@@ -33,6 +33,19 @@ export type SpritzerDetection = {
   label: string; // e.g. "metallic star spritzer 24in"
 };
 
+export type GarlandLength = '9ft' | '4.5ft';
+export type GarlandTier = 'labor' | 'bow' | 'fullDecor';
+
+// Garland is a linear run (railing, archway, porch beam). Box WIDTH in real
+// feet = garland length. Piece count = ceil(widthFt / 9). Measured on the
+// photo with a box, same UX as columns.
+export type GarlandDetection = {
+  length: GarlandLength;
+  tier: GarlandTier;
+  box: [number, number, number, number];
+  label: string; // e.g. "porch railing garland ~18ft"
+};
+
 export type PhotoAnalysisResult = {
   santasFootage: number;
   santasDifficulty: 'easy' | 'medium' | 'hard';
@@ -51,6 +64,7 @@ export type PhotoAnalysisResult = {
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
   spritzerDetections: SpritzerDetection[];
+  garlandDetections: GarlandDetection[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -89,6 +103,8 @@ WREATH TIER — "labor" = plain hanging, "bow" = wreath with a bow, "fullDecor" 
 Return each wreath as a bounding box in normalized 0-1 coords plus size + tier.
 
 SPRITZER DETECTION — identify spritzers: decorative outdoor metallic star/snowflake/starburst figures on stakes (not rope lights or projectors). They appear as shiny 3D metallic ornaments placed in garden beds, along walkways, or near the entrance. Sizes: "16" (small, ~16in), "24" (medium, common), "32" (large). Default to "24" if uncertain. Only include items actually visible as distinct placed decorations — do NOT flag distant blurs or items in the background. Return each as a bounding box plus size label.
+
+GARLAND DETECTION — identify garland runs: linear rope-of-evergreen decoration along a porch railing, archway, doorway frame, or beam. Garland is sold in 9ft sections ("9ft") or 4.5ft sections ("4.5ft"); default to "9ft" unless you can see a short run. Tier — "labor" = plain greenery, "bow" = greenery with a bow, "fullDecor" = heavy ornament/ribbon/berries; default to "bow". Return ONE bounding box per garland RUN — the box should TIGHTLY span the run's full length along its widest axis. The frontend uses the box WIDTH × the shared feet-per-pixel scale to compute linear feet and derive piece count. Do NOT flag decorative wreaths, individual bows, or roofline runs here — those have their own categories.
 
 DIFFICULTY TIERS (per package):
 - easy: single-story home, ground-accessible, simple straight runs, minimal obstacles (low shrubs, open front yard). Installer can work from a short ladder.
@@ -150,6 +166,9 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
   "spritzerDetections": [
     { "size": "16" | "24" | "32", "box": [x, y, w, h], "label": "metallic star spritzer 24in" }
   ],
+  "garlandDetections": [
+    { "length": "9ft" | "4.5ft", "tier": "labor" | "bow" | "fullDecor", "box": [x, y, w, h], "label": "porch railing garland ~18ft" }
+  ],
   "notes": "1-2 sentences on what you saw and any caveats",
   "confidence": "low" | "medium" | "high"
 }
@@ -181,6 +200,7 @@ type FewShotExample = {
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
   spritzerDetections: SpritzerDetection[];
+  garlandDetections?: GarlandDetection[];
   houseStyle?: string;
   aiFailureNotes?: string | null;
   source: 'correction' | 'training';
@@ -198,6 +218,7 @@ function correctionToExample(c: StoredCorrection): FewShotExample {
     miniLightDetections: c.corrected_mini_light_detections ?? [],
     wreathDetections: [],
     spritzerDetections: [],
+    garlandDetections: [],
     source: 'correction',
   };
 }
@@ -242,6 +263,7 @@ function buildFewShotMessages(examples: FewShotExample[]) {
       miniLightDetections: ex.miniLightDetections,
       wreathDetections: ex.wreathDetections ?? [],
       spritzerDetections: ex.spritzerDetections ?? [],
+      garlandDetections: ex.garlandDetections ?? [],
       notes: ex.aiFailureNotes
         ? `${label} Known AI pitfall on this house: ${ex.aiFailureNotes}`
         : label,
@@ -445,5 +467,6 @@ export async function analyzePhoto(
     miniLightDetections: normalizeBoxArray(parsed.miniLightDetections),
     wreathDetections: normalizeBoxArray(parsed.wreathDetections),
     spritzerDetections: normalizeBoxArray(parsed.spritzerDetections),
+    garlandDetections: normalizeBoxArray(parsed.garlandDetections),
   };
 }

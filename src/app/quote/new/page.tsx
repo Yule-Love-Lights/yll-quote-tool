@@ -7,6 +7,10 @@ import type {
   Spritzer,
   Wreath,
   GarlandItem,
+  WreathSize,
+  DecorTier,
+  SpritzerSize,
+  GarlandLength,
 } from '@/lib/pricing/pricingEngine';
 
 // ─── Shared CSS constants ────────────────────────────────────────────────────
@@ -103,6 +107,15 @@ export default function NewQuotePage() {
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
   const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
+  // Wreath / spritzer / garland detections — rendered as editable boxes on
+  // the street view, same UX as mini lights. Auto-sync into form.wreaths /
+  // form.spritzers / form.garland so they appear in the quote.
+  type WreathDetection = { size: WreathSize; tier: DecorTier; box: [number, number, number, number]; label: string };
+  type SpritzerDetection = { size: SpritzerSize; box: [number, number, number, number]; label: string };
+  type GarlandDetection = { length: GarlandLength; tier: DecorTier; box: [number, number, number, number]; label: string };
+  const [wreathDetections, setWreathDetections] = useState<WreathDetection[]>([]);
+  const [spritzerDetections, setSpritzerDetections] = useState<SpritzerDetection[]>([]);
+  const [garlandDetections, setGarlandDetections] = useState<GarlandDetection[]>([]);
   // Shared feet-per-normalized-unit scale — calibrated from the gutterline
   // (most reliable reference) and applied to both line types. This way edited
   // footage always reflects the drawn polylines, not Claude's separate text guess.
@@ -142,9 +155,11 @@ export default function NewQuotePage() {
   // Drag state for editing polyline points
   type LineType = 'santas' | 'gingerbread';
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
-  // Drag state for mini light boxes
+  // Drag state for detection boxes. `kind` lets one handler edit any of the
+  // four detection arrays (mini light, wreath, spritzer, garland).
   type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
-  const [boxDrag, setBoxDrag] = useState<{ idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
+  type DetectionKind = 'mini' | 'wreath' | 'spritzer' | 'garland';
+  const [boxDrag, setBoxDrag] = useState<{ kind: DetectionKind; idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
@@ -228,7 +243,7 @@ export default function NewQuotePage() {
     return Math.max(1, Math.round(strands));
   };
 
-  // Drag handler for mini light boxes
+  // Drag handler for detection boxes (mini lights, wreaths, spritzers, garland).
   useEffect(() => {
     if (!boxDrag) return;
     const handleMove = (e: PointerEvent) => {
@@ -245,21 +260,26 @@ export default function NewQuotePage() {
       else if (boxDrag.mode === 'ne') { y = sy + dy; w = sw + dx; h = sh - dy; }
       else if (boxDrag.mode === 'sw') { x = sx + dx; w = sw - dx; h = sh + dy; }
       else if (boxDrag.mode === 'se') { w = sw + dx; h = sh + dy; }
-      // Clamp to image + enforce min size
       const minSize = 0.02;
       w = Math.max(minSize, w); h = Math.max(minSize, h);
       x = Math.max(0, Math.min(1 - w, x));
       y = Math.max(0, Math.min(1 - h, y));
       const newBox: [number, number, number, number] = [x, y, w, h];
-      // Recalculate string count from new box dimensions (resize only, not move)
-      const newStringCount = boxDrag.mode !== 'move'
-        ? calcStringsFromBox(newBox)
-        : undefined;
-      setMiniLightDetections(dets => dets.map((d, i) =>
-        i === boxDrag.idx
-          ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
-          : d
-      ));
+      if (boxDrag.kind === 'mini') {
+        // Resize recomputes strand count from the new dimensions.
+        const newStringCount = boxDrag.mode !== 'move' ? calcStringsFromBox(newBox) : undefined;
+        setMiniLightDetections(dets => dets.map((d, i) =>
+          i === boxDrag.idx
+            ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
+            : d
+        ));
+      } else if (boxDrag.kind === 'wreath') {
+        setWreathDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      } else if (boxDrag.kind === 'spritzer') {
+        setSpritzerDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      } else if (boxDrag.kind === 'garland') {
+        setGarlandDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      }
     };
     const handleUp = () => setBoxDrag(null);
     window.addEventListener('pointermove', handleMove);
@@ -270,14 +290,19 @@ export default function NewQuotePage() {
     };
   }, [boxDrag, feetPerUnit, imgAspect]);
 
-  const startBoxDrag = (idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
+  const startBoxDrag = (kind: DetectionKind, idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const rect = imgContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const startX = (e.clientX - rect.left) / rect.width;
     const startY = (e.clientY - rect.top) / rect.height;
-    setBoxDrag({ idx, mode, startX, startY, startBox: miniLightDetections[idx].box });
+    const source =
+      kind === 'mini' ? miniLightDetections[idx].box
+      : kind === 'wreath' ? wreathDetections[idx].box
+      : kind === 'spritzer' ? spritzerDetections[idx].box
+      : garlandDetections[idx].box;
+    setBoxDrag({ kind, idx, mode, startX, startY, startBox: source });
   };
 
   const updateDetection = (idx: number, patch: Partial<MiniLightDetection>) => {
@@ -287,6 +312,28 @@ export default function NewQuotePage() {
   const deleteDetection = (idx: number) => {
     setMiniLightDetections(dets => dets.filter((_, i) => i !== idx));
   };
+
+  // Wreath / spritzer / garland CRUD — same pattern as mini-light detections.
+  const updateWreathDetection = (idx: number, patch: Partial<WreathDetection>) =>
+    setWreathDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteWreathDetection = (idx: number) =>
+    setWreathDetections(dets => dets.filter((_, i) => i !== idx));
+  const addWreathDetection = () =>
+    setWreathDetections(dets => [...dets, { size: '30noble', tier: 'bow', box: [0.4, 0.3, 0.08, 0.08], label: 'new wreath' }]);
+
+  const updateSpritzerDetection = (idx: number, patch: Partial<SpritzerDetection>) =>
+    setSpritzerDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteSpritzerDetection = (idx: number) =>
+    setSpritzerDetections(dets => dets.filter((_, i) => i !== idx));
+  const addSpritzerDetection = () =>
+    setSpritzerDetections(dets => [...dets, { size: '24', box: [0.5, 0.7, 0.05, 0.1], label: 'new spritzer' }]);
+
+  const updateGarlandDetection = (idx: number, patch: Partial<GarlandDetection>) =>
+    setGarlandDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteGarlandDetection = (idx: number) =>
+    setGarlandDetections(dets => dets.filter((_, i) => i !== idx));
+  const addGarlandDetection = () =>
+    setGarlandDetections(dets => [...dets, { length: '9ft', tier: 'bow', box: [0.2, 0.6, 0.2, 0.03], label: 'new garland' }]);
 
   const addDetection = (type: 'bush' | 'tree' | 'column') => {
     const defaults = {
@@ -312,6 +359,43 @@ export default function NewQuotePage() {
       })),
     }));
   }, [miniLightDetections]);
+
+  // Wreaths — one form entry per detection. Grouped rendering in the quote is
+  // fine with duplicates; each detection keeps its own box for editability.
+  useEffect(() => {
+    setForm(f => ({
+      ...f,
+      wreaths: wreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 })),
+    }));
+  }, [wreathDetections]);
+
+  // Spritzers — one form entry per detection.
+  useEffect(() => {
+    setForm(f => ({
+      ...f,
+      spritzers: spritzerDetections.map(d => ({ size: d.size, quantity: 1 })),
+    }));
+  }, [spritzerDetections]);
+
+  // Garland — box width in real feet (via feetPerUnit) tells us how many 9ft
+  // pieces the run needs. Rounded up so we never short the customer.
+  useEffect(() => {
+    const pieces = (box: [number, number, number, number], length: GarlandLength): number => {
+      const unitFt = length === '9ft' ? 9 : 4.5;
+      if (feetPerUnit == null) return 1;
+      const widthFt = box[2] * feetPerUnit;
+      return Math.max(1, Math.ceil(widthFt / unitFt));
+    };
+    setForm(f => ({
+      ...f,
+      garland: garlandDetections.map(d => ({
+        length: d.length,
+        type: 'noble' as const,
+        tier: d.tier,
+        quantity: pieces(d.box, d.length),
+      })),
+    }));
+  }, [garlandDetections, feetPerUnit]);
 
   // Active setter routing — drag ops operate on whichever line set matches
   // the current viewMode. Street view edits street polylines; satellite view
@@ -436,6 +520,9 @@ export default function NewQuotePage() {
     setSantasLines([]);
     setGingerbreadLines([]);
     setMiniLightDetections([]);
+    setWreathDetections([]);
+    setSpritzerDetections([]);
+    setGarlandDetections([]);
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
     setGeoLng(null);
@@ -474,6 +561,9 @@ export default function NewQuotePage() {
       setSantasLines([]);
       setGingerbreadLines([]);
       setMiniLightDetections([]);
+      setWreathDetections([]);
+      setSpritzerDetections([]);
+      setGarlandDetections([]);
       setFeetPerUnit(null);
       setSvHeading(nextHeading);
       setSvPitch(nextPitch);
@@ -529,6 +619,9 @@ export default function NewQuotePage() {
       satelliteGingerbreadFootage?: number;
       preferredSource?: 'street' | 'satellite';
       miniLightDetections?: MiniLightDetection[];
+      wreathDetections?: WreathDetection[];
+      spritzerDetections?: SpritzerDetection[];
+      garlandDetections?: GarlandDetection[];
       notes: string;
       confidence: string;
     };
@@ -557,6 +650,9 @@ export default function NewQuotePage() {
     setSantasLines(newSantasLines);
     setGingerbreadLines(newGingerbreadLines);
     setMiniLightDetections(detections);
+    setWreathDetections(r.wreathDetections ?? []);
+    setSpritzerDetections(r.spritzerDetections ?? []);
+    setGarlandDetections(r.garlandDetections ?? []);
     const santasLen = polylineLength(newSantasLines, imgAspect);
     const ridgeLen = polylineLength(newGingerbreadLines, imgAspect);
     let scale: number | null = null;
@@ -1051,6 +1147,123 @@ export default function NewQuotePage() {
                     />
                   )}
                 </svg>
+                {/* Editable wreath boxes — purple outline. */}
+                {!addMode && viewMode === 'street' && wreathDetections.map((d, i) => (
+                  <div
+                    key={`wbox-${i}`}
+                    className="absolute border-2 border-purple-500 bg-purple-400/15 cursor-move rounded-full"
+                    style={{
+                      left: `${d.box[0] * 100}%`,
+                      top: `${d.box[1] * 100}%`,
+                      width: `${d.box[2] * 100}%`,
+                      height: `${d.box[3] * 100}%`,
+                      touchAction: 'none',
+                    }}
+                    onPointerDown={startBoxDrag('wreath', i, 'move')}
+                    title="Drag to move • use corners to resize"
+                  >
+                    <div className="absolute -top-5 left-0 bg-purple-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                      W{i + 1} {d.size} · {d.tier}
+                    </div>
+                    {(['nw','ne','sw','se'] as const).map(corner => {
+                      const pos: Record<string, string> = {
+                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                      };
+                      return (
+                        <div
+                          key={corner}
+                          className={`absolute w-3 h-3 bg-white border-2 border-purple-600 rounded-sm ${pos[corner]}`}
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={startBoxDrag('wreath', i, corner)}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+
+                {/* Editable spritzer boxes — fuchsia outline. */}
+                {!addMode && viewMode === 'street' && spritzerDetections.map((d, i) => (
+                  <div
+                    key={`spbox-${i}`}
+                    className="absolute border-2 border-fuchsia-500 bg-fuchsia-400/15 cursor-move"
+                    style={{
+                      left: `${d.box[0] * 100}%`,
+                      top: `${d.box[1] * 100}%`,
+                      width: `${d.box[2] * 100}%`,
+                      height: `${d.box[3] * 100}%`,
+                      touchAction: 'none',
+                    }}
+                    onPointerDown={startBoxDrag('spritzer', i, 'move')}
+                    title="Drag to move • use corners to resize"
+                  >
+                    <div className="absolute -top-5 left-0 bg-fuchsia-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                      S{i + 1} · {d.size}in
+                    </div>
+                    {(['nw','ne','sw','se'] as const).map(corner => {
+                      const pos: Record<string, string> = {
+                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                      };
+                      return (
+                        <div
+                          key={corner}
+                          className={`absolute w-3 h-3 bg-white border-2 border-fuchsia-700 rounded-sm ${pos[corner]}`}
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={startBoxDrag('spritzer', i, corner)}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+
+                {/* Editable garland boxes — teal outline; width along the run
+                    drives piece count via feetPerUnit. */}
+                {!addMode && viewMode === 'street' && garlandDetections.map((d, i) => {
+                  const unitFt = d.length === '9ft' ? 9 : 4.5;
+                  const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
+                  const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
+                  return (
+                    <div
+                      key={`gbox-${i}`}
+                      className="absolute border-2 border-teal-500 bg-teal-400/15 cursor-move"
+                      style={{
+                        left: `${d.box[0] * 100}%`,
+                        top: `${d.box[1] * 100}%`,
+                        width: `${d.box[2] * 100}%`,
+                        height: `${d.box[3] * 100}%`,
+                        touchAction: 'none',
+                      }}
+                      onPointerDown={startBoxDrag('garland', i, 'move')}
+                      title="Drag to move • use corners to resize"
+                    >
+                      <div className="absolute -top-5 left-0 bg-teal-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                        G{i + 1} · {pieces}×{d.length} · {d.tier}
+                      </div>
+                      {(['nw','ne','sw','se'] as const).map(corner => {
+                        const pos: Record<string, string> = {
+                          nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                          ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                          sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                          se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                        };
+                        return (
+                          <div
+                            key={corner}
+                            className={`absolute w-3 h-3 bg-white border-2 border-teal-700 rounded-sm ${pos[corner]}`}
+                            style={{ touchAction: 'none' }}
+                            onPointerDown={startBoxDrag('garland', i, corner)}
+                          />
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+
                 {/* Editable mini-light boxes — only meaningful on street view
                     (box→strands math uses street-perspective scale). */}
                 {!addMode && viewMode === 'street' && miniLightDetections.map((d, i) => {
@@ -1067,7 +1280,7 @@ export default function NewQuotePage() {
                         height: `${d.box[3] * 100}%`,
                         touchAction: 'none',
                       }}
-                      onPointerDown={startBoxDrag(i, 'move')}
+                      onPointerDown={startBoxDrag('mini', i, 'move')}
                       title="Drag to move • use corners to resize"
                     >
                       <div className="absolute -top-5 left-0 bg-amber-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
@@ -1085,7 +1298,7 @@ export default function NewQuotePage() {
                             key={corner}
                             className={`absolute w-3 h-3 bg-white border-2 border-amber-600 rounded-sm ${pos[corner]}`}
                             style={{ touchAction: 'none' }}
-                            onPointerDown={startBoxDrag(i, corner)}
+                            onPointerDown={startBoxDrag('mini', i, corner)}
                           />
                         );
                       })}
@@ -1234,6 +1447,153 @@ export default function NewQuotePage() {
                 </div>
               </div>
 
+              {/* Wreaths — detected boxes, auto-synced into form.wreaths */}
+              <div className="mt-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-2 border-2 border-purple-500 rounded-sm"></span>
+                  <span className="text-sm font-semibold text-gray-800">
+                    Wreaths — {wreathDetections.length} item{wreathDetections.length === 1 ? '' : 's'}
+                  </span>
+                  <span className="text-xs text-gray-400">(sized by door / garage context)</span>
+                </div>
+                {wreathDetections.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    <div className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                      <span>#</span>
+                      <span>Size</span>
+                      <span>Tier</span>
+                      <span />
+                    </div>
+                    {wreathDetections.map((d, i) => (
+                      <div key={`wrow-${i}`} className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 items-center">
+                        <span className="text-xs font-semibold text-purple-700">W{i + 1}</span>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.size}
+                          onChange={e => updateWreathDetection(i, { size: e.target.value as WreathSize })}
+                        >
+                          <option value="24noble">24&quot; Noble</option>
+                          <option value="30noble">30&quot; Noble</option>
+                          <option value="36noble">36&quot; Noble</option>
+                          <option value="48noble">48&quot; Noble</option>
+                          <option value="36oregon">36&quot; Oregon</option>
+                        </select>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.tier}
+                          onChange={e => updateWreathDetection(i, { tier: e.target.value as DecorTier })}
+                        >
+                          <option value="labor">Labor</option>
+                          <option value="bow">Bow</option>
+                          <option value="fullDecor">Full Decor</option>
+                        </select>
+                        <button type="button" onClick={() => deleteWreathDetection(i)}
+                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button type="button" onClick={addWreathDetection}
+                  className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                  + Add Wreath
+                </button>
+              </div>
+
+              {/* Spritzers */}
+              <div className="mt-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
+                  <span className="text-sm font-semibold text-gray-800">
+                    Spritzers — {spritzerDetections.length} item{spritzerDetections.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                {spritzerDetections.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    <div className="grid grid-cols-[28px_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                      <span>#</span>
+                      <span>Size</span>
+                      <span />
+                    </div>
+                    {spritzerDetections.map((d, i) => (
+                      <div key={`srow-${i}`} className="grid grid-cols-[28px_1fr_24px] gap-2 items-center">
+                        <span className="text-xs font-semibold text-fuchsia-700">S{i + 1}</span>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.size}
+                          onChange={e => updateSpritzerDetection(i, { size: e.target.value as SpritzerSize })}
+                        >
+                          <option value="16">16&quot;</option>
+                          <option value="24">24&quot;</option>
+                          <option value="32">32&quot;</option>
+                        </select>
+                        <button type="button" onClick={() => deleteSpritzerDetection(i)}
+                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button type="button" onClick={addSpritzerDetection}
+                  className="text-xs font-medium text-fuchsia-700 border border-fuchsia-300 hover:border-fuchsia-500 rounded px-3 py-1.5">
+                  + Add Spritzer
+                </button>
+              </div>
+
+              {/* Garland — box width × feet/unit gives piece count (like columns) */}
+              <div className="mt-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-2 border-2 border-teal-500 rounded-sm"></span>
+                  <span className="text-sm font-semibold text-gray-800">
+                    Garland — {garlandDetections.length} run{garlandDetections.length === 1 ? '' : 's'}
+                  </span>
+                  <span className="text-xs text-gray-400">(box width → pieces)</span>
+                </div>
+                {garlandDetections.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    <div className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                      <span>#</span>
+                      <span>Length</span>
+                      <span>Tier</span>
+                      <span>Pieces</span>
+                      <span />
+                    </div>
+                    {garlandDetections.map((d, i) => {
+                      const unitFt = d.length === '9ft' ? 9 : 4.5;
+                      const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
+                      const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
+                      return (
+                        <div key={`grow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 items-center">
+                          <span className="text-xs font-semibold text-teal-700">G{i + 1}</span>
+                          <select
+                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                            value={d.length}
+                            onChange={e => updateGarlandDetection(i, { length: e.target.value as GarlandLength })}
+                          >
+                            <option value="9ft">9ft</option>
+                            <option value="4.5ft">4.5ft</option>
+                          </select>
+                          <select
+                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                            value={d.tier}
+                            onChange={e => updateGarlandDetection(i, { tier: e.target.value as DecorTier })}
+                          >
+                            <option value="labor">Labor</option>
+                            <option value="bow">Bow</option>
+                            <option value="fullDecor">Full Decor</option>
+                          </select>
+                          <span className="text-xs font-medium text-gray-700 tabular-nums">{pieces}</span>
+                          <button type="button" onClick={() => deleteGarlandDetection(i)}
+                            className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <button type="button" onClick={addGarlandDetection}
+                  className="text-xs font-medium text-teal-700 border border-teal-300 hover:border-teal-500 rounded px-3 py-1.5">
+                  + Add Garland Run
+                </button>
+              </div>
+
               {/* Per-line edit panels */}
               <div className="mt-4 grid grid-cols-2 gap-4">
                 <div>
@@ -1360,10 +1720,10 @@ export default function NewQuotePage() {
             </Section>
           </div>
 
-          {/* ── Winter Wonderland — Non-Standard Features ── */}
+          {/* ── C9s — Custom Runs ── */}
           <div className={`transition-opacity ${form.winterWonderlandFootage === 0 ? 'opacity-50' : ''}`}>
-            <Section title="Winter Wonderland — Non-Standard Features (C9 Bulbs)">
-              <p className="text-xs text-gray-400 mb-3">Enter manually — non-standard features only.</p>
+            <Section title="C9s — Custom Runs">
+              <p className="text-xs text-gray-400 mb-3">Enter manually — C9 bulb runs.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
