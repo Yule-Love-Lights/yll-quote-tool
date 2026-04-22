@@ -106,6 +106,9 @@ export default function NewQuotePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
+  // C9 custom runs — drawn as polylines on the photo, same UX as gutter/ridge.
+  // Footage reuses feetPerUnit from the gutterline calibration.
+  const [c9Lines, setC9Lines] = useState<LineSegment[]>([]);
   const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
   // Wreath / spritzer / garland detections — rendered as editable boxes on
   // the street view, same UX as mini lights. Auto-sync into form.wreaths /
@@ -142,6 +145,7 @@ export default function NewQuotePage() {
   // properties and complex rooflines where a street-view angle misses the back).
   const [satelliteSantasLines, setSatelliteSantasLines] = useState<LineSegment[]>([]);
   const [satelliteGingerbreadLines, setSatelliteGingerbreadLines] = useState<LineSegment[]>([]);
+  const [satelliteC9Lines, setSatelliteC9Lines] = useState<LineSegment[]>([]);
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -153,7 +157,7 @@ export default function NewQuotePage() {
   const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
 
   // Drag state for editing polyline points
-  type LineType = 'santas' | 'gingerbread';
+  type LineType = 'santas' | 'gingerbread' | 'c9';
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   // Drag state for detection boxes. `kind` lets one handler edit any of the
   // four detection arrays (mini light, wreath, spritzer, garland).
@@ -191,19 +195,34 @@ export default function NewQuotePage() {
   useEffect(() => {
     let santasFt: number | null = null;
     let gingerFt: number | null = null;
+    let c9Ft: number | null = null;
     if (measurementSource === 'street' && feetPerUnit != null) {
       santasFt = Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5;
       gingerFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5;
+      c9Ft = Math.round(polylineLength(c9Lines, imgAspect) * feetPerUnit / 5) * 5;
     } else if (measurementSource === 'satellite' && satelliteFeetPerPixel != null) {
       santasFt = Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
       gingerFt = Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+      c9Ft = Math.round(polylineLength(satelliteC9Lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
     }
     if (santasFt == null || gingerFt == null) return;
     const sFt = santasFt, gFt = gingerFt;
-    setForm(f => (f.santasFootage === sFt && f.gingerbreadFootage === gFt)
-      ? f
-      : { ...f, santasFootage: sFt, gingerbreadFootage: gFt });
-  }, [santasLines, gingerbreadLines, satelliteSantasLines, satelliteGingerbreadLines, feetPerUnit, satelliteFeetPerPixel, imgAspect, satelliteAspect, measurementSource]);
+    // c9 polyline only overrides the form value when lines are actually drawn.
+    // Otherwise leave winterWonderlandFootage alone so the manual input still works.
+    const hasC9Lines = c9Lines.length > 0 || satelliteC9Lines.length > 0;
+    const c9Target = hasC9Lines ? c9Ft : null;
+    setForm(f => {
+      const sameRoof = f.santasFootage === sFt && f.gingerbreadFootage === gFt;
+      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
+      if (sameRoof && sameC9) return f;
+      return {
+        ...f,
+        santasFootage: sFt,
+        gingerbreadFootage: gFt,
+        ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
+      };
+    });
+  }, [santasLines, gingerbreadLines, c9Lines, satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, feetPerUnit, satelliteFeetPerPixel, imgAspect, satelliteAspect, measurementSource]);
 
   // Footage display helpers — compute both sources independently so user can compare.
   const streetFootage = {
@@ -402,12 +421,17 @@ export default function NewQuotePage() {
   // edits satellite polylines.
   const getSetter = (type: LineType) => {
     if (viewMode === 'street') {
-      return type === 'santas' ? setSantasLines : setGingerbreadLines;
+      if (type === 'santas') return setSantasLines;
+      if (type === 'gingerbread') return setGingerbreadLines;
+      return setC9Lines;
     }
-    return type === 'santas' ? setSatelliteSantasLines : setSatelliteGingerbreadLines;
+    if (type === 'santas') return setSatelliteSantasLines;
+    if (type === 'gingerbread') return setSatelliteGingerbreadLines;
+    return setSatelliteC9Lines;
   };
   const activeSantasLines = viewMode === 'street' ? santasLines : satelliteSantasLines;
   const activeGingerbreadLines = viewMode === 'street' ? gingerbreadLines : satelliteGingerbreadLines;
+  const activeC9Lines = viewMode === 'street' ? c9Lines : satelliteC9Lines;
 
   useEffect(() => {
     if (!dragging) return;
@@ -466,7 +490,7 @@ export default function NewQuotePage() {
     }
     const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'new gutterline' : 'new ridgeline',
+      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -519,6 +543,7 @@ export default function NewQuotePage() {
     setAnalysisError(null);
     setSantasLines([]);
     setGingerbreadLines([]);
+    setC9Lines([]);
     setMiniLightDetections([]);
     setWreathDetections([]);
     setSpritzerDetections([]);
@@ -560,6 +585,7 @@ export default function NewQuotePage() {
       // — wipe them so they don't sit on the wrong spots. Satellite untouched.
       setSantasLines([]);
       setGingerbreadLines([]);
+      setC9Lines([]);
       setMiniLightDetections([]);
       setWreathDetections([]);
       setSpritzerDetections([]);
@@ -1136,11 +1162,23 @@ export default function NewQuotePage() {
                       vectorEffect="non-scaling-stroke"
                     />
                   ))}
+                  {activeC9Lines.map((line, i) => (
+                    <polyline
+                      key={`c9-${i}`}
+                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
                   {pendingPoints.length > 0 && (
                     <polyline
                       points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                       fill="none"
-                      stroke={addMode === 'santas' ? '#ef4444' : '#3b82f6'}
+                      stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
                       strokeWidth="3"
                       strokeDasharray="6 4"
                       vectorEffect="non-scaling-stroke"
@@ -1326,10 +1364,20 @@ export default function NewQuotePage() {
                     title="Drag to move • Double-click to delete"
                   />
                 )))}
+                {!addMode && activeC9Lines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                  <div
+                    key={`c9h-${li}-${pi}`}
+                    className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
+                    onDoubleClick={() => deletePoint('c9', li, pi)}
+                    title="Drag to move • Double-click to delete"
+                  />
+                )))}
                 {pendingPoints.map(([x, y], i) => (
                   <div
                     key={`pp-${i}`}
-                    className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : 'bg-blue-500'} border-2 border-white shadow`}
+                    className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
                     style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
                   />
                 ))}
@@ -1339,7 +1387,7 @@ export default function NewQuotePage() {
               {addMode ? (
                 <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                   <span className="text-sm text-yellow-900">
-                    Adding new {addMode === 'santas' ? 'gutterline (red)' : 'ridgeline (blue)'} — click on the photo to add points ({pendingPoints.length} placed).
+                    Adding new {addMode === 'santas' ? 'gutterline (red)' : addMode === 'gingerbread' ? 'ridgeline (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                   </span>
                   <div className="flex gap-2">
                     <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
@@ -1362,8 +1410,103 @@ export default function NewQuotePage() {
                     className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
                     + Add Ridgeline
                   </button>
+                  <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
+                    className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
+                    + Add C9 Run
+                  </button>
                 </div>
               )}
+
+              {/* Per-line edit panels — gutterline / ridgeline / C9s.
+                  Each shows live footage + editable segment labels + delete. */}
+              <div className="mt-4 grid grid-cols-3 gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-1 bg-red-500 rounded"></span>
+                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft</span>
+                  </div>
+                  {activeSantasLines.length > 0 ? (
+                    <ul className="space-y-1 ml-6">
+                      {activeSantasLines.map((line, i) => (
+                        <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
+                          <input
+                            value={line.label}
+                            onChange={e => updateLineLabel('santas', i, e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-gray-400">{line.points.length}pts</span>
+                          <button type="button" onClick={() => deleteLine('santas', i)}
+                            className="text-red-400 hover:text-red-600 font-bold">×</button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-400 ml-6">No segments</p>
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-1 bg-blue-500 rounded"></span>
+                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft</span>
+                  </div>
+                  {activeGingerbreadLines.length > 0 ? (
+                    <ul className="space-y-1 ml-6">
+                      {activeGingerbreadLines.map((line, i) => (
+                        <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
+                          <input
+                            value={line.label}
+                            onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-gray-400">{line.points.length}pts</span>
+                          <button type="button" onClick={() => deleteLine('gingerbread', i)}
+                            className="text-red-400 hover:text-red-600 font-bold">×</button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-400 ml-6">No segments</p>
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-1 bg-emerald-500 rounded"></span>
+                    <span className="text-sm font-semibold text-gray-800">C9s — {form.winterWonderlandFootage}ft</span>
+                  </div>
+                  {activeC9Lines.length > 0 ? (
+                    <ul className="space-y-1 ml-6">
+                      {activeC9Lines.map((line, i) => (
+                        <li key={`c9l-${i}`} className="flex items-center gap-2 text-xs">
+                          <input
+                            value={line.label}
+                            onChange={e => updateLineLabel('c9', i, e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-gray-400">{line.points.length}pts</span>
+                          <button type="button" onClick={() => deleteLine('c9', i)}
+                            className="text-red-400 hover:text-red-600 font-bold">×</button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="ml-6">
+                      <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
+                      <div className="flex items-center gap-2">
+                        <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
+                          value={form.winterWonderlandFootage || ''}
+                          onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
+                        <span className="text-xs text-gray-500">ft</span>
+                        <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
+                          onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                          <option value="easy">Easy</option>
+                          <option value="medium">Medium</option>
+                          <option value="hard">Hard</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
 
               {/* Mini light detections — editable */}
               <div className="mt-5">
@@ -1447,6 +1590,45 @@ export default function NewQuotePage() {
                 </div>
               </div>
 
+              {/* Spritzers */}
+              <div className="mt-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
+                  <span className="text-sm font-semibold text-gray-800">
+                    Spritzers — {spritzerDetections.length} item{spritzerDetections.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                {spritzerDetections.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    <div className="grid grid-cols-[28px_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                      <span>#</span>
+                      <span>Size</span>
+                      <span />
+                    </div>
+                    {spritzerDetections.map((d, i) => (
+                      <div key={`srow-${i}`} className="grid grid-cols-[28px_1fr_24px] gap-2 items-center">
+                        <span className="text-xs font-semibold text-fuchsia-700">S{i + 1}</span>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.size}
+                          onChange={e => updateSpritzerDetection(i, { size: e.target.value as SpritzerSize })}
+                        >
+                          <option value="16">16&quot;</option>
+                          <option value="24">24&quot;</option>
+                          <option value="32">32&quot;</option>
+                        </select>
+                        <button type="button" onClick={() => deleteSpritzerDetection(i)}
+                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button type="button" onClick={addSpritzerDetection}
+                  className="text-xs font-medium text-fuchsia-700 border border-fuchsia-300 hover:border-fuchsia-500 rounded px-3 py-1.5">
+                  + Add Spritzer
+                </button>
+              </div>
+
               {/* Wreaths — detected boxes, auto-synced into form.wreaths */}
               <div className="mt-5">
                 <div className="flex items-center gap-2 mb-2">
@@ -1496,45 +1678,6 @@ export default function NewQuotePage() {
                 <button type="button" onClick={addWreathDetection}
                   className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
                   + Add Wreath
-                </button>
-              </div>
-
-              {/* Spritzers */}
-              <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
-                  <span className="text-sm font-semibold text-gray-800">
-                    Spritzers — {spritzerDetections.length} item{spritzerDetections.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-                {spritzerDetections.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    <div className="grid grid-cols-[28px_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                      <span>#</span>
-                      <span>Size</span>
-                      <span />
-                    </div>
-                    {spritzerDetections.map((d, i) => (
-                      <div key={`srow-${i}`} className="grid grid-cols-[28px_1fr_24px] gap-2 items-center">
-                        <span className="text-xs font-semibold text-fuchsia-700">S{i + 1}</span>
-                        <select
-                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                          value={d.size}
-                          onChange={e => updateSpritzerDetection(i, { size: e.target.value as SpritzerSize })}
-                        >
-                          <option value="16">16&quot;</option>
-                          <option value="24">24&quot;</option>
-                          <option value="32">32&quot;</option>
-                        </select>
-                        <button type="button" onClick={() => deleteSpritzerDetection(i)}
-                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button type="button" onClick={addSpritzerDetection}
-                  className="text-xs font-medium text-fuchsia-700 border border-fuchsia-300 hover:border-fuchsia-500 rounded px-3 py-1.5">
-                  + Add Spritzer
                 </button>
               </div>
 
@@ -1592,84 +1735,6 @@ export default function NewQuotePage() {
                   className="text-xs font-medium text-teal-700 border border-teal-300 hover:border-teal-500 rounded px-3 py-1.5">
                   + Add Garland Run
                 </button>
-              </div>
-
-              {/* C9s — Custom Runs (manual entry, not auto-detected) */}
-              <div className="mt-4 border-t border-gray-200 pt-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-block w-3 h-3 rounded-full bg-emerald-500"></span>
-                  <span className="text-sm font-semibold text-gray-800">C9s — Custom Runs</span>
-                  <span className="text-xs text-gray-400">(manual entry)</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3 ml-5">
-                  <div>
-                    <label className={lbl}>Linear Footage</label>
-                    <input className={inp} type="number" min="0" placeholder="0"
-                      value={form.winterWonderlandFootage || ''}
-                      onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
-                  </div>
-                  <div>
-                    <label className={lbl}>Difficulty</label>
-                    <select className={sel} value={form.winterWonderlandDifficulty}
-                      onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
-                      <option value="easy">Easy — $8/ft</option>
-                      <option value="medium">Medium — $10/ft</option>
-                      <option value="hard">Hard — $12/ft</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Per-line edit panels */}
-              <div className="mt-4 grid grid-cols-2 gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-1 bg-red-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft</span>
-                  </div>
-                  {activeSantasLines.length > 0 ? (
-                    <ul className="space-y-1 ml-6">
-                      {activeSantasLines.map((line, i) => (
-                        <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
-                          <input
-                            value={line.label}
-                            onChange={e => updateLineLabel('santas', i, e.target.value)}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-gray-400">{line.points.length}pts</span>
-                          <button type="button" onClick={() => deleteLine('santas', i)}
-                            className="text-red-400 hover:text-red-600 font-bold">×</button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments</p>
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-1 bg-blue-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft</span>
-                  </div>
-                  {activeGingerbreadLines.length > 0 ? (
-                    <ul className="space-y-1 ml-6">
-                      {activeGingerbreadLines.map((line, i) => (
-                        <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
-                          <input
-                            value={line.label}
-                            onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-gray-400">{line.points.length}pts</span>
-                          <button type="button" onClick={() => deleteLine('gingerbread', i)}
-                            className="text-red-400 hover:text-red-600 font-bold">×</button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments</p>
-                  )}
-                </div>
               </div>
 
               {/* Save corrections */}
