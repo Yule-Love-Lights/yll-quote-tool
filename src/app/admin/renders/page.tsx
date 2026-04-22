@@ -14,6 +14,24 @@ type RenderDetail = {
   urls: Record<'source' | 'composite' | 'mask' | 'final', string | null>;
 };
 
+// Lazy-prompt for the admin secret and cache it in sessionStorage. Returns
+// null if the user cancels, in which case the caller should abort. The
+// secret is compared server-side; an empty/wrong value gets a 401 that the
+// caller surfaces normally.
+function getAdminSecret(): string | null {
+  if (typeof window === 'undefined') return null;
+  const cached = window.sessionStorage.getItem('yll:adminSecret');
+  if (cached) return cached;
+  const entered = window.prompt('Admin secret required for approve / reject / delete:');
+  if (!entered) return null;
+  window.sessionStorage.setItem('yll:adminSecret', entered);
+  return entered;
+}
+
+function clearAdminSecret() {
+  if (typeof window !== 'undefined') window.sessionStorage.removeItem('yll:adminSecret');
+}
+
 export default function RendersAdminPage() {
   const [items, setItems] = useState<RenderListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,10 +75,25 @@ export default function RendersAdminPage() {
     }
   };
 
+  const adminFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    const secret = getAdminSecret();
+    if (!secret) throw new Error('Admin secret required');
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        'x-admin-secret': secret,
+      },
+    });
+    // Wrong secret → clear it so the next click re-prompts.
+    if (res.status === 401) clearAdminSecret();
+    return res;
+  };
+
   const approve = async (id: string) => {
     setBusy(id);
     try {
-      const res = await fetch(`/api/renders/${id}`, {
+      const res = await adminFetch(`/api/renders/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'approve', approver: 'naldo' }),
@@ -80,7 +113,7 @@ export default function RendersAdminPage() {
     if (!reason.trim()) return;
     setBusy(id);
     try {
-      const res = await fetch(`/api/renders/${id}`, {
+      const res = await adminFetch(`/api/renders/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reject', reason }),
@@ -99,7 +132,7 @@ export default function RendersAdminPage() {
     if (!confirm('Delete this render and all its artifacts? This cannot be undone.')) return;
     setBusy(id);
     try {
-      const res = await fetch(`/api/renders/${id}`, { method: 'DELETE' });
+      const res = await adminFetch(`/api/renders/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
       if (expandedId === id) { setExpandedId(null); setDetail(null); }
       await refresh();

@@ -6,13 +6,13 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 // createClient() call allocates fetch internals and an auth state machine.
 let cached: SupabaseClient | null = null;
 let cachedKey: string | null = null;
+let cachedService: SupabaseClient | null = null;
+let cachedServiceKey: string | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY;
   if (!url || !key) return null;
-  // Invalidate cache if env vars were swapped at runtime (rare but possible
-  // during local dev). Key on url+anon_key so a change forces a new client.
   const k = `${url}::${key}`;
   if (cached && cachedKey === k) return cached;
   cached = createClient(url, key);
@@ -20,6 +20,27 @@ export function getSupabaseClient(): SupabaseClient | null {
   return cached;
 }
 
+// Service-role client bypasses RLS. ONLY use from server-side code (never
+// exposed to the browser). Used for renders pipeline writes where the row
+// lifecycle (pending → rendering → ready → approved) would otherwise break
+// the "anon SELECT only approved" policy on read-back.
+export function getSupabaseServiceClient(): SupabaseClient | null {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  const k = `${url}::${key}`;
+  if (cachedService && cachedServiceKey === k) return cachedService;
+  cachedService = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  cachedServiceKey = k;
+  return cachedService;
+}
+
 export function isSupabaseConfigured(): boolean {
   return !!(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
+}
+
+export function isSupabaseServiceConfigured(): boolean {
+  return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }

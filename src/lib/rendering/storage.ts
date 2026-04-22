@@ -8,13 +8,19 @@
 //   {renderId}/final.png
 
 import { createHash } from 'crypto';
-import { getSupabaseClient } from '@/lib/supabase';
+import { getSupabaseServiceClient } from '@/lib/supabase';
 import type {
   RenderListItem,
   RenderStatus,
   RenderStyle,
   StoredRender,
 } from './types';
+
+// All ops in this module run server-side with the service-role key so they
+// bypass RLS. Anon's SELECT policy only allows status='approved', which
+// would break the full render lifecycle (pending→rendering→ready→approved).
+// The service client is NEVER exposed to the browser. See REVIEW 2026-04-22.
+const getSb = getSupabaseServiceClient;
 
 const BUCKET = 'renders';
 
@@ -31,15 +37,18 @@ export function cacheKeyFor(photoHash: string, visionHash: string, style: Render
 }
 
 // Look up a prior render for the same inputs. If one exists and is
-// ready/approved, the orchestrator skips the Gemini call.
+// ready/approved AND still has a final artifact, the orchestrator skips
+// the Gemini call. The final_path guard prevents serving a stale row
+// whose artifacts were deleted out-of-band (see REVIEW C4).
 export async function findByCacheKey(cacheKey: string): Promise<StoredRender | null> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
     .from('renders')
     .select('*')
     .eq('cache_key', cacheKey)
     .in('status', ['ready', 'approved'])
+    .not('final_path', 'is', null)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -55,7 +64,7 @@ export async function createRenderRow(row: {
   cacheKey: string;
   notes?: string;
 }): Promise<StoredRender> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
   const { data, error } = await sb
     .from('renders')
@@ -76,7 +85,7 @@ export async function createRenderRow(row: {
 }
 
 export async function updateRender(id: string, patch: Partial<StoredRender>): Promise<void> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
   const { error } = await sb.from('renders').update(patch).eq('id', id);
   if (error) throw new Error(`updateRender: ${error.message}`);
@@ -88,7 +97,7 @@ export async function uploadArtifact(
   buf: Buffer,
   contentType: string,
 ): Promise<string> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
   const ext = contentType === 'image/jpeg' ? 'jpg' : 'png';
   const path = `${renderId}/${kind}.${ext}`;
@@ -101,7 +110,7 @@ export async function uploadArtifact(
 }
 
 export async function getSignedUrl(path: string, expiresIn = 60 * 60): Promise<string> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
   const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(path, expiresIn);
   if (error || !data) throw new Error(`getSignedUrl: ${error?.message ?? 'no url'}`);
@@ -110,8 +119,17 @@ export async function getSignedUrl(path: string, expiresIn = 60 * 60): Promise<s
 
 // Sum of gemini_cost_usd for renders created this calendar month. Used by
 // orchestrator.ts to enforce RENDER_BUDGET_MONTHLY_USD before calling Gemini.
+//
+// Fails CLOSED on DB error (throws) — refusing a render is cheaper than
+// burning Gemini $$$ blind during a Supabase outage. 60s in-memory cache
+// keeps hot-path latency off the MTD sum query.
+let mtdCache: { usd: number; until: number } | null = null;
+const MTD_CACHE_TTL_MS = 60_000;
+
 export async function getMonthToDateSpendUsd(): Promise<number> {
-  const sb = getSupabaseClient();
+  if (mtdCache && mtdCache.until > Date.now()) return mtdCache.usd;
+
+  const sb = getSb();
   if (!sb) return 0;
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
@@ -120,12 +138,23 @@ export async function getMonthToDateSpendUsd(): Promise<number> {
     .select('gemini_cost_usd')
     .gte('created_at', monthStart)
     .not('gemini_cost_usd', 'is', null);
-  if (error || !data) return 0;
-  return data.reduce((s: number, r: { gemini_cost_usd: number | null }) => s + (r.gemini_cost_usd ?? 0), 0);
+  if (error) throw new Error(`getMonthToDateSpendUsd: ${error.message}`);
+  const sum = (data ?? []).reduce(
+    (s: number, r: { gemini_cost_usd: number | null }) => s + (r.gemini_cost_usd ?? 0),
+    0,
+  );
+  mtdCache = { usd: sum, until: Date.now() + MTD_CACHE_TTL_MS };
+  return sum;
+}
+
+// Invalidate the MTD cache after a new render charge lands so back-to-back
+// calls can't race past the budget. Called by the orchestrator on success.
+export function invalidateMtdCache(): void {
+  mtdCache = null;
 }
 
 export async function listRenders(limit = 100): Promise<RenderListItem[]> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) return [];
   const { data, error } = await sb
     .from('renders')
@@ -137,7 +166,7 @@ export async function listRenders(limit = 100): Promise<RenderListItem[]> {
 }
 
 export async function getRender(id: string): Promise<StoredRender | null> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
     .from('renders')
@@ -164,7 +193,7 @@ export async function rejectRender(id: string, reason: string): Promise<void> {
 }
 
 export async function deleteRender(id: string): Promise<void> {
-  const sb = getSupabaseClient();
+  const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
   // Best-effort storage cleanup — remove all artifacts in the render's folder.
   const { data: files } = await sb.storage.from(BUCKET).list(id);

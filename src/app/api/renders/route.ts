@@ -1,31 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { runRender, RenderError } from '@/lib/rendering/orchestrator';
 import { listRenders } from '@/lib/rendering/storage';
+import { coerceVision } from '@/lib/rendering/adapter';
 import type { RenderRequest, RenderStyle } from '@/lib/rendering/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120; // Gemini image generation can take 30-60s
 
 const VALID_STYLES: RenderStyle[] = ['warm-white', 'multi', 'red-green'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Cap the POST body. A daytime JPEG from a phone runs ~2–5MB; base64 inflates
+// by ~33%, plus vision JSON. 15MB leaves headroom without letting an attacker
+// OOM the serverless function. See REVIEW H4.
+const MAX_BODY_BYTES = 15 * 1024 * 1024;
 
 export async function GET() {
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' }, { status: 503 });
   }
   const items = await listRenders(100);
   return NextResponse.json({ items });
 }
 
 export async function POST(req: NextRequest) {
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' }, { status: 503 });
   }
 
   // Tight rate limit — each call can burn $0.20 and 60s of Gemini time.
   const rl = rateLimitResponse(req, { bucket: 'renders', limit: 5, windowMs: 60_000 });
   if (rl) return rl;
+
+  const declaredLen = Number(req.headers.get('content-length') ?? 0);
+  if (declaredLen > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { error: `Payload too large (max ${MAX_BODY_BYTES} bytes)` },
+      { status: 413 },
+    );
+  }
 
   let body: Partial<RenderRequest>;
   try {
@@ -37,8 +52,19 @@ export async function POST(req: NextRequest) {
   if (!body.photoBase64 || !body.photoMediaType) {
     return NextResponse.json({ error: 'photoBase64 and photoMediaType are required' }, { status: 400 });
   }
+  // Sanity check after decoding — base64 body present but claimed over the
+  // cap (chunked transfer, missing content-length, etc.).
+  if (body.photoBase64.length * 0.75 > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { error: `photoBase64 too large (max ${MAX_BODY_BYTES} bytes decoded)` },
+      { status: 413 },
+    );
+  }
   if (!body.vision) {
     return NextResponse.json({ error: 'vision data is required' }, { status: 400 });
+  }
+  if (body.quoteId && !UUID_RE.test(body.quoteId)) {
+    return NextResponse.json({ error: 'quoteId must be a valid UUID' }, { status: 400 });
   }
   const style = (body.style ?? 'warm-white') as RenderStyle;
   if (!VALID_STYLES.includes(style)) {
@@ -50,15 +76,7 @@ export async function POST(req: NextRequest) {
       quoteId: body.quoteId,
       photoBase64: body.photoBase64,
       photoMediaType: body.photoMediaType,
-      vision: {
-        santasLines: body.vision.santasLines ?? [],
-        gingerbreadLines: body.vision.gingerbreadLines ?? [],
-        c9Lines: body.vision.c9Lines ?? [],
-        miniLights: body.vision.miniLights ?? [],
-        wreaths: body.vision.wreaths ?? [],
-        spritzers: body.vision.spritzers ?? [],
-        garland: body.vision.garland ?? [],
-      },
+      vision: coerceVision(body.vision),
       style,
       notes: body.notes,
     });
@@ -70,7 +88,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: err.message, code: err.code }, { status });
     }
     const msg = err instanceof Error ? err.message : 'Unknown render error';
-    const stack = err instanceof Error ? err.stack : undefined;
-    return NextResponse.json({ error: msg, stack }, { status: 500 });
+    // Only leak stack traces in dev — they disclose internal paths.
+    const includeStack = process.env.NODE_ENV !== 'production';
+    const stack = includeStack && err instanceof Error ? err.stack : undefined;
+    return NextResponse.json({ error: msg, ...(stack ? { stack } : {}) }, { status: 500 });
   }
 }

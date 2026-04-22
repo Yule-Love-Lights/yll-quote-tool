@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { PhotoAnalysisResult } from '@/lib/photoAnalysis';
 import type { RenderStyle } from '@/lib/rendering/types';
+import { toRenderVisionInput } from '@/lib/rendering/adapter';
 
 type Stage = 'idle' | 'analyzing' | 'rendering' | 'done' | 'error';
 
@@ -72,19 +73,14 @@ export default function NewRenderPage() {
           photoMediaType,
           style,
           notes: notes.trim() || undefined,
-          vision: {
-            santasLines: result.santasLines,
-            gingerbreadLines: result.gingerbreadLines,
-            c9Lines: [],                         // Phase 1: not yet split from gingerbread in analyzer
-            miniLights: result.miniLightDetections,
-            wreaths: result.wreathDetections,
-            spritzers: result.spritzerDetections,
-            garland: result.garlandDetections,
-          },
+          // Adapter handles coord sanitization + c9Lines plumbing. Pass c9Lines
+          // through `extra` once the quote page maintains a separate state.
+          vision: toRenderVisionInput(result),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
+        // stack only present in dev; prod keeps errors terse.
         const detail = data.stack ? `\n\n${data.stack.split('\n').slice(0, 4).join('\n')}` : '';
         throw new Error(`${data.error ?? 'Render failed'}${detail}`);
       }

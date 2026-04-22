@@ -21,6 +21,7 @@ import {
   getMonthToDateSpendUsd,
   hashBuffer,
   hashJson,
+  invalidateMtdCache,
   updateRender,
   uploadArtifact,
 } from './storage';
@@ -48,8 +49,11 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
   if (cached) return cached;
 
   // Budget guardrail. Fires BEFORE the render row is created so we don't
-  // leave half-written rows in the DB when over budget.
-  const budgetLimit = parseFloat(process.env.RENDER_BUDGET_MONTHLY_USD ?? '200');
+  // leave half-written rows in the DB when over budget. Guards against
+  // NaN from a malformed env var — if someone sets RENDER_BUDGET_MONTHLY_USD=off
+  // parseFloat returns NaN and `NaN >= NaN` is false, silently disabling the cap.
+  const parsedBudget = parseFloat(process.env.RENDER_BUDGET_MONTHLY_USD ?? '200');
+  const budgetLimit = Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : 200;
   const mtdSpend = await getMonthToDateSpendUsd();
   if (mtdSpend >= budgetLimit) {
     throw new RenderError(
@@ -106,6 +110,7 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
       gemini_ms: gemini.latencyMs,
       gemini_cost_usd: gemini.estimatedCostUsd,
     });
+    invalidateMtdCache();
 
     return {
       ...row,
