@@ -151,7 +151,12 @@ export default function NewQuotePage() {
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
   const [satelliteAspect, setSatelliteAspect] = useState<number>(1);
   const [viewMode, setViewMode] = useState<'street' | 'satellite'>('street');
+  // Pricing follows the view the user is actively editing. Keeps manual
+  // polyline edits in lockstep with the form inputs below the photo.
   const [measurementSource, setMeasurementSource] = useState<'street' | 'satellite'>('street');
+  useEffect(() => {
+    setMeasurementSource(viewMode);
+  }, [viewMode]);
 
   // Mini light rates (mirror of BUSINESS_RULES.miniLightRates)
   const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
