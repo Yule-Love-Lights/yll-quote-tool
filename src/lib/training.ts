@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { LineSegment, MiniLightDetection, WreathDetection, SpritzerDetection } from './photoAnalysis';
+import { GarlandDetection, LineSegment, MiniLightDetection, WreathDetection, SpritzerDetection } from './photoAnalysis';
 import type { Spritzer, Wreath, GarlandItem } from './pricing/pricingEngine';
 
 export type PhotoTag =
@@ -35,6 +35,8 @@ export type TrainingHousePayload = {
   miniLightDetections: MiniLightDetection[];
   wreathDetections?: WreathDetection[];
   spritzerDetections?: SpritzerDetection[];
+  garlandDetections?: GarlandDetection[];
+  c9Lines?: LineSegment[];
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
@@ -65,6 +67,8 @@ export type StoredTrainingHouse = {
   mini_light_detections: MiniLightDetection[];
   wreath_detections: WreathDetection[];
   spritzer_detections: SpritzerDetection[];
+  garland_detections: GarlandDetection[] | null;
+  c9_lines: LineSegment[] | null;
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
@@ -104,6 +108,8 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
       mini_light_detections: payload.miniLightDetections,
       wreath_detections: payload.wreathDetections ?? [],
       spritzer_detections: payload.spritzerDetections ?? [],
+      garland_detections: payload.garlandDetections ?? [],
+      c9_lines: payload.c9Lines ?? [],
       spritzers: payload.spritzers,
       wreaths: payload.wreaths,
       garland: payload.garland,
@@ -172,26 +178,43 @@ export async function getTrainingFewShot(
   const supabase = getSupabaseClient();
   if (!supabase) return [];
 
-  // Pull a larger recent pool, rank client-side by style match, then take top N.
-  const { data, error } = await supabase
+  // Two-step fetch: first pull a lightweight pool (id + house_style) so we
+  // can rank by style match without downloading full photo base64 for every
+  // candidate. Then SELECT * only for the top-N winners.
+  const poolSize = Math.max(limit * 5, 10);
+  const { data: candidates, error: poolErr } = await supabase
+    .from('training_houses')
+    .select('id, house_style, created_at')
+    .order('created_at', { ascending: false })
+    .limit(poolSize);
+  if (poolErr || !candidates) return [];
+
+  let winnerIds: string[];
+  if (!styleHint) {
+    winnerIds = candidates.slice(0, limit).map(c => c.id as string);
+  } else {
+    const hint = styleHint.toLowerCase().trim();
+    const scored = candidates.map(c => {
+      const s = (c.house_style ?? '').toLowerCase();
+      const exact = s && s === hint;
+      const partial = s && (s.includes(hint) || hint.includes(s));
+      return { id: c.id as string, score: exact ? 2 : partial ? 1 : 0 };
+    });
+    scored.sort((a, b) => b.score - a.score); // stable-ish: preserves recency within score
+    winnerIds = scored.slice(0, limit).map(x => x.id);
+  }
+
+  if (winnerIds.length === 0) return [];
+
+  const { data: full, error: fullErr } = await supabase
     .from('training_houses')
     .select('*')
-    .order('created_at', { ascending: false })
-    .limit(Math.max(limit * 5, 10));
-  if (error) return [];
+    .in('id', winnerIds);
+  if (fullErr || !full) return [];
 
-  const all = (data ?? []) as StoredTrainingHouse[];
-  if (!styleHint) return all.slice(0, limit);
-
-  const hint = styleHint.toLowerCase().trim();
-  const scored = all.map(h => {
-    const s = (h.house_style ?? '').toLowerCase();
-    const exact = s && s === hint;
-    const partial = s && (s.includes(hint) || hint.includes(s));
-    return { h, score: exact ? 2 : partial ? 1 : 0 };
-  });
-  scored.sort((a, b) => b.score - a.score); // stable-ish: preserves recency within same score
-  return scored.slice(0, limit).map(x => x.h);
+  // Preserve the ranked order — .in() returns rows in arbitrary order.
+  const byId = new Map(full.map(h => [h.id as string, h as StoredTrainingHouse]));
+  return winnerIds.map(id => byId.get(id)).filter((h): h is StoredTrainingHouse => !!h);
 }
 
 export async function deleteTrainingHouse(id: string): Promise<boolean> {

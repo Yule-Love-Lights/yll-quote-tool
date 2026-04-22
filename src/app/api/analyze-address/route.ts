@@ -4,6 +4,7 @@ import { isClaudeConfigured } from '@/lib/claude';
 import { getRecentCorrections } from '@/lib/corrections';
 import { getTrainingFewShot } from '@/lib/training';
 import { getReferenceAssetsForAnalysis } from '@/lib/referenceAssets';
+import { rateLimitResponse } from '@/lib/rateLimit';
 import {
   isGoogleMapsConfigured,
   geocodeAddress,
@@ -16,6 +17,11 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  // Each call hits Anthropic + 2 Google Maps APIs — cap at 20/min/IP to
+  // protect budget if someone scripts it. Normal interactive use is 1/min.
+  const blocked = rateLimitResponse(req, { bucket: 'analyze-address', limit: 20, windowMs: 60_000 });
+  if (blocked) return blocked;
+
   if (!isClaudeConfigured()) {
     return NextResponse.json(
       { error: 'Photo analysis not configured — ANTHROPIC_API_KEY missing' },
@@ -102,6 +108,7 @@ export async function POST(req: NextRequest) {
             miniLightDetections: h.mini_light_detections ?? [],
             wreathDetections: h.wreath_detections ?? [],
             spritzerDetections: h.spritzer_detections ?? [],
+            garlandDetections: h.garland_detections ?? [],
             houseStyle: h.house_style ?? undefined,
             aiFailureNotes: h.ai_failure_notes,
             source: 'training' as const,

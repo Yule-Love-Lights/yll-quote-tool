@@ -527,6 +527,14 @@ export default function NewQuotePage() {
           correctedGingerbreadDifficulty: form.gingerbreadDifficulty,
           correctedGingerbreadLines: gingerbreadLines,
           correctedMiniLightDetections: miniLightDetections,
+          correctedC9Lines: c9Lines,
+          correctedWinterWonderlandFootage: form.winterWonderlandFootage,
+          correctedSatelliteSantasLines: satelliteSantasLines,
+          correctedSatelliteGingerbreadLines: satelliteGingerbreadLines,
+          correctedSatelliteC9Lines: satelliteC9Lines,
+          correctedWreathDetections: wreathDetections,
+          correctedSpritzerDetections: spritzerDetections,
+          correctedGarlandDetections: garlandDetections,
         }),
       });
       if (res.ok) setCorrectionSaved(true);
@@ -553,6 +561,19 @@ export default function NewQuotePage() {
     setWreathDetections([]);
     setSpritzerDetections([]);
     setGarlandDetections([]);
+    // Reset stale state from any prior Google/address analysis so the manual
+    // upload doesn't silently reuse satellite lines, base64, or calibration.
+    setSatellitePreview(null);
+    setSatelliteSantasLines([]);
+    setSatelliteGingerbreadLines([]);
+    setSatelliteC9Lines([]);
+    setSatelliteFeetPerPixel(null);
+    setGoogleAddress(null);
+    setPhotoBase64(null);
+    setPhotoMediaType(null);
+    setOriginalAnalysis(null);
+    setFeetPerUnit(null);
+    setFewShotCount(0);
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
     setGeoLng(null);
@@ -599,8 +620,8 @@ export default function NewQuotePage() {
       setSvHeading(nextHeading);
       setSvPitch(nextPitch);
       setSvFov(nextFov);
-      // Force view to street so the new image is visible.
-      setViewMode('street');
+      // Don't force viewMode here — the viewMode→measurementSource sync would
+      // silently flip the user's chosen pricing source. User can toggle manually.
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Street View refetch failed');
     } finally {

@@ -69,6 +69,47 @@ export type PhotoAnalysisResult = {
   confidence: 'low' | 'medium' | 'high';
 };
 
+// Strip markdown code fences and pull the outer JSON object out of Claude's
+// text response. Uses a brace-balance scan instead of a greedy regex so a
+// trailing "```" or extra prose doesn't corrupt the parse. Throws with a
+// helpful snippet on failure so callers can see what Claude actually sent.
+function extractJson(text: string): unknown {
+  let s = text.trim();
+  // Strip ```json ... ``` or ``` ... ``` fences if present
+  const fenceMatch = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```\s*$/);
+  if (fenceMatch) s = fenceMatch[1].trim();
+  // Try a direct parse first — Claude usually obeys the "JSON only" instruction
+  try { return JSON.parse(s); } catch { /* fall through to balance scan */ }
+  // Balance-scan for the outermost {...}
+  const start = s.indexOf('{');
+  if (start < 0) throw new Error(`Claude returned non-JSON response: ${s.slice(0, 200)}`);
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const candidate = s.slice(start, i + 1);
+        try { return JSON.parse(candidate); }
+        catch (e) {
+          throw new Error(`Claude returned malformed JSON: ${(e as Error).message}. Snippet: ${candidate.slice(0, 200)}`);
+        }
+      }
+    }
+  }
+  throw new Error(`Claude returned unbalanced JSON: ${s.slice(0, 200)}`);
+}
+
 const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
 
 PACKAGES:
@@ -225,10 +266,12 @@ function correctionToExample(c: StoredCorrection): FewShotExample {
     gingerbreadFootage: c.corrected_gingerbread_footage,
     gingerbreadDifficulty: c.corrected_gingerbread_difficulty,
     gingerbreadLines: c.corrected_gingerbread_lines,
+    satelliteSantasLines: c.corrected_satellite_santas_lines ?? [],
+    satelliteGingerbreadLines: c.corrected_satellite_gingerbread_lines ?? [],
     miniLightDetections: c.corrected_mini_light_detections ?? [],
-    wreathDetections: [],
-    spritzerDetections: [],
-    garlandDetections: [],
+    wreathDetections: c.corrected_wreath_detections ?? [],
+    spritzerDetections: c.corrected_spritzer_detections ?? [],
+    garlandDetections: c.corrected_garland_detections ?? [],
     source: 'correction',
   };
 }
@@ -269,7 +312,11 @@ function buildFewShotMessages(examples: FewShotExample[]) {
       satelliteSantasFootage: ex.satelliteSantasFootage ?? 0,
       satelliteGingerbreadLines: ex.satelliteGingerbreadLines ?? [],
       satelliteGingerbreadFootage: ex.satelliteGingerbreadFootage ?? 0,
-      preferredSource: 'street',
+      // Prefer satellite when the example actually has satellite lines —
+      // otherwise fall back to street. Hardcoding 'street' on every example
+      // was biasing Claude toward street measurements even for commercial
+      // / complex-roof training houses where satellite was the truth source.
+      preferredSource: (ex.satelliteSantasLines?.length ?? 0) > 0 ? 'satellite' : 'street',
       miniLightDetections: ex.miniLightDetections,
       wreathDetections: ex.wreathDetections ?? [],
       spritzerDetections: ex.spritzerDetections ?? [],
@@ -433,12 +480,7 @@ export async function analyzePhoto(
   }
 
   const raw = textBlock.text.trim();
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error(`Claude returned non-JSON response: ${raw.slice(0, 200)}`);
-  }
-
-  const parsed = JSON.parse(jsonMatch[0]) as PhotoAnalysisResult;
+  const parsed = extractJson(raw) as PhotoAnalysisResult;
 
   // Normalize coordinates — Claude sometimes returns 0-1000 scale. Detect and rescale.
   const normalizeLines = (lines: LineSegment[] | undefined): LineSegment[] => {

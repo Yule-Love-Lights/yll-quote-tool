@@ -47,6 +47,12 @@ export default function TrainingListPage() {
           </div>
           <div className="flex gap-2">
             <Link
+              href="/training/corrections"
+              className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
+            >
+              Corrections
+            </Link>
+            <Link
               href="/training/references"
               className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
             >
@@ -109,8 +115,7 @@ export default function TrainingListPage() {
                   <span>Bushes/Trees: <strong>{h.mini_light_detections.length}</strong></span>
                   <span>Wreaths: <strong>{h.wreaths.reduce((s, w) => s + w.quantity, 0)}</strong></span>
                 </div>
-                <div className="mt-auto pt-2 flex justify-between text-xs">
-                  <Link href={`/training/${h.id}`} className="text-blue-600 hover:underline">View / Edit</Link>
+                <div className="mt-auto pt-2 flex justify-end text-xs">
                   <button onClick={() => remove(h.id)} className="text-red-500 hover:underline">Delete</button>
                 </div>
               </div>

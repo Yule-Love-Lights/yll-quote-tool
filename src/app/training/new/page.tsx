@@ -3,36 +3,41 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { Spritzer, Wreath, GarlandItem } from '@/lib/pricing/pricingEngine';
+import type {
+  Spritzer,
+  Wreath,
+  GarlandItem,
+  WreathSize,
+  DecorTier,
+  SpritzerSize,
+  GarlandLength,
+} from '@/lib/pricing/pricingEngine';
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 
+// ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type LineSegment = { points: [number, number][]; label: string };
 type MiniLightDetection = {
   type: 'tree' | 'bush' | 'column';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
-  columnMode?: 'minilight' | 'garland'; // columns only: switch output to garland
+  columnMode?: 'minilight' | 'garland';
   box: [number, number, number, number];
   label: string;
 };
-type WreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '36oregon';
-type WreathTier = 'labor' | 'bow' | 'fullDecor';
-type WreathDetection = {
-  size: WreathSize;
-  tier: WreathTier;
-  box: [number, number, number, number];
-  label: string;
-};
-type SpritzerSize = '16' | '24' | '32';
-type SpritzerDetection = {
-  size: SpritzerSize;
-  box: [number, number, number, number];
-  label: string;
-};
+type WreathDetection = { size: WreathSize; tier: DecorTier; box: [number, number, number, number]; label: string };
+type SpritzerDetection = { size: SpritzerSize; box: [number, number, number, number]; label: string };
+type GarlandDetection = { length: GarlandLength; tier: DecorTier; box: [number, number, number, number]; label: string };
+
+type LineType = 'santas' | 'gingerbread' | 'c9';
+type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
+type DetectionKind = 'mini' | 'wreath' | 'spritzer' | 'garland';
 
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500';
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
+
+const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
+const PLANT_PERSPECTIVE_FACTOR = 0.4;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -93,6 +98,7 @@ export default function NewTrainingHousePage() {
   const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
+  // Training-specific fields
   const [address, setAddress] = useState('');
   const [yearCompleted, setYearCompleted] = useState<number | ''>('');
   const [houseStyle, setHouseStyle] = useState('');
@@ -107,6 +113,7 @@ export default function NewTrainingHousePage() {
   const [photos, setPhotos] = useState<TrainingPhoto[]>([]);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
+  // Footages + difficulties
   const [santasFootage, setSantasFootage] = useState<number | ''>('');
   const [santasDifficulty, setSantasDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
@@ -117,21 +124,34 @@ export default function NewTrainingHousePage() {
 
   const [wwFootage, setWwFootage] = useState<number | ''>('');
   const [wwDifficulty, setWwDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
+  const [c9Lines, setC9Lines] = useState<LineSegment[]>([]);
 
+  // Detections
   const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
   const [wreathDetections, setWreathDetections] = useState<WreathDetection[]>([]);
   const [spritzerDetections, setSpritzerDetections] = useState<SpritzerDetection[]>([]);
-  const [spritzers, setSpritzers] = useState<Spritzer[]>([]);
-  const [wreaths, setWreaths] = useState<Wreath[]>([]);
-  const [garland, setGarland] = useState<GarlandItem[]>([]);
+  const [garlandDetections, setGarlandDetections] = useState<GarlandDetection[]>([]);
 
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [imgAspect, setImgAspect] = useState<number>(1);
   const [feetPerUnit, setFeetPerUnit] = useState<number | null>(null);
-  const PLANT_PERSPECTIVE_FACTOR = 0.4;
+  // Mirror fpu in a ref so the polyline→footage effect can read it without
+  // listing it as a dep — that's what previously created the round-trip loop
+  // (fpu update → footage rounded to 5ft → fpu recalibrated to the rounded
+  // value → drift on next drag).
+  const feetPerUnitRef = useRef<number | null>(null);
+  // When true on next render, the calibration effect skips one tick — used
+  // when WE set footage (from a polyline drag) so calibration doesn't treat
+  // the rounded value as a new user input.
+  const skipCalibRef = useRef(false);
 
-  // Recompute feet-per-pixel-unit whenever polylines or footages change (same pattern as quote/new).
+  useEffect(() => { feetPerUnitRef.current = feetPerUnit; }, [feetPerUnit]);
+
+  // Feet-per-unit calibration (gutter preferred, ridge fallback).
+  // Depends on footage inputs only — line edits recompute footage via the
+  // effect below, which sets skipCalibRef to keep this one from re-firing.
   useEffect(() => {
+    if (skipCalibRef.current) { skipCalibRef.current = false; return; }
     const santasLen = polylineLength(santasLines, imgAspect);
     const ridgeLen = polylineLength(gingerbreadLines, imgAspect);
     const sFt = typeof santasFootage === 'number' ? santasFootage : 0;
@@ -139,8 +159,37 @@ export default function NewTrainingHousePage() {
     let scale: number | null = null;
     if (santasLen > 0 && sFt > 0) scale = sFt / santasLen;
     else if (ridgeLen > 0 && gFt > 0) scale = gFt / ridgeLen;
-    setFeetPerUnit(scale);
-  }, [santasLines, gingerbreadLines, santasFootage, gingerbreadFootage, imgAspect]);
+    if (scale != null) setFeetPerUnit(scale);
+    // santasLines/gingerbreadLines/c9Lines intentionally excluded — the
+    // polyline-driven effect owns line-change recalibration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [santasFootage, gingerbreadFootage, imgAspect]);
+
+  // Polyline-driven footage updates — matches quote/new behavior.
+  // Reads fpu from the ref so changing lines doesn't retrigger calibration.
+  useEffect(() => {
+    const fpu = feetPerUnitRef.current;
+    if (fpu == null) return;
+    const sFt = Math.round(polylineLength(santasLines, imgAspect) * fpu / 5) * 5;
+    const gFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * fpu / 5) * 5;
+    const cFt = Math.round(polylineLength(c9Lines, imgAspect) * fpu / 5) * 5;
+    const nextSantas = santasLines.length > 0 && sFt > 0 ? sFt : null;
+    const nextGinger = gingerbreadLines.length > 0 && gFt > 0 ? gFt : null;
+    const nextC9 = c9Lines.length > 0 && cFt > 0 ? cFt : null;
+    if (nextSantas != null && nextSantas !== santasFootage) {
+      skipCalibRef.current = true;
+      setSantasFootage(nextSantas);
+    }
+    if (nextGinger != null && nextGinger !== gingerbreadFootage) {
+      skipCalibRef.current = true;
+      setGingerbreadFootage(nextGinger);
+    }
+    if (nextC9 != null && nextC9 !== wwFootage) {
+      skipCalibRef.current = true;
+      setWwFootage(nextC9);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [santasLines, gingerbreadLines, c9Lines, imgAspect]);
 
   const calcStringsFromBox = (box: [number, number, number, number]): number => {
     if (!feetPerUnit) return 1;
@@ -152,17 +201,15 @@ export default function NewTrainingHousePage() {
     return Math.max(1, Math.round(footageFt / 25));
   };
 
-  type LineType = 'santas' | 'gingerbread';
+  // Drag state
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
-  type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
-  const [boxDrag, setBoxDrag] = useState<{ idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
-  type OverlayDrag = { type: 'wreath' | 'spritzer'; idx: number; startX: number; startY: number; startBox: [number, number, number, number] };
-  const [overlayDrag, setOverlayDrag] = useState<OverlayDrag | null>(null);
+  const [boxDrag, setBoxDrag] = useState<{ kind: DetectionKind; idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
 
   const activePhoto = photos[activePhotoIdx];
 
+  // ─── Photo upload ───
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>, tag: PhotoTag) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -189,7 +236,14 @@ export default function NewTrainingHousePage() {
     setPhotos(p => p.map((ph, i) => i === idx ? { ...ph, tag } : ph));
   };
 
-  // ─── Polyline drag/edit logic (mirrors quote/new/page.tsx) ───
+  // ─── Line type routing ───
+  const getSetter = (type: LineType) => {
+    if (type === 'santas') return setSantasLines;
+    if (type === 'gingerbread') return setGingerbreadLines;
+    return setC9Lines;
+  };
+
+  // ─── Polyline drag ───
   useEffect(() => {
     if (!dragging) return;
     const handleMove = (e: PointerEvent) => {
@@ -197,7 +251,7 @@ export default function NewTrainingHousePage() {
       if (!rect) return;
       const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      const setter = dragging.type === 'santas' ? setSantasLines : setGingerbreadLines;
+      const setter = getSetter(dragging.type);
       setter(lines => lines.map((line, i) =>
         i === dragging.lineIdx
           ? { ...line, points: line.points.map((p, j) => j === dragging.ptIdx ? [x, y] as [number, number] : p) }
@@ -213,6 +267,7 @@ export default function NewTrainingHousePage() {
     };
   }, [dragging]);
 
+  // ─── Unified box drag for all four detection kinds ───
   useEffect(() => {
     if (!boxDrag) return;
     const handleMove = (e: PointerEvent) => {
@@ -234,12 +289,20 @@ export default function NewTrainingHousePage() {
       x = Math.max(0, Math.min(1 - w, x));
       y = Math.max(0, Math.min(1 - h, y));
       const newBox: [number, number, number, number] = [x, y, w, h];
-      const newStringCount = boxDrag.mode !== 'move' ? calcStringsFromBox(newBox) : undefined;
-      setMiniLightDetections(dets => dets.map((d, i) =>
-        i === boxDrag.idx
-          ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
-          : d
-      ));
+      if (boxDrag.kind === 'mini') {
+        const newStringCount = boxDrag.mode !== 'move' ? calcStringsFromBox(newBox) : undefined;
+        setMiniLightDetections(dets => dets.map((d, i) =>
+          i === boxDrag.idx
+            ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
+            : d
+        ));
+      } else if (boxDrag.kind === 'wreath') {
+        setWreathDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      } else if (boxDrag.kind === 'spritzer') {
+        setSpritzerDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      } else if (boxDrag.kind === 'garland') {
+        setGarlandDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
+      }
     };
     const handleUp = () => setBoxDrag(null);
     window.addEventListener('pointermove', handleMove);
@@ -250,59 +313,37 @@ export default function NewTrainingHousePage() {
     };
   }, [boxDrag, feetPerUnit, imgAspect]);
 
-  // Drag handler for wreath + spritzer overlays (move only)
-  useEffect(() => {
-    if (!overlayDrag) return;
-    const handleMove = (e: PointerEvent) => {
-      const rect = imgContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const curX = (e.clientX - rect.left) / rect.width;
-      const curY = (e.clientY - rect.top) / rect.height;
-      const dx = curX - overlayDrag.startX;
-      const dy = curY - overlayDrag.startY;
-      const [sx, sy, sw, sh] = overlayDrag.startBox;
-      const w = sw; const h = sh;
-      const x = Math.max(0, Math.min(1 - w, sx + dx));
-      const y = Math.max(0, Math.min(1 - h, sy + dy));
-      const newBox: [number, number, number, number] = [x, y, w, h];
-      if (overlayDrag.type === 'wreath') {
-        setWreathDetections(dets => dets.map((d, i) => i === overlayDrag.idx ? { ...d, box: newBox } : d));
-      } else {
-        setSpritzerDetections(dets => dets.map((d, i) => i === overlayDrag.idx ? { ...d, box: newBox } : d));
-      }
-    };
-    const handleUp = () => setOverlayDrag(null);
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleUp);
-    return () => {
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleUp);
-    };
-  }, [overlayDrag]);
-
-  const startOverlayDrag = (type: 'wreath' | 'spritzer', idx: number, box: [number, number, number, number]) => (e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = imgContainerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setOverlayDrag({ type, idx, startX: (e.clientX - rect.left) / rect.width, startY: (e.clientY - rect.top) / rect.height, startBox: box });
-  };
-
-  const startBoxDrag = (idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
+  const startBoxDrag = (kind: DetectionKind, idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const rect = imgContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const startX = (e.clientX - rect.left) / rect.width;
     const startY = (e.clientY - rect.top) / rect.height;
-    setBoxDrag({ idx, mode, startX, startY, startBox: miniLightDetections[idx].box });
+    const source =
+      kind === 'mini' ? miniLightDetections[idx].box
+      : kind === 'wreath' ? wreathDetections[idx].box
+      : kind === 'spritzer' ? spritzerDetections[idx].box
+      : garlandDetections[idx].box;
+    setBoxDrag({ kind, idx, mode, startX, startY, startBox: source });
   };
 
+  // ─── Polyline edit helpers ───
   const deletePoint = (type: LineType, lineIdx: number, ptIdx: number) => {
-    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    const setter = getSetter(type);
     setter(lines => lines.map((line, i) =>
       i === lineIdx ? { ...line, points: line.points.filter((_, j) => j !== ptIdx) } : line
     ).filter(line => line.points.length >= 2));
+  };
+
+  const deleteLine = (type: LineType, lineIdx: number) => {
+    const setter = getSetter(type);
+    setter(lines => lines.filter((_, i) => i !== lineIdx));
+  };
+
+  const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
+    const setter = getSetter(type);
+    setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
   };
 
   const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -320,24 +361,57 @@ export default function NewTrainingHousePage() {
       setPendingPoints([]);
       return;
     }
-    const setter = addMode === 'santas' ? setSantasLines : setGingerbreadLines;
-    setter(lines => [...lines, {
+    const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'gutterline' : 'ridgeline',
-    }]);
+      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+    };
+    const setter = getSetter(addMode);
+    setter(lines => [...lines, newLine]);
     setAddMode(null);
     setPendingPoints([]);
   };
 
+  const cancelAdd = () => {
+    setAddMode(null);
+    setPendingPoints([]);
+  };
+
+  // ─── Detection CRUD ───
   const addDetection = (type: 'bush' | 'tree' | 'column') => {
     const defaults = {
-      bush:   { wrapStyle: 'canopy' as const, stringCount: 2, label: 'bush' },
-      tree:   { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'tree' },
-      column: { wrapStyle: 'canopy' as const, stringCount: 2, label: 'column' },
+      bush:   { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new bush' },
+      tree:   { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'new tree' },
+      column: { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new column' },
     }[type];
     setMiniLightDetections(dets => [...dets, { type, ...defaults, box: [0.4, 0.6, 0.15, 0.15] }]);
   };
+  const updateDetection = (idx: number, patch: Partial<MiniLightDetection>) =>
+    setMiniLightDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteDetection = (idx: number) =>
+    setMiniLightDetections(dets => dets.filter((_, i) => i !== idx));
 
+  const updateWreathDetection = (idx: number, patch: Partial<WreathDetection>) =>
+    setWreathDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteWreathDetection = (idx: number) =>
+    setWreathDetections(dets => dets.filter((_, i) => i !== idx));
+  const addWreathDetection = () =>
+    setWreathDetections(dets => [...dets, { size: '30noble', tier: 'bow', box: [0.4, 0.3, 0.08, 0.08], label: 'new wreath' }]);
+
+  const updateSpritzerDetection = (idx: number, patch: Partial<SpritzerDetection>) =>
+    setSpritzerDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteSpritzerDetection = (idx: number) =>
+    setSpritzerDetections(dets => dets.filter((_, i) => i !== idx));
+  const addSpritzerDetection = () =>
+    setSpritzerDetections(dets => [...dets, { size: '24', box: [0.5, 0.7, 0.05, 0.1], label: 'new spritzer' }]);
+
+  const updateGarlandDetection = (idx: number, patch: Partial<GarlandDetection>) =>
+    setGarlandDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const deleteGarlandDetection = (idx: number) =>
+    setGarlandDetections(dets => dets.filter((_, i) => i !== idx));
+  const addGarlandDetection = () =>
+    setGarlandDetections(dets => [...dets, { length: '9ft', tier: 'bow', box: [0.2, 0.6, 0.2, 0.03], label: 'new garland' }]);
+
+  // ─── Auto-analyze ───
   const handleAutoAnalyze = async () => {
     if (!activePhoto) return;
     setAnalyzing(true);
@@ -360,6 +434,7 @@ export default function NewTrainingHousePage() {
         miniLightDetections?: MiniLightDetection[];
         wreathDetections?: WreathDetection[];
         spritzerDetections?: SpritzerDetection[];
+        garlandDetections?: GarlandDetection[];
         notes: string;
         confidence: string;
       };
@@ -367,8 +442,6 @@ export default function NewTrainingHousePage() {
       const newSantasLines = r.santasLines ?? [];
       const newGingerLines = r.gingerbreadLines ?? [];
       const detections = r.miniLightDetections ?? [];
-      const wreathDets = r.wreathDetections ?? [];
-      const spritzerDets = r.spritzerDetections ?? [];
 
       setSantasLines(newSantasLines);
       setGingerbreadLines(newGingerLines);
@@ -376,38 +449,19 @@ export default function NewTrainingHousePage() {
       setSantasDifficulty(r.santasDifficulty);
       setGingerbreadFootage(r.gingerbreadFootage);
       setGingerbreadDifficulty(r.gingerbreadDifficulty);
-      setWreathDetections(wreathDets);
-      setSpritzerDetections(spritzerDets);
+      setWreathDetections(r.wreathDetections ?? []);
+      setSpritzerDetections(r.spritzerDetections ?? []);
+      setGarlandDetections(r.garlandDetections ?? []);
 
-      // Auto-populate the Wreaths Used summary from detections (grouped by size+tier)
-      if (wreathDets.length > 0) {
-        const groups = new Map<string, Wreath>();
-        for (const w of wreathDets) {
-          const key = `${w.size}|${w.tier}`;
-          const existing = groups.get(key);
-          if (existing) existing.quantity += 1;
-          else groups.set(key, { size: w.size, tier: w.tier, quantity: 1 });
-        }
-        setWreaths(Array.from(groups.values()));
-      }
-
-      // Auto-populate Spritzers Used summary from detections (grouped by size)
-      if (spritzerDets.length > 0) {
-        const groups = new Map<string, Spritzer>();
-        for (const s of spritzerDets) {
-          const existing = groups.get(s.size);
-          if (existing) existing.quantity += 1;
-          else groups.set(s.size, { size: s.size as Spritzer['size'], quantity: 1 });
-        }
-        setSpritzers(Array.from(groups.values()));
-      }
-
-      // Recalc string counts from box dimensions using shared scale (same formula as quote/new)
       const santasLen = polylineLength(newSantasLines, imgAspect);
       const ridgeLen = polylineLength(newGingerLines, imgAspect);
       let scale: number | null = null;
       if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
       else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
+
+      // Seed calibration so garland/column length readouts and any subsequent
+      // polyline edits use feet, not raw normalized units.
+      if (scale) setFeetPerUnit(scale);
 
       if (scale && detections.length > 0) {
         const PERSPECTIVE = 0.4;
@@ -432,6 +486,7 @@ export default function NewTrainingHousePage() {
     }
   };
 
+  // ─── Save ───
   const handleSave = async () => {
     if (photos.length === 0) {
       setSaveError('Upload at least one photo before saving.');
@@ -440,18 +495,27 @@ export default function NewTrainingHousePage() {
     setSaving(true);
     setSaveError(null);
     try {
-      // Split columns: garland-mode columns → garland section; rest stay as mini-light detections
+      // Split columns: garland-mode columns → garland section; rest stay mini-light.
       const miniLightsToSave = miniLightDetections.filter(d => d.type !== 'column' || d.columnMode !== 'garland');
       const garlandFromColumns: GarlandItem[] = miniLightDetections
         .filter(d => d.type === 'column' && d.columnMode === 'garland')
         .map(d => {
-          // Estimate column height in feet from box dimensions
           const heightFt = feetPerUnit
             ? (d.box[3] / imgAspect) * feetPerUnit * PLANT_PERSPECTIVE_FACTOR
-            : 8; // default 8ft column if no scale
+            : 8;
           const nineFootPieces = Math.max(1, Math.ceil(heightFt / 9));
           return { type: 'noble' as GarlandItem['type'], length: '9ft' as GarlandItem['length'], tier: 'bow' as GarlandItem['tier'], quantity: nineFootPieces };
         });
+
+      // Derive summary arrays from detections (same pattern as quote/new)
+      const spritzersFromDetections: Spritzer[] = spritzerDetections.map(d => ({ size: d.size, quantity: 1 }));
+      const wreathsFromDetections: Wreath[] = wreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 }));
+      const garlandFromDetections: GarlandItem[] = garlandDetections.map(d => {
+        const unitFt = d.length === '9ft' ? 9 : 4.5;
+        const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
+        const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
+        return { length: d.length, type: 'noble' as const, tier: d.tier, quantity: pieces };
+      });
 
       const res = await fetch('/api/training', {
         method: 'POST',
@@ -473,9 +537,11 @@ export default function NewTrainingHousePage() {
           miniLightDetections: miniLightsToSave,
           wreathDetections,
           spritzerDetections,
-          spritzers,
-          wreaths,
-          garland: [...garland, ...garlandFromColumns],
+          garlandDetections,
+          c9Lines,
+          spritzers: spritzersFromDetections,
+          wreaths: wreathsFromDetections,
+          garland: [...garlandFromDetections, ...garlandFromColumns],
           scaleAnchor: scaleAnchor || null,
           didntInstall: didntInstall || null,
           aiFailureNotes: aiFailureNotes || null,
@@ -644,11 +710,11 @@ export default function NewTrainingHousePage() {
           )}
         </Section>
 
-        {/* Photo markup */}
+        {/* Photo markup — mirrors quote/new Analysis Results structure */}
         {activePhoto && (
-          <Section title="Mark Up Rooflines, Bushes, Trees & Columns">
+          <Section title="Mark Up & Correct The Measurement">
             <p className="text-xs text-gray-500 mb-3">
-              Trace the gutterline and ridgeline on the active photo, and place boxes around each bush/tree/column with its final string count.
+              Trace gutterline, ridgeline, and C9 custom runs. Place boxes around bushes, trees, columns, spritzers, wreaths, and garland.
             </p>
 
             {/* Auto-Analyze */}
@@ -657,7 +723,7 @@ export default function NewTrainingHousePage() {
                 <div className="flex-1 min-w-[200px]">
                   <p className="text-sm font-semibold text-purple-900">Auto-Analyze Photo</p>
                   <p className="text-xs text-purple-700 mt-0.5">
-                    Let Claude guess rooflines, footage, and bush/tree placements. You verify and correct below — then save to train the AI.
+                    Let Claude guess rooflines, footage, and detections. You verify and correct below — then save to train the AI.
                   </p>
                 </div>
                 <button
@@ -708,25 +774,29 @@ export default function NewTrainingHousePage() {
                     fill="none" stroke="#3b82f6" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke" />
                 ))}
+                {c9Lines.map((line, i) => (
+                  <polyline key={`c9-${i}`} points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                    fill="none" stroke="#10b981" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke" />
+                ))}
                 {pendingPoints.length > 0 && (
                   <polyline points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
-                    fill="none" stroke={addMode === 'santas' ? '#ef4444' : '#3b82f6'}
+                    fill="none" stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
                     strokeWidth="3" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
                 )}
               </svg>
-              {!addMode && miniLightDetections.map((d, i) => (
+
+              {/* Wreath boxes — purple */}
+              {!addMode && wreathDetections.map((d, i) => (
                 <div
-                  key={`box-${i}`}
-                  className="absolute border-2 border-dashed border-amber-500 bg-amber-400/15 cursor-move"
-                  style={{
-                    left: `${d.box[0] * 100}%`, top: `${d.box[1] * 100}%`,
-                    width: `${d.box[2] * 100}%`, height: `${d.box[3] * 100}%`,
-                    touchAction: 'none',
-                  }}
-                  onPointerDown={startBoxDrag(i, 'move')}
+                  key={`wbox-${i}`}
+                  className="absolute border-2 border-purple-500 bg-purple-400/15 cursor-move rounded-full"
+                  style={{ left: `${d.box[0] * 100}%`, top: `${d.box[1] * 100}%`, width: `${d.box[2] * 100}%`, height: `${d.box[3] * 100}%`, touchAction: 'none' }}
+                  onPointerDown={startBoxDrag('wreath', i, 'move')}
+                  title="Drag to move • use corners to resize"
                 >
-                  <div className="absolute -top-5 left-0 bg-amber-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                    {d.type} · {d.stringCount}s
+                  <div className="absolute -top-5 left-0 bg-purple-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                    W{i + 1} {d.size} · {d.tier}
                   </div>
                   {(['nw','ne','sw','se'] as const).map(corner => {
                     const pos: Record<string, string> = {
@@ -737,305 +807,537 @@ export default function NewTrainingHousePage() {
                     };
                     return (
                       <div key={corner}
-                        className={`absolute w-3 h-3 bg-white border-2 border-amber-600 rounded-sm ${pos[corner]}`}
+                        className={`absolute w-3 h-3 bg-white border-2 border-purple-600 rounded-sm ${pos[corner]}`}
                         style={{ touchAction: 'none' }}
-                        onPointerDown={startBoxDrag(i, corner)} />
+                        onPointerDown={startBoxDrag('wreath', i, corner)} />
                     );
                   })}
                 </div>
               ))}
-              {/* Wreath overlay — draggable + removable */}
-              {!addMode && wreathDetections.map((w, i) => (
+
+              {/* Spritzer boxes — fuchsia */}
+              {!addMode && spritzerDetections.map((d, i) => (
                 <div
-                  key={`wreath-${i}`}
-                  className="absolute border-2 border-green-600 bg-green-400/15 rounded-full cursor-move group"
-                  style={{ left: `${w.box[0] * 100}%`, top: `${w.box[1] * 100}%`, width: `${w.box[2] * 100}%`, height: `${w.box[3] * 100}%`, touchAction: 'none' }}
-                  onPointerDown={startOverlayDrag('wreath', i, w.box)}
+                  key={`spbox-${i}`}
+                  className="absolute border-2 border-fuchsia-500 bg-fuchsia-400/15 cursor-move"
+                  style={{ left: `${d.box[0] * 100}%`, top: `${d.box[1] * 100}%`, width: `${d.box[2] * 100}%`, height: `${d.box[3] * 100}%`, touchAction: 'none' }}
+                  onPointerDown={startBoxDrag('spritzer', i, 'move')}
+                  title="Drag to move • use corners to resize"
                 >
-                  <div className="absolute -top-5 left-0 bg-green-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                    wreath · {w.size.replace('noble', '" Noble').replace('oregon', '" Oregon')}
+                  <div className="absolute -top-5 left-0 bg-fuchsia-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                    S{i + 1} · {d.size}in
                   </div>
-                  <button
-                    type="button"
-                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs font-bold opacity-0 group-hover:opacity-100 pointer-events-auto"
-                    onPointerDown={e => e.stopPropagation()}
-                    onClick={() => setWreathDetections(dets => dets.filter((_, j) => j !== i))}
-                  >×</button>
+                  {(['nw','ne','sw','se'] as const).map(corner => {
+                    const pos: Record<string, string> = {
+                      nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                      ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                      sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                      se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                    };
+                    return (
+                      <div key={corner}
+                        className={`absolute w-3 h-3 bg-white border-2 border-fuchsia-700 rounded-sm ${pos[corner]}`}
+                        style={{ touchAction: 'none' }}
+                        onPointerDown={startBoxDrag('spritzer', i, corner)} />
+                    );
+                  })}
                 </div>
               ))}
-              {/* Spritzer overlay — draggable + removable */}
-              {!addMode && spritzerDetections.map((s, i) => (
-                <div
-                  key={`spritzer-${i}`}
-                  className="absolute border-2 border-yellow-500 bg-yellow-400/15 cursor-move group"
-                  style={{ left: `${s.box[0] * 100}%`, top: `${s.box[1] * 100}%`, width: `${s.box[2] * 100}%`, height: `${s.box[3] * 100}%`, touchAction: 'none' }}
-                  onPointerDown={startOverlayDrag('spritzer', i, s.box)}
-                >
-                  <div className="absolute -top-5 left-0 bg-yellow-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                    spritzer · {s.size}&quot;
+
+              {/* Garland boxes — teal */}
+              {!addMode && garlandDetections.map((d, i) => {
+                const unitFt = d.length === '9ft' ? 9 : 4.5;
+                const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
+                const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
+                return (
+                  <div
+                    key={`gbox-${i}`}
+                    className="absolute border-2 border-teal-500 bg-teal-400/15 cursor-move"
+                    style={{ left: `${d.box[0] * 100}%`, top: `${d.box[1] * 100}%`, width: `${d.box[2] * 100}%`, height: `${d.box[3] * 100}%`, touchAction: 'none' }}
+                    onPointerDown={startBoxDrag('garland', i, 'move')}
+                    title="Drag to move • use corners to resize"
+                  >
+                    <div className="absolute -top-5 left-0 bg-teal-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                      G{i + 1} · {pieces}×{d.length} · {d.tier}
+                    </div>
+                    {(['nw','ne','sw','se'] as const).map(corner => {
+                      const pos: Record<string, string> = {
+                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                      };
+                      return (
+                        <div key={corner}
+                          className={`absolute w-3 h-3 bg-white border-2 border-teal-700 rounded-sm ${pos[corner]}`}
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={startBoxDrag('garland', i, corner)} />
+                      );
+                    })}
                   </div>
-                  <button
-                    type="button"
-                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs font-bold opacity-0 group-hover:opacity-100 pointer-events-auto"
-                    onPointerDown={e => e.stopPropagation()}
-                    onClick={() => setSpritzerDetections(dets => dets.filter((_, j) => j !== i))}
-                  >×</button>
-                </div>
-              ))}
+                );
+              })}
+
+              {/* Mini-light boxes — amber */}
+              {!addMode && miniLightDetections.map((d, i) => {
+                const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
+                const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
+                return (
+                  <div
+                    key={`box-${i}`}
+                    className="absolute border-2 border-dashed border-amber-500 bg-amber-400/15 cursor-move"
+                    style={{ left: `${d.box[0] * 100}%`, top: `${d.box[1] * 100}%`, width: `${d.box[2] * 100}%`, height: `${d.box[3] * 100}%`, touchAction: 'none' }}
+                    onPointerDown={startBoxDrag('mini', i, 'move')}
+                    title="Drag to move • use corners to resize"
+                  >
+                    <div className="absolute -top-5 left-0 bg-amber-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                      {typeLetter}{i + 1} {d.type} · {d.stringCount}s · ${price}
+                    </div>
+                    {(['nw','ne','sw','se'] as const).map(corner => {
+                      const pos: Record<string, string> = {
+                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                      };
+                      return (
+                        <div key={corner}
+                          className={`absolute w-3 h-3 bg-white border-2 border-amber-600 rounded-sm ${pos[corner]}`}
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={startBoxDrag('mini', i, corner)} />
+                      );
+                    })}
+                  </div>
+                );
+              })}
+
+              {/* Polyline point handles */}
               {!addMode && santasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                 <div key={`sh-${li}-${pi}`}
-                  className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move"
+                  className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                   style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
                   onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
-                  onDoubleClick={() => deletePoint('santas', li, pi)} />
+                  onDoubleClick={() => deletePoint('santas', li, pi)}
+                  title="Drag to move • Double-click to delete" />
               )))}
               {!addMode && gingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                 <div key={`gh-${li}-${pi}`}
-                  className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move"
+                  className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                   style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
                   onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
-                  onDoubleClick={() => deletePoint('gingerbread', li, pi)} />
+                  onDoubleClick={() => deletePoint('gingerbread', li, pi)}
+                  title="Drag to move • Double-click to delete" />
+              )))}
+              {!addMode && c9Lines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                <div key={`c9h-${li}-${pi}`}
+                  className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                  style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                  onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
+                  onDoubleClick={() => deletePoint('c9', li, pi)}
+                  title="Drag to move • Double-click to delete" />
               )))}
               {pendingPoints.map(([x, y], i) => (
                 <div key={`pp-${i}`}
-                  className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : 'bg-blue-500'} border-2 border-white shadow`}
+                  className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
                   style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }} />
               ))}
             </div>
 
-            {/* Markup controls */}
+            {/* Add-line controls */}
             {addMode ? (
               <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                 <span className="text-sm text-yellow-900">
-                  Click to add points ({pendingPoints.length} placed). Tracing the {addMode === 'santas' ? 'gutterline' : 'ridgeline'}.
+                  Adding new {addMode === 'santas' ? 'gutterline (red)' : addMode === 'gingerbread' ? 'ridgeline (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                 </span>
                 <div className="flex gap-2">
                   <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">Done</button>
-                  <button type="button" onClick={() => { setAddMode(null); setPendingPoints([]); }}
+                  <button type="button" onClick={cancelAdd}
                     className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">Cancel</button>
                 </div>
               </div>
             ) : (
-              <>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
-                    className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
-                    + Add Gutterline
-                  </button>
-                  <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
-                    className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
-                    + Add Ridgeline
-                  </button>
-                  <button type="button" onClick={() => addDetection('bush')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Bush</button>
-                  <button type="button" onClick={() => addDetection('tree')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Tree</button>
-                  <button type="button" onClick={() => addDetection('column')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Column</button>
-                  <button type="button"
-                    onClick={() => setWreathDetections(dets => [...dets, { size: '30noble', tier: 'bow', box: [0.38, 0.38, 0.12, 0.12], label: 'wreath' }])}
-                    className="text-xs font-medium text-green-700 border border-green-300 hover:border-green-500 rounded px-3 py-1.5">+ Add Wreath</button>
-                  <button type="button"
-                    onClick={() => setSpritzerDetections(dets => [...dets, { size: '24', box: [0.1, 0.7, 0.07, 0.1], label: 'spritzer' }])}
-                    className="text-xs font-medium text-yellow-700 border border-yellow-300 hover:border-yellow-500 rounded px-3 py-1.5">+ Add Spritzer</button>
-                </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
+                  className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
+                  + Add Gutterline
+                </button>
+                <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
+                  className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
+                  + Add Ridgeline
+                </button>
+                <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
+                  className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
+                  + Add C9 Run
+                </button>
+              </div>
+            )}
 
-                {/* Existing polylines — removal + per-line controls */}
-                {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
-                  <div className="mt-3 space-y-1 text-xs">
+            {/* Per-line edit panels — Gutterline / Ridgeline / C9s */}
+            <div className="mt-4 grid grid-cols-3 gap-4">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-1 bg-red-500 rounded"></span>
+                  <span className="text-sm font-semibold text-gray-800">Gutterline — {typeof santasFootage === 'number' ? santasFootage : 0}ft</span>
+                </div>
+                {santasLines.length > 0 ? (
+                  <ul className="space-y-1 ml-6">
                     {santasLines.map((line, i) => (
-                      <div key={`sline-${i}`} className="flex items-center justify-between bg-red-50 border border-red-200 rounded px-2 py-1">
-                        <span className="text-red-800">Gutterline {i + 1} · {line.points.length} pts · {line.label}</span>
-                        <button type="button" onClick={() => setSantasLines(ls => ls.filter((_, j) => j !== i))}
-                          className="text-red-600 hover:text-red-800 font-semibold">× Remove</button>
-                      </div>
+                      <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
+                        <input
+                          value={line.label}
+                          onChange={e => updateLineLabel('santas', i, e.target.value)}
+                          className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                        />
+                        <span className="text-gray-400">{line.points.length}pts</span>
+                        <button type="button" onClick={() => deleteLine('santas', i)}
+                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                      </li>
                     ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-gray-400 ml-6">No segments</p>
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-1 bg-blue-500 rounded"></span>
+                  <span className="text-sm font-semibold text-gray-800">Ridgeline — {typeof gingerbreadFootage === 'number' ? gingerbreadFootage : 0}ft</span>
+                </div>
+                {gingerbreadLines.length > 0 ? (
+                  <ul className="space-y-1 ml-6">
                     {gingerbreadLines.map((line, i) => (
-                      <div key={`gline-${i}`} className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded px-2 py-1">
-                        <span className="text-blue-800">Ridgeline {i + 1} · {line.points.length} pts · {line.label}</span>
-                        <button type="button" onClick={() => {
-                          setGingerbreadLines(ls => ls.filter((_, j) => j !== i));
-                          // If this was the last ridgeline, clear ridge footage too (house has no ridge)
-                          if (gingerbreadLines.length === 1) {
-                            setGingerbreadFootage('');
-                          }
-                        }}
-                          className="text-blue-600 hover:text-blue-800 font-semibold">× Remove</button>
-                      </div>
+                      <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
+                        <input
+                          value={line.label}
+                          onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
+                          className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                        />
+                        <span className="text-gray-400">{line.points.length}pts</span>
+                        <button type="button" onClick={() => deleteLine('gingerbread', i)}
+                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                      </li>
                     ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-gray-400 ml-6">No segments</p>
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-1 bg-emerald-500 rounded"></span>
+                  <span className="text-sm font-semibold text-gray-800">C9s — {typeof wwFootage === 'number' ? wwFootage : 0}ft</span>
+                </div>
+                {c9Lines.length > 0 ? (
+                  <ul className="space-y-1 ml-6">
+                    {c9Lines.map((line, i) => (
+                      <li key={`c9l-${i}`} className="flex items-center gap-2 text-xs">
+                        <input
+                          value={line.label}
+                          onChange={e => updateLineLabel('c9', i, e.target.value)}
+                          className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                        />
+                        <span className="text-gray-400">{line.points.length}pts</span>
+                        <button type="button" onClick={() => deleteLine('c9', i)}
+                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="ml-6">
+                    <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
+                    <div className="flex items-center gap-2">
+                      <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
+                        value={wwFootage || ''}
+                        onChange={e => setWwFootage(e.target.value ? Number(e.target.value) : '')} />
+                      <span className="text-xs text-gray-500">ft</span>
+                      <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={wwDifficulty}
+                        onChange={e => setWwDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                      </select>
+                    </div>
                   </div>
                 )}
-                {gingerbreadLines.length === 0 && gingerbreadFootage !== '' && (
-                  <button type="button"
-                    onClick={() => setGingerbreadFootage('')}
-                    className="mt-2 text-xs text-blue-600 hover:text-blue-800 underline">
-                    Clear ridge footage (no ridge on this house)
-                  </button>
-                )}
-              </>
-            )}
+              </div>
+            </div>
+
+            {/* Mini Lights panel — amber */}
+            <div className="mt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-4 h-2 border-2 border-amber-500 border-dashed rounded-sm"></span>
+                <span className="text-sm font-semibold text-gray-800">
+                  Mini Lights — {miniLightDetections.length} item{miniLightDetections.length === 1 ? '' : 's'}
+                </span>
+                <span className="text-xs text-gray-400">
+                  (1 string = 50ct 5MM strand · $35 canopy · $45 trunk)
+                </span>
+              </div>
+              {miniLightDetections.length > 0 && (
+                <div className="space-y-1.5 mb-3">
+                  <div className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                    <span>#</span>
+                    <span>Type</span>
+                    <span>Wrap</span>
+                    <span>Strings</span>
+                    <span>Price</span>
+                    <span />
+                  </div>
+                  {miniLightDetections.map((d, i) => {
+                    const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
+                    const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
+                    return (
+                      <div key={`drow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 items-center">
+                        <span className="text-xs font-semibold text-amber-700">{typeLetter}{i + 1}</span>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.type}
+                          onChange={e => updateDetection(i, { type: e.target.value as MiniLightDetection['type'], columnMode: undefined })}
+                        >
+                          <option value="bush">Bush</option>
+                          <option value="tree">Tree</option>
+                          <option value="column">Column</option>
+                        </select>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.wrapStyle}
+                          onChange={e => updateDetection(i, { wrapStyle: e.target.value as MiniLightDetection['wrapStyle'] })}
+                        >
+                          <option value="canopy">Canopy</option>
+                          <option value="trunk">Trunk</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="1"
+                          value={d.stringCount}
+                          onChange={e => updateDetection(i, { stringCount: Math.max(1, Number(e.target.value)) })}
+                          className="border border-gray-200 rounded px-2 py-1 text-xs"
+                        />
+                        <span className="text-xs font-medium text-gray-700 tabular-nums">${price}</span>
+                        <button type="button" onClick={() => deleteDetection(i)}
+                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                      </div>
+                    );
+                  })}
+                  {miniLightDetections.some(d => d.type === 'column') && (
+                    <div className="pt-2 border-t border-gray-100">
+                      <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Column output</p>
+                      {miniLightDetections.map((d, i) => d.type === 'column' ? (
+                        <div key={`cmode-${i}`} className="flex items-center gap-2 text-xs mb-1">
+                          <span className="text-amber-700 font-medium w-8">C{i + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => updateDetection(i, { columnMode: d.columnMode === 'garland' ? 'minilight' : 'garland' })}
+                            className={`text-[10px] font-semibold px-2 py-1 rounded border ${d.columnMode === 'garland' ? 'bg-emerald-100 border-emerald-400 text-emerald-800' : 'bg-gray-50 border-gray-300 text-gray-500'}`}
+                          >
+                            {d.columnMode === 'garland' ? 'Garland' : 'Mini Lights'}
+                          </button>
+                        </div>
+                      ) : null)}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => addDetection('bush')}
+                  className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Bush</button>
+                <button type="button" onClick={() => addDetection('tree')}
+                  className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Tree</button>
+                <button type="button" onClick={() => addDetection('column')}
+                  className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Column</button>
+              </div>
+            </div>
+
+            {/* Spritzers — fuchsia */}
+            <div className="mt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
+                <span className="text-sm font-semibold text-gray-800">
+                  Spritzers — {spritzerDetections.length} item{spritzerDetections.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {spritzerDetections.length > 0 && (
+                <div className="space-y-1.5 mb-3">
+                  <div className="grid grid-cols-[28px_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                    <span>#</span>
+                    <span>Size</span>
+                    <span />
+                  </div>
+                  {spritzerDetections.map((d, i) => (
+                    <div key={`srow-${i}`} className="grid grid-cols-[28px_1fr_24px] gap-2 items-center">
+                      <span className="text-xs font-semibold text-fuchsia-700">S{i + 1}</span>
+                      <select
+                        className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                        value={d.size}
+                        onChange={e => updateSpritzerDetection(i, { size: e.target.value as SpritzerSize })}
+                      >
+                        <option value="16">16&quot;</option>
+                        <option value="24">24&quot;</option>
+                        <option value="32">32&quot;</option>
+                      </select>
+                      <button type="button" onClick={() => deleteSpritzerDetection(i)}
+                        className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button type="button" onClick={addSpritzerDetection}
+                className="text-xs font-medium text-fuchsia-700 border border-fuchsia-300 hover:border-fuchsia-500 rounded px-3 py-1.5">
+                + Add Spritzer
+              </button>
+            </div>
+
+            {/* Wreaths — purple */}
+            <div className="mt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-4 h-2 border-2 border-purple-500 rounded-sm"></span>
+                <span className="text-sm font-semibold text-gray-800">
+                  Wreaths — {wreathDetections.length} item{wreathDetections.length === 1 ? '' : 's'}
+                </span>
+                <span className="text-xs text-gray-400">(sized by door / garage context)</span>
+              </div>
+              {wreathDetections.length > 0 && (
+                <div className="space-y-1.5 mb-3">
+                  <div className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                    <span>#</span>
+                    <span>Size</span>
+                    <span>Tier</span>
+                    <span />
+                  </div>
+                  {wreathDetections.map((d, i) => (
+                    <div key={`wrow-${i}`} className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 items-center">
+                      <span className="text-xs font-semibold text-purple-700">W{i + 1}</span>
+                      <select
+                        className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                        value={d.size}
+                        onChange={e => updateWreathDetection(i, { size: e.target.value as WreathSize })}
+                      >
+                        <option value="24noble">24&quot; Noble</option>
+                        <option value="30noble">30&quot; Noble</option>
+                        <option value="36noble">36&quot; Noble</option>
+                        <option value="48noble">48&quot; Noble</option>
+                        <option value="36oregon">36&quot; Oregon</option>
+                      </select>
+                      <select
+                        className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                        value={d.tier}
+                        onChange={e => updateWreathDetection(i, { tier: e.target.value as DecorTier })}
+                      >
+                        <option value="labor">Labor</option>
+                        <option value="bow">Bow</option>
+                        <option value="fullDecor">Full Decor</option>
+                      </select>
+                      <button type="button" onClick={() => deleteWreathDetection(i)}
+                        className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button type="button" onClick={addWreathDetection}
+                className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                + Add Wreath
+              </button>
+            </div>
+
+            {/* Garland — teal */}
+            <div className="mt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-4 h-2 border-2 border-teal-500 rounded-sm"></span>
+                <span className="text-sm font-semibold text-gray-800">
+                  Garland — {garlandDetections.length} run{garlandDetections.length === 1 ? '' : 's'}
+                </span>
+                <span className="text-xs text-gray-400">(box width → pieces)</span>
+              </div>
+              {garlandDetections.length > 0 && (
+                <div className="space-y-1.5 mb-3">
+                  <div className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                    <span>#</span>
+                    <span>Length</span>
+                    <span>Tier</span>
+                    <span>Pieces</span>
+                    <span />
+                  </div>
+                  {garlandDetections.map((d, i) => {
+                    const unitFt = d.length === '9ft' ? 9 : 4.5;
+                    const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
+                    const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
+                    return (
+                      <div key={`grow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 items-center">
+                        <span className="text-xs font-semibold text-teal-700">G{i + 1}</span>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.length}
+                          onChange={e => updateGarlandDetection(i, { length: e.target.value as GarlandLength })}
+                        >
+                          <option value="9ft">9ft</option>
+                          <option value="4.5ft">4.5ft</option>
+                        </select>
+                        <select
+                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                          value={d.tier}
+                          onChange={e => updateGarlandDetection(i, { tier: e.target.value as DecorTier })}
+                        >
+                          <option value="labor">Labor</option>
+                          <option value="bow">Bow</option>
+                          <option value="fullDecor">Full Decor</option>
+                        </select>
+                        <span className="text-xs font-medium text-gray-700 tabular-nums">{pieces}</span>
+                        <button type="button" onClick={() => deleteGarlandDetection(i)}
+                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <button type="button" onClick={addGarlandDetection}
+                className="text-xs font-medium text-teal-700 border border-teal-300 hover:border-teal-500 rounded px-3 py-1.5">
+                + Add Garland Run
+              </button>
+            </div>
           </Section>
         )}
 
-        {/* Roofline measurements */}
+        {/* Final footage + difficulty — training-specific confirmation panel */}
         <Section title="Final Roofline Measurements">
+          <p className="text-xs text-gray-400 mb-3">
+            Final confirmed numbers. Auto-populated from polylines above. Override if the drawn lines don&apos;t capture reality.
+          </p>
           <div className="grid grid-cols-[1fr_1fr_1fr] gap-3">
             <div>
-              <label className={lbl}>Santa&apos;s (gutter) ft</label>
+              <label className={lbl}>Gutterline ft</label>
               <input className={inp} type="number" value={santasFootage}
                 onChange={e => setSantasFootage(e.target.value ? Number(e.target.value) : '')} />
             </div>
             <div>
-              <label className={lbl}>Gingerbread (ridge) ft</label>
+              <label className={lbl}>Ridgeline ft</label>
               <input className={inp} type="number" value={gingerbreadFootage}
                 onChange={e => setGingerbreadFootage(e.target.value ? Number(e.target.value) : '')} />
             </div>
             <div>
-              <label className={lbl}>Winter Wonderland ft</label>
+              <label className={lbl}>C9s ft</label>
               <input className={inp} type="number" value={wwFootage}
                 onChange={e => setWwFootage(e.target.value ? Number(e.target.value) : '')} />
             </div>
             <div>
-              <label className={lbl}>Santa&apos;s Difficulty</label>
+              <label className={lbl}>Gutterline Difficulty</label>
               <select className={sel} value={santasDifficulty} onChange={e => setSantasDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                 <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
               </select>
             </div>
             <div>
-              <label className={lbl}>Gingerbread Difficulty</label>
+              <label className={lbl}>Ridgeline Difficulty</label>
               <select className={sel} value={gingerbreadDifficulty} onChange={e => setGingerbreadDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                 <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
               </select>
             </div>
             <div>
-              <label className={lbl}>Winter Wonderland Difficulty</label>
+              <label className={lbl}>C9s Difficulty</label>
               <select className={sel} value={wwDifficulty} onChange={e => setWwDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                 <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
               </select>
             </div>
           </div>
-        </Section>
-
-        {/* Mini Light summary */}
-        <Section title="Bushes / Trees / Columns">
-          {miniLightDetections.length === 0 ? (
-            <p className="text-xs text-gray-500">Use the +Add buttons above on the photo to place boxes.</p>
-          ) : (
-            <div className="space-y-1.5">
-              <div className="grid grid-cols-[1fr_1fr_80px_80px_32px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                <span>Type</span><span>Wrap / Mode</span><span>Strings</span><span>Column Output</span><span />
-              </div>
-              {miniLightDetections.map((d, i) => (
-                <div key={i} className="grid grid-cols-[1fr_1fr_80px_80px_32px] gap-2 items-center">
-                  <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                    value={d.type}
-                    onChange={e => setMiniLightDetections(ds => ds.map((x, j) => j === i ? { ...x, type: e.target.value as 'bush'|'tree'|'column', columnMode: undefined } : x))}>
-                    <option value="bush">Bush</option><option value="tree">Tree</option><option value="column">Column</option>
-                  </select>
-                  <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                    value={d.wrapStyle}
-                    onChange={e => setMiniLightDetections(ds => ds.map((x, j) => j === i ? { ...x, wrapStyle: e.target.value as 'canopy'|'trunk' } : x))}>
-                    <option value="canopy">Canopy</option><option value="trunk">Trunk</option>
-                  </select>
-                  <input type="number" min="1" className="border border-gray-200 rounded px-2 py-1 text-xs"
-                    value={d.stringCount}
-                    onChange={e => setMiniLightDetections(ds => ds.map((x, j) => j === i ? { ...x, stringCount: Math.max(1, Number(e.target.value)) } : x))} />
-                  {/* Column garland toggle — only shown for columns */}
-                  {d.type === 'column' ? (
-                    <button
-                      type="button"
-                      onClick={() => setMiniLightDetections(ds => ds.map((x, j) => j === i
-                        ? { ...x, columnMode: x.columnMode === 'garland' ? 'minilight' : 'garland' }
-                        : x))}
-                      className={`text-[10px] font-semibold px-2 py-1 rounded border ${d.columnMode === 'garland' ? 'bg-emerald-100 border-emerald-400 text-emerald-800' : 'bg-gray-50 border-gray-300 text-gray-500'}`}
-                    >
-                      {d.columnMode === 'garland' ? 'Garland' : 'Mini Lights'}
-                    </button>
-                  ) : <span />}
-                  <button type="button" onClick={() => setMiniLightDetections(ds => ds.filter((_, j) => j !== i))}
-                    className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
-                </div>
-              ))}
-              {miniLightDetections.some(d => d.columnMode === 'garland') && (
-                <p className="text-[10px] text-emerald-700 mt-1">
-                  Columns set to Garland mode will be saved to the Garland Used section using the column height measurement.
-                </p>
-              )}
-            </div>
-          )}
-        </Section>
-
-        {/* Spritzers */}
-        <Section title="Spritzers Used">
-          {spritzers.map((s, i) => (
-            <div key={i} className="grid grid-cols-[1fr_100px_32px] gap-2 items-center mb-2">
-              <select className={sel} value={s.size}
-                onChange={e => setSpritzers(arr => arr.map((x, j) => j === i ? { ...x, size: e.target.value as Spritzer['size'] } : x))}>
-                <option value="16">16&quot;</option><option value="24">24&quot;</option><option value="32">32&quot;</option>
-              </select>
-              <input type="number" min="1" className={inp} value={s.quantity}
-                onChange={e => setSpritzers(arr => arr.map((x, j) => j === i ? { ...x, quantity: Math.max(1, Number(e.target.value)) } : x))} />
-              <button type="button" onClick={() => setSpritzers(arr => arr.filter((_, j) => j !== i))}
-                className="text-red-400 hover:text-red-600 font-bold text-xl">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setSpritzers(arr => [...arr, { size: '24', quantity: 1 }])}
-            className="text-sm text-green-700 hover:text-green-900 font-medium border border-green-300 hover:border-green-500 rounded-md px-3 py-1.5">
-            + Add Spritzer
-          </button>
-        </Section>
-
-        {/* Wreaths */}
-        <Section title="Wreaths Used">
-          {wreaths.map((w, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_100px_32px] gap-2 items-center mb-2">
-              <select className={sel} value={w.size}
-                onChange={e => setWreaths(arr => arr.map((x, j) => j === i ? { ...x, size: e.target.value as Wreath['size'] } : x))}>
-                <option value="24noble">24&quot; Noble</option>
-                <option value="30noble">30&quot; Noble</option>
-                <option value="36noble">36&quot; Noble</option>
-                <option value="48noble">48&quot; Noble</option>
-                <option value="36oregon">36&quot; Oregon</option>
-              </select>
-              <select className={sel} value={w.tier}
-                onChange={e => setWreaths(arr => arr.map((x, j) => j === i ? { ...x, tier: e.target.value as Wreath['tier'] } : x))}>
-                <option value="labor">Labor Only</option><option value="bow">With Bow</option><option value="fullDecor">Full Decor</option>
-              </select>
-              <input type="number" min="1" className={inp} value={w.quantity}
-                onChange={e => setWreaths(arr => arr.map((x, j) => j === i ? { ...x, quantity: Math.max(1, Number(e.target.value)) } : x))} />
-              <button type="button" onClick={() => setWreaths(arr => arr.filter((_, j) => j !== i))}
-                className="text-red-400 hover:text-red-600 font-bold text-xl">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setWreaths(arr => [...arr, { size: '30noble', tier: 'bow', quantity: 1 }])}
-            className="text-sm text-green-700 hover:text-green-900 font-medium border border-green-300 hover:border-green-500 rounded-md px-3 py-1.5">
-            + Add Wreath
-          </button>
-        </Section>
-
-        {/* Garland */}
-        <Section title="Garland Used">
-          {garland.map((g, i) => (
-            <div key={i} className="grid grid-cols-[120px_1fr_100px_32px] gap-2 items-center mb-2">
-              <select className={sel} value={g.length}
-                onChange={e => setGarland(arr => arr.map((x, j) => j === i ? { ...x, length: e.target.value as GarlandItem['length'] } : x))}>
-                <option value="9ft">9ft Noble</option><option value="4.5ft">4.5ft Noble</option>
-              </select>
-              <select className={sel} value={g.tier}
-                onChange={e => setGarland(arr => arr.map((x, j) => j === i ? { ...x, tier: e.target.value as GarlandItem['tier'] } : x))}>
-                <option value="labor">Labor Only</option><option value="bow">With Bow</option><option value="fullDecor">Full Decor</option>
-              </select>
-              <input type="number" min="1" className={inp} value={g.quantity}
-                onChange={e => setGarland(arr => arr.map((x, j) => j === i ? { ...x, quantity: Math.max(1, Number(e.target.value)) } : x))} />
-              <button type="button" onClick={() => setGarland(arr => arr.filter((_, j) => j !== i))}
-                className="text-red-400 hover:text-red-600 font-bold text-xl">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setGarland(arr => [...arr, { length: '9ft', type: 'noble', tier: 'bow', quantity: 1 }])}
-            className="text-sm text-green-700 hover:text-green-900 font-medium border border-green-300 hover:border-green-500 rounded-md px-3 py-1.5">
-            + Add Garland
-          </button>
         </Section>
 
         {saveError && (
