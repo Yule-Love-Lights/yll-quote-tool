@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type {
   QuoteResult,
   MiniLightItem,
@@ -95,6 +95,119 @@ export default function NewQuotePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
+  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
+  const [originalAnalysis, setOriginalAnalysis] = useState<unknown>(null);
+  const [savingCorrection, setSavingCorrection] = useState(false);
+  const [correctionSaved, setCorrectionSaved] = useState(false);
+  const [fewShotCount, setFewShotCount] = useState(0);
+
+  // Drag state for editing polyline points
+  type LineType = 'santas' | 'gingerbread';
+  const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
+  const imgContainerRef = useRef<HTMLDivElement>(null);
+  const [addMode, setAddMode] = useState<LineType | null>(null);
+  const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const handleMove = (e: PointerEvent) => {
+      const rect = imgContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      const setter = dragging.type === 'santas' ? setSantasLines : setGingerbreadLines;
+      setter(lines => lines.map((line, i) =>
+        i === dragging.lineIdx
+          ? { ...line, points: line.points.map((p, j) => j === dragging.ptIdx ? [x, y] as [number, number] : p) }
+          : line
+      ));
+    };
+    const handleUp = () => setDragging(null);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [dragging]);
+
+  const deletePoint = (type: LineType, lineIdx: number, ptIdx: number) => {
+    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    setter(lines => lines.map((line, i) =>
+      i === lineIdx ? { ...line, points: line.points.filter((_, j) => j !== ptIdx) } : line
+    ).filter(line => line.points.length >= 2));
+  };
+
+  const deleteLine = (type: LineType, lineIdx: number) => {
+    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    setter(lines => lines.filter((_, i) => i !== lineIdx));
+  };
+
+  const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
+    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
+  };
+
+  const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!addMode) return;
+    const rect = imgContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    setPendingPoints(prev => [...prev, [x, y]]);
+  };
+
+  const finishAddingLine = () => {
+    if (!addMode || pendingPoints.length < 2) {
+      setAddMode(null);
+      setPendingPoints([]);
+      return;
+    }
+    const newLine: LineSegment = {
+      points: pendingPoints,
+      label: addMode === 'santas' ? 'new gutterline' : 'new ridgeline',
+    };
+    const setter = addMode === 'santas' ? setSantasLines : setGingerbreadLines;
+    setter(lines => [...lines, newLine]);
+    setAddMode(null);
+    setPendingPoints([]);
+  };
+
+  const cancelAdd = () => {
+    setAddMode(null);
+    setPendingPoints([]);
+  };
+
+  const saveCorrections = async () => {
+    if (!photoBase64 || !photoMediaType || !originalAnalysis) return;
+    setSavingCorrection(true);
+    setCorrectionSaved(false);
+    try {
+      const res = await fetch('/api/save-correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photoBase64,
+          photoMediaType,
+          originalAnalysis,
+          correctedSantasFootage: form.santasFootage,
+          correctedSantasDifficulty: form.santasDifficulty,
+          correctedSantasLines: santasLines,
+          correctedGingerbreadFootage: form.gingerbreadFootage,
+          correctedGingerbreadDifficulty: form.gingerbreadDifficulty,
+          correctedGingerbreadLines: gingerbreadLines,
+        }),
+      });
+      if (res.ok) setCorrectionSaved(true);
+      else {
+        const data = await res.json();
+        alert(`Save failed: ${data.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setSavingCorrection(false);
+    }
+  };
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -131,6 +244,11 @@ export default function NewQuotePage() {
       setSantasLines(r.santasLines ?? []);
       setGingerbreadLines(r.gingerbreadLines ?? []);
       setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+      setPhotoBase64(data.photoBase64 ?? null);
+      setPhotoMediaType(data.photoMediaType ?? null);
+      setOriginalAnalysis(r);
+      setFewShotCount(data.fewShotCount ?? 0);
+      setCorrectionSaved(false);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -295,19 +413,25 @@ export default function NewQuotePage() {
             </div>
           </Section>
 
-          {/* ── Analysis Results — marked-up photo ── */}
-          {photoPreview && (santasLines.length > 0 || gingerbreadLines.length > 0) && (
-            <Section title="Analysis Results — What Claude Measured">
+          {/* ── Analysis Results — editable marked-up photo ── */}
+          {photoPreview && photoBase64 && (
+            <Section title="Analysis Results — Correct The Measurement">
               <p className="text-xs text-gray-500 mb-4">
-                Red lines = gutterline (Santa&apos;s). Blue lines = ridgeline (Gingerbread). Verify the markup matches the actual roof before submitting.
+                Drag the dots to reshape lines. Click a dot to remove it. Use the buttons below to add a new line, then click on the photo to place points.
+                {fewShotCount > 0 && <span className="ml-2 text-green-700 font-medium">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>}
               </p>
-              <div className="relative inline-block w-full">
+              <div
+                ref={imgContainerRef}
+                onClick={addMode ? handleImageClick : undefined}
+                className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={photoPreview} alt="Analyzed house" className="w-full h-auto rounded-md border border-gray-200 block" />
+                <img src={photoPreview} alt="Analyzed house" className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none" draggable={false} />
                 <svg
                   viewBox="0 0 1 1"
                   preserveAspectRatio="none"
-                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  className="absolute inset-0 w-full h-full"
+                  style={{ pointerEvents: 'none' }}
                 >
                   {santasLines.map((line, i) => (
                     <polyline
@@ -333,39 +457,145 @@ export default function NewQuotePage() {
                       vectorEffect="non-scaling-stroke"
                     />
                   ))}
+                  {pendingPoints.length > 0 && (
+                    <polyline
+                      points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
+                      fill="none"
+                      stroke={addMode === 'santas' ? '#ef4444' : '#3b82f6'}
+                      strokeWidth="3"
+                      strokeDasharray="6 4"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
                 </svg>
+                {/* Draggable point handles (HTML elements, positioned absolute — easier than SVG hit-testing) */}
+                {!addMode && santasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                  <div
+                    key={`sh-${li}-${pi}`}
+                    className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
+                    onDoubleClick={() => deletePoint('santas', li, pi)}
+                    title="Drag to move • Double-click to delete"
+                  />
+                )))}
+                {!addMode && gingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                  <div
+                    key={`gh-${li}-${pi}`}
+                    className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
+                    onDoubleClick={() => deletePoint('gingerbread', li, pi)}
+                    title="Drag to move • Double-click to delete"
+                  />
+                )))}
+                {pendingPoints.map(([x, y], i) => (
+                  <div
+                    key={`pp-${i}`}
+                    className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : 'bg-blue-500'} border-2 border-white shadow`}
+                    style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
+                  />
+                ))}
               </div>
+
+              {/* Add-line controls */}
+              {addMode ? (
+                <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
+                  <span className="text-sm text-yellow-900">
+                    Adding new {addMode === 'santas' ? 'gutterline (red)' : 'ridgeline (blue)'} — click on the photo to add points ({pendingPoints.length} placed).
+                  </span>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
+                      Done
+                    </button>
+                    <button type="button" onClick={cancelAdd}
+                      className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
+                    className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
+                    + Add Gutterline
+                  </button>
+                  <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
+                    className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
+                    + Add Ridgeline
+                  </button>
+                </div>
+              )}
+
+              {/* Per-line edit panels */}
               <div className="mt-4 grid grid-cols-2 gap-4">
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <span className="w-4 h-1 bg-red-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft ({form.santasDifficulty})</span>
+                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft</span>
                   </div>
                   {santasLines.length > 0 ? (
-                    <ul className="text-xs text-gray-600 space-y-1 ml-6">
+                    <ul className="space-y-1 ml-6">
                       {santasLines.map((line, i) => (
-                        <li key={`sl-${i}`}>• {line.label}</li>
+                        <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
+                          <input
+                            value={line.label}
+                            onChange={e => updateLineLabel('santas', i, e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-gray-400">{line.points.length}pts</span>
+                          <button type="button" onClick={() => deleteLine('santas', i)}
+                            className="text-red-400 hover:text-red-600 font-bold">×</button>
+                        </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments identified</p>
+                    <p className="text-xs text-gray-400 ml-6">No segments</p>
                   )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <span className="w-4 h-1 bg-blue-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft ({form.gingerbreadDifficulty})</span>
+                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft</span>
                   </div>
                   {gingerbreadLines.length > 0 ? (
-                    <ul className="text-xs text-gray-600 space-y-1 ml-6">
+                    <ul className="space-y-1 ml-6">
                       {gingerbreadLines.map((line, i) => (
-                        <li key={`gl-${i}`}>• {line.label}</li>
+                        <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
+                          <input
+                            value={line.label}
+                            onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-gray-400">{line.points.length}pts</span>
+                          <button type="button" onClick={() => deleteLine('gingerbread', i)}
+                            className="text-red-400 hover:text-red-600 font-bold">×</button>
+                        </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments identified</p>
+                    <p className="text-xs text-gray-400 ml-6">No segments</p>
                   )}
                 </div>
+              </div>
+
+              {/* Save corrections */}
+              <div className="mt-5 pt-4 border-t border-gray-100 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={saveCorrections}
+                  disabled={savingCorrection}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium text-sm px-4 py-2 rounded-md"
+                >
+                  {savingCorrection ? 'Saving…' : 'Save Corrections (train AI)'}
+                </button>
+                {correctionSaved && (
+                  <span className="text-xs text-green-700 font-medium">✓ Saved — future photos will use this as a reference.</span>
+                )}
+                <span className="text-xs text-gray-400">
+                  Also adjust footage in the form below if needed. Those values are saved with the corrections.
+                </span>
               </div>
             </Section>
           )}

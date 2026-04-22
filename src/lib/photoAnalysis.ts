@@ -1,4 +1,5 @@
 import { getClaudeClient } from './claude';
+import { StoredCorrection } from './corrections';
 
 export type LineSegment = {
   points: [number, number][]; // normalized 0-1 coords: [[x1,y1], [x2,y2], ...]
@@ -55,7 +56,43 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
 
 Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
 
-export async function analyzePhoto(base64Image: string, mediaType: string): Promise<PhotoAnalysisResult> {
+function buildFewShotMessages(corrections: StoredCorrection[]) {
+  const messages: { role: 'user' | 'assistant'; content: Array<{ type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } } | { type: 'text'; text: string }> }[] = [];
+
+  for (const c of corrections) {
+    const mt = c.photo_media_type as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mt, data: c.photo_base64 } },
+        { type: 'text', text: 'Estimate Christmas lighting measurements for this house. Respond with JSON only.' },
+      ],
+    });
+    messages.push({
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          santasFootage: c.corrected_santas_footage,
+          santasDifficulty: c.corrected_santas_difficulty,
+          santasLines: c.corrected_santas_lines,
+          gingerbreadFootage: c.corrected_gingerbread_footage,
+          gingerbreadDifficulty: c.corrected_gingerbread_difficulty,
+          gingerbreadLines: c.corrected_gingerbread_lines,
+          notes: 'human-verified measurement',
+          confidence: 'high',
+        }),
+      }],
+    });
+  }
+  return messages;
+}
+
+export async function analyzePhoto(
+  base64Image: string,
+  mediaType: string,
+  fewShotCorrections: StoredCorrection[] = [],
+): Promise<PhotoAnalysisResult> {
   const client = getClaudeClient();
   if (!client) {
     throw new Error('Claude API not configured — set ANTHROPIC_API_KEY in .env.local');
@@ -66,11 +103,17 @@ export async function analyzePhoto(base64Image: string, mediaType: string): Prom
     throw new Error(`Unsupported image type: ${mediaType}`);
   }
 
+  const fewShotMessages = buildFewShotMessages(fewShotCorrections);
+  const systemPrompt = fewShotCorrections.length > 0
+    ? `${SYSTEM_PROMPT}\n\nYou have previously analyzed ${fewShotCorrections.length} house(s) where the human operator corrected your measurements. Those corrected JSON outputs are shown in the conversation history below as ground-truth references — match their precision and coordinate style.`
+    : SYSTEM_PROMPT;
+
   const response = await client.messages.create({
     model: 'claude-sonnet-4-5',
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    max_tokens: 2048,
+    system: systemPrompt,
     messages: [
+      ...fewShotMessages,
       {
         role: 'user',
         content: [

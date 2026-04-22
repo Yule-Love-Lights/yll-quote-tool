@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzePhoto } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
+import { getRecentCorrections } from '@/lib/corrections';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -40,8 +41,14 @@ export async function POST(req: NextRequest) {
   const base64 = Buffer.from(arrayBuffer).toString('base64');
 
   try {
-    const result = await analyzePhoto(base64, mediaType);
-    return NextResponse.json({ result });
+    const corrections = await getRecentCorrections(3);
+    const result = await analyzePhoto(base64, mediaType, corrections);
+    return NextResponse.json({
+      result,
+      photoBase64: base64,
+      photoMediaType: mediaType,
+      fewShotCount: corrections.length,
+    });
   } catch (err) {
     console.error('Photo analysis error:', err);
     const message = err instanceof Error ? err.message : 'Failed to analyze photo';
