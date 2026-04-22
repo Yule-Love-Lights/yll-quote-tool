@@ -103,5 +103,23 @@ export async function analyzePhoto(base64Image: string, mediaType: string): Prom
   }
 
   const parsed = JSON.parse(jsonMatch[0]) as PhotoAnalysisResult;
-  return parsed;
+
+  // Normalize coordinates — Claude sometimes returns 0-1000 scale. Detect and rescale.
+  const normalizeLines = (lines: LineSegment[] | undefined): LineSegment[] => {
+    if (!Array.isArray(lines)) return [];
+    const allPoints = lines.flatMap(l => l.points ?? []);
+    if (allPoints.length === 0) return [];
+    const maxCoord = Math.max(...allPoints.flat());
+    const scale = maxCoord > 1.5 ? 1 / 1000 : 1;
+    return lines.map(l => ({
+      label: l.label,
+      points: (l.points ?? []).map(([x, y]) => [x * scale, y * scale] as [number, number]),
+    }));
+  };
+
+  return {
+    ...parsed,
+    santasLines: normalizeLines(parsed.santasLines),
+    gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
+  };
 }

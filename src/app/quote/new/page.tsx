@@ -269,68 +269,16 @@ export default function NewQuotePage() {
               />
               {photoPreview && (
                 <div className="space-y-3">
-                  <div className="relative inline-block max-w-full">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={photoPreview} alt="House preview" className="max-w-full h-auto rounded-md border border-gray-200 block" />
-                    {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
-                      <svg
-                        viewBox="0 0 1 1"
-                        preserveAspectRatio="none"
-                        className="absolute inset-0 w-full h-full pointer-events-none"
-                      >
-                        {santasLines.map((line, i) => (
-                          <polyline
-                            key={`s-${i}`}
-                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
-                            fill="none"
-                            stroke="#ef4444"
-                            strokeWidth="0.006"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        ))}
-                        {gingerbreadLines.map((line, i) => (
-                          <polyline
-                            key={`g-${i}`}
-                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
-                            fill="none"
-                            stroke="#3b82f6"
-                            strokeWidth="0.006"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        ))}
-                      </svg>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <button
-                      type="button"
-                      onClick={handleAnalyzePhoto}
-                      disabled={analyzing}
-                      className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
-                    >
-                      {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
-                    </button>
-                    {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
-                      <div className="flex items-center gap-4 text-xs">
-                        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500"></span>Gutterline (Santa&apos;s)</span>
-                        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500"></span>Ridgeline (Gingerbread)</span>
-                      </div>
-                    )}
-                  </div>
-                  {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
-                    <ul className="text-xs text-gray-600 space-y-0.5">
-                      {santasLines.map((line, i) => (
-                        <li key={`sl-${i}`}><span className="text-red-500 font-bold">■</span> {line.label}</li>
-                      ))}
-                      {gingerbreadLines.map((line, i) => (
-                        <li key={`gl-${i}`}><span className="text-blue-500 font-bold">■</span> {line.label}</li>
-                      ))}
-                    </ul>
-                  )}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photoPreview} alt="House preview" className="w-48 h-auto rounded-md border border-gray-200" />
+                  <button
+                    type="button"
+                    onClick={handleAnalyzePhoto}
+                    disabled={analyzing}
+                    className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
+                  >
+                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                  </button>
                 </div>
               )}
               {analysisNotes && (
@@ -346,6 +294,81 @@ export default function NewQuotePage() {
               )}
             </div>
           </Section>
+
+          {/* ── Analysis Results — marked-up photo ── */}
+          {photoPreview && (santasLines.length > 0 || gingerbreadLines.length > 0) && (
+            <Section title="Analysis Results — What Claude Measured">
+              <p className="text-xs text-gray-500 mb-4">
+                Red lines = gutterline (Santa&apos;s). Blue lines = ridgeline (Gingerbread). Verify the markup matches the actual roof before submitting.
+              </p>
+              <div className="relative inline-block w-full">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={photoPreview} alt="Analyzed house" className="w-full h-auto rounded-md border border-gray-200 block" />
+                <svg
+                  viewBox="0 0 1 1"
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                >
+                  {santasLines.map((line, i) => (
+                    <polyline
+                      key={`s-${i}`}
+                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
+                  {gingerbreadLines.map((line, i) => (
+                    <polyline
+                      key={`g-${i}`}
+                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                      fill="none"
+                      stroke="#3b82f6"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
+                </svg>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-1 bg-red-500 rounded"></span>
+                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft ({form.santasDifficulty})</span>
+                  </div>
+                  {santasLines.length > 0 ? (
+                    <ul className="text-xs text-gray-600 space-y-1 ml-6">
+                      {santasLines.map((line, i) => (
+                        <li key={`sl-${i}`}>• {line.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-400 ml-6">No segments identified</p>
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-1 bg-blue-500 rounded"></span>
+                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft ({form.gingerbreadDifficulty})</span>
+                  </div>
+                  {gingerbreadLines.length > 0 ? (
+                    <ul className="text-xs text-gray-600 space-y-1 ml-6">
+                      {gingerbreadLines.map((line, i) => (
+                        <li key={`gl-${i}`}>• {line.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-400 ml-6">No segments identified</p>
+                  )}
+                </div>
+              </div>
+            </Section>
+          )}
 
           {/* ── Santa's — Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
