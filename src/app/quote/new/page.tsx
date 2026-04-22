@@ -95,11 +95,10 @@ export default function NewQuotePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
-  // Feet-per-normalized-unit scale factors — set from Claude's output, used to
-  // recompute footage as the user drags points. Image aspect ratio baked in so
-  // horizontal and vertical movements translate correctly.
-  const [santasFeetPerUnit, setSantasFeetPerUnit] = useState<number | null>(null);
-  const [gingerbreadFeetPerUnit, setGingerbreadFeetPerUnit] = useState<number | null>(null);
+  // Shared feet-per-normalized-unit scale — calibrated from the gutterline
+  // (most reliable reference) and applied to both line types. This way edited
+  // footage always reflects the drawn polylines, not Claude's separate text guess.
+  const [feetPerUnit, setFeetPerUnit] = useState<number | null>(null);
   const [imgAspect, setImgAspect] = useState<number>(1); // width/height
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
@@ -133,22 +132,15 @@ export default function NewQuotePage() {
     return total;
   };
 
-  // Recompute footage whenever lines change, if we have a calibration.
+  // Recompute both footages from polyline length × shared scale.
   useEffect(() => {
-    if (santasFeetPerUnit != null) {
-      const len = polylineLength(santasLines, imgAspect);
-      const ft = Math.round(len * santasFeetPerUnit / 5) * 5;
-      setForm(f => f.santasFootage === ft ? f : { ...f, santasFootage: ft });
-    }
-  }, [santasLines, santasFeetPerUnit, imgAspect]);
-
-  useEffect(() => {
-    if (gingerbreadFeetPerUnit != null) {
-      const len = polylineLength(gingerbreadLines, imgAspect);
-      const ft = Math.round(len * gingerbreadFeetPerUnit / 5) * 5;
-      setForm(f => f.gingerbreadFootage === ft ? f : { ...f, gingerbreadFootage: ft });
-    }
-  }, [gingerbreadLines, gingerbreadFeetPerUnit, imgAspect]);
+    if (feetPerUnit == null) return;
+    const santasFt = Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5;
+    const gingerFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5;
+    setForm(f => (f.santasFootage === santasFt && f.gingerbreadFootage === gingerFt)
+      ? f
+      : { ...f, santasFootage: santasFt, gingerbreadFootage: gingerFt });
+  }, [santasLines, gingerbreadLines, feetPerUnit, imgAspect]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -286,11 +278,14 @@ export default function NewQuotePage() {
       const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
       setSantasLines(newSantasLines);
       setGingerbreadLines(newGingerbreadLines);
-      // Calibrate: divide footage by polyline length to get feet-per-normalized-unit
+      // Calibrate scale from gutterline (most reliable reference). Fall back to
+      // ridgeline if gutterline is absent. Scale then applies to BOTH line types.
       const santasLen = polylineLength(newSantasLines, imgAspect);
-      const gingerbreadLen = polylineLength(newGingerbreadLines, imgAspect);
-      setSantasFeetPerUnit(santasLen > 0 ? r.santasFootage / santasLen : null);
-      setGingerbreadFeetPerUnit(gingerbreadLen > 0 ? r.gingerbreadFootage / gingerbreadLen : null);
+      const ridgeLen = polylineLength(newGingerbreadLines, imgAspect);
+      let scale: number | null = null;
+      if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
+      else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
+      setFeetPerUnit(scale);
       setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
       setPhotoBase64(data.photoBase64 ?? null);
       setPhotoMediaType(data.photoMediaType ?? null);
