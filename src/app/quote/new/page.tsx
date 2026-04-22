@@ -1117,6 +1117,12 @@ export default function NewQuotePage() {
                 </div>
               )}
 
+              {viewMode === 'satellite' && (
+                <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
+                  <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
+                </div>
+              )}
+
               <div
                 ref={imgContainerRef}
                 onClick={addMode ? handleImageClick : undefined}

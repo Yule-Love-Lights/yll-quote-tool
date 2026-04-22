@@ -124,9 +124,17 @@ For each line segment include a short label like "front gutter ~40ft" or "main r
 SATELLITE MEASUREMENT — CRITICAL for commercial properties and complex rooflines:
 When a satellite image is supplied, you MUST ALSO produce polylines in the SATELLITE image's coordinate space for the full visible perimeter (gutterline) AND all ridgelines, as seen from top-down.
 
-Satellite gutterline = the full outer perimeter of the roof visible from above (all sides, not just front). Satellite ridgeline = every ridge/peak visible from above (main ridge + cross-gables + dormer ridges).
+Satellite gutterline = the full outer perimeter of the ROOF visible from above (all sides, not just front). Satellite ridgeline = every ridge/peak visible from above (main ridge + cross-gables + dormer ridges).
 
-A feet-per-pixel scale hint will be provided. You should also produce satelliteSantasFootage and satelliteGingerbreadFootage computed from the polyline pixel-distance × the scale. Round to nearest 5ft.
+HOW TO TRACE THE SATELLITE ROOFLINE — follow these rules strictly. If you can't follow them for this image, return an EMPTY array ("satelliteSantasLines": []) instead of guessing:
+- Snap polyline points ONLY to the ACTUAL ROOF EDGE (visible shingle seam / gutter line where the roof plane ends and the wall/ground begins). Lighter roofing material against the yard or driveway is usually the edge.
+- DO NOT trace the property boundary, the lot outline, driveways, sidewalks, pools, decks, patios, pergolas, sheds, detached garages, or landscaping. ONLY the primary structure's roof.
+- If the roof is L-shaped / U-shaped / T-shaped / has a courtyard, USE ENOUGH POINTS to hug every inside corner. A bounding box is WRONG — it will overstate footage. 8-20 points is typical for a modest cut-up; commercial can need 40+.
+- Shadows and tree canopy can obscure an edge. If you can't see the edge, DO NOT guess — skip that segment or return an empty array.
+- Ridges on the satellite image appear as the BRIGHTEST lines running along the roof's peak (the sunlit side meets the shaded side). Trace along those peak lines, not across the slopes.
+- FOOTAGE MUST BE DERIVED FROM THE POLYLINE. Do not invent a number and then draw a polyline to match. Compute: for each segment, sum sqrt((x2-x1)^2 + (y2-y1)^2) in normalized coords, multiply by 640 to get pixels, multiply by the feet-per-pixel scale. Sum across segments. Round to the nearest 5ft. If your polyline is empty, footage is 0.
+
+A feet-per-pixel scale hint will be provided.
 
 The street-view measurement is ALWAYS the front only (what the installer sees from the curb). The satellite measurement captures the FULL roof (all sides). For a simple single-family home these values can match. For a commercial building or complex L-shaped / U-shaped / courtyard home, the satellite number will be much higher and is the correct total.
 
@@ -135,6 +143,8 @@ Set "preferredSource" to "satellite" when:
 - The roof has significant cut-ups, dormers, or wings that aren't visible from street view.
 - Street view is heavily obscured by trees, fences, or setback.
 Otherwise set it to "street".
+
+If you could not reliably trace the satellite roofline (heavy tree cover, low contrast, image unclear), set satelliteSantasLines to [] and satelliteGingerbreadLines to []. Note this in the "notes" field. The user will trace it manually — an empty array is MUCH better than a wrong one.
 
 You MUST respond with ONLY valid JSON matching this schema. No markdown fences, no prose before or after:
 {
