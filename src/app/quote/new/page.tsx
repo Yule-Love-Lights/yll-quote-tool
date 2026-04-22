@@ -1594,6 +1594,32 @@ export default function NewQuotePage() {
                 </button>
               </div>
 
+              {/* C9s — Custom Runs (manual entry, not auto-detected) */}
+              <div className="mt-4 border-t border-gray-200 pt-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="inline-block w-3 h-3 rounded-full bg-emerald-500"></span>
+                  <span className="text-sm font-semibold text-gray-800">C9s — Custom Runs</span>
+                  <span className="text-xs text-gray-400">(manual entry)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 ml-5">
+                  <div>
+                    <label className={lbl}>Linear Footage</label>
+                    <input className={inp} type="number" min="0" placeholder="0"
+                      value={form.winterWonderlandFootage || ''}
+                      onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
+                  </div>
+                  <div>
+                    <label className={lbl}>Difficulty</label>
+                    <select className={sel} value={form.winterWonderlandDifficulty}
+                      onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                      <option value="easy">Easy — $8/ft</option>
+                      <option value="medium">Medium — $10/ft</option>
+                      <option value="hard">Hard — $12/ft</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               {/* Per-line edit panels */}
               <div className="mt-4 grid grid-cols-2 gap-4">
                 <div>
