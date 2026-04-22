@@ -61,6 +61,15 @@ export async function POST(req: NextRequest) {
       fetchSatellite(geo.lat, geo.lng),
     ]);
 
+    // Compute feet-per-pixel for the satellite image. Google Static Maps
+    // at zoom=20 uses: meters_per_pixel = 156543.03392 * cos(lat) / 2^zoom.
+    // Converted to feet (× 3.28084). This is deterministic — no calibration needed.
+    const SAT_ZOOM = 20;
+    const metersPerPixel =
+      (156543.03392 * Math.cos((geo.lat * Math.PI) / 180)) /
+      Math.pow(2, SAT_ZOOM);
+    const satelliteFeetPerPixel = metersPerPixel * 3.28084;
+
     // 4. Analyze with Claude using BOTH images as cross-reference
     const [corrections, trainingHouses, references] = await Promise.all([
       getRecentCorrections(2),
@@ -105,7 +114,11 @@ export async function POST(req: NextRequest) {
       streetView.mediaType,
       examples,
       {
-        satellite: { base64: satellite.base64, mediaType: satellite.mediaType },
+        satellite: {
+          base64: satellite.base64,
+          mediaType: satellite.mediaType,
+          feetPerPixel: satelliteFeetPerPixel,
+        },
         references,
         houseStyleHint,
       },
@@ -117,6 +130,7 @@ export async function POST(req: NextRequest) {
       photoMediaType: streetView.mediaType,
       satelliteBase64: satellite.base64,
       satelliteMediaType: satellite.mediaType,
+      satelliteFeetPerPixel,
       formattedAddress: geo.formattedAddress,
       lat: geo.lat,
       lng: geo.lng,

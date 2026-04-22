@@ -117,6 +117,16 @@ export default function NewQuotePage() {
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
+  // Satellite polylines (editable from top-down view — better for commercial
+  // properties and complex rooflines where a street-view angle misses the back).
+  const [satelliteSantasLines, setSatelliteSantasLines] = useState<LineSegment[]>([]);
+  const [satelliteGingerbreadLines, setSatelliteGingerbreadLines] = useState<LineSegment[]>([]);
+  // Deterministic scale from Google Static Maps zoom-20 formula; no user
+  // calibration needed. See analyze-address route for the math.
+  const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
+  const [satelliteAspect, setSatelliteAspect] = useState<number>(1);
+  const [viewMode, setViewMode] = useState<'street' | 'satellite'>('street');
+  const [measurementSource, setMeasurementSource] = useState<'street' | 'satellite'>('street');
 
   // Mini light rates (mirror of BUSINESS_RULES.miniLightRates)
   const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
@@ -149,15 +159,38 @@ export default function NewQuotePage() {
     return total;
   };
 
-  // Recompute both footages from polyline length × shared scale.
+  // Satellite image is always 640x640 at zoom=20 from Static Maps.
+  const SAT_PX = 640;
+
+  // Recompute both footages from whichever source is driving pricing. Street
+  // source uses calibrated feet-per-normalized-unit; satellite source uses
+  // deterministic feet-per-pixel × image pixel width (640).
   useEffect(() => {
-    if (feetPerUnit == null) return;
-    const santasFt = Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5;
-    const gingerFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5;
-    setForm(f => (f.santasFootage === santasFt && f.gingerbreadFootage === gingerFt)
+    let santasFt: number | null = null;
+    let gingerFt: number | null = null;
+    if (measurementSource === 'street' && feetPerUnit != null) {
+      santasFt = Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5;
+      gingerFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5;
+    } else if (measurementSource === 'satellite' && satelliteFeetPerPixel != null) {
+      santasFt = Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+      gingerFt = Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+    }
+    if (santasFt == null || gingerFt == null) return;
+    const sFt = santasFt, gFt = gingerFt;
+    setForm(f => (f.santasFootage === sFt && f.gingerbreadFootage === gFt)
       ? f
-      : { ...f, santasFootage: santasFt, gingerbreadFootage: gingerFt });
-  }, [santasLines, gingerbreadLines, feetPerUnit, imgAspect]);
+      : { ...f, santasFootage: sFt, gingerbreadFootage: gFt });
+  }, [santasLines, gingerbreadLines, satelliteSantasLines, satelliteGingerbreadLines, feetPerUnit, satelliteFeetPerPixel, imgAspect, satelliteAspect, measurementSource]);
+
+  // Footage display helpers — compute both sources independently so user can compare.
+  const streetFootage = {
+    santas: feetPerUnit != null ? Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5 : null,
+    ginger: feetPerUnit != null ? Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5 : null,
+  };
+  const satFootage = {
+    santas: satelliteFeetPerPixel != null ? Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5 : null,
+    ginger: satelliteFeetPerPixel != null ? Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5 : null,
+  };
 
   // Perspective correction: foreground plants are closer to the camera than the
   // roofline (typically ~half the distance), so the same pixel width represents
@@ -272,6 +305,18 @@ export default function NewQuotePage() {
     }));
   }, [miniLightDetections]);
 
+  // Active setter routing — drag ops operate on whichever line set matches
+  // the current viewMode. Street view edits street polylines; satellite view
+  // edits satellite polylines.
+  const getSetter = (type: LineType) => {
+    if (viewMode === 'street') {
+      return type === 'santas' ? setSantasLines : setGingerbreadLines;
+    }
+    return type === 'santas' ? setSatelliteSantasLines : setSatelliteGingerbreadLines;
+  };
+  const activeSantasLines = viewMode === 'street' ? santasLines : satelliteSantasLines;
+  const activeGingerbreadLines = viewMode === 'street' ? gingerbreadLines : satelliteGingerbreadLines;
+
   useEffect(() => {
     if (!dragging) return;
     const handleMove = (e: PointerEvent) => {
@@ -279,7 +324,7 @@ export default function NewQuotePage() {
       if (!rect) return;
       const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      const setter = dragging.type === 'santas' ? setSantasLines : setGingerbreadLines;
+      const setter = getSetter(dragging.type);
       setter(lines => lines.map((line, i) =>
         i === dragging.lineIdx
           ? { ...line, points: line.points.map((p, j) => j === dragging.ptIdx ? [x, y] as [number, number] : p) }
@@ -293,22 +338,22 @@ export default function NewQuotePage() {
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-  }, [dragging]);
+  }, [dragging, viewMode]);
 
   const deletePoint = (type: LineType, lineIdx: number, ptIdx: number) => {
-    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    const setter = getSetter(type);
     setter(lines => lines.map((line, i) =>
       i === lineIdx ? { ...line, points: line.points.filter((_, j) => j !== ptIdx) } : line
     ).filter(line => line.points.length >= 2));
   };
 
   const deleteLine = (type: LineType, lineIdx: number) => {
-    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    const setter = getSetter(type);
     setter(lines => lines.filter((_, i) => i !== lineIdx));
   };
 
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
-    const setter = type === 'santas' ? setSantasLines : setGingerbreadLines;
+    const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
   };
 
@@ -331,7 +376,7 @@ export default function NewQuotePage() {
       points: pendingPoints,
       label: addMode === 'santas' ? 'new gutterline' : 'new ridgeline',
     };
-    const setter = addMode === 'santas' ? setSantasLines : setGingerbreadLines;
+    const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
     setAddMode(null);
     setPendingPoints([]);
@@ -395,6 +440,11 @@ export default function NewQuotePage() {
       gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
       santasLines?: LineSegment[];
       gingerbreadLines?: LineSegment[];
+      satelliteSantasLines?: LineSegment[];
+      satelliteGingerbreadLines?: LineSegment[];
+      satelliteSantasFootage?: number;
+      satelliteGingerbreadFootage?: number;
+      preferredSource?: 'street' | 'satellite';
       miniLightDetections?: MiniLightDetection[];
       notes: string;
       confidence: string;
@@ -403,6 +453,7 @@ export default function NewQuotePage() {
     photoMediaType?: string;
     satelliteBase64?: string;
     satelliteMediaType?: string;
+    satelliteFeetPerPixel?: number;
     formattedAddress?: string;
     fewShotCount?: number;
   };
@@ -439,6 +490,16 @@ export default function NewQuotePage() {
       };
       setMiniLightDetections(detections.map(d => ({ ...d, stringCount: recalcStrings(d.box) })));
     }
+    // Satellite polylines — always seed them so the user can toggle to the
+    // satellite canvas for complex / commercial rooflines without re-analyzing.
+    setSatelliteSantasLines(r.satelliteSantasLines ?? []);
+    setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
+    setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    // Claude may have flagged satellite as the better source (e.g. because
+    // rear rooflines aren't visible from the street). Honor that hint.
+    const preferred = r.preferredSource ?? 'street';
+    setMeasurementSource(preferred);
+    setViewMode(preferred);
     setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
@@ -690,11 +751,9 @@ export default function NewQuotePage() {
                 </div>
               )}
               {satellitePreview && (
-                <div>
-                  <p className="text-xs font-medium text-gray-600 mb-1">Satellite reference (used by AI for roof footprint):</p>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={satellitePreview} alt="Satellite view" className="w-48 h-auto rounded-md border border-gray-200" />
-                </div>
+                <p className="text-xs text-gray-500 italic">
+                  Satellite view is editable below — toggle to it in the results canvas.
+                </p>
               )}
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
@@ -713,10 +772,58 @@ export default function NewQuotePage() {
           {/* ── Analysis Results — editable marked-up photo ── */}
           {photoPreview && photoBase64 && (
             <Section title="Analysis Results — Correct The Measurement">
-              <p className="text-xs text-gray-500 mb-4">
+              <p className="text-xs text-gray-500 mb-3">
                 Drag dots to reshape lines. Double-click a dot to remove it. Footage updates automatically as you edit.
                 {fewShotCount > 0 && <span className="ml-2 text-green-700 font-medium">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>}
               </p>
+
+              {/* View toggle — edit street or satellite polylines. Satellite is
+                  better for commercial properties + complex rooflines where the
+                  back + sides aren't visible from the street. */}
+              {satellitePreview && (
+                <div className="mb-3 flex items-center gap-3 flex-wrap">
+                  <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('street')}
+                      className={`px-3 py-1.5 font-medium ${viewMode === 'street' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      Street View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('satellite')}
+                      className={`px-3 py-1.5 font-medium border-l border-gray-300 ${viewMode === 'satellite' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      Satellite (top-down)
+                    </button>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Pricing uses:
+                    <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
+                      <input type="radio" name="msrc" checked={measurementSource === 'street'} onChange={() => setMeasurementSource('street')} />
+                      Street
+                    </label>
+                    <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
+                      <input type="radio" name="msrc" checked={measurementSource === 'satellite'} onChange={() => setMeasurementSource('satellite')} />
+                      Satellite
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Side-by-side footage comparison */}
+              {satellitePreview && (
+                <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className={`rounded border p-2 ${measurementSource === 'street' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
+                    <p className="font-semibold text-gray-700">Street: gutter {streetFootage.santas ?? '—'}ft · ridge {streetFootage.ginger ?? '—'}ft</p>
+                  </div>
+                  <div className={`rounded border p-2 ${measurementSource === 'satellite' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
+                    <p className="font-semibold text-gray-700">Satellite: gutter {satFootage.santas ?? '—'}ft · ridge {satFootage.ginger ?? '—'}ft</p>
+                  </div>
+                </div>
+              )}
+
               <div
                 ref={imgContainerRef}
                 onClick={addMode ? handleImageClick : undefined}
@@ -724,13 +831,17 @@ export default function NewQuotePage() {
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={photoPreview}
-                  alt="Analyzed house"
+                  src={viewMode === 'satellite' && satellitePreview ? satellitePreview : photoPreview}
+                  alt={viewMode === 'satellite' ? 'Satellite view' : 'Analyzed house'}
                   className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none"
                   draggable={false}
                   onLoad={e => {
                     const img = e.currentTarget;
-                    if (img.naturalHeight > 0) setImgAspect(img.naturalWidth / img.naturalHeight);
+                    if (img.naturalHeight > 0) {
+                      const aspect = img.naturalWidth / img.naturalHeight;
+                      if (viewMode === 'satellite') setSatelliteAspect(aspect);
+                      else setImgAspect(aspect);
+                    }
                   }}
                 />
                 <svg
@@ -739,7 +850,7 @@ export default function NewQuotePage() {
                   className="absolute inset-0 w-full h-full"
                   style={{ pointerEvents: 'none' }}
                 >
-                  {santasLines.map((line, i) => (
+                  {activeSantasLines.map((line, i) => (
                     <polyline
                       key={`s-${i}`}
                       points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
@@ -751,7 +862,7 @@ export default function NewQuotePage() {
                       vectorEffect="non-scaling-stroke"
                     />
                   ))}
-                  {gingerbreadLines.map((line, i) => (
+                  {activeGingerbreadLines.map((line, i) => (
                     <polyline
                       key={`g-${i}`}
                       points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
@@ -774,8 +885,9 @@ export default function NewQuotePage() {
                     />
                   )}
                 </svg>
-                {/* Editable mini-light boxes (move + resize) */}
-                {!addMode && miniLightDetections.map((d, i) => {
+                {/* Editable mini-light boxes — only meaningful on street view
+                    (box→strands math uses street-perspective scale). */}
+                {!addMode && viewMode === 'street' && miniLightDetections.map((d, i) => {
                   const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
                   const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
                   return (
@@ -815,7 +927,7 @@ export default function NewQuotePage() {
                   );
                 })}
                 {/* Draggable point handles (HTML elements, positioned absolute — easier than SVG hit-testing) */}
-                {!addMode && santasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                {!addMode && activeSantasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                   <div
                     key={`sh-${li}-${pi}`}
                     className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
@@ -825,7 +937,7 @@ export default function NewQuotePage() {
                     title="Drag to move • Double-click to delete"
                   />
                 )))}
-                {!addMode && gingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                {!addMode && activeGingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                   <div
                     key={`gh-${li}-${pi}`}
                     className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
@@ -963,9 +1075,9 @@ export default function NewQuotePage() {
                     <span className="w-4 h-1 bg-red-500 rounded"></span>
                     <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft</span>
                   </div>
-                  {santasLines.length > 0 ? (
+                  {activeSantasLines.length > 0 ? (
                     <ul className="space-y-1 ml-6">
-                      {santasLines.map((line, i) => (
+                      {activeSantasLines.map((line, i) => (
                         <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
                           <input
                             value={line.label}
@@ -987,9 +1099,9 @@ export default function NewQuotePage() {
                     <span className="w-4 h-1 bg-blue-500 rounded"></span>
                     <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft</span>
                   </div>
-                  {gingerbreadLines.length > 0 ? (
+                  {activeGingerbreadLines.length > 0 ? (
                     <ul className="space-y-1 ml-6">
-                      {gingerbreadLines.map((line, i) => (
+                      {activeGingerbreadLines.map((line, i) => (
                         <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
                           <input
                             value={line.label}

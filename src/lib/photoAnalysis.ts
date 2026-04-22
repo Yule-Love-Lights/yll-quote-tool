@@ -40,6 +40,14 @@ export type PhotoAnalysisResult = {
   gingerbreadFootage: number;
   gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
   gingerbreadLines: LineSegment[];
+  // Satellite-based measurements (when satellite image is supplied).
+  // Polylines are in satellite image coordinates. Footage computed
+  // from satellite pixel distance × known feet-per-pixel scale.
+  satelliteSantasLines: LineSegment[];
+  satelliteSantasFootage: number;
+  satelliteGingerbreadLines: LineSegment[];
+  satelliteGingerbreadFootage: number;
+  preferredSource: 'street' | 'satellite';
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
   spritzerDetections: SpritzerDetection[];
@@ -97,6 +105,21 @@ You must also identify the specific lines you measured, as polylines in NORMALIZ
 
 For each line segment include a short label like "front gutter ~40ft" or "main ridge ~30ft".
 
+SATELLITE MEASUREMENT — CRITICAL for commercial properties and complex rooflines:
+When a satellite image is supplied, you MUST ALSO produce polylines in the SATELLITE image's coordinate space for the full visible perimeter (gutterline) AND all ridgelines, as seen from top-down.
+
+Satellite gutterline = the full outer perimeter of the roof visible from above (all sides, not just front). Satellite ridgeline = every ridge/peak visible from above (main ridge + cross-gables + dormer ridges).
+
+A feet-per-pixel scale hint will be provided. You should also produce satelliteSantasFootage and satelliteGingerbreadFootage computed from the polyline pixel-distance × the scale. Round to nearest 5ft.
+
+The street-view measurement is ALWAYS the front only (what the installer sees from the curb). The satellite measurement captures the FULL roof (all sides). For a simple single-family home these values can match. For a commercial building or complex L-shaped / U-shaped / courtyard home, the satellite number will be much higher and is the correct total.
+
+Set "preferredSource" to "satellite" when:
+- The property is commercial (flat roof, big box, strip mall).
+- The roof has significant cut-ups, dormers, or wings that aren't visible from street view.
+- Street view is heavily obscured by trees, fences, or setback.
+Otherwise set it to "street".
+
 You MUST respond with ONLY valid JSON matching this schema. No markdown fences, no prose before or after:
 {
   "santasFootage": number,
@@ -109,6 +132,15 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
   "gingerbreadLines": [
     { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft" }
   ],
+  "satelliteSantasLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "full perimeter ~180ft" }
+  ],
+  "satelliteSantasFootage": number,
+  "satelliteGingerbreadLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~50ft" }
+  ],
+  "satelliteGingerbreadFootage": number,
+  "preferredSource": "street" | "satellite",
   "miniLightDetections": [
     { "type": "bush" | "tree" | "column", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
   ],
@@ -142,6 +174,10 @@ type FewShotExample = {
   gingerbreadFootage: number;
   gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
   gingerbreadLines: LineSegment[];
+  satelliteSantasLines?: LineSegment[];
+  satelliteSantasFootage?: number;
+  satelliteGingerbreadLines?: LineSegment[];
+  satelliteGingerbreadFootage?: number;
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
   spritzerDetections: SpritzerDetection[];
@@ -198,6 +234,11 @@ function buildFewShotMessages(examples: FewShotExample[]) {
       gingerbreadFootage: ex.gingerbreadFootage,
       gingerbreadDifficulty: ex.gingerbreadDifficulty,
       gingerbreadLines: ex.gingerbreadLines,
+      satelliteSantasLines: ex.satelliteSantasLines ?? [],
+      satelliteSantasFootage: ex.satelliteSantasFootage ?? 0,
+      satelliteGingerbreadLines: ex.satelliteGingerbreadLines ?? [],
+      satelliteGingerbreadFootage: ex.satelliteGingerbreadFootage ?? 0,
+      preferredSource: 'street',
       miniLightDetections: ex.miniLightDetections,
       wreathDetections: ex.wreathDetections ?? [],
       spritzerDetections: ex.spritzerDetections ?? [],
@@ -264,6 +305,7 @@ export { correctionToExample, type FewShotExample };
 export type SatelliteReference = {
   base64: string;
   mediaType: 'image/jpeg' | 'image/png';
+  feetPerPixel?: number; // known scale from Google Static Maps zoom level
 };
 
 export type AnalyzeOptions = {
@@ -306,7 +348,11 @@ export async function analyzePhoto(
     ? `\n\nYou have ${trainingCount} completed-job reference(s) and ${correctionCount} human-corrected example(s) shown in the conversation history below. Completed-job references are CONFIRMED measurements from takedown — highest trust. Match their precision and coordinate style.`
     : '';
   const satelliteNote = satellite
-    ? `\n\nTWO IMAGES WILL BE PROVIDED: (1) street view — front elevation, use for gutterline, ridgeline polylines, bushes/trees/columns. (2) satellite/top-down — use for cross-checking total roof footprint and identifying roof complexity. All polyline coordinates MUST be in the STREET VIEW image's coordinate space. Do NOT place polylines on the satellite image.`
+    ? `\n\nTWO IMAGES WILL BE PROVIDED: (1) street view — front elevation. Use for the STREET-VIEW polylines (santasLines, gingerbreadLines) in streetview coordinates, bushes/trees/columns, wreaths, spritzers. (2) satellite/top-down of the same property. Use for the SATELLITE polylines (satelliteSantasLines, satelliteGingerbreadLines) in satellite image coordinates. Each polyline set lives in its OWN image's coordinate space — do not mix.${
+        satellite.feetPerPixel
+          ? ` Satellite feet-per-pixel scale: ${satellite.feetPerPixel.toFixed(4)} ft/px (image is top-down, no perspective). Compute satelliteSantasFootage and satelliteGingerbreadFootage by summing each polyline's pixel-distance (in the satellite image's native pixel dimensions, which is 640x640 unless otherwise noted; but your polyline coords are normalized 0-1 so multiply by 640 before applying scale) and multiplying by the scale. Round to nearest 5ft.`
+          : ''
+      }`
     : '';
   const styleNote = houseStyleHint
     ? `\n\nHouse style hint from user: ${houseStyleHint}. Prior training examples shown are selected to match this style where possible.`
@@ -391,6 +437,11 @@ export async function analyzePhoto(
     ...parsed,
     santasLines: normalizeLines(parsed.santasLines),
     gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
+    satelliteSantasLines: normalizeLines(parsed.satelliteSantasLines),
+    satelliteGingerbreadLines: normalizeLines(parsed.satelliteGingerbreadLines),
+    satelliteSantasFootage: parsed.satelliteSantasFootage ?? 0,
+    satelliteGingerbreadFootage: parsed.satelliteGingerbreadFootage ?? 0,
+    preferredSource: parsed.preferredSource ?? 'street',
     miniLightDetections: normalizeBoxArray(parsed.miniLightDetections),
     wreathDetections: normalizeBoxArray(parsed.wreathDetections),
     spritzerDetections: normalizeBoxArray(parsed.spritzerDetections),
