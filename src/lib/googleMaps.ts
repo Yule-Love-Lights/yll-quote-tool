@@ -41,12 +41,20 @@ export type FetchedImage = {
 
 // Street View Static API — front elevation of the house.
 // Uses lat/lng for precise positioning; the Street View camera will snap to the
-// closest available panorama. Heading is auto-selected (camera aimed at target).
-export async function fetchStreetView(lat: number, lng: number, opts?: { size?: string; fov?: number }): Promise<FetchedImage> {
+// closest available panorama. Heading defaults to auto (aimed at the target
+// location); pass an explicit value to rotate the camera when obstacles like
+// trees or parked cars block the default angle.
+export async function fetchStreetView(
+  lat: number,
+  lng: number,
+  opts?: { size?: string; fov?: number; heading?: number; pitch?: number },
+): Promise<FetchedImage> {
   const key = getKey();
   const size = opts?.size ?? '640x640';
   const fov = opts?.fov ?? 80;
-  const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}&location=${lat},${lng}&fov=${fov}&source=outdoor&key=${key}`;
+  const headingParam = opts?.heading != null ? `&heading=${opts.heading}` : '';
+  const pitchParam = opts?.pitch != null ? `&pitch=${opts.pitch}` : '';
+  const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}&location=${lat},${lng}&fov=${fov}${headingParam}${pitchParam}&source=outdoor&key=${key}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Street View fetch failed: ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());

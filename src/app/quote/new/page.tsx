@@ -117,6 +117,14 @@ export default function NewQuotePage() {
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
+  // Geocoded coords + current camera angle for Street View re-capture.
+  // Used when the default angle is blocked by trees, parked cars, etc.
+  const [geoLat, setGeoLat] = useState<number | null>(null);
+  const [geoLng, setGeoLng] = useState<number | null>(null);
+  const [svHeading, setSvHeading] = useState<number | null>(null);
+  const [svPitch, setSvPitch] = useState<number>(0);
+  const [svFov, setSvFov] = useState<number>(80);
+  const [recapturing, setRecapturing] = useState(false);
   // Satellite polylines (editable from top-down view — better for commercial
   // properties and complex rooflines where a street-view angle misses the back).
   const [satelliteSantasLines, setSatelliteSantasLines] = useState<LineSegment[]>([]);
@@ -428,6 +436,81 @@ export default function NewQuotePage() {
     setSantasLines([]);
     setGingerbreadLines([]);
     setMiniLightDetections([]);
+    // Manual upload has no Google coords — hide the rotation controls.
+    setGeoLat(null);
+    setGeoLng(null);
+  };
+
+  // Re-fetch Street View at a new heading/pitch/fov — lets the user rotate
+  // around obstacles (trees, parked cars, scaffolding) blocking the default
+  // angle. Does NOT re-run Claude; user can manually edit lines or click
+  // "Re-analyze" after to let Claude remeasure the new angle.
+  const recaptureStreetView = async (patch: { heading?: number | null; pitch?: number; fov?: number }) => {
+    if (geoLat == null || geoLng == null) return;
+    // null heading means "reset to Google's auto heading"; absent means "keep current".
+    const nextHeading = patch.heading === null ? null : (patch.heading ?? svHeading);
+    const nextPitch = patch.pitch ?? svPitch;
+    const nextFov = patch.fov ?? svFov;
+    setRecapturing(true);
+    setAnalysisError(null);
+    try {
+      const res = await fetch('/api/streetview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: geoLat, lng: geoLng,
+          heading: nextHeading ?? undefined,
+          pitch: nextPitch,
+          fov: nextFov,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Street View refetch failed');
+      setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      setPhotoBase64(data.photoBase64);
+      setPhotoMediaType(data.photoMediaType);
+      // Polylines + mini-light boxes were drawn in the old image's pixel space
+      // — wipe them so they don't sit on the wrong spots. Satellite untouched.
+      setSantasLines([]);
+      setGingerbreadLines([]);
+      setMiniLightDetections([]);
+      setFeetPerUnit(null);
+      setSvHeading(nextHeading);
+      setSvPitch(nextPitch);
+      setSvFov(nextFov);
+      // Force view to street so the new image is visible.
+      setViewMode('street');
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Street View refetch failed');
+    } finally {
+      setRecapturing(false);
+    }
+  };
+
+  // Re-run Claude analysis on the current street view image (after user rotated
+  // to a clearer angle). Uses the same base64 already loaded — no extra fetch.
+  const reanalyzeCurrent = async () => {
+    if (!photoBase64 || !photoMediaType) return;
+    setAnalyzing(true);
+    setAnalysisError(null);
+    setAnalysisNotes(null);
+    try {
+      // Reconstruct a File-like blob so the existing /api/analyze-photo flow works.
+      const byteString = atob(photoBase64);
+      const bytes = new Uint8Array(byteString.length);
+      for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+      const blob = new Blob([bytes], { type: photoMediaType });
+      const fd = new FormData();
+      fd.append('photo', blob, 'streetview.jpg');
+      const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
+      applyAnalysisResult(data);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   // Shared: apply analysis result to form + line/detection state.
@@ -455,6 +538,8 @@ export default function NewQuotePage() {
     satelliteMediaType?: string;
     satelliteFeetPerPixel?: number;
     formattedAddress?: string;
+    lat?: number;
+    lng?: number;
     fewShotCount?: number;
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
@@ -531,6 +616,13 @@ export default function NewQuotePage() {
       setPhotoFile(null);
       setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
       setGoogleAddress(data.formattedAddress ?? null);
+      if (typeof data.lat === 'number') setGeoLat(data.lat);
+      if (typeof data.lng === 'number') setGeoLng(data.lng);
+      // Reset camera to default on fresh lookup so the rotation controls start
+      // from Google's auto-chosen angle rather than a stale heading.
+      setSvHeading(null);
+      setSvPitch(0);
+      setSvFov(80);
       applyAnalysisResult(data);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
@@ -808,6 +900,80 @@ export default function NewQuotePage() {
                       <input type="radio" name="msrc" checked={measurementSource === 'satellite'} onChange={() => setMeasurementSource('satellite')} />
                       Satellite
                     </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Street View angle controls — rotate around obstacles (trees,
+                  parked cars). Only shown when we have Google coordinates. */}
+              {geoLat != null && geoLng != null && viewMode === 'street' && (
+                <div className="mb-3 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                      Move the Camera
+                    </span>
+                    <span className="text-[11px] text-gray-500">
+                      Tree or truck in the way? Rotate, tilt, or zoom — then re-analyze.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      ◀ Rotate −30°
+                    </button>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 10 })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      ◀ −10°
+                    </button>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 10 })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      +10° ▶
+                    </button>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 30 })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      Rotate +30° ▶
+                    </button>
+                    <span className="mx-1 text-gray-300">|</span>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ pitch: Math.min(90, svPitch + 10) })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      ▲ Tilt Up
+                    </button>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ pitch: Math.max(-90, svPitch - 10) })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      ▼ Tilt Down
+                    </button>
+                    <span className="mx-1 text-gray-300">|</span>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ fov: Math.min(120, svFov + 10) })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      − Zoom Out
+                    </button>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ fov: Math.max(30, svFov - 10) })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      + Zoom In
+                    </button>
+                    <span className="mx-1 text-gray-300">|</span>
+                    <button type="button" disabled={recapturing}
+                      onClick={() => recaptureStreetView({ heading: null, pitch: 0, fov: 80 })}
+                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                      Reset
+                    </button>
+                    <button type="button" disabled={analyzing || recapturing}
+                      onClick={reanalyzeCurrent}
+                      className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
+                      {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-gray-500 tabular-nums">
+                    heading {svHeading ?? 'auto'}° · pitch {svPitch}° · fov {svFov}°
+                    {recapturing && <span className="ml-2 text-blue-700 font-medium">Fetching new angle…</span>}
                   </div>
                 </div>
               )}
