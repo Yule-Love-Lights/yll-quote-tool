@@ -6,6 +6,14 @@ export type LineSegment = {
   label: string;               // e.g. "front gutter ~40ft"
 };
 
+export type MiniLightDetection = {
+  type: 'tree' | 'bush' | 'column';
+  wrapStyle: 'canopy' | 'trunk';
+  stringCount: number;
+  box: [number, number, number, number]; // [x, y, width, height] normalized 0-1
+  label: string; // e.g. "small bush — 2 strings"
+};
+
 export type PhotoAnalysisResult = {
   santasFootage: number;
   santasDifficulty: 'easy' | 'medium' | 'hard';
@@ -13,6 +21,7 @@ export type PhotoAnalysisResult = {
   gingerbreadFootage: number;
   gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
   gingerbreadLines: LineSegment[];
+  miniLightDetections: MiniLightDetection[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -22,6 +31,24 @@ const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights
 PACKAGES:
 - Santa's Roofline (gutterline): lights run along the front gutters/eaves — the bottom edge of the roof visible from the street. Measure the total linear footage.
 - Gingerbread Ridge (ridgeline): lights run along the peak/ridge of the roof. Measure the total linear footage across all visible ridge lines.
+
+MINI LIGHT DETECTION — in addition to roofline, identify every bush, tree, and column visible in the photo that could get mini lights.
+
+TYPES:
+- bush: low landscaping shrubs (hedges, foundation plantings, topiaries). Wrap style "canopy" — lights drape over the canopy.
+- tree: anything from 6ft sapling to 30ft mature tree. Small trees (<10ft) use "canopy" wrap. Larger trees wrap the trunk + major branches, use "trunk" wrap.
+- column: porch columns, lamp posts, entry columns. Wrap style "canopy" (spiral wrap).
+
+STRING COUNT guidelines (each string ≈ 25ft of lights):
+- Small bush (2-3ft wide): 1-2 strings, canopy
+- Medium bush (3-5ft): 2-3 strings, canopy
+- Large bush (5-8ft): 3-4 strings, canopy
+- Small tree (6-10ft): 2-4 strings, canopy
+- Medium tree (10-20ft): 4-6 strings, trunk
+- Large tree (20ft+): 6-10 strings, trunk
+- Column/lamp post: 2-3 strings, canopy
+
+For each detection, return a bounding box in normalized 0-1 coords: [x, y, width, height] where (x,y) is the top-left corner. Round string counts to whole numbers. Only include items clearly visible and suitable for lighting (skip distant background trees or items in neighbor's yard).
 
 DIFFICULTY TIERS (per package):
 - easy: single-story home, ground-accessible, simple straight runs, minimal obstacles (low shrubs, open front yard). Installer can work from a short ladder.
@@ -49,6 +76,9 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
   "gingerbreadDifficulty": "easy" | "medium" | "hard",
   "gingerbreadLines": [
     { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft" }
+  ],
+  "miniLightDetections": [
+    { "type": "bush" | "tree" | "column", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
   ],
   "notes": "1-2 sentences on what you saw and any caveats",
   "confidence": "low" | "medium" | "high"
@@ -160,9 +190,23 @@ export async function analyzePhoto(
     }));
   };
 
+  // Normalize bounding boxes the same way (handle 0-1000 scale if Claude used it)
+  const normalizeDetections = (dets: MiniLightDetection[] | undefined): MiniLightDetection[] => {
+    if (!Array.isArray(dets)) return [];
+    const allCoords = dets.flatMap(d => d.box ?? []);
+    if (allCoords.length === 0) return [];
+    const maxCoord = Math.max(...allCoords);
+    const scale = maxCoord > 1.5 ? 1 / 1000 : 1;
+    return dets.map(d => ({
+      ...d,
+      box: (d.box ?? [0, 0, 0, 0]).map(v => v * scale) as [number, number, number, number],
+    }));
+  };
+
   return {
     ...parsed,
     santasLines: normalizeLines(parsed.santasLines),
     gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
+    miniLightDetections: normalizeDetections(parsed.miniLightDetections),
   };
 }

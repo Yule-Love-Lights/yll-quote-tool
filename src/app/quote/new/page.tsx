@@ -88,6 +88,13 @@ export default function NewQuotePage() {
 
   // Photo analysis
   type LineSegment = { points: [number, number][]; label: string };
+  type MiniLightDetection = {
+    type: 'tree' | 'bush' | 'column';
+    wrapStyle: 'canopy' | 'trunk';
+    stringCount: number;
+    box: [number, number, number, number];
+    label: string;
+  };
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -95,6 +102,7 @@ export default function NewQuotePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
+  const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
   // Shared feet-per-normalized-unit scale — calibrated from the gutterline
   // (most reliable reference) and applied to both line types. This way edited
   // footage always reflects the drawn polylines, not Claude's separate text guess.
@@ -251,6 +259,7 @@ export default function NewQuotePage() {
     setAnalysisError(null);
     setSantasLines([]);
     setGingerbreadLines([]);
+    setMiniLightDetections([]);
   };
 
   const handleAnalyzePhoto = async () => {
@@ -276,8 +285,21 @@ export default function NewQuotePage() {
       }));
       const newSantasLines: LineSegment[] = r.santasLines ?? [];
       const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
+      const detections: MiniLightDetection[] = r.miniLightDetections ?? [];
       setSantasLines(newSantasLines);
       setGingerbreadLines(newGingerbreadLines);
+      setMiniLightDetections(detections);
+      // Auto-populate miniLightItems from detections
+      if (detections.length > 0) {
+        setForm(f => ({
+          ...f,
+          miniLightItems: detections.map(d => ({
+            type: d.type,
+            wrapStyle: d.wrapStyle,
+            stringCount: d.stringCount,
+          })),
+        }));
+      }
       // Calibrate scale from gutterline (most reliable reference). Fall back to
       // ridgeline if gutterline is absent. Scale then applies to BOTH line types.
       const santasLen = polylineLength(newSantasLines, imgAspect);
@@ -509,6 +531,20 @@ export default function NewQuotePage() {
                       vectorEffect="non-scaling-stroke"
                     />
                   ))}
+                  {miniLightDetections.map((d, i) => (
+                    <rect
+                      key={`det-${i}`}
+                      x={d.box[0]}
+                      y={d.box[1]}
+                      width={d.box[2]}
+                      height={d.box[3]}
+                      fill="rgba(245, 158, 11, 0.15)"
+                      stroke="#f59e0b"
+                      strokeWidth="3"
+                      strokeDasharray="4 3"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
                   {pendingPoints.length > 0 && (
                     <polyline
                       points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
@@ -520,6 +556,19 @@ export default function NewQuotePage() {
                     />
                   )}
                 </svg>
+                {/* Mini light labels */}
+                {miniLightDetections.map((d, i) => (
+                  <div
+                    key={`lbl-${i}`}
+                    className="absolute bg-amber-500 text-white text-[10px] font-medium px-1.5 py-0.5 rounded-sm pointer-events-none whitespace-nowrap"
+                    style={{
+                      left: `${d.box[0] * 100}%`,
+                      top: `calc(${d.box[1] * 100}% - 16px)`,
+                    }}
+                  >
+                    {d.type} · {d.stringCount}s
+                  </div>
+                ))}
                 {/* Draggable point handles (HTML elements, positioned absolute — easier than SVG hit-testing) */}
                 {!addMode && santasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                   <div
@@ -577,6 +626,26 @@ export default function NewQuotePage() {
                     className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
                     + Add Ridgeline
                   </button>
+                </div>
+              )}
+
+              {/* Mini light detections */}
+              {miniLightDetections.length > 0 && (
+                <div className="mt-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-4 h-2 border-2 border-amber-500 border-dashed rounded-sm"></span>
+                    <span className="text-sm font-semibold text-gray-800">Mini Lights — {miniLightDetections.length} item{miniLightDetections.length === 1 ? '' : 's'}</span>
+                    <span className="text-xs text-gray-400">(auto-filled into form below)</span>
+                  </div>
+                  <ul className="grid grid-cols-2 gap-1 ml-6">
+                    {miniLightDetections.map((d, i) => (
+                      <li key={`det-lbl-${i}`} className="text-xs text-gray-600 flex items-center gap-2">
+                        <span className="font-semibold capitalize">{d.type}</span>
+                        <span className="text-gray-400">· {d.wrapStyle} wrap · {d.stringCount} string{d.stringCount === 1 ? '' : 's'}</span>
+                        <span className="text-gray-500 truncate">{d.label}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
