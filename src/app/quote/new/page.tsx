@@ -86,6 +86,51 @@ export default function NewQuotePage() {
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
+  // Photo analysis
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
+    setAnalysisNotes(null);
+    setAnalysisError(null);
+  };
+
+  const handleAnalyzePhoto = async () => {
+    if (!photoFile) return;
+    setAnalyzing(true);
+    setAnalysisError(null);
+    setAnalysisNotes(null);
+
+    const fd = new FormData();
+    fd.append('photo', photoFile);
+
+    try {
+      const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
+      const r = data.result;
+      setForm(f => ({
+        ...f,
+        santasFootage: r.santasFootage,
+        santasDifficulty: r.santasDifficulty,
+        gingerbreadFootage: r.gingerbreadFootage,
+        gingerbreadDifficulty: r.gingerbreadDifficulty,
+      }));
+      setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const set = <K extends keyof FormData>(k: K, v: FormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
@@ -202,6 +247,44 @@ export default function NewQuotePage() {
                 <input className={inp} required placeholder="123 Main St, Smithtown, NY 11787"
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
+            </div>
+          </Section>
+
+          {/* ── Photo Analysis ── */}
+          <Section title="House Photo — Auto-Measure">
+            <p className="text-xs text-gray-400 mb-3">Upload a photo of the front of the house. Claude will estimate gutterline + ridgeline footage and difficulty.</p>
+            <div className="space-y-3">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handlePhotoSelect}
+                className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
+              />
+              {photoPreview && (
+                <div className="flex items-start gap-4">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photoPreview} alt="House preview" className="w-48 h-auto rounded-md border border-gray-200" />
+                  <button
+                    type="button"
+                    onClick={handleAnalyzePhoto}
+                    disabled={analyzing}
+                    className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
+                  >
+                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                  </button>
+                </div>
+              )}
+              {analysisNotes && (
+                <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
+                  <strong className="block mb-1">Analysis complete — form auto-filled below.</strong>
+                  {analysisNotes}
+                </div>
+              )}
+              {analysisError && (
+                <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">
+                  {analysisError}
+                </div>
+              )}
             </div>
           </Section>
 
