@@ -13,7 +13,7 @@
 //   8. on any failure → set status='failed' + error_message, re-throw
 
 import { buildComposite } from './compositor';
-import { renderWithGemini, isGeminiConfigured } from './gemini';
+import { renderWithGemini, isGeminiConfigured, resolveRenderModel } from './gemini';
 import {
   cacheKeyFor,
   createRenderRow,
@@ -39,10 +39,13 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
     throw new RenderError('GEMINI_API_KEY not configured — set it in .env.local', 'config');
   }
 
+  const model = resolveRenderModel(req.model);
   const sourceBuf = Buffer.from(req.photoBase64, 'base64');
   const photoHash = hashBuffer(sourceBuf);
   const visionHash = hashJson(req.vision);
-  const cacheKey = cacheKeyFor(photoHash, visionHash, req.style);
+  // Model is part of the cache key so a Flash render doesn't serve back
+  // when the caller asks for Pro (or vice-versa).
+  const cacheKey = cacheKeyFor(photoHash, visionHash, req.style, model);
 
   // Cache hit — return prior render for identical inputs.
   const cached = await findByCacheKey(cacheKey);
@@ -65,6 +68,7 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
   const row = await createRenderRow({
     quoteId: req.quoteId,
     style: req.style,
+    model,
     photoHash,
     visionHash,
     cacheKey,
@@ -99,6 +103,7 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
       composite: composite.composite,
       mask: composite.mask,
       style: req.style,
+      model,
     });
 
     const finalBuf = Buffer.from(gemini.imageBase64, 'base64');

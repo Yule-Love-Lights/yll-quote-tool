@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS renders (
   quote_id uuid,
   version int NOT NULL DEFAULT 1,
   style text NOT NULL DEFAULT 'warm-white',
+  model text NOT NULL DEFAULT 'pro',
   status text NOT NULL DEFAULT 'pending',
   photo_hash text NOT NULL,
   vision_hash text NOT NULL,
@@ -38,6 +39,11 @@ CREATE TABLE IF NOT EXISTS renders (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Existing deployments: add model column if missing; enforce allowed values.
+ALTER TABLE renders ADD COLUMN IF NOT EXISTS model text NOT NULL DEFAULT 'pro';
+ALTER TABLE renders DROP CONSTRAINT IF EXISTS renders_model_check;
+ALTER TABLE renders ADD CONSTRAINT renders_model_check CHECK (model IN ('pro', 'flash2', 'flash'));
 
 CREATE INDEX IF NOT EXISTS renders_quote_id_idx ON renders(quote_id);
 CREATE INDEX IF NOT EXISTS renders_status_idx ON renders(status);

@@ -11,6 +11,7 @@ import { createHash } from 'crypto';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import type {
   RenderListItem,
+  RenderModel,
   RenderStatus,
   RenderStyle,
   StoredRender,
@@ -32,8 +33,8 @@ export function hashJson(obj: unknown): string {
   return createHash('sha256').update(JSON.stringify(obj)).digest('hex');
 }
 
-export function cacheKeyFor(photoHash: string, visionHash: string, style: RenderStyle): string {
-  return createHash('sha256').update(`${photoHash}::${visionHash}::${style}`).digest('hex');
+export function cacheKeyFor(photoHash: string, visionHash: string, style: RenderStyle, model: RenderModel): string {
+  return createHash('sha256').update(`${photoHash}::${visionHash}::${style}::${model}`).digest('hex');
 }
 
 // Look up a prior render for the same inputs. If one exists and is
@@ -59,6 +60,7 @@ export async function findByCacheKey(cacheKey: string): Promise<StoredRender | n
 export async function createRenderRow(row: {
   quoteId?: string;
   style: RenderStyle;
+  model: RenderModel;
   photoHash: string;
   visionHash: string;
   cacheKey: string;
@@ -72,6 +74,7 @@ export async function createRenderRow(row: {
       quote_id: row.quoteId ?? null,
       version: 1,
       style: row.style,
+      model: row.model,
       status: 'pending' as RenderStatus,
       photo_hash: row.photoHash,
       vision_hash: row.visionHash,
@@ -158,7 +161,7 @@ export async function listRenders(limit = 100): Promise<RenderListItem[]> {
   if (!sb) return [];
   const { data, error } = await sb
     .from('renders')
-    .select('id, quote_id, version, style, status, ssim_score, gemini_cost_usd, notes, created_at, updated_at, approved_at')
+    .select('id, quote_id, version, style, model, status, ssim_score, gemini_cost_usd, notes, created_at, updated_at, approved_at')
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw new Error(`listRenders: ${error.message}`);

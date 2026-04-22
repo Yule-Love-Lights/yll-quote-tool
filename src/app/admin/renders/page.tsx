@@ -201,6 +201,7 @@ export default function RendersAdminPage() {
                       <StatusPill status={r.status} />
                       <span className="text-gray-400">v{r.version}</span>
                       <span className="text-gray-400">· {r.style}</span>
+                      <span className="text-gray-400">· {r.model ?? 'pro'}</span>
                     </div>
                     <div className="text-sm text-gray-700 mt-0.5 truncate">
                       {r.quote_id ? `Quote ${r.quote_id.slice(0, 8)}…` : 'No linked quote'}

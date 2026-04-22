@@ -4,12 +4,13 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import { runRender, RenderError } from '@/lib/rendering/orchestrator';
 import { listRenders } from '@/lib/rendering/storage';
 import { coerceVision } from '@/lib/rendering/adapter';
-import type { RenderRequest, RenderStyle } from '@/lib/rendering/types';
+import type { RenderModel, RenderRequest, RenderStyle } from '@/lib/rendering/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120; // Gemini image generation can take 30-60s
 
 const VALID_STYLES: RenderStyle[] = ['warm-white', 'multi', 'red-green'];
+const VALID_MODELS: RenderModel[] = ['pro', 'flash2', 'flash'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Cap the POST body. A daytime JPEG from a phone runs ~2–5MB; base64 inflates
@@ -70,6 +71,11 @@ export async function POST(req: NextRequest) {
   if (!VALID_STYLES.includes(style)) {
     return NextResponse.json({ error: `style must be one of ${VALID_STYLES.join(', ')}` }, { status: 400 });
   }
+  // model is optional — orchestrator falls back to RENDER_MODEL env var, then 'pro'.
+  const model = body.model as RenderModel | undefined;
+  if (model !== undefined && !VALID_MODELS.includes(model)) {
+    return NextResponse.json({ error: `model must be one of ${VALID_MODELS.join(', ')}` }, { status: 400 });
+  }
 
   try {
     const render = await runRender({
@@ -78,6 +84,7 @@ export async function POST(req: NextRequest) {
       photoMediaType: body.photoMediaType,
       vision: coerceVision(body.vision),
       style,
+      model,
       notes: body.notes,
     });
     return NextResponse.json({ render });

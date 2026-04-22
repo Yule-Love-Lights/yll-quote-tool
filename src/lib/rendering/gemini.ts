@@ -10,14 +10,29 @@
 // Keep a cost estimate on each call so we can monitor against the monthly
 // budget ceiling.
 
-import type { RenderStyle } from './types';
+import type { RenderModel, RenderStyle } from './types';
 
-const MODEL = 'gemini-3-pro-image-preview';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// Rough cost estimate per image generation (USD). Used only for tracking
-// against RENDER_BUDGET_MONTHLY_USD — Google's invoice is authoritative.
-const ESTIMATED_COST_USD_PER_CALL = 0.2;
+// Model IDs + cost estimates (USD per image). Flash is ~5× cheaper and has
+// a free daily tier at lower visual fidelity; Pro is photoreal. Actual
+// Google invoice is authoritative — these are only used to track against
+// RENDER_BUDGET_MONTHLY_USD.
+const MODELS: Record<RenderModel, { id: string; costUsd: number; label: string }> = {
+  pro:    { id: 'gemini-3-pro-image-preview',     costUsd: 0.134, label: 'Gemini 3 Pro Image (Nano Banana Pro)' },
+  flash2: { id: 'gemini-3.1-flash-image-preview', costUsd: 0.067, label: 'Gemini 3.1 Flash Image (Nano Banana 2)' },
+  flash:  { id: 'gemini-2.5-flash-image',         costUsd: 0.04,  label: 'Gemini 2.5 Flash Image (Nano Banana)' },
+};
+
+export function resolveRenderModel(requested?: RenderModel): RenderModel {
+  if (requested === 'flash' || requested === 'flash2' || requested === 'pro') return requested;
+  const envDefault = (process.env.RENDER_MODEL ?? '').toLowerCase();
+  if (envDefault === 'flash' || envDefault === 'flash2' || envDefault === 'pro') return envDefault;
+  return 'pro';
+}
+
+export function modelIdFor(model: RenderModel): string { return MODELS[model].id; }
+export function modelCostFor(model: RenderModel): number { return MODELS[model].costUsd; }
 
 export type GeminiRenderArgs = {
   sourcePhoto: Buffer;        // daytime source
@@ -25,6 +40,7 @@ export type GeminiRenderArgs = {
   composite: Buffer;          // sharp composite (bulbs placed, dusk-toned)
   mask: Buffer;               // white-on-black mask
   style: RenderStyle;
+  model: RenderModel;
   customPromptSuffix?: string;
 };
 
@@ -50,31 +66,35 @@ export async function renderWithGemini(args: GeminiRenderArgs): Promise<GeminiRe
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new GeminiError('GEMINI_API_KEY not configured');
 
-  const prompt = buildPrompt(args.style, args.customPromptSuffix);
+  // 2.5 Flash is weaker at following multi-image instructions — it needs a
+  // short keyword-front-loaded prompt and fewer references (source + mask
+  // only; the composite biases it toward daytime-tone passthrough).
+  // 3.1 Flash (flash2) and 3 Pro both handle the full 3-reference prompt.
+  const isLegacyFlash = args.model === 'flash';
+  const prompt = isLegacyFlash
+    ? buildFlashPrompt(args.style, args.customPromptSuffix)
+    : buildProPrompt(args.style, args.customPromptSuffix);
 
-  // Three inline image parts + one text part. Order matters — the prompt
-  // references them as "first image" (source), "second image" (composite
-  // preview), "third image" (mask).
+  const requestParts: Array<Record<string, unknown>> = [
+    { text: prompt },
+    { inline_data: { mime_type: args.sourceMediaType, data: args.sourcePhoto.toString('base64') } },
+  ];
+  if (!isLegacyFlash) {
+    requestParts.push({ inline_data: { mime_type: 'image/png', data: args.composite.toString('base64') } });
+  }
+  requestParts.push({ inline_data: { mime_type: 'image/png', data: args.mask.toString('base64') } });
+
   const body = {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: prompt },
-          { inline_data: { mime_type: args.sourceMediaType, data: args.sourcePhoto.toString('base64') } },
-          { inline_data: { mime_type: 'image/png', data: args.composite.toString('base64') } },
-          { inline_data: { mime_type: 'image/png', data: args.mask.toString('base64') } },
-        ],
-      },
-    ],
+    contents: [{ role: 'user', parts: requestParts }],
     generationConfig: {
       responseModalities: ['IMAGE'],
       temperature: 0.2,  // low — we want faithful refinement, not creative drift
     },
   };
 
+  const modelId = MODELS[args.model].id;
   const t0 = Date.now();
-  const res = await fetch(`${API_BASE}/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
+  const res = await fetch(`${API_BASE}/models/${modelId}:generateContent?key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -91,10 +111,10 @@ export async function renderWithGemini(args: GeminiRenderArgs): Promise<GeminiRe
   }
 
   const json = await res.json() as GeminiResponse;
-  const parts = json.candidates?.[0]?.content?.parts ?? [];
+  const responseParts = json.candidates?.[0]?.content?.parts ?? [];
   // Google's REST API returns camelCase in responses but accepts snake_case in
   // requests. Accept either shape defensively so future API changes don't break us.
-  const imgPart = parts.find(p => (p.inlineData?.data ?? p.inline_data?.data));
+  const imgPart = responseParts.find(p => (p.inlineData?.data ?? p.inline_data?.data));
   const inline = imgPart?.inlineData ?? imgPart?.inline_data;
   if (!inline?.data) {
     throw new GeminiError(
@@ -106,7 +126,7 @@ export async function renderWithGemini(args: GeminiRenderArgs): Promise<GeminiRe
     imageBase64: inline.data,
     mediaType: inline.mimeType ?? inline.mime_type ?? 'image/png',
     latencyMs,
-    estimatedCostUsd: ESTIMATED_COST_USD_PER_CALL,
+    estimatedCostUsd: MODELS[args.model].costUsd,
   };
 }
 
@@ -119,7 +139,7 @@ export async function renderWithGemini(args: GeminiRenderArgs): Promise<GeminiRe
 // warm-white C9 everywhere, red bow on wreaths, dense bush/tree wraps,
 // preserved interior window glow, dark-but-not-black sky with subtle gradient.
 
-function buildPrompt(style: RenderStyle, suffix?: string): string {
+function buildProPrompt(style: RenderStyle, suffix?: string): string {
   const palette = paletteDescription(style);
   return [
     `You are a professional architectural photography retoucher producing a photoreal nighttime holiday-lighting visualization for Yule Love Lights, a Long Island luxury Christmas lighting company.`,
@@ -157,6 +177,29 @@ function buildPrompt(style: RenderStyle, suffix?: string): string {
     `OUTPUT`,
     `  - Return a single photoreal image. No captions, no overlays, no borders, no watermarks.`,
     suffix ? `\nADDITIONAL CONSTRAINTS:\n${suffix}` : '',
+  ].join('\n');
+}
+
+// Flash prompt: short, imperative, keyword-heavy. Flash tends to passthrough
+// the daytime source when given a nuanced prompt, so we front-load the
+// transformation keywords ("NIGHTTIME", "DARK SKY") and keep only two
+// references (source + mask). No composite — it biases Flash toward the
+// daytime tone.
+function buildFlashPrompt(style: RenderStyle, suffix?: string): string {
+  const palette = paletteDescription(style);
+  return [
+    `TRANSFORM this daytime house photo into a PHOTOREAL NIGHTTIME photograph with Christmas lights installed.`,
+    ``,
+    `NIGHTTIME. DARK SKY. BLUE HOUR. Interior windows GLOW warm yellow.`,
+    ``,
+    `LIGHTS: ${palette.label}. ${palette.description}`,
+    ``,
+    `Image 1 = the house (keep architecture, roofline, windows, landscaping, cars IDENTICAL).`,
+    `Image 2 = placement mask. Place glowing C9 bulbs ONLY where the mask is WHITE. No lights where mask is black.`,
+    ``,
+    `Bulbs look like real incandescent C9 — round, warm, soft bloom, casting glow on adjacent surfaces.`,
+    `Same camera angle as source. No text, no captions, no borders.`,
+    suffix ? `\n${suffix}` : '',
   ].join('\n');
 }
 

@@ -12,7 +12,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { PhotoAnalysisResult } from '@/lib/photoAnalysis';
-import type { RenderStyle } from '@/lib/rendering/types';
+import type { RenderModel, RenderStyle } from '@/lib/rendering/types';
 import { toRenderVisionInput } from '@/lib/rendering/adapter';
 
 type Stage = 'idle' | 'analyzing' | 'rendering' | 'done' | 'error';
@@ -22,6 +22,7 @@ export default function NewRenderPage() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [style, setStyle] = useState<RenderStyle>('warm-white');
+  const [model, setModel] = useState<RenderModel>('flash2');
   const [notes, setNotes] = useState('');
   const [stage, setStage] = useState<Stage>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +73,7 @@ export default function NewRenderPage() {
           photoBase64,
           photoMediaType,
           style,
+          model,
           notes: notes.trim() || undefined,
           // Adapter handles coord sanitization + c9Lines plumbing. Pass c9Lines
           // through `extra` once the quote page maintains a separate state.
@@ -148,6 +150,32 @@ export default function NewRenderPage() {
                   }`}
                 >
                   {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">Model</label>
+            <div className="flex gap-2">
+              {([
+                { id: 'flash' as const,  label: 'Flash 2.5', cost: '~$0.04',  hint: 'cheapest, often passthrough' },
+                { id: 'flash2' as const, label: 'Flash 3.1', cost: '~$0.067', hint: 'middle tier, Nano Banana 2' },
+                { id: 'pro' as const,    label: 'Pro 3',     cost: '~$0.134', hint: 'photoreal, customer-ready' },
+              ]).map(m => (
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setModel(m.id)}
+                  className={`flex-1 text-sm px-3 py-2 rounded-md border text-left ${
+                    model === m.id
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="font-semibold">{m.label} <span className="text-xs opacity-80">{m.cost}</span></div>
+                  <div className="text-xs opacity-80">{m.hint}</div>
                 </button>
               ))}
             </div>

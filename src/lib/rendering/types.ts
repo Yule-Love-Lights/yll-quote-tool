@@ -13,6 +13,12 @@ import type {
 
 export type RenderStyle = 'warm-white' | 'multi' | 'red-green';
 
+// 'pro'    → gemini-3-pro-image-preview        (photoreal, ~$0.13/call, customer-ready)
+// 'flash2' → gemini-3.1-flash-image-preview    (Nano Banana 2, ~$0.067/call, middle tier)
+// 'flash'  → gemini-2.5-flash-image            (lower fidelity, ~$0.04/call, free daily quota)
+// Iterate cheap on flash, dial up to flash2 for previews, ship finals on pro.
+export type RenderModel = 'pro' | 'flash2' | 'flash';
+
 export type RenderStatus =
   | 'pending'       // row created, work not yet started
   | 'rendering'     // compositor + Gemini call in flight
@@ -40,6 +46,7 @@ export type RenderRequest = {
   photoMediaType: string;           // image/jpeg or image/png
   vision: RenderVisionInput;
   style: RenderStyle;
+  model?: RenderModel;              // defaults to RENDER_MODEL env var, then 'pro'
   notes?: string;
 };
 
@@ -49,6 +56,7 @@ export type StoredRender = {
   quote_id: string | null;
   version: number;
   style: RenderStyle;
+  model: RenderModel;
   status: RenderStatus;
   photo_hash: string;
   vision_hash: string;
@@ -77,6 +85,7 @@ export type RenderListItem = {
   quote_id: string | null;
   version: number;
   style: RenderStyle;
+  model: RenderModel;
   status: RenderStatus;
   ssim_score: number | null;
   gemini_cost_usd: number | null;
