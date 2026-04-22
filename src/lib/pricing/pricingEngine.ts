@@ -18,13 +18,6 @@ export const BUSINESS_RULES = {
     hard: 12,
   },
 
-  // Model 2: multiply the per-foot rate by this factor per package
-  packageMultipliers: {
-    santas: 1.0,
-    gingerbread: 1.4,
-    winterWonderland: 1.8,
-  },
-
   miniLightRates: {
     canopy: 35,   // circles around plant — bushes, small trees, columns
     trunk: 45,    // up trunks and branches — larger trees
@@ -57,7 +50,6 @@ export const BUSINESS_RULES = {
 // ─────────────────────────────────────────────────────────
 
 export type RooflineDifficulty = 'easy' | 'medium' | 'hard';
-export type RooflinePackage = 'santas' | 'gingerbread' | 'winterWonderland';
 
 export type MiniLightItem = {
   type: 'tree' | 'bush' | 'column';
@@ -104,9 +96,12 @@ export type Discount = {
 };
 
 export interface QuoteInputs {
-  rooflineFootage: number;
-  rooflineDifficulty: RooflineDifficulty;
-  rooflinePackage: RooflinePackage;
+  santasFootage: number;
+  santasDifficulty: RooflineDifficulty;
+  gingerbreadFootage: number;
+  gingerbreadDifficulty: RooflineDifficulty;
+  winterWonderlandFootage: number;
+  winterWonderlandDifficulty: RooflineDifficulty;
 
   miniLightItems: MiniLightItem[];
   spritzers: Spritzer[];
@@ -143,24 +138,37 @@ export interface QuoteResult {
 }
 
 // ─────────────────────────────────────────────────────────
-// Roofline calculation
+// Roofline calculation — three independent line items
 // ─────────────────────────────────────────────────────────
 
-const PACKAGE_LABELS: Record<RooflinePackage, string> = {
-  santas: "Santa's",
-  gingerbread: 'Gingerbread',
-  winterWonderland: 'Winter Wonderland',
-};
+function calculateRooflineItems(inputs: QuoteInputs): LineItem[] {
+  const items: LineItem[] = [];
 
-function calculateRoofline(inputs: QuoteInputs): LineItem | null {
-  if (inputs.rooflineFootage === 0) return null;
+  if (inputs.santasFootage > 0) {
+    const rate = BUSINESS_RULES.rooflineRates[inputs.santasDifficulty];
+    items.push({
+      label: `Santa's Roofline – ${inputs.santasFootage}ft (${inputs.santasDifficulty})`,
+      amount: Math.round(inputs.santasFootage * rate),
+    });
+  }
 
-  const rate = BUSINESS_RULES.rooflineRates[inputs.rooflineDifficulty];
-  const multiplier = BUSINESS_RULES.packageMultipliers[inputs.rooflinePackage];
-  const amount = Math.round(inputs.rooflineFootage * rate * multiplier);
+  if (inputs.gingerbreadFootage > 0) {
+    const rate = BUSINESS_RULES.rooflineRates[inputs.gingerbreadDifficulty];
+    items.push({
+      label: `Gingerbread Ridge – ${inputs.gingerbreadFootage}ft (${inputs.gingerbreadDifficulty})`,
+      amount: Math.round(inputs.gingerbreadFootage * rate),
+    });
+  }
 
-  const label = `${PACKAGE_LABELS[inputs.rooflinePackage]} Roofline – ${inputs.rooflineFootage}ft (${inputs.rooflineDifficulty})`;
-  return { label, amount };
+  if (inputs.winterWonderlandFootage > 0) {
+    const rate = BUSINESS_RULES.rooflineRates[inputs.winterWonderlandDifficulty];
+    items.push({
+      label: `Winter Wonderland – ${inputs.winterWonderlandFootage}ft (${inputs.winterWonderlandDifficulty})`,
+      amount: Math.round(inputs.winterWonderlandFootage * rate),
+    });
+  }
+
+  return items;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -251,8 +259,7 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const lineItems: LineItem[] = [];
 
-  const roofline = calculateRoofline(inputs);
-  if (roofline) lineItems.push(roofline);
+  lineItems.push(...calculateRooflineItems(inputs));
 
   lineItems.push(...calculateMiniLights(inputs));
 

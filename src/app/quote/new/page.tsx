@@ -37,11 +37,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 type Customer = { name: string; address: string; phone: string; email: string };
 
+type RooflineDifficulty = 'easy' | 'medium' | 'hard';
+
 type FormData = {
   customer: Customer;
-  rooflineFootage: number;
-  rooflineDifficulty: 'easy' | 'medium' | 'hard';
-  rooflinePackage: 'santas' | 'gingerbread' | 'winterWonderland';
+  santasFootage: number;
+  santasDifficulty: RooflineDifficulty;
+  gingerbreadFootage: number;
+  gingerbreadDifficulty: RooflineDifficulty;
+  winterWonderlandFootage: number;
+  winterWonderlandDifficulty: RooflineDifficulty;
   miniLightItems: MiniLightItem[];
   spritzers: Spritzer[];
   wreaths: Wreath[];
@@ -55,9 +60,12 @@ type FormData = {
 
 const initial: FormData = {
   customer: { name: '', address: '', phone: '', email: '' },
-  rooflineFootage: 0,
-  rooflineDifficulty: 'medium',
-  rooflinePackage: 'santas',
+  santasFootage: 0,
+  santasDifficulty: 'medium',
+  gingerbreadFootage: 0,
+  gingerbreadDifficulty: 'medium',
+  winterWonderlandFootage: 0,
+  winterWonderlandDifficulty: 'medium',
   miniLightItems: [],
   spritzers: [],
   wreaths: [],
@@ -123,9 +131,12 @@ export default function NewQuotePage() {
     setResult(null);
 
     const inputs = {
-      rooflineFootage: form.rooflineFootage,
-      rooflineDifficulty: form.rooflineDifficulty,
-      rooflinePackage: form.rooflinePackage,
+      santasFootage: form.santasFootage,
+      santasDifficulty: form.santasDifficulty,
+      gingerbreadFootage: form.gingerbreadFootage,
+      gingerbreadDifficulty: form.gingerbreadDifficulty,
+      winterWonderlandFootage: form.winterWonderlandFootage,
+      winterWonderlandDifficulty: form.winterWonderlandDifficulty,
       miniLightItems: form.miniLightItems,
       spritzers: form.spritzers,
       wreaths: form.wreaths,
@@ -194,36 +205,86 @@ export default function NewQuotePage() {
             </div>
           </Section>
 
-          {/* ── Roofline ── */}
-          <Section title="Roofline — C9 Bulbs, 12&quot; Spacing">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className={lbl}>Linear Footage</label>
-                <input className={inp} type="number" min="0" placeholder="0"
-                  value={form.rooflineFootage || ''}
-                  onChange={e => set('rooflineFootage', Number(e.target.value))} />
+          {/* ── Santa's — Gutterline ── */}
+          <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
+            <Section title="Santa's — Gutterline (C9 Bulbs)">
+              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={lbl}>Linear Footage</label>
+                  <input className={inp} type="number" min="0" placeholder="0"
+                    value={form.santasFootage || ''}
+                    onChange={e => set('santasFootage', Number(e.target.value))} />
+                </div>
+                <div>
+                  <label className={lbl}>Difficulty</label>
+                  <select className={sel} value={form.santasDifficulty}
+                    onChange={e => set('santasDifficulty', e.target.value as RooflineDifficulty)}>
+                    <option value="easy">Easy — $8/ft</option>
+                    <option value="medium">Medium — $10/ft</option>
+                    <option value="hard">Hard — $12/ft</option>
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className={lbl}>Difficulty</label>
-                <select className={sel} value={form.rooflineDifficulty}
-                  onChange={e => set('rooflineDifficulty', e.target.value as FormData['rooflineDifficulty'])}>
-                  <option value="easy">Easy — $8/ft</option>
-                  <option value="medium">Medium — $10/ft</option>
-                  <option value="hard">Hard — $12/ft</option>
-                </select>
+              {form.santasFootage === 0 && (
+                <p className="mt-2 text-xs text-amber-500">Footage is 0 — not included in quote</p>
+              )}
+            </Section>
+          </div>
+
+          {/* ── Gingerbread — Ridgeline ── */}
+          <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
+            <Section title="Gingerbread — Ridgeline (C9 Bulbs)">
+              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={lbl}>Linear Footage</label>
+                  <input className={inp} type="number" min="0" placeholder="0"
+                    value={form.gingerbreadFootage || ''}
+                    onChange={e => set('gingerbreadFootage', Number(e.target.value))} />
+                </div>
+                <div>
+                  <label className={lbl}>Difficulty</label>
+                  <select className={sel} value={form.gingerbreadDifficulty}
+                    onChange={e => set('gingerbreadDifficulty', e.target.value as RooflineDifficulty)}>
+                    <option value="easy">Easy — $8/ft</option>
+                    <option value="medium">Medium — $10/ft</option>
+                    <option value="hard">Hard — $12/ft</option>
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className={lbl}>Package</label>
-                <select className={sel} value={form.rooflinePackage}
-                  onChange={e => set('rooflinePackage', e.target.value as FormData['rooflinePackage'])}>
-                  <option value="santas">Santa&apos;s — gutterline</option>
-                  <option value="gingerbread">Gingerbread — + ridgeline</option>
-                  <option value="winterWonderland">Winter Wonderland — full</option>
-                </select>
+              {form.gingerbreadFootage === 0 && (
+                <p className="mt-2 text-xs text-amber-500">Footage is 0 — not included in quote</p>
+              )}
+            </Section>
+          </div>
+
+          {/* ── Winter Wonderland — Non-Standard Features ── */}
+          <div className={`transition-opacity ${form.winterWonderlandFootage === 0 ? 'opacity-50' : ''}`}>
+            <Section title="Winter Wonderland — Non-Standard Features (C9 Bulbs)">
+              <p className="text-xs text-gray-400 mb-3">Enter manually — non-standard features only.</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={lbl}>Linear Footage</label>
+                  <input className={inp} type="number" min="0" placeholder="0"
+                    value={form.winterWonderlandFootage || ''}
+                    onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
+                </div>
+                <div>
+                  <label className={lbl}>Difficulty</label>
+                  <select className={sel} value={form.winterWonderlandDifficulty}
+                    onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                    <option value="easy">Easy — $8/ft</option>
+                    <option value="medium">Medium — $10/ft</option>
+                    <option value="hard">Hard — $12/ft</option>
+                  </select>
+                </div>
               </div>
-            </div>
-            <p className="mt-2 text-xs text-gray-400">Leave footage at 0 if no roofline lighting on this job.</p>
-          </Section>
+              {form.winterWonderlandFootage === 0 && (
+                <p className="mt-2 text-xs text-amber-500">Footage is 0 — not included in quote</p>
+              )}
+            </Section>
+          </div>
 
           {/* ── Trees / Bushes / Columns ── */}
           <Section title="Trees / Bushes / Columns — Mini Lights">
