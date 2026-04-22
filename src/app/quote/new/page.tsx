@@ -95,6 +95,12 @@ export default function NewQuotePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
   const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
+  // Feet-per-normalized-unit scale factors — set from Claude's output, used to
+  // recompute footage as the user drags points. Image aspect ratio baked in so
+  // horizontal and vertical movements translate correctly.
+  const [santasFeetPerUnit, setSantasFeetPerUnit] = useState<number | null>(null);
+  const [gingerbreadFeetPerUnit, setGingerbreadFeetPerUnit] = useState<number | null>(null);
+  const [imgAspect, setImgAspect] = useState<number>(1); // width/height
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
   const [originalAnalysis, setOriginalAnalysis] = useState<unknown>(null);
@@ -108,6 +114,41 @@ export default function NewQuotePage() {
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
+
+  // Compute polyline length in "aspect-corrected" normalized units.
+  // dx stays as-is (image width = 1), dy is scaled by (height/width) so
+  // diagonal distances reflect real pixel distances on the image.
+  const polylineLength = (lines: LineSegment[], aspect: number): number => {
+    const yScale = 1 / aspect; // height in width-units
+    let total = 0;
+    for (const line of lines) {
+      for (let i = 1; i < line.points.length; i++) {
+        const [x1, y1] = line.points[i - 1];
+        const [x2, y2] = line.points[i];
+        const dx = x2 - x1;
+        const dy = (y2 - y1) * yScale;
+        total += Math.sqrt(dx * dx + dy * dy);
+      }
+    }
+    return total;
+  };
+
+  // Recompute footage whenever lines change, if we have a calibration.
+  useEffect(() => {
+    if (santasFeetPerUnit != null) {
+      const len = polylineLength(santasLines, imgAspect);
+      const ft = Math.round(len * santasFeetPerUnit / 5) * 5;
+      setForm(f => f.santasFootage === ft ? f : { ...f, santasFootage: ft });
+    }
+  }, [santasLines, santasFeetPerUnit, imgAspect]);
+
+  useEffect(() => {
+    if (gingerbreadFeetPerUnit != null) {
+      const len = polylineLength(gingerbreadLines, imgAspect);
+      const ft = Math.round(len * gingerbreadFeetPerUnit / 5) * 5;
+      setForm(f => f.gingerbreadFootage === ft ? f : { ...f, gingerbreadFootage: ft });
+    }
+  }, [gingerbreadLines, gingerbreadFeetPerUnit, imgAspect]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -241,8 +282,15 @@ export default function NewQuotePage() {
         gingerbreadFootage: r.gingerbreadFootage,
         gingerbreadDifficulty: r.gingerbreadDifficulty,
       }));
-      setSantasLines(r.santasLines ?? []);
-      setGingerbreadLines(r.gingerbreadLines ?? []);
+      const newSantasLines: LineSegment[] = r.santasLines ?? [];
+      const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
+      setSantasLines(newSantasLines);
+      setGingerbreadLines(newGingerbreadLines);
+      // Calibrate: divide footage by polyline length to get feet-per-normalized-unit
+      const santasLen = polylineLength(newSantasLines, imgAspect);
+      const gingerbreadLen = polylineLength(newGingerbreadLines, imgAspect);
+      setSantasFeetPerUnit(santasLen > 0 ? r.santasFootage / santasLen : null);
+      setGingerbreadFeetPerUnit(gingerbreadLen > 0 ? r.gingerbreadFootage / gingerbreadLen : null);
       setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
       setPhotoBase64(data.photoBase64 ?? null);
       setPhotoMediaType(data.photoMediaType ?? null);
@@ -417,7 +465,7 @@ export default function NewQuotePage() {
           {photoPreview && photoBase64 && (
             <Section title="Analysis Results — Correct The Measurement">
               <p className="text-xs text-gray-500 mb-4">
-                Drag the dots to reshape lines. Click a dot to remove it. Use the buttons below to add a new line, then click on the photo to place points.
+                Drag dots to reshape lines. Double-click a dot to remove it. Footage updates automatically as you edit.
                 {fewShotCount > 0 && <span className="ml-2 text-green-700 font-medium">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>}
               </p>
               <div
@@ -426,7 +474,16 @@ export default function NewQuotePage() {
                 className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={photoPreview} alt="Analyzed house" className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none" draggable={false} />
+                <img
+                  src={photoPreview}
+                  alt="Analyzed house"
+                  className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none"
+                  draggable={false}
+                  onLoad={e => {
+                    const img = e.currentTarget;
+                    if (img.naturalHeight > 0) setImgAspect(img.naturalWidth / img.naturalHeight);
+                  }}
+                />
                 <svg
                   viewBox="0 0 1 1"
                   preserveAspectRatio="none"
