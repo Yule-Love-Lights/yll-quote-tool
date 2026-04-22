@@ -114,10 +114,19 @@ export default function NewQuotePage() {
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [correctionSaved, setCorrectionSaved] = useState(false);
   const [fewShotCount, setFewShotCount] = useState(0);
+  const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
+  const [googleAddress, setGoogleAddress] = useState<string | null>(null);
+  const [lookingUp, setLookingUp] = useState(false);
+
+  // Mini light rates (mirror of BUSINESS_RULES.miniLightRates)
+  const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
 
   // Drag state for editing polyline points
   type LineType = 'santas' | 'gingerbread';
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
+  // Drag state for mini light boxes
+  type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
+  const [boxDrag, setBoxDrag] = useState<{ idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
@@ -149,6 +158,119 @@ export default function NewQuotePage() {
       ? f
       : { ...f, santasFootage: santasFt, gingerbreadFootage: gingerFt });
   }, [santasLines, gingerbreadLines, feetPerUnit, imgAspect]);
+
+  // Perspective correction: foreground plants are closer to the camera than the
+  // roofline (typically ~half the distance), so the same pixel width represents
+  // a smaller real-world object. Without this, bushes get sized 2-3x too large
+  // and strand counts cube. 0.4 is an empirical factor for typical street-view
+  // photos of LI houses (camera 20-40ft from curb, bushes at foundation).
+  const PLANT_PERSPECTIVE_FACTOR = 0.4;
+
+  // 5MM Round Bush/Tree Canopy Wrap formula (matches spreadsheet):
+  // wraps = height_in / 6  (spacing always 6")
+  // footage_ft = wraps × circumference_in / 12
+  // strands = footage_ft / 25  (each strand = 50ct 5MM at 6" spacing = 25ft)
+  // circumference = π × diameter, diameter = box width in real feet
+  //
+  // All roofline math is in FEET (pixel units × feetPerUnit).
+  // Plant math converts to INCHES (ft × 12) for the wrap formula.
+  // Perspective factor shrinks box→real conversion for foreground plants.
+  const calcStringsFromBox = (box: [number, number, number, number]): number => {
+    if (!feetPerUnit) return 1;
+    const widthFt = box[2] * feetPerUnit * PLANT_PERSPECTIVE_FACTOR;
+    const heightFt = (box[3] / imgAspect) * feetPerUnit * PLANT_PERSPECTIVE_FACTOR;
+    const heightIn = heightFt * 12;
+    const circumIn = Math.PI * widthFt * 12;
+    const wraps = heightIn / 6;
+    const footageFt = (wraps * circumIn) / 12;
+    const strands = footageFt / 25;
+    return Math.max(1, Math.round(strands));
+  };
+
+  // Drag handler for mini light boxes
+  useEffect(() => {
+    if (!boxDrag) return;
+    const handleMove = (e: PointerEvent) => {
+      const rect = imgContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const curX = (e.clientX - rect.left) / rect.width;
+      const curY = (e.clientY - rect.top) / rect.height;
+      const dx = curX - boxDrag.startX;
+      const dy = curY - boxDrag.startY;
+      const [sx, sy, sw, sh] = boxDrag.startBox;
+      let [x, y, w, h] = [sx, sy, sw, sh];
+      if (boxDrag.mode === 'move') { x = sx + dx; y = sy + dy; }
+      else if (boxDrag.mode === 'nw') { x = sx + dx; y = sy + dy; w = sw - dx; h = sh - dy; }
+      else if (boxDrag.mode === 'ne') { y = sy + dy; w = sw + dx; h = sh - dy; }
+      else if (boxDrag.mode === 'sw') { x = sx + dx; w = sw - dx; h = sh + dy; }
+      else if (boxDrag.mode === 'se') { w = sw + dx; h = sh + dy; }
+      // Clamp to image + enforce min size
+      const minSize = 0.02;
+      w = Math.max(minSize, w); h = Math.max(minSize, h);
+      x = Math.max(0, Math.min(1 - w, x));
+      y = Math.max(0, Math.min(1 - h, y));
+      const newBox: [number, number, number, number] = [x, y, w, h];
+      // Recalculate string count from new box dimensions (resize only, not move)
+      const newStringCount = boxDrag.mode !== 'move'
+        ? calcStringsFromBox(newBox)
+        : undefined;
+      setMiniLightDetections(dets => dets.map((d, i) =>
+        i === boxDrag.idx
+          ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
+          : d
+      ));
+    };
+    const handleUp = () => setBoxDrag(null);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [boxDrag, feetPerUnit, imgAspect]);
+
+  const startBoxDrag = (idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = imgContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const startX = (e.clientX - rect.left) / rect.width;
+    const startY = (e.clientY - rect.top) / rect.height;
+    setBoxDrag({ idx, mode, startX, startY, startBox: miniLightDetections[idx].box });
+  };
+
+  const updateDetection = (idx: number, patch: Partial<MiniLightDetection>) => {
+    setMiniLightDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  };
+
+  const deleteDetection = (idx: number) => {
+    setMiniLightDetections(dets => dets.filter((_, i) => i !== idx));
+  };
+
+  const addDetection = (type: 'bush' | 'tree' | 'column') => {
+    const defaults = {
+      bush:   { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new bush' },
+      tree:   { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'new tree' },
+      column: { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new column' },
+    }[type];
+    setMiniLightDetections(dets => [...dets, {
+      type,
+      ...defaults,
+      box: [0.4, 0.6, 0.15, 0.15],
+    }]);
+  };
+
+  // Sync detection edits back into form.miniLightItems
+  useEffect(() => {
+    setForm(f => ({
+      ...f,
+      miniLightItems: miniLightDetections.map(d => ({
+        type: d.type,
+        wrapStyle: d.wrapStyle,
+        stringCount: d.stringCount,
+      })),
+    }));
+  }, [miniLightDetections]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -238,6 +360,7 @@ export default function NewQuotePage() {
           correctedGingerbreadFootage: form.gingerbreadFootage,
           correctedGingerbreadDifficulty: form.gingerbreadDifficulty,
           correctedGingerbreadLines: gingerbreadLines,
+          correctedMiniLightDetections: miniLightDetections,
         }),
       });
       if (res.ok) setCorrectionSaved(true);
@@ -262,6 +385,99 @@ export default function NewQuotePage() {
     setMiniLightDetections([]);
   };
 
+  // Shared: apply analysis result to form + line/detection state.
+  // Used by both manual upload and Google address lookup.
+  type AnalysisResponse = {
+    result: {
+      santasFootage: number;
+      santasDifficulty: 'easy' | 'medium' | 'hard';
+      gingerbreadFootage: number;
+      gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
+      santasLines?: LineSegment[];
+      gingerbreadLines?: LineSegment[];
+      miniLightDetections?: MiniLightDetection[];
+      notes: string;
+      confidence: string;
+    };
+    photoBase64?: string;
+    photoMediaType?: string;
+    satelliteBase64?: string;
+    satelliteMediaType?: string;
+    formattedAddress?: string;
+    fewShotCount?: number;
+  };
+  const applyAnalysisResult = (data: AnalysisResponse) => {
+    const r = data.result;
+    setForm(f => ({
+      ...f,
+      santasFootage: r.santasFootage,
+      santasDifficulty: r.santasDifficulty,
+      gingerbreadFootage: r.gingerbreadFootage,
+      gingerbreadDifficulty: r.gingerbreadDifficulty,
+    }));
+    const newSantasLines: LineSegment[] = r.santasLines ?? [];
+    const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
+    const detections: MiniLightDetection[] = r.miniLightDetections ?? [];
+    setSantasLines(newSantasLines);
+    setGingerbreadLines(newGingerbreadLines);
+    setMiniLightDetections(detections);
+    const santasLen = polylineLength(newSantasLines, imgAspect);
+    const ridgeLen = polylineLength(newGingerbreadLines, imgAspect);
+    let scale: number | null = null;
+    if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
+    else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
+    setFeetPerUnit(scale);
+    if (scale && detections.length > 0) {
+      const PERSPECTIVE = 0.4;
+      const recalcStrings = (box: [number, number, number, number]): number => {
+        const widthFt = box[2] * scale! * PERSPECTIVE;
+        const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
+        const circumIn = Math.PI * widthFt * 12;
+        const wraps = (heightFt * 12) / 6;
+        const footageFt = (wraps * circumIn) / 12;
+        return Math.max(1, Math.round(footageFt / 25));
+      };
+      setMiniLightDetections(detections.map(d => ({ ...d, stringCount: recalcStrings(d.box) })));
+    }
+    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    setPhotoBase64(data.photoBase64 ?? null);
+    setPhotoMediaType(data.photoMediaType ?? null);
+    setOriginalAnalysis(r);
+    setFewShotCount(data.fewShotCount ?? 0);
+    setCorrectionSaved(false);
+  };
+
+  const handleLookupAddress = async () => {
+    const addr = form.customer.address.trim();
+    if (!addr) {
+      setAnalysisError('Enter the property address above first.');
+      return;
+    }
+    setLookingUp(true);
+    setAnalysisError(null);
+    setAnalysisNotes(null);
+    try {
+      const res = await fetch('/api/analyze-address', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
+      // Show street view as the editable photo
+      const streetUrl = `data:${data.photoMediaType};base64,${data.photoBase64}`;
+      setPhotoPreview(streetUrl);
+      setPhotoFile(null);
+      setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
+      setGoogleAddress(data.formattedAddress ?? null);
+      applyAnalysisResult(data);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
+    } finally {
+      setLookingUp(false);
+    }
+  };
+
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
     setAnalyzing(true);
@@ -275,45 +491,9 @@ export default function NewQuotePage() {
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      const r = data.result;
-      setForm(f => ({
-        ...f,
-        santasFootage: r.santasFootage,
-        santasDifficulty: r.santasDifficulty,
-        gingerbreadFootage: r.gingerbreadFootage,
-        gingerbreadDifficulty: r.gingerbreadDifficulty,
-      }));
-      const newSantasLines: LineSegment[] = r.santasLines ?? [];
-      const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
-      const detections: MiniLightDetection[] = r.miniLightDetections ?? [];
-      setSantasLines(newSantasLines);
-      setGingerbreadLines(newGingerbreadLines);
-      setMiniLightDetections(detections);
-      // Auto-populate miniLightItems from detections
-      if (detections.length > 0) {
-        setForm(f => ({
-          ...f,
-          miniLightItems: detections.map(d => ({
-            type: d.type,
-            wrapStyle: d.wrapStyle,
-            stringCount: d.stringCount,
-          })),
-        }));
-      }
-      // Calibrate scale from gutterline (most reliable reference). Fall back to
-      // ridgeline if gutterline is absent. Scale then applies to BOTH line types.
-      const santasLen = polylineLength(newSantasLines, imgAspect);
-      const ridgeLen = polylineLength(newGingerbreadLines, imgAspect);
-      let scale: number | null = null;
-      if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
-      else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
-      setFeetPerUnit(scale);
-      setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
-      setPhotoBase64(data.photoBase64 ?? null);
-      setPhotoMediaType(data.photoMediaType ?? null);
-      setOriginalAnalysis(r);
-      setFewShotCount(data.fewShotCount ?? 0);
-      setCorrectionSaved(false);
+      setSatellitePreview(null);
+      setGoogleAddress(null);
+      applyAnalysisResult(data);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -327,13 +507,30 @@ export default function NewQuotePage() {
   const setCustomer = (k: keyof Customer, v: string) =>
     setForm(f => ({ ...f, customer: { ...f.customer, [k]: v } }));
 
-  // Mini lights
-  const addMiniLight = () =>
-    set('miniLightItems', [...form.miniLightItems, { type: 'tree', wrapStyle: 'trunk', stringCount: 3 }]);
-  const removeMiniLight = (i: number) =>
-    set('miniLightItems', form.miniLightItems.filter((_, idx) => idx !== i));
-  const updateMiniLight = (i: number, patch: Partial<MiniLightItem>) =>
-    set('miniLightItems', form.miniLightItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+  // Mini lights — when detections are present, route all changes through
+  // miniLightDetections so the boxes in the Analysis Results stay in lockstep.
+  // When no photo has been analyzed, fall back to editing miniLightItems directly.
+  const addMiniLight = () => {
+    if (miniLightDetections.length > 0 || photoPreview) {
+      addDetection('tree');
+    } else {
+      set('miniLightItems', [...form.miniLightItems, { type: 'tree', wrapStyle: 'trunk', stringCount: 3 }]);
+    }
+  };
+  const removeMiniLight = (i: number) => {
+    if (i < miniLightDetections.length) {
+      deleteDetection(i);
+    } else {
+      set('miniLightItems', form.miniLightItems.filter((_, idx) => idx !== i));
+    }
+  };
+  const updateMiniLight = (i: number, patch: Partial<MiniLightItem>) => {
+    if (i < miniLightDetections.length) {
+      updateDetection(i, patch as Partial<MiniLightDetection>);
+    } else {
+      set('miniLightItems', form.miniLightItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+    }
+  };
 
   // Spritzers
   const addSpritzer = () =>
@@ -442,7 +639,35 @@ export default function NewQuotePage() {
 
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
-            <p className="text-xs text-gray-400 mb-3">Upload a photo of the front of the house. Claude will estimate gutterline + ridgeline footage and difficulty.</p>
+            <p className="text-xs text-gray-400 mb-3">
+              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate gutterline, ridgeline, bushes, trees, and columns.
+            </p>
+
+            {/* Google lookup */}
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
+                <button
+                  type="button"
+                  onClick={handleLookupAddress}
+                  disabled={lookingUp || !form.customer.address.trim()}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                </button>
+              </div>
+              <p className="text-xs text-blue-700">
+                Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
+              </p>
+              {googleAddress && (
+                <p className="mt-2 text-xs text-blue-800">
+                  <span className="font-semibold">Matched:</span> {googleAddress}
+                </p>
+              )}
+            </div>
+
+            {/* Manual upload */}
+            <p className="text-xs text-gray-500 font-medium mb-2">— Or upload a photo manually —</p>
             <div className="space-y-3">
               <input
                 type="file"
@@ -450,7 +675,7 @@ export default function NewQuotePage() {
                 onChange={handlePhotoSelect}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
-              {photoPreview && (
+              {photoPreview && photoFile && (
                 <div className="space-y-3">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={photoPreview} alt="House preview" className="w-48 h-auto rounded-md border border-gray-200" />
@@ -462,6 +687,13 @@ export default function NewQuotePage() {
                   >
                     {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
                   </button>
+                </div>
+              )}
+              {satellitePreview && (
+                <div>
+                  <p className="text-xs font-medium text-gray-600 mb-1">Satellite reference (used by AI for roof footprint):</p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={satellitePreview} alt="Satellite view" className="w-48 h-auto rounded-md border border-gray-200" />
                 </div>
               )}
               {analysisNotes && (
@@ -531,20 +763,6 @@ export default function NewQuotePage() {
                       vectorEffect="non-scaling-stroke"
                     />
                   ))}
-                  {miniLightDetections.map((d, i) => (
-                    <rect
-                      key={`det-${i}`}
-                      x={d.box[0]}
-                      y={d.box[1]}
-                      width={d.box[2]}
-                      height={d.box[3]}
-                      fill="rgba(245, 158, 11, 0.15)"
-                      stroke="#f59e0b"
-                      strokeWidth="3"
-                      strokeDasharray="4 3"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ))}
                   {pendingPoints.length > 0 && (
                     <polyline
                       points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
@@ -556,19 +774,46 @@ export default function NewQuotePage() {
                     />
                   )}
                 </svg>
-                {/* Mini light labels */}
-                {miniLightDetections.map((d, i) => (
-                  <div
-                    key={`lbl-${i}`}
-                    className="absolute bg-amber-500 text-white text-[10px] font-medium px-1.5 py-0.5 rounded-sm pointer-events-none whitespace-nowrap"
-                    style={{
-                      left: `${d.box[0] * 100}%`,
-                      top: `calc(${d.box[1] * 100}% - 16px)`,
-                    }}
-                  >
-                    {d.type} · {d.stringCount}s
-                  </div>
-                ))}
+                {/* Editable mini-light boxes (move + resize) */}
+                {!addMode && miniLightDetections.map((d, i) => {
+                  const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
+                  const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
+                  return (
+                    <div
+                      key={`box-${i}`}
+                      className="absolute border-2 border-dashed border-amber-500 bg-amber-400/15 cursor-move"
+                      style={{
+                        left: `${d.box[0] * 100}%`,
+                        top: `${d.box[1] * 100}%`,
+                        width: `${d.box[2] * 100}%`,
+                        height: `${d.box[3] * 100}%`,
+                        touchAction: 'none',
+                      }}
+                      onPointerDown={startBoxDrag(i, 'move')}
+                      title="Drag to move • use corners to resize"
+                    >
+                      <div className="absolute -top-5 left-0 bg-amber-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
+                        {typeLetter}{i + 1} {d.type} · {d.stringCount}s · ${price}
+                      </div>
+                      {(['nw','ne','sw','se'] as const).map(corner => {
+                        const pos: Record<string, string> = {
+                          nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
+                          ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
+                          sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
+                          se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
+                        };
+                        return (
+                          <div
+                            key={corner}
+                            className={`absolute w-3 h-3 bg-white border-2 border-amber-600 rounded-sm ${pos[corner]}`}
+                            style={{ touchAction: 'none' }}
+                            onPointerDown={startBoxDrag(i, corner)}
+                          />
+                        );
+                      })}
+                    </div>
+                  );
+                })}
                 {/* Draggable point handles (HTML elements, positioned absolute — easier than SVG hit-testing) */}
                 {!addMode && santasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                   <div
@@ -629,25 +874,87 @@ export default function NewQuotePage() {
                 </div>
               )}
 
-              {/* Mini light detections */}
-              {miniLightDetections.length > 0 && (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-2 border-2 border-amber-500 border-dashed rounded-sm"></span>
-                    <span className="text-sm font-semibold text-gray-800">Mini Lights — {miniLightDetections.length} item{miniLightDetections.length === 1 ? '' : 's'}</span>
-                    <span className="text-xs text-gray-400">(auto-filled into form below)</span>
-                  </div>
-                  <ul className="grid grid-cols-2 gap-1 ml-6">
-                    {miniLightDetections.map((d, i) => (
-                      <li key={`det-lbl-${i}`} className="text-xs text-gray-600 flex items-center gap-2">
-                        <span className="font-semibold capitalize">{d.type}</span>
-                        <span className="text-gray-400">· {d.wrapStyle} wrap · {d.stringCount} string{d.stringCount === 1 ? '' : 's'}</span>
-                        <span className="text-gray-500 truncate">{d.label}</span>
-                      </li>
-                    ))}
-                  </ul>
+              {/* Mini light detections — editable */}
+              <div className="mt-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-2 border-2 border-amber-500 border-dashed rounded-sm"></span>
+                  <span className="text-sm font-semibold text-gray-800">
+                    Mini Lights — {miniLightDetections.length} item{miniLightDetections.length === 1 ? '' : 's'}
+                  </span>
+                  <span className="text-xs text-gray-400">
+                    (1 string = 50ct 5MM strand · $35 canopy · $45 trunk)
+                  </span>
                 </div>
-              )}
+                {miniLightDetections.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    <div className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
+                      <span>#</span>
+                      <span>Type</span>
+                      <span>Wrap</span>
+                      <span>Strings</span>
+                      <span>Price</span>
+                      <span />
+                    </div>
+                    {miniLightDetections.map((d, i) => {
+                      const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
+                      const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
+                      return (
+                        <div key={`drow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 items-center">
+                          <span className="text-xs font-semibold text-amber-700">{typeLetter}{i + 1}</span>
+                          <select
+                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                            value={d.type}
+                            onChange={e => updateDetection(i, { type: e.target.value as MiniLightDetection['type'] })}
+                          >
+                            <option value="bush">Bush</option>
+                            <option value="tree">Tree</option>
+                            <option value="column">Column</option>
+                          </select>
+                          <select
+                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                            value={d.wrapStyle}
+                            onChange={e => updateDetection(i, { wrapStyle: e.target.value as MiniLightDetection['wrapStyle'] })}
+                          >
+                            <option value="canopy">Canopy</option>
+                            <option value="trunk">Trunk</option>
+                          </select>
+                          <input
+                            type="number"
+                            min="1"
+                            value={d.stringCount}
+                            onChange={e => updateDetection(i, { stringCount: Math.max(1, Number(e.target.value)) })}
+                            className="border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-xs font-medium text-gray-700 tabular-nums">${price}</span>
+                          <button
+                            type="button"
+                            onClick={() => deleteDetection(i)}
+                            className="text-red-400 hover:text-red-600 font-bold text-lg leading-none"
+                            title="Delete"
+                          >×</button>
+                        </div>
+                      );
+                    })}
+                    <div className="flex justify-end pt-1 text-xs font-semibold text-gray-700">
+                      Total: ${miniLightDetections.reduce((s, d) => s + d.stringCount * MINI_LIGHT_RATES[d.wrapStyle], 0)}
+                    </div>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => addDetection('bush')}
+                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
+                    + Add Bush
+                  </button>
+                  <button type="button" onClick={() => addDetection('tree')}
+                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
+                    + Add Tree
+                  </button>
+                  <button type="button" onClick={() => addDetection('column')}
+                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
+                    + Add Column
+                  </button>
+                </div>
+              </div>
 
               {/* Per-line edit panels */}
               <div className="mt-4 grid grid-cols-2 gap-4">
@@ -822,8 +1129,8 @@ export default function NewQuotePage() {
                     </select>
                     <select className={sel} value={item.wrapStyle}
                       onChange={e => updateMiniLight(i, { wrapStyle: e.target.value as MiniLightItem['wrapStyle'] })}>
-                      <option value="canopy">Canopy — $35/string</option>
-                      <option value="trunk">Trunk — $45/string</option>
+                      <option value="canopy">Canopy — $35/strand</option>
+                      <option value="trunk">Trunk — $45/strand</option>
                     </select>
                     <input className={inp} type="number" min="1" value={item.stringCount}
                       onChange={e => updateMiniLight(i, { stringCount: Number(e.target.value) })} />

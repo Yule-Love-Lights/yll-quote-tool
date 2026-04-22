@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yule Love Lights — AI Training Guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Georgia, serif; font-size: 16px; line-height: 1.7; color: #1a1a1a; max-width: 780px; margin: 0 auto; padding: 40px 32px; }
+  h1 { font-size: 28px; font-weight: 700; color: #166534; margin-bottom: 4px; }
+  .subtitle { font-size: 14px; color: #6b7280; margin-bottom: 32px; font-family: sans-serif; text-transform: uppercase; letter-spacing: 0.05em; }
+  h2 { font-size: 20px; font-weight: 700; margin-top: 40px; margin-bottom: 12px; color: #111; border-bottom: 2px solid #d1fae5; padding-bottom: 6px; }
+  h3 { font-size: 16px; font-weight: 700; margin-top: 24px; margin-bottom: 8px; color: #166534; font-family: sans-serif; text-transform: uppercase; letter-spacing: 0.04em; }
+  p { margin-bottom: 12px; }
+  ul, ol { margin: 0 0 16px 24px; }
+  li { margin-bottom: 6px; }
+  strong { font-weight: 700; }
+  em { font-style: italic; }
+  hr { border: none; border-top: 1px solid #e5e7eb; margin: 32px 0; }
+  code { font-family: monospace; font-size: 13px; background: #f3f4f6; padding: 1px 5px; border-radius: 3px; }
+  pre { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 20px 24px; font-family: monospace; font-size: 13px; line-height: 1.6; margin: 16px 0; white-space: pre-wrap; word-break: break-word; }
+  .callout { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 14px 18px; border-radius: 0 6px 6px 0; margin: 16px 0; }
+  .callout-danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: 14px 18px; border-radius: 0 6px 6px 0; margin: 16px 0; }
+  .badge { display: inline-block; background: #166534; color: white; font-size: 11px; font-family: sans-serif; font-weight: 700; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 6px; }
+  .section-number { color: #16a34a; }
+  @media print { body { padding: 20px; } h2 { page-break-before: auto; } }
+</style>
+</head>
+<body>
+
+<p class="subtitle">Yule Love Lights · Internal Document</p>
+<h1>AI Training Guide</h1>
+<p><strong>For Jason + install team</strong></p>
+<p>Our quote tool uses AI to look at a photo of a house and estimate how much lighting it needs. The more real jobs we feed it, the better it gets. This guide explains how to capture the data that makes the AI smarter.</p>
+
+<p>There are <strong>two places</strong> you will add data:</p>
+<ol>
+  <li><strong>Product Library</strong> — canonical photos of what our wreaths, spritzers, and garland look like up close. Done once per product, then maintained as the catalog changes.</li>
+  <li><strong>Completed Job Training</strong> — full record of every completed install (photos + measurements + notes).</li>
+</ol>
+
+<hr>
+
+<h2><span class="section-number">1.</span> Product Library</h2>
+<p><em>Go to: Training → Product Library in the app</em></p>
+<p>The AI looks at these every time it analyzes a house. Think of it as the "visual glossary" — it teaches the AI what a 30-inch noble wreath looks like, what a 24-inch spritzer looks like, and so on.</p>
+
+<h3>What to Upload</h3>
+<p>For <strong>each product size and tier</strong>, upload <strong>one clean reference photo</strong>:</p>
+<ul>
+  <li><strong>Wreaths</strong> — every size we sell (24", 30", 36", 48" noble + 36" Oregon) <em>and</em> every tier (labor / bow / fullDecor). That's up to 15 photos total.</li>
+  <li><strong>Spritzers</strong> — each size: 16", 24", 32". Minimum 3 photos.</li>
+  <li><strong>Garland</strong> — 9ft and 6ft sections, in each tier (labor / bow / fullDecor).</li>
+</ul>
+
+<h3>How to Photograph</h3>
+<ul>
+  <li><strong>Plain background.</strong> A wall, garage door, blank fence. Not a busy yard.</li>
+  <li><strong>Product filling the frame.</strong> Zoom in. The product should be the main thing in the picture.</li>
+  <li><strong>Daylight, not dark.</strong> Shoot during install, before it gets dark.</li>
+  <li><strong>One product per photo.</strong> Don't put a wreath and a spritzer in the same shot.</li>
+  <li><strong>Write a caption.</strong> Example: "30in noble fir, red bow, installed on front door." This helps the AI understand context.</li>
+</ul>
+
+<h3>What NOT to Upload</h3>
+<ul>
+  <li>Photos where the product is half-obscured</li>
+  <li>Blurry night shots</li>
+  <li>Photos with the product lit up at night — we identify products in daytime Street View photos, so daytime photos train the AI better</li>
+</ul>
+
+<hr>
+
+<h2><span class="section-number">2.</span> Completed Job Training</h2>
+<p><em>Go to: Training → Add Completed Job in the app</em></p>
+<p>This is the most important part. Every completed job you log here makes the next quote more accurate.</p>
+
+<h3>Photos — Take ALL of These for Every Job</h3>
+<ol>
+  <li><strong>Front — Installed</strong> — straight-on front of the house, lights installed, daytime if possible.</li>
+  <li><strong>Front — Takedown</strong> — same angle, lights still up, captured on takedown day. This is gold for the AI.</li>
+  <li><strong>Side</strong> — left or right side showing roofline not visible from street.</li>
+  <li><strong>Detail</strong> — close-up of any tricky spots: cut-up rooflines, a wreath on a second-story window, a spritzer in an unusual spot.</li>
+</ol>
+
+<div class="callout">
+  <strong>Tip:</strong> Take the Front Installed photo from the same spot Google Street View would. Stand in the street, phone at chest height, shoot the whole house. The AI mostly gets street-view images to work with — our training photos need to match that perspective.
+</div>
+
+<h3>Required Measurements (Confirmed from Takedown)</h3>
+<ul>
+  <li><strong>Santa's Roofline (gutter) footage</strong> — actual linear feet of 5MM bulb run</li>
+  <li><strong>Gingerbread Ridge footage</strong> — actual ridgeline feet</li>
+  <li><strong>Spritzers used</strong> — size + quantity</li>
+  <li><strong>Wreaths used</strong> — size + tier + quantity</li>
+  <li><strong>Garland used</strong> — length + tier + quantity</li>
+  <li><strong>Mini-light strings used on bushes/trees/columns</strong> — confirmed strand count per item</li>
+</ul>
+
+<h3>New Context Fields — Please Fill These In</h3>
+
+<p><strong>Scale Anchor</strong> — what object in the photo gives the real-world size?</p>
+<p style="margin-left:20px;color:#6b7280;font-style:italic;">Example: "front door is 36in wide, garage door is 7ft tall, porch columns are 8ft"</p>
+<p>This is huge for accuracy. Takes 5 seconds to type and can cut AI measurement error by 30%.</p>
+
+<p><strong>Didn't Install</strong> — any items visible in the photo that the customer skipped.</p>
+<p style="margin-left:20px;color:#6b7280;font-style:italic;">Example: "customer declined ridgeline, skipped the lamp post bushes"</p>
+<p>This stops the AI from learning that those items don't exist on this kind of house.</p>
+
+<p><strong>AI Failure Notes</strong> — after the AI auto-analyzes the photo, where did it get this house wrong?</p>
+<p style="margin-left:20px;color:#6b7280;font-style:italic;">Example: "missed the back-side gutter run, over-counted side bushes as 5 strings when 3 was enough"</p>
+<p>This is pure gold — it teaches the AI its own weak spots on this exact house.</p>
+
+<p><strong>Materials Cost, Labor Hours, Revenue</strong> — for margin analysis. Not used by the AI directly but helps us track which job types make money.</p>
+
+<h3>Workflow on the Form</h3>
+<ol>
+  <li>Upload photos</li>
+  <li>Click <strong>"Auto-analyze photo"</strong> — Claude takes a first pass at measurements</li>
+  <li><strong>Verify and correct</strong> every number — move gutter lines, resize bush boxes, delete wrong wreath detections</li>
+  <li>Fill in the context fields (scale anchor, didn't install, AI failure notes, cost/revenue)</li>
+  <li>Save</li>
+</ol>
+
+<h3>House Style — Always Pick One</h3>
+<p>Tag each job's style: cape, ranch, colonial, split, tudor, custom. The AI uses style to pick similar training examples for future quotes. A cape matched against other capes gives smarter predictions than a cape compared to a colonial.</p>
+
+<hr>
+
+<h2><span class="section-number">3.</span> Common Mistakes to Avoid</h2>
+
+<div class="callout-danger">
+  <strong>Skipping the takedown photo.</strong> The front takedown shot is the single most valuable image we can capture. The roof is identical to install day but the lights are confirmed installed. It's the AI's truth signal.
+</div>
+
+<div class="callout-danger">
+  <strong>Photographing from too close.</strong> If you're standing 10 feet from the house, the scale won't match a Google Street View shot. Back up to the street.
+</div>
+
+<div class="callout-danger">
+  <strong>Leaving AI Failure Notes blank.</strong> Even if the AI got everything right, write "accurate" so we know it was reviewed. If it was wrong, be specific about what it missed.
+</div>
+
+<div class="callout-danger">
+  <strong>Uploading night-lit photos as training.</strong> We analyze daytime Street View photos to quote houses. Training on night-lit photos confuses the AI. Shoot before dark.
+</div>
+
+<div class="callout-danger">
+  <strong>Forgetting the scale anchor.</strong> Always write at least one measurement reference — door width, garage height, column height. It takes 5 seconds.
+</div>
+
+<div class="callout-danger">
+  <strong>Not tagging photos correctly.</strong> Leaving everything as "Other" kills the training value. Use the correct tags: Front Installed, Front Takedown, Side, Detail.
+</div>
+
+<hr>
+
+<h2><span class="section-number">4.</span> Priority Order — Where to Start</h2>
+<p>If you only have time for 20 jobs this week:</p>
+<ol>
+  <li>Pick 20 varied houses from the last 2 seasons — mix of cape, ranch, colonial, split, big custom</li>
+  <li>For each: upload front installed photo + side photo + measurements + scale anchor + house style</li>
+  <li>Then go back and add takedown photos as they happen this season</li>
+</ol>
+
+<p>To go deeper:</p>
+<ul>
+  <li>Upload every completed job from last season</li>
+  <li>After each install this year, log the job same-day while details are fresh</li>
+  <li>Once a month, review a few AI-generated quotes against actual install outcomes and fill in AI Failure Notes for anything that was off</li>
+</ul>
+
+<hr>
+
+<h2><span class="section-number">5.</span> What a Perfect Training Entry Looks Like</h2>
+
+<pre>Address:        245 Birch Ln, Smithtown NY
+Year:           2025
+Style:          Colonial
+Photos:
+  - Front Installed (daytime, from street, full house)
+  - Front Takedown (same angle, 3 weeks later)
+  - Side (right side showing dormer + second-story gutter)
+  - Detail (closeup of front door wreath + spritzers)
+
+Santa's Roofline:  135 ft, medium difficulty
+Gingerbread Ridge: 82 ft, medium difficulty
+Wreaths:           2x 30noble bow (front door + garage)
+Spritzers:         4x 24in (along walkway)
+Mini-lights:       3 bushes (4, 5, 3 strings) + 2 columns (3 strings each)
+
+Scale Anchor:  "front door 36in wide, garage door 7ft tall, columns 8ft"
+Didn't Install: "customer declined ridgeline on back garage wing"
+AI Failure Notes: "AI under-measured gutter by 15ft — missed the return
+                   over front porch. Over-counted side bush as 5 strings
+                   when 3 was accurate."
+
+Materials:     $680
+Labor Hours:   5.5
+Revenue:       $2,950</pre>
+
+<hr>
+
+<p style="color:#6b7280;font-size:14px;font-family:sans-serif;">Questions? Text Naldo. This guide will be updated as the AI evolves.</p>
+
+</body>
+</html>

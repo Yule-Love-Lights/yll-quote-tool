@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
   const saved = await saveCorrection(body);
   if (!saved) {
-    return NextResponse.json({ error: 'Failed to save correction' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to save correction — check server logs for Supabase error details' }, { status: 500 });
   }
   return NextResponse.json({ id: saved.id });
 }

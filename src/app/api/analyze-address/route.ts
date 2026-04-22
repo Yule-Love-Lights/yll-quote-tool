@@ -4,11 +4,16 @@ import { isClaudeConfigured } from '@/lib/claude';
 import { getRecentCorrections } from '@/lib/corrections';
 import { getTrainingFewShot } from '@/lib/training';
 import { getReferenceAssetsForAnalysis } from '@/lib/referenceAssets';
+import {
+  isGoogleMapsConfigured,
+  geocodeAddress,
+  fetchStreetView,
+  fetchSatellite,
+  hasStreetView,
+} from '@/lib/googleMaps';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
-
-const MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
 export async function POST(req: NextRequest) {
   if (!isClaudeConfigured()) {
@@ -17,46 +22,55 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
+  if (!isGoogleMapsConfigured()) {
+    return NextResponse.json(
+      { error: 'Google Maps not configured — set GOOGLE_MAPS_API_KEY in .env.local' },
+      { status: 503 },
+    );
+  }
 
-  let formData: FormData;
+  let body: { address?: string; houseStyle?: string };
   try {
-    formData = await req.formData();
+    body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid form data' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const file = formData.get('photo');
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: 'No photo uploaded (field name must be "photo")' }, { status: 400 });
+  const address = body.address?.trim();
+  if (!address) {
+    return NextResponse.json({ error: 'address is required' }, { status: 400 });
   }
-
-  if (file.size > MAX_SIZE_BYTES) {
-    return NextResponse.json({ error: 'Photo too large — max 10MB' }, { status: 400 });
-  }
-
-  const mediaType = file.type;
-  if (!mediaType.startsWith('image/')) {
-    return NextResponse.json({ error: 'File must be an image' }, { status: 400 });
-  }
-
-  const houseStyleHint = (formData.get('houseStyle') as string | null)?.trim() || undefined;
-
-  const arrayBuffer = await file.arrayBuffer();
-  const base64 = Buffer.from(arrayBuffer).toString('base64');
+  const houseStyleHint = body.houseStyle?.trim() || undefined;
 
   try {
+    // 1. Geocode the address
+    const geo = await geocodeAddress(address);
+
+    // 2. Confirm Street View exists at this location
+    const svExists = await hasStreetView(geo.lat, geo.lng);
+    if (!svExists) {
+      return NextResponse.json(
+        { error: `No Street View imagery available at ${geo.formattedAddress}` },
+        { status: 404 },
+      );
+    }
+
+    // 3. Fetch both images in parallel
+    const [streetView, satellite] = await Promise.all([
+      fetchStreetView(geo.lat, geo.lng),
+      fetchSatellite(geo.lat, geo.lng),
+    ]);
+
+    // 4. Analyze with Claude using BOTH images as cross-reference
     const [corrections, trainingHouses, references] = await Promise.all([
       getRecentCorrections(2),
       getTrainingFewShot(2, houseStyleHint),
       getReferenceAssetsForAnalysis(2),
     ]);
     const examples: FewShotExample[] = [
-      // Training first (highest trust) so the model weights them as the template
       ...trainingHouses
         .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
         .map(h => {
-          // Include up to 4 photos per training house: front_install + alt angles/details.
-          // Front install always first so the model anchors on the primary reference frame.
           const ordered = [...h.photos].sort((a, b) => {
             const order: Record<string, number> = {
               front_install: 0, front_takedown: 1, side: 2, detail: 3, back: 4, satellite: 5, other: 6,
@@ -86,14 +100,26 @@ export async function POST(req: NextRequest) {
         }),
       ...corrections.map(correctionToExample),
     ];
-    const result = await analyzePhoto(base64, mediaType, examples, {
-      references,
-      houseStyleHint,
-    });
+    const result = await analyzePhoto(
+      streetView.base64,
+      streetView.mediaType,
+      examples,
+      {
+        satellite: { base64: satellite.base64, mediaType: satellite.mediaType },
+        references,
+        houseStyleHint,
+      },
+    );
+
     return NextResponse.json({
       result,
-      photoBase64: base64,
-      photoMediaType: mediaType,
+      photoBase64: streetView.base64,
+      photoMediaType: streetView.mediaType,
+      satelliteBase64: satellite.base64,
+      satelliteMediaType: satellite.mediaType,
+      formattedAddress: geo.formattedAddress,
+      lat: geo.lat,
+      lng: geo.lng,
       fewShotCount: examples.length,
       fewShotBreakdown: {
         training: trainingHouses.length,
@@ -102,8 +128,8 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('Photo analysis error:', err);
-    const message = err instanceof Error ? err.message : 'Failed to analyze photo';
+    console.error('analyze-address error:', err);
+    const message = err instanceof Error ? err.message : 'Failed to analyze address';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

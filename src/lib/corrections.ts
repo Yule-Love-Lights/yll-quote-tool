@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { LineSegment, PhotoAnalysisResult } from './photoAnalysis';
+import { LineSegment, MiniLightDetection, PhotoAnalysisResult } from './photoAnalysis';
 
 export type CorrectionPayload = {
   photoBase64: string;
@@ -11,6 +11,7 @@ export type CorrectionPayload = {
   correctedGingerbreadFootage: number;
   correctedGingerbreadDifficulty: 'easy' | 'medium' | 'hard';
   correctedGingerbreadLines: LineSegment[];
+  correctedMiniLightDetections: MiniLightDetection[];
   notes?: string;
 };
 
@@ -25,6 +26,7 @@ export type StoredCorrection = {
   corrected_gingerbread_footage: number;
   corrected_gingerbread_difficulty: 'easy' | 'medium' | 'hard';
   corrected_gingerbread_lines: LineSegment[];
+  corrected_mini_light_detections: MiniLightDetection[];
 };
 
 export async function saveCorrection(payload: CorrectionPayload): Promise<{ id: string } | null> {
@@ -43,13 +45,14 @@ export async function saveCorrection(payload: CorrectionPayload): Promise<{ id: 
       corrected_gingerbread_footage: payload.correctedGingerbreadFootage,
       corrected_gingerbread_difficulty: payload.correctedGingerbreadDifficulty,
       corrected_gingerbread_lines: payload.correctedGingerbreadLines,
+      corrected_mini_light_detections: payload.correctedMiniLightDetections,
       notes: payload.notes ?? null,
     })
     .select('id')
     .single();
 
   if (error) {
-    console.error('saveCorrection error:', error);
+    console.error('saveCorrection error:', JSON.stringify(error), error?.message, error?.details, error?.hint);
     return null;
   }
   return { id: data.id };
