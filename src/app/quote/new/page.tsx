@@ -87,11 +87,14 @@ export default function NewQuotePage() {
   const resultRef = useRef<HTMLDivElement>(null);
 
   // Photo analysis
+  type LineSegment = { points: [number, number][]; label: string };
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
+  const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,6 +103,8 @@ export default function NewQuotePage() {
     setPhotoPreview(URL.createObjectURL(file));
     setAnalysisNotes(null);
     setAnalysisError(null);
+    setSantasLines([]);
+    setGingerbreadLines([]);
   };
 
   const handleAnalyzePhoto = async () => {
@@ -123,6 +128,8 @@ export default function NewQuotePage() {
         gingerbreadFootage: r.gingerbreadFootage,
         gingerbreadDifficulty: r.gingerbreadDifficulty,
       }));
+      setSantasLines(r.santasLines ?? []);
+      setGingerbreadLines(r.gingerbreadLines ?? []);
       setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
@@ -261,17 +268,69 @@ export default function NewQuotePage() {
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && (
-                <div className="flex items-start gap-4">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={photoPreview} alt="House preview" className="w-48 h-auto rounded-md border border-gray-200" />
-                  <button
-                    type="button"
-                    onClick={handleAnalyzePhoto}
-                    disabled={analyzing}
-                    className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
-                  >
-                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
-                  </button>
+                <div className="space-y-3">
+                  <div className="relative inline-block max-w-full">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={photoPreview} alt="House preview" className="max-w-full h-auto rounded-md border border-gray-200 block" />
+                    {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
+                      <svg
+                        viewBox="0 0 1 1"
+                        preserveAspectRatio="none"
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                      >
+                        {santasLines.map((line, i) => (
+                          <polyline
+                            key={`s-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#ef4444"
+                            strokeWidth="0.006"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                        {gingerbreadLines.map((line, i) => (
+                          <polyline
+                            key={`g-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#3b82f6"
+                            strokeWidth="0.006"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                      </svg>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button
+                      type="button"
+                      onClick={handleAnalyzePhoto}
+                      disabled={analyzing}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
+                    >
+                      {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                    </button>
+                    {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
+                      <div className="flex items-center gap-4 text-xs">
+                        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500"></span>Gutterline (Santa&apos;s)</span>
+                        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500"></span>Ridgeline (Gingerbread)</span>
+                      </div>
+                    )}
+                  </div>
+                  {(santasLines.length > 0 || gingerbreadLines.length > 0) && (
+                    <ul className="text-xs text-gray-600 space-y-0.5">
+                      {santasLines.map((line, i) => (
+                        <li key={`sl-${i}`}><span className="text-red-500 font-bold">■</span> {line.label}</li>
+                      ))}
+                      {gingerbreadLines.map((line, i) => (
+                        <li key={`gl-${i}`}><span className="text-blue-500 font-bold">■</span> {line.label}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
               {analysisNotes && (

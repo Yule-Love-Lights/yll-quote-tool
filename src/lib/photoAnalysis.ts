@@ -1,10 +1,17 @@
 import { getClaudeClient } from './claude';
 
+export type LineSegment = {
+  points: [number, number][]; // normalized 0-1 coords: [[x1,y1], [x2,y2], ...]
+  label: string;               // e.g. "front gutter ~40ft"
+};
+
 export type PhotoAnalysisResult = {
   santasFootage: number;
   santasDifficulty: 'easy' | 'medium' | 'hard';
+  santasLines: LineSegment[];
   gingerbreadFootage: number;
   gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
+  gingerbreadLines: LineSegment[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -25,17 +32,28 @@ TYPICAL LI HOUSE SIZES (sanity-check):
 - Medium colonial: 100-140 ft gutterline, 60-100 ft ridge
 - Large colonial/custom: 150-220 ft gutterline, 100-180 ft ridge
 
+LINE MARKUP — CRITICAL:
+You must also identify the specific lines you measured, as polylines in NORMALIZED IMAGE COORDINATES (0.0 to 1.0). Origin (0,0) is top-left of the image, (1,1) is bottom-right. Each polyline is an array of [x, y] points that trace along the edge of the roof. Use as many points as needed to follow the curve/angles (straight run = 2 points, L-shape = 3, dormer cut-ups = more).
+
+For each line segment include a short label like "front gutter ~40ft" or "main ridge ~30ft".
+
 You MUST respond with ONLY valid JSON matching this schema. No markdown fences, no prose before or after:
 {
   "santasFootage": number,
   "santasDifficulty": "easy" | "medium" | "hard",
+  "santasLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "front gutter ~40ft" }
+  ],
   "gingerbreadFootage": number,
   "gingerbreadDifficulty": "easy" | "medium" | "hard",
-  "notes": "1-2 sentences on what you saw and any caveats (e.g. 'only front visible, estimated back from typical cape layout')",
+  "gingerbreadLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft" }
+  ],
+  "notes": "1-2 sentences on what you saw and any caveats",
   "confidence": "low" | "medium" | "high"
 }
 
-Round footage to the nearest 5 feet. If a photo is too poor to estimate, use confidence "low" and give conservative mid-range estimates.`;
+Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
 
 export async function analyzePhoto(base64Image: string, mediaType: string): Promise<PhotoAnalysisResult> {
   const client = getClaudeClient();
