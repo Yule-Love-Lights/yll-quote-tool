@@ -143,6 +143,31 @@ export default function RendersAdminPage() {
     }
   };
 
+  const removeAll = async () => {
+    if (items.length === 0) return;
+    const ok = confirm(
+      `Delete ALL ${items.length} render${items.length === 1 ? '' : 's'} and their artifacts? This cannot be undone.`,
+    );
+    if (!ok) return;
+    setBusy('ALL');
+    try {
+      const res = await adminFetch(`/api/renders`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Bulk delete failed');
+      const data = await res.json() as { deleted: number; errors: { id: string; error: string }[] };
+      if (data.errors.length > 0) {
+        alert(`Deleted ${data.deleted}, but ${data.errors.length} failed. See console.`);
+        console.warn('[bulk delete] errors:', data.errors);
+      }
+      setExpandedId(null);
+      setDetail(null);
+      await refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Bulk delete failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const fmtDate = (iso: string) => new Date(iso).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
 
   return (
@@ -163,6 +188,18 @@ export default function RendersAdminPage() {
             <Link href="/" className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md">
               ← Home
             </Link>
+            <Link href="/admin/quotes" className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md">
+              Quotes
+            </Link>
+            {items.length > 0 && (
+              <button
+                disabled={busy !== null}
+                onClick={removeAll}
+                className="bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 font-medium text-sm px-4 py-2 rounded-md"
+              >
+                Delete all ({items.length})
+              </button>
+            )}
             <Link href="/admin/renders/new" className="bg-green-600 hover:bg-green-700 text-white font-medium text-sm px-4 py-2 rounded-md">
               + New Render
             </Link>

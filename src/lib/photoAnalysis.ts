@@ -116,6 +116,32 @@ PACKAGES:
 - Santa's Roofline (gutterline): lights run along the front gutters/eaves — the bottom edge of the roof visible from the street. Measure the total linear footage.
 - Gingerbread Ridge (ridgeline): lights run along the peak/ridge of the roof. Measure the total linear footage across all visible ridge lines.
 
+GUTTER-LINE TRACING — CRITICAL RULES (failures here are the #1 cause of under-quoted jobs):
+
+1. The "Santa's gutter" is ALWAYS the BOTTOM edge of the roof plane — the horizontal line where roofing shingles meet the top of the siding, OR the physical gutter trough. Ignore anything mid-slope (mid-roof features, texture breaks, shadow lines). The gutter is specifically the drip edge where the roof ends and the wall begins.
+
+2. ROOF SURFACE FEATURES — roofs frequently have mid-slope features that are NOT part of the gutter or ridge: skylights, vents, dormers, shadow bands, texture changes, and dark rectangular roof surfaces. These are on the roof plane, not its edges. NEVER trace along the edge of any mid-slope feature. The gutter is strictly at the bottom of the slope; the ridge is strictly at the top. If a mid-slope feature partially hides the gutter or ridge, still trace the full run based on where the roof actually ends — estimate through occlusion, do not stop short.
+
+3. MULTI-RUN ROOFLINES — most LI homes have multiple distinct gutter runs visible from the street. Trace EACH as a separate "santasLines" entry:
+   - Classic ranch / hip-roof with front gable projection → 1 long horizontal run across the main body PLUS 2 rake runs (diagonal up-and-down) on the gable face PLUS possibly a short horizontal gutter below the gable's eave.
+   - Colonial with two-story front and a one-story extension → horizontal run for main front + horizontal run for the extension (different heights).
+   - L-shaped footprint → one horizontal run per leg of the L, meeting at a hip or valley.
+   - Dormers projecting from the main roof slope → each dormer has its own gable with 2 short rake runs; trace them if they're large enough to light (>4ft each).
+   Missing even one of these means the job is under-quoted. When in doubt, trace it — the installer can skip sections later, but can't add what wasn't measured.
+
+3a. LEFT/RIGHT SYMMETRY SELF-CHECK — before returning santasLines, mentally walk the roof from LEFT edge of the photo to RIGHT edge. Does your santasLines list cover BOTH sides of the house? If the left edge has a gutter run going offscreen/around-the-corner, the right edge probably has the mirror. If you only have runs on one side of the main peak, that is almost always a miss — trace the symmetric run on the opposite side. Very few houses have lights on only one side. Over-tracing is far safer than under-tracing: the installer skips what isn't needed, but can never install what wasn't quoted.
+
+3b. NEVER TRACE OFF-ROOF LINES — a polyline MUST follow an actual roof edge (gutter, rake, or ridge) that is physically part of the house. DO NOT trace along:
+   - Power lines, utility wires, telephone cables, or any wire strung between poles / attached to a service mast. These often cross in front of the roof near the top of the photo and look tempting as a "ridge," but they are detached from the structure and we do NOT light them.
+   - Tree branches or foliage silhouettes.
+   - Fence tops, neighboring rooflines, or anything behind the subject house.
+   - Horizon lines, cloud edges, or photo artifacts.
+   If a horizontal line at the top of the photo is not CLEARLY attached to the roof (no visible connection to a ridge vent, shingle seam, or chimney), it is almost certainly a wire — skip it. When in doubt, do NOT trace it. The cost of missing a real ridge is much smaller than the cost of hallucinating lights floating in mid-air over a power line.
+
+4. RAKE vs. GUTTER — on a gable-end face (the triangular wall below a pitched roof peak), the two diagonal edges going from eave to peak are called RAKE lines. Rakes count as Santa's roofline (lights install the same way). Horizontal eaves at the bottom of the gable also count. A single gable adds ~2× (slope length) of rake + whatever eave runs below it.
+
+RIDGE TRACING — the ridge is the HIGHEST horizontal line on the roof (where two slopes meet at the top). On a gable roof it's one long line running front-to-back. On a hip roof, the ridge is shorter and may be partially or fully hidden behind the front slope. ALWAYS trace a ridge line when a horizontal peak is visible — even if the roof slope has unusual surface features (dark shingles, skylights, dormers, etc.) between the gutter and the peak. The ridge is the top horizontal edge of the roof, independent of what surface is below it. Only return gingerbreadLines = [] when there is genuinely no horizontal ridge visible from street view (e.g., a pure hip roof with no visible top ridge).
+
 MINI LIGHT DETECTION — in addition to roofline, identify every bush, tree, and column visible in the photo that could get mini lights.
 
 TYPES:
@@ -137,13 +163,50 @@ A 50ct 5MM strand covers 25ft at 6" bulb spacing. Estimate how many strands it w
 
 For each detection, return a bounding box in normalized 0-1 coords: [x, y, width, height] where (x,y) is the top-left corner. Round string counts to whole numbers. Only include items clearly visible and suitable for lighting (skip distant background trees or items in neighbor's yard).
 
-WREATH DETECTION — identify every wreath visible on the house (front door, garage doors, windows). Estimate size based on context: a standard front door is about 80in tall, so a wreath covering ~30-35in of that height is a 30" wreath; ~40in is a 36"; ~48in is a 48". Garage doors commonly get 24" or 30" wreaths. Sizes available: "24noble", "30noble", "36noble", "48noble", "36oregon" (Oregon = a wider fuller pine). Default to "30noble" if you cannot tell.
+WREATH PLACEMENT — IMPORTANT: the customer does NOT have wreaths up in the daytime photo. Your job is to SUGGEST GOOD PLACEMENT SPOTS where our install crew would hang a wreath, based on the house's architecture. Wreaths are decorations we would INSTALL — you are proposing locations, not detecting existing items.
 
-WREATH TIER — "labor" = plain hanging, "bow" = wreath with a bow, "fullDecor" = heavy ornament/berry/ribbon decoration. Default to "bow" if uncertain.
+Typical placement spots, in order of frequency on Long Island installs:
+1. "portico" — small roof / covered entry projecting over the front door. Center ONE large wreath on the front face of the portico. Very common.
+2. "peak" — the triangular gable face at the top of a pitched roof. Center ONE large wreath on the peak, below the roofline.
+3. "above-garage" — the siding panel above a garage door. Single garage = 1 wreath centered. Double garage = 2 wreaths, one above each door.
+4. "front-door" — one medium wreath on the door itself. Almost always paired with at least one of the above.
+5. "eyebrow" — a small roof projection over a bay window or bow window. One wreath centered under the eyebrow.
+6. "between-windows" — on a tall blank siding section between two second-story windows.
 
-Return each wreath as a bounding box in normalized 0-1 coords plus size + tier.
+Default sizes by spot:
+- portico / peak / above-garage → "36noble"
+- front-door → "30noble"
+- eyebrow / between-windows → "30noble" or "24noble"
+Default tier is "bow" unless the customer's existing decor style clearly calls for "fullDecor". Never default to "labor".
 
-SPRITZER DETECTION — identify spritzers: decorative outdoor metallic star/snowflake/starburst figures on stakes (not rope lights or projectors). They appear as shiny 3D metallic ornaments placed in garden beds, along walkways, or near the entrance. Sizes: "16" (small, ~16in), "24" (medium, common), "32" (large). Default to "24" if uncertain. Only include items actually visible as distinct placed decorations — do NOT flag distant blurs or items in the background. Return each as a bounding box plus size label.
+DO NOT suggest:
+- A wreath on a spot where one is already visible in the daytime photo (skip — we won't re-install over existing).
+- A wreath on an off-center / asymmetric spot that would look odd.
+- More than ~3 wreaths on a typical residential house — suggest the BEST spots, not every possible spot.
+
+Return each suggested wreath as a bounding box in normalized 0-1 coords [x, y, width, height] positioned WHERE the wreath would hang. Keep the box roughly square — wreaths are circular. Size the box so its width/height reflects real-world scale: a 36" wreath covers ~3ft of the house; a 30" covers ~2.5ft. Use the front door (~3ft wide) or garage door (~8ft or 16ft wide) as your scale anchor. Include the placement spot in the label, e.g. "portico wreath ~36in", "peak wreath ~36in".
+
+SPRITZER PLACEMENT — spritzers are individual metallic starburst stakes that plant in garden/flower beds. Each box you return represents ONE stake (one starburst, ~2ft tall). The daytime photo will NOT show them — you are SUGGESTING WHERE to plant each one, as decorative fill light for empty landscaping spots without wrappable bushes.
+
+IMPORTANT: ONE BOX PER STAKE, not per zone. If a foundation flower bed can fit 4 stakes, return 4 separate small boxes spaced along the bed. Stakes typically space ~3ft apart.
+
+Typical placement scenarios:
+1. "flower-bed" — 4-6 stakes spaced ~3ft apart across a front-of-house foundation flower bed. Most common.
+2. "walkway" — 3-5 stakes per side flanking the walkway from driveway to front door.
+3. "stoop" — 2-4 stakes flanking the front door stoop / porch steps.
+4. "bed-gap" — filling a gap between existing wrappable bushes in a foundation bed.
+
+Each box should be SMALL and SQUARE — roughly the footprint of a single stake's starburst head. On a 1000px wide photo, a 24" spritzer starburst is about ~50px wide, so a normalized box width around 0.04-0.06 is typical. Center the box at the STARBURST HEAD position (about 2ft above the ground level in that spot), not at the stake base.
+
+Default size is "24" (the standard stake). Use "16" for tight accent fills between small plantings, "32" for bold feature accents.
+
+DO NOT suggest stakes:
+- On open lawn with no planted bed / mulch / edging.
+- Overlapping a bush/shrub area that's already getting mini-light wrap — they'd be redundant.
+- Behind the house or in side yards (front-of-house only).
+- Closer than ~2ft apart (they visually merge).
+
+If the house has no empty planted beds suitable for stakes, return an EMPTY array — don't invent spots. Typical residential install is 4-8 stakes total. Label each with its position, e.g. "foundation bed stake 1 — 24in", "walkway stake left #2 — 24in".
 
 GARLAND DETECTION — identify garland runs: linear rope-of-evergreen decoration along a porch railing, archway, doorway frame, or beam. Garland is sold in 9ft sections ("9ft") or 4.5ft sections ("4.5ft"); default to "9ft" unless you can see a short run. Tier — "labor" = plain greenery, "bow" = greenery with a bow, "fullDecor" = heavy ornament/ribbon/berries; default to "bow". Return ONE bounding box per garland RUN — the box should TIGHTLY span the run's full length along its widest axis. The frontend uses the box WIDTH × the shared feet-per-pixel scale to compute linear feet and derive piece count. Do NOT flag decorative wreaths, individual bows, or roofline runs here — those have their own categories.
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { runRender, RenderError } from '@/lib/rendering/orchestrator';
-import { listRenders } from '@/lib/rendering/storage';
+import { deleteRender, listRenders } from '@/lib/rendering/storage';
 import { coerceVision } from '@/lib/rendering/adapter';
 import type { RenderModel, RenderRequest, RenderStyle } from '@/lib/rendering/types';
 
@@ -22,8 +22,38 @@ export async function GET() {
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' }, { status: 503 });
   }
-  const items = await listRenders(100);
+  const items = await listRenders(500);
   return NextResponse.json({ items });
+}
+
+// Bulk delete endpoint. Protected by the same ADMIN_SECRET the per-render
+// DELETE uses. Iterates listRenders and deletes each one (storage + row).
+// Used by the admin gallery's "Delete all" button to purge bad test renders.
+export async function DELETE(req: NextRequest) {
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' }, { status: 503 });
+  }
+  const expected = process.env.ADMIN_SECRET;
+  if (!expected) {
+    return NextResponse.json({ error: 'ADMIN_SECRET not configured on server' }, { status: 503 });
+  }
+  const provided = req.headers.get('x-admin-secret');
+  if (!provided || provided !== expected) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const items = await listRenders(1000);
+  const errors: { id: string; error: string }[] = [];
+  let deleted = 0;
+  for (const r of items) {
+    try {
+      await deleteRender(r.id);
+      deleted += 1;
+    } catch (err) {
+      errors.push({ id: r.id, error: err instanceof Error ? err.message : 'unknown' });
+    }
+  }
+  return NextResponse.json({ deleted, errors });
 }
 
 export async function POST(req: NextRequest) {
@@ -86,6 +116,7 @@ export async function POST(req: NextRequest) {
       style,
       model,
       notes: body.notes,
+      skipCache: body.skipCache === true,
     });
     return NextResponse.json({ render });
   } catch (err) {

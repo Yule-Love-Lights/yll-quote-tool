@@ -48,6 +48,11 @@ export type RenderRequest = {
   style: RenderStyle;
   model?: RenderModel;              // defaults to RENDER_MODEL env var, then 'pro'
   notes?: string;
+  // Dev/admin escape hatch. When true the orchestrator skips the
+  // findByCacheKey lookup and forces a fresh Gemini call. Useful while
+  // iterating on the prompt — otherwise identical inputs keep serving the
+  // same old render. Never set this from the customer-facing quote flow.
+  skipCache?: boolean;
 };
 
 // Matches the Supabase `renders` table row shape (snake_case).
@@ -100,6 +105,10 @@ export type RenderListItem = {
 export type CompositeResult = {
   composite: Buffer;   // daytime-photo-looking dawn scene with bulbs placed
   mask: Buffer;        // white-on-black PNG, same dims — tells Gemini where lights are
+  bushMask?: Buffer;   // white-on-black PNG of ONLY bush/tree/column regions.
+                       // Emitted when inpaint is enabled — tells the inpaint
+                       // model which pixels it's allowed to repaint. Undefined
+                       // otherwise.
   width: number;
   height: number;
   placedBulbs: number; // diagnostic — how many bulb sprites we stamped

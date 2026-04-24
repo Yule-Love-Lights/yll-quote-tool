@@ -33,8 +33,69 @@ export function hashJson(obj: unknown): string {
   return createHash('sha256').update(JSON.stringify(obj)).digest('hex');
 }
 
+// Prompt version — part of the cache key. Bump this whenever the Gemini
+// prompt, negative-suffix logic, or compositor mask-drawing logic changes
+// in a way that would produce a materially different image for the same
+// vision+photo inputs. Otherwise the orchestrator's cache will happily
+// serve the pre-change render forever.
+//
+// History:
+//   v1 — initial launch (Phase 1)
+//   v2 — 2026-04-23: added negative prompt suffix for empty categories
+//        + Gemini MALFORMED_FUNCTION_CALL retry loop
+//   v3 — 2026-04-23: removed solar-panel-specific analyzer branches (too
+//        narrow — misfired on non-panel houses). Replaced with generic
+//        "mid-slope features don't define edges" rule + stronger ridge
+//        emphasis in the Gemini prompt so ridge bulbs render even when
+//        the roof slope has dark/reflective surface features.
+//   v4 — 2026-04-23: toned down bulb size language ("small plum/strawberry
+//        NOT golf ball or tangerine") after first Replicate-enabled render
+//        showed oversized roofline bulbs. Strengthened sprite count integrity
+//        (explicit "count them yourself before finalizing"). Added left/right
+//        symmetry self-check to analyzer so missed sides of the roofline are
+//        caught before returning.
+//   v5 — 2026-04-23: v4 bulb sizing still too large. Reduced composite
+//        BULB_DIAMETER_AT_1000PX from 8 to 5 (visual reference anchor) and
+//        added architectural size references in the Gemini prompt (bulb ≈
+//        gutter trough width, ≈ 1/40 window height, < wreath bow). Removes
+//        "commercial carnival" look in favor of refined residential.
+//   v6 — 2026-04-23: spritzer visibility fix. Raw spritzer sprite was pale
+//        cream on transparent — invisible against dusk base, so Gemini
+//        dropped them. Added warm radial glow halo under each sprite +
+//        brightness/saturation boost on the sprite itself + bumped min
+//        sprite size from 7% to 9% of width.
+//   v7 — 2026-04-23: v6 spritzer halos were too bright — pooled warm light
+//        onto surrounding grass. Pulled halo opacity down (0.85→0.45,
+//        0.45→0.20), halo size 1.5x→1.3x, sprite modulate 1.8/1.5→1.4/1.3.
+//        Spritzers still visible, just not "lawn lantern" bright.
+//   v8 — 2026-04-23: three fixes in one pass:
+//        (1) Power-line hallucination guard — Gemini painted an extra run of
+//            lights along a utility wire crossing near the roofline. Added
+//            rule to analyzer (don't trace wires/branches/fences as roof
+//            edges) and to Gemini prompt (never paint lights on power lines,
+//            telephone wires, service drops, or non-house objects).
+//        (2) Roofline continuity — Gemini skipped bulbs mid-run on this same
+//            render. Added explicit "maintain continuity, do not drop bulbs
+//            because the background is dark or a branch crosses in front"
+//            directive to the COUNT INTEGRITY block.
+//        (3) Spritzer size pullback — v7 size felt ~20% too large at the
+//            composite stage. Reduced spritzerMinSide from width*0.09 to
+//            width*0.075 so rendered stakes sit closer to a real ~2ft
+//            footprint relative to the house.
+//   v9 — 2026-04-23: v8 roofline-continuity paragraph still allowed Gemini
+//        to skip one bulb mid-run (visible gap in the front gutter). Rewrote
+//        as a stronger directive: each composite dot is a "billable installed
+//        C9 bulb," 1:1 mapping, plus an explicit pre-finalize checklist
+//        (scan left-to-right, count composite bulbs, count rendered bulbs,
+//        regenerate if counts don't match). Enumerates the common false
+//        excuses ("dark shingle behind," "tree branch in front," etc.) so
+//        the model can't rationalize a drop.
+export const RENDER_PROMPT_VERSION = 9;
+
 export function cacheKeyFor(photoHash: string, visionHash: string, style: RenderStyle, model: RenderModel): string {
-  return createHash('sha256').update(`${photoHash}::${visionHash}::${style}::${model}`).digest('hex');
+  return createHash('sha256')
+    .update(`v${RENDER_PROMPT_VERSION}::${photoHash}::${visionHash}::${style}::${model}`)
+    .digest('hex');
 }
 
 // Look up a prior render for the same inputs. If one exists and is
@@ -96,7 +157,7 @@ export async function updateRender(id: string, patch: Partial<StoredRender>): Pr
 
 export async function uploadArtifact(
   renderId: string,
-  kind: 'source' | 'composite' | 'mask' | 'final',
+  kind: 'source' | 'composite' | 'mask' | 'final' | 'gemini',
   buf: Buffer,
   contentType: string,
 ): Promise<string> {

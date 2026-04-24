@@ -23,13 +23,11 @@ export async function POST(req: NextRequest) {
 
   const { customer, inputs } = body as Record<string, unknown>;
 
-  if (!customer || typeof customer !== 'object') {
-    return NextResponse.json({ error: 'Missing customer info' }, { status: 400 });
-  }
-  const c = customer as Record<string, unknown>;
-  if (typeof c.name !== 'string' || !c.name.trim() ||
-      typeof c.address !== 'string' || !c.address.trim()) {
-    return NextResponse.json({ error: 'Customer name and address are required' }, { status: 400 });
+  // Testing mode: customer fields (name, address, phone, email) are all
+  // optional. We still accept the customer object so future fields can be
+  // added without a breaking change, but we don't require any value.
+  if (customer !== undefined && customer !== null && typeof customer !== 'object') {
+    return NextResponse.json({ error: 'customer must be an object if provided' }, { status: 400 });
   }
 
   if (!inputs || typeof inputs !== 'object') {
@@ -64,9 +62,10 @@ export async function POST(req: NextRequest) {
   try {
     const quoteInputs = inputs as QuoteInputs;
     const result = calculateQuote(quoteInputs);
-    const saved = await saveQuote(customer as Customer, quoteInputs, result);
+    const safeCustomer = (customer ?? {}) as Customer;
+    const saved = await saveQuote(safeCustomer, quoteInputs, result);
     return NextResponse.json({
-      customer,
+      customer: safeCustomer,
       result,
       quoteId: saved?.id ?? null,
       persisted: saved !== null,
