@@ -69,6 +69,14 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 md:py-4">
+        {errorMsg && (
+          <p
+            role="alert"
+            className="mb-2 text-[12px] md:text-[13px] text-[#8B2A1F] bg-[#F8E8E3] border border-[#E8C9BF] rounded-md px-3 py-1.5"
+          >
+            {errorMsg}
+          </p>
+        )}
         <div className="flex items-center justify-between gap-3 md:gap-6">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.14em] uppercase text-[#1F3D2B] truncate">

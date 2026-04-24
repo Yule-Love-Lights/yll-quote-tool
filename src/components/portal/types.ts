@@ -35,6 +35,23 @@ export type PortalLineItem = {
   price: number;        // dollars for this item
 };
 
+// Walkthrough video recorded by Naldo explaining this specific quote.
+// Sits below the hero on every portal version to increase close rate.
+// Two hosting modes so Naldo can use whichever is easiest today:
+//   - 'youtube': src is the 11-char YouTube video ID (NOT full URL)
+//   - 'mp4':     src is the full URL of a hosted .mp4 file (Supabase
+//                Storage, Cloudflare R2, any public CDN)
+export type PortalVideoKind = 'youtube' | 'mp4';
+
+export type PortalVideo = {
+  kind: PortalVideoKind;
+  src: string;           // YT id OR full mp4 URL
+  poster?: string;       // custom thumbnail — falls back to YT auto-thumb
+  title?: string;        // "Your personal walkthrough"
+  durationSec?: number;  // shown as "2:45" badge
+  leaderName?: string;   // "Naldo" — shown in the eyebrow label
+};
+
 export type PortalQuote = {
   id: string;
   customer: {
@@ -47,6 +64,7 @@ export type PortalQuote = {
     after: string;      // URL of render
     alt: string;
   };
+  video?: PortalVideo;  // optional — section hides entirely when absent
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
   weeklyBookings: number;    // real scarcity — pulled from DB in production

@@ -1,34 +1,35 @@
-// Customer-facing quote approval portal — the sales-close page.
-// Route: /portal/[quoteId]
+// Portal v2 DARK — the cinematic version of the customer approval page.
+// Route: /portal-dark/[quoteId]
 //
-// This page is a Server Component that composes the 15 sections in
-// the order defined in the spec. The only client boundaries are the
-// interactive pieces that mount inside <SelectionProvider>:
-//   - PackageCards (reads + writes package state)
-//   - WhatsIncluded (reads + writes line-item state)
-//   - StickyBottomBar (reads total + deposit for the live CTA)
-//   - Hero (before/after toggle — self-contained local state)
-//   - GoogleReviews / Gallery / FAQ (self-contained local state)
+// Same information architecture as v1 (15 sections, same data seams),
+// rebuilt on a dark festive theme where warm gold is the primary
+// accent and red appears almost exclusively on the sticky CTA.
 //
-// Mock data is injected from MOCK_QUOTE — the adapter seam for the
-// real DB lives in src/components/portal/mockQuote.ts.
+// v1 at /portal/[quoteId] is preserved and untouched. Both routes read
+// from the same MOCK_QUOTE so content drift between versions is zero.
+//
+// Client boundaries (mount beneath the shared SelectionProvider):
+//   - PackageCards, WhatsIncluded — package + line-item selection
+//   - StickyBottomBar — reads live total + deposit for the CTA
+//   - Hero — before/after crossfade toggle
+//   - GoogleReviews / Gallery / FAQ — self-contained local state
 
-import { TrustBar } from '@/components/portal/TrustBar';
-import { Hero } from '@/components/portal/Hero';
-import { WalkthroughVideo } from '@/components/portal/WalkthroughVideo';
-import { UrgencyBanner } from '@/components/portal/UrgencyBanner';
-import { PackageCards } from '@/components/portal/PackageCards';
-import { WhatsIncluded } from '@/components/portal/WhatsIncluded';
-import { RiskReversal } from '@/components/portal/RiskReversal';
-import { WhatHappensNext } from '@/components/portal/WhatHappensNext';
-import { MeetYourTeam } from '@/components/portal/MeetYourTeam';
-import { GoogleReviews } from '@/components/portal/GoogleReviews';
-import { Gallery } from '@/components/portal/Gallery';
-import { Philanthropy } from '@/components/portal/Philanthropy';
-import { FAQ } from '@/components/portal/FAQ';
-import { PersonalContact } from '@/components/portal/PersonalContact';
-import { StickyBottomBar } from '@/components/portal/StickyBottomBar';
-import { Disclaimer } from '@/components/portal/Disclaimer';
+import { TrustBar } from '@/components/portal/dark/TrustBar';
+import { Hero } from '@/components/portal/dark/Hero';
+import { WalkthroughVideo } from '@/components/portal/dark/WalkthroughVideo';
+import { UrgencyBanner } from '@/components/portal/dark/UrgencyBanner';
+import { PackageCards } from '@/components/portal/dark/PackageCards';
+import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
+import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
+import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
+import { GoogleReviews } from '@/components/portal/dark/GoogleReviews';
+import { Gallery } from '@/components/portal/dark/Gallery';
+import { Philanthropy } from '@/components/portal/dark/Philanthropy';
+import { FAQ } from '@/components/portal/dark/FAQ';
+import { PersonalContact } from '@/components/portal/dark/PersonalContact';
+import { StickyBottomBar } from '@/components/portal/dark/StickyBottomBar';
+import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import {
   MOCK_QUOTE,
@@ -40,16 +41,15 @@ import {
 
 type Params = { quoteId: string };
 
-export default async function PortalPage({
+export default async function PortalDarkPage({
   params,
 }: {
   params: Promise<Params>;
 }) {
   const { quoteId } = await params;
 
-  // In production: fetch the quote from the DB by quoteId. For now
-  // the mock is returned regardless, so the page renders fully while
-  // the portal is being iterated on.
+  // In production: fetch the quote from the DB by quoteId. The mock
+  // is returned for now so the page renders fully during iteration.
   const quote = MOCK_QUOTE;
 
   return (
@@ -57,7 +57,7 @@ export default async function PortalPage({
       {/* 1. Press trust bar — quiet credibility strip above the hero */}
       <TrustBar />
 
-      {/* 2. Hero — personalized headline + before/after render */}
+      {/* 2. Hero — personalized headline floating over dusk photo */}
       <Hero
         firstName={quote.customer.firstName}
         beforeUrl={quote.photo.before}
@@ -83,7 +83,7 @@ export default async function PortalPage({
         lineItems={quote.lineItems}
         initialPackageId="B"
       >
-        {/* 4. Package cards A/B/C/D */}
+        {/* 4. Package cards A/B/C/D — gold-glow selection, no red */}
         <PackageCards packages={quote.packages} />
 
         {/* 5. What's Included — per-line-item toggles */}
@@ -110,24 +110,25 @@ export default async function PortalPage({
         {/* 10. Gallery — editorial asymmetric grid with lightbox */}
         <Gallery items={MOCK_GALLERY_ITEMS} />
 
-        {/* 11. Philanthropy strip */}
+        {/* 11. Philanthropy strip — the one emotional red moment */}
         <Philanthropy />
 
         {/* 12. FAQ accordion */}
         <FAQ items={MOCK_FAQ} />
 
-        {/* 13. Personal contact — Naldo's direct line */}
+        {/* 13. Personal contact — gold phone number, glow text-shadow */}
         <PersonalContact
           leaderName={MOCK_TEAM.leaderName}
           photo={MOCK_TEAM.photo}
           phone={MOCK_TEAM.phone}
         />
 
-        {/* 15. Disclaimer — render caveat, small cream block */}
+        {/* 15. Disclaimer — muted text, spacer for sticky bar */}
         <Disclaimer />
 
         {/* 14. Sticky bottom CTA — ALWAYS last in tree so it overlays
-         * everything. Reads live total+deposit from context. */}
+         * everything. Reads live total+deposit from context. THE one
+         * place red is the primary color in this theme. */}
         <StickyBottomBar quoteId={quoteId} />
       </SelectionProvider>
     </main>

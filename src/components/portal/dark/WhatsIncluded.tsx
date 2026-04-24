@@ -1,0 +1,109 @@
+'use client';
+
+// Portal v2 DARK — What's Included. Per-item toggle list. Selected
+// items get gold icon badge + bright cream text; deselected items
+// dim out with muted cream. No red anywhere — keeps red reserved
+// for the sticky bar CTA.
+
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2 } from 'lucide-react';
+import type { PortalLineItem, PortalLineItemKind } from '../types';
+import { useSelection } from '../SelectionContext';
+import { formatUsd } from '../format';
+
+const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>> = {
+  roofline: Home,
+  ridge: Triangle,
+  tree: TreePine,
+  bush: Leaf,
+  wreath: Gift,
+  garland: Flower2,
+  spritzer: Sparkles,
+  column: Sparkles,
+};
+
+export type WhatsIncludedProps = {
+  items: PortalLineItem[];
+};
+
+export function WhatsIncluded({ items }: WhatsIncludedProps) {
+  const { isItemSelected, toggleItem, activeName } = useSelection();
+
+  return (
+    <section
+      aria-labelledby="portal-dark-included-heading"
+      className="relative w-full bg-[#121B16] border-y border-[#243029]"
+    >
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-20 md:py-28">
+        <div className="max-w-2xl mb-10 md:mb-12">
+          <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
+            What&apos;s Included
+          </p>
+          <h2
+            id="portal-dark-included-heading"
+            className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
+          >
+            Your {activeName} — line by line.
+          </h2>
+          <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
+            Toggle anything off to remove it. We&apos;ll switch your package to &ldquo;Build Your Own&rdquo; and update your total automatically.
+          </p>
+        </div>
+
+        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+          {items.map((item) => {
+            const Icon = ICONS[item.kind] ?? Sparkles;
+            const selected = isItemSelected(item.id);
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => toggleItem(item.id)}
+                  className={[
+                    'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,opacity] duration-300 text-left',
+                    'border',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
+                    selected
+                      ? 'bg-[#1F2A23] border-[#3C4F43]'
+                      : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100',
+                  ].join(' ')}
+                >
+                  <span
+                    aria-hidden
+                    className={[
+                      'shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-[background-color,box-shadow] duration-300',
+                      selected
+                        ? 'bg-[#E8B862] shadow-[0_0_14px_rgba(232,184,98,0.45)]'
+                        : 'bg-[#243029]',
+                    ].join(' ')}
+                  >
+                    <Icon className={selected ? 'w-5 h-5 text-[#0B140F]' : 'w-5 h-5 text-[#7B7361]'} aria-hidden />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className={`block font-display text-[17px] md:text-[18px] font-semibold leading-[1.3] tracking-[-0.005em] ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
+                      {item.label}
+                    </span>
+                    <span className={`block text-[14px] mt-0.5 ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
+                      {item.detail}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className={`block font-display text-[18px] font-semibold tabular-nums tracking-[-0.01em] ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
+                      {formatUsd(item.price)}
+                    </span>
+                    <span
+                      className="block text-[11px] font-semibold tracking-[0.14em] uppercase mt-1"
+                      style={{ color: selected ? '#E8B862' : '#7B7361' }}
+                    >
+                      {selected ? 'Included' : 'Off'}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
+  );
+}

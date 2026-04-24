@@ -23,6 +23,17 @@ export const MOCK_QUOTE: PortalQuote = {
     after: AFTER_PHOTO,
     alt: 'The Smith residence at 45 Main Street, Huntington',
   },
+  // Sample walkthrough video — a short Gary Vee clip as placeholder.
+  // In production Naldo records a ~90s Loom/phone clip per quote that
+  // walks through what he designed and why. Flip `kind` to 'mp4' and
+  // paste a direct URL when hosting on Supabase Storage / R2 instead.
+  video: {
+    kind: 'youtube',
+    src: 'dQw4w9WgXcQ',
+    title: 'Your personal walkthrough',
+    durationSec: 92,
+    leaderName: 'Naldo',
+  },
   lineItems: [
     { id: 'roofline', kind: 'roofline', label: "Santa's Roofline (gutterline)", detail: '180 ft', price: 900 },
     { id: 'ridge', kind: 'ridge', label: 'Gingerbread Ridge (ridgeline)', detail: '90 ft', price: 540 },

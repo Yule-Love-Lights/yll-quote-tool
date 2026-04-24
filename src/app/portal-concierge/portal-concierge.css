@@ -1,0 +1,293 @@
+/* Portal CONCIERGE v4 — scoped design tokens via .portal-concierge-root.
+ *
+ * Palette: Racing Green + Cream + two-red strategy + antique brass.
+ * Mood: Ralph Lauren country club Christmas — old-money Long Island.
+ *
+ * Red-budget rule:
+ *   ~50% cream surface
+ *   ~35% racing green (section bands, hero, sticky)
+ *   ~15% red (CTAs, eyebrows, rules, drop caps, hover states)
+ *    ~ shared with brass (ornaments only)
+ *
+ * Red has TWO shades:
+ *   --yc-red-bright  (Christmas red)   → CTAs, hover states, active states, price callouts
+ *   --yc-red-deep    (oxblood)         → eyebrows, rules, labels, drop caps, small ornaments
+ *
+ * Green is British Racing Green — dark enough to never read "cheap."
+ * Cream is #FAF6EF — warm off-white, zero sterile feel.
+ */
+
+.portal-concierge-root {
+  /* Base surfaces */
+  --yc-cream:         #FAF6EF;  /* main bg */
+  --yc-cream-2:       #F2EBDD;  /* slightly darker cream — alt sections */
+  --yc-cream-card:    #FFFBF3;  /* raised cards on cream */
+
+  /* Racing green — dark enough to never feel toy-aisle */
+  --yc-green:         #10401F;
+  --yc-green-bright:  #195428;
+  --yc-green-deep:    #0A2A14;
+
+  /* Two reds — bright for energy, deep for elegance */
+  --yc-red-bright:    #C8313D;
+  --yc-red-brighter:  #D8434F;
+  --yc-red-deep:      #8B1F2B;
+  --yc-red-deeper:    #6B1721;
+
+  /* Antique brass — ornaments, metallic accents only (never text) */
+  --yc-brass:         #B8955A;
+  --yc-brass-bright:  #D4B272;
+
+  /* Text */
+  --yc-ink:           #1A1714;  /* body text on cream */
+  --yc-ink-soft:      #3A332B;  /* subheadings */
+  --yc-ink-muted:     #6B6052;  /* captions, disclaimers */
+  --yc-cream-on-green:#F4ECD8;  /* text on racing green */
+
+  /* Borders — thin, elegant, oxblood-tinted */
+  --yc-rule:          rgba(139, 31, 43, 0.28); /* oxblood hairline */
+  --yc-rule-soft:     rgba(26, 23, 20, 0.12);  /* ink hairline for cards */
+  --yc-rule-strong:   rgba(139, 31, 43, 0.5);
+
+  /* Shadows — soft + warm, never harsh */
+  --yc-shadow-card:   0 1px 2px rgba(26,23,20,0.04), 0 8px 24px -8px rgba(26,23,20,0.10);
+  --yc-shadow-card-hi:0 2px 6px rgba(26,23,20,0.08), 0 20px 44px -12px rgba(26,23,20,0.16);
+  --yc-shadow-sticky: 0 -4px 20px -4px rgba(26,23,20,0.10);
+
+  /* Red glow for hover states on package cards */
+  --yc-glow-red:      0 0 0 4px rgba(200,49,61,0.14);
+
+  background: var(--yc-cream);
+  color: var(--yc-ink);
+  font-family: var(--font-concierge-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.portal-concierge-root .font-display {
+  font-family: var(--font-concierge-serif), ui-serif, Georgia, 'Times New Roman', serif;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.portal-concierge-root .font-display-italic {
+  font-family: var(--font-concierge-serif), ui-serif, Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* Eyebrow labels (oxblood, uppercase, generously-spaced) */
+.portal-concierge-eyebrow {
+  font-family: var(--font-concierge-sans), sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--yc-red-deep);
+}
+
+/* Roman-numeral section marker (big, serif, oxblood — feels like a real dossier) */
+.portal-concierge-numeral {
+  font-family: var(--font-concierge-serif), serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--yc-red-deep);
+  letter-spacing: 0.05em;
+}
+
+/* Drop cap — opening paragraph first letter, red serif, 3× body line-height */
+.portal-concierge-dropcap::first-letter {
+  font-family: var(--font-concierge-serif), serif;
+  float: left;
+  font-size: 5.2em;
+  line-height: 0.85;
+  padding: 0.08em 0.1em 0 0;
+  color: var(--yc-red-deep);
+  font-weight: 500;
+}
+
+/* Small decorative ornament mark (used between sections).
+ * Rendered via pseudo-element so we don't ship an SVG for one glyph.
+ * Real 4-point star / fleuron — classic editorial divider. */
+.portal-concierge-ornament {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 8px 0;
+  color: var(--yc-red-deep);
+}
+.portal-concierge-ornament::before,
+.portal-concierge-ornament::after {
+  content: '';
+  display: block;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 1px;
+  background: var(--yc-red-deep);
+  opacity: 0.35;
+}
+.portal-concierge-ornament-mark {
+  font-family: var(--font-concierge-serif), serif;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--yc-red-deep);
+}
+
+/* Formal hairline rule used below section headings */
+.portal-concierge-hairline {
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--yc-rule-strong), transparent);
+}
+
+/* Slow reveal on scroll — 500ms (twice as slow as v2) */
+.portal-concierge-reveal {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 500ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.portal-concierge-reveal[data-visible='true'] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Accordion (Enquiries / FAQ) — grid-template-rows trick, slower */
+.portal-concierge-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 360ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.portal-concierge-accordion[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+.portal-concierge-accordion > div {
+  overflow: hidden;
+}
+
+/* Sticky pill bar — floats bottom-right, NOT full-width, NOT centered.
+ * Concierge feels reserved, not pushy. */
+.portal-concierge-sticky {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 10px 10px 20px;
+  background: var(--yc-green);
+  color: var(--yc-cream-on-green);
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: var(--yc-shadow-card-hi), 0 0 0 1px rgba(139,31,43,0.15);
+  max-width: calc(100vw - 32px);
+  backdrop-filter: blur(10px);
+}
+
+/* Mobile: sticky pill takes full width minus gutters for tap comfort */
+@media (max-width: 640px) {
+  .portal-concierge-sticky {
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+    justify-content: space-between;
+    padding: 10px 10px 10px 18px;
+  }
+}
+
+/* Selected package card — oxblood left rule + soft red glow on hover */
+.portal-concierge-proposal[data-active='true'] {
+  border-color: var(--yc-red-bright);
+  box-shadow: var(--yc-glow-red);
+}
+
+/* Primary button base — Christmas red on cream */
+.portal-concierge-btn-primary {
+  background: var(--yc-red-bright);
+  color: var(--yc-cream);
+  transition: background-color 260ms ease, box-shadow 260ms ease, transform 160ms ease;
+}
+.portal-concierge-btn-primary:hover {
+  background: var(--yc-red-brighter);
+  box-shadow: var(--yc-glow-red);
+}
+.portal-concierge-btn-primary:active {
+  transform: translateY(1px);
+}
+
+/* Secondary button — oxblood outline on cream, fills to red on hover */
+.portal-concierge-btn-secondary {
+  background: transparent;
+  color: var(--yc-red-deep);
+  border: 1px solid var(--yc-red-deep);
+  transition: background-color 260ms ease, color 260ms ease, border-color 260ms ease;
+}
+.portal-concierge-btn-secondary:hover {
+  background: var(--yc-red-bright);
+  color: var(--yc-cream);
+  border-color: var(--yc-red-bright);
+}
+
+/* Inline link — oxblood text, dotted underline, promotes on hover to
+ * bright red with solid underline */
+.portal-concierge-link {
+  color: var(--yc-red-deep);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  transition: color 200ms ease;
+}
+.portal-concierge-link:hover {
+  color: var(--yc-red-bright);
+  text-decoration: underline solid;
+}
+
+/* On-green (inverse) button — cream outline, fills to cream on hover */
+.portal-concierge-btn-on-green {
+  background: transparent;
+  color: var(--yc-cream-on-green);
+  border: 1px solid rgba(244,236,216,0.45);
+}
+.portal-concierge-btn-on-green:hover {
+  background: var(--yc-cream-on-green);
+  color: var(--yc-green);
+  border-color: var(--yc-cream-on-green);
+}
+
+/* Section spacing scale — concierge uses ~2× the padding of v2 */
+.portal-concierge-section {
+  padding-top: 96px;
+  padding-bottom: 96px;
+}
+@media (min-width: 768px) {
+  .portal-concierge-section {
+    padding-top: 144px;
+    padding-bottom: 144px;
+  }
+}
+
+/* Section on cream-2 (slightly darker cream for alternation) */
+.portal-concierge-band {
+  background: var(--yc-cream-2);
+}
+
+/* Section on racing green (for hero + engagement + dividers) */
+.portal-concierge-band-green {
+  background: var(--yc-green);
+  color: var(--yc-cream-on-green);
+}
+
+/* Reduced motion — kill transitions and reveal animation */
+@media (prefers-reduced-motion: reduce) {
+  .portal-concierge-root *,
+  .portal-concierge-root *::before,
+  .portal-concierge-root *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .portal-concierge-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

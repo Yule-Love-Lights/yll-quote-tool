@@ -1,0 +1,198 @@
+/* Portal DARK v2 — scoped design tokens applied via .portal-dark-root
+ * wrapper in src/app/portal-dark/layout.tsx. Keeps admin UI and
+ * portal v1 untouched.
+ *
+ * Mood: cinematic dark mode — the lights are the star. Deep evergreen
+ * background (not pure black — pure black reads tech, not festive).
+ * Warm gold "bulb glow" as the primary accent. Christmas red used
+ * almost nowhere except key moments of emphasis. Cream text (never
+ * pure white — kills the warmth). */
+
+.portal-dark-root {
+  /* Backgrounds — stacked depth for cards on cards */
+  --yd-bg:           #0B140F;  /* main surface */
+  --yd-bg-raised:    #121B16;  /* slightly elevated zones */
+  --yd-bg-card:      #18221C;  /* cards on main bg */
+  --yd-bg-card-hi:   #1F2A23;  /* hover / selected */
+
+  /* Borders — low contrast, warm-tinted */
+  --yd-border:       #243029;
+  --yd-border-mid:   #2E3D34;
+  --yd-border-hi:    #3C4F43;
+
+  /* Warm gold — the bulb glow. Primary accent. */
+  --yd-gold:         #E8B862;
+  --yd-gold-bright:  #F5CC7A;
+  --yd-gold-dim:     #B08840;
+  --yd-gold-deep:    #7A5E20;
+
+  /* Red — used sparingly: CTA hover, peak emphasis only */
+  --yd-red:          #C8313D;
+  --yd-red-bright:   #D8434F;
+  --yd-red-deep:     #8F1D26;
+
+  /* Cream (text) — never pure white */
+  --yd-cream:        #F4ECD8;
+  --yd-cream-2:      #E0D7C1;
+  --yd-cream-dim:    #A89F87;
+  --yd-cream-muted:  #7B7361;
+
+  /* Glow — the "light is emitting" feel */
+  --yd-glow-gold-sm: 0 0 14px rgba(232, 184, 98, 0.35);
+  --yd-glow-gold-md: 0 0 28px rgba(232, 184, 98, 0.45), 0 0 60px rgba(232, 184, 98, 0.18);
+  --yd-glow-gold-lg: 0 0 48px rgba(232, 184, 98, 0.55), 0 0 100px rgba(232, 184, 98, 0.22);
+  --yd-glow-red:     0 0 22px rgba(200, 49, 61, 0.40), 0 0 48px rgba(200, 49, 61, 0.15);
+
+  /* Shadows — deeper than v1 because of dark surface */
+  --yd-shadow-card:        0 1px 2px rgba(0,0,0,0.4),  0 12px 32px -8px rgba(0,0,0,0.55);
+  --yd-shadow-card-hover:  0 2px 6px rgba(0,0,0,0.55), 0 24px 56px -12px rgba(0,0,0,0.75);
+  --yd-shadow-sticky:      0 -8px 32px -8px rgba(0,0,0,0.65);
+
+  background: var(--yd-bg);
+  color: var(--yd-cream);
+  font-family: var(--font-portal-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.portal-dark-root .font-display {
+  font-family: var(--font-portal-serif), ui-serif, Georgia, 'Times New Roman', serif;
+}
+
+/* Subtle ambient vignette — makes the page feel like a photograph with
+ * light falling on the center. Fixed overlay, non-interactive. */
+.portal-dark-root::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 20%, rgba(232,184,98,0.035), transparent 60%),
+    radial-gradient(ellipse 100% 70% at 50% 100%, rgba(0,0,0,0.35), transparent 50%);
+  z-index: 0;
+}
+
+/* Accordion (grid-template-rows trick, same as v1) */
+.portal-dark-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.portal-dark-accordion[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+.portal-dark-accordion > div {
+  overflow: hidden;
+}
+
+/* Bulb pulse — ONE accent dot, slower + gentler than v1 to avoid
+ * "disco lights" tacky energy */
+@keyframes portal-dark-bulb-pulse {
+  0%, 100% {
+    opacity: 0.85;
+    box-shadow: 0 0 12px rgba(232,184,98,0.45), 0 0 24px rgba(232,184,98,0.20);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 18px rgba(232,184,98,0.70), 0 0 40px rgba(232,184,98,0.35);
+  }
+}
+.portal-dark-bulb {
+  animation: portal-dark-bulb-pulse 2.8s ease-in-out infinite;
+}
+
+/* Cinematic reveal — slower + smaller translate than v1 (restrained) */
+.portal-dark-reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 600ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.portal-dark-reveal[data-visible='true'] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Hero bloom — radial golden wash over the hero photo to make the
+ * bulbs feel like they're emitting light rather than painted on. */
+.portal-dark-hero-bloom {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 62%, rgba(232,184,98,0.28) 0%, rgba(232,184,98,0.08) 30%, transparent 55%),
+    radial-gradient(ellipse 100% 80% at 50% 100%, rgba(11,20,15,0.75) 0%, transparent 60%);
+  mix-blend-mode: screen;
+}
+
+/* Confetti — warm palette only (gold tones), never red/green mix */
+@keyframes portal-dark-confetti {
+  0%   { transform: translate(0,0) rotate(0deg);   opacity: 1; }
+  100% { transform: translate(var(--tx), var(--ty)) rotate(540deg); opacity: 0; }
+}
+.portal-dark-confetti-particle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  animation: portal-dark-confetti 1600ms cubic-bezier(0.15, 0.75, 0.3, 1) forwards;
+  box-shadow: 0 0 8px rgba(232,184,98,0.6);
+}
+
+/* Crossfade used by hero before/after toggle */
+.portal-dark-crossfade {
+  transition: opacity 420ms ease-in-out;
+}
+
+/* Snap scroll for trust bar mobile horizontal overflow */
+.portal-dark-snap-x {
+  scroll-snap-type: x mandatory;
+}
+.portal-dark-snap-x > * {
+  scroll-snap-align: center;
+}
+
+/* Bulb-string divider — decorative SVG-free option using pseudo-els.
+ * Used sparingly between key sections. 5 tiny gold dots on a thin
+ * hairline. Subtle, NOT a sparkle strip. */
+.portal-dark-bulb-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 0;
+  opacity: 0.7;
+}
+.portal-dark-bulb-divider span {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--yd-gold);
+  box-shadow: 0 0 8px rgba(232,184,98,0.55);
+}
+.portal-dark-bulb-divider::before,
+.portal-dark-bulb-divider::after {
+  content: '';
+  display: block;
+  flex: 1 1 auto;
+  max-width: 80px;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(232,184,98,0.35), transparent);
+}
+
+/* Reduced motion — zero all animation/transition durations */
+@media (prefers-reduced-motion: reduce) {
+  .portal-dark-root *,
+  .portal-dark-root *::before,
+  .portal-dark-root *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .portal-dark-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .portal-dark-bulb {
+    animation: none !important;
+  }
+}
