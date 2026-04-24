@@ -39,6 +39,66 @@ For **each product size/tier**, upload **one clean reference photo**:
 
 ---
 
+## 1a. Placement Rules — where wreaths and spritzers go
+
+**This is the most important change to how the AI thinks about wreaths and spritzers.** They are NOT things we *detect* in a daytime photo — the customer doesn't have them up yet. The AI's job is to *suggest* where they SHOULD go, based on real install patterns. Then the renderer drops the transparent sprite on those spots for the nighttime preview.
+
+### Wreath placement — typical spots (ranked by how common they are on LI installs)
+
+1. **Portico** — most common. A small roof over the front door / entry area. One large wreath centered on the front face of the portico.
+2. **Peak / front gable** — the triangular face at the top of a gabled roof. One large wreath centered on the peak. Common on capes, colonials, splits.
+3. **Above the garage door** — centered on the siding above a single garage, OR one above each door on a double garage (so: 2 wreaths side by side).
+4. **Front door** — one medium wreath on the door itself. Almost always paired with one of the above.
+5. **Eyebrow roof / overhang** — a small roof projection over a window or bay. Wreath centered under the eyebrow.
+6. **Between upper windows** — on tall blank wall sections between two second-story windows.
+
+**Default sizes by location:**
+- Peak / portico / above-garage: **36" noble** (large, visible from street)
+- Front door: **30" noble**
+- Eyebrow / between-windows: **30" noble** or **24" noble**
+
+**Default tier:** `bow` (red velvet + gold trim bow is the house style). `fullDecor` only when customer specifically asks for ornaments.
+
+### Spritzer placement — typical spots
+
+Spritzers are **metallic starburst stakes** that plant into garden soil. They are used to **add depth and light to empty spots** — places that don't have a bush to wrap. Think of them as "decorative fill light" for the front-of-house landscaping.
+
+1. **Flower bed in front of the house** — most common. A row of 4-6 spritzer stakes spaced ~3ft apart across a foundation flower bed.
+2. **Walkway edges** — a line of spritzers flanking the path from driveway to front door (3-5 per side).
+3. **Front door / stoop area** — 2-4 spritzers flanking the stoop / porch.
+4. **Between foundation shrubs** — filling gaps in an otherwise mini-light-wrapped bush line.
+
+**Default size:** `24"` (most common stake). Use `16"` for small accent fills, `32"` for wide open beds where you want more visual impact.
+
+**Default quantity:** 4 stakes per empty bed. If the bed is long (say, runs the full front of the house), bump to 5 or 6.
+
+### What the AI should NOT do
+
+- Do NOT suggest a wreath or spritzer where one is already visible in the daytime photo.
+- Do NOT suggest a wreath on an asymmetric spot that would look odd (e.g., on the left half of the peak — always center).
+- Do NOT suggest spritzers in a flower bed that is already fully wrapped with mini-lights (they'd be redundant).
+- Do NOT suggest spritzers on a bare lawn with no bed boundary — they need a landscaped spot to plant into.
+
+### Sprite assets (`public/sprites/`)
+
+These are the transparent PNGs the renderer uses to draw wreaths and spritzers on the nighttime preview. Keep them fresh — when we change our product lineup (new bow color, new spritzer color), swap these files.
+
+- `wreath-bow.png` — default wreath (green noble + red/gold bow), used for `tier = 'bow'`.
+- `wreath-decor.png` — fullDecor wreath (bow + mixed ornaments), used for `tier = 'fullDecor'`.
+- `spritzer.png` — default warm-white starburst stake.
+- Future: `spritzer-red.png`, `spritzer-multi.png` — once we offer color variants, drop them here and we'll wire color-aware rendering.
+
+### Reference photos (`public/references/`)
+
+Real nighttime install photos the renderer cites ("make it look like these"). More variety here = better renders. Naming convention: `install-{what}-{where}.png`. Examples already loaded:
+- `install-wreath-peak.png` — wreath on gable peak
+- `install-wreath-portico.png` — wreath under portico
+- `install-wreaths-above-garage.png` — twin wreaths over double garage
+- `install-spritzers-flowebed.png` — spritzers in foundation flower bed
+- `install-spritzers-walkway.png` — spritzers flanking walkway
+
+---
+
 ## 2. Completed Job Training (`/training/new`)
 
 This is the money-maker. Every completed job you log here makes the next quote more accurate.

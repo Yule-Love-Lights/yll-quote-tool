@@ -12,6 +12,8 @@ import type {
   SpritzerSize,
   GarlandLength,
 } from '@/lib/pricing/pricingEngine';
+import type { CrmContact } from '@/lib/integrations/types';
+import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 
 // ─── Shared CSS constants ────────────────────────────────────────────────────
 
@@ -90,6 +92,23 @@ export default function NewQuotePage() {
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
+  // ─── HighLevel integration state ────────────────────────────────────────
+  // `highlevelContact`: the GHL contact picked in the autocomplete. When
+  // set, customer fields are pre-filled and we'll attach the quote to this
+  // contact's existing opportunity on save.
+  // `savedQuoteId`: UUID returned from /api/quote. Needed for the attach
+  // call and for the "Send Quote to Customer" button (which targets
+  // /api/quotes/[id]/send).
+  // `attachStatus` / `sendStatus`: informational — surfaced as a small
+  // status line so the operator knows whether the GHL side is in sync.
+  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
+  const [savedQuoteId, setSavedQuoteId] = useState<string | null>(null);
+  const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
   // Photo analysis
   type LineSegment = { points: [number, number][]; label: string };
   type MiniLightDetection = {
@@ -129,6 +148,15 @@ export default function NewQuotePage() {
   const [originalAnalysis, setOriginalAnalysis] = useState<unknown>(null);
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [correctionSaved, setCorrectionSaved] = useState(false);
+
+  // Nighttime render preview — fires alongside Calculate Quote so the customer
+  // sees the pricing first, then the artist's-rendering image loads underneath
+  // ~60s later. Non-blocking: render errors don't block the quote itself.
+  type RenderStatus = 'idle' | 'skipped' | 'rendering' | 'ready' | 'error';
+  const [renderStatus, setRenderStatus] = useState<RenderStatus>('idle');
+  const [renderUrl, setRenderUrl] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [renderSkipReason, setRenderSkipReason] = useState<string | null>(null);
   const [fewShotCount, setFewShotCount] = useState(0);
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
@@ -857,11 +885,194 @@ export default function NewQuotePage() {
   const updateGarland = (i: number, patch: Partial<GarlandItem>) =>
     set('garland', form.garland.map((item, idx) => idx === i ? { ...item, ...patch } : item));
 
+  // Fire a nighttime render in parallel with quote calculation. Uses the
+  // user's edited lines/detections (not raw Claude output) so corrections
+  // feed the visualization. Requires photoBase64 — only populated via the
+  // Street View / address-lookup path, not plain file upload. Failures here
+  // are non-fatal; the quote still shows.
+  const kickoffRender = async () => {
+    if (!photoBase64 || !photoMediaType) {
+      setRenderSkipReason('No analyzed photo available. Use "Analyze from Address" or upload + analyze a photo first, then recalculate.');
+      setRenderStatus('skipped');
+      return;
+    }
+    const vision = {
+      santasLines,
+      gingerbreadLines,
+      c9Lines,
+      miniLights: miniLightDetections,
+      wreaths: wreathDetections,
+      spritzers: spritzerDetections,
+      garland: garlandDetections,
+    };
+    // Skip if the photo has no placeable lighting — renderer would produce
+    // a nighttime photo of nothing, wasting a Gemini call.
+    const totalGeometry =
+      santasLines.length + gingerbreadLines.length + c9Lines.length +
+      miniLightDetections.length + wreathDetections.length +
+      spritzerDetections.length + garlandDetections.length;
+    if (totalGeometry === 0) {
+      setRenderSkipReason('No lines or detections on the photo. Draw at least one gutter/ridge polyline or accept a Claude detection before recalculating.');
+      setRenderStatus('skipped');
+      return;
+    }
+
+    setRenderStatus('rendering');
+    setRenderError(null);
+    setRenderUrl(null);
+    try {
+      const res = await fetch('/api/renders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photoBase64,
+          photoMediaType,
+          style: 'warm-white',
+          model: 'flash2',
+          vision,
+          notes: form.customer.name ? `Preview for ${form.customer.name}` : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Render failed');
+      const id: string | undefined = data.render?.id;
+      if (!id) throw new Error('Render response missing id');
+      const detailRes = await fetch(`/api/renders/${id}`);
+      const detail = await detailRes.json();
+      if (!detailRes.ok) throw new Error(detail.error ?? 'Could not fetch render URL');
+      const finalUrl: string | null = detail.urls?.final ?? null;
+      if (!finalUrl) throw new Error('Render completed but final image URL is missing');
+      setRenderUrl(finalUrl);
+      setRenderStatus('ready');
+    } catch (err) {
+      setRenderError(err instanceof Error ? err.message : 'Render failed');
+      setRenderStatus('error');
+    }
+  };
+
+  // Pick a HighLevel contact → pre-fill the customer block below.
+  // Precedence: HL data wins if the contact has a value for that field. If
+  // HL has nothing (e.g., contact was created without an email), we keep
+  // whatever is currently in the input — either typed by the operator or
+  // left from a prior contact pick.
+  //
+  // Rationale: picking a contact is an explicit "use this person" action;
+  // the operator expects the form to reflect the picked contact, not to
+  // silently ignore HL's data because a prior value (including browser
+  // autofill or a stray keystroke) was sitting in the field.
+  const pickHighLevelContact = (c: CrmContact) => {
+    setHighLevelContact(c);
+    const hlName = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
+    setForm(f => ({
+      ...f,
+      customer: {
+        name: hlName || f.customer.name,
+        phone: c.phone || f.customer.phone,
+        email: c.email || f.customer.email,
+        address: hlAddress || f.customer.address,
+      },
+    }));
+    // Reset attach status — the previous attach (if any) was against a
+    // different contact and doesn't apply anymore.
+    setAttachStatus('idle');
+    setAttachError(null);
+  };
+
+  const clearHighLevelContact = () => {
+    setHighLevelContact(null);
+    setAttachStatus('idle');
+    setAttachError(null);
+  };
+
+  // Attach this quote's existing HL opportunity. Called async after save;
+  // failures don't block the quote from displaying.
+  const attachQuoteToHighLevel = async (quoteId: string, contactId: string) => {
+    setAttachStatus('attaching');
+    setAttachError(null);
+    try {
+      const res = await fetch('/api/integrations/highlevel/attach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quoteId,
+          contactId,
+          opportunityName: form.customer.address.trim()
+            ? `Holiday Lights — ${form.customer.address.trim()}`
+            : undefined,
+          monetaryValue: result?.total,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      setAttachStatus('attached');
+    } catch (err) {
+      setAttachStatus('error');
+      setAttachError(err instanceof Error ? err.message : 'Attach failed');
+    }
+  };
+
+  // Build the portal URL from the saved quote id. Used both for the
+  // "Send to Customer" action (which moves the HL stage) and for the
+  // clipboard copy.
+  const portalUrlFor = (quoteId: string) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/portal/${quoteId}`;
+  };
+
+  // "Send Quote to Customer" — copies the portal URL to clipboard AND
+  // calls /api/quotes/:id/send which moves the HL opportunity stage to
+  // "Bid Sent". The admin still manually shares the URL (email/SMS/
+  // messaging app) — we don't auto-send yet. Phase 2 could add that.
+  const handleSendToCustomer = async () => {
+    if (!savedQuoteId) return;
+    setSendStatus('sending');
+    setSendError(null);
+    setCopiedUrl(false);
+
+    const url = portalUrlFor(savedQuoteId);
+    // Copy first so if the stage-move fails the operator still has the
+    // URL on their clipboard to share manually.
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(true);
+    } catch {
+      // Non-fatal — some browsers block clipboard without user gesture.
+      setCopiedUrl(false);
+    }
+
+    try {
+      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Send failed (${res.status})`);
+      setSendStatus('sent');
+    } catch (err) {
+      setSendStatus('error');
+      setSendError(err instanceof Error ? err.message : 'Send failed');
+    }
+  };
+
+  // "Re-render" — fires kickoffRender again. The server always generates
+  // a fresh image (no cache), so this just reuses the current geometry.
+  const handleRerender = () => {
+    void kickoffRender();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
     setResult(null);
+    setRenderStatus('idle');
+    setRenderUrl(null);
+    setRenderError(null);
+    setRenderSkipReason(null);
+    setSavedQuoteId(null);
+    setAttachStatus('idle');
+    setAttachError(null);
+    setSendStatus('idle');
+    setSendError(null);
+    setCopiedUrl(false);
 
     const inputs = {
       santasFootage: form.santasFootage,
@@ -890,7 +1101,21 @@ export default function NewQuotePage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
       setResult(data.result);
+      const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
+      setSavedQuoteId(newQuoteId);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+      // Fire the render in parallel — don't await it, the quote is already
+      // visible and the preview loads below ~60s later.
+      void kickoffRender();
+      // Attach to HL opportunity in parallel too, if an HL contact was picked.
+      if (newQuoteId && highlevelContact?.id) {
+        void attachQuoteToHighLevel(newQuoteId, highlevelContact.id);
+      } else if (highlevelContact?.id && !newQuoteId) {
+        // Quote wasn't persisted (Supabase not configured). Tell the
+        // operator the HL link won't be made either.
+        setAttachStatus('skipped');
+        setAttachError('Quote not persisted — HighLevel link skipped. Check Supabase config.');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -914,10 +1139,21 @@ export default function NewQuotePage() {
 
           {/* ── Customer Info ── */}
           <Section title="Customer Info">
+            {/* HighLevel contact autocomplete — pick an existing lead to
+                pre-fill the fields below. If no match (or if we're doing
+                a walk-in quote), just type straight into the fields. */}
+            <HighLevelContactAutocomplete
+              selected={highlevelContact}
+              onPick={pickHighLevelContact}
+              onClear={clearHighLevelContact}
+            />
+            <p className="text-xs text-amber-600 mb-3">
+              Testing mode — name / phone / email are optional. Address is optional too, but helps if you want to tie the quote to a real property.
+            </p>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className={lbl}>Name *</label>
-                <input className={inp} required placeholder="Jane Smith"
+                <label className={lbl}>Name</label>
+                <input className={inp} placeholder="Jane Smith (optional)"
                   value={form.customer.name} onChange={e => setCustomer('name', e.target.value)} />
               </div>
               <div>
@@ -931,8 +1167,8 @@ export default function NewQuotePage() {
                   value={form.customer.email} onChange={e => setCustomer('email', e.target.value)} />
               </div>
               <div>
-                <label className={lbl}>Property Address *</label>
-                <input className={inp} required placeholder="123 Main St, Smithtown, NY 11787"
+                <label className={lbl}>Property Address</label>
+                <input className={inp} placeholder="123 Main St, Smithtown, NY 11787"
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
             </div>
@@ -1622,13 +1858,14 @@ export default function NewQuotePage() {
                 </div>
               </div>
 
-              {/* Spritzers */}
+              {/* Spritzers — SUGGESTED PLACEMENT ZONES (one box per zone). */}
               <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
                   <span className="text-sm font-semibold text-gray-800">
-                    Spritzers — {spritzerDetections.length} item{spritzerDetections.length === 1 ? '' : 's'}
+                    Suggested spritzer zones — {spritzerDetections.length} zone{spritzerDetections.length === 1 ? '' : 's'}
                   </span>
+                  <span className="text-xs text-gray-400">(empty flower beds, walkway edges)</span>
                 </div>
                 {spritzerDetections.length > 0 && (
                   <div className="space-y-1.5 mb-3">
@@ -1661,14 +1898,14 @@ export default function NewQuotePage() {
                 </button>
               </div>
 
-              {/* Wreaths — detected boxes, auto-synced into form.wreaths */}
+              {/* Wreaths — SUGGESTED PLACEMENT boxes, auto-synced into form.wreaths */}
               <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <span className="w-4 h-2 border-2 border-purple-500 rounded-sm"></span>
                   <span className="text-sm font-semibold text-gray-800">
-                    Wreaths — {wreathDetections.length} item{wreathDetections.length === 1 ? '' : 's'}
+                    Suggested wreath spots — {wreathDetections.length} spot{wreathDetections.length === 1 ? '' : 's'}
                   </span>
-                  <span className="text-xs text-gray-400">(sized by door / garage context)</span>
+                  <span className="text-xs text-gray-400">(peak, portico, above garage, front door)</span>
                 </div>
                 {wreathDetections.length > 0 && (
                   <div className="space-y-1.5 mb-3">
@@ -2161,6 +2398,156 @@ export default function NewQuotePage() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── Nighttime Render Preview ── */}
+        {result && renderStatus !== 'idle' && (
+          <div className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
+            <div className="flex items-baseline justify-between mb-4 pb-2 border-b border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
+                Nighttime Preview
+              </h2>
+              <span className="text-xs text-amber-600">Artist&rsquo;s rendering — actual install may vary.</span>
+            </div>
+
+            {renderStatus === 'rendering' && (
+              <div className="flex items-center gap-3 text-sm text-gray-500 py-10 justify-center">
+                <span className="inline-block h-3 w-3 rounded-full bg-green-500 animate-pulse" />
+                Generating your nighttime preview… this usually takes 30–90 seconds.
+              </div>
+            )}
+
+            {renderStatus === 'skipped' && (
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                Preview skipped: {renderSkipReason ?? 'Missing photo or geometry.'}
+              </div>
+            )}
+
+            {renderStatus === 'error' && (
+              <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">
+                Preview failed: {renderError ?? 'Unknown error'}. The quote above is still valid.
+              </div>
+            )}
+
+            {renderStatus === 'ready' && renderUrl && (
+              <div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={renderUrl}
+                  alt="Nighttime render of your home with holiday lights"
+                  className="w-full rounded-md border border-gray-300"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Warm-white C9 bulbs, blue-hour sky, interior glow. Final installs are tuned on-site; colors and placement may vary slightly.
+                </p>
+              </div>
+            )}
+
+            {/* Re-render action — available any time the render isn't
+                actively in flight. If the AI produced something weird we
+                can kick off a fresh generation without recalculating the
+                quote or re-drawing polylines. */}
+            {renderStatus !== 'rendering' && (
+              <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-500">
+                  If the render looks wrong (missing lights, weird artifacts, wrong angle), try again — Gemini is non-deterministic and a second attempt often fixes it.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRerender}
+                  className="shrink-0 border border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 text-gray-800 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  🔄 Re-render
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Send Quote to Customer ────────────────────────────────────
+            Surfaces once a quote has been saved (so we have an ID for the
+            portal URL). Copies the customer-facing link to the clipboard
+            AND moves the HighLevel opportunity to "📨Bid Sent". Manual
+            share — admin pastes the URL into email/SMS/etc. */}
+        {savedQuoteId && result && (
+          <div className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
+            <div className="flex items-baseline justify-between mb-4 pb-2 border-b border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
+                Send Quote to Customer
+              </h2>
+              <span className="text-xs text-gray-400">Copies link + updates pipeline</span>
+            </div>
+
+            {/* Portal URL preview — always visible so the admin can copy
+                manually if the button didn't work (e.g., clipboard blocked). */}
+            <div className="mb-3">
+              <p className={lbl}>Customer Portal URL</p>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={portalUrlFor(savedQuoteId)}
+                  className="flex-1 border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm text-gray-700 font-mono"
+                  onClick={e => (e.target as HTMLInputElement).select()}
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(portalUrlFor(savedQuoteId));
+                      setCopiedUrl(true);
+                      setTimeout(() => setCopiedUrl(false), 2000);
+                    } catch { /* clipboard blocked */ }
+                  }}
+                  className="shrink-0 border border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 text-gray-700 font-medium text-xs px-3 py-2 rounded-md whitespace-nowrap"
+                >
+                  {copiedUrl ? '✓ Copied' : '📋 Copy'}
+                </button>
+              </div>
+            </div>
+
+            {/* HighLevel attach status — informational. The operator might
+                have skipped the HL autocomplete (walk-in quote), in which
+                case "Send Quote to Customer" still works but no pipeline
+                stage moves. */}
+            {highlevelContact && (
+              <div className="mb-3 text-xs">
+                {attachStatus === 'attaching' && (
+                  <span className="text-gray-500">Linking to HighLevel opportunity…</span>
+                )}
+                {attachStatus === 'attached' && (
+                  <span className="text-green-700">✓ Linked to {highlevelContact.fullName || 'HighLevel contact'}&rsquo;s pipeline card</span>
+                )}
+                {attachStatus === 'error' && (
+                  <span className="text-red-600">HighLevel link failed: {attachError}. Sending will still copy the URL but won&rsquo;t move the pipeline stage.</span>
+                )}
+                {attachStatus === 'skipped' && (
+                  <span className="text-amber-700">{attachError}</span>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-500 flex-1">
+                Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
+              </p>
+              <button
+                type="button"
+                onClick={handleSendToCustomer}
+                disabled={sendStatus === 'sending'}
+                className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
+              >
+                {sendStatus === 'sending' ? 'Sending…'
+                  : sendStatus === 'sent' ? '✓ Sent — stage moved to Bid Sent'
+                  : '📨 Send Quote to Customer'}
+              </button>
+            </div>
+
+            {sendStatus === 'error' && (
+              <p className="mt-3 text-sm text-red-600">
+                Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
+              </p>
+            )}
           </div>
         )}
 
