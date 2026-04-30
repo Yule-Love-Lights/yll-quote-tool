@@ -8,12 +8,38 @@
 // boundary here — keeps LCP low and the static content pre-rendered.
 
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { Truck, MessageSquare, PackageOpen, Phone, ArrowRight } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/ApprovalCelebration';
 import { ReferralCard } from '@/components/portal/ReferralCard';
+import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
+import { formatQuoteRef, formatUsd } from '@/components/portal/format';
+import type { PortalQuote } from '@/components/portal/types';
 
 type Params = { quoteId: string };
+
+// Same dev-fallback pattern as the main portal page: real DB first, mock
+// when Supabase isn't configured. 404 on missing real row. notFound()
+// must live OUTSIDE the try/catch — see the main portal page for the
+// rationale.
+//
+// Extra rule for THIS page: even when the row exists, we 404 unless the
+// customer has actually approved (quote.approval is populated). Without
+// this guard anyone with the URL could preview the celebration page
+// before booking, which would be misleading.
+async function resolveQuote(quoteId: string): Promise<PortalQuote> {
+  let real: PortalQuote | null = null;
+  try {
+    real = await loadPortalQuote(quoteId);
+  } catch (err) {
+    if (err instanceof PortalConfigError) return MOCK_QUOTE;
+    throw err;
+  }
+  if (!real) notFound();
+  if (!real.approval) notFound();
+  return real;
+}
 
 export default async function ApprovedPage({
   params,
@@ -21,11 +47,11 @@ export default async function ApprovedPage({
   params: Promise<Params>;
 }) {
   const { quoteId } = await params;
-
-  // In production this would fetch the quote from the DB by quoteId.
-  // For now we use mock data regardless of the param.
-  const quote = MOCK_QUOTE;
-  const telHref = `tel:${MOCK_TEAM.phone.replace(/[^0-9+]/g, '')}`;
+  const quote = await resolveQuote(quoteId);
+  const leaderName =
+    process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || MOCK_TEAM.leaderName;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
+  const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
   const nextSteps: Array<{
     icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
@@ -61,7 +87,7 @@ export default async function ApprovedPage({
       >
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 md:pt-28 pb-10 md:pb-14 text-center">
           <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.14em] uppercase text-[#1F3D2B] mb-4">
-            Deposit received · Quote {quote.id}
+            Deposit received · Quote {formatQuoteRef(quote.id)}
           </p>
           <h1
             id="approved-headline"
@@ -80,17 +106,51 @@ export default async function ApprovedPage({
         </div>
       </section>
 
-      {/* Booking summary card */}
+      {/* Booking summary card. Top half = what they bought (frozen at
+          approval time), bottom half = logistics. Logistics dates are
+          intentionally hardcoded for now — the season calendar is a
+          global property of the business, not per-quote. */}
       <section aria-label="Booking summary" className="w-full">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pb-10 md:pb-14">
           <div className="rounded-2xl bg-[#FBF5E8] border border-[#E8DFCC] p-6 md:p-8 shadow-[0_1px_2px_rgba(31,27,22,0.04),0_8px_24px_-8px_rgba(31,27,22,0.08)]">
+            {/* Package + price summary — only renders when approval data
+                is present (which is enforced by the page-level 404
+                already, but cheap belt-and-suspenders). */}
+            {quote.approval && (
+              <div className="border-b border-[#E8DFCC] pb-5 mb-5 md:pb-6 md:mb-6">
+                <p className="text-[11px] font-semibold tracking-[0.14em] uppercase text-[#1F3D2B]">
+                  Package booked
+                </p>
+                <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#1F1B16] mt-1">
+                  {quote.approval.packageName}
+                </p>
+                <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+                  <p className="text-[14px] md:text-[15px] text-[#3A3229]">
+                    <span className="font-semibold text-[#1F1B16]">{formatUsd(quote.approval.totalUsd)}</span>{' '}
+                    season total
+                  </p>
+                  <p className="text-[14px] md:text-[15px] text-[#3A3229]">
+                    <span className="font-semibold text-[#1F3D2B]">{formatUsd(quote.approval.depositUsd)}</span>{' '}
+                    deposit paid
+                  </p>
+                  <p className="text-[14px] md:text-[15px] text-[#3A3229]">
+                    Balance{' '}
+                    <span className="font-semibold text-[#1F1B16]">
+                      {formatUsd(quote.approval.totalUsd - quote.approval.depositUsd)}
+                    </span>{' '}
+                    on install day
+                  </p>
+                </div>
+              </div>
+            )}
+
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-8">
               <div>
                 <dt className="text-[11px] font-semibold tracking-[0.14em] uppercase text-[#1F3D2B]">
                   Address
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#1F1B16] mt-1">
-                  {quote.customer.address}
+                  {quote.customer.address || '—'}
                 </dd>
               </div>
               <div>
@@ -114,7 +174,7 @@ export default async function ApprovedPage({
                   Your crew lead
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#1F1B16] mt-1">
-                  {MOCK_TEAM.leaderName}
+                  {leaderName}
                 </dd>
               </div>
             </dl>
@@ -207,14 +267,14 @@ export default async function ApprovedPage({
             Questions between now and install day?
           </p>
           <h3 className="font-display text-[26px] md:text-[32px] font-semibold text-[#1F1B16]">
-            Text {MOCK_TEAM.leaderName} directly.
+            Text {leaderName} directly.
           </h3>
           <a
             href={telHref}
             className="inline-flex items-center gap-2.5 mt-5 px-5 py-3 rounded-xl bg-[#B3202D] text-[#FAF6EF] font-semibold text-[16px] cursor-pointer transition-colors duration-200 hover:bg-[#8A1A22] shadow-[0_2px_8px_rgba(179,32,45,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C89B3C] focus-visible:ring-offset-2 focus-visible:ring-offset-[#FAF6EF]"
           >
             <Phone className="w-5 h-5" aria-hidden />
-            {MOCK_TEAM.phone}
+            {phone}
           </a>
 
           <div className="mt-10">
