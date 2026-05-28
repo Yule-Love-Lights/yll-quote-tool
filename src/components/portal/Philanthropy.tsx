@@ -1,12 +1,21 @@
 // Philanthropy — subtle, classy credibility. Full-bleed evergreen
-// strip, cream copy. One paragraph, one quiet link.
+// strip, cream copy. One paragraph, partner logos, one quiet link.
 
+import Image from 'next/image';
 import { Heart } from 'lucide-react';
 
 const PARTNERS = [
   'Michael Magro Foundation',
   'Beaumont Civic Association',
   'American Cancer Society',
+];
+
+// Logos we have artwork for (public/*). Beaumont has no logo on file, so
+// it stays text-only in the paragraph above. Logos sit on white chips
+// because both marks are dark-on-light and would vanish on evergreen.
+const PARTNER_LOGOS = [
+  { src: '/MMF.jpg', alt: 'Michael Magro Foundation' },
+  { src: '/acs_logo_fb.png', alt: 'American Cancer Society' },
 ];
 
 export function Philanthropy() {
@@ -42,6 +51,26 @@ export function Philanthropy() {
               ))}
               . When you choose Yule Love Lights, you&apos;re quietly supporting that mission too.
             </p>
+
+            {/* Partner logos on white chips so the dark-on-light marks read
+                against the evergreen band. */}
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              {PARTNER_LOGOS.map((logo) => (
+                <div
+                  key={logo.src}
+                  className="relative h-16 w-32 rounded-lg bg-white shadow-[0_4px_14px_-4px_rgba(0,0,0,0.35)]"
+                >
+                  <Image
+                    src={logo.src}
+                    alt={logo.alt}
+                    fill
+                    sizes="128px"
+                    className="object-contain p-2.5"
+                  />
+                </div>
+              ))}
+            </div>
+
             <a
               href="#"
               className="inline-block mt-6 font-display underline underline-offset-4 text-[#D9B15B] hover:text-[#FAF6EF] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C89B3C] focus-visible:ring-offset-2 focus-visible:ring-offset-[#1F3D2B] rounded-sm"

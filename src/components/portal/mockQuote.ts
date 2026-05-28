@@ -23,6 +23,10 @@ export const MOCK_QUOTE: PortalQuote = {
     after: AFTER_PHOTO,
     alt: 'The Smith residence at 45 Main Street, Huntington',
   },
+  // Mock has no per-package variant images — every card falls back to the
+  // 'after' hero. Real production data flows through fetchPortalPhotos
+  // and populates this map from the renders table.
+  variantPhotos: {},
   // Sample walkthrough video — a short Gary Vee clip as placeholder.
   // In production Naldo records a ~90s Loom/phone clip per quote that
   // walks through what he designed and why. Flip `kind` to 'mp4' and
@@ -98,22 +102,23 @@ export const MOCK_QUOTE: PortalQuote = {
   },
 };
 
-// Neighborhoods for the gallery — real Long Island zip codes.
+// Gallery — REAL Yule Love Lights night installs (public/references/*).
+// The chip label uses the lighting STYLE rather than a neighborhood,
+// because we don't have verified addresses for these specific homes.
+// Swap the `neighborhood` values for real town names (Huntington,
+// Garden City, etc.) once Naldo confirms which house is which.
 export const MOCK_GALLERY_ITEMS: Array<{
   id: string;
   src: string;
   neighborhood: string;
   alt: string;
 }> = [
-  { id: 'g1', neighborhood: 'Huntington',           src: 'https://images.unsplash.com/photo-1482192596544-9eb780fc7f66?auto=format&fit=crop&w=1000&q=75', alt: 'Festive home in Huntington' },
-  { id: 'g2', neighborhood: 'Muttontown',           src: 'https://images.unsplash.com/photo-1512915922686-57c11dde9b6b?auto=format&fit=crop&w=1000&q=75', alt: 'Estate in Muttontown' },
-  { id: 'g3', neighborhood: 'Cold Spring Harbor',   src: 'https://images.unsplash.com/photo-1608889825103-eb5ed706fc64?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Cold Spring Harbor' },
-  { id: 'g4', neighborhood: 'Garden City',          src: 'https://images.unsplash.com/photo-1574362848149-11496d93a7c7?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Garden City' },
-  { id: 'g5', neighborhood: 'Lloyd Harbor',         src: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Lloyd Harbor' },
-  { id: 'g6', neighborhood: 'Oyster Bay',           src: 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Oyster Bay' },
-  { id: 'g7', neighborhood: 'Dix Hills',            src: 'https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Dix Hills' },
-  { id: 'g8', neighborhood: 'Old Westbury',         src: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Old Westbury' },
-  { id: 'g9', neighborhood: 'Sands Point',          src: 'https://images.unsplash.com/photo-1628624747186-a941c476b7ef?auto=format&fit=crop&w=1000&q=75', alt: 'Home in Sands Point' },
+  { id: 'g1', neighborhood: 'Warm White Classic', src: '/references/install-night-1.jpg',              alt: 'Two-story Long Island home outlined in warm-white C9 bulbs with a lit wreath on the peak and illuminated trees' },
+  { id: 'g2', neighborhood: 'Red & White',        src: '/references/install-night-2.jpg',              alt: 'Colonial home with alternating red and white roofline bulbs, a lit wreath, and snowflake spritzer stakes' },
+  { id: 'g3', neighborhood: 'Full Bush Wrap',     src: '/references/install-bushes-and-spritzers.png', alt: 'Home with warm-white roofline and front bushes fully wrapped in mini-lights with spritzer stakes' },
+  { id: 'g4', neighborhood: 'Blue & White',       src: '/references/install-wreath-peak.png',          alt: 'Two-story home edged in blue and white bulbs with a lit bow wreath at the peak and snowflake stakes' },
+  { id: 'g5', neighborhood: 'Walkway Spritzers',  src: '/references/install-spritzers-walkway.png',    alt: 'Home with warm-white roofline, garland-wrapped columns, and lit spritzer stakes lining the walkway' },
+  { id: 'g6', neighborhood: 'Portico Columns',    src: '/references/install-wreath-portico.png',       alt: 'Home with warm-white roofline, light-wrapped portico columns, a peak wreath, and snowflake stakes' },
 ];
 
 export const MOCK_REVIEWS = [
@@ -158,8 +163,11 @@ export const MOCK_TEAM = {
   leaderName: 'Naldo',
   title: 'Director of Operations',
   subtitle: "Former Director of Operations at a $13M Chick-fil-A.",
-  photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80',
+  // Real team photo — the full crew in front of the branded YLL trailer.
+  // This is a wide group shot, not a headshot, so MeetYourTeam renders it
+  // in a landscape frame (not the old circular portrait).
+  photo: '/team.jpeg',
   body:
-    "That's the standard we bring to your home. Our 5-person team installs every property with the same care we'd give our own.",
+    "That's the standard we bring to your home. Our crew installs every property with the same care we'd give our own.",
   phone: '(555) 123-4567',
 };

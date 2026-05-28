@@ -36,22 +36,47 @@ const APPROVERS = new Set(['naldo', 'jason', 'internal']);
 // Returns the render row plus short-lived signed URLs for each artifact.
 // Signed URLs are what the admin gallery displays — lets us keep the bucket
 // private while still rendering in the browser.
+//
+// The whole body is wrapped so we ALWAYS return JSON. Without the wrapper,
+// any throw (Supabase row error, RLS reject, malformed jsonb) bubbles up
+// and Next.js serves the default HTML 500 page — which the calling
+// frontend (/quote/new, /admin/renders) tries to JSON.parse, blowing up
+// with "Unexpected token '<'" and hiding the real error.
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' }, { status: 503 });
   }
   const { id } = await params;
-  const render = await getRender(id);
-  if (!render) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const urls: Record<string, string | null> = {
-    source: render.source_path ? await getSignedUrl(render.source_path).catch(() => null) : null,
-    composite: render.composite_path ? await getSignedUrl(render.composite_path).catch(() => null) : null,
-    mask: render.mask_path ? await getSignedUrl(render.mask_path).catch(() => null) : null,
-    final: render.final_path ? await getSignedUrl(render.final_path).catch(() => null) : null,
-  };
+  // Step-by-step with phase tagging so the next failure points at the
+  // exact line that died — saves a round-trip through the dev server log.
+  // Stack trace + phase are included in the response in non-prod only.
+  let phase: 'getRender' | 'sign-source' | 'sign-composite' | 'sign-mask' | 'sign-final' | 'serialize' = 'getRender';
+  try {
+    const render = await getRender(id);
+    if (!render) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  return NextResponse.json({ render, urls });
+    phase = 'sign-source';
+    const sourceUrl = render.source_path ? await getSignedUrl(render.source_path).catch(() => null) : null;
+    phase = 'sign-composite';
+    const compositeUrl = render.composite_path ? await getSignedUrl(render.composite_path).catch(() => null) : null;
+    phase = 'sign-mask';
+    const maskUrl = render.mask_path ? await getSignedUrl(render.mask_path).catch(() => null) : null;
+    phase = 'sign-final';
+    const finalUrl = render.final_path ? await getSignedUrl(render.final_path).catch(() => null) : null;
+
+    phase = 'serialize';
+    const urls = { source: sourceUrl, composite: compositeUrl, mask: maskUrl, final: finalUrl };
+    return NextResponse.json({ render, urls });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    const stack = process.env.NODE_ENV !== 'production' && err instanceof Error ? err.stack : undefined;
+    console.error(`[api/renders/${id}] GET failed at phase=${phase}:`, err);
+    return NextResponse.json(
+      { error: `Render fetch failed at phase=${phase}: ${msg}`, phase, ...(stack ? { stack } : {}) },
+      { status: 500 },
+    );
+  }
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

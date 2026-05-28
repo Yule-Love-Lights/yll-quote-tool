@@ -20,12 +20,12 @@ export function MeetYourTeam({ leaderName, title, subtitle, photo, body }: MeetY
     >
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
         <div className="flex flex-col md:flex-row items-start md:items-center gap-6 md:gap-12">
-          <div className="relative w-[140px] h-[140px] md:w-[200px] md:h-[200px] shrink-0 rounded-full overflow-hidden ring-4 ring-[#FBF5E8] shadow-[0_8px_28px_-8px_rgba(31,27,22,0.25)]">
+          <div className="relative w-full md:w-[420px] aspect-[3/2] shrink-0 rounded-2xl overflow-hidden ring-1 ring-[#E8DFCC] shadow-[0_10px_32px_-10px_rgba(31,27,22,0.3)]">
             <Image
               src={photo}
-              alt={`Portrait of ${leaderName}`}
+              alt={`The Yule Love Lights crew, led by ${leaderName}`}
               fill
-              sizes="(max-width: 768px) 140px, 200px"
+              sizes="(max-width: 768px) 100vw, 420px"
               className="object-cover"
             />
           </div>

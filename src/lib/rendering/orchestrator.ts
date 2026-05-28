@@ -13,7 +13,7 @@
 //   8. on any failure → set status='failed' + error_message, re-throw
 
 import { buildComposite } from './compositor';
-import { renderWithGemini, isGeminiConfigured, resolveRenderModel } from './gemini';
+import { renderWithGemini, isGeminiConfigured, resolveRenderModel, resolveVariantModel } from './gemini';
 import { isInpaintConfigured, runInpaint, InpaintError } from './inpaint';
 import {
   cacheKeyFor,
@@ -26,7 +26,9 @@ import {
   updateRender,
   uploadArtifact,
 } from './storage';
-import type { RenderRequest, RenderVisionInput, StoredRender } from './types';
+import { PORTAL_VARIANTS } from './types';
+import type { RenderRequest, RenderVariant, RenderVisionInput, StoredRender } from './types';
+import { filterVisionForVariant, variantHasContent } from './variants';
 
 // When a category has zero items (operator unchecked it, or analyzer didn't
 // detect any), Gemini STILL loves to hallucinate that category in from its
@@ -74,13 +76,27 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
     throw new RenderError('GEMINI_API_KEY not configured — set it in .env.local', 'config');
   }
 
-  const model = resolveRenderModel(req.model);
+  const variant: RenderVariant = req.variant ?? 'full';
+  // Variants other than 'full' run on the cheaper RENDER_VARIANT_MODEL tier
+  // (defaults to flash2 / Gemini 3.1 Flash) since portal card images are
+  // smaller and the per-quote cost would multiply otherwise. The 'full'
+  // hero shot uses whatever the caller / RENDER_MODEL env requests.
+  const model = variant === 'full'
+    ? resolveRenderModel(req.model)
+    : resolveVariantModel();
+
+  // Apply variant filter BEFORE hashing so each variant gets a distinct
+  // visionHash and cache_key. Otherwise a cached 'full' render would
+  // serve back when 'santas' is requested.
+  const filteredVision = filterVisionForVariant(req.vision, variant);
+
   const sourceBuf = Buffer.from(req.photoBase64, 'base64');
   const photoHash = hashBuffer(sourceBuf);
-  const visionHash = hashJson(req.vision);
-  // Model is part of the cache key so a Flash render doesn't serve back
-  // when the caller asks for Pro (or vice-versa).
-  const cacheKey = cacheKeyFor(photoHash, visionHash, req.style, model);
+  const visionHash = hashJson(filteredVision);
+  // Model + variant are part of the cache key so a Flash render doesn't
+  // serve back when the caller asks for Pro, and a 'santas' variant doesn't
+  // serve back when 'full' is requested.
+  const cacheKey = cacheKeyFor(photoHash, visionHash, req.style, model, variant);
 
   // Cache hit — return prior render for identical inputs. Callers can pass
   // skipCache=true to force a fresh render (admin UI "force rerender" button).
@@ -107,6 +123,7 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
     quoteId: req.quoteId,
     style: req.style,
     model,
+    variant,
     photoHash,
     visionHash,
     cacheKey,
@@ -123,13 +140,15 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
     //   stage 1: Gemini renders everything EXCEPT bush mini-lights
     //   stage 2: Replicate inpaint repaints ONLY inside the bush mask regions
     // This sidesteps Gemini's net-light/garland prior entirely.
-    const hasBushes = (req.vision.miniLights?.length ?? 0) > 0;
+    // Use the FILTERED vision so a non-minis variant doesn't trigger the
+    // inpaint pipeline (e.g., 'santas' variant has zero bushes).
+    const hasBushes = (filteredVision.miniLights?.length ?? 0) > 0;
     const useInpaint = isInpaintConfigured() && hasBushes;
 
     const composite = await buildComposite(
       req.photoBase64,
       req.photoMediaType,
-      req.vision,
+      filteredVision,
       { style: req.style, inpaintBushes: useInpaint },
     );
 
@@ -143,7 +162,7 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
       mask_path: maskPath,
     });
 
-    const negativeSuffix = buildNegativeSuffix(req.vision);
+    const negativeSuffix = buildNegativeSuffix(filteredVision);
 
     const gemini = await renderWithGemini({
       sourcePhoto: sourceBuf,
@@ -222,4 +241,81 @@ export async function runRender(req: RenderRequest): Promise<StoredRender> {
     }).catch(() => { /* don't mask the real error */ });
     throw err instanceof RenderError ? err : new RenderError(msg, 'unknown');
   }
+}
+
+// One row per variant in the batch result. `skipped: true` means the
+// variant had no content to render (e.g., 'wreaths' on a quote with zero
+// wreath placements) and was intentionally not rendered.
+export type VariantBatchOutcome =
+  | { variant: RenderVariant; status: 'rendered' | 'cached'; render: StoredRender }
+  | { variant: RenderVariant; status: 'skipped'; reason: string }
+  | { variant: RenderVariant; status: 'failed'; error: string };
+
+// Render the full package + every applicable per-package variant for a
+// quote. The 'full' variant always runs (it's the hero shot). Other
+// variants only run if `variantHasContent()` says they have something
+// to show — no point burning a Gemini call to render "house with zero
+// wreaths" when the analyzer found no wreaths.
+//
+// Concurrency: capped at MAX_PARALLEL to stay polite to Gemini. Higher
+// values rate-limit fast; lower values stretch the wall-clock unnecessarily.
+// Sequential within each chunk's continuation but parallel across the chunk.
+//
+// Failure mode: a single variant failing does NOT abort the rest. We
+// collect outcomes and let the caller decide whether the partial success
+// is acceptable. Fail-loud only on truly fatal upstream errors (Gemini
+// API key missing, etc.) — those are caught by the per-variant runRender
+// inside its own try/catch.
+const MAX_PARALLEL = 3;
+
+export async function renderAllVariants(
+  baseReq: Omit<RenderRequest, 'variant'>,
+): Promise<VariantBatchOutcome[]> {
+  const allVariants: RenderVariant[] = ['full', ...PORTAL_VARIANTS];
+
+  const results: VariantBatchOutcome[] = [];
+
+  // Worker pool with a fixed cap. We'd use Promise.all on the whole list
+  // but Gemini gets stroppy past ~4 concurrent calls per project. Three
+  // is a defensive sweet spot.
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < allVariants.length) {
+      const idx = cursor++;
+      const variant = allVariants[idx];
+
+      // Skip empty variants — no need to render "house with zero wreaths."
+      if (!variantHasContent(baseReq.vision, variant)) {
+        results.push({
+          variant,
+          status: 'skipped',
+          reason: 'no items in vision input for this variant',
+        });
+        continue;
+      }
+
+      try {
+        const before = Date.now();
+        const render = await runRender({ ...baseReq, variant });
+        const wasCached = Date.now() - before < 1000; // crude — anything under 1s is cache
+        results.push({
+          variant,
+          status: wasCached ? 'cached' : 'rendered',
+          render,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({ variant, status: 'failed', error: msg });
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(MAX_PARALLEL, allVariants.length) }, () => worker());
+  await Promise.all(workers);
+
+  // Re-order to match allVariants order so callers get a stable shape.
+  const orderMap = new Map(allVariants.map((v, i) => [v, i] as const));
+  results.sort((a, b) => (orderMap.get(a.variant)! - orderMap.get(b.variant)!));
+
+  return results;
 }

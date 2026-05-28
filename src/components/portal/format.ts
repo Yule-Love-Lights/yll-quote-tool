@@ -27,3 +27,15 @@ export function sumSelectedItems(
 export function depositFor(total: number): number {
   return Math.round(total * 50) / 100;
 }
+
+// Customer-facing quote reference. Real DB IDs are UUIDs ("a1b2c3d4-e5f6-...")
+// which are ugly on screen and unmemorable on a phone call. We render a
+// short, distinguishable prefix instead — "YLL-A1B2C3D4". Stable per quote;
+// no information loss because the route still uses the full UUID.
+export function formatQuoteRef(quoteId: string): string {
+  // Mock IDs already follow YLL-YEAR-### format — pass them through.
+  if (/^YLL-/i.test(quoteId)) return quoteId;
+  // UUIDs: take the first segment (8 hex chars) and prefix.
+  const head = quoteId.replace(/-/g, '').slice(0, 8).toUpperCase();
+  return `YLL-${head}`;
+}

@@ -14,6 +14,7 @@ import type {
   RenderModel,
   RenderStatus,
   RenderStyle,
+  RenderVariant,
   StoredRender,
 } from './types';
 
@@ -92,9 +93,21 @@ export function hashJson(obj: unknown): string {
 //        the model can't rationalize a drop.
 export const RENDER_PROMPT_VERSION = 9;
 
-export function cacheKeyFor(photoHash: string, visionHash: string, style: RenderStyle, model: RenderModel): string {
+// Variant + a separate variant cache-bust env var both feed into the cache
+// key so per-package renders can be invalidated independently of the full
+// render and prompt-version bumps. Set RENDER_VARIANT_CACHE_BUST=anything
+// after lowering RENDER_VARIANT_MODEL to force regeneration at the new
+// (cheaper) tier without disturbing already-approved full renders.
+export function cacheKeyFor(
+  photoHash: string,
+  visionHash: string,
+  style: RenderStyle,
+  model: RenderModel,
+  variant: RenderVariant = 'full',
+): string {
+  const variantBust = variant === 'full' ? '' : `::vbust=${process.env.RENDER_VARIANT_CACHE_BUST ?? ''}`;
   return createHash('sha256')
-    .update(`v${RENDER_PROMPT_VERSION}::${photoHash}::${visionHash}::${style}::${model}`)
+    .update(`v${RENDER_PROMPT_VERSION}::${photoHash}::${visionHash}::${style}::${model}::${variant}${variantBust}`)
     .digest('hex');
 }
 
@@ -122,6 +135,7 @@ export async function createRenderRow(row: {
   quoteId?: string;
   style: RenderStyle;
   model: RenderModel;
+  variant?: RenderVariant;
   photoHash: string;
   visionHash: string;
   cacheKey: string;
@@ -129,6 +143,24 @@ export async function createRenderRow(row: {
 }): Promise<StoredRender> {
   const sb = getSb();
   if (!sb) throw new Error('Supabase not configured');
+  const variant: RenderVariant = row.variant ?? 'full';
+
+  // The unique index `renders_quote_variant_style_uniq` blocks a second
+  // non-rejected row for the same (quote, variant, style). When re-rendering,
+  // soft-replace the old row by marking it rejected so the new INSERT wins.
+  // If quote_id is null (admin smoke-test renders) the index doesn't apply,
+  // so we skip this branch.
+  if (row.quoteId) {
+    const { error: updErr } = await sb
+      .from('renders')
+      .update({ status: 'rejected' as RenderStatus, rejected_reason: 'superseded by re-render' })
+      .eq('quote_id', row.quoteId)
+      .eq('variant', variant)
+      .eq('style', row.style)
+      .not('status', 'in', '(rejected,failed)');
+    if (updErr) throw new Error(`createRenderRow supersede: ${updErr.message}`);
+  }
+
   const { data, error } = await sb
     .from('renders')
     .insert({
@@ -136,6 +168,7 @@ export async function createRenderRow(row: {
       version: 1,
       style: row.style,
       model: row.model,
+      variant,
       status: 'pending' as RenderStatus,
       photo_hash: row.photoHash,
       vision_hash: row.visionHash,
@@ -222,11 +255,47 @@ export async function listRenders(limit = 100): Promise<RenderListItem[]> {
   if (!sb) return [];
   const { data, error } = await sb
     .from('renders')
-    .select('id, quote_id, version, style, model, status, ssim_score, gemini_cost_usd, notes, created_at, updated_at, approved_at')
+    .select('id, quote_id, version, style, model, variant, status, ssim_score, gemini_cost_usd, notes, created_at, updated_at, approved_at')
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw new Error(`listRenders: ${error.message}`);
   return (data ?? []) as RenderListItem[];
+}
+
+// All non-rejected renders for a quote, one row per variant. Used by the
+// admin variant grid (filter for status='ready'/'approved') and the
+// customer portal (filter for status='approved').
+export async function getRendersForQuote(quoteId: string): Promise<StoredRender[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  const { data, error } = await sb
+    .from('renders')
+    .select('*')
+    .eq('quote_id', quoteId)
+    .not('status', 'in', '(rejected,failed)')
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(`getRendersForQuote: ${error.message}`);
+  return (data ?? []) as StoredRender[];
+}
+
+// Approve every non-rejected render for a quote in one call. Used by the
+// admin "Approve all variants" action so reviewers don't have to click 7
+// times per quote. Returns the count actually flipped.
+export async function approveAllForQuote(quoteId: string, approver: string): Promise<number> {
+  const sb = getSb();
+  if (!sb) throw new Error('Supabase not configured');
+  const { data, error } = await sb
+    .from('renders')
+    .update({
+      status: 'approved' as RenderStatus,
+      approved_at: new Date().toISOString(),
+      approved_by: approver,
+    })
+    .eq('quote_id', quoteId)
+    .in('status', ['ready', 'rendering'])
+    .select('id');
+  if (error) throw new Error(`approveAllForQuote: ${error.message}`);
+  return (data ?? []).length;
 }
 
 export async function getRender(id: string): Promise<StoredRender | null> {

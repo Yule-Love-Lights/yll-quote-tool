@@ -70,6 +70,46 @@ export default function QuotesAdminPage() {
     }
   };
 
+  // "Send to customer" — copies the portal URL to clipboard + stamps
+  // quote_sent_at + advances the HighLevel pipeline card to "Bid Sent".
+  // Naldo then pastes the URL into iMessage / email / wherever.
+  const sendToCustomer = async (id: string) => {
+    const portalUrl = `${window.location.origin}/portal/${id}`;
+
+    // Copy first — if Zapier is down we still want Naldo to have the URL.
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(portalUrl);
+      copied = true;
+    } catch {
+      // Some browsers block clipboard outside HTTPS — fall through.
+    }
+
+    setBusy(id);
+    try {
+      const res = await fetch(`/api/quotes/${id}/send`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Send failed');
+      const stage = data.stageUpdated
+        ? '\nHighLevel: card moved to Bid Sent.'
+        : data.stageError
+          ? `\nHighLevel: ${data.stageError}`
+          : '';
+      const already = data.alreadySent ? ' (already sent earlier)' : '';
+      alert(
+        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}`,
+      );
+      await refresh();
+    } catch (err) {
+      alert(
+        `${err instanceof Error ? err.message : 'Send failed'}\n\n` +
+          `Portal URL${copied ? ' (copied)' : ''}: ${portalUrl}`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const removeAll = async () => {
     if (items.length === 0) return;
     const ok = confirm(`Delete ALL ${items.length} quote${items.length === 1 ? '' : 's'}? This cannot be undone.`);
@@ -150,31 +190,69 @@ export default function QuotesAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map(q => (
-                  <tr key={q.id} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(q.created_at)}</td>
-                    <td className="px-3 py-2 text-gray-700">{q.customer_name ?? '—'}</td>
-                    <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{q.customer_address ?? '—'}</td>
-                    <td className="px-3 py-2 text-gray-500">{q.customer_phone ?? '—'}</td>
-                    <td className="px-3 py-2 text-gray-500 truncate max-w-[12rem]">{q.customer_email ?? '—'}</td>
-                    <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{fmtMoney(q.total)}</td>
-                    <td className="px-3 py-2 text-right whitespace-nowrap">
-                      <Link
-                        href={`/admin/quotes/${q.id}/video`}
-                        className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
-                      >
-                        Video
-                      </Link>
-                      <button
-                        disabled={busy === q.id || busy === 'ALL'}
-                        onClick={() => remove(q.id)}
-                        className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {items.map(q => {
+                  const status = q.customer_approved_at
+                    ? { label: 'Approved', className: 'bg-green-100 text-green-700' }
+                    : q.quote_sent_at
+                      ? { label: 'Sent', className: 'bg-blue-100 text-blue-700' }
+                      : null;
+                  return (
+                    <tr key={q.id} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(q.created_at)}</td>
+                      <td className="px-3 py-2 text-gray-700">
+                        <div className="flex items-center gap-2">
+                          <span>{q.customer_name ?? '—'}</span>
+                          {status && (
+                            <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}>
+                              {status.label}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{q.customer_address ?? '—'}</td>
+                      <td className="px-3 py-2 text-gray-500">{q.customer_phone ?? '—'}</td>
+                      <td className="px-3 py-2 text-gray-500 truncate max-w-[12rem]">{q.customer_email ?? '—'}</td>
+                      <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{fmtMoney(q.total)}</td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <Link
+                          href={`/portal/${q.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
+                        >
+                          Portal ↗
+                        </Link>
+                        <Link
+                          href={`/admin/quotes/${q.id}/video`}
+                          className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
+                        >
+                          Video
+                        </Link>
+                        <button
+                          disabled={busy === q.id || busy === 'ALL' || !!q.customer_approved_at}
+                          onClick={() => sendToCustomer(q.id)}
+                          title={
+                            q.customer_approved_at
+                              ? 'Already approved — cannot resend'
+                              : q.quote_sent_at
+                                ? 'Already sent — clicking copies the URL again'
+                                : 'Copy portal URL and mark as sent'
+                          }
+                          className="text-blue-700 hover:bg-blue-50 disabled:opacity-50 text-xs px-2 py-1 rounded mr-1"
+                        >
+                          {q.quote_sent_at ? 'Resend' : 'Send'}
+                        </button>
+                        <button
+                          disabled={busy === q.id || busy === 'ALL'}
+                          onClick={() => remove(q.id)}
+                          className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

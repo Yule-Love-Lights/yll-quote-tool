@@ -19,6 +19,47 @@ export type RenderStyle = 'warm-white' | 'multi' | 'red-green';
 // Iterate cheap on flash, dial up to flash2 for previews, ship finals on pro.
 export type RenderModel = 'pro' | 'flash2' | 'flash';
 
+// Per-package render variants used by the customer portal. Each variant
+// stamps ONLY its package's lights on the composite (with Gingerbread
+// stacked on Santa's because ridge bulbs aren't sold without gutters).
+//
+// 'full'      → everything (default, equivalent to pre-variant render)
+// 'santas'    → gutters only
+// 'ridge'     → gutters + ridge (stacked — see filterVisionForVariant)
+// 'minis'     → bushes/trees/columns only
+// 'wreaths'   → wreaths only
+// 'spritzers' → spritzer stakes only
+// 'garland'   → garland runs only
+export type RenderVariant =
+  | 'full'
+  | 'santas'
+  | 'ridge'
+  | 'minis'
+  | 'wreaths'
+  | 'spritzers'
+  | 'garland';
+
+export const ALL_RENDER_VARIANTS: RenderVariant[] = [
+  'full',
+  'santas',
+  'ridge',
+  'minis',
+  'wreaths',
+  'spritzers',
+  'garland',
+];
+
+// Variants other than 'full' that we generate for the portal's per-package
+// cards. 'full' is the hero shot, so it's handled separately.
+export const PORTAL_VARIANTS: RenderVariant[] = [
+  'santas',
+  'ridge',
+  'minis',
+  'wreaths',
+  'spritzers',
+  'garland',
+];
+
 export type RenderStatus =
   | 'pending'       // row created, work not yet started
   | 'rendering'     // compositor + Gemini call in flight
@@ -48,6 +89,11 @@ export type RenderRequest = {
   style: RenderStyle;
   model?: RenderModel;              // defaults to RENDER_MODEL env var, then 'pro'
   notes?: string;
+  // Which package preview to generate. Defaults to 'full' (the legacy
+  // behavior before per-variant rendering existed). When set to anything
+  // else, the orchestrator filters the vision via filterVisionForVariant
+  // and uses RENDER_VARIANT_MODEL instead of the model arg above.
+  variant?: RenderVariant;
   // Dev/admin escape hatch. When true the orchestrator skips the
   // findByCacheKey lookup and forces a fresh Gemini call. Useful while
   // iterating on the prompt — otherwise identical inputs keep serving the
@@ -62,6 +108,7 @@ export type StoredRender = {
   version: number;
   style: RenderStyle;
   model: RenderModel;
+  variant: RenderVariant;
   status: RenderStatus;
   photo_hash: string;
   vision_hash: string;
@@ -91,6 +138,7 @@ export type RenderListItem = {
   version: number;
   style: RenderStyle;
   model: RenderModel;
+  variant: RenderVariant;
   status: RenderStatus;
   ssim_score: number | null;
   gemini_cost_usd: number | null;

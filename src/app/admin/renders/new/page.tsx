@@ -49,6 +49,10 @@ export default function NewRenderPage() {
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Optional quote attach. When filled, the operator can fire the variant
+  // batch (POST /api/quotes/[id]/render-variants) which generates per-package
+  // preview renders for the customer portal. Empty = smoke-test only path.
+  const [quoteId, setQuoteId] = useState('');
   // Skip cache → force a fresh Gemini call even if a prior render exists
   // for this exact photo + selection. Default ON while we're iterating on
   // the prompt, so the cache doesn't silently serve the old broken output.
@@ -142,6 +146,52 @@ export default function NewRenderPage() {
     } catch (err) {
       setStage('error');
       setError(err instanceof Error ? err.message : 'Render failed');
+    }
+  };
+
+  // Renders the full hero shot + every per-package variant (Santa's, Ridge,
+  // Minis, Wreaths, Spritzers, Garland) for the supplied quote. Variants
+  // with no items in the current selection are skipped server-side. After
+  // success, jumps to /admin/quotes/[id]/renders so the operator can review
+  // and approve.
+  const renderVariants = async () => {
+    if (!photoBase64 || !photoMediaType || !filteredVision) return;
+    if (!quoteId.trim()) {
+      setError('Quote ID required for variant render — paste it in the field above.');
+      setStage('error');
+      return;
+    }
+    const secret = window.prompt('Admin secret:') ?? '';
+    if (!secret) return;
+    setError(null);
+    setStage('rendering');
+    try {
+      const res = await fetch(`/api/quotes/${quoteId.trim()}/render-variants`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': secret,
+        },
+        body: JSON.stringify({
+          photoBase64,
+          photoMediaType,
+          style,
+          model,
+          notes: notes.trim() || undefined,
+          vision: filteredVision,
+          skipCache,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = data.stack ? `\n\n${data.stack.split('\n').slice(0, 4).join('\n')}` : '';
+        throw new Error(`${data.error ?? 'Variant render failed'}${detail}`);
+      }
+      setStage('done');
+      router.push(`/admin/quotes/${quoteId.trim()}/renders`);
+    } catch (err) {
+      setStage('error');
+      setError(err instanceof Error ? err.message : 'Variant render failed');
     }
   };
 
@@ -436,6 +486,24 @@ export default function NewRenderPage() {
                 </p>
               </div>
 
+              <div>
+                <label htmlFor="quote-id" className="block text-sm font-semibold text-gray-700 mb-1">
+                  Attach to quote <span className="font-normal text-gray-500">(optional — required for variant batch)</span>
+                </label>
+                <input
+                  id="quote-id"
+                  type="text"
+                  value={quoteId}
+                  disabled={busy}
+                  onChange={(e) => setQuoteId(e.target.value)}
+                  placeholder="paste quote UUID, e.g. 3f8b1c5e-2d4a-…"
+                  className="block w-full text-sm border border-gray-300 rounded-md px-3 py-2 font-mono"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Leave blank for a one-off smoke test. Fill in to enable the &ldquo;Render all 7 variants&rdquo; button below — generates per-package preview images for the customer portal.
+                </p>
+              </div>
+
               <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -448,16 +516,30 @@ export default function NewRenderPage() {
                 </span>
               </label>
 
-              <button
-                type="button"
-                disabled={busy}
-                onClick={render}
-                className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm px-4 py-2 rounded-md"
-              >
-                {stage === 'rendering' && 'Rendering nighttime scene with Gemini… (can take 60s)'}
-                {stage === 'done' && 'Done — redirecting to gallery'}
-                {stage !== 'rendering' && stage !== 'done' && 'Render selected items'}
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={render}
+                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm px-4 py-2 rounded-md"
+                >
+                  {stage === 'rendering' && 'Rendering nighttime scene with Gemini… (can take 60s)'}
+                  {stage === 'done' && 'Done — redirecting to gallery'}
+                  {stage !== 'rendering' && stage !== 'done' && 'Render selected items (single image)'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || !quoteId.trim()}
+                  onClick={renderVariants}
+                  title={quoteId.trim() ? 'Generate 7 per-package previews for the customer portal' : 'Paste a quote UUID above to enable'}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm px-4 py-2 rounded-md"
+                >
+                  {stage === 'rendering' && 'Rendering 7 variants… (90-180s)'}
+                  {stage !== 'rendering' && (
+                    <>Render all 7 variants {quoteId.trim() ? '→ portal' : '(needs quote ID)'}</>
+                  )}
+                </button>
+              </div>
             </div>
           )}
         </div>

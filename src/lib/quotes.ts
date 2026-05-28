@@ -9,6 +9,10 @@ export type QuoteListItem = {
   customer_email: string | null;
   total: number | null;
   created_at: string;
+  // Lifecycle flags. Admin UI uses these to show "Sent" / "Approved" badges
+  // and to short-circuit the "Send to customer" button when already sent.
+  quote_sent_at: string | null;
+  customer_approved_at: string | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -17,7 +21,9 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   if (!sb) return [];
   const { data, error } = await sb
     .from('quotes')
-    .select('id, customer_name, customer_address, customer_phone, customer_email, total, created_at')
+    .select(
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at',
+    )
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {

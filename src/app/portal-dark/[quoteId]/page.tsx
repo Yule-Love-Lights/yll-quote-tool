@@ -19,6 +19,7 @@ import { Hero } from '@/components/portal/dark/Hero';
 import { WalkthroughVideo } from '@/components/portal/dark/WalkthroughVideo';
 import { UrgencyBanner } from '@/components/portal/dark/UrgencyBanner';
 import { PackageCards } from '@/components/portal/dark/PackageCards';
+import { PackageVariantGallery } from '@/components/portal/dark/PackageVariantGallery';
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
@@ -85,6 +86,14 @@ export default async function PortalDarkPage({
       >
         {/* 4. Package cards A/B/C/D — gold-glow selection, no red */}
         <PackageCards packages={quote.packages} />
+
+        {/* 4b. Per-package preview gallery — renders only when variant
+         * images have been generated and approved for this quote. Hides
+         * itself silently when the variant batch hasn't been run. */}
+        <PackageVariantGallery
+          variantPhotos={quote.variantPhotos}
+          alt={quote.photo.alt}
+        />
 
         {/* 5. What's Included — per-line-item toggles */}
         <WhatsIncluded items={quote.lineItems} />

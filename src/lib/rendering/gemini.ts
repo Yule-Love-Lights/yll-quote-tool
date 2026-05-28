@@ -31,6 +31,18 @@ export function resolveRenderModel(requested?: RenderModel): RenderModel {
   return 'pro';
 }
 
+// Per-package portal variants run on a separate (typically cheaper) model
+// than the main render. The full-package hero stays on RENDER_MODEL (Pro
+// by default) — only the smaller per-package card images use this. A
+// missing/invalid env var falls back to flash2 (Gemini 3.1 Flash, Nano
+// Banana 2) — the sweet spot of "good enough for card-sized images at
+// 50% the cost of Pro."
+export function resolveVariantModel(): RenderModel {
+  const envVal = (process.env.RENDER_VARIANT_MODEL ?? '').toLowerCase();
+  if (envVal === 'flash' || envVal === 'flash2' || envVal === 'pro') return envVal;
+  return 'flash2';
+}
+
 export function modelIdFor(model: RenderModel): string { return MODELS[model].id; }
 export function modelCostFor(model: RenderModel): number { return MODELS[model].costUsd; }
 
