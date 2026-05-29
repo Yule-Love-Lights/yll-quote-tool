@@ -68,7 +68,9 @@ export default function QuoteVariantsPage({ params }: { params: Promise<{ id: st
   }, [quoteId]);
 
   useEffect(() => {
-    refresh();
+    // Defer in a microtask so refresh()'s loading-state update isn't dispatched
+    // synchronously within the effect (microtasks flush before paint).
+    queueMicrotask(refresh);
   }, [refresh]);
 
   const approveAll = async () => {
