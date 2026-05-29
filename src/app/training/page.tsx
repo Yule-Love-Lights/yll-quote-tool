@@ -23,7 +23,12 @@ export default function TrainingListPage() {
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    // Kick off the initial load in a microtask so refresh()'s loading-state
+    // update isn't dispatched synchronously within the effect. Microtasks flush
+    // before paint, so there's no visible flash.
+    queueMicrotask(refresh);
+  }, []);
 
   const remove = async (id: string) => {
     if (!confirm('Delete this training record? This cannot be undone.')) return;
