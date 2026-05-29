@@ -1,16 +1,17 @@
-// Portal v6 — SNOWGLOBE. Interactive-hero version where the home's
-// photo becomes the product: tap a package, watch the lights come on.
-// Route: /portal-snowglobe/[quoteId]
+// Portal v6 — SNOWGLOBE. The chosen final design. Interactive-hero
+// version where the home's photo becomes the product: tap a package,
+// watch the lights come on. Route: /portal-snowglobe/[quoteId]
 //
-// v1 at /portal/[quoteId] and v2 at /portal-dark/[quoteId] are fully
-// preserved. All three versions read the same MOCK_QUOTE so content
-// can't drift between them.
+// Wired to real DB data (loadPortalQuote) with the same production
+// approve flow as v1 — the snowglobe StickyBottomBar POSTs to
+// /api/quotes/[id]/approve (home.works + HighLevel) then routes to the
+// snowglobe approved page.
 //
-// Below the fold v6 reuses most of v2's dark components — the v6
-// differentiator is almost entirely about the hero experience and the
-// tight minimal chrome (no TrustBar, no UrgencyBanner, no separate
-// PackageCards section since the hero handles package selection).
+// Below the fold it reuses the v2 dark-theme components; the v6
+// differentiator is the InteractiveHero + minimal chrome (no TrustBar,
+// no UrgencyBanner — the hero handles package selection).
 
+import { notFound } from 'next/navigation';
 import { InteractiveHero } from '@/components/portal/snowglobe/InteractiveHero';
 import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo';
 import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
@@ -33,8 +34,46 @@ import {
   MOCK_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
+import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
+import { pickInitialPackageId } from '@/lib/portal/derivePackages';
+import type { PortalQuote } from '@/components/portal/types';
 
 type Params = { quoteId: string };
+
+// Google Business Profile reviews deep-link (browser-neutral).
+const GMB_REVIEWS_URL =
+  'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
+
+// Fallback hero when a quote has no approved render yet (dev/preview only —
+// real sent quotes always carry a render by the time a customer opens this).
+const FALLBACK_HERO = '/references/Roslyn.png';
+
+// Real DB first; MOCK only when Supabase isn't configured (dev). 404 on a
+// missing real row. notFound() lives OUTSIDE the try so it isn't swallowed.
+async function resolveQuote(quoteId: string): Promise<PortalQuote> {
+  let real: PortalQuote | null = null;
+  try {
+    real = await loadPortalQuote(quoteId);
+  } catch (err) {
+    if (err instanceof PortalConfigError) return MOCK_QUOTE;
+    throw err;
+  }
+  if (!real) notFound();
+  return real;
+}
+
+function resolveTeam() {
+  const leaderName =
+    process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || MOCK_TEAM.leaderName;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
+  return {
+    leaderName,
+    phone,
+    photo: MOCK_TEAM.photo,
+    badges: MOCK_TEAM.badges,
+    companyBio: MOCK_TEAM.companyBio,
+  };
+}
 
 export default async function PortalSnowglobePage({
   params,
@@ -42,31 +81,33 @@ export default async function PortalSnowglobePage({
   params: Promise<Params>;
 }) {
   const { quoteId } = await params;
-  const quote = MOCK_QUOTE;
+  const quote = await resolveQuote(quoteId);
+  const team = resolveTeam();
+  const initialPackageId = pickInitialPackageId(quote.packages);
+  const heroAfter = quote.photo.after || FALLBACK_HERO;
+  const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
 
   return (
     <main className="relative w-full">
       <SelectionProvider
         packages={quote.packages}
         lineItems={quote.lineItems}
-        initialPackageId="B"
+        initialPackageId={initialPackageId}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
           firstName={quote.customer.firstName}
           address={quote.customer.address}
-          afterUrl={quote.photo.after}
-          alt={quote.photo.alt}
+          afterUrl={heroAfter}
+          alt={heroAlt}
           packages={quote.packages}
           lineItemCount={quote.lineItems.length}
         />
 
-        {/* 2. Walkthrough video — Naldo explains the quote (anchor
-         * target from the hero's "Watch walkthrough" link) */}
+        {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}
 
-        {/* 3. What's Included — line-item toggles; selections feed back
-         * into the hero's Custom tier and the sticky price */}
+        {/* 3. What's Included — line-item toggles feed the hero + sticky price */}
         <WhatsIncluded items={quote.lineItems} />
 
         {/* 4. Risk Reversal */}
@@ -75,17 +116,20 @@ export default async function PortalSnowglobePage({
         {/* 5. What Happens Next */}
         <WhatHappensNext />
 
-        {/* 6. Meet Your Team */}
+        {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
-          leaderName={MOCK_TEAM.leaderName}
-          title={MOCK_TEAM.title}
-          subtitle={MOCK_TEAM.subtitle}
-          photo={MOCK_TEAM.photo}
-          body={MOCK_TEAM.body}
+          photo={team.photo}
+          paragraphs={team.companyBio}
+          badges={team.badges}
         />
 
         {/* 7. Google Reviews */}
-        <GoogleReviews rating={4.9} totalReviews={187} reviews={MOCK_REVIEWS} />
+        <GoogleReviews
+          rating={4.9}
+          totalReviews={187}
+          reviews={MOCK_REVIEWS}
+          reviewsUrl={GMB_REVIEWS_URL}
+        />
 
         {/* 8. Gallery */}
         <Gallery items={MOCK_GALLERY_ITEMS} />
@@ -98,15 +142,15 @@ export default async function PortalSnowglobePage({
 
         {/* 11. Personal contact */}
         <PersonalContact
-          leaderName={MOCK_TEAM.leaderName}
-          photo={MOCK_TEAM.photo}
-          phone={MOCK_TEAM.phone}
+          leaderName={team.leaderName}
+          photo={team.photo}
+          phone={team.phone}
         />
 
         {/* 12. Disclaimer */}
         <Disclaimer />
 
-        {/* Sticky floating pill bar — v6 variant, always in tree last */}
+        {/* Sticky floating pill bar — real approve flow, always last in tree */}
         <StickyBottomBar quoteId={quoteId} />
       </SelectionProvider>
     </main>

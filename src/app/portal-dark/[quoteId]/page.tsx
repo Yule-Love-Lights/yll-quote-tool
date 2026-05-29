@@ -104,13 +104,11 @@ export default async function PortalDarkPage({
         {/* 7. What Happens Next — 4-step install timeline */}
         <WhatHappensNext />
 
-        {/* 8. Meet Your Team — Naldo + CFA credential */}
+        {/* 8. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
-          leaderName={MOCK_TEAM.leaderName}
-          title={MOCK_TEAM.title}
-          subtitle={MOCK_TEAM.subtitle}
           photo={MOCK_TEAM.photo}
-          body={MOCK_TEAM.body}
+          paragraphs={MOCK_TEAM.companyBio}
+          badges={MOCK_TEAM.badges}
         />
 
         {/* 9. Google Reviews carousel */}

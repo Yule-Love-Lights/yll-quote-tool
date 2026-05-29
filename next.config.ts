@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1'],
   images: {
+    // The snowglobe InteractiveHero requests quality 85 for the full-bleed
+    // hero; Next 16 requires every used quality to be allow-listed here.
+    qualities: [75, 85],
     // Allowlist of external image hosts for next/image. Keep this list
     // tight — every new host has to be vetted (hotlink + privacy).
     remotePatterns: [

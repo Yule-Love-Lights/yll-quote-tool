@@ -139,21 +139,40 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
 }
 
 function buildVideo(row: QuoteRowForPortal): PortalVideo | undefined {
-  if (!row.video_kind || !row.video_src) return undefined;
-  if (row.video_kind !== 'youtube' && row.video_kind !== 'mp4') return undefined;
-
   // Leader name comes from env (single source of truth for Naldo's first
   // name shown across the portal). Falls back to "Naldo" if not set.
   const leaderName = process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || 'Naldo';
 
-  return {
-    kind: row.video_kind,
-    src: row.video_src,
-    poster: row.video_poster ?? undefined,
-    title: row.video_title ?? 'Your personal walkthrough',
-    durationSec: row.video_duration_sec ?? undefined,
-    leaderName,
-  };
+  // 1. Per-quote video wins when an admin attached one via /admin/quotes/[id]/video.
+  if (
+    (row.video_kind === 'youtube' || row.video_kind === 'mp4') &&
+    row.video_src
+  ) {
+    return {
+      kind: row.video_kind,
+      src: row.video_src,
+      poster: row.video_poster ?? undefined,
+      title: row.video_title ?? 'Your Yule Love Lights walkthrough',
+      durationSec: row.video_duration_sec ?? undefined,
+      leaderName,
+    };
+  }
+
+  // 2. Otherwise fall back to the single global walkthrough video that every
+  // customer sees (NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID = 11-char YouTube
+  // ID). Section hides entirely only when neither a per-quote nor a global
+  // video exists.
+  const globalId = process.env.NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID?.trim();
+  if (globalId) {
+    return {
+      kind: 'youtube',
+      src: globalId,
+      title: 'Your Yule Love Lights walkthrough',
+      leaderName,
+    };
+  }
+
+  return undefined;
 }
 
 export type AdapterInput = {

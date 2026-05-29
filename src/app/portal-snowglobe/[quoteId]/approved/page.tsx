@@ -4,12 +4,32 @@
 // the v2 ApprovalCelebration + ReferralCard components.
 
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { Truck, MessageSquare, PackageOpen, Phone, ArrowRight } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/dark/ApprovalCelebration';
 import { ReferralCard } from '@/components/portal/dark/ReferralCard';
+import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
+import { formatQuoteRef } from '@/components/portal/format';
+import type { PortalQuote } from '@/components/portal/types';
 
 type Params = { quoteId: string };
+
+// Real DB first; MOCK only when Supabase isn't configured (dev). 404 on a
+// missing row, AND 404 unless the customer has actually approved — prevents
+// previewing the celebration page before booking.
+async function resolveQuote(quoteId: string): Promise<PortalQuote> {
+  let real: PortalQuote | null = null;
+  try {
+    real = await loadPortalQuote(quoteId);
+  } catch (err) {
+    if (err instanceof PortalConfigError) return MOCK_QUOTE;
+    throw err;
+  }
+  if (!real) notFound();
+  if (!real.approval) notFound();
+  return real;
+}
 
 export default async function PortalSnowglobeApprovedPage({
   params,
@@ -17,8 +37,11 @@ export default async function PortalSnowglobeApprovedPage({
   params: Promise<Params>;
 }) {
   const { quoteId } = await params;
-  const quote = MOCK_QUOTE;
-  const telHref = `tel:${MOCK_TEAM.phone.replace(/[^0-9+]/g, '')}`;
+  const quote = await resolveQuote(quoteId);
+  const leaderName =
+    process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || MOCK_TEAM.leaderName;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
+  const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
   const nextSteps: Array<{
     icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
@@ -49,7 +72,7 @@ export default async function PortalSnowglobeApprovedPage({
       <section aria-labelledby="snow-approved-headline" className="relative w-full">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 md:pt-32 pb-10 md:pb-14 text-center">
           <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-4">
-            Deposit received · Quote {quote.id}
+            Deposit received · Quote {formatQuoteRef(quote.id)}
           </p>
           <h1
             id="snow-approved-headline"
@@ -103,7 +126,7 @@ export default async function PortalSnowglobeApprovedPage({
                   Your crew lead
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#F4ECD8] mt-1">
-                  {MOCK_TEAM.leaderName}
+                  {leaderName}
                 </dd>
               </div>
             </dl>
@@ -191,7 +214,7 @@ export default async function PortalSnowglobeApprovedPage({
             Questions between now and install day?
           </p>
           <h3 className="font-display text-[26px] md:text-[32px] font-semibold text-[#F4ECD8]">
-            Text {MOCK_TEAM.leaderName} directly.
+            Text {leaderName} directly.
           </h3>
           <a
             href={telHref}
@@ -199,7 +222,7 @@ export default async function PortalSnowglobeApprovedPage({
             style={{ textShadow: '0 0 14px rgba(255,183,68,0.3)' }}
           >
             <Phone className="w-5 h-5" aria-hidden />
-            {MOCK_TEAM.phone}
+            {phone}
           </a>
 
           <div className="mt-10">

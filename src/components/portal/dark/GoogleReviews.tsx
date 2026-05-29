@@ -18,6 +18,7 @@ export type GoogleReviewsProps = {
   rating: number;
   totalReviews: number;
   reviews: Review[];
+  reviewsUrl?: string; // Google Business Profile reviews deep-link
 };
 
 function Stars({ count = 5 }: { count?: number }) {
@@ -45,7 +46,7 @@ function GoogleG() {
   );
 }
 
-export function GoogleReviews({ rating, totalReviews, reviews }: GoogleReviewsProps) {
+export function GoogleReviews({ rating, totalReviews, reviews, reviewsUrl }: GoogleReviewsProps) {
   const [idx, setIdx] = useState(0);
   const count = reviews.length;
   const prev = () => setIdx((i) => (i - 1 + count) % count);
@@ -148,12 +149,16 @@ export function GoogleReviews({ rating, totalReviews, reviews }: GoogleReviewsPr
             </div>
           </div>
 
-          <a
-            href="#"
-            className="inline-block mt-6 font-display underline underline-offset-4 text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F] rounded-sm"
-          >
-            Read all {totalReviews} reviews →
-          </a>
+          {reviewsUrl && (
+            <a
+              href={reviewsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block mt-6 font-display underline underline-offset-4 text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F] rounded-sm"
+            >
+              Read all {totalReviews} reviews →
+            </a>
+          )}
         </div>
       </div>
     </section>

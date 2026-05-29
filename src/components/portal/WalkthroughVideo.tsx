@@ -42,7 +42,7 @@ export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
     video.poster ??
     (video.kind === 'youtube' ? youtubePoster(video.src) : undefined);
 
-  const label = video.title ?? 'Your personal walkthrough';
+  const label = video.title ?? 'Your Yule Love Lights walkthrough';
   const leader = video.leaderName ?? 'Naldo';
 
   return (
@@ -62,8 +62,8 @@ export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
             {label}
           </h2>
           <p className="mt-3 text-[16px] md:text-[17px] text-[#3A3229] leading-[1.6]">
-            A quick video from {leader} explaining exactly what we designed for your
-            home and how the whole process works.
+            A quick video from {leader} on how Yule Love Lights works — from your
+            design and install to mid-season service and takedown.
           </p>
         </div>
 

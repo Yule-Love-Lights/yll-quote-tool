@@ -80,13 +80,17 @@ function resolveTeam() {
     process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   return {
     leaderName,
-    title: MOCK_TEAM.title,
-    subtitle: MOCK_TEAM.subtitle,
-    photo: MOCK_TEAM.photo,
-    body: MOCK_TEAM.body,
     phone,
+    photo: MOCK_TEAM.photo,
+    badges: MOCK_TEAM.badges,
+    companyBio: MOCK_TEAM.companyBio,
   };
 }
+
+// Google Business Profile reviews deep-link (cleaned of browser-specific
+// query params so it opens the reviews panel in any browser).
+const GMB_REVIEWS_URL =
+  'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
 
 export default async function PortalPage({
   params,
@@ -156,17 +160,20 @@ export default async function PortalPage({
         {/* 7. What Happens Next — 4-step install timeline */}
         <WhatHappensNext />
 
-        {/* 8. Meet Your Team — Naldo + CFA credential */}
+        {/* 8. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
-          leaderName={team.leaderName}
-          title={team.title}
-          subtitle={team.subtitle}
           photo={team.photo}
-          body={team.body}
+          paragraphs={team.companyBio}
+          badges={team.badges}
         />
 
         {/* 9. Google Reviews carousel */}
-        <GoogleReviews rating={4.9} totalReviews={187} reviews={MOCK_REVIEWS} />
+        <GoogleReviews
+          rating={4.9}
+          totalReviews={187}
+          reviews={MOCK_REVIEWS}
+          reviewsUrl={GMB_REVIEWS_URL}
+        />
 
         {/* 10. Gallery — editorial asymmetric grid with lightbox */}
         <Gallery items={MOCK_GALLERY_ITEMS} />

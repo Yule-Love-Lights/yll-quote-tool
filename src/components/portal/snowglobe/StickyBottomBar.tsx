@@ -16,15 +16,45 @@ export type StickyBottomBarProps = {
 };
 
 export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
-  const { currentTotal, currentDeposit } = useSelection();
+  const { activeName, currentTotal, currentDeposit, packageId, selectedItemIds } = useSelection();
   const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const router = useRouter();
 
+  // Real approval: POST the selection to /api/quotes/[id]/approve, which
+  // freezes the snapshot + fires the home.works Zapier webhook + advances
+  // the HighLevel pipeline. Navigate to the celebration page on any ok=true
+  // (even if home.works delivery failed — the approval is still recorded).
   const onApprove = async () => {
-    if (submitting) return;
+    if (submitting || currentTotal <= 0) return;
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 400));
-    router.push(`/portal-snowglobe/${quoteId}/approved`);
+    setErrorMsg(null);
+    try {
+      const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageId,
+          selectedItemIds: Array.from(selectedItemIds),
+          activeName,
+          currentTotal,
+          currentDeposit,
+        }),
+      });
+      // 409 = already approved — still route to the celebration page.
+      if (res.status === 409) {
+        router.push(`/portal-snowglobe/${quoteId}/approved`);
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      router.push(`/portal-snowglobe/${quoteId}/approved`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Something went wrong — please try again.');
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -33,6 +63,14 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
       role="region"
       aria-label="Approval bar with live total"
     >
+      {errorMsg && (
+        <p
+          role="alert"
+          className="absolute -top-11 left-0 right-0 mx-auto max-w-fit text-[12px] text-[#F4ECD8] bg-[#7A1C24] border border-[#C8313D]/50 rounded-md px-3 py-1.5 shadow-lg"
+        >
+          {errorMsg}
+        </p>
+      )}
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
           {formatUsd(currentTotal)}

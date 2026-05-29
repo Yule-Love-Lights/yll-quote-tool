@@ -6,15 +6,15 @@ import { Heart } from 'lucide-react';
 
 const PARTNERS = [
   'Michael Magro Foundation',
-  'Beaumont Civic Association',
+  'Belmont Lake Estates Foundation',
   'American Cancer Society',
 ];
 
-// Logos we have artwork for (public/*). Beaumont has no logo on file, so
-// it stays text-only in the paragraph above. Logos sit on white chips
-// because both marks are dark-on-light and would vanish on evergreen.
+// Logos sit on white chips because the marks are dark-on-light and would
+// vanish on the evergreen band.
 const PARTNER_LOGOS = [
   { src: '/MMF.jpg', alt: 'Michael Magro Foundation' },
+  { src: '/references/belmont-lake-civic.jpg', alt: 'Belmont Lake Estates Foundation' },
   { src: '/acs_logo_fb.png', alt: 'American Cancer Society' },
 ];
 

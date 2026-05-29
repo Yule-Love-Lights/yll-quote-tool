@@ -3,12 +3,20 @@
 // distinct from the colder surrounding bands. Still subdued — no
 // heart emojis, no cartoon.
 
+import Image from 'next/image';
 import { Heart } from 'lucide-react';
 
 const PARTNERS = [
   'Michael Magro Foundation',
-  'Beaumont Civic Association',
+  'Belmont Lake Estates Foundation',
   'American Cancer Society',
+];
+
+// White chips keep the dark-on-light marks legible on the dark band.
+const PARTNER_LOGOS = [
+  { src: '/MMF.jpg', alt: 'Michael Magro Foundation' },
+  { src: '/references/belmont-lake-civic.jpg', alt: 'Belmont Lake Estates Foundation' },
+  { src: '/acs_logo_fb.png', alt: 'American Cancer Society' },
 ];
 
 export function Philanthropy() {
@@ -48,6 +56,25 @@ export function Philanthropy() {
               ))}
               . When you choose Yule Love Lights, you&apos;re quietly supporting that mission too.
             </p>
+
+            {/* Partner logos on white chips so dark-on-light marks read on the band. */}
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              {PARTNER_LOGOS.map((logo) => (
+                <div
+                  key={logo.src}
+                  className="relative h-16 w-32 rounded-lg bg-white shadow-[0_4px_16px_-4px_rgba(0,0,0,0.5)]"
+                >
+                  <Image
+                    src={logo.src}
+                    alt={logo.alt}
+                    fill
+                    sizes="128px"
+                    className="object-contain p-2.5"
+                  />
+                </div>
+              ))}
+            </div>
+
             <a
               href="#"
               className="inline-block mt-6 font-display underline underline-offset-4 text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F] rounded-sm"

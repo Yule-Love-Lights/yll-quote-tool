@@ -27,15 +27,14 @@ export const MOCK_QUOTE: PortalQuote = {
   // 'after' hero. Real production data flows through fetchPortalPhotos
   // and populates this map from the renders table.
   variantPhotos: {},
-  // Sample walkthrough video — a short Gary Vee clip as placeholder.
-  // In production Naldo records a ~90s Loom/phone clip per quote that
-  // walks through what he designed and why. Flip `kind` to 'mp4' and
-  // paste a direct URL when hosting on Supabase Storage / R2 instead.
+  // The global walkthrough video every customer sees. Real production data
+  // uses NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID (with optional per-quote
+  // override). This mock mirrors that default so v2/v6 (which read
+  // MOCK_QUOTE directly) show the same real video.
   video: {
     kind: 'youtube',
-    src: 'dQw4w9WgXcQ',
-    title: 'Your personal walkthrough',
-    durationSec: 92,
+    src: 'IT_ijiewMBg',
+    title: 'Your Yule Love Lights walkthrough',
     leaderName: 'Naldo',
   },
   lineItems: [
@@ -102,23 +101,31 @@ export const MOCK_QUOTE: PortalQuote = {
   },
 };
 
-// Gallery — REAL Yule Love Lights night installs (public/references/*).
-// The chip label uses the lighting STYLE rather than a neighborhood,
-// because we don't have verified addresses for these specific homes.
-// Swap the `neighborhood` values for real town names (Huntington,
-// Garden City, etc.) once Naldo confirms which house is which.
+// Gallery — REAL Yule Love Lights installs (public/references/*).
+// Chips use real Long Island town names where Naldo tagged the photo;
+// the remaining tiles fall back to a lighting-style label. Order is tuned
+// to the editorial grid: portraits land in the tall slots (index 0, 6),
+// estates get the widest slots (index 4, 10).
+//
+// NOTE: Roslyn.png and Syosset.png are byte-identical (same estate). Using
+// Roslyn only — drop in the real Syosset photo and add a tile when ready.
 export const MOCK_GALLERY_ITEMS: Array<{
   id: string;
   src: string;
   neighborhood: string;
   alt: string;
 }> = [
-  { id: 'g1', neighborhood: 'Warm White Classic', src: '/references/install-night-1.jpg',              alt: 'Two-story Long Island home outlined in warm-white C9 bulbs with a lit wreath on the peak and illuminated trees' },
-  { id: 'g2', neighborhood: 'Red & White',        src: '/references/install-night-2.jpg',              alt: 'Colonial home with alternating red and white roofline bulbs, a lit wreath, and snowflake spritzer stakes' },
-  { id: 'g3', neighborhood: 'Full Bush Wrap',     src: '/references/install-bushes-and-spritzers.png', alt: 'Home with warm-white roofline and front bushes fully wrapped in mini-lights with spritzer stakes' },
-  { id: 'g4', neighborhood: 'Blue & White',       src: '/references/install-wreath-peak.png',          alt: 'Two-story home edged in blue and white bulbs with a lit bow wreath at the peak and snowflake stakes' },
-  { id: 'g5', neighborhood: 'Walkway Spritzers',  src: '/references/install-spritzers-walkway.png',    alt: 'Home with warm-white roofline, garland-wrapped columns, and lit spritzer stakes lining the walkway' },
-  { id: 'g6', neighborhood: 'Portico Columns',    src: '/references/install-wreath-portico.png',       alt: 'Home with warm-white roofline, light-wrapped portico columns, a peak wreath, and snowflake stakes' },
+  { id: 'g1',  neighborhood: 'Nesconset',      src: '/references/Nesconset.png',                                       alt: 'Large brick colonial in Nesconset with warm-white roofline bulbs, a lit peak wreath, and uplit columns' },
+  { id: 'g2',  neighborhood: 'Amityville',     src: '/references/Amityville.png',                                      alt: 'Amityville home with warm-white roofline, lit walkway, snowflake stakes, and wrapped bushes' },
+  { id: 'g3',  neighborhood: 'Massapequa',     src: '/references/Massapequa.png',                                      alt: 'Massapequa home in full multicolor lights with a lit wreath, fence garland, and pathway lights' },
+  { id: 'g4',  neighborhood: 'Blue & White',   src: '/references/install-wreath-peak.png',                             alt: 'Two-story home edged in blue and white bulbs with a lit bow wreath at the peak and snowflake stakes' },
+  { id: 'g5',  neighborhood: 'Roslyn',         src: '/references/Roslyn.png',                                          alt: 'Roslyn estate at dusk with warm-white roofline, multiple lit wreaths, and light-wrapped trees lining the driveway' },
+  { id: 'g6',  neighborhood: 'Window Wreaths', src: '/references/install-spritzers-front-of-house-no-bushes.png',      alt: 'Stately white home with warm-white roofline, a lit wreath on every window, columns, and gift-box lawn decor' },
+  { id: 'g7',  neighborhood: 'Full Bush Wrap', src: '/references/install-bushes-and-spritzers.png',                    alt: 'Home with warm-white roofline and front bushes fully wrapped in mini-lights with spritzer stakes' },
+  { id: 'g8',  neighborhood: 'Red & White',    src: '/references/install-night-2.jpg',                                 alt: 'Colonial home with alternating red and white roofline bulbs, a lit wreath, and snowflake spritzer stakes' },
+  { id: 'g9',  neighborhood: 'Warm White',     src: '/references/install-wreaths-above-garage.png',                    alt: 'Home with warm-white roofline, a lit wreath above the garage, illuminated walkway, and snowflake stakes' },
+  { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.png', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
+  { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.jpg',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
 ];
 
 export const MOCK_REVIEWS = [
@@ -160,14 +167,26 @@ export const MOCK_FAQ = [
 ];
 
 export const MOCK_TEAM = {
+  // "Naldo" is the friendly short form used in CTAs ("Text Naldo directly").
+  // The company bio refers to the founder by his full name, Naldoven.
   leaderName: 'Naldo',
-  title: 'Director of Operations',
-  subtitle: "Former Director of Operations at a $13M Chick-fil-A.",
+  phone: '(555) 123-4567',
   // Real team photo — the full crew in front of the branded YLL trailer.
-  // This is a wide group shot, not a headshot, so MeetYourTeam renders it
-  // in a landscape frame (not the old circular portrait).
+  // Wide group shot, rendered in a landscape frame in the About section.
   photo: '/team.jpeg',
+  // Scannable credential chips pulled from the company story.
+  badges: ['Family-Owned', 'CLIPA-Certified', 'Licensed & Insured', 'Est. 2022', 'Nassau & Suffolk'],
+  // Company bio — rendered as stacked paragraphs in the v1 About section.
+  companyBio: [
+    "Yule Love Lights is Long Island's trusted family-owned, CLIPA-certified holiday and permanent lighting installation company, serving homeowners and businesses across Nassau County and Suffolk County. From Elmont and Great Neck all the way east to Montauk, our licensed and insured crews design, install, maintain, and remove professional outdoor lighting for Christmas, permanent LED rooflines, outdoor weddings, corporate events, and year-round landscape illumination.",
+    "Founded in 2022, we started out bringing holiday cheer to a few homes on the South Shore. Since then, we've become one of Long Island's most recognized lighting companies — featured three times in Newsday, as well as on 1010 WINS, iHeart Radio, and News12 Long Island. Today we handle multi-million dollar residential estates, commercial properties, luxury weddings, Sweet 16s, Quinceañeras, Diwali celebrations, and everything in between.",
+    "Our founder, Naldoven, believes that everyone deserves a joyful, stress-free holiday. That's why every Yule Love Lights Christmas light installation includes professional design consultation, commercial-grade lights, clean installation, mid-season maintenance, post-season takedown, and free off-season storage — all backed by our Grinch-Proof Guarantee.",
+  ],
+  // Legacy single-person fields — still consumed by the dormant v2 (dark),
+  // v4 (concierge), and v6 (snowglobe) designs. v1 ignores these in favor
+  // of companyBio above. Safe to delete once those versions are retired.
+  title: 'Director of Operations',
+  subtitle: 'Former Director of Operations at a $13M Chick-fil-A.',
   body:
     "That's the standard we bring to your home. Our crew installs every property with the same care we'd give our own.",
-  phone: '(555) 123-4567',
 };
