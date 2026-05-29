@@ -43,7 +43,12 @@ export default function QuotesAdminPage() {
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    // Kick off the initial load in a microtask so refresh()'s loading-state
+    // update isn't dispatched synchronously within the effect. Microtasks flush
+    // before paint, so there's no visible flash.
+    queueMicrotask(refresh);
+  }, []);
 
   const adminFetch = async (url: string, init: RequestInit): Promise<Response> => {
     const secret = getAdminSecret();

@@ -112,7 +112,9 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
   }, [quoteId]);
 
   useEffect(() => {
-    load();
+    // Defer in a microtask so load()'s loading-state update isn't dispatched
+    // synchronously within the effect (microtasks flush before paint).
+    queueMicrotask(load);
   }, [load]);
 
   const previewYtId = useMemo(() => extractYouTubeIdPreview(ytInput), [ytInput]);

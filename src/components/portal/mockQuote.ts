@@ -115,17 +115,17 @@ export const MOCK_GALLERY_ITEMS: Array<{
   neighborhood: string;
   alt: string;
 }> = [
-  { id: 'g1',  neighborhood: 'Nesconset',      src: '/references/Nesconset.png',                                       alt: 'Large brick colonial in Nesconset with warm-white roofline bulbs, a lit peak wreath, and uplit columns' },
-  { id: 'g2',  neighborhood: 'Amityville',     src: '/references/Amityville.png',                                      alt: 'Amityville home with warm-white roofline, lit walkway, snowflake stakes, and wrapped bushes' },
-  { id: 'g3',  neighborhood: 'Massapequa',     src: '/references/Massapequa.png',                                      alt: 'Massapequa home in full multicolor lights with a lit wreath, fence garland, and pathway lights' },
-  { id: 'g4',  neighborhood: 'Blue & White',   src: '/references/install-wreath-peak.png',                             alt: 'Two-story home edged in blue and white bulbs with a lit bow wreath at the peak and snowflake stakes' },
-  { id: 'g5',  neighborhood: 'Roslyn',         src: '/references/Roslyn.png',                                          alt: 'Roslyn estate at dusk with warm-white roofline, multiple lit wreaths, and light-wrapped trees lining the driveway' },
-  { id: 'g6',  neighborhood: 'Window Wreaths', src: '/references/install-spritzers-front-of-house-no-bushes.png',      alt: 'Stately white home with warm-white roofline, a lit wreath on every window, columns, and gift-box lawn decor' },
-  { id: 'g7',  neighborhood: 'Full Bush Wrap', src: '/references/install-bushes-and-spritzers.png',                    alt: 'Home with warm-white roofline and front bushes fully wrapped in mini-lights with spritzer stakes' },
-  { id: 'g8',  neighborhood: 'Red & White',    src: '/references/install-night-2.jpg',                                 alt: 'Colonial home with alternating red and white roofline bulbs, a lit wreath, and snowflake spritzer stakes' },
-  { id: 'g9',  neighborhood: 'Warm White',     src: '/references/install-wreaths-above-garage.png',                    alt: 'Home with warm-white roofline, a lit wreath above the garage, illuminated walkway, and snowflake stakes' },
-  { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.png', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
-  { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.jpg',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
+  { id: 'g1',  neighborhood: 'Nesconset',      src: '/references/Nesconset.webp',                                       alt: 'Large brick colonial in Nesconset with warm-white roofline bulbs, a lit peak wreath, and uplit columns' },
+  { id: 'g2',  neighborhood: 'Amityville',     src: '/references/Amityville.webp',                                      alt: 'Amityville home with warm-white roofline, lit walkway, snowflake stakes, and wrapped bushes' },
+  { id: 'g3',  neighborhood: 'Massapequa',     src: '/references/Massapequa.webp',                                      alt: 'Massapequa home in full multicolor lights with a lit wreath, fence garland, and pathway lights' },
+  { id: 'g4',  neighborhood: 'Blue & White',   src: '/references/install-wreath-peak.webp',                             alt: 'Two-story home edged in blue and white bulbs with a lit bow wreath at the peak and snowflake stakes' },
+  { id: 'g5',  neighborhood: 'Roslyn',         src: '/references/Roslyn.webp',                                          alt: 'Roslyn estate at dusk with warm-white roofline, multiple lit wreaths, and light-wrapped trees lining the driveway' },
+  { id: 'g6',  neighborhood: 'Window Wreaths', src: '/references/install-spritzers-front-of-house-no-bushes.webp',      alt: 'Stately white home with warm-white roofline, a lit wreath on every window, columns, and gift-box lawn decor' },
+  { id: 'g7',  neighborhood: 'Full Bush Wrap', src: '/references/install-bushes-and-spritzers.webp',                    alt: 'Home with warm-white roofline and front bushes fully wrapped in mini-lights with spritzer stakes' },
+  { id: 'g8',  neighborhood: 'Red & White',    src: '/references/install-night-2.webp',                                 alt: 'Colonial home with alternating red and white roofline bulbs, a lit wreath, and snowflake spritzer stakes' },
+  { id: 'g9',  neighborhood: 'Warm White',     src: '/references/install-wreaths-above-garage.webp',                    alt: 'Home with warm-white roofline, a lit wreath above the garage, illuminated walkway, and snowflake stakes' },
+  { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.webp', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
+  { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.webp',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
 ];
 
 export const MOCK_REVIEWS = [

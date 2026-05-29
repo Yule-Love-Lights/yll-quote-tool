@@ -48,7 +48,11 @@ export function ApprovalCelebration() {
       const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced) return;
     }
-    setParticles(makeParticles());
+    // Generate on the next frame: keeps the randomized particle set client-only
+    // (no SSR/hydration mismatch) and makes the state update non-synchronous
+    // within the effect.
+    const raf = requestAnimationFrame(() => setParticles(makeParticles()));
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   if (particles.length === 0) return null;

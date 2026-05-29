@@ -46,7 +46,7 @@ const GMB_REVIEWS_URL =
 
 // Fallback hero when a quote has no approved render yet (dev/preview only —
 // real sent quotes always carry a render by the time a customer opens this).
-const FALLBACK_HERO = '/references/Roslyn.png';
+const FALLBACK_HERO = '/references/Roslyn.webp';
 
 // Real DB first; MOCK only when Supabase isn't configured (dev). 404 on a
 // missing real row. notFound() lives OUTSIDE the try so it isn't swallowed.
