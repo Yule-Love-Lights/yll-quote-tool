@@ -2,10 +2,13 @@
 
 Goal: get you from `git clone` to a running dev server with zero tribal knowledge. Read this top to bottom once.
 
-> **Heads-up on the repo location (flag for Naldo):** the git remote is currently
-> `https://github.com/naldoven/yll-quote-tool.git` — a **personal** GitHub account, **not** the
-> `Yule-Love-Lights` org. The clone command below uses the real remote. If this repo is meant to
-> live under the org, Naldo needs to transfer/move it and re-point `origin` first.
+> **Repo location (verified):** the repository now lives at the **`Yule-Love-Lights` org** —
+> `https://github.com/Yule-Love-Lights/yll-quote-tool.git`. (Confirmed during the handoff push:
+> GitHub reported the repo *moved* from the old personal account `naldoven/yll-quote-tool` and
+> redirected the push to the org.) **Clone the org URL below.** Note for Naldo: the machine's local
+> `origin` still points at the old `naldoven/...` URL and works only via GitHub's redirect — run
+> `git remote set-url origin https://github.com/Yule-Love-Lights/yll-quote-tool.git` to stop
+> relying on it.
 
 ---
 
@@ -14,7 +17,7 @@ Goal: get you from `git clone` to a running dev server with zero tribal knowledg
 ### Clone
 
 ```bash
-git clone https://github.com/naldoven/yll-quote-tool.git
+git clone https://github.com/Yule-Love-Lights/yll-quote-tool.git
 cd yll-quote-tool
 ```
 
@@ -138,7 +141,7 @@ Real secret values must reach you through a **secure private channel** — a 1Pa
 ## 4. First run, end to end
 
 ```bash
-git clone https://github.com/naldoven/yll-quote-tool.git
+git clone https://github.com/Yule-Love-Lights/yll-quote-tool.git
 cd yll-quote-tool
 npm install
 cp .env.local.example .env.local      # then fill in real values received out-of-band

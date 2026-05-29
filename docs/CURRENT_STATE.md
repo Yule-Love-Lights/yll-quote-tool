@@ -140,7 +140,7 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 ## 7. Open questions / undecided decisions (don't relitigate without checking with Naldo)
 
 - **Are dark + concierge portals being kept or retired?** (Drives a delete vs. wire decision.)
-- **Is the repo staying on the personal `naldoven` account or moving to the `Yule-Love-Lights` org?** (Affects clone URL + access.)
+- ~~Is the repo staying on the personal account or moving to the org?~~ **RESOLVED:** the repo has moved to `Yule-Love-Lights/yll-quote-tool` (confirmed via push redirect during handoff). The machine's local `origin` still points at the old `naldoven/...` URL via redirect — Naldo should `git remote set-url origin` to the org URL.
 - **What is the real monthly Gemini budget ceiling?** (Code says 200, example says 10.)
 - **Is 4.5ft garland a real selectable size?** (Drives whether the $0 placeholder is a live bug.)
 - **Deploy target — Vercel or Render?** (Memory says Render for other projects; Next 16 + Turbopack favors Vercel.)
