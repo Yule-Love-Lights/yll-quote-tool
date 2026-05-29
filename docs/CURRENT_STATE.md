@@ -1,0 +1,147 @@
+# Current State — "where Naldo left off"
+
+**As of:** 2026-05-29. Latest commit before this handoff: `8e82790` "Per-package render variants + portal gallery + press assets" (2026-05-28), plus a large **uncommitted working tree** (the Snowglobe-as-final + asset-wiring work described below, committed as part of this handoff).
+
+This doc is deliberately blunt. Every claim is tied to a file, commit, or migration. Where something is genuinely unknown it says **UNKNOWN — flag for Naldo**. Ground truth is the code, not memory.
+
+---
+
+## 1. What this tool is (orientation)
+
+An internal **AI-assisted quoting + proposal tool** for Yule Love Lights (premium holiday/permanent lighting on Long Island). End-to-end flow:
+
+**Lead → photo/address → AI measurement → pricing/quote → AI render → customer portal → approval → CRM + estimating hand-off.**
+
+1. Operator opens `/quote/new`, optionally pulls a HighLevel CRM contact, and provides a **house photo or just an address** (Google Street View + satellite are fetched automatically).
+2. **Claude Sonnet 4.5 vision** (`src/lib/photoAnalysis.ts`) traces rooflines as polylines and detects bushes/trees/wreaths/spritzers/garland, returning structured measurements. The operator can correct anything; corrections feed back as few-shot examples.
+3. The **pure pricing engine** (`src/lib/pricing/pricingEngine.ts`) turns measurements into line items + packages + tax + deposit.
+4. The **render pipeline** (`src/lib/rendering/*`) composites bulb sprites onto the photo with `sharp`, then has **Gemini 3 Pro Image** "photograph" it into a photoreal nighttime preview (optional **Replicate FLUX** inpaint pass for bush mini-lights). Internal review/approval happens in `/admin/renders`.
+5. The customer opens a **portal** (`/portal-snowglobe/[quoteId]`) showing their rendered home, package options, reviews, and gallery, and clicks **Approve & Pay Deposit**.
+6. Approval freezes an immutable snapshot, fires the **home.works** estimate (via Zapier), and advances the **HighLevel** pipeline. A later inbound webhook records the signature.
+
+---
+
+## 2. Architecture map
+
+**Routes are thin; the real logic lives in `src/lib/`.** (Full module-by-module detail is in `docs/CONVENTIONS.md` §naming and in the lib files themselves.)
+
+### `src/lib/`
+- **`pricing/pricingEngine.ts`** — pure, dependency-free money math. `BUSINESS_RULES` is the single source of adjustable numbers (rates, tax 0.08625, $1000 minimum, 50% deposit, rush/takedown). `calculateQuote(inputs) → QuoteResult`.
+- **`photoAnalysis.ts`** — the Claude vision brain. `analyzePhoto()` → polylines + detections + confidence; defends against messy JSON and 0–1000 vs 0–1 coordinate scaling. Pulls corrections + training + reference assets as few-shot context.
+- **`rendering/`** — `orchestrator.ts` (conductor: hash → cache → budget → composite → Gemini → optional inpaint → store), `gemini.ts` (REST client, 3 model tiers, retry loop), `inpaint.ts` (Replicate FLUX, optional), `compositor.ts` (`sharp` bulb-sprite compositing + mask), `storage.ts` (Supabase service-role data layer + cache key + `RENDER_PROMPT_VERSION`), `variants.ts` (per-package vision filtering), `adapter.ts` (coord clamping), `types.ts`.
+- **`portal/`** — `loader.ts` (fetch quote → `PortalQuote`), `adapter.ts` (DB row → UI shape), `photos.ts` (resolve before/after + per-variant signed URLs from `renders`), `derivePackages.ts` (one `QuoteResult` → 4 tiers), `lineItemKind.ts` + `variantPhoto.ts` (label/kind parsing).
+- **`integrations/`** — `highlevel.ts` (CRM: contact + opportunity + stage), `homeworks.ts` (Zapier hook + single-line-item rollup), `types.ts`.
+- **`supabase.ts`** (anon vs service-role client factories), **`quotes.ts`**, **`corrections.ts`**, **`training.ts`**, **`referenceAssets.ts`**, **`claude.ts`**, **`googleMaps.ts`**, **`rateLimit.ts`** (in-memory per-IP).
+
+### `src/app/`
+- **API routes** (`api/`): `quote`, `quotes/[id]/{approve,send,renders,render-variants,video}`, `analyze-photo`, `analyze-address`, `streetview`, `renders/[id]`, `corrections`, `training`, `references`, `integrations/highlevel/{contacts,attach}`, `integrations/homeworks/{send,signed}`.
+- **Pages**: `quote/new` (operator UI), `admin/quotes` + `admin/quotes/[id]/{renders,video}`, `admin/renders` + `admin/renders/new`, `training/*`, and **four portal skins** (see §4.1).
+
+### `src/components/`
+Almost entirely portal UI: a base set in `portal/`, plus per-skin overrides in `portal/dark/`, `portal/concierge/`, `portal/snowglobe/`. Skin-agnostic infra: `SelectionContext.tsx` (package/line-item selection state), `types.ts`, `format.ts`, `mockQuote.ts`. One admin component: `admin/HighLevelContactAutocomplete.tsx`.
+
+### Data model (Supabase Postgres) — 5 tables
+- **`quotes`** — one per quote. **No `status` enum; state is a chain of nullable timestamps:** `created_at → quote_sent_at → customer_approved_at → homeworks_sent_at → homeworks_signed_at`. Plus `approval_snapshot` (jsonb, frozen at approval), `highlevel_contact_id/opportunity_id`, `video_*` (walkthrough), `inputs`/`result` (jsonb). **RLS disabled** — anon client.
+- **`renders`** — one per generated image. `status`: `pending → rendering → ready → approved` (or `rejected`/`failed`). `variant` (`full`/`santas`/`ridge`/`minis`/`wreaths`/`spritzers`/`garland`), `model` (`pro`/`flash2`/`flash`), `cache_key`, artifact paths, `gemini_cost_usd`. **RLS ENABLED**: anon can SELECT only `status='approved'`; the whole pipeline therefore runs via the **service-role** client. Unique index on `(quote_id, variant, style)` for non-rejected rows.
+- **`photo_corrections`** — human-corrected analyzer outputs (few-shot source). RLS disabled.
+- **`training_houses`** — confirmed real-install measurements (highest-trust few-shot). RLS disabled.
+- **`reference_assets`** — product close-ups injected into Claude calls. **UNKNOWN — flag for Naldo: this table has NO DDL anywhere in the repo** (`db/schema.sql`, migrations, `FULL-SCHEMA.sql` all lack it). It was created by hand in Supabase; schema is inferred from `referenceAssets.ts` only. Its RLS posture is unversioned.
+- **Storage:** one private bucket **`renders`**, layout `{renderId}/{source|composite|mask|final|gemini}.{jpg|png}`, served via 1-hour signed URLs. Other tables store images inline as base64.
+
+### Render pipeline (precise order)
+Claude Sonnet 4.5 vision → `coerceVision` clamp → hash/cache lookup → monthly-budget guard → insert `pending` row → upload source → `sharp` composite + mask → Gemini 3 Pro Image (REST, source+composite+mask) → **optional** Replicate FLUX inpaint (bush regions only, non-fatal) → upload final → `ready`. Model tiers: `pro` ≈ $0.134, `flash2` ≈ $0.067, `flash` ≈ $0.04 per call. Cache key includes `RENDER_PROMPT_VERSION` (currently **9**) so prompt changes bust cache.
+
+---
+
+## 3. DONE — works end-to-end today
+
+All verified against current files (the 2026-04-22 code review's CRITICAL/HIGH items were fixed the same day in `0ef2592` + RLS migrations; I checked the code, not the review).
+
+- **Pricing engine** — solid, pure, the most reliable module. `calculateQuote` covers roofline/mini-lights/spritzers/wreaths/garland → discount → minimum → rush/takedown → tax → deposit. (One placeholder price; see Known Bugs.)
+- **AI photo/address analysis** — `analyzePhoto` works from a photo or just an address (Street View + satellite). Robust JSON salvage + coordinate normalization. Few-shot from corrections + training + reference assets.
+- **Render engine core** — `runRender()` fully wired (`caa435c`): composite → Gemini, caching, budget guardrail, variant filtering, Supabase storage. Phase 1 was rated by Naldo "literally looks amazing" (see `docs/context/project_yll_render_engine.md`). **Works reliably** for warm-white; bush inpaint is the rough edge.
+- **Per-package render variants** — `variants.ts` + `render-variants` route + `PackageVariantGallery` (`8e82790`, latest commit).
+- **3-tier Gemini model toggle** — `pro`/`flash2`/`flash` (`b6d0d20`).
+- **Security hardening** — `x-admin-secret` on all admin/destructive routes, `UUID_RE` validation, coord clamping, budget guard with NaN protection, hardened `renders` RLS (anon reads only approved). (`0ef2592` + `renders-harden-rls.sql`.)
+- **Live customer approval** — `approve` route writes a versioned `approval_snapshot`; approved portal page reads the real snapshot (`d873e9c`). UUID-as-capability-token auth (intentional, documented in the route).
+- **CRM + home.works pipeline** — HighLevel lookup-first opportunity handling + stage moves; home.works outbound via Zapier with single-line-item rollup; inbound signature webhook (`b55d61a`, `ac389a4`).
+- **Two portals on real data** — **v1 `/portal/[quoteId]`** and **v6 `/portal-snowglobe/[quoteId]`** both load real quotes via `lib/portal/loader.ts` (mock only as a dev fallback when Supabase is unconfigured) and run the real approve flow.
+
+---
+
+## 4. IN PROGRESS / half-done (read this carefully)
+
+### 4.1 Portal design is consolidating on **Snowglobe (v6)** — two of four skins are dormant/mock
+There are **four portal skins**: `portal/` (v1, warm cream), `portal-dark/` (v2), `portal-concierge/` (v4), `portal-snowglobe/` (v6).
+- **Decision made this session: Snowglobe (v6) is the chosen final customer-facing design.** The admin "Portal ↗" link and the "Send to customer" copied URL now point to `/portal-snowglobe/[id]` (`src/app/admin/quotes/page.tsx`), and the snowglobe page + approved page were wired to real data with the real approve flow + approval guard.
+- **v1 `/portal`** also reads real data (it was the first real-data portal) — effectively the fallback/reference design.
+- **v2 `portal-dark` and v4 `portal-concierge` are still hardcoded to `MOCK_QUOTE`** — `portal-dark/[quoteId]/page.tsx` and `portal-concierge/[quoteId]/page.tsx` both do `const quote = MOCK_QUOTE;` and **ignore `quoteId` entirely**. Their approved pages say "we use mock data regardless of the param."
+- **Next step (decide first):** retire dark + concierge (delete the routes + their components + the now-unused `MOCK_TEAM.title/subtitle/body` legacy fields) **or** wire them through `loader.ts` like v1/snowglobe. `mockQuote.ts` already calls them "dormant." Leaving them live on mock data is a footgun — a stray link to `/portal-dark/<real-id>` shows fake data + a fake phone number.
+
+### 4.2 Reviews are still placeholder content
+- `MOCK_REVIEWS` (3 fabricated testimonials) and a **hardcoded `rating={4.9} totalReviews={187}`** are passed to `<GoogleReviews>` on every portal. This session wired the real **GMB "read all reviews" link**, but the **rating, count, and the 3 quotes are still fake.**
+- **Next step:** replace with 3–5 real Google reviews + the real current rating/count (Naldo to supply; reliable scraping of GMB isn't feasible from the link alone).
+
+### 4.3 `c9Lines` (Winter Wonderland) plumbed but fed empty
+The adapter and the quote/training UIs capture `c9Lines` as drawable polylines, but the render-from-analysis path hardcodes empty: `admin/renders/new/page.tsx` `c9: allTrue(0), // analyzer doesn't yet produce c9Lines`. Deferred to a later phase.
+- **Next step:** when the analyzer emits `c9Lines`, drop the hardcoded zero and pass captured lines through.
+
+### 4.4 home.works `notes` not wired
+`api/integrations/homeworks/send/route.ts`: `notes: undefined, // TODO wire up when notes field is added to quotes`. The `quotes` table has no `notes` column.
+- **Next step:** add a `notes` column (migration) + form field, then populate.
+
+### 4.5 Quote delivery is manual
+`/send` only stamps `quote_sent_at` + moves the HL stage; the operator hands the URL to the customer themselves (`quote/new/page.tsx`: "we don't auto-send yet. Phase 2 could add that"). Optional SMS/email auto-send is unbuilt.
+
+### 4.6 SSIM scoring is scaffolding only
+`ssim_score` column + type + admin display exist, but the orchestrator never computes it — always `null`.
+- **Next step:** compute SSIM post-Gemini, or remove the dead column/UI.
+
+### 4.7 This session's uncommitted work (now part of the handoff commit)
+Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + dark components, `lib/portal/adapter.ts`, `next.config.ts`, admin page) plus new real install photos and press logos under `public/references/`. Committed as part of this handoff.
+
+---
+
+## 5. KNOWN BUGS / LIMITATIONS / FRAGILE SPOTS
+
+- **🔴 Pricing placeholder = silent $0 line.** `pricingEngine.ts` `'4.5ft': { labor: 0, bow: 0, fullDecor: 0 } // TODO: prices TBD`. A 4.5ft garland selection prices at **$0** with no warning. **Business risk — confirm whether 4.5ft is selectable and set real prices.**
+- **🔴 Customer-facing FAKE phone number on dormant portals.** `MOCK_TEAM.phone: '(555) 123-4567'` renders in CTAs + `tel:` links on **dark + concierge** approved pages. v1/snowglobe override via `NEXT_PUBLIC_PORTAL_PHONE` (real). If dark/concierge stay reachable, the fake number is live to customers.
+- **🟠 RLS migration ordering is unverified in prod.** Both `renders-fix-rls.sql` (insecure, `anon full access`) and `renders-harden-rls.sql` (secure) share the `2026-04-22` date prefix. `FULL-SCHEMA.sql` reflects the hardened end state. **UNKNOWN whether the live Supabase project has the hardened policies applied** — Naldo/Jason should run `\d renders` (or check the dashboard policies) and confirm anon SELECT is `status = 'approved'`, not `true`.
+- **🟠 Gemini retry inflates cost estimate.** On a retried success, `estimatedCostUsd = costUsd * (attempt+1)` — MTD spend (and the budget guard) climb faster than nominal when Pro-preview is flaky.
+- **🟠 Cost figures inconsistent.** Code charges ~$0.134/Pro call; `.env.local.example` comment says "~$0.20"; the in-code budget fallback is **200** but the example ships **`RENDER_BUDGET_MONTHLY_USD=10`** (the env value wins). Decide the real ceiling.
+- **🟡 Gemini model IDs are all `-preview`/β** — `gemini-3-pro-image-preview` etc. can change without notice. Exact model ID matters (`gemini-3-pro-image` 404s — see context snapshot).
+- **🟡 Replicate inpaint model ref is unpinned** (`zsxkib/flux-dev-inpainting`, no `:version`) — output quality can drift; pin once validated. Large photos can exceed the 120s poll window.
+- **🟡 Compositor geometry is approximate** — trunk wrap = 3 stripes not a helix, garland = straight line, wreath ring overshoots non-square boxes, `multi` style returns one amber (rotation is "Phase 2"). Cosmetic; affects mask guidance, not pricing.
+- **🟡 Rate limiter trusts first `x-forwarded-for`** — spoofable on non-Vercel hosts (memory says Naldo deploys to Render). Budget protection, not DoS-grade.
+- **🟡 `renders.quote_id` is not a real FK** (no `REFERENCES quotes(id)`); orphan integrity is app-logic only.
+- **⚪ "Works on Naldo's machine only" risks:** `reference_assets` table exists only in the live Supabase (no DDL in repo); `FULL-SCHEMA.sql` is stale (predates the post-Apr-22 quotes columns + `renders.variant`), so a true from-scratch DB rebuild needs `db/schema.sql` + `FULL-SCHEMA.sql` + the four later quotes migrations + a hand-made `reference_assets`. The site isn't deployed anywhere public yet — everything has been localhost dev.
+
+---
+
+## 6. NEXT STEPS / ROADMAP
+
+**Must-do to be stable (do these first):**
+1. **Set real `.env.local`** incl. the newly-documented `HIGHLEVEL_STAGE_QUOTE_INTERESTED`, and confirm `RENDER_BUDGET_MONTHLY_USD`.
+2. **Verify live Supabase RLS** on `renders` is the hardened policy (§5). One SQL check.
+3. **Fix the `$0` pricing placeholder** in `pricingEngine.ts` (`'4.5ft'`) or confirm it's unreachable.
+4. **Resolve the dormant portals** (§4.1) — retire or wire dark + concierge so the fake `(555)` phone can't reach a customer.
+5. **Capture `reference_assets` DDL** in a migration so the DB is reproducible.
+
+**Planned / higher-leverage:**
+6. Real Google reviews + rating/count on the portal (§4.2).
+7. Decide whether to deploy (Vercel is the natural fit for Next 16; memory mentions Render). Set env vars in the host; the customer URL becomes `https://<domain>/portal-snowglobe/[id]`.
+8. Pin the Replicate model version; reconcile Gemini cost accounting.
+9. `c9Lines` end-to-end (§4.3), home.works `notes` (§4.4), optional auto-send (§4.5), SSIM or remove it (§4.6).
+
+**Good first tasks for Jason** (low-risk, high-orientation-value): fix the `$0` pricing placeholder; swap real review content; add the `reference_assets` migration; retire/wire the dormant portals. Each touches one well-bounded area.
+
+---
+
+## 7. Open questions / undecided decisions (don't relitigate without checking with Naldo)
+
+- **Are dark + concierge portals being kept or retired?** (Drives a delete vs. wire decision.)
+- **Is the repo staying on the personal `naldoven` account or moving to the `Yule-Love-Lights` org?** (Affects clone URL + access.)
+- **What is the real monthly Gemini budget ceiling?** (Code says 200, example says 10.)
+- **Is 4.5ft garland a real selectable size?** (Drives whether the $0 placeholder is a live bug.)
+- **Deploy target — Vercel or Render?** (Memory says Render for other projects; Next 16 + Turbopack favors Vercel.)
+- **Auth model for portals** is intentionally "UUID = capability token" (no login). Confirm that's acceptable long-term before building login on top of it.
