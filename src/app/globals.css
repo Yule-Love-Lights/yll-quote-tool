@@ -3,6 +3,13 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* This is a light-themed app: the operator/admin UI uses white cards and
+     light backgrounds, and the customer portal skins set their own colors.
+     Pin the color scheme to light so the OS's dark mode can't flip default
+     text to near-white on our white surfaces (which made text unreadable).
+     The leftover create-next-app `prefers-color-scheme: dark` override that
+     used to live here was the cause and has been removed. */
+  color-scheme: light;
 }
 
 @theme inline {
@@ -10,13 +17,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {

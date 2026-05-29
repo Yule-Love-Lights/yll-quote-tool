@@ -40,7 +40,7 @@ export const BUSINESS_RULES = {
   garlandPrices: {
     noble: {
       '9ft':   { labor: 165, bow: 195, fullDecor: 250 },
-      '4.5ft': { labor: 0,   bow: 0,   fullDecor: 0   },  // TODO: prices TBD
+      '4.5ft': { labor: 135, bow: 0,   fullDecor: 210 },  // TODO: 'bow' tier price still TBD — Naldo to confirm (currently silently prices $0)
     },
   },
 } as const;
