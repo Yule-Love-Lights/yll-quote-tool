@@ -4,6 +4,8 @@
 
 This doc is deliberately blunt. Every claim is tied to a file, commit, or migration. Where something is genuinely unknown it says **UNKNOWN — flag for Naldo**. Ground truth is the code, not memory.
 
+> **Post-handoff updates (2026-05-29, Jason — branch `jason/onboarding-followups`):** fixed the silent $0 garland pricing (§5); added a `reference_assets` migration (§5 / §6 #5); introduced **Vitest** + a pricing-engine test suite (`npm test`); converted the gallery photos to **WebP** (~86% smaller); and began the `react-hooks/set-state-in-effect` lint refactor (rule temporarily downgraded to `warn`, 8 of 18 sites fixed — see `CONVENTIONS.md` §4). Two discoveries: the project **is already deployed on Vercel** (Production tracks `master` → `quote.yulelovelights.com`), and **every Vercel env var is marked "Sensitive"** so the values can't be read back — secrets must come from the source accounts (Supabase/Anthropic/Google), not Vercel.
+
 ---
 
 ## 1. What this tool is (orientation)
@@ -104,7 +106,7 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 
 ## 5. KNOWN BUGS / LIMITATIONS / FRAGILE SPOTS
 
-- **🔴 Pricing placeholder = silent $0 line.** `pricingEngine.ts` `'4.5ft': { labor: 0, bow: 0, fullDecor: 0 } // TODO: prices TBD`. A 4.5ft garland selection prices at **$0** with no warning. **Business risk — confirm whether 4.5ft is selectable and set real prices.**
+- **🟡 Pricing placeholder — mostly fixed.** `pricingEngine.ts` 4.5ft Noble garland was a `{ labor: 0, bow: 0, fullDecor: 0 }` placeholder that silently priced at **$0**. Now set: **labor $135, fullDecor $210** (Naldo confirmed 4.5ft is a real size). The **`bow` tier is still `0`** pending Naldo's price — selecting "4.5ft / With Bow" still prices at $0. A regression test guards the two fixed values (`pricingEngine.test.ts`).
 - **🔴 Customer-facing FAKE phone number on dormant portals.** `MOCK_TEAM.phone: '(555) 123-4567'` renders in CTAs + `tel:` links on **dark + concierge** approved pages. v1/snowglobe override via `NEXT_PUBLIC_PORTAL_PHONE` (real). If dark/concierge stay reachable, the fake number is live to customers.
 - **🟠 RLS migration ordering is unverified in prod.** Both `renders-fix-rls.sql` (insecure, `anon full access`) and `renders-harden-rls.sql` (secure) share the `2026-04-22` date prefix. `FULL-SCHEMA.sql` reflects the hardened end state. **UNKNOWN whether the live Supabase project has the hardened policies applied** — Naldo/Jason should run `\d renders` (or check the dashboard policies) and confirm anon SELECT is `status = 'approved'`, not `true`.
 - **🟠 Gemini retry inflates cost estimate.** On a retried success, `estimatedCostUsd = costUsd * (attempt+1)` — MTD spend (and the budget guard) climb faster than nominal when Pro-preview is flaky.
@@ -114,7 +116,8 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 - **🟡 Compositor geometry is approximate** — trunk wrap = 3 stripes not a helix, garland = straight line, wreath ring overshoots non-square boxes, `multi` style returns one amber (rotation is "Phase 2"). Cosmetic; affects mask guidance, not pricing.
 - **🟡 Rate limiter trusts first `x-forwarded-for`** — spoofable on non-Vercel hosts (memory says Naldo deploys to Render). Budget protection, not DoS-grade.
 - **🟡 `renders.quote_id` is not a real FK** (no `REFERENCES quotes(id)`); orphan integrity is app-logic only.
-- **⚪ "Works on Naldo's machine only" risks:** `reference_assets` table exists only in the live Supabase (no DDL in repo); `FULL-SCHEMA.sql` is stale (predates the post-Apr-22 quotes columns + `renders.variant`), so a true from-scratch DB rebuild needs `db/schema.sql` + `FULL-SCHEMA.sql` + the four later quotes migrations + a hand-made `reference_assets`. The site isn't deployed anywhere public yet — everything has been localhost dev.
+- **⚪ "Works on Naldo's machine only" risks (reduced):** `reference_assets` now has a migration (`migrations/2026-05-29-reference-assets-create.sql`) — it no longer exists *only* in the live Supabase. `FULL-SCHEMA.sql` is still stale (predates the post-Apr-22 quotes columns + `renders.variant`), so a true from-scratch rebuild = `db/schema.sql` + `FULL-SCHEMA.sql` + the four later quotes migrations + the new `reference_assets` migration.
+- **🟢 Deploy (corrected):** the site **is** deployed on **Vercel** — project `yll-quote-tool`, Production env tracks `master` (→ `quote.yulelovelights.com` + `yll-quote-tool.vercel.app`), so merges to `master` auto-deploy. (Supersedes the earlier "not deployed anywhere public yet" note.) All Vercel env vars are marked **Sensitive**, so their values can't be read from the dashboard/CLI — pull secrets from the source services instead.
 
 ---
 
@@ -123,9 +126,9 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 **Must-do to be stable (do these first):**
 1. **Set real `.env.local`** incl. the newly-documented `HIGHLEVEL_STAGE_QUOTE_INTERESTED`, and confirm `RENDER_BUDGET_MONTHLY_USD`.
 2. **Verify live Supabase RLS** on `renders` is the hardened policy (§5). One SQL check.
-3. **Fix the `$0` pricing placeholder** in `pricingEngine.ts` (`'4.5ft'`) or confirm it's unreachable.
+3. ~~**Fix the `$0` pricing placeholder**~~ — **DONE** for labor ($135) + fullDecor ($210); the `bow` tier is still `$0` pending Naldo's price.
 4. **Resolve the dormant portals** (§4.1) — retire or wire dark + concierge so the fake `(555)` phone can't reach a customer.
-5. **Capture `reference_assets` DDL** in a migration so the DB is reproducible.
+5. ~~**Capture `reference_assets` DDL** in a migration~~ — **DONE** (`migrations/2026-05-29-reference-assets-create.sql`); still needs applying to any fresh DB.
 
 **Planned / higher-leverage:**
 6. Real Google reviews + rating/count on the portal (§4.2).
@@ -133,7 +136,7 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 8. Pin the Replicate model version; reconcile Gemini cost accounting.
 9. `c9Lines` end-to-end (§4.3), home.works `notes` (§4.4), optional auto-send (§4.5), SSIM or remove it (§4.6).
 
-**Good first tasks for Jason** (low-risk, high-orientation-value): fix the `$0` pricing placeholder; swap real review content; add the `reference_assets` migration; retire/wire the dormant portals. Each touches one well-bounded area.
+**Good first tasks for Jason** (low-risk, high-orientation-value): ~~fix the `$0` pricing placeholder~~ (done); swap real review content; ~~add the `reference_assets` migration~~ (done); retire/wire the dormant portals. Each touches one well-bounded area.
 
 ---
 
@@ -142,6 +145,6 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 - **Are dark + concierge portals being kept or retired?** (Drives a delete vs. wire decision.)
 - ~~Is the repo staying on the personal account or moving to the org?~~ **RESOLVED:** the repo has moved to `Yule-Love-Lights/yll-quote-tool` (confirmed via push redirect during handoff). The machine's local `origin` still points at the old `naldoven/...` URL via redirect — Naldo should `git remote set-url origin` to the org URL.
 - **What is the real monthly Gemini budget ceiling?** (Code says 200, example says 10.)
-- **Is 4.5ft garland a real selectable size?** (Drives whether the $0 placeholder is a live bug.)
-- **Deploy target — Vercel or Render?** (Memory says Render for other projects; Next 16 + Turbopack favors Vercel.)
+- ~~**Is 4.5ft garland a real selectable size?**~~ **RESOLVED:** yes (Naldo confirmed). labor/fullDecor now priced; the `bow`-tier price is still outstanding from Naldo.
+- ~~**Deploy target — Vercel or Render?**~~ **RESOLVED:** the project is on **Vercel** (`yll-quote-tool`, Production tracks `master` → `quote.yulelovelights.com`).
 - **Auth model for portals** is intentionally "UUID = capability token" (no login). Confirm that's acceptable long-term before building login on top of it.
