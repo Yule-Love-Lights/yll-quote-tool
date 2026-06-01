@@ -183,7 +183,8 @@ export default function NewQuotePage() {
   // polyline edits in lockstep with the form inputs below the photo.
   const [measurementSource, setMeasurementSource] = useState<'street' | 'satellite'>('street');
   useEffect(() => {
-    setMeasurementSource(viewMode);
+    // defer so the state update isn't synchronous within the effect (flushes before paint)
+    queueMicrotask(() => setMeasurementSource(viewMode));
   }, [viewMode]);
 
   // Mini light rates (mirror of BUSINESS_RULES.miniLightRates)
@@ -244,7 +245,8 @@ export default function NewQuotePage() {
     // Otherwise leave winterWonderlandFootage alone so the manual input still works.
     const hasC9Lines = c9Lines.length > 0 || satelliteC9Lines.length > 0;
     const c9Target = hasC9Lines ? c9Ft : null;
-    setForm(f => {
+    // defer so the form update isn't synchronous within the effect (flushes before paint)
+    queueMicrotask(() => setForm(f => {
       const sameRoof = f.santasFootage === sFt && f.gingerbreadFootage === gFt;
       const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
       if (sameRoof && sameC9) return f;
@@ -254,7 +256,7 @@ export default function NewQuotePage() {
         gingerbreadFootage: gFt,
         ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
       };
-    });
+    }));
   }, [santasLines, gingerbreadLines, c9Lines, satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, feetPerUnit, satelliteFeetPerPixel, imgAspect, satelliteAspect, measurementSource]);
 
   // Footage display helpers — compute both sources independently so user can compare.
@@ -402,31 +404,34 @@ export default function NewQuotePage() {
 
   // Sync detection edits back into form.miniLightItems
   useEffect(() => {
-    setForm(f => ({
+    // defer the form sync out of the synchronous effect body (flushes before paint)
+    queueMicrotask(() => setForm(f => ({
       ...f,
       miniLightItems: miniLightDetections.map(d => ({
         type: d.type,
         wrapStyle: d.wrapStyle,
         stringCount: d.stringCount,
       })),
-    }));
+    })));
   }, [miniLightDetections]);
 
   // Wreaths — one form entry per detection. Grouped rendering in the quote is
   // fine with duplicates; each detection keeps its own box for editability.
   useEffect(() => {
-    setForm(f => ({
+    // defer the form sync out of the synchronous effect body (flushes before paint)
+    queueMicrotask(() => setForm(f => ({
       ...f,
       wreaths: wreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 })),
-    }));
+    })));
   }, [wreathDetections]);
 
   // Spritzers — one form entry per detection.
   useEffect(() => {
-    setForm(f => ({
+    // defer the form sync out of the synchronous effect body (flushes before paint)
+    queueMicrotask(() => setForm(f => ({
       ...f,
       spritzers: spritzerDetections.map(d => ({ size: d.size, quantity: 1 })),
-    }));
+    })));
   }, [spritzerDetections]);
 
   // Garland — box width in real feet (via feetPerUnit) tells us how many 9ft
@@ -438,7 +443,8 @@ export default function NewQuotePage() {
       const widthFt = box[2] * feetPerUnit;
       return Math.max(1, Math.ceil(widthFt / unitFt));
     };
-    setForm(f => ({
+    // defer the form sync out of the synchronous effect body (flushes before paint)
+    queueMicrotask(() => setForm(f => ({
       ...f,
       garland: garlandDetections.map(d => ({
         length: d.length,
@@ -446,7 +452,7 @@ export default function NewQuotePage() {
         tier: d.tier,
         quantity: pieces(d.box, d.length),
       })),
-    }));
+    })));
   }, [garlandDetections, feetPerUnit]);
 
   // Active setter routing — drag ops operate on whichever line set matches

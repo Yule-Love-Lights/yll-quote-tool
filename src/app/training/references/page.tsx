@@ -42,13 +42,19 @@ export default function ReferenceLibraryPage() {
       setLoading(false);
     }
   };
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    // defer the initial load so refresh()'s setLoading isn't synchronous in the effect
+    queueMicrotask(refresh);
+  }, []);
 
   // Reset size/tier defaults when type changes
   useEffect(() => {
-    if (assetType === 'spritzer') { setSize('24'); setTier(''); }
-    else if (assetType === 'wreath') { setSize('30noble'); setTier('bow'); }
-    else { setSize('9ft'); setTier('bow'); }
+    // defer the reset so these state updates aren't synchronous in the effect body
+    queueMicrotask(() => {
+      if (assetType === 'spritzer') { setSize('24'); setTier(''); }
+      else if (assetType === 'wreath') { setSize('30noble'); setTier('bow'); }
+      else { setSize('9ft'); setTier('bow'); }
+    });
   }, [assetType]);
 
   const sizeOptions = assetType === 'spritzer' ? SPRITZER_SIZES

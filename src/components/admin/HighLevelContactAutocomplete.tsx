@@ -45,9 +45,12 @@ export default function HighLevelContactAutocomplete({
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2) {
-      setResults([]);
-      setError(null);
-      setLoading(false);
+      // defer the reset so these aren't synchronous setStates in the effect body
+      queueMicrotask(() => {
+        setResults([]);
+        setError(null);
+        setLoading(false);
+      });
       return;
     }
     const timer = setTimeout(async () => {

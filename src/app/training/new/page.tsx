@@ -159,7 +159,8 @@ export default function NewTrainingHousePage() {
     let scale: number | null = null;
     if (santasLen > 0 && sFt > 0) scale = sFt / santasLen;
     else if (ridgeLen > 0 && gFt > 0) scale = gFt / ridgeLen;
-    if (scale != null) setFeetPerUnit(scale);
+    // defer out of the synchronous effect body; the skipCalibRef guard above stays synchronous
+    if (scale != null) queueMicrotask(() => setFeetPerUnit(scale));
     // santasLines/gingerbreadLines/c9Lines intentionally excluded — the
     // polyline-driven effect owns line-change recalibration.
     // eslint-disable-next-line react-hooks/exhaustive-deps

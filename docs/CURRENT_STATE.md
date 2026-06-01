@@ -4,7 +4,7 @@
 
 This doc is deliberately blunt. Every claim is tied to a file, commit, or migration. Where something is genuinely unknown it says **UNKNOWN — flag for Naldo**. Ground truth is the code, not memory.
 
-> **Post-handoff updates (2026-05-29, Jason — branch `jason/onboarding-followups`):** fixed the silent $0 garland pricing (§5); added a `reference_assets` migration (§5 / §6 #5); introduced **Vitest** + a pricing-engine test suite (`npm test`); converted the gallery photos to **WebP** (~86% smaller); and began the `react-hooks/set-state-in-effect` lint refactor (rule temporarily downgraded to `warn`, 8 of 18 sites fixed — see `CONVENTIONS.md` §4). Two discoveries: the project **is already deployed on Vercel** (Production tracks `master` → `quote.yulelovelights.com`), and **every Vercel env var is marked "Sensitive"** so the values can't be read back — secrets must come from the source accounts (Supabase/Anthropic/Google), not Vercel.
+> **Post-handoff updates (2026-05-29, Jason — branch `jason/onboarding-followups`):** fixed the silent $0 garland pricing (§5); added a `reference_assets` migration (§5 / §6 #5); introduced **Vitest** + a pricing-engine test suite (`npm test`); converted the gallery photos to **WebP** (~86% smaller); and completed the `react-hooks/set-state-in-effect` lint refactor (all 18 sites fixed via `queueMicrotask`/`rAF` deferral; rule restored to `error` — see `CONVENTIONS.md` §4). Two discoveries: the project **is already deployed on Vercel** (Production tracks `master` → `quote.yulelovelights.com`), and **every Vercel env var is marked "Sensitive"** so the values can't be read back — secrets must come from the source accounts (Supabase/Anthropic/Google), not Vercel.
 
 ---
 
