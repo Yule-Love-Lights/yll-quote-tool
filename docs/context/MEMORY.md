@@ -1,17 +1,18 @@
-# Project memory index (snapshot)
+# AI Quote Tool — memory index
 
-> Snapshot of the Claude Code project memory relevant to **yll-quote-tool**, taken 2026-05-29 for the handoff to Jason. See `README.md` in this folder for what these are and how to load them. This is a point-in-time copy, not a live link — it will drift from the machine's live memory.
+> Claude Code auto-loads these at session start. **Read order:** this index → latest `session_log.md` entry → `project_quote_tool.md` (Current state / Decisions confirmed / Next up). See `README.md` for the continuity system + start/close protocols. `docs/context/` in the repo is the **canonical shared copy** (Jason + Naldo work on different machines; local memory is seeded from it and synced back to it).
 
-- [User profile — Naldo](user_naldo.md) — owner context: runs Yule Love Lights (LI holiday lighting) + Chick-fil-A Director of Ops; builds solo; not a working developer.
-- [YLL Render Engine project](project_yll_render_engine.md) — the locked-in design decisions for `src/lib/rendering/` (Option D: sharp composite + mask → Gemini 3 Pro Image), brand aesthetic, Phase 1 "shipped + validated" notes, and the exact Gemini model-ID / REST-parsing gotchas. **Most important file here.**
-- [Claude Code empty ANTHROPIC_API_KEY gotcha](feedback_claude_code_env_override.md) — a Claude-Code-shell quirk: the inherited shell sets `ANTHROPIC_API_KEY=""` which silently overrides `.env.local`; `unset` it before `npm run dev` or Claude API routes return 503.
-- [npx skills add flags](feedback_npx_skills_add_flags.md) — minor tooling note for this machine's dev environment.
+**Continuity (read first):**
+- [Project state — READ FIRST](project_quote_tool.md) — current state at a glance, confirmed decisions (don't re-ask), run commands, gotchas, QA backlog, next up.
+- [Session log](session_log.md) — running per-session continuity thread; newest entry on top.
 
-## Intentionally excluded from this snapshot
+**Reference:**
+- [User — Jason](user_jason.md) — current dev (took over from Naldo); Windows/PowerShell, PR-not-master, GitHub `100levelz`.
+- [User — Naldo](user_naldo.md) — owner; runs Yule Love Lights + Chick-fil-A; builds solo; not a working developer.
+- [Render engine project](project_yll_render_engine.md) — locked render-pipeline decisions + the exact Gemini model-ID / REST-parsing gotchas. Most detailed legacy note.
+- [Where to get secrets](project_secrets_access.md) — Vercel env vars are "Sensitive"/unreadable; pull values from the source accounts.
+- [Empty ANTHROPIC_API_KEY gotcha](feedback_claude_code_env_override.md) — the Claude-Code shell sets it to `""`, overriding `.env.local`; unset before `npm run dev`.
+- [npx skills add flags](feedback_npx_skills_add_flags.md) — minor tooling note.
 
-Two files that exist in the live memory folder were **omitted** from the repo:
-
-- `project_yll_goals.md` — Naldo's 2026 business goals; contains **sensitive business financials** and belongs to a separate ("Naldo's Brain") project, not the quote tool. Omitted for sensitivity + scope.
-- `project_naldos_brain.md` — the separate WhatsApp "second brain" project; out of scope for this repo. Omitted.
-
-No API keys, tokens, or secrets were present in any memory file; nothing needed redaction beyond the two omissions above.
+> Deep, repo-side detail (source of truth for specifics): `docs/ONBOARDING.md`, `docs/CURRENT_STATE.md`, `docs/CONVENTIONS.md`.
+> Note: two files from Naldo's live memory were intentionally excluded from the repo snapshot (his 2026 business goals + a separate WhatsApp project) — don't go looking for them here.
