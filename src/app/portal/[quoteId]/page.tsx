@@ -1,14 +1,16 @@
 // Customer-facing quote approval portal — the sales-close page.
-// Route: /portal/[quoteId]
+// Route: /portal/[quoteId] (the canonical customer URL).
 //
-// This page is a Server Component that composes the 15 sections in
-// the order defined in the spec. The only client boundaries are the
-// interactive pieces that mount inside <SelectionProvider>:
-//   - PackageCards (reads + writes package state)
-//   - WhatsIncluded (reads + writes line-item state)
-//   - StickyBottomBar (reads total + deposit for the live CTA)
-//   - Hero (before/after toggle — self-contained local state)
-//   - GoogleReviews / Gallery / FAQ (self-contained local state)
+// This is the SNOWGLOBE design: the home's photo becomes the product —
+// tap a package, watch the lights come on. Wired to real DB data
+// (loadPortalQuote) with the production approve flow: the StickyBottomBar
+// POSTs to /api/quotes/[id]/approve (home.works + HighLevel) then routes
+// to /portal/[id]/approved.
+//
+// The first screen is the InteractiveHero; below the fold it composes the
+// dark-theme sections (WhatsIncluded, RiskReversal, …). The interactive
+// pieces mount inside <SelectionProvider> so the hero, line-item toggles,
+// and sticky price stay in sync.
 //
 // Data flow:
 //   1. loadPortalQuote(quoteId) — DB → PortalQuote via the adapter.
@@ -17,23 +19,20 @@
 //   3. If Supabase is configured but the row doesn't exist, 404.
 
 import { notFound } from 'next/navigation';
-import { TrustBar } from '@/components/portal/TrustBar';
-import { Hero } from '@/components/portal/Hero';
-import { WalkthroughVideo } from '@/components/portal/WalkthroughVideo';
-import { UrgencyBanner } from '@/components/portal/UrgencyBanner';
-import { PackageCards } from '@/components/portal/PackageCards';
-import { PackageVariantGallery } from '@/components/portal/PackageVariantGallery';
-import { WhatsIncluded } from '@/components/portal/WhatsIncluded';
-import { RiskReversal } from '@/components/portal/RiskReversal';
-import { WhatHappensNext } from '@/components/portal/WhatHappensNext';
-import { MeetYourTeam } from '@/components/portal/MeetYourTeam';
-import { GoogleReviews } from '@/components/portal/GoogleReviews';
-import { Gallery } from '@/components/portal/Gallery';
-import { Philanthropy } from '@/components/portal/Philanthropy';
-import { FAQ } from '@/components/portal/FAQ';
-import { PersonalContact } from '@/components/portal/PersonalContact';
-import { StickyBottomBar } from '@/components/portal/StickyBottomBar';
-import { Disclaimer } from '@/components/portal/Disclaimer';
+import { InteractiveHero } from '@/components/portal/snowglobe/InteractiveHero';
+import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo';
+import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
+// Below-the-fold sections reuse the dark-theme components:
+import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
+import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
+import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
+import { GoogleReviews } from '@/components/portal/dark/GoogleReviews';
+import { Gallery } from '@/components/portal/dark/Gallery';
+import { Philanthropy } from '@/components/portal/dark/Philanthropy';
+import { FAQ } from '@/components/portal/dark/FAQ';
+import { PersonalContact } from '@/components/portal/dark/PersonalContact';
+import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import {
   MOCK_QUOTE,
@@ -48,6 +47,14 @@ import type { PortalQuote } from '@/components/portal/types';
 
 type Params = { quoteId: string };
 
+// Google Business Profile reviews deep-link (browser-neutral).
+const GMB_REVIEWS_URL =
+  'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
+
+// Fallback hero when a quote has no approved render yet (dev/preview only —
+// real sent quotes always carry a render by the time a customer opens this).
+const FALLBACK_HERO = '/references/Roslyn.webp';
+
 // Resolve the active quote: real DB first, MOCK_QUOTE only as a dev
 // fallback when Supabase isn't configured.
 //
@@ -61,10 +68,7 @@ async function resolveQuote(quoteId: string): Promise<PortalQuote> {
   try {
     real = await loadPortalQuote(quoteId);
   } catch (err) {
-    if (err instanceof PortalConfigError) {
-      // Dev mode without env vars — keep the page renderable.
-      return MOCK_QUOTE;
-    }
+    if (err instanceof PortalConfigError) return MOCK_QUOTE;
     throw err;
   }
   if (!real) notFound();
@@ -76,8 +80,7 @@ async function resolveQuote(quoteId: string): Promise<PortalQuote> {
 function resolveTeam() {
   const leaderName =
     process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || MOCK_TEAM.leaderName;
-  const phone =
-    process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   return {
     leaderName,
     phone,
@@ -86,11 +89,6 @@ function resolveTeam() {
     companyBio: MOCK_TEAM.companyBio,
   };
 }
-
-// Google Business Profile reviews deep-link (cleaned of browser-specific
-// query params so it opens the reviews panel in any browser).
-const GMB_REVIEWS_URL =
-  'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
 
 export default async function PortalPage({
   params,
@@ -101,73 +99,46 @@ export default async function PortalPage({
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
   const initialPackageId = pickInitialPackageId(quote.packages);
-
-  // Hero hides when no photos exist on the quote yet (renders pipeline
-  // hasn't produced an approved final). Rendering an empty <img> with
-  // src="" would break LCP and trigger a console warning.
-  const heroHasPhotos = quote.photo.before && quote.photo.after;
+  const heroAfter = quote.photo.after || FALLBACK_HERO;
+  const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
 
   return (
     <main className="relative w-full">
-      {/* 1. Press trust bar — quiet credibility strip above the hero */}
-      <TrustBar />
-
-      {/* 2. Hero — personalized headline + before/after render */}
-      {heroHasPhotos && (
-        <Hero
-          firstName={quote.customer.firstName}
-          beforeUrl={quote.photo.before}
-          afterUrl={quote.photo.after}
-          alt={quote.photo.alt}
-        />
-      )}
-
-      {/* 2b. Walkthrough video — Naldo explains the quote. Renders only
-       * when the quote has a video attached; silently hides otherwise. */}
-      {quote.video && <WalkthroughVideo video={quote.video} />}
-
-      {/* 3. Urgency / scarcity — honest, no fake countdowns */}
-      <UrgencyBanner
-        weeklyBookings={quote.weeklyBookings}
-        bookedThroughDate={quote.seasonCapacity.bookedThroughDate}
-      />
-
-      {/* SelectionProvider wraps every piece that reads/writes the
-       * live package + line-item selection. PackageCards, WhatsIncluded,
-       * and StickyBottomBar all subscribe to this shared state. */}
       <SelectionProvider
         packages={quote.packages}
         lineItems={quote.lineItems}
         initialPackageId={initialPackageId}
       >
-        {/* 4. Package cards A/B/C/D */}
-        <PackageCards packages={quote.packages} />
-
-        {/* 4b. Per-package preview gallery — renders only when variant
-         * images have been generated and approved for this quote. Hides
-         * itself silently when the variant batch hasn't been run. */}
-        <PackageVariantGallery
-          variantPhotos={quote.variantPhotos}
-          alt={quote.photo.alt}
+        {/* 1. InteractiveHero — the whole first screen is the product */}
+        <InteractiveHero
+          firstName={quote.customer.firstName}
+          address={quote.customer.address}
+          afterUrl={heroAfter}
+          alt={heroAlt}
+          packages={quote.packages}
+          lineItemCount={quote.lineItems.length}
         />
 
-        {/* 5. What's Included — per-line-item toggles */}
+        {/* 2. Walkthrough video — global default or per-quote override */}
+        {quote.video && <WalkthroughVideo video={quote.video} />}
+
+        {/* 3. What's Included — line-item toggles feed the hero + sticky price */}
         <WhatsIncluded items={quote.lineItems} />
 
-        {/* 6. Risk Reversal — six guarantees */}
+        {/* 4. Risk Reversal */}
         <RiskReversal />
 
-        {/* 7. What Happens Next — 4-step install timeline */}
+        {/* 5. What Happens Next */}
         <WhatHappensNext />
 
-        {/* 8. About Yule Love Lights — company story + credentials */}
+        {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
           photo={team.photo}
           paragraphs={team.companyBio}
           badges={team.badges}
         />
 
-        {/* 9. Google Reviews carousel */}
+        {/* 7. Google Reviews */}
         <GoogleReviews
           rating={4.9}
           totalReviews={187}
@@ -175,27 +146,26 @@ export default async function PortalPage({
           reviewsUrl={GMB_REVIEWS_URL}
         />
 
-        {/* 10. Gallery — editorial asymmetric grid with lightbox */}
+        {/* 8. Gallery */}
         <Gallery items={MOCK_GALLERY_ITEMS} />
 
-        {/* 11. Philanthropy strip */}
+        {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 12. FAQ accordion */}
+        {/* 10. FAQ */}
         <FAQ items={MOCK_FAQ} />
 
-        {/* 13. Personal contact — Naldo's direct line */}
+        {/* 11. Personal contact */}
         <PersonalContact
           leaderName={team.leaderName}
           photo={team.photo}
           phone={team.phone}
         />
 
-        {/* 15. Disclaimer — render caveat, small cream block */}
+        {/* 12. Disclaimer */}
         <Disclaimer />
 
-        {/* 14. Sticky bottom CTA — ALWAYS last in tree so it overlays
-         * everything. Reads live total+deposit from context. */}
+        {/* Sticky floating pill bar — real approve flow, always last in tree */}
         <StickyBottomBar quoteId={quoteId} />
       </SelectionProvider>
     </main>

@@ -217,7 +217,7 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
               ← Quotes
             </Link>
             <Link
-              href={`/portal-snowglobe/${quoteId}`}
+              href={`/portal/${quoteId}`}
               target="_blank"
               rel="noopener"
               className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"

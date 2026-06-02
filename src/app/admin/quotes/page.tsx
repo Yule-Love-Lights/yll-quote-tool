@@ -79,7 +79,7 @@ export default function QuotesAdminPage() {
   // quote_sent_at + advances the HighLevel pipeline card to "Bid Sent".
   // Naldo then pastes the URL into iMessage / email / wherever.
   const sendToCustomer = async (id: string) => {
-    const portalUrl = `${window.location.origin}/portal-snowglobe/${id}`;
+    const portalUrl = `${window.location.origin}/portal/${id}`;
 
     // Copy first — if Zapier is down we still want Naldo to have the URL.
     let copied = false;
@@ -220,7 +220,7 @@ export default function QuotesAdminPage() {
                       <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         <Link
-                          href={`/portal-snowglobe/${q.id}`}
+                          href={`/portal/${q.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"

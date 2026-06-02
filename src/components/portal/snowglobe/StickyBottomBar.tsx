@@ -43,14 +43,14 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
       });
       // 409 = already approved — still route to the celebration page.
       if (res.status === 409) {
-        router.push(`/portal-snowglobe/${quoteId}/approved`);
+        router.push(`/portal/${quoteId}/approved`);
         return;
       }
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(body.error ?? `Request failed: ${res.status}`);
       }
-      router.push(`/portal-snowglobe/${quoteId}/approved`);
+      router.push(`/portal/${quoteId}/approved`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong — please try again.');
       setSubmitting(false);
