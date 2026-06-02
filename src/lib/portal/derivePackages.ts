@@ -14,18 +14,21 @@
 // the same operational charges regardless of which tier they pick. The
 // only thing that varies between A/B/C is the bundled line-item subtotal.
 //
-// Minimum-quote rule applies per-package: if a package's items sum to
-// less than $1,000 (BUSINESS_RULES.minimumQuoteAmount), we round up.
-// Empty packages (no items in this quote that match the bucket) get
-// total: 0 so they render as "—" and can't be selected.
+// Per-package totals are the REAL tax-inclusive price of the bucket's items
+// (no $1,000 floor — the minimum is a customer-side approval gate on the
+// portal, not a silent bump; see minimumOrderSubtotal). Empty packages (no
+// items in this quote that match the bucket) get total: 0 so they render as
+// "—" and can't be selected.
 
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 import type {
   PackageId,
+  PortalCharges,
   PortalLineItem,
   PortalLineItemKind,
   PortalPackage,
+  SelectionPrice,
 } from '@/components/portal/types';
 
 // Which kinds belong to which tier. Tiers stack — B includes A's kinds, etc.
@@ -49,36 +52,68 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// Per-job charges (rush/takedown/tax) pulled from the quote's pricing
+// result. Defensive null-coercion in case an older row is missing fields.
+// Shared by the package totals here AND the live "Build Your Own" custom
+// total in SelectionContext, so the $1,000 minimum + fees + tax apply
+// identically no matter how the customer builds their selection (#18).
+export function chargesFromResult(result: QuoteResult): PortalCharges {
+  return {
+    rushFee: typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0,
+    takedown: typeof result.takedownAmount === 'number' ? result.takedownAmount : 0,
+    taxRate: effectiveTaxRate(result),
+  };
+}
+
+// Price a selection subtotal into the full tax-inclusive breakdown: add the
+// per-job rush/takedown, then tax, then a 50% deposit. NO $1,000 floor — the
+// minimum is enforced as a portal approval gate (see minimumOrderSubtotal), so
+// prices always reflect exactly what's selected. An empty selection is
+// all-zero (renders as "—"). This is THE single place selection pricing lives:
+// packages A/B/C and the custom Build-Your-Own path both call it.
+export function priceSelection(
+  subtotal: number,
+  charges: PortalCharges,
+): SelectionPrice {
+  if (subtotal <= 0) {
+    return { subtotal: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0 };
+  }
+
+  const taxable = subtotal + charges.rushFee + charges.takedown;
+  const tax = round2(taxable * charges.taxRate);
+  const total = round2(taxable + tax);
+  const deposit = round2(total * BUSINESS_RULES.depositPercentage);
+  return {
+    subtotal,
+    rushFee: charges.rushFee,
+    takedown: charges.takedown,
+    taxable,
+    tax,
+    total,
+    deposit,
+  };
+}
+
+// The pre-tax subtotal the customer's selection must reach before they can
+// approve on the portal ($1,000) — OR 0 (waived) when the whole quote's items
+// sum below the minimum, i.e. staff intentionally sent a sub-$1,000 quote and
+// gating would make it un-approvable. (#18 — minimum is a gate, not a floor.)
+export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
+  const sum = lineItems.reduce((s, li) => s + li.price, 0);
+  return sum >= BUSINESS_RULES.minimumQuoteAmount ? BUSINESS_RULES.minimumQuoteAmount : 0;
+}
+
 function totalsFor(
   itemIds: string[],
   lineItems: PortalLineItem[],
-  result: QuoteResult,
+  charges: PortalCharges,
 ): { total: number; deposit: number } {
   const idSet = new Set(itemIds);
   const subtotal = lineItems.reduce(
     (sum, li) => (idSet.has(li.id) ? sum + li.price : sum),
     0,
   );
-
-  // Empty package — render as "—", not as a $1,000 minimum-charge surprise.
-  if (subtotal <= 0) return { total: 0, deposit: 0 };
-
-  const subtotalAfterMin =
-    subtotal < BUSINESS_RULES.minimumQuoteAmount
-      ? BUSINESS_RULES.minimumQuoteAmount
-      : subtotal;
-
-  // Rush + takedown are per-job, not per-package — the customer pays them
-  // whether they pick A or C. Pull from the original quote's result so we
-  // honor whatever the admin set at quote-creation time. Defensive null-
-  // coercion in case an older row is missing these fields.
-  const rushFee = typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0;
-  const takedown = typeof result.takedownAmount === 'number' ? result.takedownAmount : 0;
-  const taxable = subtotalAfterMin + rushFee + takedown;
-  const tax = round2(taxable * effectiveTaxRate(result));
-  const total = round2(taxable + tax);
-  const deposit = round2(total * BUSINESS_RULES.depositPercentage);
-  return { total, deposit };
+  return priceSelection(subtotal, charges);
 }
 
 export function derivePackages(
@@ -102,9 +137,10 @@ export function derivePackages(
     )
     .map((li) => li.id);
 
-  const a = totalsFor(idsForTierA, lineItems, result);
-  const b = totalsFor(idsForTierB, lineItems, result);
-  const c = totalsFor(idsForTierC, lineItems, result);
+  const charges = chargesFromResult(result);
+  const a = totalsFor(idsForTierA, lineItems, charges);
+  const b = totalsFor(idsForTierB, lineItems, charges);
+  const c = totalsFor(idsForTierC, lineItems, charges);
 
   // Tier C "à la carte" reference — what the bundle WOULD cost if the
   // customer bought everything individually. Currently same as the bundle

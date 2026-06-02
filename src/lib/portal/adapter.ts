@@ -19,7 +19,7 @@ import type {
   PortalVideo,
 } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
-import { derivePackages } from './derivePackages';
+import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import type { PortalPhotos } from './photos';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
@@ -100,7 +100,11 @@ function buildLineItems(result: QuoteResult): PortalLineItem[] {
       return {
         id: buildLineItemId(kind, idx),
         kind,
-        label: raw.label,
+        // Legacy shim: quotes created before the "Gingerbread Ridge" → "Gingerbread"
+        // rename have the old label stored in their result. Normalize for display so
+        // the portal reads consistently regardless of when the quote was made. (New
+        // quotes already emit "Gingerbread", so this is a no-op for them.)
+        label: raw.label.replace(/Gingerbread Ridge/g, 'Gingerbread'),
         detail,
         price: raw.amount,
       };
@@ -206,6 +210,13 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     video: buildVideo(row),
     packages,
     lineItems,
+    // Per-job charges so the custom "Build Your Own" total is priced the
+    // same way the A/B/C tiers are (rush/takedown + tax). Same source
+    // derivePackages uses, kept in sync via the shared chargesFromResult.
+    charges: chargesFromResult(row.result),
+    // The $1,000 approval gate threshold (0 when the quote's items total
+    // under $1,000 — staff override). Enforced on the portal, not in pricing.
+    minimumOrderSubtotal: minimumOrderSubtotal(lineItems),
     weeklyBookings,
     seasonCapacity: {
       installedThisWeek: weeklyBookings,

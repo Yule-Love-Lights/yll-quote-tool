@@ -2,7 +2,7 @@
 //
 // The pricing engine produces freeform label strings:
 //   "Santa's Roofline – 180ft (medium)"
-//   "Gingerbread Ridge – 90ft (medium)"
+//   "Gingerbread – 90ft (medium)"
 //   "Winter Wonderland – 50ft (easy)"
 //   "Tree – canopy wrap, 4 strings"
 //   "Bush – canopy wrap, 2 strings"
@@ -30,7 +30,7 @@ export type ParsedLineItem = {
 const TREE_RE = /^Tree\b/i;
 const BUSH_RE = /^Bush\b/i;
 const COLUMN_RE = /^Column\b/i;
-const RIDGE_RE = /(Ridge|Wonderland)/i;          // gingerbread ridge OR winter wonderland
+const RIDGE_RE = /(Gingerbread|Ridge|Wonderland)/i; // Gingerbread (ridge) OR Winter Wonderland
 const ROOFLINE_RE = /Roofline/i;
 const SPRITZER_RE = /Spritzer/i;
 const WREATH_RE = /Wreath/i;
@@ -42,9 +42,9 @@ export function parseLineItem(label: string): ParsedLineItem {
   if (BUSH_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
   if (COLUMN_RE.test(label)) return { kind: 'column', detail: extractStrings(label) };
 
-  // Roofline family — order matters: Ridge regex must run BEFORE Roofline
-  // because "Gingerbread Ridge" doesn't contain "Roofline" but the more
-  // generic pattern would catch other ridge-y text in future. Detail = "N ft".
+  // Roofline family — order matters: the Ridge regex runs BEFORE Roofline.
+  // "Gingerbread" (the ridge product, renamed from "Gingerbread Ridge") is
+  // matched explicitly so it classifies as 'ridge', not 'roofline'. Detail = "N ft".
   if (RIDGE_RE.test(label)) return { kind: 'ridge', detail: extractFootage(label) };
   if (ROOFLINE_RE.test(label)) return { kind: 'roofline', detail: extractFootage(label) };
 

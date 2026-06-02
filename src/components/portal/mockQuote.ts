@@ -39,7 +39,7 @@ export const MOCK_QUOTE: PortalQuote = {
   },
   lineItems: [
     { id: 'roofline', kind: 'roofline', label: "Santa's Roofline (gutterline)", detail: '180 ft', price: 900 },
-    { id: 'ridge', kind: 'ridge', label: 'Gingerbread Ridge (ridgeline)', detail: '90 ft', price: 540 },
+    { id: 'ridge', kind: 'ridge', label: 'Gingerbread (ridgeline)', detail: '90 ft', price: 540 },
     { id: 'tree-l', kind: 'tree', label: 'Front-left tree', detail: '4 strands', price: 180 },
     { id: 'tree-r', kind: 'tree', label: 'Front-right tree', detail: '3 strands', price: 135 },
     { id: 'bush-1', kind: 'bush', label: 'Front bush 1', detail: '2 strands', price: 70 },
@@ -94,6 +94,12 @@ export const MOCK_QUOTE: PortalQuote = {
       includedItemIds: [],
     },
   ],
+  // Per-job charges for the custom "Build Your Own" total. Mock has no
+  // rush/takedown; taxRate matches BUSINESS_RULES.taxRate so dev custom
+  // totals look like production.
+  charges: { rushFee: 0, takedown: 0, taxRate: 0.08625 },
+  // Mock items total well over $1,000, so the $1,000 approval gate is active.
+  minimumOrderSubtotal: 1000,
   weeklyBookings: 12,
   seasonCapacity: {
     installedThisWeek: 12,

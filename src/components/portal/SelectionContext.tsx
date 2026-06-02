@@ -10,19 +10,39 @@
 //   - Toggling a single item while on A/B/C auto-converts to 'D'
 //     (Custom), preserving the currently-selected items then adding/
 //     removing the toggled one.
-//   - Pricing for 'D' is sum-of-selected-items.
+//   - Pricing ALWAYS derives from the selected items via priceSelection
+//     (subtotal + rush/takedown + tax), so tiers and custom stay consistent.
+//   - Approval is gated until the pre-tax subtotal reaches the order
+//     minimum ($1,000, or 0 when waived); see meetsMinimum / amountToMinimum.
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
-import type { PackageId, PortalPackage, PortalLineItem } from './types';
-import { depositFor, sumSelectedItems } from './format';
+import type {
+  PackageId,
+  PortalCharges,
+  PortalPackage,
+  PortalLineItem,
+  SelectionPrice,
+} from './types';
+import { sumSelectedItems } from './format';
+import { priceSelection } from '@/lib/portal/derivePackages';
 
 type SelectionContextValue = {
   packageId: PackageId;
   selectedItemIds: Set<string>;
-  /** dollars — current total considering package or custom selection */
+  /** dollars — pre-tax sum of the selected line items (ties to What's Included) */
+  currentSubtotal: number;
+  /** dollars — tax-inclusive total the customer pays */
   currentTotal: number;
-  /** dollars — 50% of currentTotal, rounded to cents */
+  /** dollars — 50% of currentTotal, due today */
   currentDeposit: number;
+  /** full breakdown (subtotal · fees · tax · total · deposit) for tie-out display */
+  breakdown: SelectionPrice;
+  /** pre-tax subtotal required to approve ($1,000, or 0 when waived) */
+  minimumOrderSubtotal: number;
+  /** true once the selection is non-empty AND at/above the order minimum */
+  meetsMinimum: boolean;
+  /** dollars still needed to reach the minimum (0 once met) */
+  amountToMinimum: number;
   /** name of the active package ("Build Your Own" when custom) */
   activeName: string;
   selectPackage: (id: PackageId) => void;
@@ -41,6 +61,12 @@ export function useSelection(): SelectionContextValue {
 export type SelectionProviderProps = {
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
+  // Per-job charges (rush/takedown/tax) used to price every selection
+  // (tiers and custom) consistently.
+  charges: PortalCharges;
+  // Pre-tax subtotal the selection must reach to approve ($1,000, or 0
+  // when waived because staff sent a sub-$1,000 quote).
+  minimumOrderSubtotal: number;
   initialPackageId?: PackageId;
   children: React.ReactNode;
 };
@@ -48,6 +74,8 @@ export type SelectionProviderProps = {
 export function SelectionProvider({
   packages,
   lineItems,
+  charges,
+  minimumOrderSubtotal,
   initialPackageId = 'B',
   children,
 }: SelectionProviderProps) {
@@ -101,13 +129,23 @@ export function SelectionProvider({
     [selectedItemIds],
   );
 
-  // Total: for A/B/C use the canned package total; for D sum items.
-  const currentTotal = useMemo(() => {
-    if (packageId === 'D') return sumSelectedItems(selectedItemIds, priceMap);
-    return packagesById.get(packageId)?.total ?? 0;
-  }, [packageId, packagesById, priceMap, selectedItemIds]);
+  // Price EVERY selection (tier or custom) from the actual selected items via
+  // the shared priceSelection, so the displayed total always equals the sum of
+  // what's checked — plus rush/takedown + tax — with no silent $1,000 floor
+  // (#18). The minimum is surfaced as an approval gate below, not baked into
+  // the price.
+  const currentSubtotal = useMemo(
+    () => sumSelectedItems(selectedItemIds, priceMap),
+    [selectedItemIds, priceMap],
+  );
 
-  const currentDeposit = useMemo(() => depositFor(currentTotal), [currentTotal]);
+  const breakdown = useMemo(
+    () => priceSelection(currentSubtotal, charges),
+    [currentSubtotal, charges],
+  );
+
+  const meetsMinimum = currentSubtotal > 0 && currentSubtotal >= minimumOrderSubtotal;
+  const amountToMinimum = Math.max(0, minimumOrderSubtotal - currentSubtotal);
 
   const activeName = useMemo(() => {
     if (packageId === 'D') return 'Build Your Own';
@@ -117,8 +155,13 @@ export function SelectionProvider({
   const value: SelectionContextValue = {
     packageId,
     selectedItemIds,
-    currentTotal,
-    currentDeposit,
+    currentSubtotal,
+    currentTotal: breakdown.total,
+    currentDeposit: breakdown.deposit,
+    breakdown,
+    minimumOrderSubtotal,
+    meetsMinimum,
+    amountToMinimum,
     activeName,
     selectPackage,
     toggleItem,

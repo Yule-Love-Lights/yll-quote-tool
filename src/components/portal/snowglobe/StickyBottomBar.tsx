@@ -16,7 +16,16 @@ export type StickyBottomBarProps = {
 };
 
 export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
-  const { activeName, currentTotal, currentDeposit, packageId, selectedItemIds } = useSelection();
+  const {
+    activeName,
+    currentTotal,
+    currentDeposit,
+    currentSubtotal,
+    meetsMinimum,
+    amountToMinimum,
+    packageId,
+    selectedItemIds,
+  } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const router = useRouter();
@@ -26,7 +35,7 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
   // the HighLevel pipeline. Navigate to the celebration page on any ok=true
   // (even if home.works delivery failed — the approval is still recorded).
   const onApprove = async () => {
-    if (submitting || currentTotal <= 0) return;
+    if (submitting || !meetsMinimum) return;
     setSubmitting(true);
     setErrorMsg(null);
     try {
@@ -71,19 +80,28 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
           {errorMsg}
         </p>
       )}
+      {/* Minimum-order gate nudge — shown until the selection reaches the
+       * $1,000 order minimum (the Approve button stays disabled until then). */}
+      {!errorMsg && !meetsMinimum && (
+        <p className="absolute -top-11 left-0 right-0 mx-auto max-w-fit text-[12px] text-[#F4ECD8] bg-[#0D1519] border border-[#FFB744]/40 rounded-md px-3 py-1.5 shadow-lg whitespace-nowrap">
+          {currentSubtotal <= 0
+            ? 'Select at least one item to continue'
+            : `Add ${formatUsd(amountToMinimum)} more to reach the $1,000 minimum`}
+        </p>
+      )}
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
           {formatUsd(currentTotal)}
         </span>
         <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
-          · <span className="tabular-nums text-[#FFD07A]">{formatUsd(currentDeposit)}</span> today
+          incl. tax · <span className="tabular-nums text-[#FFD07A]">{formatUsd(currentDeposit)}</span> today
         </span>
       </div>
 
       <button
         type="button"
         onClick={onApprove}
-        disabled={submitting || currentTotal <= 0}
+        disabled={submitting || !meetsMinimum}
         aria-label={`Approve quote and pay ${formatUsd(currentDeposit)} deposit`}
         className="inline-flex items-center gap-1.5 px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
       >
