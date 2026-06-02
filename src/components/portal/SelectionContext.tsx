@@ -24,7 +24,7 @@ import type {
   SelectionPrice,
 } from './types';
 import { sumSelectedItems } from './format';
-import { priceSelection } from '@/lib/portal/derivePackages';
+import { priceSelection, effectiveCharges } from '@/lib/portal/derivePackages';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -43,6 +43,16 @@ type SelectionContextValue = {
   meetsMinimum: boolean;
   /** dollars still needed to reach the minimum (0 once met) */
   amountToMinimum: number;
+  /** whether the rush-install fee is currently selected (#4) */
+  rushSelected: boolean;
+  /** whether the premium-takedown fee is currently selected (#4) */
+  takedownSelected: boolean;
+  /** canonical rush fee amount ($) for the toggle label */
+  rushAmount: number;
+  /** canonical premium-takedown amount ($) for the toggle label */
+  takedownAmount: number;
+  toggleRush: () => void;
+  toggleTakedown: () => void;
   /** name of the active package ("Build Your Own" when custom) */
   activeName: string;
   selectPackage: (id: PackageId) => void;
@@ -98,6 +108,14 @@ export function SelectionProvider({
     return new Set(initial?.includedItemIds ?? []);
   });
 
+  // Rush + premium-takedown toggles (#4). Seeded from the staff quote's
+  // defaults; the customer can flip either. NEVER changed by selectPackage —
+  // only the staff default + these toggles control them.
+  const [rushSelected, setRushSelected] = useState<boolean>(charges.rush.defaultOn);
+  const [takedownSelected, setTakedownSelected] = useState<boolean>(charges.takedown.defaultOn);
+  const toggleRush = useCallback(() => setRushSelected((v) => !v), []);
+  const toggleTakedown = useCallback(() => setTakedownSelected((v) => !v), []);
+
   const selectPackage = useCallback(
     (id: PackageId) => {
       const pkg = packagesById.get(id);
@@ -139,9 +157,11 @@ export function SelectionProvider({
     [selectedItemIds, priceMap],
   );
 
+  // Effective fees reflect the live toggle state; the breakdown re-prices
+  // whenever the selection OR a fee toggle changes.
   const breakdown = useMemo(
-    () => priceSelection(currentSubtotal, charges),
-    [currentSubtotal, charges],
+    () => priceSelection(currentSubtotal, effectiveCharges(charges, rushSelected, takedownSelected)),
+    [currentSubtotal, charges, rushSelected, takedownSelected],
   );
 
   const meetsMinimum = currentSubtotal > 0 && currentSubtotal >= minimumOrderSubtotal;
@@ -162,6 +182,12 @@ export function SelectionProvider({
     minimumOrderSubtotal,
     meetsMinimum,
     amountToMinimum,
+    rushSelected,
+    takedownSelected,
+    rushAmount: charges.rush.amount,
+    takedownAmount: charges.takedown.amount,
+    toggleRush,
+    toggleTakedown,
     activeName,
     selectPackage,
     toggleItem,

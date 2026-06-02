@@ -86,16 +86,24 @@ export type PortalApproval = {
   selectedItemCount: number; // for a "X items included" line
 };
 
-// Per-job charges needed to price the "Build Your Own" custom selection
-// the SAME way the A/B/C package totals are priced (so the $1,000 minimum,
-// rush/takedown fees, and tax apply consistently no matter how the customer
-// builds their selection). Populated by the adapter from the quote's
-// pricing result; the live SelectionContext total runs the custom subtotal
-// through `priceSelection(subtotal, charges)`.
-export type PortalCharges = {
-  rushFee: number;   // dollars (premium rush fee, or 0)
-  takedown: number;  // dollars (premium takedown fee, or 0)
+// Effective per-job charges fed into priceSelection: the actual dollar
+// amounts to add (0 when a fee is toggled off) plus the quote's tax rate.
+export type SelectionCharges = {
+  rushFee: number;   // dollars to add (0 when off)
+  takedown: number;  // dollars to add (0 when off)
   taxRate: number;   // effective rate for this quote, e.g. 0.08625
+};
+
+// Per-quote fee config for the portal. Rush + premium-takedown are
+// customer-toggleable (#4): each carries the canonical amount charged when ON
+// and the default on/off state staff set in the builder. SelectionContext
+// turns the live toggle state + this config into the effective
+// SelectionCharges it passes to priceSelection (package-card totals use the
+// staff defaults). Populated by the adapter from the quote's pricing result.
+export type PortalCharges = {
+  taxRate: number;   // effective rate for this quote, e.g. 0.08625
+  rush: { amount: number; defaultOn: boolean };
+  takedown: { amount: number; defaultOn: boolean };
 };
 
 // Full price breakdown for a selection, so the portal can show a
