@@ -97,3 +97,28 @@ export async function saveQuote(
   }
   return { id: data.id };
 }
+
+// Re-price an existing quote IN PLACE (no new row). Used when the operator
+// changes the recommended roofline in the builder breakdown (#17 Phase 1b):
+// the price updates without re-rendering or creating a duplicate quote.
+export async function updateQuote(
+  id: string,
+  inputs: QuoteInputs,
+  result: QuoteResult,
+): Promise<{ id: string } | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('quotes')
+    .update({ inputs, result, total: result.total })
+    .eq('id', id)
+    .select('id')
+    .single();
+
+  if (error) {
+    console.error('Supabase updateQuote error:', error);
+    return null;
+  }
+  return { id: data.id };
+}

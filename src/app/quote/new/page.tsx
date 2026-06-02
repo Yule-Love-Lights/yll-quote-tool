@@ -44,6 +44,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 type Customer = { name: string; address: string; phone: string; email: string };
 
 type RooflineDifficulty = 'easy' | 'medium' | 'hard';
+type RooflineChoice = 'santas' | 'gingerbread' | 'none';
 
 type FormData = {
   customer: Customer;
@@ -53,6 +54,10 @@ type FormData = {
   gingerbreadDifficulty: RooflineDifficulty;
   winterWonderlandFootage: number;
   winterWonderlandDifficulty: RooflineDifficulty;
+  // Staff's recommended roofline (the portal default). Undefined → the engine
+  // auto-picks the option closest to the $1,000 minimum (#17). Set via the
+  // breakdown's recommend radios.
+  rooflineChoice?: RooflineChoice;
   miniLightItems: MiniLightItem[];
   spritzers: Spritzer[];
   wreaths: Wreath[];
@@ -1072,8 +1077,10 @@ export default function NewQuotePage() {
     void kickoffRender();
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
+  // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
+  // (#17 Phase 1b) without waiting on the async form-state update.
+  const runQuote = async (rooflineChoiceOverride?: RooflineChoice) => {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -1088,6 +1095,7 @@ export default function NewQuotePage() {
     setSendError(null);
     setCopiedUrl(false);
 
+    const effectiveRooflineChoice = rooflineChoiceOverride ?? form.rooflineChoice;
     const inputs = {
       santasFootage: form.santasFootage,
       santasDifficulty: form.santasDifficulty,
@@ -1095,6 +1103,9 @@ export default function NewQuotePage() {
       gingerbreadDifficulty: form.gingerbreadDifficulty,
       winterWonderlandFootage: form.winterWonderlandFootage,
       winterWonderlandDifficulty: form.winterWonderlandDifficulty,
+      // Only sent when staff has explicitly recommended one — otherwise the
+      // engine auto-picks (closest to the $1,000 minimum).
+      ...(effectiveRooflineChoice ? { rooflineChoice: effectiveRooflineChoice } : {}),
       miniLightItems: form.miniLightItems,
       spritzers: form.spritzers,
       wreaths: form.wreaths,
@@ -1138,6 +1149,59 @@ export default function NewQuotePage() {
         setAttachStatus('skipped');
         setAttachError('Quote not persisted — HighLevel link skipped. Check Supabase config.');
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runQuote();
+  };
+
+  // Staff recommends which roofline the customer sees by default. Lighter than
+  // a full re-quote: re-prices the EXISTING quote in place (no new row, no
+  // re-render, no scroll) so only the price/breakdown updates (#17 Phase 1b).
+  const recommendRoofline = async (choice: RooflineChoice) => {
+    if (loading) return;
+    setForm((f) => ({ ...f, rooflineChoice: choice }));
+    setLoading(true);
+    setError(null);
+    try {
+      const inputs = {
+        santasFootage: form.santasFootage,
+        santasDifficulty: form.santasDifficulty,
+        gingerbreadFootage: form.gingerbreadFootage,
+        gingerbreadDifficulty: form.gingerbreadDifficulty,
+        winterWonderlandFootage: form.winterWonderlandFootage,
+        winterWonderlandDifficulty: form.winterWonderlandDifficulty,
+        rooflineChoice: choice,
+        miniLightItems: form.miniLightItems,
+        spritzers: form.spritzers,
+        wreaths: form.wreaths,
+        garland: form.garland,
+        takedown: form.takedown,
+        rushFee: form.rushFee,
+        ...(form.discountEnabled && {
+          discount: {
+            type: form.discountType,
+            amount: form.discountType === 'percentage' ? form.discountAmount / 100 : form.discountAmount,
+          },
+        }),
+      };
+      const res = await fetch('/api/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // quoteId → re-price that quote in place; falls back to a fresh save
+        // if the quote wasn't persisted (Supabase unconfigured).
+        body: JSON.stringify({ customer: form.customer, inputs, quoteId: savedQuoteId ?? undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      setResult(data.result);
+      if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -2077,7 +2141,7 @@ export default function NewQuotePage() {
 
           {/* ── Gingerbread — Ridgeline ── */}
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
-            <Section title="Gingerbread — Ridgeline (C9 Bulbs)">
+            <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2362,14 +2426,63 @@ export default function NewQuotePage() {
               Quote Breakdown
             </h2>
 
-            {/* Line items */}
-            <div className="mb-4 space-y-1.5">
-              {result.lineItems.map((item, i) => (
-                <div key={i} className="flex justify-between text-sm">
-                  <span className="text-gray-700">{item.label}</span>
-                  <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+            {/* Roofline options — Santa's vs Gingerbread are mutually exclusive
+                (#17). BOTH are presented to the customer; only the recommended
+                one is billed in the total below. (Interactive staff-pick toggle
+                is Phase 1b — for now the recommendation is auto-picked to land
+                the quote closest to the $1,000 minimum without going under.) */}
+            {(result.rooflineOptions.santas || result.rooflineOptions.gingerbread) && (
+              <div className="mb-4 rounded-md border border-gray-200 bg-gray-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                  Roofline — recommend one <span className="font-normal normal-case text-gray-400">(the customer picks on the portal)</span>
+                </p>
+                <div className="space-y-1">
+                  {result.rooflineOptions.santas && (
+                    <label className="flex items-center justify-between text-sm cursor-pointer rounded px-2 py-1.5 hover:bg-gray-100">
+                      <span className="flex items-center gap-2 text-gray-700">
+                        <input
+                          type="radio"
+                          name="rooflineChoice"
+                          checked={result.rooflineChoice === 'santas'}
+                          onChange={() => recommendRoofline('santas')}
+                          disabled={loading}
+                        />
+                        Santa&apos;s <span className="text-gray-400">(front roofline)</span>
+                      </span>
+                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.santas.amount)}</span>
+                    </label>
+                  )}
+                  {result.rooflineOptions.gingerbread && (
+                    <label className="flex items-center justify-between text-sm cursor-pointer rounded px-2 py-1.5 hover:bg-gray-100">
+                      <span className="flex items-center gap-2 text-gray-700">
+                        <input
+                          type="radio"
+                          name="rooflineChoice"
+                          checked={result.rooflineChoice === 'gingerbread'}
+                          onChange={() => recommendRoofline('gingerbread')}
+                          disabled={loading}
+                        />
+                        Gingerbread <span className="text-gray-400">(front + ridge + sides)</span>
+                      </span>
+                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.gingerbread.amount)}</span>
+                    </label>
+                  )}
                 </div>
-              ))}
+                <p className="text-[11px] text-gray-400 mt-2">Only the recommended (selected) option is billed in the total below.</p>
+              </div>
+            )}
+
+            {/* Line items (the recommended roofline is shown in the option box
+                above, so it's filtered out here to avoid listing it twice). */}
+            <div className="mb-4 space-y-1.5">
+              {result.lineItems
+                .filter((item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')))
+                .map((item, i) => (
+                  <div key={i} className="flex justify-between text-sm">
+                    <span className="text-gray-700">{item.label}</span>
+                    <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                  </div>
+                ))}
             </div>
 
             {/* Subtotals */}

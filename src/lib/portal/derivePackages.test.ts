@@ -22,6 +22,8 @@ function resultWith(overrides: Partial<QuoteResult>): QuoteResult {
     total: 0,
     depositAmount: 0,
     balanceDue: 0,
+    rooflineChoice: 'none',
+    rooflineOptions: { santas: null, gingerbread: null },
     ...overrides,
   } as QuoteResult;
 }
