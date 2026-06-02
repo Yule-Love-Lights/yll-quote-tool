@@ -18,7 +18,7 @@ An internal **AI-assisted quoting + proposal tool** for Yule Love Lights (premiu
 2. **Claude Sonnet 4.5 vision** (`src/lib/photoAnalysis.ts`) traces rooflines as polylines and detects bushes/trees/wreaths/spritzers/garland, returning structured measurements. The operator can correct anything; corrections feed back as few-shot examples.
 3. The **pure pricing engine** (`src/lib/pricing/pricingEngine.ts`) turns measurements into line items + packages + tax + deposit.
 4. The **render pipeline** (`src/lib/rendering/*`) composites bulb sprites onto the photo with `sharp`, then has **Gemini 3 Pro Image** "photograph" it into a photoreal nighttime preview (optional **Replicate FLUX** inpaint pass for bush mini-lights). Internal review/approval happens in `/admin/renders`.
-5. The customer opens a **portal** (`/portal-snowglobe/[quoteId]`) showing their rendered home, package options, reviews, and gallery, and clicks **Approve & Pay Deposit**.
+5. The customer opens the **portal** (`/portal/[quoteId]`) showing their rendered home, package options, reviews, and gallery, and clicks **Approve & Pay Deposit**.
 6. Approval freezes an immutable snapshot, fires the **home.works** estimate (via Zapier), and advances the **HighLevel** pipeline. A later inbound webhook records the signature.
 
 ---
@@ -67,18 +67,17 @@ All verified against current files (the 2026-04-22 code review's CRITICAL/HIGH i
 - **Security hardening** — `x-admin-secret` on all admin/destructive routes, `UUID_RE` validation, coord clamping, budget guard with NaN protection, hardened `renders` RLS (anon reads only approved). (`0ef2592` + `renders-harden-rls.sql`.)
 - **Live customer approval** — `approve` route writes a versioned `approval_snapshot`; approved portal page reads the real snapshot (`d873e9c`). UUID-as-capability-token auth (intentional, documented in the route).
 - **CRM + home.works pipeline** — HighLevel lookup-first opportunity handling + stage moves; home.works outbound via Zapier with single-line-item rollup; inbound signature webhook (`b55d61a`, `ac389a4`).
-- **Two portals on real data** — **v1 `/portal/[quoteId]`** and **v6 `/portal-snowglobe/[quoteId]`** both load real quotes via `lib/portal/loader.ts` (mock only as a dev fallback when Supabase is unconfigured) and run the real approve flow.
+- **One customer portal on real data** — **`/portal/[quoteId]`** (the Snowglobe design) loads real quotes via `lib/portal/loader.ts` (mock only as a dev fallback when Supabase is unconfigured) and runs the real approve flow. The old `portal-snowglobe`/`portal-dark`/`portal-concierge` routes were retired in task #27.
 
 ---
 
 ## 4. IN PROGRESS / half-done (read this carefully)
 
-### 4.1 Portal design is consolidating on **Snowglobe (v6)** — two of four skins are dormant/mock
-There are **four portal skins**: `portal/` (v1, warm cream), `portal-dark/` (v2), `portal-concierge/` (v4), `portal-snowglobe/` (v6).
-- **Decision made this session: Snowglobe (v6) is the chosen final customer-facing design.** The admin "Portal ↗" link and the "Send to customer" copied URL now point to `/portal-snowglobe/[id]` (`src/app/admin/quotes/page.tsx`), and the snowglobe page + approved page were wired to real data with the real approve flow + approval guard.
-- **v1 `/portal`** also reads real data (it was the first real-data portal) — effectively the fallback/reference design.
-- **v2 `portal-dark` and v4 `portal-concierge` are still hardcoded to `MOCK_QUOTE`** — `portal-dark/[quoteId]/page.tsx` and `portal-concierge/[quoteId]/page.tsx` both do `const quote = MOCK_QUOTE;` and **ignore `quoteId` entirely**. Their approved pages say "we use mock data regardless of the param."
-- **Next step (decide first):** retire dark + concierge (delete the routes + their components + the now-unused `MOCK_TEAM.title/subtitle/body` legacy fields) **or** wire them through `loader.ts` like v1/snowglobe. `mockQuote.ts` already calls them "dormant." Leaving them live on mock data is a footgun — a stray link to `/portal-dark/<real-id>` shows fake data + a fake phone number.
+### 4.1 Portal consolidated on **Snowglobe** — `/portal` is the one and only portal (task #27, DONE)
+There is now a **single portal route**: **`/portal/[quoteId]`**, which *is* the Snowglobe design. The old multi-skin layout (`portal/` v1, `portal-dark/` v2, `portal-concierge/` v4, `portal-snowglobe/` v6) was retired — the three extra route folders were deleted and the v1-only + concierge components removed.
+- **`/portal/[quoteId]`** serves the Snowglobe compositions on real data via `loader.ts` (mock only as a dev fallback when Supabase is unconfigured), with the real approve flow + the approved-page approval guard. The admin "Portal ↗" link, the "Send to customer" copied URL (`src/app/admin/quotes/page.tsx`), and the admin video-page portal link all point to `/portal/[id]`.
+- **Implementation note:** the Snowglobe page reuses the dark-theme below-the-fold sections, so `components/portal/dark/*` and `snowglobe/*` are kept (alongside shared infra `SelectionContext`/`types`/`format`/`mockQuote` + `lib/portal/*`). The route CSS lives at `src/app/portal/portal-dark.css` + `portal-snowglobe.css`, applied via the `portal-dark-root portal-snowglobe-root` wrapper in `layout.tsx`.
+- **Known leftover:** `components/portal/dark/StickyBottomBar.tsx` still `router.push`es to the now-removed `/portal-dark/...` route. It's no longer rendered by any page (the live portal uses `snowglobe/StickyBottomBar`), so it's harmless dead code retained under the "keep `dark/*`" guardrail — a candidate for a future micro-cleanup.
 
 ### 4.2 Reviews are still placeholder content
 - `MOCK_REVIEWS` (3 fabricated testimonials) and a **hardcoded `rating={4.9} totalReviews={187}`** are passed to `<GoogleReviews>` on every portal. This session wired the real **GMB "read all reviews" link**, but the **rating, count, and the 3 quotes are still fake.**
@@ -128,16 +127,16 @@ Snowglobe promotion + asset wiring across ~18 files (`mockQuote.ts`, portal + da
 1. **Set real `.env.local`** incl. the newly-documented `HIGHLEVEL_STAGE_QUOTE_INTERESTED`, and confirm `RENDER_BUDGET_MONTHLY_USD`.
 2. **Verify live Supabase RLS** on `renders` is the hardened policy (§5). One SQL check.
 3. ~~**Fix the `$0` pricing placeholder**~~ — **DONE** for labor ($135) + fullDecor ($210); the `bow` tier is still `$0` pending Naldo's price.
-4. **Resolve the dormant portals** (§4.1) — retire or wire dark + concierge so the fake `(555)` phone can't reach a customer.
+4. ~~**Resolve the dormant portals**~~ — **DONE** (task #27): consolidated on Snowglobe at `/portal`; retired the dark + concierge + snowglobe routes and their orphaned components (§4.1).
 5. ~~**Capture `reference_assets` DDL** in a migration~~ — **DONE** (`migrations/2026-05-29-reference-assets-create.sql`); still needs applying to any fresh DB.
 
 **Planned / higher-leverage:**
 6. Real Google reviews + rating/count on the portal (§4.2).
-7. Decide whether to deploy (Vercel is the natural fit for Next 16; memory mentions Render). Set env vars in the host; the customer URL becomes `https://<domain>/portal-snowglobe/[id]`.
+7. Decide whether to deploy (Vercel is the natural fit for Next 16; memory mentions Render). Set env vars in the host; the customer URL becomes `https://<domain>/portal/[id]`.
 8. Pin the Replicate model version; reconcile Gemini cost accounting.
 9. `c9Lines` end-to-end (§4.3), home.works `notes` (§4.4), optional auto-send (§4.5), SSIM or remove it (§4.6).
 
-**Good first tasks for Jason** (low-risk, high-orientation-value): ~~fix the `$0` pricing placeholder~~ (done); swap real review content; ~~add the `reference_assets` migration~~ (done); retire/wire the dormant portals. Each touches one well-bounded area.
+**Good first tasks for Jason** (low-risk, high-orientation-value): ~~fix the `$0` pricing placeholder~~ (done); swap real review content; ~~add the `reference_assets` migration~~ (done); ~~retire/wire the dormant portals~~ (done, task #27). Each touches one well-bounded area.
 
 ---
 

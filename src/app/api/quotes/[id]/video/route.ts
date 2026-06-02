@@ -1,9 +1,9 @@
 // Admin: attach / update / clear the walkthrough video on a quote.
 //
 // A quote can have at most one walkthrough video. It's rendered on the
-// customer portal right below the hero photo on v1 (/portal),
-// v2 (/portal-dark), and v6 (/portal-snowglobe). The columns live on the
-// `quotes` table — see migrations/2026-04-24-quotes-add-walkthrough-video.sql.
+// customer portal (/portal) right below the hero photo. The columns live
+// on the `quotes` table — see
+// migrations/2026-04-24-quotes-add-walkthrough-video.sql.
 //
 // Auth: admin-secret header, same pattern as DELETE /api/quotes/[id].
 // Rate limit: low — admin-only, one human, they don't spam save.
