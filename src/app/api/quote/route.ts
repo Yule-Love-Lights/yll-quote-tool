@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { calculateQuote, QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { saveQuote, Customer } from '@/lib/quotes';
+import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs } = body as Record<string, unknown>;
+  const { customer, inputs, quoteId } = body as Record<string, unknown>;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -63,7 +63,13 @@ export async function POST(req: NextRequest) {
     const quoteInputs = inputs as QuoteInputs;
     const result = calculateQuote(quoteInputs);
     const safeCustomer = (customer ?? {}) as Customer;
-    const saved = await saveQuote(safeCustomer, quoteInputs, result);
+    // A valid quoteId means re-price that existing quote in place (the
+    // builder's "recommend roofline" toggle, #17) instead of inserting a new
+    // row; otherwise save a fresh quote.
+    const isUpdate = typeof quoteId === 'string' && /^[0-9a-f-]{36}$/i.test(quoteId);
+    const saved = isUpdate
+      ? await updateQuote(quoteId as string, quoteInputs, result)
+      : await saveQuote(safeCustomer, quoteInputs, result);
     return NextResponse.json({
       customer: safeCustomer,
       result,
