@@ -15,7 +15,25 @@ metadata:
 
 ---
 
-### Session 1 — Jason onboarding + cleanup sweep + QA review (2026-06-01) · CURRENT
+### Session 2 — Portal consolidation + quote-builder fixes (2026-06-02) · CURRENT
+**Picked up from:** Session 1 close-out; portal consolidation (#27) queued as the next big piece.
+
+**Shipped** (each its own PR, all merged to `master`):
+- **Portal consolidation (#27):** `/portal/[quoteId]` IS now the **Snowglobe** design — the single canonical customer URL. Replaced the v1 page + approved page with the Snowglobe compositions (real data via `loadPortalQuote`, mock dev-fallback, approval guard kept); brought `portal-dark.css` + `portal-snowglobe.css` into `src/app/portal/` under the `portal-dark-root portal-snowglobe-root` wrapper. Repointed every `portal-snowglobe` route ref → `/portal`. Deleted the 3 old route folders + the 19 v1 base components + `concierge/*` (grep-verified ZERO importers each). KEPT `dark/*`, `snowglobe/*`, shared infra. Updated CURRENT_STATE §4.1, ONBOARDING, CONVENTIONS, docs/context.
+- **Cleanup follow-up:** removed the now-dead `components/portal/dark/StickyBottomBar.tsx` (zero importers; it still pushed to the deleted /portal-dark route).
+- **#25 discount input [UX]:** percentage field now accepts a whole number (`20` = 20%) instead of `0.20` — builder divides by 100 (engine still takes a fraction); placeholder/help updated, capped at 100.
+- **#24 C9 footage [bug]:** deleting all C9 custom-run lines now resets the derived `winterWonderlandFootage` to 0 (ref tracks prior line presence; resets on had-lines→none). Manual entry preserved.
+- **#18 $1000 minimum — REWORKED (not the original spec):** removed the engine auto-floor (staff can send sub-$1000 quotes; "Minimum applied" note gone). The minimum is now a **customer-portal approval gate** — Approve disabled until the selected pre-tax subtotal ≥ $1000 (with an "Add $X more" nudge), **waived** when the whole quote's items total < $1000 (staff override). Portal shows real prices + a Subtotal/Tax/Total/Deposit tie-out (tax now visible). Shared `priceSelection`/`chargesFromResult`/`minimumOrderSubtotal` in `derivePackages`; added `vitest.config.ts` (@/ alias). **Also renamed** "Gingerbread Ridge" line item → **"Gingerbread"** (engine label + parser regex + legacy display shim).
+
+**Ending state:** #27 + cleanup + #25 + #24 merged to `master`; **#18 in PR** `jason/min-quote-everywhere`. One portal at `/portal`. Gates green (tsc, lint, **26** Vitest tests). Jason verifies pages himself in his own Chrome (the screenshot tool is flaky reaching localhost; `find`/curl + dev-server logs used). **New workflow rules:** refresh memory/logs around task completion ([[memory-log-cadence]]); hand Jason links + test steps to self-verify BEFORE committing ([[verify-handoff-before-commit]]).
+
+**Model/context:** Claude Opus (1M window).
+
+**NEXT → #4 (customer rush/premium portal toggles — spawned task)**, then plan **#17** (roofline redesign — big, needs a plan first). See `project_quote_tool.md` QA punch-list.
+
+---
+
+### Session 1 — Jason onboarding + cleanup sweep + QA review (2026-06-01)
 **Picked up from:** fresh handoff Naldo → Jason; cold start, no `.env.local`.
 
 **Shipped** (all merged to `master` unless noted):
