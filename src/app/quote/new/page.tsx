@@ -223,6 +223,11 @@ export default function NewQuotePage() {
   // Satellite image is always 640x640 at zoom=20 from Static Maps.
   const SAT_PX = 640;
 
+  // Tracks whether C9 lines existed on the previous effect run, so deleting
+  // the last C9 line resets the derived footage instead of leaving a stale
+  // value behind. (Manual entry without any lines is still preserved.)
+  const hadC9LinesRef = useRef(false);
+
   // Recompute both footages from whichever source is driving pricing. Street
   // source uses calibrated feet-per-normalized-unit; satellite source uses
   // deterministic feet-per-pixel × image pixel width (640).
@@ -241,10 +246,13 @@ export default function NewQuotePage() {
     }
     if (santasFt == null || gingerFt == null) return;
     const sFt = santasFt, gFt = gingerFt;
-    // c9 polyline only overrides the form value when lines are actually drawn.
-    // Otherwise leave winterWonderlandFootage alone so the manual input still works.
+    // When C9 lines are drawn, footage tracks them. When the last line is
+    // deleted (had lines on the previous run, none now), reset footage to 0 —
+    // it was derived from those lines. When no lines were ever drawn, leave
+    // winterWonderlandFootage alone so the manual input still works.
     const hasC9Lines = c9Lines.length > 0 || satelliteC9Lines.length > 0;
-    const c9Target = hasC9Lines ? c9Ft : null;
+    const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
+    hadC9LinesRef.current = hasC9Lines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
       const sameRoof = f.santasFootage === sFt && f.gingerbreadFootage === gFt;
@@ -1094,7 +1102,15 @@ export default function NewQuotePage() {
       takedown: form.takedown,
       rushFee: form.rushFee,
       ...(form.discountEnabled && {
-        discount: { type: form.discountType, amount: form.discountAmount },
+        discount: {
+          type: form.discountType,
+          // Percentage is entered as a whole number (20 = 20%); the pricing
+          // engine wants a fraction. Flat dollars pass through unchanged.
+          amount:
+            form.discountType === 'percentage'
+              ? form.discountAmount / 100
+              : form.discountAmount,
+        },
       }),
     };
 
@@ -2304,14 +2320,16 @@ export default function NewQuotePage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <input
-                      type="number" min="0" step="0.01"
+                      type="number" min="0"
+                      max={form.discountType === 'percentage' ? '100' : undefined}
+                      step="0.01"
                       className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
                       value={form.discountAmount || ''}
-                      placeholder={form.discountType === 'percentage' ? '0.20' : '100'}
+                      placeholder={form.discountType === 'percentage' ? '20' : '100'}
                       onChange={e => set('discountAmount', Number(e.target.value))}
                     />
                     <span className="text-xs text-gray-400">
-                      {form.discountType === 'percentage' ? 'e.g. 0.20 = 20% off' : 'e.g. 100 = $100 off'}
+                      {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
                     </span>
                   </div>
                 </div>
