@@ -1,6 +1,8 @@
-/* Portal DARK v2 — scoped design tokens applied via .portal-dark-root
- * wrapper in src/app/portal-dark/layout.tsx. Keeps admin UI and
- * portal v1 untouched.
+/* Portal dark-theme design tokens — scoped via the .portal-dark-root
+ * wrapper in src/app/portal/layout.tsx. The Snowglobe portal layers
+ * portal-snowglobe.css on top of these tokens; this file keeps the admin
+ * UI untouched. (Originally the v2 "dark" skin; now the shared base for
+ * the consolidated /portal — see CONVENTIONS.md "New portal section".)
  *
  * Mood: cinematic dark mode — the lights are the star. Deep evergreen
  * background (not pure black — pure black reads tech, not festive).

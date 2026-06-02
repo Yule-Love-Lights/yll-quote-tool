@@ -152,6 +152,6 @@ Useful URLs once it's up:
 - `/quote/new` — operator quote builder (the main internal tool)
 - `/admin/quotes` — quote list + per-quote render review + "send to customer"
 - `/admin/renders` and `/admin/renders/new` — render gallery + smoke-test a render
-- `/portal/[quoteId]` and `/portal-snowglobe/[quoteId]` — the live customer-facing portals (real DB data)
+- `/portal/[quoteId]` — the live customer-facing portal (the Snowglobe design, real DB data)
 
 Then read **`docs/CURRENT_STATE.md`** (what's done vs. half-done vs. fragile) and **`docs/CONVENTIONS.md`** (how to add code without breaking patterns), and load the context snapshot per **`docs/context/README.md`**.

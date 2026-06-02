@@ -36,7 +36,7 @@ metadata:
   `unset ANTHROPIC_API_KEY; unset ANTHROPIC_BASE_URL; export PATH="/c/Program Files/nodejs:$PATH"; npm.cmd run dev`
   (Normal terminal: just `npm run dev`.) → http://localhost:3000
 - Gates: `npx tsc --noEmit` · `npm run lint` · `npm test`
-- Key pages: `/quote/new` (operator) · `/admin/quotes` · `/admin/renders` · `/portal-snowglobe/<quoteId>` · `/training/*`.
+- Key pages: `/quote/new` (operator) · `/admin/quotes` · `/admin/renders` · `/portal/<quoteId>` (Snowglobe) · `/training/*`.
 
 ## Known gotchas
 - Empty `ANTHROPIC_API_KEY` in the Claude-Code shell overrides `.env.local` → Claude routes 503. Unset it before `npm run dev`.
