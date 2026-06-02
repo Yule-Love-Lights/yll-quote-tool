@@ -28,7 +28,7 @@ An internal **AI-assisted quoting + proposal tool** for Yule Love Lights (premiu
 **Routes are thin; the real logic lives in `src/lib/`.** (Full module-by-module detail is in `docs/CONVENTIONS.md` §naming and in the lib files themselves.)
 
 ### `src/lib/`
-- **`pricing/pricingEngine.ts`** — pure, dependency-free money math. `BUSINESS_RULES` is the single source of adjustable numbers (rates, tax 0.08625, $1000 minimum, 50% deposit, rush/takedown). `calculateQuote(inputs) → QuoteResult`.
+- **`pricing/pricingEngine.ts`** — pure, dependency-free money math. `BUSINESS_RULES` is the single source of adjustable numbers (rates, tax 0.08625, $1000 order minimum [now enforced as a customer-portal approval gate, NOT an engine floor — #18], 50% deposit, rush/takedown). `calculateQuote(inputs) → QuoteResult`.
 - **`photoAnalysis.ts`** — the Claude vision brain. `analyzePhoto()` → polylines + detections + confidence; defends against messy JSON and 0–1000 vs 0–1 coordinate scaling. Pulls corrections + training + reference assets as few-shot context.
 - **`rendering/`** — `orchestrator.ts` (conductor: hash → cache → budget → composite → Gemini → optional inpaint → store), `gemini.ts` (REST client, 3 model tiers, retry loop), `inpaint.ts` (Replicate FLUX, optional), `compositor.ts` (`sharp` bulb-sprite compositing + mask), `storage.ts` (Supabase service-role data layer + cache key + `RENDER_PROMPT_VERSION`), `variants.ts` (per-package vision filtering), `adapter.ts` (coord clamping), `types.ts`.
 - **`portal/`** — `loader.ts` (fetch quote → `PortalQuote`), `adapter.ts` (DB row → UI shape), `photos.ts` (resolve before/after + per-variant signed URLs from `renders`), `derivePackages.ts` (one `QuoteResult` → 4 tiers), `lineItemKind.ts` + `variantPhoto.ts` (label/kind parsing).
@@ -59,7 +59,7 @@ Claude Sonnet 4.5 vision → `coerceVision` clamp → hash/cache lookup → mont
 
 All verified against current files (the 2026-04-22 code review's CRITICAL/HIGH items were fixed the same day in `0ef2592` + RLS migrations; I checked the code, not the review).
 
-- **Pricing engine** — solid, pure, the most reliable module. `calculateQuote` covers roofline/mini-lights/spritzers/wreaths/garland → discount → minimum → rush/takedown → tax → deposit. (One placeholder price; see Known Bugs.)
+- **Pricing engine** — solid, pure, the most reliable module. `calculateQuote` covers roofline/mini-lights/spritzers/wreaths/garland → discount → rush/takedown → tax → deposit. (The $1000 minimum is **no longer** an engine floor — task #18 moved it to a customer-portal approval gate so staff can intentionally send sub-$1000 quotes.) (One placeholder price; see Known Bugs.)
 - **AI photo/address analysis** — `analyzePhoto` works from a photo or just an address (Street View + satellite). Robust JSON salvage + coordinate normalization. Few-shot from corrections + training + reference assets.
 - **Render engine core** — `runRender()` fully wired (`caa435c`): composite → Gemini, caching, budget guardrail, variant filtering, Supabase storage. Phase 1 was rated by Naldo "literally looks amazing" (see `docs/context/project_yll_render_engine.md`). **Works reliably** for warm-white; bush inpaint is the rough edge.
 - **Per-package render variants** — `variants.ts` + `render-variants` route + `PackageVariantGallery` (`8e82790`, latest commit).

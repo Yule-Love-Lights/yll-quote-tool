@@ -57,7 +57,7 @@ describe('calculateQuote — roofline', () => {
   it('omits a roofline whose footage is 0', () => {
     const r = calculateQuote(emptyInputs({ gingerbreadFootage: 50, gingerbreadDifficulty: 'easy' })); // 50 × 8
     expect(r.lineItems).toHaveLength(1);
-    expect(r.lineItems[0].label).toContain('Gingerbread Ridge');
+    expect(r.lineItems[0].label).toContain('Gingerbread');
     expect(r.lineItems[0].amount).toBe(400);
   });
 });
@@ -112,16 +112,18 @@ describe('calculateQuote — garland (incl. 4.5ft regression)', () => {
 });
 
 describe('calculateQuote — minimum, fees, tax, deposit', () => {
-  it('bumps a small quote up to the $1000 minimum and flags it', () => {
+  it('does NOT auto-apply the $1000 minimum — staff can send sub-$1000 quotes', () => {
+    // The minimum is now a customer-side approval gate on the portal, not an
+    // engine floor. A small quote prices through at its real (sub-$1000) value.
     const r = calculateQuote(emptyInputs({ spritzers: [{ size: '16', quantity: 1 }] })); // 85
     expect(r.subtotalBeforeDiscount).toBe(85);
-    expect(r.minimumApplied).toBe(true);
-    expect(r.subtotalAfterDiscount).toBe(1000);
-    expect(r.taxableAmount).toBe(1000);
-    expect(r.taxAmount).toBe(86.25);
-    expect(r.total).toBe(1086.25);
-    expect(r.depositAmount).toBe(543.13); // 543.125 rounds up
-    expect(r.balanceDue).toBe(543.12);
+    expect(r.minimumApplied).toBe(false);
+    expect(r.subtotalAfterDiscount).toBe(85);
+    expect(r.taxableAmount).toBe(85);
+    expect(r.taxAmount).toBe(7.33);
+    expect(r.total).toBe(92.33);
+    expect(r.depositAmount).toBe(46.17);
+    expect(r.balanceDue).toBe(46.16);
     // deposit + balance must always reconstruct the total exactly
     expect(r.depositAmount + r.balanceDue).toBeCloseTo(r.total, 2);
   });
@@ -178,14 +180,14 @@ describe('calculateQuote — discounts', () => {
     expect(r.subtotalAfterDiscount).toBe(1700);
   });
 
-  it('still enforces the minimum when a discount drops the subtotal below it', () => {
+  it('does NOT floor when a discount drops the subtotal below $1000', () => {
     const r = calculateQuote(emptyInputs({
       santasFootage: 110, santasDifficulty: 'medium', // 1100
       discount: { type: 'flat', amount: 300 },        // -> 800, below $1000
     }));
     expect(r.subtotalBeforeDiscount).toBe(1100);
     expect(r.discountAmount).toBe(300);
-    expect(r.minimumApplied).toBe(true);
-    expect(r.subtotalAfterDiscount).toBe(1000);
+    expect(r.minimumApplied).toBe(false);
+    expect(r.subtotalAfterDiscount).toBe(800); // real value, not floored to 1000
   });
 });

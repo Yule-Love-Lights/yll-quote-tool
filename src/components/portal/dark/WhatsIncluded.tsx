@@ -26,7 +26,16 @@ export type WhatsIncludedProps = {
 };
 
 export function WhatsIncluded({ items }: WhatsIncludedProps) {
-  const { isItemSelected, toggleItem, activeName } = useSelection();
+  const {
+    isItemSelected,
+    toggleItem,
+    activeName,
+    breakdown,
+    minimumOrderSubtotal,
+    meetsMinimum,
+    amountToMinimum,
+    currentSubtotal,
+  } = useSelection();
 
   return (
     <section
@@ -47,6 +56,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
             Toggle anything off to remove it. We&apos;ll switch your package to &ldquo;Build Your Own&rdquo; and update your total automatically.
           </p>
+          <p className="mt-3 text-[13px] text-[#7B7361]">Prices shown are before tax.</p>
         </div>
 
         <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
@@ -103,6 +113,50 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
             );
           })}
         </ul>
+
+        {/* Totals — ties the line items above out to the all-in price:
+         * Subtotal (+ any per-job fees) + tax = Total, with the 50% deposit
+         * due today. No silent $1,000 floor; the minimum is a gate enforced
+         * on the Approve button (status line below). */}
+        <div className="mt-8 md:mt-10 ml-auto w-full max-w-sm rounded-2xl bg-[#18221C] border border-[#243029] p-5 md:p-6">
+          <dl className="space-y-2.5 text-[14px] md:text-[15px]">
+            <div className="flex justify-between text-[#A89F87]">
+              <dt>Subtotal</dt>
+              <dd className="tabular-nums text-[#E0D7C1]">{formatUsd(breakdown.subtotal)}</dd>
+            </div>
+            {breakdown.rushFee > 0 && (
+              <div className="flex justify-between text-[#A89F87]">
+                <dt>Rush fee</dt>
+                <dd className="tabular-nums text-[#E0D7C1]">{formatUsd(breakdown.rushFee)}</dd>
+              </div>
+            )}
+            {breakdown.takedown > 0 && (
+              <div className="flex justify-between text-[#A89F87]">
+                <dt>Premium takedown</dt>
+                <dd className="tabular-nums text-[#E0D7C1]">{formatUsd(breakdown.takedown)}</dd>
+              </div>
+            )}
+            <div className="flex justify-between text-[#A89F87]">
+              <dt>Tax</dt>
+              <dd className="tabular-nums text-[#E0D7C1]">{formatUsd(breakdown.tax)}</dd>
+            </div>
+            <div className="flex justify-between pt-2.5 border-t border-[#243029]">
+              <dt className="font-display font-semibold text-[#F4ECD8]">Total</dt>
+              <dd className="font-display font-semibold tabular-nums text-[#F4ECD8]">{formatUsd(breakdown.total)}</dd>
+            </div>
+            <div className="flex justify-between text-[13px]">
+              <dt className="text-[#A89F87]">Deposit today (50%)</dt>
+              <dd className="tabular-nums text-[#E8B862]">{formatUsd(breakdown.deposit)}</dd>
+            </div>
+          </dl>
+          {minimumOrderSubtotal > 0 && !meetsMinimum && (
+            <p className="mt-4 border-t border-[#243029] pt-3 text-[13px] text-[#E8B862]">
+              {currentSubtotal <= 0
+                ? `Our season minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
+                : `Our season minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`}
+            </p>
+          )}
+        </div>
       </div>
     </section>
   );

@@ -76,12 +76,10 @@ export function InteractiveHero({
       ? 0.55 + Math.min(1, selectedItemIds.size / Math.max(1, lineItemCount)) * 0.43
       : undefined;
 
-  const displayTotal =
-    packageId === 'D' ? currentTotal : packages.find((p) => p.id === packageId)?.total ?? 0;
-  const displayDeposit =
-    packageId === 'D'
-      ? currentDeposit
-      : packages.find((p) => p.id === packageId)?.deposit ?? 0;
+  // Live total/deposit always come from the shared selection pricing (the
+  // real selected items + tax), so tiers and custom read consistently (#18).
+  const displayTotal = currentTotal;
+  const displayDeposit = currentDeposit;
 
   const scrollToVideo = () => {
     document.getElementById('portal-snow-walkthrough')?.scrollIntoView({
@@ -171,7 +169,7 @@ export function InteractiveHero({
                   {formatUsd(displayTotal)}
                 </span>
                 <span className="text-[13px] md:text-[14px] text-[#F4ECD8]/75">
-                  ·{' '}
+                  incl. tax ·{' '}
                   <span className="tabular-nums text-[#FFD07A]">{formatUsd(displayDeposit)}</span>{' '}
                   deposit today
                 </span>

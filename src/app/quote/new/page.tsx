@@ -2366,9 +2366,6 @@ export default function NewQuotePage() {
                   <span className="tabular-nums">−{usd(result.discountAmount)}</span>
                 </div>
               )}
-              {result.minimumApplied && (
-                <p className="text-xs text-amber-600 italic">Minimum quote of $1,000 applied</p>
-              )}
               {result.rushFeeAmount > 0 && (
                 <div className="flex justify-between">
                   <span>Rush fee</span>

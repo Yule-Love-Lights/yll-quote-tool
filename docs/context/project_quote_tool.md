@@ -23,7 +23,7 @@ metadata:
 
 ## Decisions confirmed — DON'T re-ask
 - **Roofline model (target):** 🔴 red line = **front roofline only = Santa's**; 🔵 blue line = **ridge + sides**. **Santa's & Gingerbread are MUTUALLY EXCLUSIVE** (Santa's OR Gingerbread OR none). Pricing: Santa's = front×rate; **Gingerbread = (front + ridge+sides)×rate**. Customer picks on the portal; operator quotes everything. *(Today's code wrongly treats them as two additive line items and prices Gingerbread as ridge-only — see task #17.)*
-- **$1000 minimum before tax** applies EVERYWHERE (packages + à la carte). A quote may have no roofline if other items total ≥ $1000.
+- **$1000 minimum (CHANGED in S2, task #18):** NO LONGER an engine floor — `pricingEngine` returns the real total so staff can intentionally send sub-$1000 quotes (the "Minimum quote applied" note is gone). It's now a **customer-portal approval gate**: Approve is disabled until the selected pre-tax subtotal reaches $1000 (with an "Add $X more" nudge). **Waived** (gate off) when the whole quote's items total < $1000 — staff override, else it'd be un-approvable. Portal shows real prices + a Subtotal/Tax/Total/Deposit tie-out (tax now visible). *(Supersedes the old "minimum applies everywhere / floor" rule.)*
 - **Multi-image quoting:** extra images are **manual-only** (no AI auto-quote) to avoid double-counting; no cross-image AI dedup. Image 1 covers the roof.
 - **Light color/pattern:** operator sets a default (warm white by default) in the builder; the customer sees it **pre-selected** on the portal and can change it; saved to the quote; no extra cost. (Option list in task #26.)
 - **4.5ft garland:** labor $135, fullDecor $210; **bow tier still $0 — pending Naldo.**
@@ -45,11 +45,14 @@ metadata:
 - Vercel prod lacks the `HIGHLEVEL_*` vars + uses mismatched home.works var names → prod CRM/home.works are off (likely intentional; task #5 on hold).
 
 ## QA punch-list (the active backlog — mirrored from the Claude task list so it survives a cold session)
-- **#17** Roofline redesign (the model above — *big*) · **#18** $1000 minimum everywhere (contained) · **#19** [low] operator "recommend items" checkboxes
-- **#20** corner-house default → front-door view (feasibility TBD) · **#21** move Street View camera along the road (feasibility TBD) · **#22** multi-image quoting (*big*) · **#23** re-analyze button for uploaded images · **#24** [bug] C9 line delete doesn't reset footage · **#25** [UX] discount input accept `20` not `0.20` · **#26** portal color/pattern picker
+- **#17** Roofline redesign (the model above — *big*) · ~~**#18** $1000 minimum everywhere~~ **DONE (S2)** — reworked into a portal approval gate (not an engine floor) · **#19** [low] operator "recommend items" checkboxes
+- **#20** corner-house default → front-door view (feasibility TBD) · **#21** move Street View camera along the road (feasibility TBD) · **#22** multi-image quoting (*big*) · **#23** re-analyze button for uploaded images · ~~**#24** [bug] C9 line delete doesn't reset footage~~ **DONE (S2)** · ~~**#25** [UX] discount input accept `20` not `0.20`~~ **DONE (S2)** · **#26** portal color/pattern picker
+- ~~**#27** Portal consolidation~~ **DONE (S2)** — `/portal` IS Snowglobe; old skins/routes retired.
 - Pending / needs Naldo: #4 verify renders RLS · #6 dormant portals decision · #7 dev Supabase · #8 bow price · #9 HL stage mapping · #10 reviews · #11 phone/video · #14 migration apply + image cleanup.
 
 ## Next up
-**Immediate (Session 2): Portal consolidation — task #27.** Make `/portal/[quoteId]` the Snowglobe design (canonical URL); retire routes `/portal-snowglobe`, `/portal-dark`, `/portal-concierge`. ⚠️ Snowglobe REUSES `components/portal/dark/*` + `snowglobe/*` + shared infra — **delete only the route folders, KEEP those component folders, grep-verify before deleting anything.** Branch `jason/consolidate-portal` off `master`; commit per step; gates after each; eyeball `/portal/<id>` before any deletion. Full plan in task #27.
+**Done in Session 2:** #27 portal consolidation + dead-`dark/StickyBottomBar` cleanup + #25 (discount accepts `20`) + #24 (C9 delete resets footage) + #18 ($1000 minimum reworked into a portal approval gate; tax now shown on the portal; "Gingerbread Ridge" → "Gingerbread" rename). All merged / in PR to `master`.
 
-After that, the QA punch-list: **#25** (quick) / **#24** (bug) → **#18** ($1000 min) → plan **#17** (roofline).
+**Immediate next: #4 — customer rush/premium toggles on the portal** (spawned task): rush-fee + premium-takedown checkboxes in Build-Your-Own, defaulting to staff's builder choice, **never** auto-selected by package; builds on #18's `charges` + `priceSelection`. Then **plan #17** (roofline redesign — Santa's/Gingerbread mutually-exclusive model — *big*, plan first). Remaining quick-ish: #19, #23, #26.
+
+**Also noted in S2:** "Gingerbread Ridge" still appears in non-line-item places (variant preview gallery, training UI, AI prompt, training docs) — Jason to decide whether to rename those too.

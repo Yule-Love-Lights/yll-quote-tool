@@ -10,8 +10,8 @@ export type PortalPackage = {
   id: PackageId;
   name: string;
   tagline: string;
-  total: number;        // dollars, pre-tax, already deposit-inclusive total
-  deposit: number;      // dollars, typically 50% of total
+  total: number;        // dollars, tax-inclusive final price (rush/takedown + tax; no floor — minimum is a portal gate)
+  deposit: number;      // dollars, 50% of total
   recommended?: boolean;
   aLaCarteTotal?: number; // used to compute "you save $X" line (Package C only)
   includedItemIds: string[]; // which line items are bundled in this package
@@ -86,6 +86,32 @@ export type PortalApproval = {
   selectedItemCount: number; // for a "X items included" line
 };
 
+// Per-job charges needed to price the "Build Your Own" custom selection
+// the SAME way the A/B/C package totals are priced (so the $1,000 minimum,
+// rush/takedown fees, and tax apply consistently no matter how the customer
+// builds their selection). Populated by the adapter from the quote's
+// pricing result; the live SelectionContext total runs the custom subtotal
+// through `priceSelection(subtotal, charges)`.
+export type PortalCharges = {
+  rushFee: number;   // dollars (premium rush fee, or 0)
+  takedown: number;  // dollars (premium takedown fee, or 0)
+  taxRate: number;   // effective rate for this quote, e.g. 0.08625
+};
+
+// Full price breakdown for a selection, so the portal can show a
+// tie-out (Subtotal + fees + tax = Total) instead of a mystery number.
+// Produced by priceSelection(subtotal, charges). No $1,000 floor — the
+// minimum is enforced as an approval gate (see minimumOrderSubtotal).
+export type SelectionPrice = {
+  subtotal: number;  // pre-tax sum of the selected line items
+  rushFee: number;   // dollars (0 when not on this quote)
+  takedown: number;  // dollars (0 when not on this quote)
+  taxable: number;   // subtotal + rushFee + takedown
+  tax: number;       // dollars
+  total: number;     // tax-inclusive total the customer pays
+  deposit: number;   // 50% of total, due today
+};
+
 export type PortalQuote = {
   id: string;
   customer: {
@@ -104,6 +130,13 @@ export type PortalQuote = {
   video?: PortalVideo;  // optional — section hides entirely when absent
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
+  // Per-job charges (rush/takedown/tax) so the custom "Build Your Own"
+  // total is priced identically to the A/B/C tiers. See PortalCharges.
+  charges: PortalCharges;
+  // Pre-tax subtotal the customer's selection must reach to approve
+  // ($1,000), or 0 when waived (staff sent a sub-$1,000 quote). See
+  // minimumOrderSubtotal() in lib/portal/derivePackages.
+  minimumOrderSubtotal: number;
   weeklyBookings: number;    // real scarcity — pulled from DB in production
   seasonCapacity: {
     installedThisWeek: number;

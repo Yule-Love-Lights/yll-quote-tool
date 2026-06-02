@@ -155,7 +155,7 @@ function calculateRooflineItems(inputs: QuoteInputs): LineItem[] {
   if (inputs.gingerbreadFootage > 0) {
     const rate = BUSINESS_RULES.rooflineRates[inputs.gingerbreadDifficulty];
     items.push({
-      label: `Gingerbread Ridge – ${inputs.gingerbreadFootage}ft (${inputs.gingerbreadDifficulty})`,
+      label: `Gingerbread – ${inputs.gingerbreadFootage}ft (${inputs.gingerbreadDifficulty})`,
       amount: Math.round(inputs.gingerbreadFootage * rate),
     });
   }
@@ -278,8 +278,13 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   }
 
   const postDiscount = subtotalBeforeDiscount - discountAmount;
-  const minimumApplied = postDiscount > 0 && postDiscount < BUSINESS_RULES.minimumQuoteAmount;
-  const subtotalAfterDiscount = minimumApplied ? BUSINESS_RULES.minimumQuoteAmount : postDiscount;
+  // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
+  // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
+  // customer-side approval gate on the portal instead (see lib/portal/adapter
+  // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
+  // preserve the home.works payload contract (downstream still reads the flag).
+  const minimumApplied = false;
+  const subtotalAfterDiscount = postDiscount;
 
   const rushFeeAmount = inputs.rushFee ? BUSINESS_RULES.rushFeeAmount : 0;
   const takedownAmount = inputs.takedown === 'premium' ? BUSINESS_RULES.premiumTakedownFee : 0;
