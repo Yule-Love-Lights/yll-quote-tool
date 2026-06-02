@@ -95,13 +95,27 @@ export type Discount = {
   amount: number;
 };
 
+// Santa's (front roofline) and Gingerbread (front + ridge + sides) are
+// MUTUALLY EXCLUSIVE — the customer picks one on the portal (or none). #17.
+export type RooflineChoice = 'santas' | 'gingerbread' | 'none';
+
 export interface QuoteInputs {
+  // Front roofline footage (the "red" line) — Santa's on its own, and the
+  // front component of Gingerbread.
   santasFootage: number;
   santasDifficulty: RooflineDifficulty;
+  // Ridge + sides footage (the "blue" line). Added on top of the front to
+  // form Gingerbread; never billed on its own (Gingerbread always includes
+  // the front). NOTE: historically ridge-only — the AI/builder gain
+  // side-gutter capture in a later #17 phase.
   gingerbreadFootage: number;
   gingerbreadDifficulty: RooflineDifficulty;
   winterWonderlandFootage: number;
   winterWonderlandDifficulty: RooflineDifficulty;
+  // The roofline the quote defaults to (operator's pick). When omitted the
+  // engine infers it from footage (Gingerbread if there's ridge/sides, else
+  // Santa's, else none); the portal can switch it — see QuoteResult.rooflineOptions.
+  rooflineChoice?: RooflineChoice;
 
   miniLightItems: MiniLightItem[];
   spritzers: Spritzer[];
@@ -122,6 +136,10 @@ export type LineItem = {
   amount: number;
 };
 
+// One mutually-exclusive roofline option (Santa's or Gingerbread): the total
+// footage it covers and its dollar amount.
+export type RooflineOption = { footage: number; amount: number };
+
 export interface QuoteResult {
   lineItems: LineItem[];
   subtotalBeforeDiscount: number;
@@ -135,40 +153,121 @@ export interface QuoteResult {
   total: number;
   depositAmount: number;
   balanceDue: number;
+  // The active roofline choice this result was priced with, plus BOTH
+  // mutually-exclusive options' prices so the portal can offer the switch
+  // (#17). A `null` option means there's no footage for that option.
+  rooflineChoice: RooflineChoice;
+  rooflineOptions: {
+    santas: RooflineOption | null;
+    gingerbread: RooflineOption | null;
+  };
 }
 
 // ─────────────────────────────────────────────────────────
-// Roofline calculation — three independent line items
+// Roofline calculation — Santa's vs Gingerbread are MUTUALLY EXCLUSIVE
+// (#17). Santa's = front only; Gingerbread = front + ridge + sides. Winter
+// Wonderland (C9 custom runs) is independent and can accompany either.
 // ─────────────────────────────────────────────────────────
 
-function calculateRooflineItems(inputs: QuoteInputs): LineItem[] {
-  const items: LineItem[] = [];
+function rooflineCost(footage: number, difficulty: RooflineDifficulty): number {
+  return Math.round(footage * BUSINESS_RULES.rooflineRates[difficulty]);
+}
 
-  if (inputs.santasFootage > 0) {
-    const rate = BUSINESS_RULES.rooflineRates[inputs.santasDifficulty];
-    items.push({
-      label: `Santa's Roofline – ${inputs.santasFootage}ft (${inputs.santasDifficulty})`,
-      amount: Math.round(inputs.santasFootage * rate),
-    });
+// Both mutually-exclusive roofline options, priced from the captured footage.
+// Santa's = front only (exists when there's front footage). Gingerbread =
+// front + ridge + sides — only a DISTINCT option when there's ridge/sides
+// footage to add (otherwise it would be identical to Santa's). Each component
+// is priced at its own difficulty (Gingerbread = the front cost + the
+// ridge/sides cost). The portal shows both; only the recommended one is billed.
+function rooflineOptionsFor(inputs: QuoteInputs): QuoteResult['rooflineOptions'] {
+  const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty);
+  const ridgeSidesCost = rooflineCost(inputs.gingerbreadFootage, inputs.gingerbreadDifficulty);
+
+  const santas =
+    inputs.santasFootage > 0 ? { footage: inputs.santasFootage, amount: frontCost } : null;
+
+  const gingerbread =
+    inputs.gingerbreadFootage > 0
+      ? {
+          footage: inputs.santasFootage + inputs.gingerbreadFootage,
+          amount: frontCost + ridgeSidesCost,
+        }
+      : null;
+
+  return { santas, gingerbread };
+}
+
+// When staff hasn't recommended a roofline, auto-pick the option whose
+// resulting quote total (the rest of the quote + that option) lands closest
+// to the $1,000 minimum WITHOUT going under it — so we don't lead with a scary
+// Gingerbread price when Santa's already clears the minimum. If neither option
+// reaches the minimum, pick the larger (closest from below).
+function autoRooflineChoice(
+  restSubtotal: number,
+  options: QuoteResult['rooflineOptions'],
+): RooflineChoice {
+  const candidates: { choice: RooflineChoice; total: number }[] = [];
+  if (options.santas) candidates.push({ choice: 'santas', total: restSubtotal + options.santas.amount });
+  if (options.gingerbread) {
+    candidates.push({ choice: 'gingerbread', total: restSubtotal + options.gingerbread.amount });
   }
+  if (candidates.length === 0) return 'none';
 
-  if (inputs.gingerbreadFootage > 0) {
-    const rate = BUSINESS_RULES.rooflineRates[inputs.gingerbreadDifficulty];
-    items.push({
-      label: `Gingerbread – ${inputs.gingerbreadFootage}ft (${inputs.gingerbreadDifficulty})`,
-      amount: Math.round(inputs.gingerbreadFootage * rate),
-    });
+  const min = BUSINESS_RULES.minimumQuoteAmount;
+  const meeting = candidates.filter((c) => c.total >= min);
+  if (meeting.length > 0) {
+    return meeting.reduce((best, c) => (c.total < best.total ? c : best)).choice;
   }
+  return candidates.reduce((best, c) => (c.total > best.total ? c : best)).choice;
+}
 
-  if (inputs.winterWonderlandFootage > 0) {
-    const rate = BUSINESS_RULES.rooflineRates[inputs.winterWonderlandDifficulty];
-    items.push({
+// Honor an explicit operator recommendation; otherwise auto-pick (above).
+function resolveRooflineChoice(
+  inputs: QuoteInputs,
+  restSubtotal: number,
+  options: QuoteResult['rooflineOptions'],
+): RooflineChoice {
+  if (inputs.rooflineChoice) return inputs.rooflineChoice;
+  return autoRooflineChoice(restSubtotal, options);
+}
+
+// The recommended roofline as ONE line item (Santa's OR Gingerbread, never
+// both). The non-recommended option lives only in QuoteResult.rooflineOptions
+// for display — it is NOT billed (so the front footage isn't double-counted).
+function rooflineLineItem(
+  inputs: QuoteInputs,
+  choice: RooflineChoice,
+  options: QuoteResult['rooflineOptions'],
+): LineItem[] {
+  if (choice === 'santas' && options.santas) {
+    return [
+      {
+        label: `Santa's Roofline – ${inputs.santasFootage}ft (${inputs.santasDifficulty})`,
+        amount: options.santas.amount,
+      },
+    ];
+  }
+  if (choice === 'gingerbread' && options.gingerbread) {
+    return [
+      {
+        label: `Gingerbread – ${options.gingerbread.footage}ft (front + ridge + sides)`,
+        amount: options.gingerbread.amount,
+      },
+    ];
+  }
+  return [];
+}
+
+// Winter Wonderland (C9 custom runs) — INDEPENDENT of the Santa's/Gingerbread
+// choice; left exactly as it was. Part of the "rest of the quote."
+function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
+  if (inputs.winterWonderlandFootage <= 0) return [];
+  return [
+    {
       label: `Winter Wonderland – ${inputs.winterWonderlandFootage}ft (${inputs.winterWonderlandDifficulty})`,
-      amount: Math.round(inputs.winterWonderlandFootage * rate),
-    });
-  }
-
-  return items;
+      amount: rooflineCost(inputs.winterWonderlandFootage, inputs.winterWonderlandDifficulty),
+    },
+  ];
 }
 
 // ─────────────────────────────────────────────────────────
@@ -257,16 +356,30 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 // ─────────────────────────────────────────────────────────
 
 export function calculateQuote(inputs: QuoteInputs): QuoteResult {
-  const lineItems: LineItem[] = [];
+  // "Rest of the quote" — everything except the Santa's/Gingerbread choice
+  // (C9/Winter Wonderland is independent and belongs here). Computed first so
+  // the recommended roofline can be auto-picked relative to the $1,000 minimum.
+  const restItems: LineItem[] = [
+    ...calculateWinterWonderland(inputs),
+    ...calculateMiniLights(inputs),
+    ...calculateSpritzers(inputs),
+    ...calculateWreaths(inputs),
+    ...calculateGarland(inputs),
+  ];
+  const restSubtotal = restItems.reduce((sum, item) => sum + item.amount, 0);
 
-  lineItems.push(...calculateRooflineItems(inputs));
+  // Both roofline options are exposed (so the builder + portal can show both),
+  // but only the recommended one is billed — Santa's and Gingerbread are
+  // mutually exclusive (#17).
+  const rooflineOptions = rooflineOptionsFor(inputs);
+  const rooflineChoice = resolveRooflineChoice(inputs, restSubtotal, rooflineOptions);
 
-  lineItems.push(...calculateMiniLights(inputs));
-
-  lineItems.push(...calculateSpritzers(inputs));
-
-  lineItems.push(...calculateWreaths(inputs));
-  lineItems.push(...calculateGarland(inputs));
+  // Recommended roofline first (keeps it at the top of the breakdown), then
+  // the rest.
+  const lineItems: LineItem[] = [
+    ...rooflineLineItem(inputs, rooflineChoice, rooflineOptions),
+    ...restItems,
+  ];
 
   const subtotalBeforeDiscount = lineItems.reduce((sum, item) => sum + item.amount, 0);
 
@@ -308,5 +421,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     total,
     depositAmount,
     balanceDue,
+    rooflineChoice,
+    rooflineOptions,
   };
 }

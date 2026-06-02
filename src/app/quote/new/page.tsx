@@ -2077,7 +2077,7 @@ export default function NewQuotePage() {
 
           {/* ── Gingerbread — Ridgeline ── */}
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
-            <Section title="Gingerbread — Ridgeline (C9 Bulbs)">
+            <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2362,14 +2362,55 @@ export default function NewQuotePage() {
               Quote Breakdown
             </h2>
 
-            {/* Line items */}
-            <div className="mb-4 space-y-1.5">
-              {result.lineItems.map((item, i) => (
-                <div key={i} className="flex justify-between text-sm">
-                  <span className="text-gray-700">{item.label}</span>
-                  <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+            {/* Roofline options — Santa's vs Gingerbread are mutually exclusive
+                (#17). BOTH are presented to the customer; only the recommended
+                one is billed in the total below. (Interactive staff-pick toggle
+                is Phase 1b — for now the recommendation is auto-picked to land
+                the quote closest to the $1,000 minimum without going under.) */}
+            {(result.rooflineOptions.santas || result.rooflineOptions.gingerbread) && (
+              <div className="mb-4 rounded-md border border-gray-200 bg-gray-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                  Roofline option <span className="font-normal normal-case text-gray-400">— customer picks one</span>
+                </p>
+                <div className="space-y-1.5">
+                  {result.rooflineOptions.santas && (
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-gray-700">
+                        Santa&apos;s <span className="text-gray-400">(front roofline)</span>
+                        {result.rooflineChoice === 'santas' && (
+                          <span className="rounded bg-green-100 text-green-700 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5">Recommended</span>
+                        )}
+                      </span>
+                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.santas.amount)}</span>
+                    </div>
+                  )}
+                  {result.rooflineOptions.gingerbread && (
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-gray-700">
+                        Gingerbread <span className="text-gray-400">(front + ridge + sides)</span>
+                        {result.rooflineChoice === 'gingerbread' && (
+                          <span className="rounded bg-green-100 text-green-700 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5">Recommended</span>
+                        )}
+                      </span>
+                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.gingerbread.amount)}</span>
+                    </div>
+                  )}
                 </div>
-              ))}
+                <p className="text-[11px] text-gray-400 mt-2">Only the recommended option is billed below. Staff-pick toggle coming next.</p>
+              </div>
+            )}
+
+            {/* Line items (the recommended roofline is shown in the option box
+                above, so it's filtered out here to avoid listing it twice). */}
+            <div className="mb-4 space-y-1.5">
+              {result.lineItems
+                .filter((item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')))
+                .map((item, i) => (
+                  <div key={i} className="flex justify-between text-sm">
+                    <span className="text-gray-700">{item.label}</span>
+                    <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                  </div>
+                ))}
             </div>
 
             {/* Subtotals */}

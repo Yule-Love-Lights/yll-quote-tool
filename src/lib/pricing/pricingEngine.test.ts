@@ -62,6 +62,108 @@ describe('calculateQuote — roofline', () => {
   });
 });
 
+describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)', () => {
+  it('bills exactly ONE roofline, but exposes BOTH options for the portal/builder', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // front 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // ridge+sides 400
+    }));
+    const roofItems = r.lineItems.filter((li) => /Santa's Roofline|Gingerbread/.test(li.label));
+    expect(roofItems).toHaveLength(1);
+    expect(r.rooflineOptions.santas).toEqual({ footage: 100, amount: 1000 });
+    expect(r.rooflineOptions.gingerbread).toEqual({ footage: 140, amount: 1400 });
+  });
+
+  it('Gingerbread includes the front (front + ridge + sides)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // 400
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.lineItems[0].label).toContain('140ft'); // 100 + 40
+    expect(r.lineItems[0].amount).toBe(1400);        // 1000 + 400
+  });
+
+  it('Santa\'s bills the front only, ignoring ridge/sides', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // ignored when Santa's
+      rooflineChoice: 'santas',
+    }));
+    expect(r.lineItems[0].label).toContain("Santa's Roofline");
+    expect(r.lineItems[0].amount).toBe(1000);
+    expect(r.rooflineChoice).toBe('santas'); // explicit choice overrides auto
+  });
+
+  describe('auto-default (no staff recommendation) — closest to $1,000 without going under', () => {
+    it('picks the cheaper Santa\'s when both options clear the minimum', () => {
+      const r = calculateQuote(emptyInputs({
+        santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+        gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      }));
+      expect(r.rooflineChoice).toBe('santas');
+      expect(r.lineItems[0].amount).toBe(1000);
+    });
+
+    it('picks Gingerbread when Santa\'s alone would fall under the minimum', () => {
+      const r = calculateQuote(emptyInputs({
+        santasFootage: 90, santasDifficulty: 'medium',           // Santa's 900 (< 1000)
+        gingerbreadFootage: 20, gingerbreadDifficulty: 'medium', // Gingerbread 1100
+      }));
+      expect(r.rooflineChoice).toBe('gingerbread');
+      expect(r.lineItems[0].amount).toBe(1100);
+    });
+
+    it('picks the larger Gingerbread when NEITHER reaches the minimum', () => {
+      const r = calculateQuote(emptyInputs({
+        santasFootage: 30, santasDifficulty: 'medium',           // Santa's 300
+        gingerbreadFootage: 30, gingerbreadDifficulty: 'medium', // Gingerbread 600
+      }));
+      expect(r.rooflineChoice).toBe('gingerbread');
+    });
+
+    it('factors the rest of the quote in — rest pushes Santa\'s over the minimum, so Santa\'s wins', () => {
+      // $710 of "rest" (two $355 wreaths). Santa's 350 -> 1060, Gingerbread 650 -> 1360.
+      const r = calculateQuote(emptyInputs({
+        santasFootage: 35, santasDifficulty: 'medium',           // Santa's 350
+        gingerbreadFootage: 30, gingerbreadDifficulty: 'medium', // Gingerbread 650
+        wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 2 }], // 710
+      }));
+      expect(r.rooflineChoice).toBe('santas');
+    });
+
+    it('without that rest, the SAME options default to Gingerbread (neither clears the min alone)', () => {
+      const r = calculateQuote(emptyInputs({
+        santasFootage: 35, santasDifficulty: 'medium',           // Santa's 350 (< 1000)
+        gingerbreadFootage: 30, gingerbreadDifficulty: 'medium', // Gingerbread 650 (< 1000)
+      }));
+      expect(r.rooflineChoice).toBe('gingerbread');
+    });
+  });
+
+  it('rooflineChoice "none" bills no roofline even with footage (options still exposed)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'none',
+    }));
+    expect(r.lineItems).toHaveLength(0);
+    expect(r.rooflineChoice).toBe('none');
+    expect(r.rooflineOptions.gingerbread).toEqual({ footage: 140, amount: 1400 });
+  });
+
+  it('Winter Wonderland (C9) bills independently of the roofline choice', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',                  // Santa's 1000
+      rooflineChoice: 'santas',
+      winterWonderlandFootage: 30, winterWonderlandDifficulty: 'easy', // 240
+    }));
+    const labels = r.lineItems.map((li) => li.label).join(' | ');
+    expect(labels).toContain("Santa's Roofline");
+    expect(labels).toContain('Winter Wonderland');
+  });
+});
+
 describe('calculateQuote — line-item categories', () => {
   it('prices mini lights by string count and wrap style', () => {
     const r = calculateQuote(emptyInputs({
