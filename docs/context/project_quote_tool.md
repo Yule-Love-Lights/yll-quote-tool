@@ -29,6 +29,7 @@ metadata:
 - **4.5ft garland:** labor $135, fullDecor $210; **bow tier still $0 — pending Naldo.**
 - **Workflow:** never commit without Jason's explicit "yes"; PR-not-master; run gates (tsc + lint + test) before commit. Jason + Naldo are on different machines → `docs/context/` is the canonical shared memory.
 - **Pushing:** **Claude runs `git push`** (Jason approved in Session 1). Pushing to the `Yule-Love-Lights` org is NOT blocked here, unlike the design tool's exfil guard. Commits still require Jason's explicit "yes" first.
+- **Portal consolidation (next up, task #27):** `/portal/[quoteId]` becomes THE canonical customer URL serving the **Snowglobe** design; the other 3 portal routes (`portal-snowglobe`, `portal-dark`, `portal-concierge`) get retired. ⚠️ KEEP the `components/portal/dark/*` + `snowglobe/*` COMPONENT folders — Snowglobe reuses them; delete only the route folders, and grep-verify before deleting any component.
 
 ## How to run locally
 - Dev server (repo root). Via Claude Code's **Bash** tool, prefix to dodge the empty-`ANTHROPIC_API_KEY` shell quirk:
@@ -49,4 +50,6 @@ metadata:
 - Pending / needs Naldo: #4 verify renders RLS · #6 dormant portals decision · #7 dev Supabase · #8 bow price · #9 HL stage mapping · #10 reviews · #11 phone/video · #14 migration apply + image cleanup.
 
 ## Next up
-Jason picks the first QA item. Warm-ups: **#25** (quick) or **#24** (contained bug); then **#18** ($1000 minimum); then plan **#17** (roofline — phase-1 pricing + tests before touching money logic). Also confirm the `jason/refresh-full-schema` PR is merged.
+**Immediate (Session 2): Portal consolidation — task #27.** Make `/portal/[quoteId]` the Snowglobe design (canonical URL); retire routes `/portal-snowglobe`, `/portal-dark`, `/portal-concierge`. ⚠️ Snowglobe REUSES `components/portal/dark/*` + `snowglobe/*` + shared infra — **delete only the route folders, KEEP those component folders, grep-verify before deleting anything.** Branch `jason/consolidate-portal` off `master`; commit per step; gates after each; eyeball `/portal/<id>` before any deletion. Full plan in task #27.
+
+After that, the QA punch-list: **#25** (quick) / **#24** (bug) → **#18** ($1000 min) → plan **#17** (roofline).
