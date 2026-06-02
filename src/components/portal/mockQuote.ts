@@ -94,10 +94,14 @@ export const MOCK_QUOTE: PortalQuote = {
       includedItemIds: [],
     },
   ],
-  // Per-job charges for the custom "Build Your Own" total. Mock has no
-  // rush/takedown; taxRate matches BUSINESS_RULES.taxRate so dev custom
-  // totals look like production.
-  charges: { rushFee: 0, takedown: 0, taxRate: 0.08625 },
+  // Per-quote fee config for the portal. Mock leaves rush + premium-takedown
+  // off by default (customer can toggle them on); amounts match BUSINESS_RULES,
+  // taxRate matches BUSINESS_RULES.taxRate so dev totals look like production.
+  charges: {
+    taxRate: 0.08625,
+    rush: { amount: 150, defaultOn: false },
+    takedown: { amount: 150, defaultOn: false },
+  },
   // Mock items total well over $1,000, so the $1,000 approval gate is active.
   minimumOrderSubtotal: 1000,
   weeklyBookings: 12,

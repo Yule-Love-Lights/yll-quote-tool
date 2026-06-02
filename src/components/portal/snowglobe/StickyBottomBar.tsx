@@ -23,6 +23,8 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
     currentSubtotal,
     meetsMinimum,
     amountToMinimum,
+    rushSelected,
+    takedownSelected,
     packageId,
     selectedItemIds,
   } = useSelection();
@@ -48,6 +50,8 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
           activeName,
           currentTotal,
           currentDeposit,
+          rushSelected,
+          takedownSelected,
         }),
       });
       // 409 = already approved — still route to the celebration page.

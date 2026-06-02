@@ -5,10 +5,65 @@
 // dim out with muted cream. No red anywhere — keeps red reserved
 // for the sticky bar CTA.
 
-import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2 } from 'lucide-react';
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Check } from 'lucide-react';
 import type { PortalLineItem, PortalLineItemKind } from '../types';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
+
+// Customer-toggleable add-on (rush install / premium takedown) — #4.
+function AddOnToggle({
+  selected,
+  onToggle,
+  title,
+  blurb,
+  amount,
+}: {
+  selected: boolean;
+  onToggle: () => void;
+  title: string;
+  blurb: string;
+  amount: number;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        aria-pressed={selected}
+        onClick={onToggle}
+        className={[
+          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,opacity] duration-300 text-left border',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
+          selected
+            ? 'bg-[#1F2A23] border-[#3C4F43]'
+            : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100',
+        ].join(' ')}
+      >
+        <span
+          aria-hidden
+          className={[
+            'shrink-0 mt-0.5 w-6 h-6 rounded-md flex items-center justify-center transition-colors duration-300 border',
+            selected ? 'bg-[#E8B862] border-[#E8B862]' : 'bg-transparent border-[#3C4F43]',
+          ].join(' ')}
+        >
+          {selected && <Check className="w-4 h-4 text-[#0B140F]" aria-hidden />}
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="flex items-baseline justify-between gap-3">
+            <span className={`font-display text-[17px] md:text-[18px] font-semibold ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
+              {title}
+            </span>
+            <span className={`font-display text-[16px] font-semibold tabular-nums ${selected ? 'text-[#E8B862]' : 'text-[#7B7361]'}`}>
+              +{formatUsd(amount)}
+            </span>
+          </span>
+          <span className={`block text-[13px] mt-1 leading-[1.5] ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
+            {blurb}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+}
 
 const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>> = {
   roofline: Home,
@@ -35,6 +90,12 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
     meetsMinimum,
     amountToMinimum,
     currentSubtotal,
+    rushSelected,
+    takedownSelected,
+    rushAmount,
+    takedownAmount,
+    toggleRush,
+    toggleTakedown,
   } = useSelection();
 
   return (
@@ -113,6 +174,31 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
             );
           })}
         </ul>
+
+        {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
+         * Seeded from the staff quote's choice; NEVER changed by picking a
+         * package. Toggling either updates the totals + the approval. */}
+        <div className="mt-10 md:mt-12">
+          <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
+            Optional add-ons
+          </p>
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+            <AddOnToggle
+              selected={rushSelected}
+              onToggle={toggleRush}
+              title="Rush install"
+              blurb="Bump your install to the front of the queue."
+              amount={rushAmount}
+            />
+            <AddOnToggle
+              selected={takedownSelected}
+              onToggle={toggleTakedown}
+              title="Premium takedown"
+              blurb="We take everything down before Jan 9 (standard is Jan 9 – Feb 3)."
+              amount={takedownAmount}
+            />
+          </ul>
+        </div>
 
         {/* Totals — ties the line items above out to the all-in price:
          * Subtotal (+ any per-job fees) + tax = Total, with the 50% deposit

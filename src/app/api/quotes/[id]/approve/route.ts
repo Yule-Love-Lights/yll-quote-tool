@@ -9,6 +9,8 @@
 //     activeName: string,                 // package display name ("Build Your Own" etc.)
 //     currentTotal: number,               // dollars, what the customer saw
 //     currentDeposit: number,             // dollars, what they're paying up front
+//     rushSelected: boolean,              // customer's rush add-on toggle (#4)
+//     takedownSelected: boolean,          // customer's premium-takedown toggle (#4)
 //   }
 // Response:
 //   { ok: true, sentAt: ISO, homeworksOk: boolean }  — on success
@@ -75,6 +77,8 @@ type ApproveBody = {
   activeName?: string;
   currentTotal?: number;
   currentDeposit?: number;
+  rushSelected?: boolean;
+  takedownSelected?: boolean;
 };
 
 // The snapshot shape — stored in the approval_snapshot jsonb column.
@@ -90,6 +94,8 @@ type ApprovalSnapshot = {
     selectedItemIds: string[];
     currentTotalUsd: number;
     currentDepositUsd: number;
+    rushSelected: boolean;      // #4 — customer's rush add-on choice
+    takedownSelected: boolean;  // #4 — customer's premium-takedown choice
   };
   customer: {
     fullName: string | null;
@@ -140,6 +146,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const activeName = typeof body.activeName === 'string' ? body.activeName.slice(0, 200) : '';
   const currentTotal = typeof body.currentTotal === 'number' && body.currentTotal >= 0 ? body.currentTotal : 0;
   const currentDeposit = typeof body.currentDeposit === 'number' && body.currentDeposit >= 0 ? body.currentDeposit : 0;
+  // #4 — the customer's rush / premium-takedown add-on choices. Recorded in
+  // the snapshot (the authoritative record of what they approved); the
+  // toggle-inclusive amount is already in currentTotal/currentDeposit.
+  const rushSelected = body.rushSelected === true;
+  const takedownSelected = body.takedownSelected === true;
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
@@ -184,6 +195,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       selectedItemIds,
       currentTotalUsd: currentTotal,
       currentDepositUsd: currentDeposit,
+      rushSelected,
+      takedownSelected,
     },
     customer: {
       fullName: quote.customer_name,

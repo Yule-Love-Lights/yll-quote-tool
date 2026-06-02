@@ -28,6 +28,7 @@ import type {
   PortalLineItem,
   PortalLineItemKind,
   PortalPackage,
+  SelectionCharges,
   SelectionPrice,
 } from '@/components/portal/types';
 
@@ -52,16 +53,37 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-// Per-job charges (rush/takedown/tax) pulled from the quote's pricing
-// result. Defensive null-coercion in case an older row is missing fields.
-// Shared by the package totals here AND the live "Build Your Own" custom
-// total in SelectionContext, so the $1,000 minimum + fees + tax apply
-// identically no matter how the customer builds their selection (#18).
+// Per-quote fee CONFIG pulled from the pricing result: the canonical rush +
+// premium-takedown amounts (charged when toggled ON) and the default on/off
+// state staff set in the builder (a fee defaults on when the staff quote
+// already includes it), plus the effective tax rate. Shared by the
+// package-card totals here AND the live SelectionContext total (#4/#18).
 export function chargesFromResult(result: QuoteResult): PortalCharges {
   return {
-    rushFee: typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0,
-    takedown: typeof result.takedownAmount === 'number' ? result.takedownAmount : 0,
     taxRate: effectiveTaxRate(result),
+    rush: {
+      amount: BUSINESS_RULES.rushFeeAmount,
+      defaultOn: (typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0) > 0,
+    },
+    takedown: {
+      amount: BUSINESS_RULES.premiumTakedownFee,
+      defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
+    },
+  };
+}
+
+// Resolve the fee config + a toggle state (customer's, or the staff defaults)
+// into the effective SelectionCharges priceSelection consumes: each fee adds
+// its canonical amount only when its toggle is on.
+export function effectiveCharges(
+  charges: PortalCharges,
+  rushOn: boolean,
+  takedownOn: boolean,
+): SelectionCharges {
+  return {
+    rushFee: rushOn ? charges.rush.amount : 0,
+    takedown: takedownOn ? charges.takedown.amount : 0,
+    taxRate: charges.taxRate,
   };
 }
 
@@ -73,7 +95,7 @@ export function chargesFromResult(result: QuoteResult): PortalCharges {
 // packages A/B/C and the custom Build-Your-Own path both call it.
 export function priceSelection(
   subtotal: number,
-  charges: PortalCharges,
+  charges: SelectionCharges,
 ): SelectionPrice {
   if (subtotal <= 0) {
     return { subtotal: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0 };
@@ -106,7 +128,7 @@ export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
 function totalsFor(
   itemIds: string[],
   lineItems: PortalLineItem[],
-  charges: PortalCharges,
+  charges: SelectionCharges,
 ): { total: number; deposit: number } {
   const idSet = new Set(itemIds);
   const subtotal = lineItems.reduce(
@@ -137,7 +159,11 @@ export function derivePackages(
     )
     .map((li) => li.id);
 
-  const charges = chargesFromResult(result);
+  // Package cards reflect the STAFF quote, so price them with the staff-default
+  // rush/takedown toggle state. The live portal total (SelectionContext)
+  // re-prices with the customer's toggles.
+  const config = chargesFromResult(result);
+  const charges = effectiveCharges(config, config.rush.defaultOn, config.takedown.defaultOn);
   const a = totalsFor(idsForTierA, lineItems, charges);
   const b = totalsFor(idsForTierB, lineItems, charges);
   const c = totalsFor(idsForTierC, lineItems, charges);
