@@ -16,6 +16,7 @@ import type {
   PortalLineItem,
   PortalLineItemKind,
   PortalQuote,
+  PortalRoofline,
   PortalVideo,
 } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
@@ -111,6 +112,67 @@ function buildLineItems(result: QuoteResult): PortalLineItem[] {
     });
 }
 
+// The engine's single billed roofline — Santa's ("…Roofline…") or Gingerbread
+// (incl. the legacy "Gingerbread Ridge" wording). NOT Winter Wonderland, which
+// is independent C9 and stays a line item even though it parses to 'ridge'.
+// Matched by label (not kind) so an unparseable item — which falls back to
+// kind 'roofline' — is never mistaken for the roofline.
+function isBilledRoofline(label: string): boolean {
+  return /Roofline/i.test(label) || /Gingerbread/i.test(label);
+}
+
+// Build the portal line items + the mutually-exclusive roofline group (#17
+// Phase 2).
+//
+// For Phase-1+ quotes the engine BILLS one roofline (Santa's or Gingerbread)
+// as a line item but exposes BOTH priced options on result.rooflineOptions.
+// The portal shows BOTH as ordinary toggle line items (no footage) so the
+// customer can pick either one — SelectionContext makes them mutually
+// exclusive. So we drop the single billed roofline and synthesize one line
+// item per captured option in its place.
+//
+// Legacy rows (no rooflineOptions, or no billed roofline) keep their existing
+// single roofline line item untouched and `roofline` is undefined.
+function buildPortalLineItems(result: QuoteResult): {
+  lineItems: PortalLineItem[];
+  roofline?: PortalRoofline;
+} {
+  const all = buildLineItems(result);
+  const opts = result.rooflineOptions;
+  const choice = result.rooflineChoice;
+
+  if (!opts || (choice !== 'santas' && choice !== 'gingerbread')) {
+    return { lineItems: all };
+  }
+
+  // One line item per captured option, no footage. Santa's keeps the
+  // 'roofline' icon, Gingerbread the 'ridge' icon. Stable, descriptive ids.
+  const optionItems: PortalLineItem[] = [];
+  if (opts.santas) {
+    optionItems.push({ id: 'roofline-santas', kind: 'roofline', label: "Santa's Roofline", detail: '', price: opts.santas.amount });
+  }
+  if (opts.gingerbread) {
+    optionItems.push({ id: 'roofline-gingerbread', kind: 'ridge', label: 'Gingerbread', detail: '', price: opts.gingerbread.amount });
+  }
+  if (optionItems.length === 0) return { lineItems: all };
+
+  const recommendedItemId =
+    (choice === 'gingerbread' ? 'roofline-gingerbread' : 'roofline-santas');
+  // Defensive: if the recommended option wasn't actually captured, default to
+  // whichever option we do have.
+  const recommended = optionItems.some((i) => i.id === recommendedItemId)
+    ? recommendedItemId
+    : optionItems[0].id;
+
+  // Drop the engine's single billed roofline; the option items replace it and
+  // lead the list, where the billed roofline sat before.
+  const rest = all.filter((li) => !isBilledRoofline(li.label));
+  return {
+    lineItems: [...optionItems, ...rest],
+    roofline: { itemIds: optionItems.map((i) => i.id), recommendedItemId: recommended },
+  };
+}
+
 // Translate the jsonb approval snapshot into the camelCase PortalApproval
 // the frontend consumes. Returns undefined when the customer hasn't
 // approved yet (or when the snapshot is malformed beyond rescue) — the
@@ -188,8 +250,17 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // Without a pricing result there's nothing to show — caller should 404.
   if (!row.result) return null;
 
-  const lineItems = buildLineItems(row.result);
-  const packages = derivePackages(lineItems, row.result);
+  const { lineItems, roofline } = buildPortalLineItems(row.result);
+  // The A/B/C package tiers and the $1,000 gate threshold bundle only the
+  // RECOMMENDED roofline — never both options. Excluding the non-recommended
+  // option keeps a tier from selecting two rooflines at once, and keeps the
+  // gate-waiver sum from double-counting a roofline the customer can't both have.
+  const tierLineItems = roofline
+    ? lineItems.filter(
+        (li) => !(roofline.itemIds.includes(li.id) && li.id !== roofline.recommendedItemId),
+      )
+    : lineItems;
+  const packages = derivePackages(tierLineItems, row.result);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
 
   return {
@@ -210,13 +281,16 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     video: buildVideo(row),
     packages,
     lineItems,
+    roofline,
     // Per-job charges so the custom "Build Your Own" total is priced the
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
     charges: chargesFromResult(row.result),
     // The $1,000 approval gate threshold (0 when the quote's items total
     // under $1,000 — staff override). Enforced on the portal, not in pricing.
-    minimumOrderSubtotal: minimumOrderSubtotal(lineItems),
+    // Uses tierLineItems so a quote with two roofline options (only one of
+    // which is ever selected) isn't double-counted into clearing the minimum.
+    minimumOrderSubtotal: minimumOrderSubtotal(tierLineItems),
     weeklyBookings,
     seasonCapacity: {
       installedThisWeek: weeklyBookings,

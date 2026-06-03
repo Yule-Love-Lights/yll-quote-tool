@@ -38,8 +38,11 @@ export const MOCK_QUOTE: PortalQuote = {
     leaderName: 'Naldo',
   },
   lineItems: [
-    { id: 'roofline', kind: 'roofline', label: "Santa's Roofline (gutterline)", detail: '180 ft', price: 900 },
-    { id: 'ridge', kind: 'ridge', label: 'Gingerbread (ridgeline)', detail: '90 ft', price: 540 },
+    // The mutually-exclusive roofline pair (#17 Phase 2). Both show in the
+    // grid; picking one deselects the other (see `roofline` below). No footage
+    // on the customer portal. Santa's = front; Gingerbread = front + ridge + sides.
+    { id: 'roofline-santas', kind: 'roofline', label: "Santa's Roofline", detail: '', price: 900 },
+    { id: 'roofline-gingerbread', kind: 'ridge', label: 'Gingerbread', detail: '', price: 1440 },
     { id: 'tree-l', kind: 'tree', label: 'Front-left tree', detail: '4 strands', price: 180 },
     { id: 'tree-r', kind: 'tree', label: 'Front-right tree', detail: '3 strands', price: 135 },
     { id: 'bush-1', kind: 'bush', label: 'Front bush 1', detail: '2 strands', price: 70 },
@@ -55,7 +58,7 @@ export const MOCK_QUOTE: PortalQuote = {
       tagline: 'Roofline only. Clean, simple, elegant.',
       total: 1480,
       deposit: 740,
-      includedItemIds: ['roofline'],
+      includedItemIds: ['roofline-santas'],
     },
     {
       id: 'B',
@@ -64,7 +67,7 @@ export const MOCK_QUOTE: PortalQuote = {
       total: 2150,
       deposit: 1075,
       recommended: true,
-      includedItemIds: ['roofline', 'tree-l', 'tree-r', 'bush-1', 'bush-2'],
+      includedItemIds: ['roofline-santas', 'tree-l', 'tree-r', 'bush-1', 'bush-2'],
     },
     {
       id: 'C',
@@ -74,8 +77,7 @@ export const MOCK_QUOTE: PortalQuote = {
       deposit: 1492.5,
       aLaCarteTotal: 3170,
       includedItemIds: [
-        'roofline',
-        'ridge',
+        'roofline-santas',
         'tree-l',
         'tree-r',
         'bush-1',
@@ -94,6 +96,13 @@ export const MOCK_QUOTE: PortalQuote = {
       includedItemIds: [],
     },
   ],
+  // The mutually-exclusive roofline group (#17 Phase 2): Santa's + Gingerbread
+  // both render as grid line items; picking one deselects the other. Default
+  // (and the only one bundled into the A/B/C tiers) is the staff pick, Santa's.
+  roofline: {
+    itemIds: ['roofline-santas', 'roofline-gingerbread'],
+    recommendedItemId: 'roofline-santas',
+  },
   // Per-quote fee config for the portal. Mock leaves rush + premium-takedown
   // off by default (customer can toggle them on); amounts match BUSINESS_RULES,
   // taxRate matches BUSINESS_RULES.taxRate so dev totals look like production.
