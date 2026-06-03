@@ -948,7 +948,7 @@ export default function NewTrainingHousePage() {
             {addMode ? (
               <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                 <span className="text-sm text-yellow-900">
-                  Adding new {addMode === 'santas' ? 'gutterline (red)' : addMode === 'gingerbread' ? 'ridgeline (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
+                  Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                 </span>
                 <div className="flex gap-2">
                   <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
@@ -961,11 +961,11 @@ export default function NewTrainingHousePage() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
                   className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
-                  + Add Gutterline
+                  + Add Front Gutterline
                 </button>
                 <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
                   className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
-                  + Add Ridgeline
+                  + Add Ridge / Side
                 </button>
                 <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
                   className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
@@ -974,12 +974,12 @@ export default function NewTrainingHousePage() {
               </div>
             )}
 
-            {/* Per-line edit panels — Gutterline / Ridgeline / C9s */}
+            {/* Per-line edit panels — Front Gutterline / Ridge+Sides / C9s */}
             <div className="mt-4 grid grid-cols-3 gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-4 h-1 bg-red-500 rounded"></span>
-                  <span className="text-sm font-semibold text-gray-800">Gutterline — {typeof santasFootage === 'number' ? santasFootage : 0}ft</span>
+                  <span className="text-sm font-semibold text-gray-800">Front Gutterline — {typeof santasFootage === 'number' ? santasFootage : 0}ft</span>
                 </div>
                 {santasLines.length > 0 ? (
                   <ul className="space-y-1 ml-6">
@@ -1003,7 +1003,7 @@ export default function NewTrainingHousePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-4 h-1 bg-blue-500 rounded"></span>
-                  <span className="text-sm font-semibold text-gray-800">Ridgeline — {typeof gingerbreadFootage === 'number' ? gingerbreadFootage : 0}ft</span>
+                  <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {typeof gingerbreadFootage === 'number' ? gingerbreadFootage : 0}ft</span>
                 </div>
                 {gingerbreadLines.length > 0 ? (
                   <ul className="space-y-1 ml-6">

@@ -1,7 +1,7 @@
 // Per-package render variants for the customer portal.
 //
 // Each customer-facing package on the quote portal (Santa's Roofline,
-// Gingerbread Ridge, Mini Lights, Wreaths, Spritzers, Garland) gets its
+// Gingerbread, Mini Lights, Wreaths, Spritzers, Garland) gets its
 // own preview render that shows the house with ONLY that package's lights
 // installed. This file is the single source of truth for which vision
 // fields belong to which variant.
@@ -11,12 +11,12 @@
 // variant cache key without running a render. Keeping it side-effect-free
 // makes both safe.
 //
-// Stacking semantics: 'ridge' is unique in that it stacks ON TOP of
-// Santa's. In the YLL business model, Gingerbread Ridge is sold as an
-// upsell to Santa's Roofline — a render of the ridge alone (peak lit,
-// gutters dark) doesn't reflect what a customer would actually see if
-// they bought the package. Every other variant is sold à la carte and
-// reads visually correct in isolation, so they get pure isolation.
+// Stacking semantics: 'ridge' (the Gingerbread variant) is unique in that
+// it stacks ON TOP of Santa's. In the YLL business model, Gingerbread is
+// sold as an upsell to Santa's Roofline — a render of the ridge + sides
+// alone (peak/sides lit, front gutters dark) doesn't reflect what a customer
+// would actually see if they bought the package. Every other variant is sold
+// à la carte and reads visually correct in isolation, so they get pure isolation.
 
 import type { RenderVariant, RenderVisionInput } from './types';
 
@@ -101,7 +101,7 @@ export function variantHasContent(
 export const VARIANT_LABELS: Record<RenderVariant, string> = {
   full: 'Full Package',
   santas: "Santa's Roofline",
-  ridge: 'Gingerbread Ridge',
+  ridge: 'Gingerbread',
   minis: 'Mini Lights',
   wreaths: 'Wreaths',
   spritzers: 'Spritzers',

@@ -45,7 +45,7 @@ export function variantPhotoForKind(
 export function variantKeyToHumanLabel(key: keyof PortalVariantPhotos): string {
   switch (key) {
     case 'santas': return "Santa's Roofline";
-    case 'ridge': return 'Gingerbread Ridge';
+    case 'ridge': return 'Gingerbread';
     case 'minis': return 'Mini Lights';
     case 'wreaths': return 'Wreaths';
     case 'spritzers': return 'Spritzers';
