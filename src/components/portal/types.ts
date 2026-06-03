@@ -35,6 +35,21 @@ export type PortalLineItem = {
   price: number;        // dollars for this item
 };
 
+// The mutually-exclusive roofline group for the portal (#17 Phase 2). Present
+// ONLY for quotes priced by the Phase-1 engine (QuoteResult.rooflineOptions)
+// that have a billed roofline. Legacy rows leave this undefined and the single
+// roofline stays an ordinary toggleable line item.
+//
+// Both Santa's (front) and Gingerbread (front + ridge + sides) appear as
+// ordinary line items in "What's Included"; this just tells SelectionContext
+// which line items form the either/or group so picking one deselects the
+// other. `recommendedItemId` is the staff pick — the one selected by default
+// (and the only one bundled into the A/B/C package tiers).
+export type PortalRoofline = {
+  itemIds: string[];          // the mutually-exclusive roofline line-item ids (1 or 2)
+  recommendedItemId: string;  // the default-selected one (staff's rooflineChoice)
+};
+
 // Walkthrough video recorded by Naldo explaining this specific quote.
 // Sits below the hero on every portal version to increase close rate.
 // Two hosting modes so Naldo can use whichever is easiest today:
@@ -138,6 +153,10 @@ export type PortalQuote = {
   video?: PortalVideo;  // optional — section hides entirely when absent
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
+  // The mutually-exclusive roofline choice (#17 Phase 2). Present only for
+  // quotes priced by the Phase-1 engine; undefined for legacy rows (their
+  // roofline stays a normal toggleable line item). See PortalRoofline.
+  roofline?: PortalRoofline;
   // Per-job charges (rush/takedown/tax) so the custom "Build Your Own"
   // total is priced identically to the A/B/C tiers. See PortalCharges.
   charges: PortalCharges;

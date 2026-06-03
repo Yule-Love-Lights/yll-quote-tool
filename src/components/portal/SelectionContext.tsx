@@ -21,6 +21,7 @@ import type {
   PortalCharges,
   PortalPackage,
   PortalLineItem,
+  PortalRoofline,
   SelectionPrice,
 } from './types';
 import { sumSelectedItems } from './format';
@@ -71,6 +72,10 @@ export function useSelection(): SelectionContextValue {
 export type SelectionProviderProps = {
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
+  // The mutually-exclusive roofline group (#17 Phase 2): the line-item ids for
+  // Santa's + Gingerbread. Selecting one deselects the other. Undefined for
+  // legacy quotes (the single roofline is then a plain toggle).
+  roofline?: PortalRoofline;
   // Per-job charges (rush/takedown/tax) used to price every selection
   // (tiers and custom) consistently.
   charges: PortalCharges;
@@ -84,6 +89,7 @@ export type SelectionProviderProps = {
 export function SelectionProvider({
   packages,
   lineItems,
+  roofline,
   charges,
   minimumOrderSubtotal,
   initialPackageId = 'B',
@@ -95,6 +101,14 @@ export function SelectionProvider({
     lineItems.forEach((li) => m.set(li.id, li.price));
     return m;
   }, [lineItems]);
+
+  // The either/or roofline group. Selecting one roofline option removes the
+  // others, so the customer can only ever have one (never both). Empty for
+  // legacy quotes.
+  const rooflineGroup = useMemo(
+    () => new Set(roofline?.itemIds ?? []),
+    [roofline],
+  );
 
   const packagesById = useMemo(() => {
     const m = new Map<PackageId, PortalPackage>();
@@ -134,13 +148,22 @@ export function SelectionProvider({
   const toggleItem = useCallback((itemId: string) => {
     setSelectedItemIds((prev) => {
       const next = new Set(prev);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        // Roofline is mutually exclusive: picking Santa's OR Gingerbread
+        // removes the other (you can never have both). Removing one is just a
+        // normal toggle-off, so this only fires when ADDING.
+        if (rooflineGroup.has(itemId)) {
+          for (const sibling of rooflineGroup) next.delete(sibling);
+        }
+        next.add(itemId);
+      }
       return next;
     });
     // Any manual item toggle flips selection to Custom.
     setPackageId('D');
-  }, []);
+  }, [rooflineGroup]);
 
   const isItemSelected = useCallback(
     (itemId: string) => selectedItemIds.has(itemId),

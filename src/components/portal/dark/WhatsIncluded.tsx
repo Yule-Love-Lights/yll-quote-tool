@@ -115,7 +115,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
             Your {activeName} — line by line.
           </h2>
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
-            Toggle anything off to remove it. We&apos;ll switch your package to &ldquo;Build Your Own&rdquo; and update your total automatically.
+            Toggle anything off to remove it and we&apos;ll update your total automatically.
           </p>
           <p className="mt-3 text-[13px] text-[#7B7361]">Prices shown are before tax.</p>
         </div>

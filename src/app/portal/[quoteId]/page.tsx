@@ -107,6 +107,7 @@ export default async function PortalPage({
       <SelectionProvider
         packages={quote.packages}
         lineItems={quote.lineItems}
+        roofline={quote.roofline}
         charges={quote.charges}
         minimumOrderSubtotal={quote.minimumOrderSubtotal}
         initialPackageId={initialPackageId}
