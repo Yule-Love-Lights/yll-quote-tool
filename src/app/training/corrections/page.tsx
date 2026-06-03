@@ -123,8 +123,8 @@ export default function CorrectionsListPage() {
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-gray-500">{fmtDate(c.created_at)}</div>
                     <div className="text-sm text-gray-900 mt-0.5 flex gap-3 flex-wrap">
-                      <span>Gutter <strong>{c.corrected_santas_footage}ft</strong> ({c.corrected_santas_difficulty})</span>
-                      <span>Ridge <strong>{c.corrected_gingerbread_footage}ft</strong> ({c.corrected_gingerbread_difficulty})</span>
+                      <span>Front <strong>{c.corrected_santas_footage}ft</strong> ({c.corrected_santas_difficulty})</span>
+                      <span>Ridge+Sides <strong>{c.corrected_gingerbread_footage}ft</strong> ({c.corrected_gingerbread_difficulty})</span>
                       {(c.corrected_winter_wonderland_footage ?? 0) > 0 && (
                         <span>C9 <strong>{c.corrected_winter_wonderland_footage}ft</strong></span>
                       )}
@@ -159,11 +159,11 @@ export default function CorrectionsListPage() {
                           />
                         </div>
                         <div className="text-xs space-y-2">
-                          <Section label="Santa's Roofline (gutter)">
+                          <Section label="Santa's Roofline (front gutter)">
                             <div>{detail.corrected_santas_footage} ft · {detail.corrected_santas_difficulty}</div>
                             <LineList lines={detail.corrected_santas_lines} />
                           </Section>
-                          <Section label="Gingerbread Ridge">
+                          <Section label="Gingerbread — Ridge + Sides">
                             <div>{detail.corrected_gingerbread_footage} ft · {detail.corrected_gingerbread_difficulty}</div>
                             <LineList lines={detail.corrected_gingerbread_lines} />
                           </Section>

@@ -1263,7 +1263,7 @@ export default function NewQuotePage() {
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
-              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate gutterline, ridgeline, bushes, trees, and columns.
+              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.
             </p>
 
             {/* Google lookup */}
@@ -1452,10 +1452,10 @@ export default function NewQuotePage() {
               {satellitePreview && (
                 <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
                   <div className={`rounded border p-2 ${measurementSource === 'street' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
-                    <p className="font-semibold text-gray-700">Street: gutter {streetFootage.santas ?? '—'}ft · ridge {streetFootage.ginger ?? '—'}ft</p>
+                    <p className="font-semibold text-gray-700">Street: front {streetFootage.santas ?? '—'}ft · ridge+sides {streetFootage.ginger ?? '—'}ft</p>
                   </div>
                   <div className={`rounded border p-2 ${measurementSource === 'satellite' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
-                    <p className="font-semibold text-gray-700">Satellite: gutter {satFootage.santas ?? '—'}ft · ridge {satFootage.ginger ?? '—'}ft</p>
+                    <p className="font-semibold text-gray-700">Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft</p>
                   </div>
                 </div>
               )}
@@ -1741,7 +1741,7 @@ export default function NewQuotePage() {
               {addMode ? (
                 <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                   <span className="text-sm text-yellow-900">
-                    Adding new {addMode === 'santas' ? 'gutterline (red)' : addMode === 'gingerbread' ? 'ridgeline (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
+                    Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                   </span>
                   <div className="flex gap-2">
                     <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
@@ -1758,11 +1758,11 @@ export default function NewQuotePage() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
                     className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
-                    + Add Gutterline
+                    + Add Front Gutterline
                   </button>
                   <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
                     className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
-                    + Add Ridgeline
+                    + Add Ridge / Side
                   </button>
                   <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
                     className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
@@ -1771,13 +1771,13 @@ export default function NewQuotePage() {
                 </div>
               )}
 
-              {/* Per-line edit panels — gutterline / ridgeline / C9s.
+              {/* Per-line edit panels — front gutterline / ridge+sides / C9s.
                   Each shows live footage + editable segment labels + delete. */}
               <div className="mt-4 grid grid-cols-3 gap-4">
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <span className="w-4 h-1 bg-red-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Gutterline — {form.santasFootage}ft</span>
+                    <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
                   </div>
                   {activeSantasLines.length > 0 ? (
                     <ul className="space-y-1 ml-6">
@@ -1801,7 +1801,7 @@ export default function NewQuotePage() {
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <span className="w-4 h-1 bg-blue-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Ridgeline — {form.gingerbreadFootage}ft</span>
+                    <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
                   </div>
                   {activeGingerbreadLines.length > 0 ? (
                     <ul className="space-y-1 ml-6">
@@ -2112,9 +2112,9 @@ export default function NewQuotePage() {
             </Section>
           )}
 
-          {/* ── Santa's — Gutterline ── */}
+          {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
-            <Section title="Santa's — Gutterline (C9 Bulbs)">
+            <Section title="Santa's — Front Gutterline (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2139,7 +2139,7 @@ export default function NewQuotePage() {
             </Section>
           </div>
 
-          {/* ── Gingerbread — Ridgeline ── */}
+          {/* ── Gingerbread — Ridge + Sides ── */}
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>

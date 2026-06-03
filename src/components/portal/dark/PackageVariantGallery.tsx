@@ -19,7 +19,7 @@ type Variant = {
 
 const VARIANTS: Variant[] = [
   { key: 'santas',    label: "Santa's Roofline",   blurb: 'Warm-white C9s along every front gutter.' },
-  { key: 'ridge',     label: 'Gingerbread Ridge',  blurb: 'C9s along the roof peak — added on top of Santa’s for a full crown.' },
+  { key: 'ridge',     label: 'Gingerbread',  blurb: 'C9s along the roof peak and side gutters — added on top of Santa’s for a full wrap.' },
   { key: 'minis',     label: 'Mini Lights',        blurb: 'Hand-wrapped warm-white minis on bushes, trees, and columns.' },
   { key: 'wreaths',   label: 'Wreaths',            blurb: 'Lit noble pine wreaths on doors, peaks, and porticos.' },
   { key: 'spritzers', label: 'Spritzers',          blurb: 'Metallic starburst stakes lit warm-white in your garden beds.' },
