@@ -6,26 +6,14 @@ Claude Code keeps **per-project memory** as Markdown files on the developer's ma
 
 This mirrors the convention already used in the sibling **`design-tool`** repo (which snapshots its memory into `docs/context/` the same way).
 
-## The continuity system (how sessions hand off)
-
-Long sessions run out of context, so work spans many fresh sessions across two machines (Jason + Naldo). Two files make a cold start resumable:
-
-- **`session_log.md`** — append-only, newest-on-top log. Each entry = what shipped, ending state, and the single most important NEXT step. Read the latest entry first.
-- **`project_quote_tool.md`** — "current state at a glance," **Decisions confirmed (don't re-ask)**, run commands, gotchas, and the live QA backlog. Read this second.
-
-**`docs/context/` is the canonical, shared copy.** The two machines' *local* Claude memories don't sync with each other, so this in-repo folder is the source of truth that travels via GitHub. Local memory is *seeded from* it at session start and *snapshotted back into* it at session close.
-
-- **Start of session:** read `MEMORY.md` → latest `session_log.md` entry → `project_quote_tool.md`; if local memory is empty/stale, copy these files into the local memory dir; confirm the dev server runs; then don't re-ask anything under "Decisions confirmed."
-- **Close of session (~90% context):** finish the current `session_log.md` entry, make `project_quote_tool.md` accurate, copy the local `memory/*.md` back into `docs/context/`, then have Jason commit + push.
-
 ## Snapshot metadata
 
 - **Snapshot date:** 2026-05-29
 - **Source machine:** Naldo's PC
-- **Files:** `MEMORY.md` (index), `session_log.md` + `project_quote_tool.md` (continuity — added Session 1, 2026-06-01), `user_jason.md`, `user_naldo.md`, `project_yll_render_engine.md`, `project_secrets_access.md`, and the two `feedback_*` files.
+- **Files included:** `MEMORY.md` (index), `project_yll_render_engine.md`, `user_naldo.md`, `feedback_claude_code_env_override.md`, `feedback_npx_skills_add_flags.md`
 - **Redaction:** No secrets (API keys/tokens) were present in any memory file. Two files were **omitted** — `project_yll_goals.md` (sensitive business financials + belongs to a separate project) and `project_naldos_brain.md` (separate WhatsApp project, out of scope). See `MEMORY.md` for details.
 
-> ⚠️ **Keep this in sync.** It began as a one-time snapshot (2026-05-29) but is now an **actively maintained** continuity copy. Per the close-of-session protocol, re-snapshot every session (copy local `memory/*.md` → here, then commit + push) so it never drifts from the live memory.
+> ⚠️ **This is a snapshot, not a live link.** It reflects the memory as of the date above and will drift as work continues. Re-snapshot before the next handoff (copy the live `memory/*.md` files back into this folder, re-scrub, and re-commit).
 
 ## Where the live copy lives
 
