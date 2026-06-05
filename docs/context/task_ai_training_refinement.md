@@ -10,7 +10,7 @@ metadata:
 # AI training/correction system — refinement task (SCOPING / PLANNING)
 
 > **Task #8 in [[task_ledger.md]]** (companion: #9 = manual satellite upload on `/quote/new`).
-> **Status: PLANNING ONLY.** Jason wants to stay in "list the issues + plan" mode and is still adding feedback; do NOT start building until he says go. This doc is a running list — keep appending as more comes up. Started Session 3 (2026-06-03), Jason driving (Naldo originally built this system; Jason is learning it).
+> **Status: PLANNING DONE (S3, 2026-06-05).** Jason confirmed he's listed everything; issues + direction captured. Build deferred — feeds #27 (integration) Phase 3 auto-design. Detailed design happens at build time. Open items carried to build: `front_takedown` photo meaning (ask Naldo), fine-tuning research (later). Jason wants to stay in "list the issues + plan" mode and is still adding feedback; do NOT start building until he says go. This doc is a running list — keep appending as more comes up. Started Session 3 (2026-06-03), Jason driving (Naldo originally built this system; Jason is learning it).
 
 ## Why this task exists
 Phase 4 (#17) fixed the roofline classification in the prompt, but validating it exposed how little the "training" system actually does. Jason wants to understand it fully, then refine it so the tool is solid for years. Core realization driving everything:
