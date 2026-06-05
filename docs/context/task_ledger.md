@@ -27,7 +27,7 @@ metadata:
 ## 🟡 In planning — NOT building yet (current)
 | # | Task | Size | Status | Old # |
 |---|------|------|--------|-------|
-| 8 | AI training/correction system refinement → detail in [[task_ai_training_refinement]] | L | planning | #28 |
+| 8 | AI training/correction system refinement → detail in [[task_ai_training_refinement]] | L | **planning DONE (S3)** — issues + direction captured; build deferred (feeds #27 Phase 3) | #28 |
 | 9 | Manual satellite upload on `/quote/new` (front + satellite split) — companion to #8 | M | planning | #28a |
 | 27 | **Design-tool integration (Path B)** — absorb the Konva design editor into this app; Supabase-stored editable `scene`; **line-items ⇄ scene-items linked both ways**; live design **replaces the static portal render**; phased (manual embedded editor → portal live-design + toggle→scene filter → AI auto-design). Full plan: [[project_integration]]; design-tool internals: `docs/design-tool-context/`. ⮕ don't keep investing in the Gemini portal-hero render (slated for replacement). | L (epic) | groundwork only — NOT building | — |
 
@@ -41,6 +41,7 @@ metadata:
 | 14 | Corner-house default → front-door view | M | feasibility TBD | #20 |
 | 15 | Move Street View camera along the road | M | feasibility TBD | #21 |
 | 25 | **Satellite-default pricing + decouple "Pricing uses" from the view toggle** (fix the sticky reset bug). Satellite is more accurate (top-down, exact zoom-derived scale, no perspective), so default pricing to satellite when available, sticking until staff picks street or enters manual. Today a `useEffect` forces `measurementSource = viewMode` on every view switch (quote/new ~L191-193), clobbering the explicit pick; default is 'street'. Relates to #9. | S–M | quote/new (new, raised S3) | — |
+| 28 | **Add a standalone-`bow` line-item category to the pricing engine** — a bow sold on its own (rare; or on garland) is a real Christmas product the quote can't price today. Surfaced by the design-tool integration data contract (#27). Bows inside wreaths / on garland are already priced via tier; only a standalone bow needs this. | S | pricing engine (new, raised S3) | — |
 | 26 | **Scroll-wheel zoom + pan inside the measurement image box** (the street/satellite editing area). Today you can only ctrl-zoom the whole browser; staff want to scroll-zoom + pan just the image for precise line/decoration placement. NOTE: that box is an `<img>` + **SVG overlay** + draggable point-handles (NOT an HTML `<canvas>`), so zoom must transform image+overlay together and coexist with point-dragging (wheel=zoom, drag handle=edit point, drag empty=pan). Applies to quote/new + training/new. | M | quote/new + training/new (new, raised S3) | — |
 
 ## ⏸️ Pending / needs Naldo (blocked — not active dev)
