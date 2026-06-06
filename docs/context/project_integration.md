@@ -127,5 +127,28 @@ Also carried over (still agreed): **headless renderer deferrable** via `stage.to
 
 **Next artifact:** write the data-contract doc (the keystone) from the above; Phase 1 starts from it.
 
-## NOT doing yet
-No implementation. This is captured groundwork only. Do not start building the embedded editor, the export/render endpoint, the auto-design pipeline, or any Supabase migration until Jason says go.
+## Phase 1 — BUILDING (Session 4, 2026-06-05) · branch `jason/integration-phase1`
+Jason said GO on #27 Phase 1 (manual embedded editor + scene storage; NO price-linking [Phase 2], NO portal changes [Phase 2], NO AI [Phase 3]).
+
+**Decisions this session (Jason):**
+- **Design is INDEPENDENT** (own id; optional quote link set on "Calculate Quote") — so a design can be built BEFORE the quote is saved (his vision: pull Street View → photo into the editor → [later] AI auto-design → staff edit → links to the quote), and even with NO quote (future standalone design site). Amends data-contract §3.
+- **Port = copy the working editor over** (NOT a react-konva rewrite), structured for re-syncing → eventual **shared package** both apps install. The "freeze the editor after one copy" idea is **OFF** — the design tool keeps evolving in both places (Jason may host it standalone). For now: clean self-contained core + one small connector (storage adapter), so re-copying a design-tool update = overwrite core, leave the connector.
+- Jason **declined** the DB connection-string access for now (tired) → migrations applied by hand in the Supabase SQL editor.
+
+**✅ Shipped S4 (the backend half):** `designs` table + private bucket (applied); `src/lib/designs.ts`; routes `POST /api/designs` (create + seed photo), `GET|PUT /api/designs/[id]` (load / save scene + link quote), `POST /api/designs/[id]/photo`. Gates green; smoke-tested live end-to-end.
+
+**Design-tool AI reply (cross-assistant convergence on the shared core):**
+- Confirmed the storage-agnostic shared-core → shared-package direction. `client/src/api.ts` is canonical for the types; **vendor the TYPES + guards, drop their Fastify `fetch` client** (it goes away under Path B).
+- Proposed **`EditorStorage` adapter interface** (the single seam): `loadDesign(id)` · `saveScene(id, patch)` · `uploadPhoto(file)` · `listUploads/createUpload/deleteUpload` · `getColors()` · `getDefaults()`. Quote tool implements it over Supabase (my routes already map to it); design tool keeps the Fastify impl.
+- **`assets.ts`** hard-codes `/items/...` for the wreath/garland/bow PNGs → needs a **configurable asset base** (different URL per app).
+- Proposed **byte-identical `editor-core/`** folder (both repos): `types.ts · guards.ts · storage.ts` (adapter INTERFACE, no impl) `· colors.ts · assets.ts` (base-URL config) `· renderers/` (bulb, strand, wreath, bow, garland, spritzer, text, custom, pole, yardstick) `· engine.ts` (framework-neutral controller: scene state, selection, undo, mutations + clean API/events). App-specific (outside core): the adapter impl, asset hosting, and the **panels/shell** (React+Tailwind for us, vanilla for them).
+
+**⚠️ THE open decision for next session (shapes the whole editor port):**
+**How much UI lives in the shared core?**
+- **(A) Headless engine + app-native panels** — the design tool's *recommendation* and the true shared-package shape: share canvas/renderers/engine; each app builds its OWN sidebar/edit panels (React+Tailwind here). Cleaner + native look, but rebuilding all the panels = much more work.
+- **(B) Wrap the whole vanilla editor (panels included) in a React shell** — fast, low-risk, = the "copy it over" we already agreed; refine toward headless later. Design tool says this is the move-fast option.
+- **Claude's lean for Phase 1 = (B)** (ship the working editor fast via the `renderEditor → destroy()` seam + storage swap; graduate to the headless `editor-core` split as the shared-package work matures). NEEDS JASON'S CALL before the editor-port step.
+- Design tool suggested **co-authoring a tiny spec for the adapter interface + engine API** (like the data contract) to lock those two boundaries. Do this as the shared core firms up.
+
+## NOT doing yet (Phase 1 scope guard)
+Still OUT of Phase 1: price-linking/projection (Phase 2), portal live-design + toggle→scene filter (Phase 2), AI auto-design (Phase 3), headless `editor-core` refactor/shared package (later), custom-uploads library + editable palette + Settings page (deferred — use built-in defaults).

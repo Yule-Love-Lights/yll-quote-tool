@@ -29,7 +29,7 @@ metadata:
 |---|------|------|--------|-------|
 | 8 | AI training/correction system refinement → detail in [[task_ai_training_refinement]] | L | **planning DONE (S3)** — issues + direction captured; build deferred (feeds #27 Phase 3) | #28 |
 | 9 | Manual satellite upload on `/quote/new` (front + satellite split) — companion to #8 | M | planning | #28a |
-| 27 | **Design-tool integration (Path B)** — absorb the Konva design editor into this app; Supabase-stored editable `scene`; **line-items ⇄ scene-items linked both ways**; live design **replaces the static portal render**; phased (manual embedded editor → portal live-design + toggle→scene filter → AI auto-design). Full plan: [[project_integration]]; design-tool internals: `docs/design-tool-context/`. ⮕ don't keep investing in the Gemini portal-hero render (slated for replacement). | L (epic) | groundwork only — NOT building | — |
+| 27 | **Design-tool integration (Path B)** — absorb the Konva design editor into this app; Supabase-stored editable `scene`; **line-items ⇄ scene-items linked both ways**; live design **replaces the static portal render**; phased (manual embedded editor → portal live-design + toggle→scene filter → AI auto-design). Full plan: [[project_integration]]; design-tool internals: `docs/design-tool-context/`. ⮕ don't keep investing in the Gemini portal-hero render (slated for replacement). | L (epic) | **BUILDING (S4)** — Phase 1 BACKEND done (`designs` table+bucket, `src/lib/designs.ts`, API routes; smoke-tested); branch `jason/integration-phase1`. Next = editor-port half (resolve headless-vs-wrap decision first). | — |
 
 ## 🔜 Backlog — active dev (priority order)
 | # | Task | Size | Notes | Old # |

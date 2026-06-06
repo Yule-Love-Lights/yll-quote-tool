@@ -15,7 +15,29 @@ metadata:
 
 ---
 
-### Session 3 — Roofline Phase 2 + Phase 4 (built/merged) THEN a big planning block: #8 training-system + #27 design-tool integration (2026-06-05) · CURRENT
+### Session 4 — #27 Phase 1 (design-tool integration): `designs` storage + API BUILT; editor port planned (2026-06-05) · CURRENT
+**Picked up from:** Session 3 close-out — LOCKED data contract; roofline epic (#7/#17) merged (the Phase-1 prerequisite). A long plain-language clarification block with Jason (**non-dev — wants plain language, minimal jargon, less deep detail**), then BUILT the backend half of Phase 1.
+
+**Decisions confirmed with Jason this session:**
+- **Design is INDEPENDENT** — its own record/id with an OPTIONAL quote link, set when the operator clicks **"Calculate Quote"** (which is ALSO what saves a quote — there is **NO separate Save button**; verified in `quote/new/page.tsx`, button label "Calculate Quote" → POST `/api/quote` saves + returns id). Enables design-BEFORE-quote (Jason's vision: pull Street View → photo into editor → [Phase 3] AI auto-design → staff edit → link on Calculate) and a future **standalone no-quote design site**. Amends data-contract §3.
+- **Port = COPY the working editor** (Option 1 / "vendor"), structured as a self-contained core + ONE small storage connector → heading toward a **shared package** both apps install. "Freeze the editor after one copy" is **OFF**: the design tool keeps evolving in both places. Honest caveat told to Jason: a shared library updates on rebuild, not instantly/silently.
+- Jason **declined** the DB connection-string access (tired) → migrations applied by hand in the Supabase SQL editor. (Built then reverted a `pg` migration-runner helper; offer stands for a future session.)
+
+**✅ Shipped (branch `jason/integration-phase1`, off `master`) — the BACKEND half of Phase 1:**
+- **`designs` table + private `designs` Storage bucket** — migration `migrations/2026-06-05-designs.sql` + folded into `FULL-SCHEMA.sql`. Independent record: `quote_id` nullable (`on delete set null`); partial unique index = one design per LINKED quote, unlimited unlinked; `updated_at` trigger. **Jason applied the SQL** in the Supabase editor.
+- **`src/lib/designs.ts`** — create/getDesign(WithPhoto)/updateDesignScene/linkDesignToQuote/uploadDesignPhoto (sharp for dims) + signDesignPhoto; service-role client; scene kept OPAQUE (the full typed Scene arrives with the editor port).
+- **Routes** (mirror `/api/quotes` conventions) — `POST /api/designs` (create + optional photo seed + optional quote link), `GET|PUT /api/designs/[id]` (load / save scene and/or link quote), `POST /api/designs/[id]/photo` (replace photo, signed URL back).
+- **Smoke-tested live** end-to-end vs real Supabase (create→read→save-scene→photo→link→cleanup; bad input→400; deleted→404). **Gates green:** tsc clean, lint clean (8 pre-existing warnings, none new), 46 tests pass.
+
+**Cross-assistant (design-tool AI) convergence on the shared core:** confirmed storage-agnostic core → shared package; `client/src/api.ts` canonical for types (**vendor TYPES + guards, DROP the Fastify fetch client**); proposed an **`EditorStorage` adapter interface** (loadDesign/saveScene/uploadPhoto/uploads/getColors/getDefaults — my routes already map to it) + a **byte-identical `editor-core/` folder** (types · guards · storage-interface · colors · assets[base-url] · renderers/ · engine.ts) with the adapter impl + panels OUTSIDE the core; `assets.ts` needs a configurable asset base. Base-shape facts to honor: `points` = flat `number[]`, coords in photo-pixels, colors are IDs not hex, `WreathItem.withBow` missing⇒true, start clean with `items[]`. **Full detail + THE open decision in [[project_integration]].**
+
+**⚠️ NEXT (resume here) — the EDITOR PORT (Phase 1 second half).** FIRST resolve **THE open decision** (captured in [[project_integration]]): **(A) headless engine + React/Tailwind panels** (design-tool's rec; true shared-package shape; more work) vs **(B) wrap the whole vanilla editor in a React shell** (fast, low-risk, = the copy-it-over we agreed; **Claude's lean for Phase 1**). Then: add `konva`, vendor the editor core, swap storage to the new routes, port the CSS (`main.css` `.editor` block, scoped under a host class), copy `/items/*.png` → `public/`, add Google Fonts, mount a lazy `next/dynamic(ssr:false)` `<DesignEditor>` in `quote/new/page.tsx` (create the design when the Street View photo is pulled; autosave; link on "Calculate Quote"). The design-tool AI offered to co-author an adapter+engine spec (like the data contract).
+
+**Model/context:** Claude Opus (1M window). Session ended at Jason's call (tired) — backend committed + pushed to the branch; editor port next session.
+
+---
+
+### Session 3 — Roofline Phase 2 + Phase 4 (built/merged) THEN a big planning block: #8 training-system + #27 design-tool integration (2026-06-05)
 **Picked up from:** Session 2 close-out — #17 Phase 1+1b merged. Did Phase 2 (merged PR #13), then Phase 4 (merged PR #14), then spent the rest of the long session in PLANNING — the AI training system (#8) and the new design-tool integration (#27). Lots of small process/doc work; the task ledger was created + renumbered. (Note: this session spanned a couple of days; dates on the early Phase-2/4 notes may read 06-03, the session closed 06-05.)
 
 **Shipped (PR `jason/roofline-phase2`, branched off `master`):**

@@ -23,13 +23,15 @@ The quote tool is **Christmas-only today** (no permanent lights, bistro, or pole
   - *Sellable Christmas product the quote doesn't price YET:* **standalone `bow`** (rare; sold on its own or placed on garland). Renders + no line item for MVP; **follow-up = add a `bow` line-item category** to the pricing engine. (Bows inside wreaths / on garland are already priced via those items' `tier`/`withBow` — only a *standalone* bow needs the new category.)
 - **Robustness requirement:** "scene item with no mapped surface" is a **first-class graceful case** — it renders, just produces no line item. The projection MUST NOT assume every strand maps to a category. (Later UX call: whether the Christmas-quote editor hides the perm/bistro/pole tools — default = available but unmapped.)
 
-## 3. Storage (Supabase)
-`designs(id, quote_id FK → quotes, photo_path, photo_w, photo_h, scene jsonb, created_at, updated_at)`
-- One **active design per quote** (MVP); versioning later.
+## 3. Storage (Supabase) — AMENDED 2026-06-05 (S4): design is INDEPENDENT
+`designs(id, quote_id NULL → quotes ON DELETE SET NULL, photo_path, photo_w, photo_h, scene jsonb, created_at, updated_at)`
+- **A design is its OWN record** (own `id`) with an **OPTIONAL** quote link (`quote_id` nullable). It's created when the Street View photo is pulled — BEFORE a quote is saved — and the link is set when the operator clicks **"Calculate Quote"**. *(Supersedes the original "keyed to a quote" model; enables design-before-save AND the future standalone no-quote site — Jason's call, S4. Design-tool AI agreed.)*
+- **At most ONE design per LINKED quote** (partial unique index on `quote_id` WHERE NOT NULL); unlimited unlinked designs. Versioning later.
 - **No `px_per_foot` column** — scale already lives in `scene.yardsticks`.
 - `scene` jsonb = the design's existing `Scene` shape; core geometry read/written as-is.
-- `photo_path` + `CustomItem.imagePath` become **Supabase Storage** references (not local `/photos`).
+- `photo_path` + `CustomItem.imagePath` become **Supabase Storage** references — private `designs` bucket, served via service-role **signed URLs** (not local `/photos`).
 - Customer = the quote's HighLevel contact; the design tool's clients/projects hierarchy is dropped (Path B).
+- **✅ BUILT (S4):** table + bucket live; `src/lib/designs.ts` + routes `POST /api/designs`, `GET|PUT /api/designs/[id]`, `POST /api/designs/[id]/photo`. These map 1:1 to the design-tool's proposed `EditorStorage` adapter (loadDesign=GET, saveScene=PUT, uploadPhoto=POST photo). Smoke-tested green end-to-end.
 
 ## 4. The binding — ADDITIVE optional fields on SceneItem
 The scene jsonb is **not literally unchanged**: `SceneItem` gains additive *optional* fields (geometry untouched; the ported editor reads/writes core fields as-is):
