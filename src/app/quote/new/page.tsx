@@ -14,6 +14,10 @@ import type {
 } from '@/lib/pricing/pricingEngine';
 import type { CrmContact } from '@/lib/integrations/types';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
+import dynamic from 'next/dynamic';
+
+// The Konva design editor touches the DOM/canvas, so load it client-only.
+const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
 
 // ─── Shared CSS constants ────────────────────────────────────────────────────
 
@@ -153,6 +157,55 @@ export default function NewQuotePage() {
   const [originalAnalysis, setOriginalAnalysis] = useState<unknown>(null);
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [correctionSaved, setCorrectionSaved] = useState(false);
+
+  // ─── Embedded design editor (#27 Phase 1) ───────────────────────────────
+  // A design is its own record, created when the editor is first opened
+  // (seeded with the current photo). It links to the quote once the quote is
+  // saved (Calculate Quote). The Konva editor is a client-only dynamic import.
+  const [designId, setDesignId] = useState<string | null>(null);
+  const [designOpen, setDesignOpen] = useState(false);
+  const [designBusy, setDesignBusy] = useState(false);
+  const [designError, setDesignError] = useState<string | null>(null);
+
+  const openDesignEditor = async () => {
+    setDesignError(null);
+    if (designId) {
+      setDesignOpen(true);
+      return;
+    }
+    setDesignBusy(true);
+    try {
+      const res = await fetch('/api/designs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quoteId: savedQuoteId ?? undefined,
+          photoBase64: photoBase64 ?? undefined,
+          photoMediaType: photoMediaType ?? undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to create design');
+      const id: string | undefined = data?.design?.id;
+      if (!id) throw new Error('No design id returned');
+      setDesignId(id);
+      setDesignOpen(true);
+    } catch (err) {
+      setDesignError(err instanceof Error ? err.message : 'Failed to open the design editor');
+    } finally {
+      setDesignBusy(false);
+    }
+  };
+
+  // Link the design to the quote once the quote has been saved (best-effort).
+  useEffect(() => {
+    if (!savedQuoteId || !designId) return;
+    void fetch(`/api/designs/${designId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quoteId: savedQuoteId }),
+    }).catch(() => {});
+  }, [savedQuoteId, designId]);
 
   // Nighttime render preview — fires alongside Calculate Quote so the customer
   // sees the pricing first, then the artist's-rendering image loads underneath
@@ -2411,6 +2464,37 @@ export default function NewQuotePage() {
           </button>
 
         </form>
+
+        {/* ── Design — lights on the photo (#27 Phase 1) ── */}
+        <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
+                Design — lights on the photo
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Draw the install on the customer&apos;s photo. Use <span className="font-medium">Full screen</span> for room
+                to work. It saves automatically and attaches to this quote.
+              </p>
+            </div>
+            {!designOpen && (
+              <button
+                type="button"
+                onClick={openDesignEditor}
+                disabled={designBusy}
+                className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
+              >
+                {designBusy ? 'Opening…' : designId ? 'Show design editor' : 'Open the design editor'}
+              </button>
+            )}
+          </div>
+          {designError && <p className="text-sm text-red-600 mt-3">{designError}</p>}
+          {designOpen && designId && (
+            <div className="mt-4">
+              <DesignEditor designId={designId} onClose={() => setDesignOpen(false)} height={600} />
+            </div>
+          )}
+        </div>
 
         {/* Error */}
         {error && (
