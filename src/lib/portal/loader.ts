@@ -13,6 +13,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import type { PortalQuote } from '@/components/portal/types';
 import { quoteRowToPortalQuote, type QuoteRowForPortal } from './adapter';
 import { fetchPortalPhotos } from './photos';
+import { getDesignByQuote } from '@/lib/designs';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -56,7 +57,25 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     if (!data) return null;
 
     const photos = await fetchPortalPhotos(id, data.customer_address);
-    return quoteRowToPortalQuote({ row: data, photos });
+    const portal = quoteRowToPortalQuote({ row: data, photos });
+    // Attach the linked design (if any) so the hero can render it live (#27
+    // Phase 2). Best-effort: a design lookup failure never blocks the quote.
+    if (portal) {
+      try {
+        const design = await getDesignByQuote(id);
+        if (design) {
+          portal.design = {
+            scene: design.scene,
+            photoUrl: design.photoUrl,
+            photoW: design.photoW,
+            photoH: design.photoH,
+          };
+        }
+      } catch (err) {
+        console.error('[loadPortalQuote] design lookup failed:', err);
+      }
+    }
+    return portal;
   } catch (err) {
     console.error('[loadPortalQuote] unexpected error:', err);
     return null;
