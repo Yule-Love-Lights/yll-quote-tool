@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { getSupabaseServiceClient } from './supabase';
+import type { Scene } from './design/sceneTypes';
 
 // Server-side business logic for the design-tool integration (Path B, task #27
 // Phase 1). A "design" is one editable on-photo light layout. The `scene` is
@@ -11,14 +12,10 @@ import { getSupabaseServiceClient } from './supabase';
 // All access is via the service-role client: the `designs` Storage bucket is
 // private (no anon policies), so uploads + signed URLs require the service key.
 
-// Minimal structural view of the stored scene. The fully-typed Scene + item
-// union is vendored alongside the editor in a later step; the server only
-// needs to know it's an object holding two arrays.
-export type DesignScene = {
-  yardsticks: unknown[];
-  items: unknown[];
-  brightness?: number;
-};
+// The stored scene IS the design tool's Scene shape (vendored in
+// ./design/sceneTypes — types + guards + the contract's binding fields).
+// Kept as a `DesignScene` alias so the API routes' imports don't churn.
+export type DesignScene = Scene;
 
 export const EMPTY_SCENE: DesignScene = { yardsticks: [], items: [] };
 
