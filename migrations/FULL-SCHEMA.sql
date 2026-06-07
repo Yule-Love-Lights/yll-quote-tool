@@ -14,13 +14,16 @@
 --   3. training_houses   — confirmed real-install measurements (RLS disabled)
 --   4. reference_assets  — product close-ups for Claude few-shot (RLS disabled)
 --   5. renders           — one per generated image (RLS ENABLED + hardened)
+--   6. designs           — one editable on-photo light design (RLS disabled)
 -- Storage:
 --   renders bucket (+ object RLS: insert/update/delete, NO anon select)
+--   designs bucket (private; served via service-role signed URLs)
 --
--- Last refreshed: 2026-05-29 — folded in db/schema.sql (base tables) plus the
---   post-Apr quotes columns (integration/lifecycle/walkthrough video),
---   renders.variant, and the reference_assets table, so this file alone is a
---   complete rebuild.
+-- Last refreshed: 2026-06-05 — added the designs table + bucket (design-tool
+--   integration, task #27 Phase 1). Prior refresh 2026-05-29 folded in
+--   db/schema.sql (base tables) plus the post-Apr quotes columns
+--   (integration/lifecycle/walkthrough video), renders.variant, and the
+--   reference_assets table, so this file alone is a complete rebuild.
 -- =====================================================================
 
 
@@ -276,3 +279,53 @@ create policy "anon update renders bucket" on storage.objects
   for update using (bucket_id = 'renders') with check (bucket_id = 'renders');
 create policy "anon delete renders bucket" on storage.objects
   for delete using (bucket_id = 'renders');
+
+
+-- ---------------------------------------------------------------------
+-- 6. designs  (design-tool integration, Path B — task #27 Phase 1)
+--    One editable on-photo light design. The `scene` jsonb is the design
+--    tool's Scene shape (yardsticks + items + brightness). A design is an
+--    INDEPENDENT record with its own id and an OPTIONAL link to a quote, so it
+--    can exist before a quote is saved (the builder creates it when the Street
+--    View photo is pulled) and even with no quote at all (future standalone
+--    use). The quote link is set when the operator clicks "Calculate Quote".
+--    Reached via the service-role client (server routes), so RLS is disabled
+--    to match quotes.
+-- ---------------------------------------------------------------------
+create table if not exists designs (
+  id uuid primary key default gen_random_uuid(),
+  quote_id uuid references quotes(id) on delete set null,
+  photo_path text,                                          -- Storage path: {designId}/photo.<ext>
+  photo_w integer,
+  photo_h integer,
+  scene jsonb not null default '{"yardsticks":[],"items":[]}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table designs disable row level security;
+
+-- At most ONE design per quote (linked designs); unlimited UNLINKED designs
+-- (quote_id NULL — Postgres treats NULLs as distinct in the partial index).
+create unique index if not exists designs_quote_id_uniq
+  on designs (quote_id) where quote_id is not null;
+create index if not exists designs_created_at_idx on designs (created_at desc);
+
+create or replace function designs_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists designs_updated_at_trigger on designs;
+create trigger designs_updated_at_trigger
+  before update on designs
+  for each row execute function designs_set_updated_at();
+
+-- Storage bucket for design artifacts (base house photo + custom-item images).
+-- Private; reads go through service-role signed URLs (same pattern as renders).
+insert into storage.buckets (id, name, public)
+values ('designs', 'designs', false)
+on conflict (id) do nothing;

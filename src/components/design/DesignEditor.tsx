@@ -1,0 +1,134 @@
+'use client';
+
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import './design-editor.css';
+
+type Props = {
+  designId: string;
+  onClose?: () => void;
+  /** Embedded (collapsed) editor height in px. Full screen ignores this. */
+  height?: number;
+};
+
+const BAR_HEIGHT = 40; // px — the React control bar above the editor.
+
+// React shell around the vendored vanilla Konva editor (Option B). On mount it
+// dynamically imports the editor controller — so Konva (which touches the DOM)
+// never runs during SSR — calls renderEditor() against our host element, and
+// tears it down via the returned destroy() on unmount.
+//
+// A thin control bar adds a Full screen toggle (a narrow embedded box squishes
+// the editor's sidebar + canvas; full screen gives it the whole tab) and a
+// Close button. The host is given an EXPLICIT height (px when embedded, a
+// calc() when full screen) — not a flex/percentage height — so the editor's
+// `height:100%` grid always resolves to a real box and its ResizeObserver can
+// refit the canvas. The editor stays mounted across the toggle, so nothing is
+// lost; it simply refits to the new size.
+export default function DesignEditor({ designId, onClose, height = 600 }: Props) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    let destroy: (() => void) | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      const host = hostRef.current;
+      if (!host) return;
+      const { renderEditor } = await import('./editor-core/editor');
+      if (cancelled) return;
+      destroy = await renderEditor(host, designId, { embedded: true });
+      if (cancelled) {
+        destroy?.();
+        destroy = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      destroy?.();
+    };
+  }, [designId]);
+
+  // Stop the page behind from scrolling while full screen.
+  useEffect(() => {
+    if (!expanded) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [expanded]);
+
+  // Escape exits full screen (in addition to the button). Ignored while typing
+  // in an input/textarea so it doesn't fight text entry (e.g. editing a text
+  // item or a field), and only active while expanded.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      setExpanded(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
+  // The host just changed size (full-screen toggle) — nudge the editor to refit
+  // its canvas to the new box. The editor also has a ResizeObserver, but a
+  // window resize is a reliable, explicit trigger across environments. Fire
+  // after the layout settles: a double rAF (next-frame after reflow) plus a
+  // timeout fallback, since a single rAF can run before the reflow completes.
+  useEffect(() => {
+    const fire = () => window.dispatchEvent(new Event('resize'));
+    const raf = requestAnimationFrame(() => requestAnimationFrame(fire));
+    const timer = setTimeout(fire, 150);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [expanded]);
+
+  const wrapStyle: CSSProperties = expanded
+    ? { position: 'fixed', inset: 0, zIndex: 9999 }
+    : { position: 'relative' };
+
+  const wrapClass = expanded
+    ? 'overflow-hidden bg-[#0f1115]'
+    : 'overflow-hidden rounded-lg border border-[#2e3340] bg-[#0f1115]';
+
+  const hostHeight: CSSProperties['height'] = expanded ? `calc(100vh - ${BAR_HEIGHT}px)` : height;
+
+  const barBtn =
+    'rounded border border-[#2e3340] bg-[#242833] hover:bg-[#2e3340] text-[#e8ebf0] px-2.5 py-1 text-xs cursor-pointer';
+
+  return (
+    <div style={wrapStyle} className={wrapClass}>
+      <div
+        style={{ height: BAR_HEIGHT }}
+        className="flex items-center justify-between gap-2 px-3 border-b border-[#2e3340] bg-[#1a1d24]"
+      >
+        <span className="text-xs font-medium text-[#9aa3b2]">Design editor</span>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setExpanded((e) => !e)} className={barBtn}>
+            {expanded ? '✕ Exit full screen' : '⛶ Full screen'}
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={() => {
+                setExpanded(false);
+                onClose();
+              }}
+              className={barBtn}
+            >
+              Close
+            </button>
+          )}
+        </div>
+      </div>
+      <div ref={hostRef} className="yll-design-host" style={{ height: hostHeight, width: '100%' }} />
+    </div>
+  );
+}

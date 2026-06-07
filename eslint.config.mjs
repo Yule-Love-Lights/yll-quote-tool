@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored design-tool editor (a faithful copy kept in the design tool's
+    // own style for easy re-syncing — see src/components/design/editor-core).
+    // tsc still type-checks it; only ESLint's style rules are skipped.
+    "src/components/design/editor-core/**",
   ]),
 ]);
 
