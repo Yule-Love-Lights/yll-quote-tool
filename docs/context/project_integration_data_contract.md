@@ -79,5 +79,5 @@ Add a **mapped** scene item ⇒ line item appears (priced from the book); delete
 - **Winter Wonderland** = a name for **extra/custom C9 lights beyond the Santa's/Gingerbread roof packages** (the green "C9" lines), footage-priced. Model = `c9` strand + `surface:"winter-wonderland"`. (The *name* may be revisited with Naldo later — irrelevant to the contract.)
 - **Standalone bow** = a **sellable product** (rare; on its own or on garland), but the quote tool has **no bow line-item category today** → unmapped for MVP (renders, no line item). **Follow-up:** add a `bow` line-item category to the pricing engine (ledger task). Bows in wreaths / on garland are already priced via those items' `tier`/`withBow`.
 
-## NOT doing yet
-Spec only. No Supabase migration, no editor port, no projection code until Jason says go.
+## Build status (was "NOT doing yet")
+**Phase 1 SHIPPED (Session 4, merged PR #18):** the Supabase `designs` table + bucket, `src/lib/designs.ts`, the API routes (POST `/api/designs`, GET|PUT `/api/designs/[id]`, POST `/api/designs/[id]/photo` — map 1:1 to the `EditorStorage` adapter), and the embedded Konva editor (Option B). §3 amended (design = independent record + optional quote link). **Phase 2 IN PROGRESS** = portal live-design (Step 1 render → Step 2 toggle-filter → Step 3 projection). The **projection code** (scene→line-items) is still NOT built — that's Step 3, after the items model lands (Option-1+2 hybrid + the mini-light tool; see [[project_integration]]).

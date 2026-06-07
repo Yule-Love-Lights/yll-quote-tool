@@ -120,6 +120,7 @@ export default async function PortalPage({
           alt={heroAlt}
           packages={quote.packages}
           lineItemCount={quote.lineItems.length}
+          design={quote.design}
         />
 
         {/* 2. Walkthrough video — global default or per-quote override */}

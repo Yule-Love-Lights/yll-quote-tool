@@ -4,6 +4,8 @@
 // engine. When wiring real data later, write a thin adapter that maps
 // the quote/pricing domain types INTO these.
 
+import type { Scene } from '@/lib/design/sceneTypes';
+
 export type PackageId = 'A' | 'B' | 'C' | 'D';
 
 export type PortalPackage = {
@@ -135,6 +137,17 @@ export type SelectionPrice = {
   deposit: number;   // 50% of total, due today
 };
 
+// A saved on-photo light design linked to this quote (design-tool integration
+// #27 Phase 2). When present, the portal hero renders it live (read-only)
+// instead of the static render image. `scene` is the design tool's Scene;
+// `photoUrl` is a signed, time-limited URL to the design's base photo.
+export type PortalDesign = {
+  scene: Scene;
+  photoUrl: string | null;
+  photoW: number | null;
+  photoH: number | null;
+};
+
 export type PortalQuote = {
   id: string;
   customer: {
@@ -174,6 +187,10 @@ export type PortalQuote = {
   // its absence as the signal to 404 (prevents anyone from previewing
   // the celebration page before approval).
   approval?: PortalApproval;
+  // Linked on-photo light design (#27 Phase 2). When present, the hero renders
+  // it live instead of the static render image. Undefined for quotes with no
+  // design (they keep the current static-image behavior).
+  design?: PortalDesign;
 };
 
 export type PortalSelection = {

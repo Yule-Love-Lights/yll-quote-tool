@@ -149,3 +149,21 @@ Jason said GO on #27 Phase 1 (manual embedded editor + scene storage; NO price-l
 
 ## NOT doing yet (Phase 1 scope guard)
 Still OUT of Phase 1: price-linking/projection (Phase 2), portal live-design + toggle→scene filter (Phase 2), AI auto-design (Phase 3), headless `editor-core` refactor/shared package (later), custom-uploads library + editable palette + Settings page (deferred — use built-in defaults).
+
+## Phase 2 plan + Step-3 decisions (confirmed with Naldo, Session 4)
+**Phase 2 = the portal live-design**, built in 3 steps (smallest-risk first):
+- **Step 1 — Show the real design on the portal.** Render the linked design's scene on the customer portal hero, replacing the static placeholder/Gemini render. Pure rendering; no pricing/builder changes. **Jason said GO toward Step 1** (start when he says go). ⮕ NEXT.
+- **Step 2 — Toggles filter the picture.** Wire the "What's Included" toggles so toggling a line item hides/shows its scene item(s). Price already updates today; this makes the picture match.
+- **Step 3 — Design drives the items** (the items model below). Most powerful + most invasive; built after the model is settled (it now is).
+
+**Items model — DECIDED (Jason + Naldo): Option-1 + Option-2 HYBRID.**
+- **Standard items (roofline, mini-lights, wreaths, spritzers, garland) → driven by the DESIGN** (the master list). One source per item type ⇒ the double-count bug can't happen. The design item-buttons for these go away once Step 3 lands (you add them by drawing).
+- **PLUS a "custom / manual line item" feature (the Option-2 escape hatch)** — staff set name + price + description; it shows on the quote AND the portal but is NOT tied to the design. Covers the ~5% special/niche quotes. Build LATER (not needed for Steps 1–2); but design the line-item model to allow "a line item with no design item" from the start (mirror of the contract's "scene item with no line item" graceful case).
+- **Roofline** stays **measurement-driven** (footage × rate) — the ONE exception (design's own measurements are unreliable; design just shows it).
+- **Mini-lights** are design-driven but priced by a **staff-typed strand count × rate** (NOT length; hidden per-strand cost). Each bush/tree/column/railing = ONE instance = one priced unit + one portal line item + one toggle.
+
+**Mini-light editor tool — DECIDED = Approach B (place an area), enhanced** (a NEW editor item type; build in the SHARED editor → coordinate with the design-tool AI):
+- Place a **mini-light area** two ways: (a) **resizable box** (fast default), or (b) **draw/trace an enclosed shape** around a bush/column/railing outline (auto-closed on finish, so the user never has to seal it perfectly). The area fills with single mini-lights.
+- **Density** control (slider/buttons) = **VISUAL ONLY** (sparse↔packed); does NOT affect price. Price = the staff-typed **strand count**.
+- Flow: place area → set density (looks) → type strand count (price) → it's one bush/column/etc.
+- **Railings — DECIDED (Jason):** railings will **NOT** use box/shape (they're linear, not an area). They still use mini-lights, so they need a **GROUPING mechanism** — draw the strand coverage, select it, group as one "railing" unit (a strand count + one line item + one toggle). So minis have BOTH: the **place-an-area tool** (box/shape) for bushes/trees/columns AND a **group-the-drawn-strands** mechanism for railings (and any hand-drawn coverage). Both produce the same thing: one instance = one priced unit = one portal toggle.

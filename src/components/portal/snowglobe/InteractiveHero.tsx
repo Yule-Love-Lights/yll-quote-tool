@@ -22,10 +22,14 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import { PlayCircle, MapPin } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { PlayCircle, MapPin, Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
-import type { PortalPackage, PackageId } from '../types';
+import type { PortalPackage, PackageId, PortalDesign } from '../types';
+
+// The live design render uses Konva — load it client-side only (no SSR).
+const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
 export type InteractiveHeroProps = {
   firstName: string;
@@ -34,6 +38,9 @@ export type InteractiveHeroProps = {
   alt: string;
   packages: PortalPackage[];
   lineItemCount: number; // total items (for "D" brightness scaling)
+  // Linked design (#27 Phase 2). When present, the hero renders it live
+  // instead of the static `afterUrl` image, with a daytime/lit toggle.
+  design?: PortalDesign;
 };
 
 export function InteractiveHero({
@@ -43,6 +50,7 @@ export function InteractiveHero({
   alt,
   packages,
   lineItemCount,
+  design,
 }: InteractiveHeroProps) {
   const {
     packageId,
@@ -52,6 +60,8 @@ export function InteractiveHero({
     selectedItemIds,
   } = useSelection();
   const [ready, setReady] = useState(false);
+  // Daytime ⇄ lit-design toggle (only shown when a design with a photo exists).
+  const [showBefore, setShowBefore] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   const prevId = useRef<PackageId>(packageId);
 
@@ -93,23 +103,45 @@ export function InteractiveHero({
       aria-labelledby="portal-snow-hero-heading"
       className="portal-snow-stage"
     >
-      {/* Photo layer */}
-      <Image
-        src={afterUrl}
-        alt={alt}
-        fill
-        priority
-        sizes="100vw"
-        quality={85}
-        className="portal-snow-stage-photo"
-        data-level={packageId}
-        data-ready={ready ? 'true' : 'false'}
-        style={
-          dBrightness !== undefined
-            ? ({ ['--brightness' as string]: dBrightness.toString() } as React.CSSProperties)
-            : undefined
-        }
-      />
+      {/* Photo layer — the live design when one is linked, else the static render */}
+      {design ? (
+        showBefore && design.photoUrl ? (
+          // Before: the plain daytime photo (the design's base image).
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={design.photoUrl}
+            alt={`${alt} — before installation, daytime`}
+            className="portal-snow-stage-photo absolute inset-0 w-full h-full object-cover"
+            data-ready={ready ? 'true' : 'false'}
+          />
+        ) : (
+          // After: the live, lit design rendered on the photo.
+          <DesignCanvas
+            scene={design.scene}
+            photoUrl={design.photoUrl}
+            photoW={design.photoW}
+            photoH={design.photoH}
+            className="portal-snow-stage-photo absolute inset-0"
+          />
+        )
+      ) : (
+        <Image
+          src={afterUrl}
+          alt={alt}
+          fill
+          priority
+          sizes="100vw"
+          quality={85}
+          className="portal-snow-stage-photo"
+          data-level={packageId}
+          data-ready={ready ? 'true' : 'false'}
+          style={
+            dBrightness !== undefined
+              ? ({ ['--brightness' as string]: dBrightness.toString() } as React.CSSProperties)
+              : undefined
+          }
+        />
+      )}
 
       {/* Warm amber bloom that scales with package level */}
       <div
@@ -133,14 +165,27 @@ export function InteractiveHero({
             <MapPin className="w-3.5 h-3.5 text-[#FFB744]" aria-hidden />
             {address.split(',').slice(-2, -1)[0]?.trim() ?? 'Long Island'}, NY
           </p>
-          <button
-            type="button"
-            onClick={scrollToVideo}
-            className="inline-flex items-center gap-1.5 text-[12px] md:text-[13px] font-semibold text-[#F4ECD8]/85 hover:text-[#FFB744] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm px-2 py-1"
-          >
-            <PlayCircle className="w-4 h-4" aria-hidden />
-            Watch walkthrough
-          </button>
+          <div className="flex items-center gap-3 md:gap-4">
+            {design && design.photoUrl && (
+              <button
+                type="button"
+                onClick={() => setShowBefore((v) => !v)}
+                aria-pressed={showBefore}
+                className="inline-flex items-center gap-1.5 text-[12px] md:text-[13px] font-semibold text-[#F4ECD8]/85 hover:text-[#FFB744] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm px-2 py-1"
+              >
+                <Sun className="w-4 h-4" aria-hidden />
+                {showBefore ? 'See the lights' : 'See it in daylight'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={scrollToVideo}
+              className="inline-flex items-center gap-1.5 text-[12px] md:text-[13px] font-semibold text-[#F4ECD8]/85 hover:text-[#FFB744] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm px-2 py-1"
+            >
+              <PlayCircle className="w-4 h-4" aria-hidden />
+              Watch walkthrough
+            </button>
+          </div>
         </div>
       </div>
 
