@@ -11,6 +11,8 @@ import type {
   BowItem,
   TextItem,
   Surface,
+  MiniAreaItem,
+  MiniGroupItem,
 } from './sceneTypes';
 
 // ── Minimal valid item builders (only the fields the projection reads matter;
@@ -49,6 +51,12 @@ function garland(over: Partial<GarlandItem> = {}): GarlandItem {
 }
 function spritzer(over: Partial<SpritzerItem> = {}): SpritzerItem {
   return { id: nextId(), yardstickId: null, kind: 'spritzer', x: 0, y: 0, sizeIn: 48, colorPattern: ['warm'], ...over };
+}
+function miniArea(over: Partial<MiniAreaItem> = {}): MiniAreaItem {
+  return { id: nextId(), yardstickId: null, kind: 'miniArea', shape: 'box', x: 0, y: 0, width: 50, height: 50, ...over };
+}
+function miniGroup(over: Partial<MiniGroupItem> = {}): MiniGroupItem {
+  return { id: nextId(), yardstickId: null, kind: 'miniGroup', memberIds: [], ...over };
 }
 function bow(over: Partial<BowItem> = {}): BowItem {
   return { id: nextId(), yardstickId: null, kind: 'bow', x: 0, y: 0, sizeIn: 24, ...over };
@@ -277,6 +285,58 @@ describe('applyProjectionToInputs — design overrides per-unit, else falls back
   it('returns inputs UNCHANGED for an empty scene', () => {
     const inputs = baseInputs();
     expect(applyProjectionToInputs(inputs, scene([]))).toBe(inputs);
+  });
+});
+
+describe('projectScene — A2 mini-light areas + grouped railings', () => {
+  it('projects a miniArea (bush) as one mini unit, hideable by its own id', () => {
+    const p = projectScene(scene([miniArea({ id: 'a1', surface: 'bush', wrapStyle: 'canopy', stringCount: 4 })]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 4 }]);
+    expect(p.items[0]).toEqual({ id: 'mini-a1', category: 'mini', sceneItemIds: ['a1'], input: { type: 'bush', wrapStyle: 'canopy', stringCount: 4 } });
+  });
+
+  it('miniArea defaults wrapStyle→canopy, stringCount→1', () => {
+    const p = projectScene(scene([miniArea({ surface: 'tree' })]));
+    expect(p.miniLightItems).toEqual([{ type: 'tree', wrapStyle: 'canopy', stringCount: 1 }]);
+  });
+
+  it('miniArea without a surface tag is not projected', () => {
+    const p = projectScene(scene([miniArea({})]));
+    expect(p.items).toEqual([]);
+  });
+
+  it('projects a miniGroup as one mini unit; sceneItemIds = the member strands', () => {
+    const p = projectScene(scene([miniGroup({ id: 'g1', surface: 'bush', stringCount: 3, memberIds: ['s1', 's2', 's3'] })]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }]);
+    expect(p.items[0].sceneItemIds).toEqual(['s1', 's2', 's3']);
+    expect(p.items[0].id).toBe('mini-g1');
+  });
+
+  it('miniGroup with no members falls back to its own id', () => {
+    const p = projectScene(scene([miniGroup({ id: 'g0', surface: 'bush', memberIds: [] })]));
+    expect(p.items[0].sceneItemIds).toEqual(['g0']);
+  });
+
+  it('SKIPS a grouped strand (priced via its group — no double count)', () => {
+    const p = projectScene(scene([
+      strand({ id: 's1', surface: 'bush', stringCount: 1, groupId: 'g1' }),
+      strand({ id: 's2', surface: 'bush', stringCount: 1, groupId: 'g1' }),
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 5, memberIds: ['s1', 's2'] }),
+    ]));
+    // Only the group prices (the two grouped strands are skipped).
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 5 }]);
+    expect(p.items.map((i) => i.id)).toEqual(['mini-g1']);
+  });
+
+  it('counts strand-wrap + area + group as exactly one unit each', () => {
+    const p = projectScene(scene([
+      strand({ id: 'b1', surface: 'bush', stringCount: 1 }),       // ungrouped wrap → 1
+      miniArea({ id: 'a1', surface: 'bush', stringCount: 2 }),     // area → 1
+      strand({ id: 'm1', surface: 'bush', groupId: 'g1' }),        // grouped → skip
+      miniGroup({ id: 'g1', surface: 'bush', memberIds: ['m1'] }), // group → 1
+    ]));
+    expect(p.miniLightItems).toHaveLength(3);
+    expect(p.items.map((i) => i.id)).toEqual(['mini-b1', 'mini-a1', 'mini-g1']);
   });
 });
 

@@ -29,8 +29,8 @@
 // refines data-contract §5's "grouped by size/tier" wording, which predates the
 // "live from design" decision.)
 
-import type { Scene } from './sceneTypes';
-import { isStrand, isWreath, isGarland, isSpritzer } from './sceneTypes';
+import type { Scene, MiniBilling } from './sceneTypes';
+import { isStrand, isWreath, isGarland, isSpritzer, isMiniArea, isMiniGroup } from './sceneTypes';
 import type {
   MiniLightItem,
   Spritzer,
@@ -76,6 +76,16 @@ function isIncluded(item: { included?: boolean }): boolean {
   return item.included !== false; // default true
 }
 
+// One priced mini unit, shared across all three authoring paths (strand wrap,
+// area fill, grouped railing) so they price identically (#27 A2).
+function miniInput(type: 'bush' | 'tree' | 'column', billing: MiniBilling): MiniLightItem {
+  return {
+    type,
+    wrapStyle: billing.wrapStyle ?? 'canopy',
+    stringCount: Math.max(1, Math.round(billing.stringCount ?? 1)),
+  };
+}
+
 export function projectScene(scene: Scene): Projection {
   const items: ProjectedLineItem[] = [];
   const sceneItems = Array.isArray(scene?.items) ? scene.items : [];
@@ -84,18 +94,35 @@ export function projectScene(scene: Scene): Projection {
     if (!isIncluded(item)) continue;
 
     if (isStrand(item)) {
+      // A grouped strand (a railing member) is priced via its MiniGroupItem —
+      // skip it here so the unit isn't double-counted (#27 A2).
+      if (item.groupId) continue;
       // Strands disambiguate by `surface`: bush/tree/column = a mini-light wrap
       // (projected); santas-roofline/gingerbread/winter-wonderland = roofline
       // (measurement-driven, NOT projected); no surface = unmapped.
       const s = item.surface;
       if (s === 'bush' || s === 'tree' || s === 'column') {
-        const stringCount = Math.max(1, Math.round(item.stringCount ?? 1));
-        items.push({
-          id: `mini-${item.id}`,
-          category: 'mini',
-          sceneItemIds: [item.id],
-          input: { type: s, wrapStyle: item.wrapStyle ?? 'canopy', stringCount },
-        });
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
+      }
+      continue;
+    }
+
+    // A2: a mini-light AREA fill → one mini unit (hides as its own item).
+    if (isMiniArea(item)) {
+      const s = item.surface;
+      if (s === 'bush' || s === 'tree' || s === 'column') {
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
+      }
+      continue;
+    }
+
+    // A2: a grouped railing → one mini unit. The members are what render, so the
+    // portal hides/shows them as a unit (sceneItemIds = the member ids).
+    if (isMiniGroup(item)) {
+      const s = item.surface;
+      if (s === 'bush' || s === 'tree' || s === 'column') {
+        const sceneItemIds = item.memberIds.length > 0 ? [...item.memberIds] : [item.id];
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds, input: miniInput(s, item) });
       }
       continue;
     }
