@@ -7,8 +7,16 @@ metadata:
   originSessionId: e4aa4be2-5f3b-45ef-ba10-c5884f1b5b20
 ---
 
-# Integration Data Contract — line-item ⇄ scene-item linkage (v0.2, BUILD-READY)
+# Integration Data Contract — line-item ⇄ scene-item linkage (v0.4, BUILDING)
 
+> **v0.4 AMENDMENT (S5, 2026-06-10):** A2 mini-light authoring. Two NEW scene representations, each projecting to ONE `MiniLightItem` (per-instance; sizing visual-only — same model as A1 mini strands). Locked member-for-member with the design-tool AI:
+> - **`MiniAreaItem`** (kind `miniArea`) — a box or traced polygon that fills with single mini-lights at a 0–1 **visual** `density` (NOT a count). Billed via `surface` (ItemBase) + `MiniBilling`. Bushes-first in v1 (tree canopy optional); columns stay strand-based (a trunk wrap won't read as an area fill).
+> - **`MiniGroupItem`** (kind `miniGroup`) — several drawn strands grouped into one priced unit (e.g. a railing); geometry-less (extent = members). Members stay visual + carry a `groupId` backref.
+> - **`MiniBilling`** = `{ wrapStyle?, stringCount? }`, shared by `StrandItem` + `MiniAreaItem` + `MiniGroupItem` so the billed mini fields stay identical across all three authoring paths. (`surface`/`included` already on `ItemBase`, v0.3.)
+> - **Projection skip-logic (no double-count):** grouped strand (`groupId`) → skip · ungrouped mini strand w/ surface → 1 · `miniArea` → 1 · `miniGroup` → 1 (portal hides it as its member strands). Implemented: `src/lib/design/projectScene.ts` (+tests). The editor tool (box/polygon draw + seeded-scatter fill renderer + group action/panel) is authored by the design-tool AI → copied verbatim.
+>
+> **v0.3 AMENDMENT (S5, 2026-06-10):** building the FULL PROJECTION (#27). Two changes locked with the design-tool AI (both sides mirrored, member-for-member): **(a) drawn size is VISUAL-ONLY** → billed spec now lives in explicit staff-set `quote*` fields (`quoteSize` on spritzer+wreath, `quoteLength`+`quoteSections` on garland; garland `lengthFt` removed) — see §4/§5/§7; **(b) per-instance granularity** (one drawn item = one line item = one toggle) — see §5. Linkage model = **"live from design"** (Jason): the portal re-derives per-unit line items from the current scene with ids embedding the scene item, so picture↔price stays consistent (roofline stays measurement-frozen). Editor binding UI gated behind `renderEditor` `opts.showQuoteBinding`. Projection lib shipped: `src/lib/design/projectScene.ts` (+ tests). Builder/portal wiring (C/D) in progress.
+>
 > **Status: LOCKED / build-ready** (Session 3, 2026-06-05). Both pending confirmations resolved by Jason: **(1) Winter Wonderland** = just a name (Naldo's, from building the design tool) for **extra/custom C9 lights that don't fall under the Santa's or Gingerbread roof packages** — the green "C9" lines; footage-priced; model as `c9` strand + `surface:"winter-wonderland"` (Jason/Naldo may revisit the *name* later — not important now). **(2) Standalone bow IS a sellable product** (rare; sold on its own or on garland) — but the quote tool has **no bow line-item category today**, so for MVP it renders + produces no line item, with a **follow-up to add a `bow` line-item category** (ledger task). **NO implementation until Jason says go.** Prices owned by the QUOTE side (`BUSINESS_RULES`); the design never computes price. See [[project_integration]] for the broader plan.
 
 ## 1. The model, in one breath
@@ -34,32 +42,34 @@ The quote tool is **Christmas-only today** (no permanent lights, bistro, or pole
 - **✅ BUILT (S4):** table + bucket live; `src/lib/designs.ts` + routes `POST /api/designs`, `GET|PUT /api/designs/[id]`, `POST /api/designs/[id]/photo`. These map 1:1 to the design-tool's proposed `EditorStorage` adapter (loadDesign=GET, saveScene=PUT, uploadPhoto=POST photo). Smoke-tested green end-to-end.
 
 ## 4. The binding — ADDITIVE optional fields on SceneItem
-The scene jsonb is **not literally unchanged**: `SceneItem` gains additive *optional* fields (geometry untouched; the ported editor reads/writes core fields as-is):
-- **`surface`** — the binding tag (the design's already-planned tag; **separate from `bulbType`**). Values = the surface taxonomy:
-  `santas-roofline` (front edges) · `gingerbread` (the sides+ridge increment Gingerbread adds) · `winter-wonderland` · `bush` · `tree` · `column` · (future: perm/bistro surfaces) · absent/`null` = unmapped.
-  e.g. Winter Wonderland = `surface:"winter-wonderland"` + `bulbType:"c9"`.
-- **`included: boolean`** (default true) — portal selection state.
-- **mini strands** (`surface` bush/tree/column): **`stringCount`** (default 1) + **`wrapStyle`** (canopy/trunk) — staff/AI-set, independent of the polyline.
-- **garland**: **`lengthFt`** (seeded from drawn length × px_per_foot, but **editable** — keeps scale visual-only) + **`withBow?`** + **`tier`**.
-- **wreath**: **`tier`** (`labor|bow|fullDecor`). (`withLights`/`withBow` seed the visual; `tier` drives price — see §6.)
+The scene jsonb is **not literally unchanged**: `SceneItem` gains additive *optional* fields (geometry untouched; the ported editor reads/writes core fields as-is). **AMENDED v0.3 (S5):** a drawn item's on-canvas **size is VISUAL-ONLY** (staff pick whatever looks best on the photo — unrelated to the real product that gets billed; a 60″ drawn wreath might be a 30″ Noble on the quote), so the BILLED spec is carried in explicit staff-set **`quote*`** fields, generalizing the mini-light model (visual density vs staff-typed strand count) to every item. Locked block — quote-tool `sceneTypes.ts` ↔ design-tool `api.ts`, **member-for-member** (both mirrored S5):
+- **`surface`** (on **`ItemBase`**) — the binding tag (**separate from `bulbType`**). Taxonomy: `santas-roofline` · `gingerbread` · `winter-wonderland` · `bush` · `tree` · `column` · absent/`null` = unmapped. e.g. Winter Wonderland = `surface:"winter-wonderland"` + `bulbType:"c9"`.
+- **`included: boolean`** (on **`ItemBase`**, default true) — portal selection state.
+- **mini strands** (`surface` bush/tree/column): **`stringCount`** (default 1) + **`wrapStyle`** (`canopy|trunk`) — staff-set, independent of the polyline.
+- **spritzer**: **`quoteSize`** (`16|24|32`) — the billed size, separate from the visual `sizeIn`.
+- **wreath**: **`quoteSize`** (`24noble|30noble|36noble|48noble|36oregon` — incl. the Noble/Oregon variety) + **`tier`** (`labor|bow|fullDecor`). `withLights`/`withBow` seed the visual only; `quoteSize`+`tier` drive price (§6).
+- **garland**: **`quoteLength`** (`4.5ft|9ft`) + **`quoteSections`** (count, default 1) + **`tier`**. The drawn run length is visual-only; sections are staff-set. *(v0.2's `lengthFt` is **REMOVED** — billed length is no longer drawn-derived.)*
+
+The billed-spec unions mirror the price-book keys in `pricingEngine` (`BUSINESS_RULES`). **Editor creation defaults:** `included:true`; spritzer `quoteSize 24`; wreath `36noble`/`bow`; garland `9ft`/1 section/`fullDecor`; mini `stringCount 1`/`canopy`.
 
 ## 5. The mapping table — (surface/kind) → category → priced quantity
+**Granularity: per-instance** (S5) — one drawn item = one line item = one toggle (refines the earlier "grouped by size/tier" wording; matches the live picture↔toggle 1:1 + the "live from design" model). Billed size/length come from the staff-set `quote*` fields, **never** the visual size.
 | Scene item (surface · kind) | Line-item category | Priced quantity & SOURCE | Pricing rule |
 |---|---|---|---|
 | `santas-roofline` · strand(c9) | Roofline — **Santa's** (tier) | footage — **MEASUREMENT** (`santasFootage`) | footage × difficulty rate ($8/10/12) |
 | `gingerbread` · strand(c9) | Roofline — **Gingerbread** superset (tier) | footage — **MEASUREMENT** (`gingerbreadFootage`) | (santas+ginger) × rate |
 | `winter-wonderland` · strand(c9) | Winter Wonderland (C9) | footage — **MEASUREMENT** (`winterWonderlandFootage`) | footage × rate |
-| `bush`/`tree`/`column` · strand(mini) | Mini-lights (per instance) | **stringCount + wrapStyle** (scene attrs) | stringCount × rate[wrapStyle] |
-| spritzer | Spritzer (per instance) | **count** grouped by sizeIn | qty × rate[size] |
-| wreath | Wreath (per instance) | **count** grouped by (sizeIn, tier) | price[size][tier] × qty |
-| garland | Garland (per instance) | **count + lengthFt** → `ceil(lengthFt/9)` sections | price[length][tier] × qty |
+| `bush`/`tree`/`column` · strand(mini) | Mini-lights (per instance) | **`stringCount` + `wrapStyle`** (staff-set) | stringCount × rate[wrapStyle] |
+| spritzer | Spritzer (per instance) | **`quoteSize`** (staff-set); qty 1 | qty × rate[quoteSize] |
+| wreath | Wreath (per instance) | **`quoteSize` + `tier`** (staff-set); qty 1 | price[quoteSize][tier] × qty |
+| garland | Garland (per instance) | **`quoteLength` + `quoteSections` + `tier`** (staff-set) | price[quoteLength][tier] × quoteSections |
 | permanent / bistro / pole / text / custom / standalone bow | — (unmapped today) | — | no line item (see §2) |
 
 ## 6. Tier (wreath + garland) — explicit field, not derived
 Quote tiers: `labor` (Labor Only) · `bow` (With Bow) · `fullDecor` (heavy ornament / ribbon / berries). Because **`fullDecor` means MORE than "lit + bow,"** tier can't be derived purely from `withLights`/`withBow` — so carry an **explicit `tier` field** on wreath + garland. The booleans seed the visual; `tier` drives the price. (A `fullDecor` item may look like `bow` visually until a fullDecor asset exists; pricing still reflects the tier.)
 
 ## 7. The two projection rules
-- **Per-unit items → project from SCENE.** Group the **included** scene items of a category → compute priced quantity (instance count, an attribute like `stringCount`, or `lengthFt` for garland) → price via the book. Add/remove a mapped scene item ⇒ add/remove the line item.
+- **Per-unit items → project from SCENE.** For each **included** mapped scene item (per-instance), read its staff-set billed spec (`stringCount`/`wrapStyle`, `quoteSize`, or `quoteLength`/`quoteSections`) → price via the book. Add/remove a mapped scene item ⇒ add/remove the line item. The drawn size is visual-only and never priced. *(Implemented S5: `src/lib/design/projectScene.ts`, unit-tested.)*
 - **Roofline → project from MEASUREMENT.** Price = `santasFootage`/`gingerbreadFootage`/`winterWonderlandFootage` (vision/manual), NOT scene pixels. The roofline strands are visual + toggle binding only. Scene + measurement co-derived from the same vision pass → born consistent; a visual tweak does NOT reprice (edit the measurement to reprice).
 
 ## 8. Roofline tier enum

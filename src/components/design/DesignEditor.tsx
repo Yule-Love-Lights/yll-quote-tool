@@ -37,7 +37,10 @@ export default function DesignEditor({ designId, onClose, height = 600 }: Props)
       if (!host) return;
       const { renderEditor } = await import('./editor-core/editor');
       if (cancelled) return;
-      destroy = await renderEditor(host, designId, { embedded: true });
+      // showQuoteBinding: true → the quote embed shows the per-item "Quote
+      // binding" panels (surface/included + billed quote spec). The design
+      // tool's standalone/dashboard embeds leave it off (#27 A1).
+      destroy = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true });
       if (cancelled) {
         destroy?.();
         destroy = null;

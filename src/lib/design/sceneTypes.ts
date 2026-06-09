@@ -29,6 +29,13 @@ export type DrawingStyle = 'strand' | 'trace' | 'single';
 // Quote-tool BINDING additions (data contract §4) — NOT in the design tool yet.
 // `surface` tags a scene item to a quote category; `included` is portal
 // selection state; the rest are pricing attributes the projection reads.
+//
+// KEY PRINCIPLE (Jason, S5): a drawn item's on-canvas SIZE is VISUAL ONLY —
+// staff pick whatever diameter/length looks best on the photo, which is
+// unrelated to the real product that gets billed (a 60" wreath on the design
+// might really be a 30" Noble on the quote). So the BILLED spec is carried in
+// separate, staff-set "quote*" fields, generalizing the mini-light model
+// (visual density vs staff-typed strand count) to every item.
 // ---------------------------------------------------------------------------
 export type Surface =
   | 'santas-roofline' // front roof edges (Santa's)
@@ -40,6 +47,22 @@ export type Surface =
 export type Tier = 'labor' | 'bow' | 'fullDecor'; // wreath + garland price tier
 export type WrapStyle = 'canopy' | 'trunk'; // mini-light wrap style
 
+// Billed mini-light attrs shared by EVERY authoring path (A1 mini strands, A2
+// area fills, A2 grouped railings) so the billed fields stay identical across all
+// three — one place to evolve. The bush/tree/column category stays on `surface`
+// (ItemBase). (#27 A2 / v0.4)
+export type MiniBilling = {
+  wrapStyle?: WrapStyle; // canopy | trunk — billed rate
+  stringCount?: number; // default 1; billed quantity
+};
+
+// Quote-spec sizes — the REAL billed product, set by staff in the editor's
+// Quote-binding panel, INDEPENDENT of the item's on-canvas visual size. These
+// mirror the price-book keys in pricingEngine (BUSINESS_RULES) member-for-member.
+export type QuoteSpritzerSize = '16' | '24' | '32';
+export type QuoteWreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '36oregon';
+export type QuoteGarlandLength = '4.5ft' | '9ft';
+
 export type ItemBase = {
   id: string;
   yardstickId: string | null;
@@ -48,7 +71,7 @@ export type ItemBase = {
   included?: boolean; // default true; portal selection state
 };
 
-export type StrandItem = ItemBase & {
+export type StrandItem = ItemBase & MiniBilling & {
   kind: 'strand';
   bulbType: BulbType;
   spacingIn: number;
@@ -63,21 +86,25 @@ export type StrandItem = ItemBase & {
   showCoverage?: boolean;
   // Bistro-only catenary sag (fraction of span). Ignored otherwise.
   sagFactor?: number;
-  // --- binding additions (§4): mini-light wraps (bush/tree/column) ---
-  stringCount?: number; // default 1; priced quantity for mini wraps
-  wrapStyle?: WrapStyle;
+  // mini-light wraps (bush/tree/column): wrapStyle/stringCount via MiniBilling.
+  // --- binding (A2 / v0.4) ---
+  // groupId: this strand belongs to a MiniGroupItem (a railing) → priced via the
+  // group + skipped in the per-strand projection (no double-count).
+  groupId?: string;
 };
 
 export type WreathItem = ItemBase & {
   kind: 'wreath';
   x: number;
   y: number;
-  sizeIn: number; // 24 / 36 / 48 / 60
+  sizeIn: number; // 24 / 36 / 48 / 60 — VISUAL ONLY (not the billed size)
   withLights: boolean;
-  withBow?: boolean; // missing ⇒ treat as true (back-compat)
+  withBow?: boolean; // missing ⇒ treat as true (back-compat); visual seed only
   colorId?: string; // legacy — unused; kept for back-compat
   rotation?: number;
-  // --- binding addition (§4) ---
+  // --- binding additions (§4) — design size is VISUAL ONLY; staff set the
+  // real billed product here ---
+  quoteSize?: QuoteWreathSize; // the actual billed product size + variety
   tier?: Tier; // drives price; booleans only seed the visual
 };
 
@@ -94,10 +121,12 @@ export type GarlandItem = ItemBase & {
   points: number[];
   drawingStyle: DrawingStyle;
   withLights: boolean;
-  sizeIn?: number; // 6 / 9 / 12 / 18 / 24; missing ⇒ ~9.6"
-  // --- binding additions (§4) ---
-  lengthFt?: number; // seeded from drawn length, editable; drives sections
-  withBow?: boolean;
+  sizeIn?: number; // 6 / 9 / 12 / 18 / 24 rope thickness — VISUAL ONLY
+  // --- binding additions (§4) — garland is priced by length × sections × tier,
+  // all staff-set; the drawn run length is VISUAL ONLY ---
+  quoteLength?: QuoteGarlandLength; // 4.5ft / 9ft sections
+  quoteSections?: number; // number of sections billed (default 1)
+  withBow?: boolean; // visual seed only; `tier` drives price
   tier?: Tier;
 };
 
@@ -105,8 +134,10 @@ export type SpritzerItem = ItemBase & {
   kind: 'spritzer';
   x: number;
   y: number;
-  sizeIn: number; // 16 / 24 / 36 / 48
+  sizeIn: number; // 16 / 24 / 36 / 48 — VISUAL ONLY (not the billed size)
   colorPattern: string[];
+  // --- binding addition: the real billed spritzer size (staff-set) ---
+  quoteSize?: QuoteSpritzerSize;
 };
 
 export type TextItem = ItemBase & {
@@ -141,6 +172,32 @@ export type PoleItem = ItemBase & {
   baseType: 'none' | 'cube' | 'barrel';
 };
 
+// A mini-light AREA (#27 A2 / v0.4): a box or traced polygon that fills with
+// single mini-lights at a VISUAL density. One area = one priced mini unit
+// (surface + MiniBilling). Bushes-first in v1 (tree canopy optional); columns
+// stay strand-based (a vertical trunk wrap won't read as an area fill).
+export type MiniAreaItem = ItemBase & MiniBilling & {
+  kind: 'miniArea';
+  shape: 'box' | 'polygon';
+  x?: number; // box
+  y?: number;
+  width?: number;
+  height?: number;
+  points?: number[]; // polygon, flat [x0,y0,…], auto-closed on finish
+  density?: number; // 0–1 VISUAL fill (bulbs-per-area at render), NOT a count
+  // surface (bush/tree/column) + included inherited from ItemBase
+};
+
+// A mini-light GROUP (#27 A2 / v0.4): several drawn strands grouped into ONE
+// priced unit (e.g. a railing). Geometry-less — its extent is its members, which
+// still render individually and carry a `groupId` backref. One group = one
+// priced mini unit (surface + MiniBilling); grouped strands are skipped in the
+// per-strand projection.
+export type MiniGroupItem = ItemBase & MiniBilling & {
+  kind: 'miniGroup';
+  memberIds: string[]; // the member strand ids
+};
+
 export type SceneItem =
   | StrandItem
   | WreathItem
@@ -149,7 +206,9 @@ export type SceneItem =
   | SpritzerItem
   | TextItem
   | CustomItem
-  | PoleItem;
+  | PoleItem
+  | MiniAreaItem
+  | MiniGroupItem;
 
 // Convenience alias kept so editor imports keep working.
 export type Strand = StrandItem;
@@ -223,4 +282,10 @@ export function isCustom(item: SceneItem): item is CustomItem {
 }
 export function isPole(item: SceneItem): item is PoleItem {
   return item.kind === 'pole';
+}
+export function isMiniArea(item: SceneItem): item is MiniAreaItem {
+  return item.kind === 'miniArea';
+}
+export function isMiniGroup(item: SceneItem): item is MiniGroupItem {
+  return item.kind === 'miniGroup';
 }

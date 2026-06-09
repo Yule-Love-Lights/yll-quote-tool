@@ -11,6 +11,7 @@ import type {
   DecorTier,
   SpritzerSize,
   GarlandLength,
+  CustomLineItem,
 } from '@/lib/pricing/pricingEngine';
 import type { CrmContact } from '@/lib/integrations/types';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -66,6 +67,8 @@ type FormData = {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
+  // Custom / manual line items (#27 escape hatch) — off-design items.
+  customLineItems: CustomLineItem[];
   takedown: 'included' | 'premium';
   rushFee: boolean;
   discountEnabled: boolean;
@@ -85,6 +88,7 @@ const initial: FormData = {
   spritzers: [],
   wreaths: [],
   garland: [],
+  customLineItems: [],
   takedown: 'included',
   rushFee: false,
   discountEnabled: false,
@@ -957,6 +961,15 @@ export default function NewQuotePage() {
   const updateGarland = (i: number, patch: Partial<GarlandItem>) =>
     set('garland', form.garland.map((item, idx) => idx === i ? { ...item, ...patch } : item));
 
+  // Custom / manual line items (#27 escape hatch) — staff-typed name + price for
+  // off-design items. Not tied to the design; flow to the quote + portal.
+  const addCustomLineItem = () =>
+    set('customLineItems', [...form.customLineItems, { label: '', amount: 0, quantity: 1 }]);
+  const removeCustomLineItem = (i: number) =>
+    set('customLineItems', form.customLineItems.filter((_, idx) => idx !== i));
+  const updateCustomLineItem = (i: number, patch: Partial<CustomLineItem>) =>
+    set('customLineItems', form.customLineItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+
   // Fire a nighttime render in parallel with quote calculation. Uses the
   // user's edited lines/detections (not raw Claude output) so corrections
   // feed the visualization. Requires photoBase64 — only populated via the
@@ -1163,6 +1176,7 @@ export default function NewQuotePage() {
       spritzers: form.spritzers,
       wreaths: form.wreaths,
       garland: form.garland,
+      customLineItems: form.customLineItems,
       takedown: form.takedown,
       rushFee: form.rushFee,
       ...(form.discountEnabled && {
@@ -1182,7 +1196,10 @@ export default function NewQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer: form.customer, inputs }),
+        // designId → if the linked design has per-unit items, the route uses
+        // them (design-driven pricing); otherwise the form's per-unit entry
+        // drives it (decision 2a fallback).
+        body: JSON.stringify({ customer: form.customer, inputs, designId: designId ?? undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -1235,6 +1252,7 @@ export default function NewQuotePage() {
         spritzers: form.spritzers,
         wreaths: form.wreaths,
         garland: form.garland,
+        customLineItems: form.customLineItems,
         takedown: form.takedown,
         rushFee: form.rushFee,
         ...(form.discountEnabled && {
@@ -1249,7 +1267,7 @@ export default function NewQuotePage() {
         headers: { 'Content-Type': 'application/json' },
         // quoteId → re-price that quote in place; falls back to a fresh save
         // if the quote wasn't persisted (Supabase unconfigured).
-        body: JSON.stringify({ customer: form.customer, inputs, quoteId: savedQuoteId ?? undefined }),
+        body: JSON.stringify({ customer: form.customer, inputs, quoteId: savedQuoteId ?? undefined, designId: designId ?? undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -2380,6 +2398,41 @@ export default function NewQuotePage() {
             )}
             <button type="button" onClick={addGarland} className={addBtn}>
               + Add Garland
+            </button>
+          </Section>
+
+          {/* ── Custom / manual line items (#27 escape hatch) ── */}
+          <Section title="Custom / manual line items">
+            <p className="text-xs text-gray-400 mb-3">
+              For anything the design can&apos;t represent — staff-named items billed at the price you set.
+              They appear on the quote and the customer portal (not tied to the design).
+            </p>
+            {form.customLineItems.length > 0 && (
+              <div className="mb-3">
+                <div className="grid grid-cols-[1fr_96px_64px_28px] gap-2 mb-1">
+                  <span className={lbl}>Name</span>
+                  <span className={lbl}>Unit $</span>
+                  <span className={lbl}>Qty</span>
+                  <span />
+                </div>
+                {form.customLineItems.map((item, i) => (
+                  <div key={i} className="grid grid-cols-[1fr_96px_64px_28px] gap-2 mb-2 items-start">
+                    <input className={inp} type="text" placeholder="e.g. Custom monogram display"
+                      value={item.label}
+                      onChange={e => updateCustomLineItem(i, { label: e.target.value })} />
+                    <input className={inp} type="number" min="0" step="0.01"
+                      value={item.amount || ''}
+                      onChange={e => updateCustomLineItem(i, { amount: Number(e.target.value) })} />
+                    <input className={inp} type="number" min="1" step="1"
+                      value={item.quantity ?? 1}
+                      onChange={e => updateCustomLineItem(i, { quantity: Number(e.target.value) })} />
+                    <button type="button" onClick={() => removeCustomLineItem(i)} className={rmBtn}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={addCustomLineItem} className={addBtn}>
+              + Add custom line item
             </button>
           </Section>
 

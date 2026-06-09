@@ -95,6 +95,18 @@ export type Discount = {
   amount: number;
 };
 
+// Custom / manual line item (Option-2 escape hatch, #27): a staff-typed name +
+// unit price + optional quantity (+ optional description) for off-design items
+// the design can't represent (~5% of niche quotes). NOT tied to the scene — it's
+// an ordinary line item on the quote + portal. Priced exactly as entered (no
+// price-book lookup): line amount = amount × quantity.
+export type CustomLineItem = {
+  label: string;
+  amount: number; // unit price
+  quantity?: number; // default 1
+  description?: string;
+};
+
 // Santa's (front roofline) and Gingerbread (front + ridge + sides) are
 // MUTUALLY EXCLUSIVE — the customer picks one on the portal (or none). #17.
 export type RooflineChoice = 'santas' | 'gingerbread' | 'none';
@@ -121,6 +133,9 @@ export interface QuoteInputs {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
+  // Custom / manual line items (#27 — the Option-2 escape hatch). Optional for
+  // back-compat: quotes priced before this field stay valid.
+  customLineItems?: CustomLineItem[];
 
   takedown: Takedown;
   rushFee: boolean;
@@ -352,6 +367,36 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 }
 
 // ─────────────────────────────────────────────────────────
+// Custom / manual line items (#27 escape hatch)
+// ─────────────────────────────────────────────────────────
+
+// Pass staff-entered custom items straight through as line items — no price-book
+// lookup, the amount IS the price. Defensive: skip entries without a non-empty
+// label or a finite, non-negative amount (a malformed entry never breaks a quote).
+function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
+  if (!Array.isArray(inputs.customLineItems)) return [];
+  return inputs.customLineItems
+    .filter(
+      (c) =>
+        c &&
+        typeof c.label === 'string' &&
+        c.label.trim().length > 0 &&
+        typeof c.amount === 'number' &&
+        Number.isFinite(c.amount) &&
+        c.amount >= 0,
+    )
+    .map((c) => {
+      // Quantity defaults to 1; a missing/invalid/<1 value is treated as 1.
+      const qty =
+        typeof c.quantity === 'number' && Number.isFinite(c.quantity) && c.quantity >= 1
+          ? Math.floor(c.quantity)
+          : 1;
+      const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
+      return { label, amount: c.amount * qty };
+    });
+}
+
+// ─────────────────────────────────────────────────────────
 // Main quote calculator — add each category here as we build
 // ─────────────────────────────────────────────────────────
 
@@ -365,6 +410,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     ...calculateSpritzers(inputs),
     ...calculateWreaths(inputs),
     ...calculateGarland(inputs),
+    ...calculateCustomLineItems(inputs),
   ];
   const restSubtotal = restItems.reduce((sum, item) => sum + item.amount, 0);
 

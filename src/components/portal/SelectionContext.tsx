@@ -59,6 +59,13 @@ type SelectionContextValue = {
   selectPackage: (id: PackageId) => void;
   toggleItem: (itemId: string) => void;
   isItemSelected: (itemId: string) => boolean;
+  /**
+   * Design scene-item ids that should be HIDDEN in the live render (#27 D):
+   * a scene item is hidden when every line item that controls it is deselected.
+   * Unmapped scene items (no controlling line item) are never in this set, so
+   * they always render. Empty for quotes with no linked design.
+   */
+  hiddenSceneItemIds: Set<string>;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -170,6 +177,26 @@ export function SelectionProvider({
     [selectedItemIds],
   );
 
+  // Which design scene items to hide in the live render (#27 D). A scene item is
+  // controlled by the line item(s) whose sceneItemIds include it; it's hidden
+  // only when NONE of its controllers is selected. Items no line item references
+  // (text/custom/bow/untagged) never appear here → always visible.
+  const hiddenSceneItemIds = useMemo(() => {
+    const controllers = new Map<string, string[]>();
+    lineItems.forEach((li) => {
+      li.sceneItemIds?.forEach((sid) => {
+        const arr = controllers.get(sid);
+        if (arr) arr.push(li.id);
+        else controllers.set(sid, [li.id]);
+      });
+    });
+    const hidden = new Set<string>();
+    controllers.forEach((controllingIds, sid) => {
+      if (!controllingIds.some((id) => selectedItemIds.has(id))) hidden.add(sid);
+    });
+    return hidden;
+  }, [lineItems, selectedItemIds]);
+
   // Price EVERY selection (tier or custom) from the actual selected items via
   // the shared priceSelection, so the displayed total always equals the sum of
   // what's checked — plus rush/takedown + tax — with no silent $1,000 floor
@@ -215,6 +242,7 @@ export function SelectionProvider({
     selectPackage,
     toggleItem,
     isItemSelected,
+    hiddenSceneItemIds,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
