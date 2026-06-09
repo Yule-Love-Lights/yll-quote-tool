@@ -336,4 +336,24 @@ describe('calculateQuote — custom / manual line items (#27 escape hatch)', () 
     const r = calculateQuote(emptyInputs({ santasFootage: 50, santasDifficulty: 'medium' }));
     expect(r.lineItems).toHaveLength(1); // just the roofline
   });
+
+  it('multiplies a custom item by its quantity and shows × N in the label', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Yard stake', amount: 25, quantity: 4 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Yard stake × 4', amount: 100 }]);
+  });
+
+  it('treats a missing / <1 quantity as 1 (no × suffix)', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [
+        { label: 'A', amount: 50 },
+        { label: 'B', amount: 30, quantity: 0 },
+      ],
+    }));
+    expect(r.lineItems).toEqual([
+      { label: 'A', amount: 50 },
+      { label: 'B', amount: 30 },
+    ]);
+  });
 });

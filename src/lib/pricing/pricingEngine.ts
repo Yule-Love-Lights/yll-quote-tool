@@ -96,12 +96,14 @@ export type Discount = {
 };
 
 // Custom / manual line item (Option-2 escape hatch, #27): a staff-typed name +
-// price (+ optional description) for off-design items the design can't represent
-// (~5% of niche quotes). NOT tied to the scene — it's an ordinary line item on
-// the quote + portal. Priced exactly as entered (no price-book lookup).
+// unit price + optional quantity (+ optional description) for off-design items
+// the design can't represent (~5% of niche quotes). NOT tied to the scene — it's
+// an ordinary line item on the quote + portal. Priced exactly as entered (no
+// price-book lookup): line amount = amount × quantity.
 export type CustomLineItem = {
   label: string;
-  amount: number;
+  amount: number; // unit price
+  quantity?: number; // default 1
   description?: string;
 };
 
@@ -383,7 +385,15 @@ function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
         Number.isFinite(c.amount) &&
         c.amount >= 0,
     )
-    .map((c) => ({ label: c.label.trim(), amount: c.amount }));
+    .map((c) => {
+      // Quantity defaults to 1; a missing/invalid/<1 value is treated as 1.
+      const qty =
+        typeof c.quantity === 'number' && Number.isFinite(c.quantity) && c.quantity >= 1
+          ? Math.floor(c.quantity)
+          : 1;
+      const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
+      return { label, amount: c.amount * qty };
+    });
 }
 
 // ─────────────────────────────────────────────────────────
