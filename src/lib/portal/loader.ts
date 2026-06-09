@@ -14,6 +14,7 @@ import type { PortalQuote } from '@/components/portal/types';
 import { quoteRowToPortalQuote, type QuoteRowForPortal } from './adapter';
 import { fetchPortalPhotos } from './photos';
 import { getDesignByQuote } from '@/lib/designs';
+import { attachSceneLinks } from './sceneLinks';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -70,6 +71,10 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
             photoW: design.photoW,
             photoH: design.photoH,
           };
+          // Link line items ⇄ scene items so the portal can hide a drawn item
+          // when its line item is toggled off (#27 D). Additive — same ids, just
+          // gains sceneItemIds; packages/selection are unaffected.
+          portal.lineItems = attachSceneLinks(portal.lineItems, design.scene);
         }
       } catch (err) {
         console.error('[loadPortalQuote] design lookup failed:', err);

@@ -37,6 +37,18 @@ export type ReadOnlyDesignOptions = {
   photoH: number | null;
   /** Overrides scene.brightness if provided. */
   brightness?: number;
+  /**
+   * Scene-item ids to HIDE (#27 D — portal toggle filter). null/undefined ⇒
+   * render everything. Update live without remounting via the returned setHidden.
+   */
+  hiddenIds?: Set<string> | null;
+};
+
+// Handle returned to the React wrapper: tear down, or update the hidden set
+// in place (re-renders only the draw layer — no photo reload / no flicker).
+export type ReadOnlyDesignController = {
+  destroy: () => void;
+  setHidden: (ids: Set<string> | null) => void;
 };
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {
@@ -52,9 +64,11 @@ function loadHTMLImage(url: string): Promise<HTMLImageElement> {
 export async function renderReadOnlyDesign(
   host: HTMLDivElement,
   opts: ReadOnlyDesignOptions,
-): Promise<() => void> {
+): Promise<ReadOnlyDesignController> {
   const scene = opts.scene;
   const brightness = opts.brightness ?? scene.brightness ?? 50;
+  // Mutable so the React wrapper can update the toggle filter without remounting.
+  let hidden: Set<string> | null = opts.hiddenIds ?? null;
 
   // Konva clears its container on mount; `host` is a dedicated, empty div.
   const stage = new Konva.Stage({
@@ -142,9 +156,11 @@ export async function renderReadOnlyDesign(
   function renderItems() {
     if (destroyed) return;
     drawLayer.destroyChildren();
-    // Step 1 renders ALL items. (The included-flag filter for the portal
-    // toggles is Step 2.)
+    // Render every scene item EXCEPT those hidden by the portal toggle filter
+    // (#27 D). Items with no controlling line item are never in `hidden`, so
+    // they always render.
     for (const item of scene.items) {
+      if (hidden && hidden.has(item.id)) continue;
       let g: Konva.Group | null = null;
       if (isStrand(item)) g = renderStrand(item, ppfBound(item.yardstickId));
       else if (isWreath(item)) g = createWreath(item, ppfActive(), requestRedraw);
@@ -171,7 +187,7 @@ export async function renderReadOnlyDesign(
         } catch {
           /* gone */
         }
-        return () => {};
+        return { destroy: () => {}, setHidden: () => {} };
       }
       photoW = photoW || img.naturalWidth;
       photoH = photoH || img.naturalHeight;
@@ -196,7 +212,7 @@ export async function renderReadOnlyDesign(
   ro.observe(host);
   window.addEventListener("resize", refit);
 
-  return function destroy() {
+  function destroy() {
     if (destroyed) return;
     destroyed = true;
     ro.disconnect();
@@ -207,5 +223,14 @@ export async function renderReadOnlyDesign(
     } catch {
       /* already gone */
     }
-  };
+  }
+
+  // Update the hidden set live (portal toggle) — re-render the draw layer only.
+  function setHidden(ids: Set<string> | null) {
+    if (destroyed) return;
+    hidden = ids;
+    renderItems();
+  }
+
+  return { destroy, setHidden };
 }

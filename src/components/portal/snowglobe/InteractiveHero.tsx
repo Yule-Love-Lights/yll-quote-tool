@@ -58,6 +58,7 @@ export function InteractiveHero({
     currentTotal,
     currentDeposit,
     selectedItemIds,
+    hiddenSceneItemIds,
   } = useSelection();
   const [ready, setReady] = useState(false);
   // Daytime ⇄ lit-design toggle (only shown when a design with a photo exists).
@@ -121,6 +122,7 @@ export function InteractiveHero({
             photoUrl={design.photoUrl}
             photoW={design.photoW}
             photoH={design.photoH}
+            hiddenIds={hiddenSceneItemIds}
             className="portal-snow-stage-photo absolute inset-0"
           />
         )

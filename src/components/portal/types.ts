@@ -35,6 +35,11 @@ export type PortalLineItem = {
   label: string;        // "Front-left tree"
   detail: string;       // "4 strands" or "180 ft"
   price: number;        // dollars for this item
+  // The design scene item(s) this line item controls (#27 D). Present only for
+  // design-linked quotes; toggling this line item off hides exactly these drawn
+  // items in the live portal render. Undefined ⇒ no linked design item (legacy
+  // quotes, custom line items, or an untagged item).
+  sceneItemIds?: string[];
 };
 
 // The mutually-exclusive roofline group for the portal (#17 Phase 2). Present
