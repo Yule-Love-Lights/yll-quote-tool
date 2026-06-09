@@ -29,6 +29,13 @@ export type DrawingStyle = 'strand' | 'trace' | 'single';
 // Quote-tool BINDING additions (data contract §4) — NOT in the design tool yet.
 // `surface` tags a scene item to a quote category; `included` is portal
 // selection state; the rest are pricing attributes the projection reads.
+//
+// KEY PRINCIPLE (Jason, S5): a drawn item's on-canvas SIZE is VISUAL ONLY —
+// staff pick whatever diameter/length looks best on the photo, which is
+// unrelated to the real product that gets billed (a 60" wreath on the design
+// might really be a 30" Noble on the quote). So the BILLED spec is carried in
+// separate, staff-set "quote*" fields, generalizing the mini-light model
+// (visual density vs staff-typed strand count) to every item.
 // ---------------------------------------------------------------------------
 export type Surface =
   | 'santas-roofline' // front roof edges (Santa's)
@@ -39,6 +46,13 @@ export type Surface =
   | 'column';
 export type Tier = 'labor' | 'bow' | 'fullDecor'; // wreath + garland price tier
 export type WrapStyle = 'canopy' | 'trunk'; // mini-light wrap style
+
+// Quote-spec sizes — the REAL billed product, set by staff in the editor's
+// Quote-binding panel, INDEPENDENT of the item's on-canvas visual size. These
+// mirror the price-book keys in pricingEngine (BUSINESS_RULES) member-for-member.
+export type QuoteSpritzerSize = '16' | '24' | '32';
+export type QuoteWreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '36oregon';
+export type QuoteGarlandLength = '4.5ft' | '9ft';
 
 export type ItemBase = {
   id: string;
@@ -72,12 +86,14 @@ export type WreathItem = ItemBase & {
   kind: 'wreath';
   x: number;
   y: number;
-  sizeIn: number; // 24 / 36 / 48 / 60
+  sizeIn: number; // 24 / 36 / 48 / 60 — VISUAL ONLY (not the billed size)
   withLights: boolean;
-  withBow?: boolean; // missing ⇒ treat as true (back-compat)
+  withBow?: boolean; // missing ⇒ treat as true (back-compat); visual seed only
   colorId?: string; // legacy — unused; kept for back-compat
   rotation?: number;
-  // --- binding addition (§4) ---
+  // --- binding additions (§4) — design size is VISUAL ONLY; staff set the
+  // real billed product here ---
+  quoteSize?: QuoteWreathSize; // the actual billed product size + variety
   tier?: Tier; // drives price; booleans only seed the visual
 };
 
@@ -94,10 +110,12 @@ export type GarlandItem = ItemBase & {
   points: number[];
   drawingStyle: DrawingStyle;
   withLights: boolean;
-  sizeIn?: number; // 6 / 9 / 12 / 18 / 24; missing ⇒ ~9.6"
-  // --- binding additions (§4) ---
-  lengthFt?: number; // seeded from drawn length, editable; drives sections
-  withBow?: boolean;
+  sizeIn?: number; // 6 / 9 / 12 / 18 / 24 rope thickness — VISUAL ONLY
+  // --- binding additions (§4) — garland is priced by length × sections × tier,
+  // all staff-set; the drawn run length is VISUAL ONLY ---
+  quoteLength?: QuoteGarlandLength; // 4.5ft / 9ft sections
+  quoteSections?: number; // number of sections billed (default 1)
+  withBow?: boolean; // visual seed only; `tier` drives price
   tier?: Tier;
 };
 
@@ -105,8 +123,10 @@ export type SpritzerItem = ItemBase & {
   kind: 'spritzer';
   x: number;
   y: number;
-  sizeIn: number; // 16 / 24 / 36 / 48
+  sizeIn: number; // 16 / 24 / 36 / 48 — VISUAL ONLY (not the billed size)
   colorPattern: string[];
+  // --- binding addition: the real billed spritzer size (staff-set) ---
+  quoteSize?: QuoteSpritzerSize;
 };
 
 export type TextItem = ItemBase & {
