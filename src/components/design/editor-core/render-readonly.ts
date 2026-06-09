@@ -8,6 +8,7 @@ import {
   isText,
   isCustom,
   isPole,
+  isMiniArea,
   type Scene,
 } from "@/lib/design/sceneTypes";
 import { pxPerFoot } from "./yardstick";
@@ -19,6 +20,7 @@ import { createSpritzer } from "./spritzer";
 import { renderText } from "./text";
 import { createCustom } from "./custom";
 import { createPole } from "./pole";
+import { renderMiniArea } from "./miniArea";
 
 // Read-only render of a design scene onto its photo (design-tool integration
 // #27 Phase 2 — Step 1: the live portal hero). This is a stripped-down sibling
@@ -170,6 +172,10 @@ export async function renderReadOnlyDesign(
       else if (isText(item)) g = renderText(item, ppfActive());
       else if (isCustom(item)) g = createCustom(item, ppfActive(), requestRedraw);
       else if (isPole(item)) g = createPole(item, ppfActive());
+      // A2 Mini-Area scatter-fill (bushes/canopy). Uses its bound yardstick like
+      // strands (the fill density is area/scale-dependent). miniGroup has no
+      // geometry — its member strands render on their own.
+      else if (isMiniArea(item)) g = renderMiniArea(item, ppfBound(item.yardstickId));
       if (g) {
         g.listening(false);
         drawLayer.add(g);

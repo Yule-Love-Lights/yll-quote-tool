@@ -43,7 +43,8 @@ export type Surface =
   | 'winter-wonderland' // extra/custom C9 runs
   | 'bush'
   | 'tree'
-  | 'column';
+  | 'column'
+  | 'railing'; // grouped mini-light wraps (A2). Tags today; needs a price-book rate (v0.5) to bill.
 export type Tier = 'labor' | 'bow' | 'fullDecor'; // wreath + garland price tier
 export type WrapStyle = 'canopy' | 'trunk'; // mini-light wrap style
 
