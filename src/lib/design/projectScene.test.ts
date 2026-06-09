@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { projectScene } from './projectScene';
+import { projectScene, applyProjectionToInputs } from './projectScene';
+import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
 import type {
   Scene,
   SceneItem,
@@ -57,6 +58,24 @@ function text(over: Partial<TextItem> = {}): TextItem {
 }
 function scene(items: SceneItem[]): Scene {
   return { yardsticks: [], items };
+}
+
+function baseInputs(over: Partial<QuoteInputs> = {}): QuoteInputs {
+  return {
+    santasFootage: 100,
+    santasDifficulty: 'medium',
+    gingerbreadFootage: 0,
+    gingerbreadDifficulty: 'medium',
+    winterWonderlandFootage: 0,
+    winterWonderlandDifficulty: 'medium',
+    miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 9 }], // a "form" item
+    spritzers: [],
+    wreaths: [],
+    garland: [],
+    takedown: 'included',
+    rushFee: false,
+    ...over,
+  };
 }
 
 describe('projectScene — basics', () => {
@@ -217,6 +236,47 @@ describe('projectScene — unmapped item kinds', () => {
   it('bow and text render but produce no line item', () => {
     const p = projectScene(scene([bow(), text()]));
     expect(p.items).toEqual([]);
+  });
+});
+
+describe('applyProjectionToInputs — design overrides per-unit, else falls back', () => {
+  it('replaces the per-unit arrays when the scene HAS per-unit items', () => {
+    const s = scene([
+      strand({ id: 'b', surface: 'tree', stringCount: 2, wrapStyle: 'trunk' }),
+      wreath({ id: 'w', quoteSize: '24noble', tier: 'bow' }),
+    ]);
+    const out = applyProjectionToInputs(baseInputs(), s);
+    expect(out.miniLightItems).toEqual([{ type: 'tree', wrapStyle: 'trunk', stringCount: 2 }]); // not the form's bush/9
+    expect(out.wreaths).toEqual([{ size: '24noble', tier: 'bow', quantity: 1 }]);
+    expect(out.spritzers).toEqual([]);
+    expect(out.garland).toEqual([]);
+  });
+
+  it('passes roofline + custom items + fees through untouched', () => {
+    const s = scene([strand({ surface: 'bush', stringCount: 1 })]);
+    const inputs = baseInputs({
+      santasFootage: 180,
+      customLineItems: [{ label: 'Custom', amount: 99 }],
+      rushFee: true,
+      takedown: 'premium',
+    });
+    const out = applyProjectionToInputs(inputs, s);
+    expect(out.santasFootage).toBe(180);
+    expect(out.customLineItems).toEqual([{ label: 'Custom', amount: 99 }]);
+    expect(out.rushFee).toBe(true);
+    expect(out.takedown).toBe('premium');
+  });
+
+  it('returns inputs UNCHANGED when the scene has NO per-unit items (form fallback)', () => {
+    const rooflineOnly = scene([strand({ bulbType: 'c9', surface: 'santas-roofline' })]);
+    const inputs = baseInputs();
+    const out = applyProjectionToInputs(inputs, rooflineOnly);
+    expect(out).toBe(inputs); // same reference — untouched
+  });
+
+  it('returns inputs UNCHANGED for an empty scene', () => {
+    const inputs = baseInputs();
+    expect(applyProjectionToInputs(inputs, scene([]))).toBe(inputs);
   });
 });
 

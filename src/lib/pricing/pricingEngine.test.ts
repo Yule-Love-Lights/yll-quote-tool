@@ -293,3 +293,47 @@ describe('calculateQuote — discounts', () => {
     expect(r.subtotalAfterDiscount).toBe(800); // real value, not floored to 1000
   });
 });
+
+describe('calculateQuote — custom / manual line items (#27 escape hatch)', () => {
+  it('passes custom items straight through as line items at the entered price', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [
+        { label: 'Custom monogram display', amount: 450 },
+        { label: 'Extra ladder fee', amount: 75, description: 'tall peak' },
+      ],
+    }));
+    expect(r.lineItems).toHaveLength(2);
+    expect(r.lineItems.map((li) => li.label)).toEqual(['Custom monogram display', 'Extra ladder fee']);
+    expect(r.subtotalBeforeDiscount).toBe(525);
+  });
+
+  it('includes custom items in the taxable total and toward the minimum/auto-roofline', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 50, santasDifficulty: 'medium', // 500
+      gingerbreadFootage: 60, gingerbreadDifficulty: 'medium', // +600 = ginger 1100
+      customLineItems: [{ label: 'Custom', amount: 600 }],
+    }));
+    // rest (custom 600) + santas 500 = 1100 ≥ 1000 → auto-picks Santa's (closest
+    // to the minimum without going under), proving custom items count toward it.
+    expect(r.rooflineChoice).toBe('santas');
+    expect(r.taxableAmount).toBe(1100); // 500 roofline + 600 custom
+  });
+
+  it('skips malformed custom entries (blank label, non-finite/negative amount)', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [
+        { label: '   ', amount: 100 },
+        { label: 'NaN amount', amount: Number.NaN },
+        { label: 'Negative', amount: -50 },
+        { label: 'Valid', amount: 120 },
+      ],
+    }));
+    expect(r.lineItems).toHaveLength(1);
+    expect(r.lineItems[0]).toEqual({ label: 'Valid', amount: 120 });
+  });
+
+  it('treats a missing customLineItems field as none (back-compat)', () => {
+    const r = calculateQuote(emptyInputs({ santasFootage: 50, santasDifficulty: 'medium' }));
+    expect(r.lineItems).toHaveLength(1); // just the roofline
+  });
+});

@@ -36,6 +36,7 @@ import type {
   Spritzer,
   Wreath,
   GarlandItem as PriceGarland,
+  QuoteInputs,
 } from '@/lib/pricing/pricingEngine';
 
 export type ProjectedCategory = 'mini' | 'spritzer' | 'wreath' | 'garland';
@@ -148,5 +149,29 @@ export function projectScene(scene: Scene): Projection {
     wreaths: items.filter((i) => i.category === 'wreath').map((i) => i.input as Wreath),
     garland: items.filter((i) => i.category === 'garland').map((i) => i.input as PriceGarland),
     items,
+  };
+}
+
+// Merge a design's projection INTO a quote's inputs for pricing (#27 sub-step C).
+//
+// The design is the master list for per-unit items, so when its scene has any
+// projectable per-unit item we REPLACE the inputs' per-unit arrays with the
+// projection. Everything else (roofline footage — measurement-driven — plus
+// takedown/rush/discount/customLineItems) passes through untouched.
+//
+// Fallback (Jason S5, decision 2a + the pre-A1 transition): if the scene has NO
+// projectable per-unit items, return the inputs UNCHANGED so the builder's manual
+// per-unit entry still drives the quote. This keeps no-design / legacy quotes
+// working today and means design-driven pricing activates cleanly the moment
+// staff start tagging items (once the editor's binding UI lands).
+export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): QuoteInputs {
+  const p = projectScene(scene);
+  if (p.items.length === 0) return inputs;
+  return {
+    ...inputs,
+    miniLightItems: p.miniLightItems,
+    spritzers: p.spritzers,
+    wreaths: p.wreaths,
+    garland: p.garland,
   };
 }
