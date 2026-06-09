@@ -15,7 +15,36 @@ metadata:
 
 ---
 
-### Session 4 — #27 Phase 1 (design-tool integration): `designs` storage + API BUILT; editor port planned (2026-06-05) · CURRENT
+### Session 5 — #27 FULL PROJECTION (A1→D) BUILT + A2 part 1: design is the master item list + live portal toggle-filter (2026-06-10) · CURRENT
+**Picked up from:** Session 4 close — full-projection plan locked. Branch **`jason/integration-projection`** (off master). Built the loop A→D + A2 part 1 with the design-tool AI in lockstep (cross-assistant; Jason relayed).
+
+**Decisions confirmed with Jason this session (DON'T re-ask):**
+- **Linkage = "LIVE FROM DESIGN"** (not frozen): the design drives per-unit line items; editing it updates them. Roofline stays measurement-frozen.
+- **Per-instance granularity:** one drawn item = one line item = one portal toggle (refines data-contract §5's "grouped" wording; matches minis + the live picture↔toggle 1:1).
+- **Drawn SIZE is VISUAL-ONLY** (Jason): on the design you pick whatever size looks best — unrelated to the billed product (a 60" drawn wreath may be a 30" Noble quote). The BILLED spec lives in explicit staff-set **`quote*`** fields (`quoteSize` on spritzer+wreath; `quoteLength`+`quoteSections` on garland), NOT the drawn `sizeIn`.
+- **Custom line items** carry a quantity (unit price × qty).
+- **No-design / roofline-only-design quotes:** the builder's manual per-unit entry still drives (decision **2a** fallback).
+
+**✅ Shipped (branch `jason/integration-projection`; gates green throughout — 94 tests):**
+- **B** `src/lib/design/projectScene.ts` (+tests) — scene → per-unit `QuoteInputs` slices + per-instance linkage + `applyProjectionToInputs`. Commit `3791f8d`.
+- **Data contract v0.3 → v0.4** (visual/billed split + per-instance; then A2 mini representations) — design-tool AI re-mirrored hash-identical. Commits `4e44d6e`, `9dc733f`.
+- **C1** engine `customLineItems` + `/api/quote` projects the linked design server-side. Commit `6133ac9`.
+- **C3a** builder: "Custom / manual line items" (name·unit$·qty) + passes `designId`. Commit `768a4b4`.
+- **A1** (SHARED editor) — vendored the design-tool's `editor.ts @ 2233e1e` (gated Quote-binding panels + creation defaults) re-applying only our 2 vendor seams; resolved `[yll]`; synced `spritzer.ts`; `DesignEditor` passes `showQuoteBinding:true`. Commit `73b7832`.
+- **D** portal toggle-filter — `src/lib/portal/sceneLinks.ts` (`attachSceneLinks`) links line items↔scene items; `SelectionContext.hiddenSceneItemIds`; `render-readonly` hide filter + `setHidden`. Commit `fdc8917`. **Jason verified live. ✅**
+- **A2 part 1** (v0.4 types + projection) — `MiniBilling`/`MiniAreaItem`/`MiniGroupItem`/`StrandItem.groupId` + guards; `projectScene` skip-logic (grouped strand → skip; strand/area/group → 1 mini each). Commit `fb831d7`.
+
+**🔑 Cross-assistant (design-tool AI):** types mirrored member-for-member, `showQuoteBinding` flag, A1 editor authored by them + copied by us — cores **byte-identical (hash-verified)**. **A2 part 2 IN PROGRESS on their side:** authoring the canonical `editor.ts` (box/polygon area tool + group action/panel + creation defaults incl/bush/canopy/1/density~0.5) + a standalone `editor/miniArea.ts` scatter-fill renderer → they send the diff, **we copy verbatim** + wire `miniArea` into our `render-readonly.ts` + verify. Externally gated (no rush).
+
+**Deferred (Jason: after A2):** **roofline portal PICTURE-toggle** — Santa's↔Gingerbread does nothing in the live picture (price toggle works); needs the c9 roofline strands tagged `santas-roofline`/`gingerbread` (manual+tedious today). Fix = better tagging UX / auto-tag from the AI classification. Also: **mini grouping** (each drawn strand = its own bush today) lands with A2's railing grouping.
+
+**NEXT:** A2 part 2 (copy the design-tool's `editor.ts`+`miniArea.ts` diff → render-readonly wiring → verify), then **C3b** (optional builder "From your design" summary), then the deferred roofline-toggle. **This branch is being PR'd at the A1→D + A2-part1 milestone** (A2 part-1 types are inert/back-compat until the editor tool lands).
+
+**Model/context:** Claude Opus (1M). Long multi-day session; A1→D + A2 part 1 shipped + verified; branch PR'd.
+
+---
+
+### Session 4 — #27 Phase 1 (design-tool integration): `designs` storage + API BUILT; editor port planned (2026-06-05)
 **Picked up from:** Session 3 close-out — LOCKED data contract; roofline epic (#7/#17) merged (the Phase-1 prerequisite). A long plain-language clarification block with Jason (**non-dev — wants plain language, minimal jargon, less deep detail**), then BUILT the backend half of Phase 1.
 
 **Decisions confirmed with Jason this session:**
