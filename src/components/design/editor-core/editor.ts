@@ -1,5 +1,10 @@
 import Konva from "konva";
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle } from "@/lib/design/sceneTypes";
+// VENDOR ADAPTATION (Path B): types come from our local sceneTypes (not the
+// design tool's ../api), the Fastify `api` client is replaced by our Supabase
+// storage connector (createEditorApi, below), and the sibling renderers live in
+// THIS folder (./). Everything else in this file is byte-identical with the
+// design tool's canonical editor.ts (commit 2233e1e) — keep it that way.
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -105,10 +110,11 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean } = {},
 ): Promise<() => void> {
-  // Storage connector bound to this design (Path B): talks to our Supabase
-  // /api/designs routes instead of the design tool's Fastify backend.
+  // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
+  // to our Supabase /api/designs routes in place of the design tool's Fastify
+  // `api`. The rest of the file uses `api.*` exactly as upstream.
   const api = createEditorApi(designId);
   let design: Design;
   try {
@@ -2123,6 +2129,44 @@ export async function renderEditor(
       </section>
       ` : ""}
 
+      ${opts.showQuoteBinding ? (() => {
+        const surfaceOpts: [string, string][] =
+          sharedBulbType.length === 1 && sharedBulbType[0] === "c9"
+            ? [["santas-roofline", "Santa's Roofline"], ["gingerbread", "Gingerbread"], ["winter-wonderland", "Winter Wonderland"]]
+            : sharedBulbType.length === 1 && sharedBulbType[0] === "mini"
+            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"]]
+            : [];
+        const sSurface = uniq(sel.map((s) => s.surface ?? ""));
+        const sInc = uniq(sel.map((s) => s.included ?? true));
+        const sWrap = uniq(sel.map((s) => s.wrapStyle ?? "canopy"));
+        const sCount = uniq(sel.map((s) => s.stringCount ?? 1));
+        const wrapSurface = sSurface.length === 1 && ["bush", "tree", "column"].includes(sSurface[0]);
+        return `
+      <section>
+        <h3>Quote binding</h3>
+        ${surfaceOpts.length ? `
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Surface</label>
+        <select id="sel-surface" class="yardstick-select">
+          <option value="">${sSurface.length > 1 ? "— mixed —" : "— none (untagged) —"}</option>
+          ${surfaceOpts.map(([v, l]) => `<option value="${v}" ${sSurface.length === 1 && sSurface[0] === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+        ` : `<div style="font-size:11px;color:var(--text-dim)">This light type isn't quoted yet — nothing to tag.</div>`}
+        ${wrapSurface ? `
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
+        <select id="sel-wrapstyle" class="yardstick-select">
+          <option value="canopy" ${sWrap.length === 1 && sWrap[0] === "canopy" ? "selected" : ""}>Canopy</option>
+          <option value="trunk" ${sWrap.length === 1 && sWrap[0] === "trunk" ? "selected" : ""}>Trunk</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
+        <input type="number" id="sel-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount.length === 1 ? sCount[0] : 1}" />
+        ` : ""}
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>`;
+      })() : ""}
+
       <section style="display:flex;gap:6px">
         <button id="sel-duplicate">Duplicate</button>
         <button id="sel-delete" class="danger">Delete</button>
@@ -2249,6 +2293,26 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
+    if (opts.showQuoteBinding) {
+      const surfSel = sb.querySelector("#sel-surface") as HTMLSelectElement | null;
+      surfSel?.addEventListener("change", () => {
+        const v = surfSel.value;
+        updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
+      });
+      const wrapSel = sb.querySelector("#sel-wrapstyle") as HTMLSelectElement | null;
+      wrapSel?.addEventListener("change", () => {
+        updateSelected((s) => ({ ...s, wrapStyle: wrapSel.value as WrapStyle }));
+      });
+      const scInput = sb.querySelector("#sel-stringcount") as HTMLInputElement | null;
+      scInput?.addEventListener("change", () => {
+        const n = Math.max(1, Math.round(Number(scInput.value) || 1));
+        updateSelected((s) => ({ ...s, stringCount: n }));
+      });
+      const incCb = sb.querySelector("#sel-included") as HTMLInputElement | null;
+      incCb?.addEventListener("change", () => {
+        updateSelected((s) => ({ ...s, included: incCb.checked }));
+      });
+    }
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
 
@@ -2291,6 +2355,32 @@ export async function renderEditor(
           <span>Include bow${sharedWithBow.length > 1 ? " (mixed)" : ""}</span>
         </label>
       </section>
+      ${opts.showQuoteBinding ? (() => {
+        const sQS = uniq(sel.map((w) => w.quoteSize ?? ""));
+        const sTier = uniq(sel.map((w) => w.tier ?? ""));
+        const sInc = uniq(sel.map((w) => w.included ?? true));
+        const WSIZES: [string, string][] = [["24noble", '24" Noble'], ["30noble", '30" Noble'], ["36noble", '36" Noble'], ["48noble", '48" Noble'], ["36oregon", '36" Oregon']];
+        return `
+      <section>
+        <h3>Quote binding</h3>
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Quote size (billed product)</label>
+        <select id="sel-wreath-qsize" class="yardstick-select">
+          <option value="">${sQS.length > 1 ? "— mixed —" : "— none —"}</option>
+          ${WSIZES.map(([v, l]) => `<option value="${v}" ${sQS.length === 1 && sQS[0] === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Tier</label>
+        <select id="sel-wreath-tier" class="yardstick-select">
+          <option value="">${sTier.length > 1 ? "— mixed —" : "— none —"}</option>
+          <option value="labor" ${sTier.length === 1 && sTier[0] === "labor" ? "selected" : ""}>Labor only</option>
+          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>With bow</option>
+          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Full decor</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-wreath-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>`;
+      })() : ""}
       <section style="display:flex;gap:6px">
         <button id="sel-wreath-duplicate">Duplicate</button>
         <button id="sel-wreath-delete" class="danger">Delete</button>
@@ -2337,6 +2427,22 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
+    if (opts.showQuoteBinding) {
+      const qs = sb.querySelector("#sel-wreath-qsize") as HTMLSelectElement | null;
+      qs?.addEventListener("change", () => {
+        const v = qs.value;
+        updateWreaths((w) => ({ ...w, quoteSize: v ? (v as QuoteWreathSize) : undefined }));
+      });
+      const tr = sb.querySelector("#sel-wreath-tier") as HTMLSelectElement | null;
+      tr?.addEventListener("change", () => {
+        const v = tr.value;
+        updateWreaths((w) => ({ ...w, tier: v ? (v as Tier) : undefined }));
+      });
+      const inc = sb.querySelector("#sel-wreath-included") as HTMLInputElement | null;
+      inc?.addEventListener("change", () => {
+        updateWreaths((w) => ({ ...w, included: inc.checked }));
+      });
+    }
     sb.querySelector("#sel-wreath-delete")?.addEventListener("click", deleteSelected);
   }
 
@@ -2453,6 +2559,35 @@ export async function renderEditor(
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Changes the px/ft used to scale the garland's stamp size.</div>
       </section>
       ` : ""}
+      ${opts.showQuoteBinding ? (() => {
+        const sQL = uniq(sel.map((g) => g.quoteLength ?? ""));
+        const sSec = uniq(sel.map((g) => g.quoteSections ?? 1));
+        const sTier = uniq(sel.map((g) => g.tier ?? ""));
+        const sInc = uniq(sel.map((g) => g.included ?? true));
+        return `
+      <section>
+        <h3>Quote binding</h3>
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Section length</label>
+        <select id="sel-garland-qlength" class="yardstick-select">
+          <option value="">${sQL.length > 1 ? "— mixed —" : "— none —"}</option>
+          <option value="4.5ft" ${sQL.length === 1 && sQL[0] === "4.5ft" ? "selected" : ""}>4.5 ft</option>
+          <option value="9ft" ${sQL.length === 1 && sQL[0] === "9ft" ? "selected" : ""}>9 ft</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)"># sections</label>
+        <input type="number" id="sel-garland-sections" class="yardstick-select" style="width:90px" min="1" step="1" value="${sSec.length === 1 ? sSec[0] : 1}" />
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Tier</label>
+        <select id="sel-garland-tier" class="yardstick-select">
+          <option value="">${sTier.length > 1 ? "— mixed —" : "— none —"}</option>
+          <option value="labor" ${sTier.length === 1 && sTier[0] === "labor" ? "selected" : ""}>Labor only</option>
+          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>With bow</option>
+          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Full decor</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-garland-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>`;
+      })() : ""}
       <section style="display:flex;gap:6px">
         <button id="sel-garland-duplicate">Duplicate</button>
         <button id="sel-garland-delete" class="danger">Delete</button>
@@ -2507,6 +2642,27 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
+    if (opts.showQuoteBinding) {
+      const ql = sb.querySelector("#sel-garland-qlength") as HTMLSelectElement | null;
+      ql?.addEventListener("change", () => {
+        const v = ql.value;
+        updateGarlands((g) => ({ ...g, quoteLength: v ? (v as QuoteGarlandLength) : undefined }));
+      });
+      const sec = sb.querySelector("#sel-garland-sections") as HTMLInputElement | null;
+      sec?.addEventListener("change", () => {
+        const n = Math.max(1, Math.round(Number(sec.value) || 1));
+        updateGarlands((g) => ({ ...g, quoteSections: n }));
+      });
+      const tr = sb.querySelector("#sel-garland-tier") as HTMLSelectElement | null;
+      tr?.addEventListener("change", () => {
+        const v = tr.value;
+        updateGarlands((g) => ({ ...g, tier: v ? (v as Tier) : undefined }));
+      });
+      const inc = sb.querySelector("#sel-garland-included") as HTMLInputElement | null;
+      inc?.addEventListener("change", () => {
+        updateGarlands((g) => ({ ...g, included: inc.checked }));
+      });
+    }
     sb.querySelector("#sel-garland-delete")?.addEventListener("click", deleteSelected);
   }
 
@@ -2558,6 +2714,25 @@ export async function renderEditor(
           Patterns differ across the selection. Tap a color to replace, or use Multi for rainbow.
         </div>`}
       </section>
+      ${opts.showQuoteBinding ? (() => {
+        const sQS = uniq(sel.map((s) => s.quoteSize ?? ""));
+        const sInc = uniq(sel.map((s) => s.included ?? true));
+        return `
+      <section>
+        <h3>Quote binding</h3>
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Quote size (billed)</label>
+        <select id="sel-spritzer-qsize" class="yardstick-select">
+          <option value="">${sQS.length > 1 ? "— mixed —" : "— none —"}</option>
+          <option value="16" ${sQS.length === 1 && sQS[0] === "16" ? "selected" : ""}>16"</option>
+          <option value="24" ${sQS.length === 1 && sQS[0] === "24" ? "selected" : ""}>24"</option>
+          <option value="32" ${sQS.length === 1 && sQS[0] === "32" ? "selected" : ""}>32"</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-spritzer-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>`;
+      })() : ""}
       <section style="display:flex;gap:6px">
         <button id="sel-spritzer-duplicate">Duplicate</button>
         <button id="sel-spritzer-delete" class="danger">Delete</button>
@@ -2630,6 +2805,17 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
+    if (opts.showQuoteBinding) {
+      const qs = sb.querySelector("#sel-spritzer-qsize") as HTMLSelectElement | null;
+      qs?.addEventListener("change", () => {
+        const v = qs.value;
+        updateSpritzers((s) => ({ ...s, quoteSize: v ? (v as QuoteSpritzerSize) : undefined }));
+      });
+      const inc = sb.querySelector("#sel-spritzer-included") as HTMLInputElement | null;
+      inc?.addEventListener("change", () => {
+        updateSpritzers((s) => ({ ...s, included: inc.checked }));
+      });
+    }
     sb.querySelector("#sel-spritzer-delete")?.addEventListener("click", deleteSelected);
   }
 
@@ -3302,6 +3488,9 @@ export async function renderEditor(
       withLights: tool.wreathWithLights,
       withBow: tool.wreathWithBow,
       yardstickId: activeYs()?.id ?? null,
+      quoteSize: "36noble",
+      tier: "bow",
+      included: true,
     };
     scene = { ...scene, items: [...scene.items, wreath] };
     scheduleSave();
@@ -3331,6 +3520,8 @@ export async function renderEditor(
       sizeIn: tool.spritzerSizeIn,
       colorPattern: [...tool.spritzerColorPattern],
       yardstickId: activeYs()?.id ?? null,
+      quoteSize: "24",
+      included: true,
     };
     scene = { ...scene, items: [...scene.items, spritzer] };
     scheduleSave();
@@ -3399,6 +3590,7 @@ export async function renderEditor(
       points: [...points],
       yardstickId: activeYs()?.id ?? null,
       ...permPropsForNewStrand(),
+      ...quoteDefaultsForNewStrand(),
     };
     scene = { ...scene, items: [...scene.items, strand] };
     scheduleSave();
@@ -3421,6 +3613,18 @@ export async function renderEditor(
     };
   }
 
+  // Quote-binding defaults baked onto newly-created items so the quote can
+  // project them out of the box (operator still sets `surface`). Harmless in the
+  // standalone tool — ignored unless a quote reads them.
+  function quoteDefaultsForNewStrand(): Partial<StrandItem> {
+    const d: Partial<StrandItem> = { included: true };
+    if (tool.bulbType === "mini") { d.stringCount = 1; d.wrapStyle = "canopy"; }
+    return d;
+  }
+  function quoteDefaultsForNewGarland(): Partial<GarlandItem> {
+    return { included: true, quoteLength: "9ft", quoteSections: 1, tier: "fullDecor" };
+  }
+
   // Creates one strand per straight segment from a polyline (used by Trace mode so
   // each click→click line is its own editable strand). One history entry covers
   // all of them so a single Undo removes the whole trace.
@@ -3440,6 +3644,7 @@ export async function renderEditor(
         points: seg,
         yardstickId: activeYs()?.id ?? null,
         ...permPropsForNewStrand(),
+        ...quoteDefaultsForNewStrand(),
       });
     }
     if (newStrands.length === 0) return;
@@ -3459,6 +3664,7 @@ export async function renderEditor(
       points: [p.x, p.y],
       yardstickId: activeYs()?.id ?? null,
       ...permPropsForNewStrand(),
+      ...quoteDefaultsForNewStrand(),
     };
     scene = { ...scene, items: [...scene.items, strand] };
     scheduleSave();
@@ -3479,6 +3685,7 @@ export async function renderEditor(
       sizeIn: tool.garlandSizeIn,
       points: [...points],
       yardstickId: activeYs()?.id ?? null,
+      ...quoteDefaultsForNewGarland(),
     };
     scene = { ...scene, items: [...scene.items, g] };
     scheduleSave();
@@ -3494,6 +3701,7 @@ export async function renderEditor(
       sizeIn: tool.garlandSizeIn,
       points: [p.x, p.y],
       yardstickId: activeYs()?.id ?? null,
+      ...quoteDefaultsForNewGarland(),
     };
     scene = { ...scene, items: [...scene.items, g] };
     scheduleSave();
@@ -3517,6 +3725,7 @@ export async function renderEditor(
         sizeIn: tool.garlandSizeIn,
         points: seg,
         yardstickId: activeYs()?.id ?? null,
+        ...quoteDefaultsForNewGarland(),
       });
     }
     if (newGarlands.length === 0) return;
@@ -3895,20 +4104,18 @@ export async function renderEditor(
   window.addEventListener("keydown", keyHandler);
 
   // --- Resize ---
-  // [yll] Refit pulled into a named fn so a window 'resize' listener can share
-  // it. The embedded React host (quote tool) resizes the editor when toggling
-  // full screen and dispatches a window resize; this also hardens against
-  // environments where ResizeObserver doesn't deliver notifications (e.g. some
-  // headless browsers). Upstream to the design tool when convenient.
-  const refit = () => {
+  function refit() {
     if (bgImageNode) fitStage(bgImageNode.width(), bgImageNode.height());
     else stage.size({ width: stageWrap.clientWidth, height: stageWrap.clientHeight });
     drawLayer.batchDraw();
     bgLayer.batchDraw();
     tintLayer.batchDraw();
-  };
+  }
   const ro = new ResizeObserver(refit);
   ro.observe(stageWrap);
+  // Some embed hosts (e.g. the quote tool's React shell full-screen toggle)
+  // resize the editor without delivering ResizeObserver notifications, so also
+  // refit on window resize. Removed in destroy().
   window.addEventListener("resize", refit);
 
   // --- Teardown ---

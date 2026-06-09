@@ -1,4 +1,5 @@
 import Konva from "konva";
+// VENDOR ADAPTATION (Path B): types from our local sceneTypes, not ../api.
 import type { SpritzerItem } from "@/lib/design/sceneTypes";
 import { colorOf } from "./colors";
 
@@ -14,10 +15,6 @@ export function createSpritzer(
   pxPerFoot: number,
 ): Konva.Group {
   const diameterFt = item.sizeIn / 12;
-  // Scale purely with the yardstick (sizeIn × pxPerFoot), like every other
-  // item. A tiny floor only guards against a degenerate zero radius — it must
-  // NOT dominate, or low-pxPerFoot photos render the spritzer hugely oversized
-  // and it can't be resized down. [yll: was Math.max(20, …); relay to design tool]
   const radiusPx = Math.max(2, (diameterFt * pxPerFoot) / 2);
 
   const group = new Konva.Group({
@@ -32,11 +29,10 @@ export function createSpritzer(
   const colors = item.colorPattern.length > 0 ? item.colorPattern : ["warm-white"];
   const isMulti = colors.length > 1;
 
-  // Ray count scales with the rendered RADIUS (not sizeIn) so the angular
-  // spacing between ray tips stays roughly constant at every size — a small
-  // spritzer gets proportionally FEWER rays instead of collapsing into one
-  // dense blob, while large ones stay full. ~0.45/px keeps a 24" spritzer at
-  // the old ~22 rays. [yll: was 10 + sizeIn/2; relay to design tool]
+  // Ray density scales with the RENDERED radius (not sizeIn) so the angular
+  // spacing between ray tips stays constant at every size; small spritzers get
+  // proportionally fewer rays instead of collapsing into a blob. Clamped 7..36.
+  // (0.45 keeps a 24" spritzer at ~22 rays.)
   const numRays = Math.max(7, Math.min(36, Math.round(radiusPx * 0.45)));
   const rng = makeRng(item.id);
 
