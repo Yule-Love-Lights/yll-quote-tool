@@ -57,6 +57,9 @@ export async function POST(req: NextRequest) {
   if (q.customLineItems !== undefined && !Array.isArray(q.customLineItems)) {
     return NextResponse.json({ error: 'customLineItems must be an array if provided' }, { status: 400 });
   }
+  if (q.bows !== undefined && !Array.isArray(q.bows)) {
+    return NextResponse.json({ error: 'bows must be an array if provided' }, { status: 400 });
+  }
   if (!VALID_TAKEDOWNS.includes(q.takedown as string)) {
     return NextResponse.json({ error: 'Invalid takedown value' }, { status: 400 });
   }

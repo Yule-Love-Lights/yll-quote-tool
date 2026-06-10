@@ -12,6 +12,7 @@ import type {
   DecorTier,
   SpritzerSize,
   GarlandLength,
+  BowLineInput,
   CustomLineItem,
   RooflineDifficulty,
   RooflineChoice,
@@ -156,6 +157,20 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [designOpen, setDesignOpen] = useState(false);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
+  // Bumped after a roofline sync so the editor remounts and loads the seeded
+  // scene (#33).
+  const [designEditorKey, setDesignEditorKey] = useState(0);
+  const [designSyncMsg, setDesignSyncMsg] = useState<string | null>(null);
+
+  // The builder's STREET measurement polylines (normalized 0–1 of the photo),
+  // shaped for the roofline-seeding API (#33). Satellite lines are excluded —
+  // they're drawn on a different image than the design's base photo.
+  const buildSeedLines = () => ({
+    santas: santasLines.map((l) => l.points),
+    gingerbread: gingerbreadLines.map((l) => l.points),
+    winterWonderland: c9Lines.map((l) => l.points),
+  });
+  const hasSeedLines = santasLines.length + gingerbreadLines.length + c9Lines.length > 0;
 
   const openDesignEditor = async () => {
     setDesignError(null);
@@ -172,6 +187,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           quoteId: savedQuoteId ?? undefined,
           photoBase64: photoBase64 ?? undefined,
           photoMediaType: photoMediaType ?? undefined,
+          // The roofline lines ride along at creation (#33): the design opens
+          // with tagged, editable C9 roofline strands already drawn.
+          seedLines: photoBase64 && hasSeedLines ? buildSeedLines() : undefined,
         }),
       });
       const data = await res.json();
@@ -182,6 +200,41 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       setDesignOpen(true);
     } catch (err) {
       setDesignError(err instanceof Error ? err.message : 'Failed to open the design editor');
+    } finally {
+      setDesignBusy(false);
+    }
+  };
+
+  // "Sync roofline from measurement" (#33) — push the builder's current
+  // street polylines into the linked design as tagged C9 strands, REPLACING
+  // all roofline-tagged strands (the measurement owns the roofline; untagged
+  // hand-drawn strands are untouched). Closes the editor first: its unmount
+  // cancels the pending debounced autosave, so the seed can't be overwritten.
+  const syncRooflineToDesign = async () => {
+    if (!designId || designBusy) return;
+    setDesignError(null);
+    setDesignSyncMsg(null);
+    setDesignBusy(true);
+    const wasOpen = designOpen;
+    try {
+      if (wasOpen) {
+        setDesignOpen(false);
+        // Let any already-fired autosave PUT land before we write the scene.
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      const res = await fetch(`/api/designs/${designId}/seed-roofline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seedLines: buildSeedLines() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Roofline sync failed');
+      setDesignEditorKey((k) => k + 1);
+      const n = typeof data.rooflineStrands === 'number' ? data.rooflineStrands : 0;
+      setDesignSyncMsg(`Roofline synced — ${n} tagged strand${n === 1 ? '' : 's'} on the design.`);
+      if (wasOpen) setDesignOpen(true);
+    } catch (err) {
+      setDesignError(err instanceof Error ? err.message : 'Roofline sync failed');
     } finally {
       setDesignBusy(false);
     }
@@ -964,6 +1017,14 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     set('garland', form.garland.filter((_, idx) => idx !== i));
   const updateGarland = (i: number, patch: Partial<GarlandItem>) =>
     set('garland', form.garland.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+
+  // Standalone bows (#28) — flat per-bow price (TBD by Naldo, $0 today).
+  const addBow = () =>
+    set('bows', [...form.bows, { quantity: 1 }]);
+  const removeBow = (i: number) =>
+    set('bows', form.bows.filter((_, idx) => idx !== i));
+  const updateBow = (i: number, patch: Partial<BowLineInput>) =>
+    set('bows', form.bows.map((item, idx) => idx === i ? { ...item, ...patch } : item));
 
   // Custom / manual line items (#27 escape hatch) — staff-typed name + price for
   // off-design items. Not tied to the design; flow to the quote + portal.
@@ -2390,6 +2451,32 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             </button>
           </Section>
 
+          {/* ── Standalone bows (#28) ── */}
+          <Section title="Bows">
+            <p className="text-xs text-gray-400 mb-3">
+              A bow sold on its own (not on a wreath or garland). Flat price each — pricing pending
+              Naldo, bills $0 for now.
+            </p>
+            {form.bows.length > 0 && (
+              <div className="mb-3">
+                <div className="grid grid-cols-[96px_28px] gap-2 mb-1">
+                  <span className={lbl}>Qty</span>
+                  <span />
+                </div>
+                {form.bows.map((item, i) => (
+                  <div key={i} className="grid grid-cols-[96px_28px] gap-2 mb-2 items-start">
+                    <input className={inp} type="number" min="1" step="1" value={item.quantity}
+                      onChange={e => updateBow(i, { quantity: Number(e.target.value) })} />
+                    <button type="button" onClick={() => removeBow(i)} className={rmBtn}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={addBow} className={addBtn}>
+              + Add Bow
+            </button>
+          </Section>
+
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
             <p className="text-xs text-gray-400 mb-3">
@@ -2519,21 +2606,39 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 to work. It saves automatically and attaches to this quote.
               </p>
             </div>
-            {!designOpen && (
-              <button
-                type="button"
-                onClick={openDesignEditor}
-                disabled={designBusy}
-                className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
-              >
-                {designBusy ? 'Opening…' : designId ? 'Show design editor' : 'Open the design editor'}
-              </button>
-            )}
+            <div className="shrink-0 flex gap-2">
+              {designId && (
+                <button
+                  type="button"
+                  onClick={syncRooflineToDesign}
+                  disabled={designBusy || !hasSeedLines}
+                  title={
+                    hasSeedLines
+                      ? 'Replace the design’s roofline strands with the measurement lines above (tagged for the portal’s Santa’s/Gingerbread picture toggle). Hand-drawn decor is untouched.'
+                      : 'Analyze or draw street roofline lines first — there’s nothing to sync yet.'
+                  }
+                  className="bg-white border border-green-600 text-green-700 hover:bg-green-50 disabled:border-gray-300 disabled:text-gray-400 font-medium py-2 px-4 rounded-md text-sm"
+                >
+                  {designBusy ? 'Working…' : 'Sync roofline from measurement'}
+                </button>
+              )}
+              {!designOpen && (
+                <button
+                  type="button"
+                  onClick={openDesignEditor}
+                  disabled={designBusy}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
+                >
+                  {designBusy ? 'Opening…' : designId ? 'Show design editor' : 'Open the design editor'}
+                </button>
+              )}
+            </div>
           </div>
           {designError && <p className="text-sm text-red-600 mt-3">{designError}</p>}
+          {designSyncMsg && <p className="text-sm text-green-700 mt-3">{designSyncMsg}</p>}
           {designOpen && designId && (
             <div className="mt-4">
-              <DesignEditor designId={designId} onClose={() => setDesignOpen(false)} height={600} />
+              <DesignEditor key={designEditorKey} designId={designId} onClose={() => setDesignOpen(false)} height={600} />
             </div>
           )}
         </div>

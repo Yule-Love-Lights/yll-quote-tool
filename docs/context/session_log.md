@@ -15,7 +15,28 @@ metadata:
 
 ---
 
-### Session 6 — #31 EDIT AN EXISTING QUOTE shipped: /quote/[id] hydrates the builder + linked design; Calculate updates in place (2026-06-10) · CURRENT
+### Session 7 — #33 roofline PICTURE-toggle (auto-seed tagged strands from the measurement) + #28 standalone bow @$0 (2026-06-10) · CURRENT
+**Picked up from:** Session 6 close (#31 merged, PR #23). Branch **`jason/roofline-picture-toggle`** (off master). Plan approved by Jason first; his calls: **Option A** (auto-seed + sync button, NO editor-core changes), **replacement rule OK** (re-seed replaces ALL roofline-TAGGED strands; untagged hand-drawn decor untouched), **"Bow — $0.00" visible on the portal** until Naldo prices it.
+
+**✅ #28 — standalone bow (price $0, TODO Naldo):**
+- Engine: `BUSINESS_RULES.standaloneBowPrice = 0` (TODO note, same pattern as the 4.5ft bow tier) + `QuoteInputs.bows?: BowLineInput[]` (back-compat optional) + `calculateBows` ("Bow" / "Bows × N").
+- Projection: every included `BowItem` → one "Bow" line item (per-instance, no tag needed — a bow is always a bow) + `sceneItemIds` linkage; `applyProjectionToInputs` replaces `bows` too (design = master).
+- Portal: new `bow` kind (ANCHORED `/^Bows?\b/` — "With Bow" labels unaffected) + Ribbon icon + Tier C + sceneLinks category + variantPhoto rides 'wreaths'. Builder: manual "Bows" section (qty only) + quoteForm mapping/tests + `/api/quote` validation.
+
+**✅ #33 — roofline portal picture-toggle.** KEY RECON FINDING: the S5 mechanism was already 100% done (`sceneLinks` maps `roofline-santas` → `santas-roofline` strands, `roofline-gingerbread` → santas+gingerbread SUPERSET, WW → `winter-wonderland`; `hiddenSceneItemIds` hides only when NO controller is selected — superset-safe). The whole task = getting TAGS on strands. Shipped Option A:
+- **`src/lib/design/seedRoofline.ts`** (+13 tests) — pure: builder's normalized street polylines → photo-pixel C9 `StrandItem`s pre-tagged (editor defaults: c9 · 12" · strand · warm-white; ids `seed-*`). Replacement keys on the surface TAG; empty-lines = NO-OP; idempotent.
+- **Create-time seed:** `POST /api/designs` accepts `seedLines` → the design opens with the roofline already drawn + tagged (zero manual tagging in the normal flow). `createDesign` seeds after the photo upload (needs dims).
+- **Sync:** `POST /api/designs/[id]/seed-roofline` + a builder **"Sync roofline from measurement"** button (closes the editor first — its destroy cancels the pending debounced autosave (editor.ts ~L4668) + an 800ms settle → no save race; editor remounts via key bump). Disabled w/ hint when no lines (e.g. the /quote/[id] edit page, where analysis starts empty).
+- **Contract → v0.5** (bows project + seed convention + replacement rule + a railing-rate correction to the v0.4 note); synced to local memory. **Design-tool side: NOTHING to implement** (seeded strands are ordinary items) — Jason relays the v0.5 doc for the mirror.
+
+**Verified** (API-level end-to-end + headless UI; gates green — tsc · lint · **122 tests**): create-design-with-seedLines → 3 tagged strands at correct pixel coords; quote on it → `roofline-santas: [seed-santas-1]`, `roofline-gingerbread: [all 3]`, manual "Bows × 2" @$0 kind `bow`; drawn bow + tagged bush added → recalc in place → design-is-master replaced manual bows with the drawn "Bow" (+ linkage); re-sync with changed lines → tagged strands replaced, bow/bush untouched; edit page: Bows section hydrates, Sync disabled w/ hint. **Portal pixel-toggle NOT verifiable headlessly** (known S4 preview-browser canvas limitation — even the S5-verified bush-hide shows no pixel delta there); the hide path is byte-identical to the S5-verified one → Jason verifies visually in Chrome.
+**Test fixture left for Jason's verify:** quote `f0c8d731-798c-4238-b0e2-d67e50a7812a` ("S7 test — roofline toggle") + design `de40b906` (Roslyn photo, 2 tagged roofline strands + tagged bush + drawn bow). Delete via admin after.
+
+**NEXT (Session 8): #8 → Phase 3 — AI auto-design** (the big one; planning done in [[task_ai_training_refinement]]). Note the #33 seeding path IS a mini Phase-3: measurement lines → scene items programmatically — Phase 3 generalizes it to every category. Optional: C3b, #34 portal railing icon, #30, #25; bow + 4.5ft-garland bow prices from Naldo.
+
+---
+
+### Session 6 — #31 EDIT AN EXISTING QUOTE shipped: /quote/[id] hydrates the builder + linked design; Calculate updates in place (2026-06-10)
 **Picked up from:** Session 5 close — integration core merged; Jason's sequence = #31 → #33/#28 → Phase 3. Branch **`jason/edit-existing-quote`** (off master). Plan approved by Jason BEFORE coding; 3 calls confirmed: route = **`/quote/[id]`**; **/quote/new also stops duplicating** (every Calculate after the first updates the row in place); editing sent/approved quotes **allowed with a warning badge**.
 
 **✅ Shipped (gates green throughout — tsc · lint · 109 tests, 10 new):**

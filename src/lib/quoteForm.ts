@@ -6,6 +6,7 @@ import type {
   Spritzer,
   Wreath,
   GarlandItem,
+  BowLineInput,
   CustomLineItem,
   Takedown,
 } from './pricing/pricingEngine';
@@ -34,6 +35,8 @@ export type QuoteFormData = {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
+  // Standalone bows (#28) — flat per-bow price (TBD by Naldo, $0 today).
+  bows: BowLineInput[];
   // Custom / manual line items (#27 escape hatch) — off-design items.
   customLineItems: CustomLineItem[];
   takedown: Takedown;
@@ -55,6 +58,7 @@ export const initialFormData: QuoteFormData = {
   spritzers: [],
   wreaths: [],
   garland: [],
+  bows: [],
   customLineItems: [],
   takedown: 'included',
   rushFee: false,
@@ -85,6 +89,7 @@ export function buildQuoteInputs(
     spritzers: form.spritzers,
     wreaths: form.wreaths,
     garland: form.garland,
+    bows: form.bows,
     customLineItems: form.customLineItems,
     takedown: form.takedown,
     rushFee: form.rushFee,
@@ -153,6 +158,7 @@ export function inputsToFormData(
     spritzers: i.spritzers ?? [],
     wreaths: i.wreaths ?? [],
     garland: i.garland ?? [],
+    bows: i.bows ?? [],
     customLineItems: i.customLineItems ?? [],
     takedown: i.takedown ?? 'included',
     rushFee: i.rushFee ?? false,

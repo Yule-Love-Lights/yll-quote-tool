@@ -21,6 +21,7 @@ const fullForm: QuoteFormData = {
   spritzers: [{ size: '24', quantity: 2 }],
   wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }],
   garland: [{ length: '9ft', type: 'noble', tier: 'labor', quantity: 2 }],
+  bows: [{ quantity: 2 }],
   customLineItems: [{ label: 'Flagpole wrap', amount: 95, quantity: 2 }],
   takedown: 'premium',
   rushFee: true,
@@ -107,6 +108,7 @@ describe('inputsToFormData', () => {
     } as QuoteInputs;
     const hydrated = inputsToFormData({ name: 'Bob' }, old);
     expect(hydrated.customLineItems).toEqual([]);
+    expect(hydrated.bows).toEqual([]); // pre-#28 quotes have no bows field
     expect('rooflineChoice' in hydrated).toBe(false);
     expect(hydrated.discountEnabled).toBe(false);
     expect(hydrated.santasFootage).toBe(90);

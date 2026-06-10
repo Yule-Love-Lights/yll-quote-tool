@@ -1,15 +1,19 @@
 // Design collection endpoint (design-tool integration, Path B — task #27).
 //
 //   POST /api/designs — create a new design. Optional body:
-//       { quoteId?, photoBase64?, photoMediaType? }
+//       { quoteId?, photoBase64?, photoMediaType?, seedLines? }
 //     Used by the builder when the Street View photo is pulled: it creates the
 //     design (independent of any saved quote) and seeds the base photo so the
-//     editor opens on the customer's house. A design may be created before a
-//     quote exists; the quote link is set later via PUT /api/designs/[id].
+//     editor opens on the customer's house. `seedLines` (#33) carries the
+//     builder's normalized roofline polylines — they become pre-tagged C9
+//     strands so the portal picture-toggle works without manual tagging.
+//     A design may be created before a quote exists; the quote link is set
+//     later via PUT /api/designs/[id].
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createDesign, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
+import { sanitizeSeedLines } from '@/lib/design/seedRoofline';
 
 export const runtime = 'nodejs';
 
@@ -41,6 +45,7 @@ export async function POST(req: NextRequest) {
       quoteId: (quoteId as string | undefined) ?? null,
       photoBase64,
       photoMediaType,
+      seedLines: sanitizeSeedLines(body.seedLines),
     });
     if (!created) {
       return NextResponse.json({ error: 'Failed to create design' }, { status: 500 });

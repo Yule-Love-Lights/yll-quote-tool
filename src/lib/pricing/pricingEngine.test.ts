@@ -387,3 +387,34 @@ describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2
     expect(r.lineItems).toEqual([{ label: 'Tree – trunk wrap, 2 strings', amount: 90 }]); // 2 × $45
   });
 });
+
+describe('calculateQuote — standalone bows (#28; price TBD by Naldo, $0 for now)', () => {
+  it('prices each bow entry as its own line item at the standalone rate', () => {
+    const r = calculateQuote(emptyInputs({ bows: [{ quantity: 1 }, { quantity: 1 }] }));
+    // Written against the rule (not a literal $0) so this test survives Naldo
+    // setting the real price — only the TODO note + config guard change.
+    const each = BUSINESS_RULES.standaloneBowPrice;
+    expect(r.lineItems).toEqual([
+      { label: 'Bow', amount: each },
+      { label: 'Bow', amount: each },
+    ]);
+  });
+
+  it('multiplies quantity within an entry and pluralizes the label', () => {
+    const r = calculateQuote(emptyInputs({ bows: [{ quantity: 3 }] }));
+    expect(r.lineItems).toEqual([
+      { label: 'Bows × 3', amount: 3 * BUSINESS_RULES.standaloneBowPrice },
+    ]);
+  });
+
+  it('skips malformed entries and stays back-compatible when bows is absent', () => {
+    const bad = calculateQuote(emptyInputs({
+      bows: [{ quantity: 0 }, { quantity: NaN }, null as never, { quantity: 2.9 }],
+    }));
+    // Only the 2.9 entry survives, floored to 2 whole bows.
+    expect(bad.lineItems).toEqual([
+      { label: 'Bows × 2', amount: 2 * BUSINESS_RULES.standaloneBowPrice },
+    ]);
+    expect(calculateQuote(emptyInputs()).lineItems).toHaveLength(0);
+  });
+});

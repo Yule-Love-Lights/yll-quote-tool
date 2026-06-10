@@ -31,6 +31,9 @@ const TREE_RE = /^Tree\b/i;
 const BUSH_RE = /^Bush\b/i;
 const COLUMN_RE = /^Column\b/i;
 const RAILING_RE = /^Railing\b/i;
+// Standalone bow (#28): "Bow" or "Bows × 3". ANCHORED — wreath/garland labels
+// contain "With Bow" mid-string and must keep matching their own kinds.
+const BOW_RE = /^Bows?\b/i;
 const RIDGE_RE = /(Gingerbread|Ridge|Wonderland)/i; // Gingerbread (ridge) OR Winter Wonderland
 const ROOFLINE_RE = /Roofline/i;
 const SPRITZER_RE = /Spritzer/i;
@@ -46,6 +49,9 @@ export function parseLineItem(label: string): ParsedLineItem {
   // the portal (icon/tier/scene-linkage = mini); the label still reads "Railing".
   // (Follow-up: a dedicated 'railing' kind + icon — ledger #34.)
   if (RAILING_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
+
+  // Standalone bow (#28). Detail = "1 bow" / "N bows".
+  if (BOW_RE.test(label)) return { kind: 'bow', detail: extractBowDetail(label) };
 
   // Roofline family — order matters: the Ridge regex runs BEFORE Roofline.
   // "Gingerbread" (the ridge product, renamed from "Gingerbread Ridge") is
@@ -83,6 +89,12 @@ function extractSpritzerDetail(label: string): string {
   const qty = qtyM ? parseInt(qtyM[1], 10) : 1;
   if (!sizeM) return qty === 1 ? '1 stake' : `${qty} stakes`;
   return qty === 1 ? `1 × ${sizeM[1]}"` : `${qty} × ${sizeM[1]}"`;
+}
+
+function extractBowDetail(label: string): string {
+  const qtyM = label.match(/×\s*(\d+)/);
+  const qty = qtyM ? parseInt(qtyM[1], 10) : 1;
+  return qty === 1 ? '1 bow' : `${qty} bows`;
 }
 
 function extractDecorDetail(label: string): string {
