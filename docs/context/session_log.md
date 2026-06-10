@@ -38,9 +38,11 @@ metadata:
 
 **Deferred (Jason: after A2):** **roofline portal PICTURE-toggle** — Santa's↔Gingerbread does nothing in the live picture (price toggle works); needs the c9 roofline strands tagged `santas-roofline`/`gingerbread` (manual+tedious today). Fix = better tagging UX / auto-tag from the AI classification. Also: **mini grouping** (each drawn strand = its own bush today) lands with A2's railing grouping.
 
-**NEXT:** A2 part 2 (copy the design-tool's `editor.ts`+`miniArea.ts` diff → render-readonly wiring → verify), then **C3b** (optional builder "From your design" summary), then the deferred roofline-toggle. **This branch is being PR'd at the A1→D + A2-part1 milestone** (A2 part-1 types are inert/back-compat until the editor tool lands).
+**✅ A2 COMPLETE + WHOLE INTEGRATION CORE MERGED (end of S5).** Beyond A2 part 1: vendored the design-tool's **Scattershot** mini-area editor (box draw + color fill) + color-aware `miniArea.ts`; **railing grouping** (≥2 strands → one `MiniGroupItem` → one "Railing – N strings", verified); **railing + column** bill at the standard **$35/string** (canopy rate, no wrap style; only trees vary canopy/trunk); wrap-style dropdown hidden for column+railing. Cores byte-identical (hash-verified), **zero `[yll]`**, 99 tests. Branch `jason/integration-projection` (~16 commits `3791f8d`→`8a19e2f`) **merged to `master` via PR.**
 
-**Model/context:** Claude Opus (1M). Long multi-day session; A1→D + A2 part 1 shipped + verified; branch PR'd.
+**NEXT (Session 6) — Jason's chosen sequence, DO IN ORDER:** (1) **#31 edit-existing-quote** (reopen a saved quote + its design into the builder — `/quote/new` only CREATES today); (2) **#33 roofline portal PICTURE-toggle** (needs c9 strands tagged santas/gingerbread) **+ #28 standalone bow line item**; (3) **#8 → Phase 3 AI auto-design**. Optional anytime: C3b, #34 portal railing icon, #30, #25.
+
+**Model/context:** Claude Opus (1M). Long multi-day session; **A1→D + A2 fully shipped, verified, and MERGED to master.** Session closed at ~80% context (Jason's call) after the recommended-sequence handoff.
 
 ---
 
