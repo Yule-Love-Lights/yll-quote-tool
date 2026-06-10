@@ -1,6 +1,11 @@
 import sharp from 'sharp';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
+import {
+  seedRooflineStrands,
+  seedLinesHaveContent,
+  type RooflineSeedLines,
+} from './design/seedRoofline';
 
 // Server-side business logic for the design-tool integration (Path B, task #27
 // Phase 1). A "design" is one editable on-photo light layout. The `scene` is
@@ -69,13 +74,18 @@ export async function signDesignPhoto(path: string | null): Promise<string | nul
   }
 }
 
-// Create a new design row. Optionally link it to a quote and/or seed its base
-// photo from a base64 data payload (the Street View image the builder already
-// has in hand). Returns the new id, or null if Supabase isn't configured.
+// Create a new design row. Optionally link it to a quote, seed its base photo
+// from a base64 data payload (the Street View image the builder already has in
+// hand), and/or seed roofline strands from the builder's measurement polylines
+// (#33 — the polylines arrive pre-split red/blue, so the strands land tagged
+// `santas-roofline`/`gingerbread`/`winter-wonderland` and the portal's
+// picture-toggle works with zero manual tagging). Returns the new id, or null
+// if Supabase isn't configured.
 export async function createDesign(opts: {
   quoteId?: string | null;
   photoBase64?: string | null;
   photoMediaType?: string | null;
+  seedLines?: RooflineSeedLines | null;
 }): Promise<{ id: string } | null> {
   const sb = getSb();
   if (!sb) return null;
@@ -97,11 +107,17 @@ export async function createDesign(opts: {
   // Seed the base photo if one was supplied with the create call.
   if (opts.photoBase64) {
     try {
-      await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
+      const photo = await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
+      // Roofline seeding needs the photo's pixel dimensions — only possible
+      // when a photo came with the create call (the lines are drawn on it).
+      if (opts.seedLines && seedLinesHaveContent(opts.seedLines) && photo.width > 0 && photo.height > 0) {
+        const scene = seedRooflineStrands(EMPTY_SCENE, opts.seedLines, photo.width, photo.height);
+        await updateDesignScene(id, scene);
+      }
     } catch (err) {
-      // A failed photo seed isn't fatal — the design still exists and the
-      // operator can upload one from the editor.
-      console.error('createDesign: photo seed failed:', err);
+      // A failed photo/roofline seed isn't fatal — the design still exists and
+      // the operator can upload a photo / sync the roofline from the builder.
+      console.error('createDesign: photo/roofline seed failed:', err);
     }
   }
   return { id };
