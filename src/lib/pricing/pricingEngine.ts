@@ -52,7 +52,7 @@ export const BUSINESS_RULES = {
 export type RooflineDifficulty = 'easy' | 'medium' | 'hard';
 
 export type MiniLightItem = {
-  type: 'tree' | 'bush' | 'column';
+  type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
 };
@@ -293,13 +293,23 @@ const MINI_LIGHT_TYPE_LABELS: Record<MiniLightItem['type'], string> = {
   tree: 'Tree',
   bush: 'Bush',
   column: 'Column',
+  railing: 'Railing',
 };
 
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
   return inputs.miniLightItems.map(item => {
+    const strings = item.stringCount === 1 ? '1 string' : `${item.stringCount} strings`;
+    // Railings run mini-light strands at the SAME per-string cost as a bush
+    // (the canopy/standard rate) and have no wrap style — so they price at the
+    // canopy rate and label without a "wrap" qualifier (Jason, S5).
+    if (item.type === 'railing') {
+      return {
+        label: `Railing – ${strings}`,
+        amount: item.stringCount * BUSINESS_RULES.miniLightRates.canopy,
+      };
+    }
     const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
     const amount = item.stringCount * rate;
-    const strings = item.stringCount === 1 ? '1 string' : `${item.stringCount} strings`;
     const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
     return { label, amount };
   });

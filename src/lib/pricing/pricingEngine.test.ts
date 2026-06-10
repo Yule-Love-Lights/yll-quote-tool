@@ -357,3 +357,19 @@ describe('calculateQuote — custom / manual line items (#27 escape hatch)', () 
     ]);
   });
 });
+
+describe('calculateQuote — railing mini-lights (#27 A2)', () => {
+  it('prices a railing at the canopy/standard rate, no wrap style in the label', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'railing', wrapStyle: 'canopy', stringCount: 7 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Railing – 7 strings', amount: 245 }]); // 7 × $35
+  });
+
+  it('ignores wrapStyle for railings (always $35/string) and singularizes "1 string"', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'railing', wrapStyle: 'trunk', stringCount: 1 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Railing – 1 string', amount: 35 }]); // trunk ignored
+  });
+});

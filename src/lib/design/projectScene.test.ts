@@ -338,6 +338,14 @@ describe('projectScene — A2 mini-light areas + grouped railings', () => {
     expect(p.miniLightItems).toHaveLength(3);
     expect(p.items.map((i) => i.id)).toEqual(['mini-b1', 'mini-a1', 'mini-g1']);
   });
+
+  it('projects a railing surface (grouped strands) as a mini unit of type railing', () => {
+    const p = projectScene(scene([
+      miniGroup({ id: 'rail1', surface: 'railing', stringCount: 7, memberIds: ['s1', 's2'] }),
+    ]));
+    expect(p.miniLightItems).toEqual([{ type: 'railing', wrapStyle: 'canopy', stringCount: 7 }]);
+    expect(p.items[0].sceneItemIds).toEqual(['s1', 's2']); // hides as its member strands
+  });
 });
 
 describe('projectScene — mixed scene preserves order + derived arrays', () => {
