@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type {
   QuoteResult,
+  QuoteInputs,
   MiniLightItem,
   Spritzer,
   Wreath,
@@ -12,7 +13,17 @@ import type {
   SpritzerSize,
   GarlandLength,
   CustomLineItem,
+  RooflineDifficulty,
+  RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
+import {
+  type QuoteFormData,
+  type FormCustomer,
+  type StoredCustomer,
+  initialFormData,
+  buildQuoteInputs,
+  inputsToFormData,
+} from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
@@ -45,64 +56,34 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 // ─── Form state ──────────────────────────────────────────────────────────────
+// The form-state type + the form ⇄ QuoteInputs mapping live in
+// src/lib/quoteForm.ts (tested) so /quote/[id] hydration can't drift from
+// what Calculate Quote sends.
 
-type Customer = { name: string; address: string; phone: string; email: string };
-
-type RooflineDifficulty = 'easy' | 'medium' | 'hard';
-type RooflineChoice = 'santas' | 'gingerbread' | 'none';
-
-type FormData = {
-  customer: Customer;
-  santasFootage: number;
-  santasDifficulty: RooflineDifficulty;
-  gingerbreadFootage: number;
-  gingerbreadDifficulty: RooflineDifficulty;
-  winterWonderlandFootage: number;
-  winterWonderlandDifficulty: RooflineDifficulty;
-  // Staff's recommended roofline (the portal default). Undefined → the engine
-  // auto-picks the option closest to the $1,000 minimum (#17). Set via the
-  // breakdown's recommend radios.
-  rooflineChoice?: RooflineChoice;
-  miniLightItems: MiniLightItem[];
-  spritzers: Spritzer[];
-  wreaths: Wreath[];
-  garland: GarlandItem[];
-  // Custom / manual line items (#27 escape hatch) — off-design items.
-  customLineItems: CustomLineItem[];
-  takedown: 'included' | 'premium';
-  rushFee: boolean;
-  discountEnabled: boolean;
-  discountType: 'percentage' | 'flat';
-  discountAmount: number;
-};
-
-const initial: FormData = {
-  customer: { name: '', address: '', phone: '', email: '' },
-  santasFootage: 0,
-  santasDifficulty: 'medium',
-  gingerbreadFootage: 0,
-  gingerbreadDifficulty: 'medium',
-  winterWonderlandFootage: 0,
-  winterWonderlandDifficulty: 'medium',
-  miniLightItems: [],
-  spritzers: [],
-  wreaths: [],
-  garland: [],
-  customLineItems: [],
-  takedown: 'included',
-  rushFee: false,
-  discountEnabled: false,
-  discountType: 'percentage',
-  discountAmount: 0,
+// What /quote/[id] passes in to reopen a saved quote (task #31): the raw quote
+// row fields. The builder maps them into form state via inputsToFormData.
+export type QuoteBuilderInitial = {
+  quoteId: string;
+  customer: StoredCustomer;
+  inputs: Partial<QuoteInputs>;
+  result: QuoteResult | null;
+  designId: string | null;
+  sentAt: string | null;
+  approvedAt: string | null;
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
 // The full quote builder, shared by /quote/new (blank) and /quote/[id] (edit —
 // hydrated from a saved quote, task #31).
 
-export default function QuoteBuilder() {
-  const [form, setForm] = useState<FormData>(initial);
-  const [result, setResult] = useState<QuoteResult | null>(null);
+export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBuilderInitial }) {
+  const editMode = initialQuote != null;
+  const [form, setForm] = useState<QuoteFormData>(() =>
+    initialQuote ? inputsToFormData(initialQuote.customer, initialQuote.inputs) : initialFormData,
+  );
+  // In edit mode the saved result hydrates too, so the operator sees the
+  // current price breakdown (and the portal/send buttons) without recalculating.
+  const [result, setResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -117,12 +98,15 @@ export default function QuoteBuilder() {
   // `attachStatus` / `sendStatus`: informational — surfaced as a small
   // status line so the operator knows whether the GHL side is in sync.
   const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
-  const [savedQuoteId, setSavedQuoteId] = useState<string | null>(null);
+  const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  // Guards against re-attaching the same quote+contact on every recalculation,
+  // now that Calculate updates the saved row in place instead of inserting.
+  const lastAttachKey = useRef<string | null>(null);
 
   // Photo analysis
   type LineSegment = { points: [number, number][]; label: string };
@@ -168,7 +152,7 @@ export default function QuoteBuilder() {
   // A design is its own record, created when the editor is first opened
   // (seeded with the current photo). It links to the quote once the quote is
   // saved (Calculate Quote). The Konva editor is a client-only dynamic import.
-  const [designId, setDesignId] = useState<string | null>(null);
+  const [designId, setDesignId] = useState<string | null>(initialQuote?.designId ?? null);
   const [designOpen, setDesignOpen] = useState(false);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
@@ -474,8 +458,20 @@ export default function QuoteBuilder() {
     }]);
   };
 
+  // Detection→form syncs only run once that detection type has actually been
+  // populated (an analysis or a manually-added box). Without the gate, the
+  // mount-time run of each effect maps over the still-empty detection arrays
+  // and would wipe items hydrated from a saved quote (/quote/[id], task #31).
+  // Once seen, delete-the-last-detection still clears the form items as before.
+  const miniDetectionsSeen = useRef(false);
+  const wreathDetectionsSeen = useRef(false);
+  const spritzerDetectionsSeen = useRef(false);
+  const garlandDetectionsSeen = useRef(false);
+
   // Sync detection edits back into form.miniLightItems
   useEffect(() => {
+    if (miniLightDetections.length > 0) miniDetectionsSeen.current = true;
+    if (!miniDetectionsSeen.current) return;
     // defer the form sync out of the synchronous effect body (flushes before paint)
     queueMicrotask(() => setForm(f => ({
       ...f,
@@ -490,6 +486,8 @@ export default function QuoteBuilder() {
   // Wreaths — one form entry per detection. Grouped rendering in the quote is
   // fine with duplicates; each detection keeps its own box for editability.
   useEffect(() => {
+    if (wreathDetections.length > 0) wreathDetectionsSeen.current = true;
+    if (!wreathDetectionsSeen.current) return;
     // defer the form sync out of the synchronous effect body (flushes before paint)
     queueMicrotask(() => setForm(f => ({
       ...f,
@@ -499,6 +497,8 @@ export default function QuoteBuilder() {
 
   // Spritzers — one form entry per detection.
   useEffect(() => {
+    if (spritzerDetections.length > 0) spritzerDetectionsSeen.current = true;
+    if (!spritzerDetectionsSeen.current) return;
     // defer the form sync out of the synchronous effect body (flushes before paint)
     queueMicrotask(() => setForm(f => ({
       ...f,
@@ -509,6 +509,8 @@ export default function QuoteBuilder() {
   // Garland — box width in real feet (via feetPerUnit) tells us how many 9ft
   // pieces the run needs. Rounded up so we never short the customer.
   useEffect(() => {
+    if (garlandDetections.length > 0) garlandDetectionsSeen.current = true;
+    if (!garlandDetectionsSeen.current) return;
     const pieces = (box: [number, number, number, number], length: GarlandLength): number => {
       const unitFt = length === '9ft' ? 9 : 4.5;
       if (feetPerUnit == null) return 1;
@@ -908,10 +910,10 @@ export default function QuoteBuilder() {
     }
   };
 
-  const set = <K extends keyof FormData>(k: K, v: FormData[K]) =>
+  const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
-  const setCustomer = (k: keyof Customer, v: string) =>
+  const setCustomer = (k: keyof FormCustomer, v: string) =>
     setForm(f => ({ ...f, customer: { ...f.customer, [k]: v } }));
 
   // Mini lights — when detections are present, route all changes through
@@ -1156,43 +1158,17 @@ export default function QuoteBuilder() {
     setRenderUrl(null);
     setRenderError(null);
     setRenderSkipReason(null);
-    setSavedQuoteId(null);
     setAttachStatus('idle');
     setAttachError(null);
     setSendStatus('idle');
     setSendError(null);
     setCopiedUrl(false);
 
-    const effectiveRooflineChoice = rooflineChoiceOverride ?? form.rooflineChoice;
-    const inputs = {
-      santasFootage: form.santasFootage,
-      santasDifficulty: form.santasDifficulty,
-      gingerbreadFootage: form.gingerbreadFootage,
-      gingerbreadDifficulty: form.gingerbreadDifficulty,
-      winterWonderlandFootage: form.winterWonderlandFootage,
-      winterWonderlandDifficulty: form.winterWonderlandDifficulty,
-      // Only sent when staff has explicitly recommended one — otherwise the
-      // engine auto-picks (closest to the $1,000 minimum).
-      ...(effectiveRooflineChoice ? { rooflineChoice: effectiveRooflineChoice } : {}),
-      miniLightItems: form.miniLightItems,
-      spritzers: form.spritzers,
-      wreaths: form.wreaths,
-      garland: form.garland,
-      customLineItems: form.customLineItems,
-      takedown: form.takedown,
-      rushFee: form.rushFee,
-      ...(form.discountEnabled && {
-        discount: {
-          type: form.discountType,
-          // Percentage is entered as a whole number (20 = 20%); the pricing
-          // engine wants a fraction. Flat dollars pass through unchanged.
-          amount:
-            form.discountType === 'percentage'
-              ? form.discountAmount / 100
-              : form.discountAmount,
-        },
-      }),
-    };
+    // Once a quote exists (edit mode, or any Calculate after the first on a
+    // new quote), recalculating UPDATES that row in place — no more duplicate
+    // rows piling up in /admin/quotes (#31).
+    const existingQuoteId = savedQuoteId;
+    const inputs = buildQuoteInputs(form, rooflineChoiceOverride);
 
     try {
       const res = await fetch('/api/quote', {
@@ -1201,7 +1177,12 @@ export default function QuoteBuilder() {
         // designId → if the linked design has per-unit items, the route uses
         // them (design-driven pricing); otherwise the form's per-unit entry
         // drives it (decision 2a fallback).
-        body: JSON.stringify({ customer: form.customer, inputs, designId: designId ?? undefined }),
+        body: JSON.stringify({
+          customer: form.customer,
+          inputs,
+          quoteId: existingQuoteId ?? undefined,
+          designId: designId ?? undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -1212,8 +1193,11 @@ export default function QuoteBuilder() {
       // Fire the render in parallel — don't await it, the quote is already
       // visible and the preview loads below ~60s later.
       void kickoffRender();
-      // Attach to HL opportunity in parallel too, if an HL contact was picked.
-      if (newQuoteId && highlevelContact?.id) {
+      // Attach to HL opportunity in parallel too, if an HL contact was picked
+      // (skipped when this quote+contact pair is already attached).
+      const attachKey = newQuoteId && highlevelContact?.id ? `${newQuoteId}:${highlevelContact.id}` : null;
+      if (attachKey && newQuoteId && highlevelContact?.id && lastAttachKey.current !== attachKey) {
+        lastAttachKey.current = attachKey;
         void attachQuoteToHighLevel(newQuoteId, highlevelContact.id);
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
@@ -1242,28 +1226,7 @@ export default function QuoteBuilder() {
     setLoading(true);
     setError(null);
     try {
-      const inputs = {
-        santasFootage: form.santasFootage,
-        santasDifficulty: form.santasDifficulty,
-        gingerbreadFootage: form.gingerbreadFootage,
-        gingerbreadDifficulty: form.gingerbreadDifficulty,
-        winterWonderlandFootage: form.winterWonderlandFootage,
-        winterWonderlandDifficulty: form.winterWonderlandDifficulty,
-        rooflineChoice: choice,
-        miniLightItems: form.miniLightItems,
-        spritzers: form.spritzers,
-        wreaths: form.wreaths,
-        garland: form.garland,
-        customLineItems: form.customLineItems,
-        takedown: form.takedown,
-        rushFee: form.rushFee,
-        ...(form.discountEnabled && {
-          discount: {
-            type: form.discountType,
-            amount: form.discountType === 'percentage' ? form.discountAmount / 100 : form.discountAmount,
-          },
-        }),
-      };
+      const inputs = buildQuoteInputs(form, choice);
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1291,7 +1254,28 @@ export default function QuoteBuilder() {
           <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
             Yule Love Lights
           </p>
-          <h1 className="text-2xl font-bold text-gray-900">New Quote</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-gray-900">{editMode ? 'Edit Quote' : 'New Quote'}</h1>
+            {initialQuote?.approvedAt ? (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                Approved
+              </span>
+            ) : initialQuote?.sentAt ? (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                Sent
+              </span>
+            ) : null}
+          </div>
+          {editMode && (
+            <p className="text-xs text-gray-500 mt-1">
+              Editing saved quote <span className="font-mono">{initialQuote?.quoteId.slice(0, 8)}</span> —
+              Calculate updates this quote in place{initialQuote?.approvedAt
+                ? '. ⚠️ The customer already APPROVED this quote; edits change what their portal shows.'
+                : initialQuote?.sentAt
+                  ? '. ⚠️ This quote was already sent; edits change what the customer sees on their portal.'
+                  : '.'}
+            </p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit}>
@@ -2283,6 +2267,9 @@ export default function QuoteBuilder() {
                       <option value="tree">Tree</option>
                       <option value="bush">Bush</option>
                       <option value="column">Column</option>
+                      {/* Railing comes from design projections (#27 A2); without
+                          this option a hydrated railing item displays as "Tree". */}
+                      <option value="railing">Railing</option>
                     </select>
                     <select className={sel} value={item.wrapStyle}
                       onChange={e => updateMiniLight(i, { wrapStyle: e.target.value as MiniLightItem['wrapStyle'] })}>

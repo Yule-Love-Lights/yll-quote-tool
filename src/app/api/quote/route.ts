@@ -83,8 +83,11 @@ export async function POST(req: NextRequest) {
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
     // row; otherwise save a fresh quote.
     const isUpdate = typeof quoteId === 'string' && /^[0-9a-f-]{36}$/i.test(quoteId);
+    // On update, only touch the customer columns when the request actually
+    // carried a customer object — omitting it must not reset the stored
+    // name/address to the Anonymous sentinels.
     const saved = isUpdate
-      ? await updateQuote(quoteId as string, quoteInputs, result)
+      ? await updateQuote(quoteId as string, quoteInputs, result, customer ? safeCustomer : undefined)
       : await saveQuote(safeCustomer, quoteInputs, result);
     return NextResponse.json({
       customer: safeCustomer,
