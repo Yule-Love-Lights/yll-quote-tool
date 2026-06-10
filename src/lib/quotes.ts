@@ -99,19 +99,34 @@ export async function saveQuote(
 }
 
 // Re-price an existing quote IN PLACE (no new row). Used when the operator
-// changes the recommended roofline in the builder breakdown (#17 Phase 1b):
-// the price updates without re-rendering or creating a duplicate quote.
+// changes the recommended roofline in the builder breakdown (#17 Phase 1b)
+// and when recalculating from the edit flow (/quote/[id], #31). Passing
+// `customer` also persists edited customer fields (same sentinel defaults
+// as saveQuote so the row never regresses to NULL name/address).
 export async function updateQuote(
   id: string,
   inputs: QuoteInputs,
   result: QuoteResult,
+  customer?: Customer,
 ): Promise<{ id: string } | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
   const { data, error } = await supabase
     .from('quotes')
-    .update({ inputs, result, total: result.total })
+    .update({
+      inputs,
+      result,
+      total: result.total,
+      ...(customer
+        ? {
+            customer_name: blankToNull(customer.name) ?? 'Anonymous',
+            customer_address: blankToNull(customer.address) ?? '(no address)',
+            customer_phone: blankToNull(customer.phone),
+            customer_email: blankToNull(customer.email),
+          }
+        : {}),
+    })
     .eq('id', id)
     .select('id')
     .single();
@@ -121,4 +136,37 @@ export async function updateQuote(
     return null;
   }
   return { id: data.id };
+}
+
+// The raw row the EDIT flow needs (/quote/[id], #31): stored customer columns +
+// the exact QuoteInputs/QuoteResult jsonb the builder hydrates from. Distinct
+// from loadPortalQuote, which shapes the same row for the customer portal.
+export type QuoteRaw = {
+  id: string;
+  customer_name: string | null;
+  customer_address: string | null;
+  customer_phone: string | null;
+  customer_email: string | null;
+  inputs: Partial<QuoteInputs>;
+  result: QuoteResult | null;
+  quote_sent_at: string | null;
+  customer_approved_at: string | null;
+};
+
+export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
+  // Service client first: the edit page is staff-side (like the admin list).
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('quotes')
+    .select(
+      'id, customer_name, customer_address, customer_phone, customer_email, inputs, result, quote_sent_at, customer_approved_at',
+    )
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    console.error('Supabase getQuoteRaw error:', error);
+    return null;
+  }
+  return (data as QuoteRaw | null) ?? null;
 }

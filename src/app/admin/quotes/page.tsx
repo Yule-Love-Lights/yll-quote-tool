@@ -220,6 +220,12 @@ export default function QuotesAdminPage() {
                       <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         <Link
+                          href={`/quote/${q.id}`}
+                          className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
+                        >
+                          Edit
+                        </Link>
+                        <Link
                           href={`/portal/${q.id}`}
                           target="_blank"
                           rel="noopener noreferrer"

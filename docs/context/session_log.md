@@ -15,7 +15,23 @@ metadata:
 
 ---
 
-### Session 5 — #27 FULL PROJECTION (A1→D) BUILT + A2 part 1: design is the master item list + live portal toggle-filter (2026-06-10) · CURRENT
+### Session 6 — #31 EDIT AN EXISTING QUOTE shipped: /quote/[id] hydrates the builder + linked design; Calculate updates in place (2026-06-10) · CURRENT
+**Picked up from:** Session 5 close — integration core merged; Jason's sequence = #31 → #33/#28 → Phase 3. Branch **`jason/edit-existing-quote`** (off master). Plan approved by Jason BEFORE coding; 3 calls confirmed: route = **`/quote/[id]`**; **/quote/new also stops duplicating** (every Calculate after the first updates the row in place); editing sent/approved quotes **allowed with a warning badge**.
+
+**✅ Shipped (gates green throughout — tsc · lint · 109 tests, 10 new):**
+- **Refactor** (`c267b4c`): the 2,828-line `/quote/new` page body → shared **`src/components/quote/QuoteBuilder.tsx`**; `/quote/new` = thin wrapper. Pure move.
+- **Mapping lib** (`185bca9`): **`src/lib/quoteForm.ts`** (+10 tests) — `QuoteFormData` + `buildQuoteInputs` (form→API; now the ONE payload builder used by runQuote AND recommendRoofline) + `inputsToFormData` (saved row→form: discount fraction→whole %, blank-form defaults for fields old quotes predate, `Anonymous`/`(no address)` sentinels stripped).
+- **The feature** (`9d5630b`): **`/quote/[id]`** server component (`getQuoteRaw` in lib/quotes.ts + `getDesignByQuote` — the Phase-1 fn finally used) → `<QuoteBuilder initialQuote>`; bad id → 404; `/quote/new` keeps precedence. Edit mode hydrates form + saved **result** (breakdown/portal/Send visible on open) + `savedQuoteId` + `designId` (design section opens the EXISTING design — the #27 re-test unblock); header "Edit Quote" + Sent/Approved warning badge. **Calculate updates the row in place** (passes `quoteId`; HL attach deduped per quote+contact). `updateQuote()` now also persists customer columns (edits were silently dropped); `/api/quote` only touches them when the request carried a customer. **`/admin/quotes` rows have an Edit link.** Manual mini-type select gained `railing` (projected railing items had displayed as "Tree" — DOM select fallback).
+- **⚠️ Landmine found + fixed:** the 4 detection→form sync effects run on mount over the still-empty detection arrays and would WIPE hydrated per-unit items — each now syncs only once its detection type has ever been populated (per-array `useRef` seen-guards; zero `/quote/new` behavior change, delete-last-detection still clears).
+
+**Verified** (headless preview browser + curl, then Jason): edit page hydrates everything incl. 2 railings surviving mount; design editor loads the existing design `25d01750` (GET only, no create POST); in-place recalc (row count stayed 98); /quote/new dup-fix (2 Calculates → 1 row); admin Edit links. **Live-from-design note:** recalcing `ad0e9e64` moved its total 2351.73→2389.75 — CORRECT: its scene's railing items (7-string group + 1-string) postdated the last saved result; the design is the master list.
+**Edit-mode caveat (by design):** the photo-analysis section starts EMPTY on `/quote/[id]` (the street photo/polylines were never saved on the quote row — known architecture); running a fresh analysis behaves like a new quote (replaces per-unit items); the render politely skips with no photo. The linked design carries its own photo, so the design editor is fully functional.
+
+**NEXT (Session 7):** **#33 roofline portal PICTURE-toggle** (needs c9 strands tagged `santas-roofline`/`gingerbread`) **+ #28 standalone bow line item** (needs Naldo's $), then **#8 → Phase 3 AI auto-design**. Optional anytime: C3b, #34 portal railing icon, #30, #25.
+
+---
+
+### Session 5 — #27 FULL PROJECTION (A1→D) BUILT + A2 part 1: design is the master item list + live portal toggle-filter (2026-06-10)
 **Picked up from:** Session 4 close — full-projection plan locked. Branch **`jason/integration-projection`** (off master). Built the loop A→D + A2 part 1 with the design-tool AI in lockstep (cross-assistant; Jason relayed).
 
 **Decisions confirmed with Jason this session (DON'T re-ask):**
