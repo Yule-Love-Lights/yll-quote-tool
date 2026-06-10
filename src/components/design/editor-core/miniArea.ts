@@ -1,7 +1,7 @@
 import Konva from "konva";
 // VENDOR ADAPTATION (Path B): type from our local sceneTypes, not ../api.
-// Byte-identical with the design tool's canonical editor/miniArea.ts otherwise.
 import type { MiniAreaItem } from "@/lib/design/sceneTypes";
+import { colorOf } from "./colors";
 
 // Renders a MiniAreaItem: a box or traced polygon "filled" with deterministically
 // scattered single mini-lights, blended onto the photo with `lighten` so it reads
@@ -14,6 +14,10 @@ import type { MiniAreaItem } from "@/lib/design/sceneTypes";
 // the staff-set `stringCount`). Scatter is seeded by the item id so a given area
 // renders identically across reloads / undo.
 //
+// Bulb colors come from `colorPattern` (palette color IDs, like strand/spritzer):
+// bulbs cycle through the pattern in placement order. Missing/empty pattern ⇒
+// warm-white, matching areas saved before color support existed.
+//
 // Coordinate convention: the returned Group is positioned at the area's origin
 // (box top-left, or the polygon's bounding-box min) and all children are drawn in
 // LOCAL coordinates relative to that origin — so dragging the Group moves the
@@ -22,8 +26,6 @@ import type { MiniAreaItem } from "@/lib/design/sceneTypes";
 const FILL_K = 6;          // bulbs per real-world sq ft at density = 1
 const MIN_BULBS = 4;
 const MAX_BULBS = 600;     // perf guard for huge / dense areas
-const MINI_HEX = "#fff2d4";    // warm-white mini glow
-const MINI_CORE = "#fffdf5";
 
 export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Group {
   // Resolve the shape into LOCAL polygon points + an origin (so the group can
@@ -41,6 +43,8 @@ export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Gro
   const areaFt2 = polygonAreaPx(local) / (pxPerFoot * pxPerFoot);
   const density = clamp(item.density ?? 0.5, 0, 1);
   const count = clamp(Math.round(density * areaFt2 * FILL_K), MIN_BULBS, MAX_BULBS);
+
+  const colors = item.colorPattern && item.colorPattern.length > 0 ? item.colorPattern : ["warm-white"];
 
   const rPx = Math.max(1.2, 0.09 * pxPerFoot);   // mini bulb core radius
   const haloPx = rPx * 2.6;
@@ -67,6 +71,7 @@ export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Gro
     const lx = minX + rng() * (maxX - minX);
     const ly = minY + rng() * (maxY - minY);
     if (item.shape === "polygon" && !pointInPolygon(lx, ly, local)) continue;
+    const color = colorOf(colors[placed % colors.length]);
     // Soft halo (lighten).
     group.add(
       new Konva.Circle({
@@ -77,12 +82,13 @@ export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Gro
         fillRadialGradientStartRadius: 0,
         fillRadialGradientEndPoint: { x: 0, y: 0 },
         fillRadialGradientEndRadius: haloPx,
-        fillRadialGradientColorStops: [0, hexA(MINI_HEX, 0.8), 0.4, hexA(MINI_HEX, 0.35), 1, hexA(MINI_HEX, 0)],
+        fillRadialGradientColorStops: [0, hexA(color.hex, 0.8), 0.4, hexA(color.hex, 0.35), 1, hexA(color.hex, 0)],
         globalCompositeOperation: "lighten",
         listening: false,
       }),
     );
-    // Crisp core.
+    // Crisp core (glow-bright center fading to the bulb color, like a strand
+    // mini / spritzer tip).
     group.add(
       new Konva.Circle({
         x: lx,
@@ -92,7 +98,7 @@ export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Gro
         fillRadialGradientStartRadius: 0,
         fillRadialGradientEndPoint: { x: 0, y: 0 },
         fillRadialGradientEndRadius: rPx,
-        fillRadialGradientColorStops: [0, MINI_CORE, 0.6, MINI_HEX, 1, hexA(MINI_HEX, 0.2)],
+        fillRadialGradientColorStops: [0, color.glow, 0.6, color.hex, 1, hexA(color.hex, 0.2)],
         listening: false,
       }),
     );

@@ -3,8 +3,8 @@ import Konva from "konva";
 // design tool's ../api), the Fastify `api` client is replaced by our Supabase
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
-// design tool's canonical editor.ts (commit 2233e1e) — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength } from "@/lib/design/sceneTypes";
+// design tool's canonical editor.ts — keep it that way.
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -15,6 +15,7 @@ import { createSpritzer } from "./spritzer";
 import { renderText, fontsReady, FONT_OPTIONS, DEFAULT_TEXT_SIZE_IN, type FontFamily } from "./text";
 import { createCustom } from "./custom";
 import { createPole } from "./pole";
+import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 
@@ -54,6 +55,13 @@ const STYLE_HELP: Record<DrawingStyle, string> = {
   single: "Click to place a single bulb.",
 };
 
+// "Scattershot" is a lights-only 4th drawing style tracked by a LOCAL tool flag
+// (tool.scattershot) — deliberately NOT added to the shared DrawingStyle type,
+// which garland drawing also uses. It drag-draws a box that fills with
+// scattered mini-lights (a MiniAreaItem; the internal kind stays "miniArea").
+const SCATTERSHOT_HELP =
+  "Click and drag a box — it fills with scattered mini-lights in the selected color pattern. Drag its corners after to refit; set fill density in the edit panel.";
+
 type ItemCategory = "lights" | "decor" | "text" | "custom" | "poles";
 type DecorType = "wreath" | "bow" | "garland" | "spritzer";
 
@@ -62,6 +70,9 @@ type ToolState = {
   bulbType: BulbType;
   spacingIn: number;
   drawingStyle: DrawingStyle;
+  // Lights-only local style flag — see SCATTERSHOT_HELP. When true, the
+  // drawingStyle buttons render inactive and drags create mini-light areas.
+  scattershot: boolean;
   colorPattern: string[];
   pickerColorId: string;
   // Type-specific defaults that get baked into new strands at creation time.
@@ -175,6 +186,7 @@ export async function renderEditor(
     bulbType: "c9",
     spacingIn: 12,
     drawingStyle: "strand",
+    scattershot: false,
     colorPattern: ["warm-white"],
     pickerColorId: "warm-white",
     beamLengthFt: 4,
@@ -237,6 +249,11 @@ export async function renderEditor(
   // Trace polyline state (for "trace" mode) — accumulates committed points; last entry tracks the cursor.
   let tracePts: number[] | null = null;
   let drawPreview: Konva.Line | null = null;
+  // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
+  let scattershotStart: { x: number; y: number } | null = null;
+  // Scattershot edit panel: when armed (via "+ Add to pattern"), the next
+  // color tap APPENDS to the pattern instead of replacing it.
+  let maAddArmed = false;
 
   // --- Tool mode ---
   // "draw" = clicks/drags create new strands (current behavior).
@@ -604,6 +621,10 @@ export async function renderEditor(
         if (tool.category === "lights" && tool.bulbType === "bistro" && toolMode === "draw") {
           g.draggable(false);
         }
+      } else if (isMiniArea(item)) {
+        g = renderMiniArea(item, ppfForActiveYardstick());
+        g.draggable(true);
+        g.on("transformend dragend", () => bakeTransformIntoMiniArea(g, item.id));
       } else {
         continue;
       }
@@ -902,6 +923,43 @@ export async function renderEditor(
           : i,
       ),
     };
+    group.scaleX(1);
+    group.scaleY(1);
+    scheduleSave();
+    commit();
+    redrawScene();
+  }
+
+  // Bake a miniArea move/resize back into the item. Box: position → x/y, scale →
+  // width/height. Polygon: shift/scale the points by the group's transform.
+  function bakeTransformIntoMiniArea(group: Konva.Group, areaId: string) {
+    const cur = scene.items.find((i) => i.id === areaId);
+    if (!cur || !isMiniArea(cur)) return;
+    const sx = group.scaleX();
+    const sy = group.scaleY();
+    if (cur.shape === "polygon" && cur.points && cur.points.length >= 6) {
+      let minX = Infinity, minY = Infinity;
+      for (let i = 0; i + 1 < cur.points.length; i += 2) {
+        minX = Math.min(minX, cur.points[i]);
+        minY = Math.min(minY, cur.points[i + 1]);
+      }
+      const next = cur.points.map((p, i) =>
+        i % 2 === 0 ? group.x() + (p - minX) * sx : group.y() + (p - minY) * sy,
+      );
+      scene = {
+        ...scene,
+        items: scene.items.map((i) => (i.id === areaId && isMiniArea(i) ? { ...i, points: next } : i)),
+      };
+    } else {
+      const w = Math.max(4, (cur.width ?? 0) * sx);
+      const h = Math.max(4, (cur.height ?? 0) * sy);
+      scene = {
+        ...scene,
+        items: scene.items.map((i) =>
+          i.id === areaId && isMiniArea(i) ? { ...i, x: group.x(), y: group.y(), width: w, height: h } : i,
+        ),
+      };
+    }
     group.scaleX(1);
     group.scaleY(1);
     scheduleSave();
@@ -1339,18 +1397,21 @@ export async function renderEditor(
           </button>`;
         })()}
       </section>
+      ${tool.scattershot ? "" : `
       <section>
         <h3>Spacing (in)</h3>
         <div class="spacing-row" id="spacings">
           ${SPACINGS[tool.bulbType].map((s) => `<button data-s="${s}" class="${tool.spacingIn === s ? "active" : ""}">${s}"</button>`).join("")}
         </div>
       </section>
+      `}
       <section>
         <h3>Drawing Style</h3>
         <div class="style-row" id="styles">
-          ${STYLES.map((s) => `<button data-style="${s.id}" class="${tool.drawingStyle === s.id ? "active" : ""}">${s.label}</button>`).join("")}
+          ${STYLES.map((s) => `<button data-style="${s.id}" class="${!tool.scattershot && tool.drawingStyle === s.id ? "active" : ""}">${s.label}</button>`).join("")}
+          ${tool.bulbType === "mini" ? `<button data-style="scattershot" class="${tool.scattershot ? "active" : ""}">Scattershot</button>` : ""}
         </div>
-        <div class="style-help">${STYLE_HELP[tool.drawingStyle]}</div>
+        <div class="style-help">${tool.scattershot ? SCATTERSHOT_HELP : STYLE_HELP[tool.drawingStyle]}</div>
       </section>
       ${tool.bulbType === "permanent" ? `
       <section>
@@ -1554,6 +1615,9 @@ export async function renderEditor(
     sb.querySelectorAll("#bulb-types button").forEach((b) =>
       b.addEventListener("click", () => {
         tool.bulbType = (b as HTMLElement).dataset.type as BulbType;
+        // Scattershot is a mini-light-only style — leaving Mini drops back to
+        // the regular drawing style.
+        if (tool.bulbType !== "mini") tool.scattershot = false;
         // Pull the user's saved defaults for the newly-active type. Falls back to
         // factory values for anything not overridden in Settings.
         applyDefaultsForCurrentType();
@@ -1820,7 +1884,11 @@ export async function renderEditor(
 
     // Pre-draw config for perm lights. Updates tool state (no scene mutation; these
     // values get baked into newly-created strands only). Labels update inline.
-    if (tool.bulbType === "permanent") {
+    // Category guard: the sliders only exist in the Lights branch HTML, but
+    // tool.bulbType keeps its value across category switches — without the
+    // guard this block throws when e.g. Decor renders while bulbType is
+    // still "permanent".
+    if (tool.category === "lights" && tool.bulbType === "permanent") {
       const wireToolSlider = (
         id: string,
         key: "beamLengthFt" | "beamWidthFt" | "distanceToSurfaceFt" | "opacity",
@@ -1872,7 +1940,15 @@ export async function renderEditor(
     sb.querySelectorAll("#styles button").forEach((b) =>
       b.addEventListener("click", () => {
         cancelInProgress();
-        tool.drawingStyle = (b as HTMLElement).dataset.style as DrawingStyle;
+        const s = (b as HTMLElement).dataset.style!;
+        // "scattershot" is the local 4th style — a tool flag, never written
+        // into tool.drawingStyle (that type is shared with garland drawing).
+        if (s === "scattershot") {
+          tool.scattershot = true;
+        } else {
+          tool.scattershot = false;
+          tool.drawingStyle = s as DrawingStyle;
+        }
         renderSidebar();
       }),
     );
@@ -1886,11 +1962,14 @@ export async function renderEditor(
         renderSidebar();
       }),
     );
-    sb.querySelector("#add-color")!.addEventListener("click", () => {
+    // These exist only in the Lights branch — optional-chain so rendering any
+    // other category's panel doesn't throw mid-renderSidebar (a throw here
+    // aborts the caller's redrawScene and corrupts Konva's event dispatch).
+    sb.querySelector("#add-color")?.addEventListener("click", () => {
       tool.colorPattern = [...tool.colorPattern, tool.pickerColorId];
       renderSidebar();
     });
-    sb.querySelector("#clear-pattern")!.addEventListener("click", () => {
+    sb.querySelector("#clear-pattern")?.addEventListener("click", () => {
       tool.colorPattern = [tool.pickerColorId];
       renderSidebar();
     });
@@ -1970,6 +2049,7 @@ export async function renderEditor(
     const textSel = selectedItems.filter(isText);
     const customSel = selectedItems.filter(isCustom);
     const poleSel = selectedItems.filter(isPole);
+    const miniAreaSel = selectedItems.filter(isMiniArea);
 
     // All-of-one-kind → dedicated edit panel.
     if (wreathSel.length === selectedItems.length) {
@@ -2000,8 +2080,22 @@ export async function renderEditor(
       renderSelectedPoleSidebar(sb, poleSel);
       return;
     }
+    if (miniAreaSel.length === selectedItems.length) {
+      renderSelectedMiniAreaSidebar(sb, miniAreaSel);
+      return;
+    }
     if (strandSel.length === selectedItems.length) {
-      // Falls through to the strand panel below.
+      // If the selected strands all belong to ONE mini group, edit the GROUP
+      // (its billed attrs + Ungroup) rather than the individual strands.
+      const gid = strandSel[0].groupId;
+      if (gid && strandSel.every((s) => s.groupId === gid)) {
+        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
+        if (grp && isMiniGroup(grp)) {
+          renderSelectedMiniGroupSidebar(sb, grp);
+          return;
+        }
+      }
+      // else: falls through to the strand panel below.
     } else {
       // Mixed selection — just offer delete.
       const counts: string[] = [];
@@ -2013,6 +2107,7 @@ export async function renderEditor(
       if (textSel.length) counts.push(`${textSel.length} text${textSel.length === 1 ? "" : "s"}`);
       if (customSel.length) counts.push(`${customSel.length} custom${customSel.length === 1 ? "" : "s"}`);
       if (poleSel.length) counts.push(`${poleSel.length} pole${poleSel.length === 1 ? "" : "s"}`);
+      if (miniAreaSel.length) counts.push(`${miniAreaSel.length} scattershot${miniAreaSel.length === 1 ? "" : "s"}`);
       sb.innerHTML = `
         <section>
           <h3>Mixed selection</h3>
@@ -2129,18 +2224,24 @@ export async function renderEditor(
       </section>
       ` : ""}
 
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId) ? `
+      <section>
+        <button id="sel-group-mini" style="width:100%">Group as one quote unit</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} mini strands as a single unit (e.g. a railing).</div>
+      </section>
+      ` : ""}
       ${opts.showQuoteBinding ? (() => {
         const surfaceOpts: [string, string][] =
           sharedBulbType.length === 1 && sharedBulbType[0] === "c9"
             ? [["santas-roofline", "Santa's Roofline"], ["gingerbread", "Gingerbread"], ["winter-wonderland", "Winter Wonderland"]]
             : sharedBulbType.length === 1 && sharedBulbType[0] === "mini"
-            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"]]
+            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"], ["railing", "Railing"]]
             : [];
         const sSurface = uniq(sel.map((s) => s.surface ?? ""));
         const sInc = uniq(sel.map((s) => s.included ?? true));
         const sWrap = uniq(sel.map((s) => s.wrapStyle ?? "canopy"));
         const sCount = uniq(sel.map((s) => s.stringCount ?? 1));
-        const wrapSurface = sSurface.length === 1 && ["bush", "tree", "column"].includes(sSurface[0]);
+        const wrapSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing"].includes(sSurface[0]);
         return `
       <section>
         <h3>Quote binding</h3>
@@ -2313,6 +2414,30 @@ export async function renderEditor(
         updateSelected((s) => ({ ...s, included: incCb.checked }));
       });
     }
+    sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
+      const memberIds = sel.map((s) => s.id);
+      const groupId = cryptoId();
+      const grp: MiniGroupItem = {
+        id: groupId,
+        kind: "miniGroup",
+        memberIds,
+        yardstickId: null,
+        surface: sel[0].surface ?? "bush",
+        wrapStyle: sel[0].wrapStyle ?? "canopy",
+        stringCount: sel[0].stringCount ?? 1,
+        included: true,
+      };
+      scene = {
+        ...scene,
+        items: [
+          ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
+          grp,
+        ],
+      };
+      scheduleSave();
+      commit();
+      redrawScene();
+    });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
 
@@ -2817,6 +2942,282 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-spritzer-delete")?.addEventListener("click", deleteSelected);
+  }
+
+  // ============================================================
+  // Sidebar — edit panel for the currently selected mini-area(s)
+  // ============================================================
+  function renderSelectedMiniAreaSidebar(sb: HTMLElement, sel: MiniAreaItem[]) {
+    const sharedDensity = uniq(sel.map((a) => a.density ?? 0.5));
+    const sSurface = uniq(sel.map((a) => a.surface ?? ""));
+    const sWrap = uniq(sel.map((a) => a.wrapStyle ?? "canopy"));
+    const sCount = uniq(sel.map((a) => a.stringCount ?? 1));
+    const sInc = uniq(sel.map((a) => a.included ?? true));
+    const densityVal = sharedDensity.length === 1 ? sharedDensity[0] : 0.5;
+
+    sb.innerHTML = `
+      <section>
+        <h3>${sel.length === 1 ? "Edit Scattershot" : `Edit ${sel.length} Scattershots`}</h3>
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
+          Drag the body to move · drag corners to resize the fill region.
+        </div>
+      </section>
+      ${(() => {
+        const count = scene.items.filter(isMiniArea).length;
+        return `<section><button id="sel-select-all-miniareas" style="width:100%" ${count === 0 ? "disabled" : ""}>
+          Select All Scattershots (${count})
+        </button></section>`;
+      })()}
+      <section>
+        <h3>Fill density <span id="sel-ma-density-val" style="float:right;color:var(--text);font-weight:400">${Math.round(densityVal * 100)}%</span></h3>
+        <input type="range" id="sel-ma-density" min="0" max="1" step="0.05" value="${densityVal}" />
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Visual only — how densely the area fills with mini-lights. Doesn't affect the quote.</div>
+      </section>
+      ${(() => {
+        const sharedPattern = uniq(sel.map((a) => (a.colorPattern ?? []).join(",")));
+        const firstPattern = sel[0].colorPattern ?? [];
+        return `
+      <section>
+        <h3>Color${sharedPattern.length > 1 ? " (mixed)" : ""}</h3>
+        <div class="colors" id="sel-ma-colors">
+          ${COLORS.map((c) => `<button data-c="${c.id}" title="${c.label}" style="background:${c.hex}"></button>`).join("")}
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px">
+          <button id="sel-ma-add-color" class="${maAddArmed ? "active" : ""}">${maAddArmed ? "Tap a color to add…" : "+ Add to pattern"}</button>
+          <button id="sel-ma-clear-pattern">Clear</button>
+          <button id="sel-ma-multi" title="Set the pattern to every color in the palette">Multi</button>
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">
+          Tap a color to recolor everything · "+ Add to pattern" then a color to extend the pattern.
+        </div>
+        ${sharedPattern.length === 1 ? `
+        <div class="pattern-row" id="sel-ma-pattern">
+          ${firstPattern.map((id, i) => {
+            const c = COLORS.find((cc) => cc.id === id);
+            return `<div class="swatch" data-i="${i}" style="background:${c?.hex ?? "#333"}"><button>×</button></div>`;
+          }).join("")}
+        </div>` : `
+        <div style="margin-top:8px;color:var(--text-dim);font-size:11px">
+          Patterns differ across the selection. Tap a color to make them match, or use Multi for rainbow.
+        </div>`}
+      </section>`;
+      })()}
+      ${opts.showQuoteBinding ? `
+      <section>
+        <h3>Quote binding</h3>
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Surface</label>
+        <select id="sel-ma-surface" class="yardstick-select">
+          <option value="">${sSurface.length > 1 ? "— mixed —" : "— none (untagged) —"}</option>
+          <option value="bush" ${sSurface.length === 1 && sSurface[0] === "bush" ? "selected" : ""}>Bush</option>
+          <option value="tree" ${sSurface.length === 1 && sSurface[0] === "tree" ? "selected" : ""}>Tree</option>
+          <option value="column" ${sSurface.length === 1 && sSurface[0] === "column" ? "selected" : ""}>Column</option>
+          <option value="railing" ${sSurface.length === 1 && sSurface[0] === "railing" ? "selected" : ""}>Railing</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
+        <select id="sel-ma-wrapstyle" class="yardstick-select">
+          <option value="canopy" ${sWrap.length === 1 && sWrap[0] === "canopy" ? "selected" : ""}>Canopy</option>
+          <option value="trunk" ${sWrap.length === 1 && sWrap[0] === "trunk" ? "selected" : ""}>Trunk</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
+        <input type="number" id="sel-ma-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount.length === 1 ? sCount[0] : 1}" />
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-ma-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>
+      ` : ""}
+      <section style="display:flex;gap:6px">
+        <button id="sel-ma-duplicate">Duplicate</button>
+        <button id="sel-ma-delete" class="danger">Delete</button>
+      </section>
+    `;
+
+    const updateMiniAreas = (mut: (a: MiniAreaItem) => MiniAreaItem) => {
+      scene = { ...scene, items: scene.items.map((i) => (isMiniArea(i) && selectedIds.has(i.id) ? mut(i) : i)) };
+      scheduleSave();
+      commit();
+      redrawScene();
+    };
+
+    sb.querySelector("#sel-select-all-miniareas")?.addEventListener("click", () => {
+      const ids = scene.items.filter(isMiniArea).map((a) => a.id);
+      if (ids.length === 0) return;
+      selectedIds = new Set(ids);
+      selectedYardstickId = null;
+      redrawScene();
+    });
+
+    const dInput = sb.querySelector("#sel-ma-density") as HTMLInputElement | null;
+    const dLabel = sb.querySelector("#sel-ma-density-val") as HTMLElement | null;
+    dInput?.addEventListener("input", () => {
+      const v = Number(dInput.value);
+      if (dLabel) dLabel.textContent = `${Math.round(v * 100)}%`;
+      scene = { ...scene, items: scene.items.map((i) => (isMiniArea(i) && selectedIds.has(i.id) ? { ...i, density: v } : i)) };
+      scheduleSave();
+      requestCanvasRedraw();
+    });
+    dInput?.addEventListener("change", () => commit());
+
+    // Color pattern. A plain tap recolors the whole pattern (quick single-color
+    // change). "+ Add to pattern" ARMS the next tap to append instead — so
+    // building red+green is: tap red → Add → tap green.
+    sb.querySelectorAll("#sel-ma-colors button").forEach((b) =>
+      b.addEventListener("click", () => {
+        const id = (b as HTMLElement).dataset.c!;
+        if (maAddArmed) {
+          maAddArmed = false;
+          updateMiniAreas((a) => ({ ...a, colorPattern: [...(a.colorPattern ?? ["warm-white"]), id] }));
+        } else {
+          updateMiniAreas((a) => ({ ...a, colorPattern: [id] }));
+        }
+      }),
+    );
+    sb.querySelector("#sel-ma-add-color")?.addEventListener("click", () => {
+      maAddArmed = !maAddArmed;
+      renderSidebar();
+    });
+    sb.querySelector("#sel-ma-clear-pattern")?.addEventListener("click", () => {
+      maAddArmed = false;
+      updateMiniAreas((a) => ({ ...a, colorPattern: [(a.colorPattern ?? [])[0] ?? "warm-white"] }));
+    });
+    sb.querySelector("#sel-ma-multi")?.addEventListener("click", () => {
+      maAddArmed = false;
+      const all = COLORS.map((c) => c.id);
+      updateMiniAreas((a) => ({ ...a, colorPattern: all }));
+    });
+    sb.querySelectorAll("#sel-ma-pattern .swatch button").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const i = Number(((btn as HTMLElement).parentElement as HTMLElement).dataset.i);
+        updateMiniAreas((a) => {
+          const cp = (a.colorPattern ?? []).filter((_, idx) => idx !== i);
+          return { ...a, colorPattern: cp.length > 0 ? cp : ["warm-white"] };
+        });
+      });
+    });
+
+    if (opts.showQuoteBinding) {
+      const surf = sb.querySelector("#sel-ma-surface") as HTMLSelectElement | null;
+      surf?.addEventListener("change", () => {
+        const v = surf.value;
+        updateMiniAreas((a) => ({ ...a, surface: v ? (v as Surface) : null }));
+      });
+      const wrap = sb.querySelector("#sel-ma-wrapstyle") as HTMLSelectElement | null;
+      wrap?.addEventListener("change", () => {
+        updateMiniAreas((a) => ({ ...a, wrapStyle: wrap.value as WrapStyle }));
+      });
+      const sc = sb.querySelector("#sel-ma-stringcount") as HTMLInputElement | null;
+      sc?.addEventListener("change", () => {
+        const n = Math.max(1, Math.round(Number(sc.value) || 1));
+        updateMiniAreas((a) => ({ ...a, stringCount: n }));
+      });
+      const inc = sb.querySelector("#sel-ma-included") as HTMLInputElement | null;
+      inc?.addEventListener("change", () => {
+        updateMiniAreas((a) => ({ ...a, included: inc.checked }));
+      });
+    }
+
+    sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
+      const dupes = sel.map((a) => ({
+        ...a,
+        id: cryptoId(),
+        ...(a.shape === "polygon" && a.points
+          ? { points: a.points.map((p) => p + 20) }
+          : { x: (a.x ?? 0) + 20, y: (a.y ?? 0) + 20 }),
+      }));
+      scene = { ...scene, items: [...scene.items, ...dupes] };
+      selectedIds = new Set(dupes.map((a) => a.id));
+      scheduleSave();
+      commit();
+      redrawScene();
+    });
+    sb.querySelector("#sel-ma-delete")?.addEventListener("click", deleteSelected);
+  }
+
+  // ============================================================
+  // Sidebar — edit panel for a mini-light GROUP (surfaced when the selected
+  // strands all share one groupId). The group is geometry-less; the member
+  // strands still render/move individually.
+  // ============================================================
+  function renderSelectedMiniGroupSidebar(sb: HTMLElement, group: MiniGroupItem) {
+    const sSurface = group.surface ?? "";
+    const sWrap = group.wrapStyle ?? "canopy";
+    const sCount = group.stringCount ?? 1;
+    const inc = group.included ?? true;
+
+    sb.innerHTML = `
+      <section>
+        <h3>Mini-light group</h3>
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
+          ${group.memberIds.length} strands billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
+        </div>
+      </section>
+      ${opts.showQuoteBinding ? `
+      <section>
+        <h3>Quote binding</h3>
+        <label style="display:block;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Surface</label>
+        <select id="sel-mg-surface" class="yardstick-select">
+          <option value="" ${sSurface === "" ? "selected" : ""}>— none (untagged) —</option>
+          <option value="bush" ${sSurface === "bush" ? "selected" : ""}>Bush</option>
+          <option value="tree" ${sSurface === "tree" ? "selected" : ""}>Tree</option>
+          <option value="column" ${sSurface === "column" ? "selected" : ""}>Column</option>
+          <option value="railing" ${sSurface === "railing" ? "selected" : ""}>Railing</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
+        <select id="sel-mg-wrapstyle" class="yardstick-select">
+          <option value="canopy" ${sWrap === "canopy" ? "selected" : ""}>Canopy</option>
+          <option value="trunk" ${sWrap === "trunk" ? "selected" : ""}>Trunk</option>
+        </select>
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
+        <input type="number" id="sel-mg-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount}" />
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+          <input type="checkbox" id="sel-mg-included" ${inc === false ? "" : "checked"} />
+          <span>Included in quote</span>
+        </label>
+      </section>
+      ` : ""}
+      <section>
+        <button id="sel-mg-ungroup" style="width:100%">Ungroup</button>
+      </section>
+    `;
+
+    const updateGroup = (mut: (g: MiniGroupItem) => MiniGroupItem) => {
+      scene = { ...scene, items: scene.items.map((i) => (i.id === group.id && isMiniGroup(i) ? mut(i) : i)) };
+      scheduleSave();
+      commit();
+      redrawScene();
+    };
+
+    if (opts.showQuoteBinding) {
+      const surf = sb.querySelector("#sel-mg-surface") as HTMLSelectElement | null;
+      surf?.addEventListener("change", () => {
+        const v = surf.value;
+        updateGroup((g) => ({ ...g, surface: v ? (v as Surface) : null }));
+      });
+      const wrap = sb.querySelector("#sel-mg-wrapstyle") as HTMLSelectElement | null;
+      wrap?.addEventListener("change", () => updateGroup((g) => ({ ...g, wrapStyle: wrap.value as WrapStyle })));
+      const sc = sb.querySelector("#sel-mg-stringcount") as HTMLInputElement | null;
+      sc?.addEventListener("change", () => {
+        const n = Math.max(1, Math.round(Number(sc.value) || 1));
+        updateGroup((g) => ({ ...g, stringCount: n }));
+      });
+      const incCb = sb.querySelector("#sel-mg-included") as HTMLInputElement | null;
+      incCb?.addEventListener("change", () => updateGroup((g) => ({ ...g, included: incCb.checked })));
+    }
+
+    sb.querySelector("#sel-mg-ungroup")?.addEventListener("click", () => {
+      const memberIds = group.memberIds;
+      scene = {
+        ...scene,
+        items: scene.items
+          .filter((i) => i.id !== group.id)
+          .map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+      };
+      selectedIds = new Set(memberIds); // keep members selected → strand panel returns
+      scheduleSave();
+      commit();
+      redrawScene();
+    });
   }
 
   // ============================================================
@@ -3528,6 +3929,30 @@ export async function renderEditor(
     commit();
   }
 
+  // Commit a scattershot box drawn via drag (Lights → Scattershot style).
+  function commitMiniArea(r: { x: number; y: number; width: number; height: number }) {
+    const area: MiniAreaItem = {
+      id: cryptoId(),
+      kind: "miniArea",
+      shape: "box",
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+      density: 0.5,
+      colorPattern: [...tool.colorPattern],
+      yardstickId: activeYs()?.id ?? null,
+      surface: "bush",
+      wrapStyle: "canopy",
+      stringCount: 1,
+      included: true,
+    };
+    scene = { ...scene, items: [...scene.items, area] };
+    selectedIds = new Set([area.id]);
+    scheduleSave();
+    commit();
+  }
+
   function commitText(p: { x: number; y: number }) {
     const item: TextItem = {
       id: cryptoId(),
@@ -3745,6 +4170,10 @@ export async function renderEditor(
     tracePts = null;
     drawPreview?.destroy();
     drawPreview = null;
+    if (scattershotStart) {
+      scattershotStart = null;
+      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+    }
     if (creatingYardstick) {
       drawLayer.find(".ys-preview").forEach((n) => n.destroy());
       ysDragStart = null;
@@ -3813,6 +4242,12 @@ export async function renderEditor(
 
     // Click on an existing spritzer — same deal as wreath/bow.
     if (e.target.findAncestor(".spritzer", true)) return;
+
+    // Click on an existing mini-light area — let its click handler select it;
+    // don't fall through to the place/draw pipeline (which would drop a
+    // duplicate box and destroy the pressed group mid-gesture). Same trace
+    // exception as strands/garlands: mid-trace clicks continue the polyline.
+    if (e.target.findAncestor(".miniArea", true) && !tracePts) return;
 
     // Click on an existing text item — same.
     if (e.target.findAncestor(".text", true)) return;
@@ -3893,6 +4328,13 @@ export async function renderEditor(
       return;
     }
 
+    // Scattershot (lights-only local style): drag a box that fills with
+    // scattered mini-lights on release. Preview drawn on mousemove.
+    if (tool.scattershot) {
+      scattershotStart = p;
+      return;
+    }
+
     if (tool.drawingStyle === "single") {
       if (drawingGarland()) commitGarlandSingle(p);
       else commitSingle(p);
@@ -3952,6 +4394,24 @@ export async function renderEditor(
         fill: "rgba(79,140,255,0.1)",
         listening: false,
         name: "ys-preview",
+      });
+      drawLayer.add(preview);
+      drawLayer.batchDraw();
+      return;
+    }
+    if (scattershotStart) {
+      const p = imagePoint();
+      if (!p) return;
+      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      const preview = new Konva.Rect({
+        x: Math.min(p.x, scattershotStart.x),
+        y: Math.min(p.y, scattershotStart.y),
+        width: Math.abs(p.x - scattershotStart.x),
+        height: Math.abs(p.y - scattershotStart.y),
+        stroke: "#4f8cff", strokeWidth: 2, dash: [6, 4],
+        fill: "rgba(79,140,255,0.08)",
+        listening: false,
+        name: "scattershot-preview",
       });
       drawLayer.add(preview);
       drawLayer.batchDraw();
@@ -4022,6 +4482,22 @@ export async function renderEditor(
       ysDragStart = null;
       creatingYardstick = false;
       stage.container().style.cursor = "";
+      redrawScene();
+      return;
+    }
+
+    if (scattershotStart) {
+      const p = imagePoint();
+      if (p) {
+        const x = Math.min(p.x, scattershotStart.x);
+        const y = Math.min(p.y, scattershotStart.y);
+        const w = Math.abs(p.x - scattershotStart.x);
+        const h = Math.abs(p.y - scattershotStart.y);
+        // Reject tiny boxes as accidental clicks (same spirit as strand's 6px).
+        if (w > 8 && h > 8) commitMiniArea({ x, y, width: w, height: h });
+      }
+      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      scattershotStart = null;
       redrawScene();
       return;
     }

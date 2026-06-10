@@ -186,6 +186,7 @@ export type MiniAreaItem = ItemBase & MiniBilling & {
   height?: number;
   points?: number[]; // polygon, flat [x0,y0,…], auto-closed on finish
   density?: number; // 0–1 VISUAL fill (bulbs-per-area at render), NOT a count
+  colorPattern?: string[]; // palette color IDs; bulbs cycle the pattern (spritzer semantics); empty ⇒ warm-white. VISUAL-only (no projection impact).
   // surface (bush/tree/column) + included inherited from ItemBase
 };
 
