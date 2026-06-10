@@ -5,7 +5,7 @@
 // dim out with muted cream. No red anywhere — keeps red reserved
 // for the sticky bar CTA.
 
-import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Check } from 'lucide-react';
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Check } from 'lucide-react';
 import type { PortalLineItem, PortalLineItemKind } from '../types';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
@@ -74,6 +74,7 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   garland: Flower2,
   spritzer: Sparkles,
   column: Sparkles,
+  bow: Ribbon,
 };
 
 export type WhatsIncludedProps = {

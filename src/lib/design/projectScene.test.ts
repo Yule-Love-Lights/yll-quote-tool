@@ -241,9 +241,26 @@ describe('projectScene — garland (length + sections + tier, all staff-set)', (
 });
 
 describe('projectScene — unmapped item kinds', () => {
-  it('bow and text render but produce no line item', () => {
-    const p = projectScene(scene([bow(), text()]));
+  it('text renders but produces no line item', () => {
+    const p = projectScene(scene([text()]));
     expect(p.items).toEqual([]);
+  });
+});
+
+describe('projectScene — standalone bows (#28)', () => {
+  it('projects each drawn bow per-instance: one "Bow" unit, qty 1, linked to its scene item', () => {
+    const p = projectScene(scene([bow({ id: 'b1' }), bow({ id: 'b2' })]));
+    expect(p.items).toEqual([
+      { id: 'bow-b1', category: 'bow', sceneItemIds: ['b1'], input: { quantity: 1 } },
+      { id: 'bow-b2', category: 'bow', sceneItemIds: ['b2'], input: { quantity: 1 } },
+    ]);
+    expect(p.bows).toEqual([{ quantity: 1 }, { quantity: 1 }]);
+  });
+
+  it('skips a bow toggled off (included: false)', () => {
+    const p = projectScene(scene([bow({ included: false })]));
+    expect(p.items).toEqual([]);
+    expect(p.bows).toEqual([]);
   });
 });
 
@@ -351,17 +368,18 @@ describe('projectScene — A2 mini-light areas + grouped railings', () => {
 describe('projectScene — mixed scene preserves order + derived arrays', () => {
   it('items[] order matches scene order; arrays are the per-category slices', () => {
     const p = projectScene(scene([
-      strand({ id: 'roof', bulbType: 'c9', surface: 'santas-roofline' }), // skipped
+      strand({ id: 'roof', bulbType: 'c9', surface: 'santas-roofline' }), // skipped (roofline = measurement-driven)
       wreath({ id: 'w', quoteSize: '24noble', tier: 'bow' }),
       strand({ id: 'bush', surface: 'bush', stringCount: 2 }),
       spritzer({ id: 'sp', quoteSize: '16' }),
       garland({ id: 'g', quoteLength: '9ft', quoteSections: 1, tier: 'labor' }),
-      bow({ id: 'b' }), // skipped
+      bow({ id: 'b' }), // projects as of #28
     ]));
-    expect(p.items.map((i) => i.id)).toEqual(['wreath-w', 'mini-bush', 'spritzer-sp', 'garland-g']);
+    expect(p.items.map((i) => i.id)).toEqual(['wreath-w', 'mini-bush', 'spritzer-sp', 'garland-g', 'bow-b']);
     expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 2 }]);
     expect(p.spritzers).toEqual([{ size: '16', quantity: 1 }]);
     expect(p.wreaths).toEqual([{ size: '24noble', tier: 'bow', quantity: 1 }]);
     expect(p.garland).toEqual([{ length: '9ft', type: 'noble', tier: 'labor', quantity: 1 }]);
+    expect(p.bows).toEqual([{ quantity: 1 }]);
   });
 });

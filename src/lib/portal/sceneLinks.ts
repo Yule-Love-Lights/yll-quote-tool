@@ -32,6 +32,7 @@ const KIND_TO_CATEGORY: Partial<Record<PortalLineItemKind, ProjectedCategory>> =
   spritzer: 'spritzer',
   wreath: 'wreath',
   garland: 'garland',
+  bow: 'bow',
 };
 
 export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): PortalLineItem[] {
@@ -49,8 +50,9 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
     spritzer: proj.items.filter((p) => p.category === 'spritzer').map((p) => p.sceneItemIds),
     wreath: proj.items.filter((p) => p.category === 'wreath').map((p) => p.sceneItemIds),
     garland: proj.items.filter((p) => p.category === 'garland').map((p) => p.sceneItemIds),
+    bow: proj.items.filter((p) => p.category === 'bow').map((p) => p.sceneItemIds),
   };
-  const cursor: Record<ProjectedCategory, number> = { mini: 0, spritzer: 0, wreath: 0, garland: 0 };
+  const cursor: Record<ProjectedCategory, number> = { mini: 0, spritzer: 0, wreath: 0, garland: 0, bow: 0 };
 
   return lineItems.map((li) => {
     // Roofline tiers (synthesized by the adapter with stable ids).

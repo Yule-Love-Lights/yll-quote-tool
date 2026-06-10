@@ -30,6 +30,9 @@ const KIND_TO_VARIANT: Record<PortalLineItemKind, keyof PortalVariantPhotos> = {
   wreath: 'wreaths',
   garland: 'garland',
   spritzer: 'spritzers',
+  // Standalone bow (#28) rides the wreaths variant — no dedicated AI render
+  // variant exists for bows (and the render pipeline is slated for replacement).
+  bow: 'wreaths',
 };
 
 export function variantPhotoForKind(

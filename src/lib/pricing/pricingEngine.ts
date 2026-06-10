@@ -43,6 +43,11 @@ export const BUSINESS_RULES = {
       '4.5ft': { labor: 135, bow: 0,   fullDecor: 210 },  // TODO: 'bow' tier price still TBD — Naldo to confirm (currently silently prices $0)
     },
   },
+
+  // Standalone bow — a bow sold on its own, not on a wreath/garland (#28).
+  // TODO: price still TBD — Naldo to confirm (currently prices $0; Jason
+  // approved shipping the category at $0 so drawn bows price + toggle now).
+  standaloneBowPrice: 0,
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -85,6 +90,12 @@ export type GarlandItem = {
   length: GarlandLength;
   type: GarlandType;
   tier: DecorTier;
+  quantity: number;
+};
+
+// Standalone bow (#28) — bills flat per bow (no size/tier; the drawn size on a
+// design is visual-only, like every per-unit item).
+export type BowLineInput = {
   quantity: number;
 };
 
@@ -133,6 +144,9 @@ export interface QuoteInputs {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
+  // Standalone bows (#28). Optional for back-compat: quotes priced before this
+  // field stay valid.
+  bows?: BowLineInput[];
   // Custom / manual line items (#27 — the Option-2 escape hatch). Optional for
   // back-compat: quotes priced before this field stay valid.
   customLineItems?: CustomLineItem[];
@@ -379,6 +393,33 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 }
 
 // ─────────────────────────────────────────────────────────
+// Standalone bows (#28)
+// ─────────────────────────────────────────────────────────
+
+// Flat per-bow price (currently $0 — see BUSINESS_RULES.standaloneBowPrice
+// TODO). One input entry → one line item, so a design's drawn bows each get
+// their own portal toggle (per-instance, like minis). Defensive: malformed
+// entries are skipped, quantities floor to whole bows.
+function calculateBows(inputs: QuoteInputs): LineItem[] {
+  if (!Array.isArray(inputs.bows)) return [];
+  return inputs.bows
+    .filter(
+      (b) =>
+        b &&
+        typeof b.quantity === 'number' &&
+        Number.isFinite(b.quantity) &&
+        b.quantity >= 1,
+    )
+    .map((b) => {
+      const qty = Math.floor(b.quantity);
+      return {
+        label: qty === 1 ? 'Bow' : `Bows × ${qty}`,
+        amount: qty * BUSINESS_RULES.standaloneBowPrice,
+      };
+    });
+}
+
+// ─────────────────────────────────────────────────────────
 // Custom / manual line items (#27 escape hatch)
 // ─────────────────────────────────────────────────────────
 
@@ -422,6 +463,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     ...calculateSpritzers(inputs),
     ...calculateWreaths(inputs),
     ...calculateGarland(inputs),
+    ...calculateBows(inputs),
     ...calculateCustomLineItems(inputs),
   ];
   const restSubtotal = restItems.reduce((sum, item) => sum + item.amount, 0);

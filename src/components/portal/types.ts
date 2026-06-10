@@ -27,7 +27,8 @@ export type PortalLineItemKind =
   | 'wreath'
   | 'garland'
   | 'spritzer'
-  | 'column';
+  | 'column'
+  | 'bow';
 
 export type PortalLineItem = {
   id: string;

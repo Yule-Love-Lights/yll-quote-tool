@@ -16,8 +16,9 @@
 // Two things stay OUT of the projection (by design — data contract §7):
 //   • Roofline (Santa's / Gingerbread / Winter Wonderland) is MEASUREMENT-driven
 //     (footage × rate). Roofline scene strands are visual + toggle binding only.
-//   • Anything unmapped (text, custom, bow, pole, permanent, bistro, or a strand
+//   • Anything unmapped (text, custom, pole, permanent, bistro, or a strand
 //     with no recognized `surface`) renders but produces no line item (§2).
+//     (Standalone BOWS used to be on that list — they project as of #28.)
 //
 // LINKAGE ("live from design" model): every projected line item carries the
 // scene-item id(s) it controls and a stable `id`. The portal re-derives this at
@@ -30,16 +31,17 @@
 // "live from design" decision.)
 
 import type { Scene, MiniBilling } from './sceneTypes';
-import { isStrand, isWreath, isGarland, isSpritzer, isMiniArea, isMiniGroup } from './sceneTypes';
+import { isStrand, isWreath, isGarland, isSpritzer, isBow, isMiniArea, isMiniGroup } from './sceneTypes';
 import type {
   MiniLightItem,
   Spritzer,
   Wreath,
   GarlandItem as PriceGarland,
+  BowLineInput,
   QuoteInputs,
 } from '@/lib/pricing/pricingEngine';
 
-export type ProjectedCategory = 'mini' | 'spritzer' | 'wreath' | 'garland';
+export type ProjectedCategory = 'mini' | 'spritzer' | 'wreath' | 'garland' | 'bow';
 
 // Default billed specs when staff haven't set them (per Jason S5). The editor
 // seeds these on creation too; these are the projection's safety net so an
@@ -57,7 +59,8 @@ export type ProjectedLineItem =
   | { id: string; category: 'mini'; sceneItemIds: string[]; input: MiniLightItem }
   | { id: string; category: 'spritzer'; sceneItemIds: string[]; input: Spritzer }
   | { id: string; category: 'wreath'; sceneItemIds: string[]; input: Wreath }
-  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland };
+  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland }
+  | { id: string; category: 'bow'; sceneItemIds: string[]; input: BowLineInput };
 
 export type Projection = {
   // Ready to drop into QuoteInputs. The builder adds roofline footage, takedown,
@@ -66,6 +69,7 @@ export type Projection = {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: PriceGarland[];
+  bows: BowLineInput[];
   // The linkage-carrying view. The arrays above are derived from this (same
   // order), so the Nth entry of a category here lines up with the Nth engine
   // line item for that category.
@@ -174,7 +178,15 @@ export function projectScene(scene: Scene): Projection {
       continue;
     }
 
-    // bow / text / custom / pole + any unmapped item → renders, no line item.
+    // Standalone bow (#28) — per-instance like everything else: one drawn bow =
+    // one "Bow" line item = one toggle. No tag needed (a bow is always a bow);
+    // flat price each (drawn size is visual-only; rate TBD by Naldo, $0 today).
+    if (isBow(item)) {
+      items.push({ id: `bow-${item.id}`, category: 'bow', sceneItemIds: [item.id], input: { quantity: 1 } });
+      continue;
+    }
+
+    // text / custom / pole + any unmapped item → renders, no line item.
   }
 
   return {
@@ -182,6 +194,7 @@ export function projectScene(scene: Scene): Projection {
     spritzers: items.filter((i) => i.category === 'spritzer').map((i) => i.input as Spritzer),
     wreaths: items.filter((i) => i.category === 'wreath').map((i) => i.input as Wreath),
     garland: items.filter((i) => i.category === 'garland').map((i) => i.input as PriceGarland),
+    bows: items.filter((i) => i.category === 'bow').map((i) => i.input as BowLineInput),
     items,
   };
 }
@@ -207,5 +220,6 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
     spritzers: p.spritzers,
     wreaths: p.wreaths,
     garland: p.garland,
+    bows: p.bows,
   };
 }
