@@ -30,6 +30,7 @@ export type ParsedLineItem = {
 const TREE_RE = /^Tree\b/i;
 const BUSH_RE = /^Bush\b/i;
 const COLUMN_RE = /^Column\b/i;
+const RAILING_RE = /^Railing\b/i;
 const RIDGE_RE = /(Gingerbread|Ridge|Wonderland)/i; // Gingerbread (ridge) OR Winter Wonderland
 const ROOFLINE_RE = /Roofline/i;
 const SPRITZER_RE = /Spritzer/i;
@@ -41,6 +42,10 @@ export function parseLineItem(label: string): ParsedLineItem {
   if (TREE_RE.test(label)) return { kind: 'tree', detail: extractStrings(label) };
   if (BUSH_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
   if (COLUMN_RE.test(label)) return { kind: 'column', detail: extractStrings(label) };
+  // Railing = mini-light strands priced like a bush. Rides the 'bush' kind for
+  // the portal (icon/tier/scene-linkage = mini); the label still reads "Railing".
+  // (Follow-up: a dedicated 'railing' kind + icon — ledger #34.)
+  if (RAILING_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
 
   // Roofline family — order matters: the Ridge regex runs BEFORE Roofline.
   // "Gingerbread" (the ridge product, renamed from "Gingerbread Ridge") is

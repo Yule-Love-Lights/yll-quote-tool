@@ -76,9 +76,16 @@ function isIncluded(item: { included?: boolean }): boolean {
   return item.included !== false; // default true
 }
 
+// The mini-light surfaces that project to a priced mini unit. Railing prices
+// like a bush (canopy/standard rate, no wrap style) — see calculateMiniLights.
+type MiniSurface = 'bush' | 'tree' | 'column' | 'railing';
+function asMiniSurface(s: unknown): MiniSurface | null {
+  return s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' ? s : null;
+}
+
 // One priced mini unit, shared across all three authoring paths (strand wrap,
 // area fill, grouped railing) so they price identically (#27 A2).
-function miniInput(type: 'bush' | 'tree' | 'column', billing: MiniBilling): MiniLightItem {
+function miniInput(type: MiniSurface, billing: MiniBilling): MiniLightItem {
   return {
     type,
     wrapStyle: billing.wrapStyle ?? 'canopy',
@@ -97,11 +104,11 @@ export function projectScene(scene: Scene): Projection {
       // A grouped strand (a railing member) is priced via its MiniGroupItem —
       // skip it here so the unit isn't double-counted (#27 A2).
       if (item.groupId) continue;
-      // Strands disambiguate by `surface`: bush/tree/column = a mini-light wrap
-      // (projected); santas-roofline/gingerbread/winter-wonderland = roofline
+      // Strands disambiguate by `surface`: bush/tree/column/railing = a mini-light
+      // wrap (projected); santas-roofline/gingerbread/winter-wonderland = roofline
       // (measurement-driven, NOT projected); no surface = unmapped.
-      const s = item.surface;
-      if (s === 'bush' || s === 'tree' || s === 'column') {
+      const s = asMiniSurface(item.surface);
+      if (s) {
         items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
       }
       continue;
@@ -109,8 +116,8 @@ export function projectScene(scene: Scene): Projection {
 
     // A2: a mini-light AREA fill → one mini unit (hides as its own item).
     if (isMiniArea(item)) {
-      const s = item.surface;
-      if (s === 'bush' || s === 'tree' || s === 'column') {
+      const s = asMiniSurface(item.surface);
+      if (s) {
         items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
       }
       continue;
@@ -119,8 +126,8 @@ export function projectScene(scene: Scene): Projection {
     // A2: a grouped railing → one mini unit. The members are what render, so the
     // portal hides/shows them as a unit (sceneItemIds = the member ids).
     if (isMiniGroup(item)) {
-      const s = item.surface;
-      if (s === 'bush' || s === 'tree' || s === 'column') {
+      const s = asMiniSurface(item.surface);
+      if (s) {
         const sceneItemIds = item.memberIds.length > 0 ? [...item.memberIds] : [item.id];
         items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds, input: miniInput(s, item) });
       }

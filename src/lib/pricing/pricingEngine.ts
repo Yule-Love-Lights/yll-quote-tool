@@ -52,7 +52,7 @@ export const BUSINESS_RULES = {
 export type RooflineDifficulty = 'easy' | 'medium' | 'hard';
 
 export type MiniLightItem = {
-  type: 'tree' | 'bush' | 'column';
+  type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
 };
@@ -293,13 +293,25 @@ const MINI_LIGHT_TYPE_LABELS: Record<MiniLightItem['type'], string> = {
   tree: 'Tree',
   bush: 'Bush',
   column: 'Column',
+  railing: 'Railing',
 };
+
+// Mini-light surfaces with NO wrap style — they run strands at the standard
+// per-string cost (the canopy rate, same as a bush) and label without a "wrap"
+// qualifier (Jason, S5). Only TREES vary by wrap style (canopy vs trunk).
+const NO_WRAP_STYLE_TYPES: ReadonlySet<MiniLightItem['type']> = new Set(['column', 'railing']);
 
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
   return inputs.miniLightItems.map(item => {
+    const strings = item.stringCount === 1 ? '1 string' : `${item.stringCount} strings`;
+    if (NO_WRAP_STYLE_TYPES.has(item.type)) {
+      return {
+        label: `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${strings}`,
+        amount: item.stringCount * BUSINESS_RULES.miniLightRates.canopy,
+      };
+    }
     const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
     const amount = item.stringCount * rate;
-    const strings = item.stringCount === 1 ? '1 string' : `${item.stringCount} strings`;
     const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
     return { label, amount };
   });
