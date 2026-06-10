@@ -2264,10 +2264,9 @@ export async function renderEditor(
         const sInc = uniq(sel.map((s) => s.included ?? true));
         const sWrap = uniq(sel.map((s) => s.wrapStyle ?? "canopy"));
         const sCount = uniq(sel.map((s) => s.stringCount ?? 1));
-        // Wrap style applies to wrapped surfaces only — bushes + trees. Columns
-        // and railings have NO wrap style (the quote prices them per string at the
-        // standard rate + ignores wrapStyle). [yll: column added to the no-wrap set
-        // on our side; relay to design tool to upstream — also lines ~3064 / ~3216]
+        // Wrap style applies to wrapped surfaces only — railings and columns
+        // have no wrap (the quote prices both per string and ignores
+        // wrapStyle; only bushes/trees vary canopy vs trunk).
         const wrapSurface = sSurface.length === 1 && ["bush", "tree"].includes(sSurface[0]);
         const countSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing"].includes(sSurface[0]);
         return `
