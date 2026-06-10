@@ -7,8 +7,13 @@ metadata:
   originSessionId: e4aa4be2-5f3b-45ef-ba10-c5884f1b5b20
 ---
 
-# Integration Data Contract — line-item ⇄ scene-item linkage (v0.4, BUILDING)
+# Integration Data Contract — line-item ⇄ scene-item linkage (v0.5, BUILDING)
 
+> **v0.5 AMENDMENT (S7, 2026-06-10):** standalone bows price (#28) + roofline seeding (#33). NO scene-type changes — `BowItem` and the roofline `surface` tags already existed; this amendment changes projection semantics + adds a quote-side authoring convention:
+> - **Standalone bow now PROJECTS (#28):** every included `BowItem` → one "Bow" line item (per-instance, qty 1, flat price each — drawn `sizeIn` stays visual-only). Rate = `BUSINESS_RULES.standaloneBowPrice`, currently **$0 with a TODO until Naldo prices it** (Jason approved shipping at $0 so drawn bows price + portal-toggle now). §2's "renders, no line item" carve-out for bows is REMOVED (§5 row added). Bows on wreaths/garland are unchanged (priced via `tier`).
+> - **Roofline seeding (#33, quote-tool side only):** the builder converts its STREET measurement polylines (staff-corrected red/blue/C9, normalized 0–1) into ordinary editable C9 `StrandItem`s pre-tagged `santas-roofline`/`gingerbread`/`winter-wonderland` — at design creation and via a "Sync roofline from measurement" action (`POST /api/designs/[id]/seed-roofline`). Seeded ids use a **`seed-*` prefix** (informational only — replacement keys on the surface TAG, not the id). **Replacement rule:** a (re-)seed REPLACES every roofline-TAGGED strand, any origin (§7 — the measurement owns the roofline); untagged strands + all other kinds untouched; an empty-lines sync is a NO-OP. Editor defaults used: c9 · 12" · `strand` style · `warm-white`. Design-tool side: nothing to implement — seeded strands are ordinary scene items; just expect `seed-*` ids + programmatic replacement of roofline-tagged strands.
+> - **Correction to the v0.4 note below:** railing DID get its rate in S5 after all — bills at the standard $35/string (canopy/bush rate, no wrap style; only trees vary canopy/trunk). No Naldo $ needed; ledger #34 closed except a cosmetic portal icon.
+>
 > **v0.4 AMENDMENT (S5, 2026-06-10):** A2 mini-light authoring. Two NEW scene representations, each projecting to ONE `MiniLightItem` (per-instance; sizing visual-only — same model as A1 mini strands). Locked member-for-member with the design-tool AI:
 > - **`MiniAreaItem`** (kind `miniArea`) — a box or traced polygon that fills with single mini-lights at a 0–1 **visual** `density` (NOT a count). Billed via `surface` (ItemBase) + `MiniBilling`. Bushes-first in v1 (tree canopy optional); columns stay strand-based (a trunk wrap won't read as an area fill).
 > - **`MiniGroupItem`** (kind `miniGroup`) — several drawn strands grouped into one priced unit (e.g. a railing); geometry-less (extent = members). Members stay visual + carry a `groupId` backref.
@@ -29,7 +34,7 @@ The quote tool is **Christmas-only today** (no permanent lights, bistro, or pole
 - **Unmapped — RENDER but produce NO line item:**
   - *Intrinsically visual-only:* `text`, `custom`.
   - *Out-of-current-scope products (future, not soon):* `permanent`, `bistro`, `pole`. These get `surface` bindings + pricing **only when the quote tool adds those categories later** — no rework (forward-compatible).
-  - *Sellable Christmas product the quote doesn't price YET:* **standalone `bow`** (rare; sold on its own or placed on garland). Renders + no line item for MVP; **follow-up = add a `bow` line-item category** to the pricing engine. (Bows inside wreaths / on garland are already priced via those items' `tier`/`withBow` — only a *standalone* bow needs the new category.)
+  - *Standalone `bow`*: **prices as of v0.5 (#28, S7)** — one "Bow" line item per drawn bow at `standaloneBowPrice` (**$0 placeholder until Naldo prices it**). (Bows inside wreaths / on garland are priced via those items' `tier`/`withBow`, unchanged.)
 - **Robustness requirement:** "scene item with no mapped surface" is a **first-class graceful case** — it renders, just produces no line item. The projection MUST NOT assume every strand maps to a category. (Later UX call: whether the Christmas-quote editor hides the perm/bistro/pole tools — default = available but unmapped.)
 
 ## 3. Storage (Supabase) — AMENDED 2026-06-05 (S4): design is INDEPENDENT
@@ -64,7 +69,8 @@ The billed-spec unions mirror the price-book keys in `pricingEngine` (`BUSINESS_
 | spritzer | Spritzer (per instance) | **`quoteSize`** (staff-set); qty 1 | qty × rate[quoteSize] |
 | wreath | Wreath (per instance) | **`quoteSize` + `tier`** (staff-set); qty 1 | price[quoteSize][tier] × qty |
 | garland | Garland (per instance) | **`quoteLength` + `quoteSections` + `tier`** (staff-set) | price[quoteLength][tier] × quoteSections |
-| permanent / bistro / pole / text / custom / standalone bow | — (unmapped today) | — | no line item (see §2) |
+| bow (standalone) | Bow (per instance, v0.5/#28) | qty 1 each (no spec — `sizeIn` visual-only) | qty × `standaloneBowPrice` ($0 until Naldo prices) |
+| permanent / bistro / pole / text / custom | — (unmapped today) | — | no line item (see §2) |
 
 ## 6. Tier (wreath + garland) — explicit field, not derived
 Quote tiers: `labor` (Labor Only) · `bow` (With Bow) · `fullDecor` (heavy ornament / ribbon / berries). Because **`fullDecor` means MORE than "lit + bow,"** tier can't be derived purely from `withLights`/`withBow` — so carry an **explicit `tier` field** on wreath + garland. The booleans seed the visual; `tier` drives the price. (A `fullDecor` item may look like `bow` visually until a fullDecor asset exists; pricing still reflects the tier.)
@@ -80,7 +86,7 @@ Quote tiers: `labor` (Labor Only) · `bow` (With Bow) · `fullDecor` (heavy orna
 = the set of **`included` scene items** + the **roofline tier enum**. Toggle a line item off ⇒ `included=false` on its scene item(s) ⇒ they vanish from the live render AND drop from price. The approval snapshot freezes it.
 
 ## 10. Reverse direction (builder edits)
-Add a **mapped** scene item ⇒ line item appears (priced from the book); delete ⇒ removed. Add an **unmapped** item (text/custom/perm/bistro/pole/standalone-bow) ⇒ picture only, no quote change.
+Add a **mapped** scene item ⇒ line item appears (priced from the book); delete ⇒ removed. Add an **unmapped** item (text/custom/perm/bistro/pole) ⇒ picture only, no quote change. (Standalone bow moved to MAPPED in v0.5/#28.)
 
 ## 11. Non-pricing concerns
 - **Scale:** `px_per_foot` (in `scene.yardsticks`) is VISUAL fidelity only, NOT pricing. Auto-set from the measurement (roofline ft ÷ pixel span); manual yardstick override.
@@ -88,7 +94,7 @@ Add a **mapped** scene item ⇒ line item appears (priced from the book); delete
 
 ## 12. Resolved (Jason, 2026-06-05)
 - **Winter Wonderland** = a name for **extra/custom C9 lights beyond the Santa's/Gingerbread roof packages** (the green "C9" lines), footage-priced. Model = `c9` strand + `surface:"winter-wonderland"`. (The *name* may be revisited with Naldo later — irrelevant to the contract.)
-- **Standalone bow** = a **sellable product** (rare; on its own or on garland), but the quote tool has **no bow line-item category today** → unmapped for MVP (renders, no line item). **Follow-up:** add a `bow` line-item category to the pricing engine (ledger task). Bows in wreaths / on garland are already priced via those items' `tier`/`withBow`.
+- **Standalone bow** = a **sellable product** (rare; on its own or on garland), but the quote tool has **no bow line-item category today** → unmapped for MVP (renders, no line item). **Follow-up:** add a `bow` line-item category to the pricing engine (ledger task). Bows in wreaths / on garland are already priced via those items' `tier`/`withBow`. → **DONE (v0.5/#28, S7):** the category exists; price = $0 placeholder pending Naldo.
 
 ## Build status (was "NOT doing yet")
 **Phase 1 SHIPPED (Session 4, merged PR #18):** the Supabase `designs` table + bucket, `src/lib/designs.ts`, the API routes (POST `/api/designs`, GET|PUT `/api/designs/[id]`, POST `/api/designs/[id]/photo` — map 1:1 to the `EditorStorage` adapter), and the embedded Konva editor (Option B). §3 amended (design = independent record + optional quote link). **Phase 2 IN PROGRESS** = portal live-design (Step 1 render → Step 2 toggle-filter → Step 3 projection). The **projection code** (scene→line-items) is still NOT built — that's Step 3, after the items model lands (Option-1+2 hybrid + the mini-light tool; see [[project_integration]]).
