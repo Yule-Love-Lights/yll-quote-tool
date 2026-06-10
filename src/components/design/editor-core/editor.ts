@@ -251,9 +251,10 @@ export async function renderEditor(
   let drawPreview: Konva.Line | null = null;
   // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
   let scattershotStart: { x: number; y: number } | null = null;
-  // Scattershot edit panel: when armed (via "+ Add to pattern"), the next
-  // color tap APPENDS to the pattern instead of replacing it.
+  // Scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
+  // the next color tap APPENDS to the pattern instead of replacing it.
   let maAddArmed = false;
+  let spAddArmed = false;
 
   // --- Tool mode ---
   // "draw" = clicks/drags create new strands (current behavior).
@@ -722,6 +723,10 @@ export async function renderEditor(
     return scene.items.filter(isPole);
   }
 
+  function allMiniAreas(): MiniAreaItem[] {
+    return scene.items.filter(isMiniArea);
+  }
+
   // Garlands size themselves using their own yardstick (or the first one as
   // fallback if their own was deleted), same fall-back behavior as strands.
   function yardstickForGarland(g: GarlandItem): Yardstick | null {
@@ -1146,6 +1151,24 @@ export async function renderEditor(
           return false;
         })
         .map((g) => g.id);
+    } else if (tool.category === "lights" && tool.scattershot) {
+      // Scattershot mode: pick mini-light areas whose bounds overlap the box.
+      matchIds = allMiniAreas()
+        .filter((a) => {
+          let ax1: number, ay1: number, ax2: number, ay2: number;
+          if (a.shape === "polygon" && a.points && a.points.length >= 6) {
+            ax1 = Infinity; ay1 = Infinity; ax2 = -Infinity; ay2 = -Infinity;
+            for (let i = 0; i + 1 < a.points.length; i += 2) {
+              ax1 = Math.min(ax1, a.points[i]); ax2 = Math.max(ax2, a.points[i]);
+              ay1 = Math.min(ay1, a.points[i + 1]); ay2 = Math.max(ay2, a.points[i + 1]);
+            }
+          } else {
+            ax1 = a.x ?? 0; ay1 = a.y ?? 0;
+            ax2 = ax1 + (a.width ?? 0); ay2 = ay1 + (a.height ?? 0);
+          }
+          return ax1 <= x2 && ax2 >= x1 && ay1 <= y2 && ay2 >= y1;
+        })
+        .map((a) => a.id);
     } else {
       // Default: strand items whose bulbType matches AND have any point in the box.
       matchIds = allStrands()
@@ -2241,7 +2264,12 @@ export async function renderEditor(
         const sInc = uniq(sel.map((s) => s.included ?? true));
         const sWrap = uniq(sel.map((s) => s.wrapStyle ?? "canopy"));
         const sCount = uniq(sel.map((s) => s.stringCount ?? 1));
-        const wrapSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing"].includes(sSurface[0]);
+        // Wrap style applies to wrapped surfaces only — bushes + trees. Columns
+        // and railings have NO wrap style (the quote prices them per string at the
+        // standard rate + ignores wrapStyle). [yll: column added to the no-wrap set
+        // on our side; relay to design tool to upstream — also lines ~3064 / ~3216]
+        const wrapSurface = sSurface.length === 1 && ["bush", "tree"].includes(sSurface[0]);
+        const countSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing"].includes(sSurface[0]);
         return `
       <section>
         <h3>Quote binding</h3>
@@ -2258,6 +2286,8 @@ export async function renderEditor(
           <option value="canopy" ${sWrap.length === 1 && sWrap[0] === "canopy" ? "selected" : ""}>Canopy</option>
           <option value="trunk" ${sWrap.length === 1 && sWrap[0] === "trunk" ? "selected" : ""}>Trunk</option>
         </select>
+        ` : ""}
+        ${countSurface ? `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
         <input type="number" id="sel-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount.length === 1 ? sCount[0] : 1}" />
         ` : ""}
@@ -2394,10 +2424,45 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
+    // Group the selected (mini, ungrouped) strands into ONE billed unit: a
+    // MiniGroupItem owning the billed attrs; members get groupId and are
+    // skipped by the quote's projection.
+    const groupSelectedMini = (surface: Surface, stringCount: number) => {
+      const memberIds = sel.map((s) => s.id);
+      const groupId = cryptoId();
+      const grp: MiniGroupItem = {
+        id: groupId,
+        kind: "miniGroup",
+        memberIds,
+        yardstickId: null,
+        surface,
+        wrapStyle: sel[0].wrapStyle ?? "canopy",
+        stringCount,
+        included: true,
+      };
+      scene = {
+        ...scene,
+        items: [
+          ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
+          grp,
+        ],
+      };
+      scheduleSave();
+      commit();
+      redrawScene();
+    };
     if (opts.showQuoteBinding) {
       const surfSel = sb.querySelector("#sel-surface") as HTMLSelectElement | null;
       surfSel?.addEventListener("change", () => {
         const v = surfSel.value;
+        // Railing across a multi-selection means ONE railing built from these
+        // strands — emit a single MiniGroupItem (projection bills one
+        // "Railing – N strings") instead of tagging each strand as its own
+        // billed railing. Default the string count to the member count.
+        if (v === "railing" && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId)) {
+          groupSelectedMini("railing", sel.length);
+          return;
+        }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
       });
       const wrapSel = sb.querySelector("#sel-wrapstyle") as HTMLSelectElement | null;
@@ -2415,28 +2480,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      const memberIds = sel.map((s) => s.id);
-      const groupId = cryptoId();
-      const grp: MiniGroupItem = {
-        id: groupId,
-        kind: "miniGroup",
-        memberIds,
-        yardstickId: null,
-        surface: sel[0].surface ?? "bush",
-        wrapStyle: sel[0].wrapStyle ?? "canopy",
-        stringCount: sel[0].stringCount ?? 1,
-        included: true,
-      };
-      scene = {
-        ...scene,
-        items: [
-          ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
-          grp,
-        ],
-      };
-      scheduleSave();
-      commit();
-      redrawScene();
+      groupSelectedMini(sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -2824,9 +2868,12 @@ export async function renderEditor(
           ${COLORS.map((c) => `<button data-c="${c.id}" title="${c.label}" style="background:${c.hex}"></button>`).join("")}
         </div>
         <div style="margin-top:8px;display:flex;gap:6px">
-          <button id="sel-spritzer-add-color">+ Add to pattern</button>
+          <button id="sel-spritzer-add-color" class="${spAddArmed ? "active" : ""}">${spAddArmed ? "Tap a color to add…" : "+ Add to pattern"}</button>
           <button id="sel-spritzer-clear-pattern">Clear</button>
           <button id="sel-spritzer-multi" title="Set the pattern to every color in the palette">Multi</button>
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">
+          Tap a color to recolor everything · "+ Add to pattern" then a color to extend the pattern.
         </div>
         ${sharedPattern.length === 1 ? `
         <div class="pattern-row" id="sel-spritzer-pattern">
@@ -2836,7 +2883,7 @@ export async function renderEditor(
           }).join("")}
         </div>` : `
         <div style="margin-top:8px;color:var(--text-dim);font-size:11px">
-          Patterns differ across the selection. Tap a color to replace, or use Multi for rainbow.
+          Patterns differ across the selection. Tap a color to make them match, or use Multi for rainbow.
         </div>`}
       </section>
       ${opts.showQuoteBinding ? (() => {
@@ -2887,27 +2934,30 @@ export async function renderEditor(
         updateSpritzers((s) => ({ ...s, sizeIn: v }));
       }),
     );
+    // Color pattern — same gestures as the scattershot edit panel: a plain tap
+    // recolors the whole pattern; "+ Add to pattern" ARMS the next tap to
+    // append instead, so building red+green is: tap red → Add → tap green.
     sb.querySelectorAll("#sel-spritzer-colors button").forEach((b) =>
       b.addEventListener("click", () => {
         const id = (b as HTMLElement).dataset.c!;
-        // Tap-to-replace mirrors the strand edit panel: single-color pattern
-        // shortcut. To build a multi-color pattern from the edit panel use
-        // Add to pattern (after first replacing with the desired single color).
-        updateSpritzers((s) => ({ ...s, colorPattern: [id] }));
+        if (spAddArmed) {
+          spAddArmed = false;
+          updateSpritzers((s) => ({ ...s, colorPattern: [...s.colorPattern, id] }));
+        } else {
+          updateSpritzers((s) => ({ ...s, colorPattern: [id] }));
+        }
       }),
     );
     sb.querySelector("#sel-spritzer-add-color")?.addEventListener("click", () => {
-      // Add the first color of the first selected item's pattern as a "default"
-      // to extend each selection's own pattern.
-      updateSpritzers((s) => ({
-        ...s,
-        colorPattern: [...s.colorPattern, s.colorPattern[s.colorPattern.length - 1] ?? "warm-white"],
-      }));
+      spAddArmed = !spAddArmed;
+      renderSidebar();
     });
     sb.querySelector("#sel-spritzer-clear-pattern")?.addEventListener("click", () => {
+      spAddArmed = false;
       updateSpritzers((s) => ({ ...s, colorPattern: [s.colorPattern[0] ?? "warm-white"] }));
     });
     sb.querySelector("#sel-spritzer-multi")?.addEventListener("click", () => {
+      spAddArmed = false;
       const all = COLORS.map((c) => c.id);
       updateSpritzers((s) => ({ ...s, colorPattern: all }));
     });
@@ -3013,11 +3063,13 @@ export async function renderEditor(
           <option value="column" ${sSurface.length === 1 && sSurface[0] === "column" ? "selected" : ""}>Column</option>
           <option value="railing" ${sSurface.length === 1 && sSurface[0] === "railing" ? "selected" : ""}>Railing</option>
         </select>
+        ${sSurface.length === 1 && (sSurface[0] === "railing" || sSurface[0] === "column") ? "" : `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
         <select id="sel-ma-wrapstyle" class="yardstick-select">
           <option value="canopy" ${sWrap.length === 1 && sWrap[0] === "canopy" ? "selected" : ""}>Canopy</option>
           <option value="trunk" ${sWrap.length === 1 && sWrap[0] === "trunk" ? "selected" : ""}>Trunk</option>
         </select>
+        `}
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
         <input type="number" id="sel-ma-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount.length === 1 ? sCount[0] : 1}" />
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
@@ -3163,11 +3215,13 @@ export async function renderEditor(
           <option value="column" ${sSurface === "column" ? "selected" : ""}>Column</option>
           <option value="railing" ${sSurface === "railing" ? "selected" : ""}>Railing</option>
         </select>
+        ${sSurface === "railing" || sSurface === "column" ? "" : `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
         <select id="sel-mg-wrapstyle" class="yardstick-select">
           <option value="canopy" ${sWrap === "canopy" ? "selected" : ""}>Canopy</option>
           <option value="trunk" ${sWrap === "trunk" ? "selected" : ""}>Trunk</option>
         </select>
+        `}
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">String count</label>
         <input type="number" id="sel-mg-stringcount" class="yardstick-select" style="width:90px" min="1" step="1" value="${sCount}" />
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
