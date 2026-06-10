@@ -358,7 +358,7 @@ describe('calculateQuote — custom / manual line items (#27 escape hatch)', () 
   });
 });
 
-describe('calculateQuote — railing mini-lights (#27 A2)', () => {
+describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2)', () => {
   it('prices a railing at the canopy/standard rate, no wrap style in the label', () => {
     const r = calculateQuote(emptyInputs({
       miniLightItems: [{ type: 'railing', wrapStyle: 'canopy', stringCount: 7 }],
@@ -371,5 +371,19 @@ describe('calculateQuote — railing mini-lights (#27 A2)', () => {
       miniLightItems: [{ type: 'railing', wrapStyle: 'trunk', stringCount: 1 }],
     }));
     expect(r.lineItems).toEqual([{ label: 'Railing – 1 string', amount: 35 }]); // trunk ignored
+  });
+
+  it('prices a column at the canopy rate with no wrap style (columns = $35/string like bushes)', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'column', wrapStyle: 'trunk', stringCount: 3 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Column – 3 strings', amount: 105 }]); // 3 × $35; trunk ignored
+  });
+
+  it('trees STILL vary by wrap style (canopy vs trunk)', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'tree', wrapStyle: 'trunk', stringCount: 2 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Tree – trunk wrap, 2 strings', amount: 90 }]); // 2 × $45
   });
 });
