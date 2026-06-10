@@ -4,15 +4,6 @@ import { useState, useRef, useEffect } from 'react';
 import type {
   QuoteResult,
   QuoteInputs,
-  MiniLightItem,
-  Spritzer,
-  Wreath,
-  GarlandItem,
-  WreathSize,
-  DecorTier,
-  SpritzerSize,
-  GarlandLength,
-  BowLineInput,
   CustomLineItem,
   RooflineDifficulty,
   RooflineChoice,
@@ -29,6 +20,8 @@ import type { CrmContact } from '@/lib/integrations/types';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
 
+import DesignSummary from '@/components/quote/DesignSummary';
+
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
 
@@ -44,6 +37,30 @@ const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+// A measurement polyline on the satellite image (normalized 0–1 coords).
+type LineSegment = { points: [number, number][]; label: string };
+
+// Satellite image is always 640x640 at zoom=20 from Static Maps.
+const SAT_PX = 640;
+
+// Compute polyline length in "aspect-corrected" normalized units.
+// dx stays as-is (image width = 1), dy is scaled by (height/width) so
+// diagonal distances reflect real pixel distances on the image.
+function polylineLength(lines: LineSegment[], aspect: number): number {
+  const yScale = 1 / aspect; // height in width-units
+  let total = 0;
+  for (const line of lines) {
+    for (let i = 1; i < line.points.length; i++) {
+      const [x1, y1] = line.points[i - 1];
+      const [x2, y2] = line.points[i];
+      const dx = x2 - x1;
+      const dy = (y2 - y1) * yScale;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+  return total;
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -109,136 +126,113 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
 
-  // Photo analysis
-  type LineSegment = { points: [number, number][]; label: string };
-  type MiniLightDetection = {
-    type: 'tree' | 'bush' | 'column';
-    wrapStyle: 'canopy' | 'trunk';
-    stringCount: number;
-    box: [number, number, number, number];
-    label: string;
-  };
+  // Photo analysis (#35: the street photo lives in the DESIGN — only the
+  // satellite keeps measurement polylines; street overlays/detections are gone)
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [santasLines, setSantasLines] = useState<LineSegment[]>([]);
-  const [gingerbreadLines, setGingerbreadLines] = useState<LineSegment[]>([]);
-  // C9 custom runs — drawn as polylines on the photo, same UX as gutter/ridge.
-  // Footage reuses feetPerUnit from the gutterline calibration.
-  const [c9Lines, setC9Lines] = useState<LineSegment[]>([]);
-  const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
-  // Wreath / spritzer / garland detections — rendered as editable boxes on
-  // the street view, same UX as mini lights. Auto-sync into form.wreaths /
-  // form.spritzers / form.garland so they appear in the quote.
-  type WreathDetection = { size: WreathSize; tier: DecorTier; box: [number, number, number, number]; label: string };
-  type SpritzerDetection = { size: SpritzerSize; box: [number, number, number, number]; label: string };
-  type GarlandDetection = { length: GarlandLength; tier: DecorTier; box: [number, number, number, number]; label: string };
-  const [wreathDetections, setWreathDetections] = useState<WreathDetection[]>([]);
-  const [spritzerDetections, setSpritzerDetections] = useState<SpritzerDetection[]>([]);
-  const [garlandDetections, setGarlandDetections] = useState<GarlandDetection[]>([]);
-  // Shared feet-per-normalized-unit scale — calibrated from the gutterline
-  // (most reliable reference) and applied to both line types. This way edited
-  // footage always reflects the drawn polylines, not Claude's separate text guess.
-  const [feetPerUnit, setFeetPerUnit] = useState<number | null>(null);
-  const [imgAspect, setImgAspect] = useState<number>(1); // width/height
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
-  const [originalAnalysis, setOriginalAnalysis] = useState<unknown>(null);
-  const [savingCorrection, setSavingCorrection] = useState(false);
-  const [correctionSaved, setCorrectionSaved] = useState(false);
 
-  // ─── Embedded design editor (#27 Phase 1) ───────────────────────────────
-  // A design is its own record, created when the editor is first opened
-  // (seeded with the current photo). It links to the quote once the quote is
-  // saved (Calculate Quote). The Konva editor is a client-only dynamic import.
+  // ─── Embedded design editor — the Design tab (#27 Phase 1, #35 design-first) ──
+  // The design IS the primary canvas now: it's created EAGERLY the moment a
+  // street photo is in hand (address lookup or upload+analyze), not when a
+  // section is opened. It links to the quote on Calculate. The Konva editor is
+  // a client-only dynamic import, kept mounted (hidden) across tab switches.
   const [designId, setDesignId] = useState<string | null>(initialQuote?.designId ?? null);
-  const [designOpen, setDesignOpen] = useState(false);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
-  // Bumped after a roofline sync so the editor remounts and loads the seeded
-  // scene (#33).
+  // Bumped when the design's scene/photo changes outside the editor (roofline
+  // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
-  const [designSyncMsg, setDesignSyncMsg] = useState<string | null>(null);
+  // The base64 photo the design currently carries (what we last pushed). Lets
+  // the eager effect tell "new photo → create/replace" from re-renders, and
+  // applyAnalysisResult tell "same photo re-analyzed → seed directly".
+  const designPhotoRef = useRef<string | null>(null);
+  // Roofline lines from the latest analysis, waiting for the design to exist
+  // before they can seed (#33 tagging keeps the portal picture-toggle alive).
+  const pendingSeedRef = useRef<{
+    santas: [number, number][][];
+    gingerbread: [number, number][][];
+    winterWonderland: [number, number][][];
+  } | null>(null);
 
-  // The builder's STREET measurement polylines (normalized 0–1 of the photo),
-  // shaped for the roofline-seeding API (#33). Satellite lines are excluded —
-  // they're drawn on a different image than the design's base photo.
-  const buildSeedLines = () => ({
-    santas: santasLines.map((l) => l.points),
-    gingerbread: gingerbreadLines.map((l) => l.points),
-    winterWonderland: c9Lines.map((l) => l.points),
-  });
-  const hasSeedLines = santasLines.length + gingerbreadLines.length + c9Lines.length > 0;
-
-  const openDesignEditor = async () => {
-    setDesignError(null);
-    if (designId) {
-      setDesignOpen(true);
-      return;
-    }
-    setDesignBusy(true);
+  // Push the AI's roofline lines into the design as tagged C9 strands (#33's
+  // replacement semantics: roofline-tagged strands swap out, hand-drawn decor
+  // survives) and remount the editor so it shows them.
+  const seedDesignRoofline = async (id: string, lines: NonNullable<typeof pendingSeedRef.current>) => {
+    if (!lines.santas.length && !lines.gingerbread.length && !lines.winterWonderland.length) return;
     try {
-      const res = await fetch('/api/designs', {
+      const res = await fetch(`/api/designs/${id}/seed-roofline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteId: savedQuoteId ?? undefined,
-          photoBase64: photoBase64 ?? undefined,
-          photoMediaType: photoMediaType ?? undefined,
-          // The roofline lines ride along at creation (#33): the design opens
-          // with tagged, editable C9 roofline strands already drawn.
-          seedLines: photoBase64 && hasSeedLines ? buildSeedLines() : undefined,
-        }),
+        body: JSON.stringify({ seedLines: lines }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to create design');
-      const id: string | undefined = data?.design?.id;
-      if (!id) throw new Error('No design id returned');
-      setDesignId(id);
-      setDesignOpen(true);
-    } catch (err) {
-      setDesignError(err instanceof Error ? err.message : 'Failed to open the design editor');
-    } finally {
-      setDesignBusy(false);
+      if (res.ok) setDesignEditorKey((k) => k + 1);
+    } catch {
+      // Non-fatal: the design still works, the roofline just isn't pre-drawn.
     }
   };
 
-  // "Sync roofline from measurement" (#33) — push the builder's current
-  // street polylines into the linked design as tagged C9 strands, REPLACING
-  // all roofline-tagged strands (the measurement owns the roofline; untagged
-  // hand-drawn strands are untouched). Closes the editor first: its unmount
-  // cancels the pending debounced autosave, so the seed can't be overwritten.
-  const syncRooflineToDesign = async () => {
-    if (!designId || designBusy) return;
-    setDesignError(null);
-    setDesignSyncMsg(null);
-    setDesignBusy(true);
-    const wasOpen = designOpen;
-    try {
-      if (wasOpen) {
-        setDesignOpen(false);
-        // Let any already-fired autosave PUT land before we write the scene.
-        await new Promise((r) => setTimeout(r, 800));
+  // Eager design lifecycle: photo arrives → create the design with it (plus any
+  // pending roofline seed); photo changes later (camera recapture / re-lookup)
+  // → replace the existing design's base photo in place.
+  useEffect(() => {
+    if (!photoBase64 || !photoMediaType) return;
+    if (designPhotoRef.current === photoBase64) return;
+    let stale = false;
+    const push = async () => {
+      setDesignBusy(true);
+      setDesignError(null);
+      try {
+        if (!designId) {
+          const res = await fetch('/api/designs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              quoteId: savedQuoteId ?? undefined,
+              photoBase64,
+              photoMediaType,
+              seedLines: pendingSeedRef.current ?? undefined,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? 'Failed to create design');
+          const id: string | undefined = data?.design?.id;
+          if (!id) throw new Error('No design id returned');
+          pendingSeedRef.current = null;
+          designPhotoRef.current = photoBase64;
+          if (!stale) setDesignId(id);
+        } else {
+          const res = await fetch(`/api/designs/${designId}/photo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ photoBase64, photoMediaType }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? 'Failed to update the design photo');
+          designPhotoRef.current = photoBase64;
+          if (pendingSeedRef.current) {
+            const lines = pendingSeedRef.current;
+            pendingSeedRef.current = null;
+            await seedDesignRoofline(designId, lines);
+          }
+          if (!stale) setDesignEditorKey((k) => k + 1);
+        }
+      } catch (err) {
+        if (!stale) setDesignError(err instanceof Error ? err.message : 'Design photo update failed');
+      } finally {
+        if (!stale) setDesignBusy(false);
       }
-      const res = await fetch(`/api/designs/${designId}/seed-roofline`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seedLines: buildSeedLines() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Roofline sync failed');
-      setDesignEditorKey((k) => k + 1);
-      const n = typeof data.rooflineStrands === 'number' ? data.rooflineStrands : 0;
-      setDesignSyncMsg(`Roofline synced — ${n} tagged strand${n === 1 ? '' : 's'} on the design.`);
-      if (wasOpen) setDesignOpen(true);
-    } catch (err) {
-      setDesignError(err instanceof Error ? err.message : 'Roofline sync failed');
-    } finally {
-      setDesignBusy(false);
-    }
-  };
+    };
+    void push();
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoBase64, photoMediaType, designId]);
 
   // Link the design to the quote once the quote has been saved (best-effort).
   useEffect(() => {
@@ -250,14 +244,8 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }).catch(() => {});
   }, [savedQuoteId, designId]);
 
-  // Nighttime render preview — fires alongside Calculate Quote so the customer
-  // sees the pricing first, then the artist's-rendering image loads underneath
-  // ~60s later. Non-blocking: render errors don't block the quote itself.
-  type RenderStatus = 'idle' | 'skipped' | 'rendering' | 'ready' | 'error';
-  const [renderStatus, setRenderStatus] = useState<RenderStatus>('idle');
-  const [renderUrl, setRenderUrl] = useState<string | null>(null);
-  const [renderError, setRenderError] = useState<string | null>(null);
-  const [renderSkipReason, setRenderSkipReason] = useState<string | null>(null);
+  // (#35: the Gemini nighttime-render preview is gone — the live design IS the
+  // customer-facing visual now; the app-wide render teardown is task #36.)
   const [fewShotCount, setFewShotCount] = useState(0);
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
@@ -279,79 +267,37 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
   const [satelliteAspect, setSatelliteAspect] = useState<number>(1);
-  const [viewMode, setViewMode] = useState<'street' | 'satellite'>('street');
-  // Pricing follows the view the user is actively editing. Keeps manual
-  // polyline edits in lockstep with the form inputs below the photo.
-  const [measurementSource, setMeasurementSource] = useState<'street' | 'satellite'>('street');
-  useEffect(() => {
-    // defer so the state update isn't synchronous within the effect (flushes before paint)
-    queueMicrotask(() => setMeasurementSource(viewMode));
-  }, [viewMode]);
+  // The top box's active tab (#35): the DESIGN (street photo in the editor) or
+  // the SATELLITE measurement canvas. Both stay mounted across switches so
+  // neither loses state. Measurement comes from satellite lines or manual
+  // typing only — street is no longer a measurement source.
+  const [viewMode, setViewMode] = useState<'design' | 'satellite'>('design');
 
-  // Mini light rates (mirror of BUSINESS_RULES.miniLightRates)
-  const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
-
-  // Drag state for editing polyline points
+  // Drag state for editing satellite polyline points
   type LineType = 'santas' | 'gingerbread' | 'c9';
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
-  // Drag state for detection boxes. `kind` lets one handler edit any of the
-  // four detection arrays (mini light, wreath, spritzer, garland).
-  type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
-  type DetectionKind = 'mini' | 'wreath' | 'spritzer' | 'garland';
-  const [boxDrag, setBoxDrag] = useState<{ kind: DetectionKind; idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
-
-  // Compute polyline length in "aspect-corrected" normalized units.
-  // dx stays as-is (image width = 1), dy is scaled by (height/width) so
-  // diagonal distances reflect real pixel distances on the image.
-  const polylineLength = (lines: LineSegment[], aspect: number): number => {
-    const yScale = 1 / aspect; // height in width-units
-    let total = 0;
-    for (const line of lines) {
-      for (let i = 1; i < line.points.length; i++) {
-        const [x1, y1] = line.points[i - 1];
-        const [x2, y2] = line.points[i];
-        const dx = x2 - x1;
-        const dy = (y2 - y1) * yScale;
-        total += Math.sqrt(dx * dx + dy * dy);
-      }
-    }
-    return total;
-  };
-
-  // Satellite image is always 640x640 at zoom=20 from Static Maps.
-  const SAT_PX = 640;
 
   // Tracks whether C9 lines existed on the previous effect run, so deleting
   // the last C9 line resets the derived footage instead of leaving a stale
   // value behind. (Manual entry without any lines is still preserved.)
   const hadC9LinesRef = useRef(false);
 
-  // Recompute both footages from whichever source is driving pricing. Street
-  // source uses calibrated feet-per-normalized-unit; satellite source uses
-  // deterministic feet-per-pixel × image pixel width (640).
+  // Recompute footages from the SATELLITE lines (#35: the only line-measurement
+  // source — deterministic feet-per-pixel × image pixel width). When there's no
+  // satellite, the footage fields are plain manual inputs.
   useEffect(() => {
-    let santasFt: number | null = null;
-    let gingerFt: number | null = null;
-    let c9Ft: number | null = null;
-    if (measurementSource === 'street' && feetPerUnit != null) {
-      santasFt = Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5;
-      gingerFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5;
-      c9Ft = Math.round(polylineLength(c9Lines, imgAspect) * feetPerUnit / 5) * 5;
-    } else if (measurementSource === 'satellite' && satelliteFeetPerPixel != null) {
-      santasFt = Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
-      gingerFt = Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
-      c9Ft = Math.round(polylineLength(satelliteC9Lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
-    }
-    if (santasFt == null || gingerFt == null) return;
-    const sFt = santasFt, gFt = gingerFt;
+    if (satelliteFeetPerPixel == null) return;
+    const sFt = Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+    const gFt = Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+    const c9Ft = Math.round(polylineLength(satelliteC9Lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
     // When C9 lines are drawn, footage tracks them. When the last line is
     // deleted (had lines on the previous run, none now), reset footage to 0 —
     // it was derived from those lines. When no lines were ever drawn, leave
     // winterWonderlandFootage alone so the manual input still works.
-    const hasC9Lines = c9Lines.length > 0 || satelliteC9Lines.length > 0;
+    const hasC9Lines = satelliteC9Lines.length > 0;
     const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
     hadC9LinesRef.current = hasC9Lines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
@@ -366,238 +312,24 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
       };
     }));
-  }, [santasLines, gingerbreadLines, c9Lines, satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, feetPerUnit, satelliteFeetPerPixel, imgAspect, satelliteAspect, measurementSource]);
+  }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteFeetPerPixel, satelliteAspect]);
 
-  // Footage display helpers — compute both sources independently so user can compare.
-  const streetFootage = {
-    santas: feetPerUnit != null ? Math.round(polylineLength(santasLines, imgAspect) * feetPerUnit / 5) * 5 : null,
-    ginger: feetPerUnit != null ? Math.round(polylineLength(gingerbreadLines, imgAspect) * feetPerUnit / 5) * 5 : null,
-  };
+  // Footage readout for the satellite tab.
   const satFootage = {
     santas: satelliteFeetPerPixel != null ? Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5 : null,
     ginger: satelliteFeetPerPixel != null ? Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5 : null,
   };
 
-  // Perspective correction: foreground plants are closer to the camera than the
-  // roofline (typically ~half the distance), so the same pixel width represents
-  // a smaller real-world object. Without this, bushes get sized 2-3x too large
-  // and strand counts cube. 0.4 is an empirical factor for typical street-view
-  // photos of LI houses (camera 20-40ft from curb, bushes at foundation).
-  const PLANT_PERSPECTIVE_FACTOR = 0.4;
-
-  // 5MM Round Bush/Tree Canopy Wrap formula (matches spreadsheet):
-  // wraps = height_in / 6  (spacing always 6")
-  // footage_ft = wraps × circumference_in / 12
-  // strands = footage_ft / 25  (each strand = 50ct 5MM at 6" spacing = 25ft)
-  // circumference = π × diameter, diameter = box width in real feet
-  //
-  // All roofline math is in FEET (pixel units × feetPerUnit).
-  // Plant math converts to INCHES (ft × 12) for the wrap formula.
-  // Perspective factor shrinks box→real conversion for foreground plants.
-  const calcStringsFromBox = (box: [number, number, number, number]): number => {
-    if (!feetPerUnit) return 1;
-    const widthFt = box[2] * feetPerUnit * PLANT_PERSPECTIVE_FACTOR;
-    const heightFt = (box[3] / imgAspect) * feetPerUnit * PLANT_PERSPECTIVE_FACTOR;
-    const heightIn = heightFt * 12;
-    const circumIn = Math.PI * widthFt * 12;
-    const wraps = heightIn / 6;
-    const footageFt = (wraps * circumIn) / 12;
-    const strands = footageFt / 25;
-    return Math.max(1, Math.round(strands));
-  };
-
-  // Drag handler for detection boxes (mini lights, wreaths, spritzers, garland).
-  useEffect(() => {
-    if (!boxDrag) return;
-    const handleMove = (e: PointerEvent) => {
-      const rect = imgContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const curX = (e.clientX - rect.left) / rect.width;
-      const curY = (e.clientY - rect.top) / rect.height;
-      const dx = curX - boxDrag.startX;
-      const dy = curY - boxDrag.startY;
-      const [sx, sy, sw, sh] = boxDrag.startBox;
-      let [x, y, w, h] = [sx, sy, sw, sh];
-      if (boxDrag.mode === 'move') { x = sx + dx; y = sy + dy; }
-      else if (boxDrag.mode === 'nw') { x = sx + dx; y = sy + dy; w = sw - dx; h = sh - dy; }
-      else if (boxDrag.mode === 'ne') { y = sy + dy; w = sw + dx; h = sh - dy; }
-      else if (boxDrag.mode === 'sw') { x = sx + dx; w = sw - dx; h = sh + dy; }
-      else if (boxDrag.mode === 'se') { w = sw + dx; h = sh + dy; }
-      const minSize = 0.02;
-      w = Math.max(minSize, w); h = Math.max(minSize, h);
-      x = Math.max(0, Math.min(1 - w, x));
-      y = Math.max(0, Math.min(1 - h, y));
-      const newBox: [number, number, number, number] = [x, y, w, h];
-      if (boxDrag.kind === 'mini') {
-        // Resize recomputes strand count from the new dimensions.
-        const newStringCount = boxDrag.mode !== 'move' ? calcStringsFromBox(newBox) : undefined;
-        setMiniLightDetections(dets => dets.map((d, i) =>
-          i === boxDrag.idx
-            ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
-            : d
-        ));
-      } else if (boxDrag.kind === 'wreath') {
-        setWreathDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
-      } else if (boxDrag.kind === 'spritzer') {
-        setSpritzerDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
-      } else if (boxDrag.kind === 'garland') {
-        setGarlandDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
-      }
-    };
-    const handleUp = () => setBoxDrag(null);
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleUp);
-    return () => {
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleUp);
-    };
-  }, [boxDrag, feetPerUnit, imgAspect]);
-
-  const startBoxDrag = (kind: DetectionKind, idx: number, mode: BoxDragMode) => (e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = imgContainerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const startX = (e.clientX - rect.left) / rect.width;
-    const startY = (e.clientY - rect.top) / rect.height;
-    const source =
-      kind === 'mini' ? miniLightDetections[idx].box
-      : kind === 'wreath' ? wreathDetections[idx].box
-      : kind === 'spritzer' ? spritzerDetections[idx].box
-      : garlandDetections[idx].box;
-    setBoxDrag({ kind, idx, mode, startX, startY, startBox: source });
-  };
-
-  const updateDetection = (idx: number, patch: Partial<MiniLightDetection>) => {
-    setMiniLightDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
-  };
-
-  const deleteDetection = (idx: number) => {
-    setMiniLightDetections(dets => dets.filter((_, i) => i !== idx));
-  };
-
-  // Wreath / spritzer / garland CRUD — same pattern as mini-light detections.
-  const updateWreathDetection = (idx: number, patch: Partial<WreathDetection>) =>
-    setWreathDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
-  const deleteWreathDetection = (idx: number) =>
-    setWreathDetections(dets => dets.filter((_, i) => i !== idx));
-  const addWreathDetection = () =>
-    setWreathDetections(dets => [...dets, { size: '30noble', tier: 'bow', box: [0.4, 0.3, 0.08, 0.08], label: 'new wreath' }]);
-
-  const updateSpritzerDetection = (idx: number, patch: Partial<SpritzerDetection>) =>
-    setSpritzerDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
-  const deleteSpritzerDetection = (idx: number) =>
-    setSpritzerDetections(dets => dets.filter((_, i) => i !== idx));
-  const addSpritzerDetection = () =>
-    setSpritzerDetections(dets => [...dets, { size: '24', box: [0.5, 0.7, 0.05, 0.1], label: 'new spritzer' }]);
-
-  const updateGarlandDetection = (idx: number, patch: Partial<GarlandDetection>) =>
-    setGarlandDetections(dets => dets.map((d, i) => i === idx ? { ...d, ...patch } : d));
-  const deleteGarlandDetection = (idx: number) =>
-    setGarlandDetections(dets => dets.filter((_, i) => i !== idx));
-  const addGarlandDetection = () =>
-    setGarlandDetections(dets => [...dets, { length: '9ft', tier: 'bow', box: [0.2, 0.6, 0.2, 0.03], label: 'new garland' }]);
-
-  const addDetection = (type: 'bush' | 'tree' | 'column') => {
-    const defaults = {
-      bush:   { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new bush' },
-      tree:   { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'new tree' },
-      column: { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new column' },
-    }[type];
-    setMiniLightDetections(dets => [...dets, {
-      type,
-      ...defaults,
-      box: [0.4, 0.6, 0.15, 0.15],
-    }]);
-  };
-
-  // Detection→form syncs only run once that detection type has actually been
-  // populated (an analysis or a manually-added box). Without the gate, the
-  // mount-time run of each effect maps over the still-empty detection arrays
-  // and would wipe items hydrated from a saved quote (/quote/[id], task #31).
-  // Once seen, delete-the-last-detection still clears the form items as before.
-  const miniDetectionsSeen = useRef(false);
-  const wreathDetectionsSeen = useRef(false);
-  const spritzerDetectionsSeen = useRef(false);
-  const garlandDetectionsSeen = useRef(false);
-
-  // Sync detection edits back into form.miniLightItems
-  useEffect(() => {
-    if (miniLightDetections.length > 0) miniDetectionsSeen.current = true;
-    if (!miniDetectionsSeen.current) return;
-    // defer the form sync out of the synchronous effect body (flushes before paint)
-    queueMicrotask(() => setForm(f => ({
-      ...f,
-      miniLightItems: miniLightDetections.map(d => ({
-        type: d.type,
-        wrapStyle: d.wrapStyle,
-        stringCount: d.stringCount,
-      })),
-    })));
-  }, [miniLightDetections]);
-
-  // Wreaths — one form entry per detection. Grouped rendering in the quote is
-  // fine with duplicates; each detection keeps its own box for editability.
-  useEffect(() => {
-    if (wreathDetections.length > 0) wreathDetectionsSeen.current = true;
-    if (!wreathDetectionsSeen.current) return;
-    // defer the form sync out of the synchronous effect body (flushes before paint)
-    queueMicrotask(() => setForm(f => ({
-      ...f,
-      wreaths: wreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 })),
-    })));
-  }, [wreathDetections]);
-
-  // Spritzers — one form entry per detection.
-  useEffect(() => {
-    if (spritzerDetections.length > 0) spritzerDetectionsSeen.current = true;
-    if (!spritzerDetectionsSeen.current) return;
-    // defer the form sync out of the synchronous effect body (flushes before paint)
-    queueMicrotask(() => setForm(f => ({
-      ...f,
-      spritzers: spritzerDetections.map(d => ({ size: d.size, quantity: 1 })),
-    })));
-  }, [spritzerDetections]);
-
-  // Garland — box width in real feet (via feetPerUnit) tells us how many 9ft
-  // pieces the run needs. Rounded up so we never short the customer.
-  useEffect(() => {
-    if (garlandDetections.length > 0) garlandDetectionsSeen.current = true;
-    if (!garlandDetectionsSeen.current) return;
-    const pieces = (box: [number, number, number, number], length: GarlandLength): number => {
-      const unitFt = length === '9ft' ? 9 : 4.5;
-      if (feetPerUnit == null) return 1;
-      const widthFt = box[2] * feetPerUnit;
-      return Math.max(1, Math.ceil(widthFt / unitFt));
-    };
-    // defer the form sync out of the synchronous effect body (flushes before paint)
-    queueMicrotask(() => setForm(f => ({
-      ...f,
-      garland: garlandDetections.map(d => ({
-        length: d.length,
-        type: 'noble' as const,
-        tier: d.tier,
-        quantity: pieces(d.box, d.length),
-      })),
-    })));
-  }, [garlandDetections, feetPerUnit]);
-
-  // Active setter routing — drag ops operate on whichever line set matches
-  // the current viewMode. Street view edits street polylines; satellite view
-  // edits satellite polylines.
+  // Line setters — satellite-only now (#35): street lines are gone, the design
+  // owns the street-side visuals.
   const getSetter = (type: LineType) => {
-    if (viewMode === 'street') {
-      if (type === 'santas') return setSantasLines;
-      if (type === 'gingerbread') return setGingerbreadLines;
-      return setC9Lines;
-    }
     if (type === 'santas') return setSatelliteSantasLines;
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
     return setSatelliteC9Lines;
   };
-  const activeSantasLines = viewMode === 'street' ? santasLines : satelliteSantasLines;
-  const activeGingerbreadLines = viewMode === 'street' ? gingerbreadLines : satelliteGingerbreadLines;
-  const activeC9Lines = viewMode === 'street' ? c9Lines : satelliteC9Lines;
+  const activeSantasLines = satelliteSantasLines;
+  const activeGingerbreadLines = satelliteGingerbreadLines;
+  const activeC9Lines = satelliteC9Lines;
 
   useEffect(() => {
     if (!dragging) return;
@@ -620,7 +352,8 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-  }, [dragging, viewMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragging]);
 
   const deletePoint = (type: LineType, lineIdx: number, ptIdx: number) => {
     const setter = getSetter(type);
@@ -669,45 +402,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setPendingPoints([]);
   };
 
-  const saveCorrections = async () => {
-    if (!photoBase64 || !photoMediaType || !originalAnalysis) return;
-    setSavingCorrection(true);
-    setCorrectionSaved(false);
-    try {
-      const res = await fetch('/api/save-correction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          photoBase64,
-          photoMediaType,
-          originalAnalysis,
-          correctedSantasFootage: form.santasFootage,
-          correctedSantasDifficulty: form.santasDifficulty,
-          correctedSantasLines: santasLines,
-          correctedGingerbreadFootage: form.gingerbreadFootage,
-          correctedGingerbreadDifficulty: form.gingerbreadDifficulty,
-          correctedGingerbreadLines: gingerbreadLines,
-          correctedMiniLightDetections: miniLightDetections,
-          correctedC9Lines: c9Lines,
-          correctedWinterWonderlandFootage: form.winterWonderlandFootage,
-          correctedSatelliteSantasLines: satelliteSantasLines,
-          correctedSatelliteGingerbreadLines: satelliteGingerbreadLines,
-          correctedSatelliteC9Lines: satelliteC9Lines,
-          correctedWreathDetections: wreathDetections,
-          correctedSpritzerDetections: spritzerDetections,
-          correctedGarlandDetections: garlandDetections,
-        }),
-      });
-      if (res.ok) setCorrectionSaved(true);
-      else {
-        const data = await res.json();
-        alert(`Save failed: ${data.error ?? 'unknown error'}`);
-      }
-    } finally {
-      setSavingCorrection(false);
-    }
-  };
-
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -715,13 +409,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setPhotoPreview(URL.createObjectURL(file));
     setAnalysisNotes(null);
     setAnalysisError(null);
-    setSantasLines([]);
-    setGingerbreadLines([]);
-    setC9Lines([]);
-    setMiniLightDetections([]);
-    setWreathDetections([]);
-    setSpritzerDetections([]);
-    setGarlandDetections([]);
     // Reset stale state from any prior Google/address analysis so the manual
     // upload doesn't silently reuse satellite lines, base64, or calibration.
     setSatellitePreview(null);
@@ -732,8 +419,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setGoogleAddress(null);
     setPhotoBase64(null);
     setPhotoMediaType(null);
-    setOriginalAnalysis(null);
-    setFeetPerUnit(null);
     setFewShotCount(0);
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
@@ -765,24 +450,16 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Street View refetch failed');
+      // Any roofline seed from a PREVIOUS analysis belongs to the old camera
+      // angle — drop it so it can't land on the new photo. (The eager design
+      // effect will push this photo into the design as its new base.)
+      pendingSeedRef.current = null;
       setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
       setPhotoBase64(data.photoBase64);
       setPhotoMediaType(data.photoMediaType);
-      // Polylines + mini-light boxes were drawn in the old image's pixel space
-      // — wipe them so they don't sit on the wrong spots. Satellite untouched.
-      setSantasLines([]);
-      setGingerbreadLines([]);
-      setC9Lines([]);
-      setMiniLightDetections([]);
-      setWreathDetections([]);
-      setSpritzerDetections([]);
-      setGarlandDetections([]);
-      setFeetPerUnit(null);
       setSvHeading(nextHeading);
       setSvPitch(nextPitch);
       setSvFov(nextFov);
-      // Don't force viewMode here — the viewMode→measurementSource sync would
-      // silently flip the user's chosen pricing source. User can toggle manually.
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Street View refetch failed');
     } finally {
@@ -816,8 +493,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }
   };
 
-  // Shared: apply analysis result to form + line/detection state.
-  // Used by both manual upload and Google address lookup.
+  // Shared: apply analysis result to the form + satellite state + the design's
+  // roofline seed. Used by both manual upload and Google address lookup.
+  // #35 Phase 1: the AI's street roofline lines feed the DESIGN (as tagged C9
+  // strands); its per-unit detections are dropped for now — Phase 2 (the bridge
+  // auto-design) converts them into scene items too, and #8 then upgrades the
+  // AI itself to design directly.
   type AnalysisResponse = {
     result: {
       santasFootage: number;
@@ -828,13 +509,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       gingerbreadLines?: LineSegment[];
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
-      satelliteSantasFootage?: number;
-      satelliteGingerbreadFootage?: number;
       preferredSource?: 'street' | 'satellite';
-      miniLightDetections?: MiniLightDetection[];
-      wreathDetections?: WreathDetection[];
-      spritzerDetections?: SpritzerDetection[];
-      garlandDetections?: GarlandDetection[];
       notes: string;
       confidence: string;
     };
@@ -850,6 +525,8 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
     const r = data.result;
+    // The AI's footage estimates pre-fill the inputs; satellite lines (when
+    // present) take over via the measurement effect, and staff can always type.
     setForm(f => ({
       ...f,
       santasFootage: r.santasFootage,
@@ -857,49 +534,31 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       gingerbreadFootage: r.gingerbreadFootage,
       gingerbreadDifficulty: r.gingerbreadDifficulty,
     }));
-    const newSantasLines: LineSegment[] = r.santasLines ?? [];
-    const newGingerbreadLines: LineSegment[] = r.gingerbreadLines ?? [];
-    const detections: MiniLightDetection[] = r.miniLightDetections ?? [];
-    setSantasLines(newSantasLines);
-    setGingerbreadLines(newGingerbreadLines);
-    setMiniLightDetections(detections);
-    setWreathDetections(r.wreathDetections ?? []);
-    setSpritzerDetections(r.spritzerDetections ?? []);
-    setGarlandDetections(r.garlandDetections ?? []);
-    const santasLen = polylineLength(newSantasLines, imgAspect);
-    const ridgeLen = polylineLength(newGingerbreadLines, imgAspect);
-    let scale: number | null = null;
-    if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
-    else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
-    setFeetPerUnit(scale);
-    if (scale && detections.length > 0) {
-      const PERSPECTIVE = 0.4;
-      const recalcStrings = (box: [number, number, number, number]): number => {
-        const widthFt = box[2] * scale! * PERSPECTIVE;
-        const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
-        const circumIn = Math.PI * widthFt * 12;
-        const wraps = (heightFt * 12) / 6;
-        const footageFt = (wraps * circumIn) / 12;
-        return Math.max(1, Math.round(footageFt / 25));
-      };
-      setMiniLightDetections(detections.map(d => ({ ...d, stringCount: recalcStrings(d.box) })));
-    }
-    // Satellite polylines — always seed them so the user can toggle to the
-    // satellite canvas for complex / commercial rooflines without re-analyzing.
+    // Satellite polylines — seed them so the satellite tab is ready for
+    // complex / commercial rooflines without re-analyzing.
     setSatelliteSantasLines(r.satelliteSantasLines ?? []);
     setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
     setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
-    // Claude may have flagged satellite as the better source (e.g. because
-    // rear rooflines aren't visible from the street). Honor that hint.
-    const preferred = r.preferredSource ?? 'street';
-    setMeasurementSource(preferred);
-    setViewMode(preferred);
+    // The AI's street roofline lines become tagged C9 strands on the design
+    // (#33). If the design already carries this exact photo (a re-analyze),
+    // seed it directly; otherwise park the lines for the eager design effect.
+    const seedLines = {
+      santas: (r.santasLines ?? []).map((l) => l.points),
+      gingerbread: (r.gingerbreadLines ?? []).map((l) => l.points),
+      winterWonderland: [] as [number, number][][],
+    };
+    if (designId && data.photoBase64 && designPhotoRef.current === data.photoBase64) {
+      void seedDesignRoofline(designId, seedLines);
+    } else {
+      pendingSeedRef.current = seedLines;
+    }
+    // Claude may flag satellite as the better measurement source (e.g. rear
+    // rooflines invisible from the street) — surface that tab if so.
+    setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
     setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
-    setOriginalAnalysis(r);
     setFewShotCount(data.fewShotCount ?? 0);
-    setCorrectionSaved(false);
   };
 
   const handleLookupAddress = async () => {
@@ -969,62 +628,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const setCustomer = (k: keyof FormCustomer, v: string) =>
     setForm(f => ({ ...f, customer: { ...f.customer, [k]: v } }));
 
-  // Mini lights — when detections are present, route all changes through
-  // miniLightDetections so the boxes in the Analysis Results stay in lockstep.
-  // When no photo has been analyzed, fall back to editing miniLightItems directly.
-  const addMiniLight = () => {
-    if (miniLightDetections.length > 0 || photoPreview) {
-      addDetection('tree');
-    } else {
-      set('miniLightItems', [...form.miniLightItems, { type: 'tree', wrapStyle: 'trunk', stringCount: 3 }]);
-    }
-  };
-  const removeMiniLight = (i: number) => {
-    if (i < miniLightDetections.length) {
-      deleteDetection(i);
-    } else {
-      set('miniLightItems', form.miniLightItems.filter((_, idx) => idx !== i));
-    }
-  };
-  const updateMiniLight = (i: number, patch: Partial<MiniLightItem>) => {
-    if (i < miniLightDetections.length) {
-      updateDetection(i, patch as Partial<MiniLightDetection>);
-    } else {
-      set('miniLightItems', form.miniLightItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
-    }
-  };
-
-  // Spritzers
-  const addSpritzer = () =>
-    set('spritzers', [...form.spritzers, { size: '24' as const, quantity: 1 }]);
-  const removeSpritzer = (i: number) =>
-    set('spritzers', form.spritzers.filter((_, idx) => idx !== i));
-  const updateSpritzer = (i: number, patch: Partial<Spritzer>) =>
-    set('spritzers', form.spritzers.map((item, idx) => idx === i ? { ...item, ...patch } : item));
-
-  // Wreaths
-  const addWreath = () =>
-    set('wreaths', [...form.wreaths, { size: '30noble' as const, tier: 'bow' as const, quantity: 1 }]);
-  const removeWreath = (i: number) =>
-    set('wreaths', form.wreaths.filter((_, idx) => idx !== i));
-  const updateWreath = (i: number, patch: Partial<Wreath>) =>
-    set('wreaths', form.wreaths.map((item, idx) => idx === i ? { ...item, ...patch } : item));
-
-  // Garland
-  const addGarland = () =>
-    set('garland', [...form.garland, { length: '9ft' as const, type: 'noble' as const, tier: 'bow' as const, quantity: 1 }]);
-  const removeGarland = (i: number) =>
-    set('garland', form.garland.filter((_, idx) => idx !== i));
-  const updateGarland = (i: number, patch: Partial<GarlandItem>) =>
-    set('garland', form.garland.map((item, idx) => idx === i ? { ...item, ...patch } : item));
-
-  // Standalone bows (#28) — flat per-bow price (TBD by Naldo, $0 today).
-  const addBow = () =>
-    set('bows', [...form.bows, { quantity: 1 }]);
-  const removeBow = (i: number) =>
-    set('bows', form.bows.filter((_, idx) => idx !== i));
-  const updateBow = (i: number, patch: Partial<BowLineInput>) =>
-    set('bows', form.bows.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+  // (#35: per-unit items — minis/spritzers/wreaths/garland/bows — are authored
+  // ONLY on the design now; the manual form sections are gone. The engine still
+  // accepts the arrays; the design projection populates them at Calculate.)
 
   // Custom / manual line items (#27 escape hatch) — staff-typed name + price for
   // off-design items. Not tied to the design; flow to the quote + portal.
@@ -1034,71 +640,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     set('customLineItems', form.customLineItems.filter((_, idx) => idx !== i));
   const updateCustomLineItem = (i: number, patch: Partial<CustomLineItem>) =>
     set('customLineItems', form.customLineItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
-
-  // Fire a nighttime render in parallel with quote calculation. Uses the
-  // user's edited lines/detections (not raw Claude output) so corrections
-  // feed the visualization. Requires photoBase64 — only populated via the
-  // Street View / address-lookup path, not plain file upload. Failures here
-  // are non-fatal; the quote still shows.
-  const kickoffRender = async () => {
-    if (!photoBase64 || !photoMediaType) {
-      setRenderSkipReason('No analyzed photo available. Use "Analyze from Address" or upload + analyze a photo first, then recalculate.');
-      setRenderStatus('skipped');
-      return;
-    }
-    const vision = {
-      santasLines,
-      gingerbreadLines,
-      c9Lines,
-      miniLights: miniLightDetections,
-      wreaths: wreathDetections,
-      spritzers: spritzerDetections,
-      garland: garlandDetections,
-    };
-    // Skip if the photo has no placeable lighting — renderer would produce
-    // a nighttime photo of nothing, wasting a Gemini call.
-    const totalGeometry =
-      santasLines.length + gingerbreadLines.length + c9Lines.length +
-      miniLightDetections.length + wreathDetections.length +
-      spritzerDetections.length + garlandDetections.length;
-    if (totalGeometry === 0) {
-      setRenderSkipReason('No lines or detections on the photo. Draw at least one gutter/ridge polyline or accept a Claude detection before recalculating.');
-      setRenderStatus('skipped');
-      return;
-    }
-
-    setRenderStatus('rendering');
-    setRenderError(null);
-    setRenderUrl(null);
-    try {
-      const res = await fetch('/api/renders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          photoBase64,
-          photoMediaType,
-          style: 'warm-white',
-          model: 'flash2',
-          vision,
-          notes: form.customer.name ? `Preview for ${form.customer.name}` : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Render failed');
-      const id: string | undefined = data.render?.id;
-      if (!id) throw new Error('Render response missing id');
-      const detailRes = await fetch(`/api/renders/${id}`);
-      const detail = await detailRes.json();
-      if (!detailRes.ok) throw new Error(detail.error ?? 'Could not fetch render URL');
-      const finalUrl: string | null = detail.urls?.final ?? null;
-      if (!finalUrl) throw new Error('Render completed but final image URL is missing');
-      setRenderUrl(finalUrl);
-      setRenderStatus('ready');
-    } catch (err) {
-      setRenderError(err instanceof Error ? err.message : 'Render failed');
-      setRenderStatus('error');
-    }
-  };
 
   // Pick a HighLevel contact → pre-fill the customer block below.
   // Precedence: HL data wins if the contact has a value for that field. If
@@ -1202,12 +743,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }
   };
 
-  // "Re-render" — fires kickoffRender again. The server always generates
-  // a fresh image (no cache), so this just reuses the current geometry.
-  const handleRerender = () => {
-    void kickoffRender();
-  };
-
   // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
   // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
   // (#17 Phase 1b) without waiting on the async form-state update.
@@ -1215,10 +750,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setLoading(true);
     setError(null);
     setResult(null);
-    setRenderStatus('idle');
-    setRenderUrl(null);
-    setRenderError(null);
-    setRenderSkipReason(null);
     setAttachStatus('idle');
     setAttachError(null);
     setSendStatus('idle');
@@ -1251,10 +782,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       setSavedQuoteId(newQuoteId);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
-      // Fire the render in parallel — don't await it, the quote is already
-      // visible and the preview loads below ~60s later.
-      void kickoffRender();
-      // Attach to HL opportunity in parallel too, if an HL contact was picked
+      // Attach to HL opportunity in parallel, if an HL contact was picked
       // (skipped when this quote+contact pair is already attached).
       const attachKey = newQuoteId && highlevelContact?.id ? `${newQuoteId}:${highlevelContact.id}` : null;
       if (attachKey && newQuoteId && highlevelContact?.id && lastAttachKey.current !== attachKey) {
@@ -1271,11 +799,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await runQuote();
   };
 
   // Staff recommends which roofline the customer sees by default. Lighter than
@@ -1339,7 +862,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           )}
         </div>
 
-        <form onSubmit={handleSubmit}>
+        {/* No <form> wrapper (#35): the embedded design editor's vanilla
+            buttons carry no type attribute and would implicitly submit a
+            surrounding form on every click. Calculate is a plain button. */}
+        <div>
 
           {/* ── Customer Info ── */}
           <Section title="Customer Info">
@@ -1432,12 +958,17 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               )}
               {satellitePreview && (
                 <p className="text-xs text-gray-500 italic">
-                  Satellite view is editable below — toggle to it in the results canvas.
+                  Roof measurements come from the Satellite tab below (or type them manually).
                 </p>
               )}
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
-                  <strong className="block mb-1">Analysis complete — form auto-filled below.</strong>
+                  <strong className="block mb-1">
+                    Analysis complete — measurements auto-filled, roofline drawn on the design.
+                    {fewShotCount > 0 && (
+                      <span className="ml-1 font-normal">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>
+                    )}
+                  </strong>
                   {analysisNotes}
                 </div>
               )}
@@ -1449,786 +980,388 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             </div>
           </Section>
 
-          {/* ── Analysis Results — editable marked-up photo ── */}
-          {photoPreview && photoBase64 && (
-            <Section title="Analysis Results — Correct The Measurement">
-              <p className="text-xs text-gray-500 mb-3">
-                Drag dots to reshape lines. Double-click a dot to remove it. Footage updates automatically as you edit.
-                {fewShotCount > 0 && <span className="ml-2 text-green-700 font-medium">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>}
-              </p>
-
-              {/* View toggle — edit street or satellite polylines. Satellite is
-                  better for commercial properties + complex rooflines where the
-                  back + sides aren't visible from the street. */}
-              {satellitePreview && (
-                <div className="mb-3 flex items-center gap-3 flex-wrap">
-                  <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setViewMode('street')}
-                      className={`px-3 py-1.5 font-medium ${viewMode === 'street' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-                    >
-                      Street View
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewMode('satellite')}
-                      className={`px-3 py-1.5 font-medium border-l border-gray-300 ${viewMode === 'satellite' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-                    >
-                      Satellite (top-down)
-                    </button>
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    Pricing uses:
-                    <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
-                      <input type="radio" name="msrc" checked={measurementSource === 'street'} onChange={() => setMeasurementSource('street')} />
-                      Street
-                    </label>
-                    <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
-                      <input type="radio" name="msrc" checked={measurementSource === 'satellite'} onChange={() => setMeasurementSource('satellite')} />
-                      Satellite
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Street View angle controls — rotate around obstacles (trees,
-                  parked cars). Only shown when we have Google coordinates. */}
-              {geoLat != null && geoLng != null && viewMode === 'street' && (
-                <div className="mb-3 p-3 bg-gray-50 border border-gray-200 rounded-md">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                      Move the Camera
-                    </span>
-                    <span className="text-[11px] text-gray-500">
-                      Tree or truck in the way? Rotate, tilt, or zoom — then re-analyze.
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      ◀ Rotate −30°
-                    </button>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 10 })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      ◀ −10°
-                    </button>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 10 })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      +10° ▶
-                    </button>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 30 })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      Rotate +30° ▶
-                    </button>
-                    <span className="mx-1 text-gray-300">|</span>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ pitch: Math.min(90, svPitch + 10) })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      ▲ Tilt Up
-                    </button>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ pitch: Math.max(-90, svPitch - 10) })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      ▼ Tilt Down
-                    </button>
-                    <span className="mx-1 text-gray-300">|</span>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ fov: Math.min(120, svFov + 10) })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      − Zoom Out
-                    </button>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ fov: Math.max(30, svFov - 10) })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      + Zoom In
-                    </button>
-                    <span className="mx-1 text-gray-300">|</span>
-                    <button type="button" disabled={recapturing}
-                      onClick={() => recaptureStreetView({ heading: null, pitch: 0, fov: 80 })}
-                      className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
-                      Reset
-                    </button>
-                    <button type="button" disabled={analyzing || recapturing}
-                      onClick={reanalyzeCurrent}
-                      className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
-                      {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
-                    </button>
-                  </div>
-                  <div className="mt-2 text-[11px] text-gray-500 tabular-nums">
-                    heading {svHeading ?? 'auto'}° · pitch {svPitch}° · fov {svFov}°
-                    {recapturing && <span className="ml-2 text-blue-700 font-medium">Fetching new angle…</span>}
-                  </div>
-                </div>
-              )}
-
-              {/* Side-by-side footage comparison */}
-              {satellitePreview && (
-                <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
-                  <div className={`rounded border p-2 ${measurementSource === 'street' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
-                    <p className="font-semibold text-gray-700">Street: front {streetFootage.santas ?? '—'}ft · ridge+sides {streetFootage.ginger ?? '—'}ft</p>
-                  </div>
-                  <div className={`rounded border p-2 ${measurementSource === 'satellite' ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
-                    <p className="font-semibold text-gray-700">Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft</p>
-                  </div>
-                </div>
-              )}
-
-              {viewMode === 'satellite' && (
-                <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
-                  <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
-                </div>
-              )}
-
-              <div
-                ref={imgContainerRef}
-                onClick={addMode ? handleImageClick : undefined}
-                className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={viewMode === 'satellite' && satellitePreview ? satellitePreview : photoPreview}
-                  alt={viewMode === 'satellite' ? 'Satellite view' : 'Analyzed house'}
-                  className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none"
-                  draggable={false}
-                  onLoad={e => {
-                    const img = e.currentTarget;
-                    if (img.naturalHeight > 0) {
-                      const aspect = img.naturalWidth / img.naturalHeight;
-                      if (viewMode === 'satellite') setSatelliteAspect(aspect);
-                      else setImgAspect(aspect);
-                    }
-                  }}
-                />
-                <svg
-                  viewBox="0 0 1 1"
-                  preserveAspectRatio="none"
-                  className="absolute inset-0 w-full h-full"
-                  style={{ pointerEvents: 'none' }}
-                >
-                  {activeSantasLines.map((line, i) => (
-                    <polyline
-                      key={`s-${i}`}
-                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
-                      fill="none"
-                      stroke="#ef4444"
-                      strokeWidth="4"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ))}
-                  {activeGingerbreadLines.map((line, i) => (
-                    <polyline
-                      key={`g-${i}`}
-                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
-                      fill="none"
-                      stroke="#3b82f6"
-                      strokeWidth="4"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ))}
-                  {activeC9Lines.map((line, i) => (
-                    <polyline
-                      key={`c9-${i}`}
-                      points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
-                      fill="none"
-                      stroke="#10b981"
-                      strokeWidth="4"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ))}
-                  {pendingPoints.length > 0 && (
-                    <polyline
-                      points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
-                      fill="none"
-                      stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
-                      strokeWidth="3"
-                      strokeDasharray="6 4"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  )}
-                </svg>
-                {/* Editable wreath boxes — purple outline. */}
-                {!addMode && viewMode === 'street' && wreathDetections.map((d, i) => (
-                  <div
-                    key={`wbox-${i}`}
-                    className="absolute border-2 border-purple-500 bg-purple-400/15 cursor-move rounded-full"
-                    style={{
-                      left: `${d.box[0] * 100}%`,
-                      top: `${d.box[1] * 100}%`,
-                      width: `${d.box[2] * 100}%`,
-                      height: `${d.box[3] * 100}%`,
-                      touchAction: 'none',
+          {/* ── House — Design (street) + Satellite measurement (#35) ── */}
+          {(designId || photoPreview || satellitePreview || designBusy) ? (
+            <Section title="House — Design & Measure">
+              {/* Tab switcher. Both panes stay MOUNTED across switches (CSS
+                  hidden) so the design editor and the satellite lines never
+                  lose state; switching to Design nudges a window resize so the
+                  Konva canvas refits after being unhidden. */}
+              <div className="mb-3 flex items-center gap-3 flex-wrap">
+                <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('design');
+                      requestAnimationFrame(() => requestAnimationFrame(() => window.dispatchEvent(new Event('resize'))));
                     }}
-                    onPointerDown={startBoxDrag('wreath', i, 'move')}
-                    title="Drag to move • use corners to resize"
+                    className={`px-3 py-1.5 font-medium ${viewMode === 'design' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
                   >
-                    <div className="absolute -top-5 left-0 bg-purple-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                      W{i + 1} {d.size} · {d.tier}
-                    </div>
-                    {(['nw','ne','sw','se'] as const).map(corner => {
-                      const pos: Record<string, string> = {
-                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
-                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
-                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
-                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
-                      };
-                      return (
-                        <div
-                          key={corner}
-                          className={`absolute w-3 h-3 bg-white border-2 border-purple-600 rounded-sm ${pos[corner]}`}
-                          style={{ touchAction: 'none' }}
-                          onPointerDown={startBoxDrag('wreath', i, corner)}
-                        />
-                      );
-                    })}
-                  </div>
-                ))}
-
-                {/* Editable spritzer boxes — fuchsia outline. */}
-                {!addMode && viewMode === 'street' && spritzerDetections.map((d, i) => (
-                  <div
-                    key={`spbox-${i}`}
-                    className="absolute border-2 border-fuchsia-500 bg-fuchsia-400/15 cursor-move"
-                    style={{
-                      left: `${d.box[0] * 100}%`,
-                      top: `${d.box[1] * 100}%`,
-                      width: `${d.box[2] * 100}%`,
-                      height: `${d.box[3] * 100}%`,
-                      touchAction: 'none',
-                    }}
-                    onPointerDown={startBoxDrag('spritzer', i, 'move')}
-                    title="Drag to move • use corners to resize"
+                    Design (Street)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('satellite')}
+                    disabled={!satellitePreview}
+                    title={satellitePreview ? undefined : 'No satellite view — look up the address to get one.'}
+                    className={`px-3 py-1.5 font-medium border-l border-gray-300 ${viewMode === 'satellite' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'} disabled:text-gray-300 disabled:hover:bg-white`}
                   >
-                    <div className="absolute -top-5 left-0 bg-fuchsia-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                      S{i + 1} · {d.size}in
+                    Satellite (top-down)
+                  </button>
+                </div>
+                {satelliteFeetPerPixel != null && (
+                  <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
+                    Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
+                  </div>
+                )}
+              </div>
+
+              {/* ── DESIGN tab — the design tool IS the street view (#35) ── */}
+              <div className={viewMode === 'design' ? '' : 'hidden'}>
+                {/* Street View angle controls — rotate around obstacles (trees,
+                    parked cars). Only shown when we have Google coordinates.
+                    Re-capturing swaps the design's base photo underneath the
+                    drawn items — fix the angle BEFORE designing. */}
+                {geoLat != null && geoLng != null && (
+                  <div className="mb-3 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                        Move the Camera
+                      </span>
+                      <span className="text-[11px] text-gray-500">
+                        Tree or truck in the way? Rotate, tilt, or zoom — then re-analyze. Best done before designing.
+                      </span>
                     </div>
-                    {(['nw','ne','sw','se'] as const).map(corner => {
-                      const pos: Record<string, string> = {
-                        nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
-                        ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
-                        sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
-                        se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
-                      };
-                      return (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ◀ Rotate −30°
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 10 })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ◀ −10°
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 10 })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        +10° ▶
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 30 })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        Rotate +30° ▶
+                      </button>
+                      <span className="mx-1 text-gray-300">|</span>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ pitch: Math.min(90, svPitch + 10) })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ▲ Tilt Up
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ pitch: Math.max(-90, svPitch - 10) })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ▼ Tilt Down
+                      </button>
+                      <span className="mx-1 text-gray-300">|</span>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ fov: Math.min(120, svFov + 10) })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        − Zoom Out
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ fov: Math.max(30, svFov - 10) })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        + Zoom In
+                      </button>
+                      <span className="mx-1 text-gray-300">|</span>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => recaptureStreetView({ heading: null, pitch: 0, fov: 80 })}
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        Reset
+                      </button>
+                      <button type="button" disabled={analyzing || recapturing}
+                        onClick={reanalyzeCurrent}
+                        className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
+                        {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
+                      </button>
+                    </div>
+                    <div className="mt-2 text-[11px] text-gray-500 tabular-nums">
+                      heading {svHeading ?? 'auto'}° · pitch {svPitch}° · fov {svFov}°
+                      {recapturing && <span className="ml-2 text-blue-700 font-medium">Fetching new angle…</span>}
+                    </div>
+                  </div>
+                )}
+                {designError && <p className="text-sm text-red-600 mb-2">{designError}</p>}
+                {designId ? (
+                  <>
+                    <DesignEditor key={designEditorKey} designId={designId} height={640} />
+                    <p className="text-xs text-gray-400 mt-2">
+                      Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
+                      quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
+                      represent). Saves automatically and attaches to this quote on Calculate.
+                    </p>
+                    <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                  </>
+                ) : (
+                  <p className="text-sm text-gray-500 py-10 text-center">
+                    {designBusy
+                      ? 'Setting up the design canvas…'
+                      : 'Analyze from address (or upload + analyze a photo) and the design canvas opens here with the house photo.'}
+                  </p>
+                )}
+              </div>
+
+              {/* ── SATELLITE tab — roof measurement lines (the ONLY line-
+                  measurement source; no satellite → type footage manually) ── */}
+              <div className={viewMode === 'satellite' ? '' : 'hidden'}>
+                {satellitePreview ? (
+                  <>
+                    <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
+                      <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
+                    </div>
+                    <div
+                      ref={imgContainerRef}
+                      onClick={addMode ? handleImageClick : undefined}
+                      className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={satellitePreview}
+                        alt="Satellite view"
+                        className="w-full h-auto rounded-md border border-gray-200 block select-none pointer-events-none"
+                        draggable={false}
+                        onLoad={e => {
+                          const img = e.currentTarget;
+                          if (img.naturalHeight > 0) setSatelliteAspect(img.naturalWidth / img.naturalHeight);
+                        }}
+                      />
+                      <svg
+                        viewBox="0 0 1 1"
+                        preserveAspectRatio="none"
+                        className="absolute inset-0 w-full h-full"
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        {activeSantasLines.map((line, i) => (
+                          <polyline
+                            key={`s-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#ef4444"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                        {activeGingerbreadLines.map((line, i) => (
+                          <polyline
+                            key={`g-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#3b82f6"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                        {activeC9Lines.map((line, i) => (
+                          <polyline
+                            key={`c9-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                        {pendingPoints.length > 0 && (
+                          <polyline
+                            points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
+                            strokeWidth="3"
+                            strokeDasharray="6 4"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
+                      </svg>
+                      {/* Draggable point handles (HTML elements, positioned absolute) */}
+                      {!addMode && activeSantasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                         <div
-                          key={corner}
-                          className={`absolute w-3 h-3 bg-white border-2 border-fuchsia-700 rounded-sm ${pos[corner]}`}
-                          style={{ touchAction: 'none' }}
-                          onPointerDown={startBoxDrag('spritzer', i, corner)}
+                          key={`sh-${li}-${pi}`}
+                          className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
+                          onDoubleClick={() => deletePoint('santas', li, pi)}
+                          title="Drag to move • Double-click to delete"
                         />
-                      );
-                    })}
-                  </div>
-                ))}
-
-                {/* Editable garland boxes — teal outline; width along the run
-                    drives piece count via feetPerUnit. */}
-                {!addMode && viewMode === 'street' && garlandDetections.map((d, i) => {
-                  const unitFt = d.length === '9ft' ? 9 : 4.5;
-                  const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
-                  const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
-                  return (
-                    <div
-                      key={`gbox-${i}`}
-                      className="absolute border-2 border-teal-500 bg-teal-400/15 cursor-move"
-                      style={{
-                        left: `${d.box[0] * 100}%`,
-                        top: `${d.box[1] * 100}%`,
-                        width: `${d.box[2] * 100}%`,
-                        height: `${d.box[3] * 100}%`,
-                        touchAction: 'none',
-                      }}
-                      onPointerDown={startBoxDrag('garland', i, 'move')}
-                      title="Drag to move • use corners to resize"
-                    >
-                      <div className="absolute -top-5 left-0 bg-teal-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                        G{i + 1} · {pieces}×{d.length} · {d.tier}
-                      </div>
-                      {(['nw','ne','sw','se'] as const).map(corner => {
-                        const pos: Record<string, string> = {
-                          nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
-                          ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
-                          sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
-                          se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
-                        };
-                        return (
-                          <div
-                            key={corner}
-                            className={`absolute w-3 h-3 bg-white border-2 border-teal-700 rounded-sm ${pos[corner]}`}
-                            style={{ touchAction: 'none' }}
-                            onPointerDown={startBoxDrag('garland', i, corner)}
-                          />
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-
-                {/* Editable mini-light boxes — only meaningful on street view
-                    (box→strands math uses street-perspective scale). */}
-                {!addMode && viewMode === 'street' && miniLightDetections.map((d, i) => {
-                  const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
-                  const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
-                  return (
-                    <div
-                      key={`box-${i}`}
-                      className="absolute border-2 border-dashed border-amber-500 bg-amber-400/15 cursor-move"
-                      style={{
-                        left: `${d.box[0] * 100}%`,
-                        top: `${d.box[1] * 100}%`,
-                        width: `${d.box[2] * 100}%`,
-                        height: `${d.box[3] * 100}%`,
-                        touchAction: 'none',
-                      }}
-                      onPointerDown={startBoxDrag('mini', i, 'move')}
-                      title="Drag to move • use corners to resize"
-                    >
-                      <div className="absolute -top-5 left-0 bg-amber-500 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-sm whitespace-nowrap pointer-events-none">
-                        {typeLetter}{i + 1} {d.type} · {d.stringCount}s · ${price}
-                      </div>
-                      {(['nw','ne','sw','se'] as const).map(corner => {
-                        const pos: Record<string, string> = {
-                          nw: 'left-[-6px] top-[-6px] cursor-nw-resize',
-                          ne: 'right-[-6px] top-[-6px] cursor-ne-resize',
-                          sw: 'left-[-6px] bottom-[-6px] cursor-sw-resize',
-                          se: 'right-[-6px] bottom-[-6px] cursor-se-resize',
-                        };
-                        return (
-                          <div
-                            key={corner}
-                            className={`absolute w-3 h-3 bg-white border-2 border-amber-600 rounded-sm ${pos[corner]}`}
-                            style={{ touchAction: 'none' }}
-                            onPointerDown={startBoxDrag('mini', i, corner)}
-                          />
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-                {/* Draggable point handles (HTML elements, positioned absolute — easier than SVG hit-testing) */}
-                {!addMode && activeSantasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
-                  <div
-                    key={`sh-${li}-${pi}`}
-                    className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
-                    onDoubleClick={() => deletePoint('santas', li, pi)}
-                    title="Drag to move • Double-click to delete"
-                  />
-                )))}
-                {!addMode && activeGingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
-                  <div
-                    key={`gh-${li}-${pi}`}
-                    className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
-                    onDoubleClick={() => deletePoint('gingerbread', li, pi)}
-                    title="Drag to move • Double-click to delete"
-                  />
-                )))}
-                {!addMode && activeC9Lines.flatMap((line, li) => line.points.map(([x, y], pi) => (
-                  <div
-                    key={`c9h-${li}-${pi}`}
-                    className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                    style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                    onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
-                    onDoubleClick={() => deletePoint('c9', li, pi)}
-                    title="Drag to move • Double-click to delete"
-                  />
-                )))}
-                {pendingPoints.map(([x, y], i) => (
-                  <div
-                    key={`pp-${i}`}
-                    className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
-                    style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
-                  />
-                ))}
-              </div>
-
-              {/* Add-line controls */}
-              {addMode ? (
-                <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
-                  <span className="text-sm text-yellow-900">
-                    Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
-                  </span>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
-                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
-                      Done
-                    </button>
-                    <button type="button" onClick={cancelAdd}
-                      className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
-                    className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
-                    + Add Front Gutterline
-                  </button>
-                  <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
-                    className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
-                    + Add Ridge / Side
-                  </button>
-                  <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
-                    className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
-                    + Add C9 Run
-                  </button>
-                </div>
-              )}
-
-              {/* Per-line edit panels — front gutterline / ridge+sides / C9s.
-                  Each shows live footage + editable segment labels + delete. */}
-              <div className="mt-4 grid grid-cols-3 gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-1 bg-red-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
-                  </div>
-                  {activeSantasLines.length > 0 ? (
-                    <ul className="space-y-1 ml-6">
-                      {activeSantasLines.map((line, i) => (
-                        <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
-                          <input
-                            value={line.label}
-                            onChange={e => updateLineLabel('santas', i, e.target.value)}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-gray-400">{line.points.length}pts</span>
-                          <button type="button" onClick={() => deleteLine('santas', i)}
-                            className="text-red-400 hover:text-red-600 font-bold">×</button>
-                        </li>
+                      )))}
+                      {!addMode && activeGingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                        <div
+                          key={`gh-${li}-${pi}`}
+                          className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
+                          onDoubleClick={() => deletePoint('gingerbread', li, pi)}
+                          title="Drag to move • Double-click to delete"
+                        />
+                      )))}
+                      {!addMode && activeC9Lines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                        <div
+                          key={`c9h-${li}-${pi}`}
+                          className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
+                          onDoubleClick={() => deletePoint('c9', li, pi)}
+                          title="Drag to move • Double-click to delete"
+                        />
+                      )))}
+                      {pendingPoints.map(([x, y], i) => (
+                        <div
+                          key={`pp-${i}`}
+                          className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
+                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
+                        />
                       ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments</p>
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-1 bg-blue-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
-                  </div>
-                  {activeGingerbreadLines.length > 0 ? (
-                    <ul className="space-y-1 ml-6">
-                      {activeGingerbreadLines.map((line, i) => (
-                        <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
-                          <input
-                            value={line.label}
-                            onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-gray-400">{line.points.length}pts</span>
-                          <button type="button" onClick={() => deleteLine('gingerbread', i)}
-                            className="text-red-400 hover:text-red-600 font-bold">×</button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-gray-400 ml-6">No segments</p>
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-4 h-1 bg-emerald-500 rounded"></span>
-                    <span className="text-sm font-semibold text-gray-800">C9s — {form.winterWonderlandFootage}ft</span>
-                  </div>
-                  {activeC9Lines.length > 0 ? (
-                    <ul className="space-y-1 ml-6">
-                      {activeC9Lines.map((line, i) => (
-                        <li key={`c9l-${i}`} className="flex items-center gap-2 text-xs">
-                          <input
-                            value={line.label}
-                            onChange={e => updateLineLabel('c9', i, e.target.value)}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-gray-400">{line.points.length}pts</span>
-                          <button type="button" onClick={() => deleteLine('c9', i)}
-                            className="text-red-400 hover:text-red-600 font-bold">×</button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="ml-6">
-                      <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
-                      <div className="flex items-center gap-2">
-                        <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
-                          value={form.winterWonderlandFootage || ''}
-                          onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
-                        <span className="text-xs text-gray-500">ft</span>
-                        <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
-                          onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
-                          <option value="easy">Easy</option>
-                          <option value="medium">Medium</option>
-                          <option value="hard">Hard</option>
-                        </select>
-                      </div>
                     </div>
-                  )}
-                </div>
-              </div>
 
-              {/* Mini light detections — editable */}
-              <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="w-4 h-2 border-2 border-amber-500 border-dashed rounded-sm"></span>
-                  <span className="text-sm font-semibold text-gray-800">
-                    Mini Lights — {miniLightDetections.length} item{miniLightDetections.length === 1 ? '' : 's'}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    (1 string = 50ct 5MM strand · $35 canopy · $45 trunk)
-                  </span>
-                </div>
-                {miniLightDetections.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    <div className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                      <span>#</span>
-                      <span>Type</span>
-                      <span>Wrap</span>
-                      <span>Strings</span>
-                      <span>Price</span>
-                      <span />
-                    </div>
-                    {miniLightDetections.map((d, i) => {
-                      const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
-                      const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
-                      return (
-                        <div key={`drow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 items-center">
-                          <span className="text-xs font-semibold text-amber-700">{typeLetter}{i + 1}</span>
-                          <select
-                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                            value={d.type}
-                            onChange={e => updateDetection(i, { type: e.target.value as MiniLightDetection['type'] })}
-                          >
-                            <option value="bush">Bush</option>
-                            <option value="tree">Tree</option>
-                            <option value="column">Column</option>
-                          </select>
-                          <select
-                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                            value={d.wrapStyle}
-                            onChange={e => updateDetection(i, { wrapStyle: e.target.value as MiniLightDetection['wrapStyle'] })}
-                          >
-                            <option value="canopy">Canopy</option>
-                            <option value="trunk">Trunk</option>
-                          </select>
-                          <input
-                            type="number"
-                            min="1"
-                            value={d.stringCount}
-                            onChange={e => updateDetection(i, { stringCount: Math.max(1, Number(e.target.value)) })}
-                            className="border border-gray-200 rounded px-2 py-1 text-xs"
-                          />
-                          <span className="text-xs font-medium text-gray-700 tabular-nums">${price}</span>
-                          <button
-                            type="button"
-                            onClick={() => deleteDetection(i)}
-                            className="text-red-400 hover:text-red-600 font-bold text-lg leading-none"
-                            title="Delete"
-                          >×</button>
+                    {/* Add-line controls */}
+                    {addMode ? (
+                      <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
+                        <span className="text-sm text-yellow-900">
+                          Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
+                        </span>
+                        <div className="flex gap-2">
+                          <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
+                            className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
+                            Done
+                          </button>
+                          <button type="button" onClick={cancelAdd}
+                            className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
+                            Cancel
+                          </button>
                         </div>
-                      );
-                    })}
-                    <div className="flex justify-end pt-1 text-xs font-semibold text-gray-700">
-                      Total: ${miniLightDetections.reduce((s, d) => s + d.stringCount * MINI_LIGHT_RATES[d.wrapStyle], 0)}
-                    </div>
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={() => addDetection('bush')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
-                    + Add Bush
-                  </button>
-                  <button type="button" onClick={() => addDetection('tree')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
-                    + Add Tree
-                  </button>
-                  <button type="button" onClick={() => addDetection('column')}
-                    className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">
-                    + Add Column
-                  </button>
-                </div>
-              </div>
-
-              {/* Spritzers — SUGGESTED PLACEMENT ZONES (one box per zone). */}
-              <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className="w-4 h-2 border-2 border-fuchsia-500 rounded-sm"></span>
-                  <span className="text-sm font-semibold text-gray-800">
-                    Suggested spritzer zones — {spritzerDetections.length} zone{spritzerDetections.length === 1 ? '' : 's'}
-                  </span>
-                  <span className="text-xs text-gray-400">(empty flower beds, walkway edges)</span>
-                </div>
-                {spritzerDetections.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    <div className="grid grid-cols-[28px_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                      <span>#</span>
-                      <span>Size</span>
-                      <span />
-                    </div>
-                    {spritzerDetections.map((d, i) => (
-                      <div key={`srow-${i}`} className="grid grid-cols-[28px_1fr_24px] gap-2 items-center">
-                        <span className="text-xs font-semibold text-fuchsia-700">S{i + 1}</span>
-                        <select
-                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                          value={d.size}
-                          onChange={e => updateSpritzerDetection(i, { size: e.target.value as SpritzerSize })}
-                        >
-                          <option value="16">16&quot;</option>
-                          <option value="24">24&quot;</option>
-                          <option value="32">32&quot;</option>
-                        </select>
-                        <button type="button" onClick={() => deleteSpritzerDetection(i)}
-                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
                       </div>
-                    ))}
-                  </div>
-                )}
-                <button type="button" onClick={addSpritzerDetection}
-                  className="text-xs font-medium text-fuchsia-700 border border-fuchsia-300 hover:border-fuchsia-500 rounded px-3 py-1.5">
-                  + Add Spritzer
-                </button>
-              </div>
-
-              {/* Wreaths — SUGGESTED PLACEMENT boxes, auto-synced into form.wreaths */}
-              <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className="w-4 h-2 border-2 border-purple-500 rounded-sm"></span>
-                  <span className="text-sm font-semibold text-gray-800">
-                    Suggested wreath spots — {wreathDetections.length} spot{wreathDetections.length === 1 ? '' : 's'}
-                  </span>
-                  <span className="text-xs text-gray-400">(peak, portico, above garage, front door)</span>
-                </div>
-                {wreathDetections.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    <div className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                      <span>#</span>
-                      <span>Size</span>
-                      <span>Tier</span>
-                      <span />
-                    </div>
-                    {wreathDetections.map((d, i) => (
-                      <div key={`wrow-${i}`} className="grid grid-cols-[28px_1fr_1fr_24px] gap-2 items-center">
-                        <span className="text-xs font-semibold text-purple-700">W{i + 1}</span>
-                        <select
-                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                          value={d.size}
-                          onChange={e => updateWreathDetection(i, { size: e.target.value as WreathSize })}
-                        >
-                          <option value="24noble">24&quot; Noble</option>
-                          <option value="30noble">30&quot; Noble</option>
-                          <option value="36noble">36&quot; Noble</option>
-                          <option value="48noble">48&quot; Noble</option>
-                          <option value="36oregon">36&quot; Oregon</option>
-                        </select>
-                        <select
-                          className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                          value={d.tier}
-                          onChange={e => updateWreathDetection(i, { tier: e.target.value as DecorTier })}
-                        >
-                          <option value="labor">Labor</option>
-                          <option value="bow">Bow</option>
-                          <option value="fullDecor">Full Decor</option>
-                        </select>
-                        <button type="button" onClick={() => deleteWreathDetection(i)}
-                          className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                    ) : (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
+                          className="text-xs font-medium text-red-700 border border-red-300 hover:border-red-500 rounded px-3 py-1.5">
+                          + Add Front Gutterline
+                        </button>
+                        <button type="button" onClick={() => { setAddMode('gingerbread'); setPendingPoints([]); }}
+                          className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
+                          + Add Ridge / Side
+                        </button>
+                        <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
+                          className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
+                          + Add C9 Run
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                )}
-                <button type="button" onClick={addWreathDetection}
-                  className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
-                  + Add Wreath
-                </button>
-              </div>
+                    )}
 
-              {/* Garland — box width × feet/unit gives piece count (like columns) */}
-              <div className="mt-5">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="w-4 h-2 border-2 border-teal-500 rounded-sm"></span>
-                  <span className="text-sm font-semibold text-gray-800">
-                    Garland — {garlandDetections.length} run{garlandDetections.length === 1 ? '' : 's'}
-                  </span>
-                  <span className="text-xs text-gray-400">(box width → pieces)</span>
-                </div>
-                {garlandDetections.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    <div className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 text-[10px] uppercase tracking-wide text-gray-400 px-1">
-                      <span>#</span>
-                      <span>Length</span>
-                      <span>Tier</span>
-                      <span>Pieces</span>
-                      <span />
-                    </div>
-                    {garlandDetections.map((d, i) => {
-                      const unitFt = d.length === '9ft' ? 9 : 4.5;
-                      const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
-                      const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
-                      return (
-                        <div key={`grow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_24px] gap-2 items-center">
-                          <span className="text-xs font-semibold text-teal-700">G{i + 1}</span>
-                          <select
-                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                            value={d.length}
-                            onChange={e => updateGarlandDetection(i, { length: e.target.value as GarlandLength })}
-                          >
-                            <option value="9ft">9ft</option>
-                            <option value="4.5ft">4.5ft</option>
-                          </select>
-                          <select
-                            className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                            value={d.tier}
-                            onChange={e => updateGarlandDetection(i, { tier: e.target.value as DecorTier })}
-                          >
-                            <option value="labor">Labor</option>
-                            <option value="bow">Bow</option>
-                            <option value="fullDecor">Full Decor</option>
-                          </select>
-                          <span className="text-xs font-medium text-gray-700 tabular-nums">{pieces}</span>
-                          <button type="button" onClick={() => deleteGarlandDetection(i)}
-                            className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
+                    {/* Per-line edit panels — front gutterline / ridge+sides / C9s. */}
+                    <div className="mt-4 grid grid-cols-3 gap-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-1 bg-red-500 rounded"></span>
+                          <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
                         </div>
-                      );
-                    })}
-                  </div>
+                        {activeSantasLines.length > 0 ? (
+                          <ul className="space-y-1 ml-6">
+                            {activeSantasLines.map((line, i) => (
+                              <li key={`sl-${i}`} className="flex items-center gap-2 text-xs">
+                                <input
+                                  value={line.label}
+                                  onChange={e => updateLineLabel('santas', i, e.target.value)}
+                                  className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                                />
+                                <span className="text-gray-400">{line.points.length}pts</span>
+                                <button type="button" onClick={() => deleteLine('santas', i)}
+                                  className="text-red-400 hover:text-red-600 font-bold">×</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-gray-400 ml-6">No segments</p>
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-1 bg-blue-500 rounded"></span>
+                          <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
+                        </div>
+                        {activeGingerbreadLines.length > 0 ? (
+                          <ul className="space-y-1 ml-6">
+                            {activeGingerbreadLines.map((line, i) => (
+                              <li key={`gl-${i}`} className="flex items-center gap-2 text-xs">
+                                <input
+                                  value={line.label}
+                                  onChange={e => updateLineLabel('gingerbread', i, e.target.value)}
+                                  className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                                />
+                                <span className="text-gray-400">{line.points.length}pts</span>
+                                <button type="button" onClick={() => deleteLine('gingerbread', i)}
+                                  className="text-red-400 hover:text-red-600 font-bold">×</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-gray-400 ml-6">No segments</p>
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-1 bg-emerald-500 rounded"></span>
+                          <span className="text-sm font-semibold text-gray-800">C9s — {form.winterWonderlandFootage}ft</span>
+                        </div>
+                        {activeC9Lines.length > 0 ? (
+                          <ul className="space-y-1 ml-6">
+                            {activeC9Lines.map((line, i) => (
+                              <li key={`c9l-${i}`} className="flex items-center gap-2 text-xs">
+                                <input
+                                  value={line.label}
+                                  onChange={e => updateLineLabel('c9', i, e.target.value)}
+                                  className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                                />
+                                <span className="text-gray-400">{line.points.length}pts</span>
+                                <button type="button" onClick={() => deleteLine('c9', i)}
+                                  className="text-red-400 hover:text-red-600 font-bold">×</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="ml-6">
+                            <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
+                            <div className="flex items-center gap-2">
+                              <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
+                                value={form.winterWonderlandFootage || ''}
+                                onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
+                              <span className="text-xs text-gray-500">ft</span>
+                              <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
+                                onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                                <option value="easy">Easy</option>
+                                <option value="medium">Medium</option>
+                                <option value="hard">Hard</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-gray-500 py-10 text-center">
+                    No satellite view (manual photo upload) — enter the roof measurements in the sections below.
+                  </p>
                 )}
-                <button type="button" onClick={addGarlandDetection}
-                  className="text-xs font-medium text-teal-700 border border-teal-300 hover:border-teal-500 rounded px-3 py-1.5">
-                  + Add Garland Run
-                </button>
-              </div>
-
-              {/* Save corrections */}
-              <div className="mt-5 pt-4 border-t border-gray-100 flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={saveCorrections}
-                  disabled={savingCorrection}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium text-sm px-4 py-2 rounded-md"
-                >
-                  {savingCorrection ? 'Saving…' : 'Save Corrections (train AI)'}
-                </button>
-                {correctionSaved && (
-                  <span className="text-xs text-green-700 font-medium">✓ Saved — future photos will use this as a reference.</span>
-                )}
-                <span className="text-xs text-gray-400">
-                  Also adjust footage in the form below if needed. Those values are saved with the corrections.
-                </span>
               </div>
             </Section>
-          )}
+          ) : null}
 
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
@@ -2310,172 +1443,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               )}
             </Section>
           </div>
-
-          {/* ── Trees / Bushes / Columns ── */}
-          <Section title="Trees / Bushes / Columns — Mini Lights">
-            {form.miniLightItems.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-[1fr_1fr_72px_28px] gap-2 mb-1">
-                  <span className={lbl}>Type</span>
-                  <span className={lbl}>Wrap Style</span>
-                  <span className={lbl}>Strings</span>
-                  <span />
-                </div>
-                {form.miniLightItems.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_1fr_72px_28px] gap-2 mb-2 items-start">
-                    <select className={sel} value={item.type}
-                      onChange={e => updateMiniLight(i, { type: e.target.value as MiniLightItem['type'] })}>
-                      <option value="tree">Tree</option>
-                      <option value="bush">Bush</option>
-                      <option value="column">Column</option>
-                      {/* Railing comes from design projections (#27 A2); without
-                          this option a hydrated railing item displays as "Tree". */}
-                      <option value="railing">Railing</option>
-                    </select>
-                    <select className={sel} value={item.wrapStyle}
-                      onChange={e => updateMiniLight(i, { wrapStyle: e.target.value as MiniLightItem['wrapStyle'] })}>
-                      <option value="canopy">Canopy — $35/strand</option>
-                      <option value="trunk">Trunk — $45/strand</option>
-                    </select>
-                    <input className={inp} type="number" min="1" value={item.stringCount}
-                      onChange={e => updateMiniLight(i, { stringCount: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeMiniLight(i)} className={rmBtn}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button type="button" onClick={addMiniLight} className={addBtn}>
-              + Add Tree / Bush / Column
-            </button>
-          </Section>
-
-          {/* ── Spritzers ── */}
-          <Section title="Spritzers">
-            {form.spritzers.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-[1fr_72px_28px] gap-2 mb-1">
-                  <span className={lbl}>Size</span>
-                  <span className={lbl}>Qty</span>
-                  <span />
-                </div>
-                {form.spritzers.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_72px_28px] gap-2 mb-2 items-start">
-                    <select className={sel} value={item.size}
-                      onChange={e => updateSpritzer(i, { size: e.target.value as Spritzer['size'] })}>
-                      <option value="16">16&quot; — $85 each</option>
-                      <option value="24">24&quot; — $95 each</option>
-                      <option value="32">32&quot; — $105 each</option>
-                    </select>
-                    <input className={inp} type="number" min="1" value={item.quantity}
-                      onChange={e => updateSpritzer(i, { quantity: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeSpritzer(i)} className={rmBtn}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button type="button" onClick={addSpritzer} className={addBtn}>
-              + Add Spritzer
-            </button>
-          </Section>
-
-          {/* ── Wreaths ── */}
-          <Section title="Wreaths">
-            {form.wreaths.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-[1fr_1fr_72px_28px] gap-2 mb-1">
-                  <span className={lbl}>Size</span>
-                  <span className={lbl}>Tier</span>
-                  <span className={lbl}>Qty</span>
-                  <span />
-                </div>
-                {form.wreaths.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_1fr_72px_28px] gap-2 mb-2 items-start">
-                    <select className={sel} value={item.size}
-                      onChange={e => updateWreath(i, { size: e.target.value as Wreath['size'] })}>
-                      <option value="24noble">24&quot; Noble</option>
-                      <option value="30noble">30&quot; Noble</option>
-                      <option value="36noble">36&quot; Noble</option>
-                      <option value="48noble">48&quot; Noble</option>
-                      <option value="36oregon">36&quot; Oregon</option>
-                    </select>
-                    <select className={sel} value={item.tier}
-                      onChange={e => updateWreath(i, { tier: e.target.value as Wreath['tier'] })}>
-                      <option value="labor">Labor Only</option>
-                      <option value="bow">With Bow</option>
-                      <option value="fullDecor">Full Decor</option>
-                    </select>
-                    <input className={inp} type="number" min="1" value={item.quantity}
-                      onChange={e => updateWreath(i, { quantity: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeWreath(i)} className={rmBtn}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button type="button" onClick={addWreath} className={addBtn}>
-              + Add Wreath
-            </button>
-          </Section>
-
-          {/* ── Garland ── */}
-          <Section title="Garland">
-            {form.garland.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-[140px_1fr_72px_28px] gap-2 mb-1">
-                  <span className={lbl}>Length</span>
-                  <span className={lbl}>Tier</span>
-                  <span className={lbl}>Qty</span>
-                  <span />
-                </div>
-                {form.garland.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[140px_1fr_72px_28px] gap-2 mb-2 items-start">
-                    <select className={sel} value={item.length}
-                      onChange={e => updateGarland(i, { length: e.target.value as GarlandItem['length'] })}>
-                      <option value="9ft">9ft Noble</option>
-                      <option value="4.5ft">4.5ft Noble</option>
-                    </select>
-                    <select className={sel} value={item.tier}
-                      onChange={e => updateGarland(i, { tier: e.target.value as GarlandItem['tier'] })}>
-                      <option value="labor">Labor Only</option>
-                      <option value="bow">With Bow</option>
-                      <option value="fullDecor">Full Decor</option>
-                    </select>
-                    <input className={inp} type="number" min="1" value={item.quantity}
-                      onChange={e => updateGarland(i, { quantity: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeGarland(i)} className={rmBtn}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button type="button" onClick={addGarland} className={addBtn}>
-              + Add Garland
-            </button>
-          </Section>
-
-          {/* ── Standalone bows (#28) ── */}
-          <Section title="Bows">
-            <p className="text-xs text-gray-400 mb-3">
-              A bow sold on its own (not on a wreath or garland). Flat price each — pricing pending
-              Naldo, bills $0 for now.
-            </p>
-            {form.bows.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-[96px_28px] gap-2 mb-1">
-                  <span className={lbl}>Qty</span>
-                  <span />
-                </div>
-                {form.bows.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[96px_28px] gap-2 mb-2 items-start">
-                    <input className={inp} type="number" min="1" step="1" value={item.quantity}
-                      onChange={e => updateBow(i, { quantity: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeBow(i)} className={rmBtn}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button type="button" onClick={addBow} className={addBtn}>
-              + Add Bow
-            </button>
-          </Section>
 
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
@@ -2583,64 +1550,16 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             </div>
           </Section>
 
-          {/* Submit */}
+          {/* Calculate */}
           <button
-            type="submit"
+            type="button"
+            onClick={() => void runQuote()}
             disabled={loading}
             className="w-full bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-semibold py-3 px-6 rounded-lg transition-colors mb-6 text-base"
           >
             {loading ? 'Calculating…' : 'Calculate Quote'}
           </button>
 
-        </form>
-
-        {/* ── Design — lights on the photo (#27 Phase 1) ── */}
-        <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
-                Design — lights on the photo
-              </h2>
-              <p className="text-sm text-gray-500 mt-1">
-                Draw the install on the customer&apos;s photo. Use <span className="font-medium">Full screen</span> for room
-                to work. It saves automatically and attaches to this quote.
-              </p>
-            </div>
-            <div className="shrink-0 flex gap-2">
-              {designId && (
-                <button
-                  type="button"
-                  onClick={syncRooflineToDesign}
-                  disabled={designBusy || !hasSeedLines}
-                  title={
-                    hasSeedLines
-                      ? 'Replace the design’s roofline strands with the measurement lines above (tagged for the portal’s Santa’s/Gingerbread picture toggle). Hand-drawn decor is untouched.'
-                      : 'Analyze or draw street roofline lines first — there’s nothing to sync yet.'
-                  }
-                  className="bg-white border border-green-600 text-green-700 hover:bg-green-50 disabled:border-gray-300 disabled:text-gray-400 font-medium py-2 px-4 rounded-md text-sm"
-                >
-                  {designBusy ? 'Working…' : 'Sync roofline from measurement'}
-                </button>
-              )}
-              {!designOpen && (
-                <button
-                  type="button"
-                  onClick={openDesignEditor}
-                  disabled={designBusy}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
-                >
-                  {designBusy ? 'Opening…' : designId ? 'Show design editor' : 'Open the design editor'}
-                </button>
-              )}
-            </div>
-          </div>
-          {designError && <p className="text-sm text-red-600 mt-3">{designError}</p>}
-          {designSyncMsg && <p className="text-sm text-green-700 mt-3">{designSyncMsg}</p>}
-          {designOpen && designId && (
-            <div className="mt-4">
-              <DesignEditor key={designEditorKey} designId={designId} onClose={() => setDesignOpen(false)} height={600} />
-            </div>
-          )}
         </div>
 
         {/* Error */}
@@ -2763,70 +1682,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 </div>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* ── Nighttime Render Preview ── */}
-        {result && renderStatus !== 'idle' && (
-          <div className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
-            <div className="flex items-baseline justify-between mb-4 pb-2 border-b border-gray-100">
-              <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">
-                Nighttime Preview
-              </h2>
-              <span className="text-xs text-amber-600">Artist&rsquo;s rendering — actual install may vary.</span>
-            </div>
-
-            {renderStatus === 'rendering' && (
-              <div className="flex items-center gap-3 text-sm text-gray-500 py-10 justify-center">
-                <span className="inline-block h-3 w-3 rounded-full bg-green-500 animate-pulse" />
-                Generating your nighttime preview… this usually takes 30–90 seconds.
-              </div>
-            )}
-
-            {renderStatus === 'skipped' && (
-              <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
-                Preview skipped: {renderSkipReason ?? 'Missing photo or geometry.'}
-              </div>
-            )}
-
-            {renderStatus === 'error' && (
-              <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">
-                Preview failed: {renderError ?? 'Unknown error'}. The quote above is still valid.
-              </div>
-            )}
-
-            {renderStatus === 'ready' && renderUrl && (
-              <div>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={renderUrl}
-                  alt="Nighttime render of your home with holiday lights"
-                  className="w-full rounded-md border border-gray-300"
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  Warm-white C9 bulbs, blue-hour sky, interior glow. Final installs are tuned on-site; colors and placement may vary slightly.
-                </p>
-              </div>
-            )}
-
-            {/* Re-render action — available any time the render isn't
-                actively in flight. If the AI produced something weird we
-                can kick off a fresh generation without recalculating the
-                quote or re-drawing polylines. */}
-            {renderStatus !== 'rendering' && (
-              <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between gap-3">
-                <p className="text-xs text-gray-500">
-                  If the render looks wrong (missing lights, weird artifacts, wrong angle), try again — Gemini is non-deterministic and a second attempt often fixes it.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleRerender}
-                  className="shrink-0 border border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 text-gray-800 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                >
-                  🔄 Re-render
-                </button>
-              </div>
-            )}
           </div>
         )}
 
