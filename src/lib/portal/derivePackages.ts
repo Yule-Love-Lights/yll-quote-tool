@@ -34,7 +34,7 @@ import type {
 
 // Which kinds belong to which tier. Tiers stack — B includes A's kinds, etc.
 const TIER_A_KINDS: ReadonlySet<PortalLineItemKind> = new Set(['roofline', 'ridge']);
-const TIER_B_EXTRA: ReadonlySet<PortalLineItemKind> = new Set(['tree', 'bush', 'column']);
+const TIER_B_EXTRA: ReadonlySet<PortalLineItemKind> = new Set(['tree', 'bush', 'column', 'railing']);
 const TIER_C_EXTRA: ReadonlySet<PortalLineItemKind> = new Set(['wreath', 'garland', 'spritzer', 'bow']);
 
 function effectiveTaxRate(result: QuoteResult): number {

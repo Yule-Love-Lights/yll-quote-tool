@@ -45,10 +45,9 @@ export function parseLineItem(label: string): ParsedLineItem {
   if (TREE_RE.test(label)) return { kind: 'tree', detail: extractStrings(label) };
   if (BUSH_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
   if (COLUMN_RE.test(label)) return { kind: 'column', detail: extractStrings(label) };
-  // Railing = mini-light strands priced like a bush. Rides the 'bush' kind for
-  // the portal (icon/tier/scene-linkage = mini); the label still reads "Railing".
-  // (Follow-up: a dedicated 'railing' kind + icon — ledger #34.)
-  if (RAILING_RE.test(label)) return { kind: 'bush', detail: extractStrings(label) };
+  // Railing — its own kind as of #34 (still PRICED like a bush at $35/string;
+  // the kind only drives the portal icon/tier/scene-linkage).
+  if (RAILING_RE.test(label)) return { kind: 'railing', detail: extractStrings(label) };
 
   // Standalone bow (#28). Detail = "1 bow" / "N bows".
   if (BOW_RE.test(label)) return { kind: 'bow', detail: extractBowDetail(label) };
