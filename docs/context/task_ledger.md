@@ -26,6 +26,10 @@ metadata:
 | 31 | Edit an existing quote — `/quote/[id]` hydrates the builder + linked design; Calculate updates the row in place (and `/quote/new` stops duplicating rows after the first save); Sent/Approved warning badge; admin Edit links | M | S6 | — |
 | 28 | Standalone-`bow` line-item category — drawn bows project per-instance ("Bow" line item + portal toggle w/ Ribbon icon); manual "Bows" builder section; **price = $0 placeholder, TODO Naldo** (see ⏸️ #17) | S | S7 | — |
 | 33 | Roofline portal PICTURE-toggle — the S5 link/hide mechanism was already complete; shipped the missing tagging via **auto-seeded tagged C9 strands from the builder's measurement lines** (create-time seed + "Sync roofline from measurement" button; replacement keys on the surface tag; contract v0.5). Legacy designs: hand-drawn UNTAGGED rooflines aren't auto-replaced — delete them once in the editor after the first sync | M | S7 | — |
+| 30 | Admin quotes table overflow — the container was `overflow-hidden`, CLIPPING the Delete button; now `overflow-x-auto` (scrolls) | S | S7 | — |
+| 34 | Dedicated portal `railing` kind + Fence icon (was riding `bush`); Tier B; pricing unchanged ($35/string since S5) | S | S7 | — |
+| 11 | Re-analyze for uploaded photos — CLOSED BY #35: the Analyze button persists after analysis and re-clicking re-analyzes + re-seeds the design | S | S7 (via #35) | #23 |
+| 25 | Satellite-default pricing + sticky-source bug — CLOSED BY #35: street is no longer a measurement source, the "Pricing uses" radio is gone, satellite-or-manual is the rule | S–M | S7 (via #35) | — |
 
 ## 🟡 In planning — NOT building yet (current)
 | # | Task | Size | Status | Old # |
@@ -40,17 +44,13 @@ metadata:
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
 | 10 | Portal color/pattern picker (operator default → customer-changeable) | M | | #26 |
-| 11 | Re-analyze button for uploaded images | S–M | | #23 |
-| 12 | Operator "recommend items" checkboxes in the builder | S | low priority | #19 |
+| 12 | Operator "recommend items" checkboxes in the builder | S | low priority — ⚠️ REVIEW before building: raised pre-design-first (S1); with #35 the design + `included` flags may already cover or reshape this | #19 |
 | 13 | Multi-image quoting (manual-only, no AI auto-quote) | L | big | #22 |
 | 14 | Corner-house default → front-door view | M | feasibility TBD | #20 |
 | 15 | Move Street View camera along the road | M | feasibility TBD | #21 |
-| 25 | **Satellite-default pricing + decouple "Pricing uses" from the view toggle** (fix the sticky reset bug). Satellite is more accurate (top-down, exact zoom-derived scale, no perspective), so default pricing to satellite when available, sticking until staff picks street or enters manual. Today a `useEffect` forces `measurementSource = viewMode` on every view switch (quote/new ~L191-193), clobbering the explicit pick; default is 'street'. Relates to #9. | S–M | quote/new (new, raised S3) | — |
 | 26 | **Scroll-wheel zoom + pan inside the measurement image box** (the street/satellite editing area). Today you can only ctrl-zoom the whole browser; staff want to scroll-zoom + pan just the image for precise line/decoration placement. NOTE: that box is an `<img>` + **SVG overlay** + draggable point-handles (NOT an HTML `<canvas>`), so zoom must transform image+overlay together and coexist with point-dragging (wheel=zoom, drag handle=edit point, drag empty=pan). Applies to quote/new + training/new. | M | quote/new + training/new (new, raised S3) | — |
 | 29 | **Restyle the embedded design editor to match the quote tool (the "Option A" cohesion pass)** — Jason's explicit want (S4). Phase 1 drops the design tool's editor in AS-IS via **Option B** (its own vanilla side panels, wrapped in a React shell — fast, low-risk). This task is the follow-on cleanup: rebuild those side panels/buttons in the quote tool's React+Tailwind style so the editor looks/feels native, wired to the shared engine (the headless-engine + native-panels "Option A" shape). Same functionality to the user — it's a rebuild of the controls, not a reskin; needs testing. Ties into the shared `editor-core`/`EditorStorage` work (see [[project_integration]]). Do AFTER #27 Phase 1 ships. | M–L | design editor (new, raised S4) — future cohesion pass | — |
-| 30 | **`/admin/quotes` table overflows — the row Delete button is cut off / unreachable.** Each row has Portal↗ / Video / Send / **Delete**, but the table is wider than the viewport with no horizontal scroll, so Delete is off-screen (can't shift-scroll or zoom to reach it). Make the table fit (responsive/condensed columns) or horizontally scrollable, or move Delete. `src/app/admin/quotes/page.tsx`. | S | admin (new, raised S4) | — |
 | 32 | **Make the spritzer ray-density factor editable in Settings** — the `0.45` rays-per-pixel constant in `editor-core/spritzer.ts` (`numRays = radiusPx * 0.45`) is hard-coded. Jason wants it tunable from the editor Settings page when that's built, so we can dial ray density without a code change. Small; folds into the deferred Settings work (palette/per-type defaults). Shared editor → coordinate w/ design-tool AI. | S | design editor (new, raised S4) | — |
-| 34 | **Railing polish** — railing PRICING ✅ **DONE (S5)** at the standard $35/string; the editor wrap-style dropdown hide also ✅ DONE (S5, upstreamed `32aa324`). **Remaining (cosmetic only):** a dedicated portal `railing` icon/kind (today it rides `bush` — `lineItemKind.ts`). | S | portal (cosmetic) | — |
 
 ## ⏸️ Pending / needs Naldo (blocked — not active dev)
 | # | Task | Size | Notes | Old # |
