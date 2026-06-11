@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createDesign, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
 import { sanitizeSeedLines } from '@/lib/design/seedRoofline';
+import { sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
 
 export const runtime = 'nodejs';
 
@@ -46,6 +47,9 @@ export async function POST(req: NextRequest) {
       photoBase64,
       photoMediaType,
       seedLines: sanitizeSeedLines(body.seedLines),
+      // Full bridge auto-design payload (#35 Phase 2): roofline lines +
+      // per-unit detections — the design opens already designed.
+      seedAnalysis: sanitizeAnalysisSeed(body.seedAnalysis),
     });
     if (!created) {
       return NextResponse.json({ error: 'Failed to create design' }, { status: 500 });
