@@ -1,11 +1,12 @@
 import sharp from 'sharp';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
+import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
 import {
-  seedRooflineStrands,
-  seedLinesHaveContent,
-  type RooflineSeedLines,
-} from './design/seedRoofline';
+  seedSceneFromAnalysis,
+  analysisSeedHasContent,
+  type AnalysisSeed,
+} from './design/seedFromAnalysis';
 
 // Server-side business logic for the design-tool integration (Path B, task #27
 // Phase 1). A "design" is one editable on-photo light layout. The `scene` is
@@ -85,7 +86,10 @@ export async function createDesign(opts: {
   quoteId?: string | null;
   photoBase64?: string | null;
   photoMediaType?: string | null;
+  /** Roofline lines only — superseded by seedAnalysis (kept for back-compat). */
   seedLines?: RooflineSeedLines | null;
+  /** Full bridge auto-design payload (#35 Phase 2): roofline lines + per-unit detections. */
+  seedAnalysis?: AnalysisSeed | null;
 }): Promise<{ id: string } | null> {
   const sb = getSb();
   if (!sb) return null;
@@ -108,10 +112,17 @@ export async function createDesign(opts: {
   if (opts.photoBase64) {
     try {
       const photo = await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
-      // Roofline seeding needs the photo's pixel dimensions — only possible
-      // when a photo came with the create call (the lines are drawn on it).
-      if (opts.seedLines && seedLinesHaveContent(opts.seedLines) && photo.width > 0 && photo.height > 0) {
-        const scene = seedRooflineStrands(EMPTY_SCENE, opts.seedLines, photo.width, photo.height);
+      // Seeding needs the photo's pixel dimensions — only possible when a
+      // photo came with the create call (everything is drawn on it). The full
+      // analysis seed (#35 Phase 2) wins; bare seedLines is the legacy shape.
+      const seed: AnalysisSeed | null =
+        opts.seedAnalysis && analysisSeedHasContent(opts.seedAnalysis)
+          ? opts.seedAnalysis
+          : opts.seedLines && seedLinesHaveContent(opts.seedLines)
+            ? { lines: opts.seedLines }
+            : null;
+      if (seed && photo.width > 0 && photo.height > 0) {
+        const scene = seedSceneFromAnalysis(EMPTY_SCENE, seed, photo.width, photo.height);
         await updateDesignScene(id, scene);
       }
     } catch (err) {

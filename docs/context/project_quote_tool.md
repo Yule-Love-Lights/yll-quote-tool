@@ -73,10 +73,11 @@ The full task list (done / planning / backlog / Naldo-pending) lives in **[[task
 
 **✅ Also in Session 7 — #35 raised (Jason) + Phase 1 SHIPPED (branch `jason/design-first-builder`).** **Design-first `/quote/new`:** the measurement box = tabs **Design (Street) | Satellite** — the design tool moved up and IS the street view (eager design creation on photo arrival; camera controls inside; AI roofline lines still seed tagged strands so the portal picture-toggle survives); satellite/manual = the only measurement sources (no more "Pricing uses" radio — solves most of #25); per-unit manual form sections REMOVED entirely (custom items stay — the escape hatch); builder render preview removed; `<form>` wrapper dropped (editor's type-less buttons would implicit-submit; Calculate = plain button, **Enter no longer calculates**); **C3b shipped** (`DesignSummary` — live projected items + prices under the editor). Per-unit items are authored ONLY on the design now. QuoteBuilder 2,963→~1,800 lines.
 
-**Immediate next (Session 8):**
-1. **#35 Phase 2 — the bridge auto-design:** AI detections → scene items (`seedFromAnalysis.ts`; bush/tree→miniArea, column→strand, wreath/spritzer/garland→items at the boxes; ai-seed replacement rule), wired into `applyAnalysisResult`. Recon done (S7 workflow journal, agents 1–3).
-2. **#36 — Gemini render teardown** (recon at pickup; keep Street View/geocoding Google keys).
-3. **#8 → Phase 3 — AI auto-design** (now lands straight into the design-first layout; planning done — [[task_ai_training_refinement]]).
+**✅ Done in Session 7, Day 2 — #35 Phase 2: the BRIDGE AUTO-DESIGN (#35 COMPLETE).** `seedFromAnalysis.ts`: the AI's analysis now BECOMES the design — roofline → tagged strands, bushes/trees → Scattershot areas, columns → strands, wreaths/spritzers/garland → placed items with billed specs, **plus a derived 5 ft scale yardstick** (the AI's roofline-pixel-length ÷ footage = px/ft; without it everything rendered huge — Jason's catch). Staff calibration/items always win (`seed-` prefix + tag replacement rules); seeded garland bills 1 section until staff set the count. Designs open already designed + correctly scaled; staff refine and Calculate.
+
+**Immediate next (Session 9):**
+1. **#36 — Gemini render teardown** (re-run the inventory recon at pickup — the S7 agent died; ⚠️ keep Street View/geocoding Google keys).
+2. **#8 → Phase 3 — AI auto-design:** now purely "make the AI a better designer" — #33+#35 built the entire delivery path (analysis → scene items). Better layouts, scene-based corrections/training. Planning: [[task_ai_training_refinement]].
 **Optional anytime:** #34 (portal railing icon — cosmetic), #30. **Naldo:** bow prices (#17 — garland bow tier + standalone bow).
 
 After #27: #25, #26, #11/#12, #30/#31/#32, then the rest of the ledger + Naldo-pending. Loose thread: seeded Roslyn test design on quote `4fe4936c`.

@@ -1,0 +1,427 @@
+// Bridge auto-design (#35 Phase 2): convert the EXISTING AI's analysis output
+// — roofline polylines + per-unit detections, all in normalized 0–1 photo
+// coords — into real design scene items. This is the v0 of "the AI designs the
+// house": today's detection brain feeds the design tool; #8 (Phase 3) then
+// upgrades the brain, reusing this exact plumbing.
+//
+// Mapping (per the data contract — billed spec in quote* fields, visuals are
+// just sensible defaults staff can restyle):
+//   roofline lines  → tagged C9 strands (seedRoofline — replacement by TAG)
+//   bush / tree     → Scattershot MiniAreaItem at the box (AI's stringCount)
+//   column          → a vertical mini strand through the box (column wraps
+//                     stay strand-based — contract A2)
+//   wreath          → WreathItem at the box center (quoteSize/tier from AI)
+//   spritzer        → SpritzerItem at the box center (quoteSize from AI)
+//   garland         → GarlandItem run across the box (quoteLength/tier from
+//                     AI; quoteSections defaults to 1 — staff set the count)
+//
+// REPLACEMENT RULE: AI-seeded items carry a `seed-` id prefix. Re-seeding
+// replaces ONLY seed-* items (any kind) — staff-drawn items are never touched.
+// Roofline-TAGGED strands additionally follow #33's rule (the measurement owns
+// the roofline, whatever drew it). Empty payloads are NO-OPs — a stray re-seed
+// can never wipe a design.
+
+import type {
+  Scene,
+  SceneItem,
+  StrandItem,
+  MiniAreaItem,
+  WreathItem,
+  SpritzerItem,
+  GarlandItem as SceneGarlandItem,
+  Yardstick,
+  QuoteWreathSize,
+  QuoteSpritzerSize,
+  QuoteGarlandLength,
+  Tier,
+  WrapStyle,
+} from './sceneTypes';
+import { isStrand } from './sceneTypes';
+import {
+  seedRooflineStrands,
+  sanitizeSeedLines,
+  seedLinesHaveContent,
+  type RooflineSeedLines,
+} from './seedRoofline';
+
+export type NormalizedBox = [number, number, number, number]; // x, y, w, h — 0–1 of the photo
+
+export type MiniDetection = {
+  type: 'tree' | 'bush' | 'column';
+  wrapStyle: WrapStyle;
+  stringCount: number;
+  box: NormalizedBox;
+};
+export type WreathDetection = { size: QuoteWreathSize; tier: Tier; box: NormalizedBox };
+export type SpritzerDetection = { size: QuoteSpritzerSize; box: NormalizedBox };
+export type GarlandDetection = { length: QuoteGarlandLength; tier: Tier; box: NormalizedBox };
+
+export type AnalysisDetections = {
+  miniLights?: MiniDetection[];
+  wreaths?: WreathDetection[];
+  spritzers?: SpritzerDetection[];
+  garland?: GarlandDetection[];
+};
+
+export type AnalysisSeed = {
+  lines?: RooflineSeedLines;
+  detections?: AnalysisDetections;
+  // The AI's roofline footage estimates — paired with the drawn lines they
+  // yield pixels-per-foot, which seeds the SCALE yardstick (below).
+  calibration?: { santasFootage?: number; gingerbreadFootage?: number };
+};
+
+const SEED_PREFIX = 'seed-';
+
+// The seeded scale yardstick (5 ft — Jason's pick, S8). Its WIDTH is the
+// measuring dimension (pxPerFoot = width / realFeet — see
+// editor-core/yardstick.ts); height is cosmetic.
+const YARDSTICK_REAL_FEET = 5;
+// Plausibility bounds for a derived pixels-per-foot — outside this range the
+// calibration inputs are garbage (degenerate line, absurd footage).
+const MIN_PPF = 2;
+const MAX_PPF = 500;
+
+// Visual defaults for seeded items (staff restyle freely — visuals never
+// drive price). Mirrors the editor's creation defaults where one exists.
+const MINI_AREA_DENSITY = 0.5;
+const WARM_WHITE = ['warm-white'];
+const WREATH_VISUAL_SIZE_IN = 36;
+const SPRITZER_VISUAL_SIZE_IN = 24;
+
+const MINI_TYPES = new Set(['tree', 'bush', 'column']);
+const WRAP_STYLES = new Set(['canopy', 'trunk']);
+const WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '36oregon']);
+const SPRITZER_SIZES = new Set(['16', '24', '32']);
+const GARLAND_LENGTHS = new Set(['4.5ft', '9ft']);
+const TIERS = new Set(['labor', 'bow', 'fullDecor']);
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function isBox(b: unknown): b is NormalizedBox {
+  return (
+    Array.isArray(b) &&
+    b.length === 4 &&
+    b.every((n) => typeof n === 'number' && Number.isFinite(n)) &&
+    b[2] > 0 &&
+    b[3] > 0
+  );
+}
+
+// Defensive parse of an untrusted request payload. Drops malformed entries
+// (bad boxes, unknown enums) instead of failing the call; reuses the roofline
+// sanitizer for the lines half.
+export function sanitizeAnalysisSeed(input: unknown): AnalysisSeed {
+  const out: AnalysisSeed = {};
+  if (!input || typeof input !== 'object') return out;
+  const o = input as Record<string, unknown>;
+  const lines = sanitizeSeedLines(o.lines);
+  if (seedLinesHaveContent(lines)) out.lines = lines;
+
+  const cal = o.calibration;
+  if (cal && typeof cal === 'object') {
+    const c = cal as Record<string, unknown>;
+    const calibration: NonNullable<AnalysisSeed['calibration']> = {};
+    if (typeof c.santasFootage === 'number' && Number.isFinite(c.santasFootage) && c.santasFootage > 0) {
+      calibration.santasFootage = c.santasFootage;
+    }
+    if (typeof c.gingerbreadFootage === 'number' && Number.isFinite(c.gingerbreadFootage) && c.gingerbreadFootage > 0) {
+      calibration.gingerbreadFootage = c.gingerbreadFootage;
+    }
+    if (Object.keys(calibration).length) out.calibration = calibration;
+  }
+
+  const d = o.detections;
+  if (d && typeof d === 'object') {
+    const det = d as Record<string, unknown>;
+    const detections: AnalysisDetections = {};
+    if (Array.isArray(det.miniLights)) {
+      const minis = det.miniLights.filter(
+        (m): m is MiniDetection =>
+          !!m &&
+          typeof m === 'object' &&
+          MINI_TYPES.has((m as MiniDetection).type) &&
+          WRAP_STYLES.has((m as MiniDetection).wrapStyle) &&
+          typeof (m as MiniDetection).stringCount === 'number' &&
+          Number.isFinite((m as MiniDetection).stringCount) &&
+          isBox((m as MiniDetection).box),
+      );
+      if (minis.length) detections.miniLights = minis;
+    }
+    if (Array.isArray(det.wreaths)) {
+      const ws = det.wreaths.filter(
+        (w): w is WreathDetection =>
+          !!w &&
+          typeof w === 'object' &&
+          WREATH_SIZES.has((w as WreathDetection).size) &&
+          TIERS.has((w as WreathDetection).tier) &&
+          isBox((w as WreathDetection).box),
+      );
+      if (ws.length) detections.wreaths = ws;
+    }
+    if (Array.isArray(det.spritzers)) {
+      const sp = det.spritzers.filter(
+        (s): s is SpritzerDetection =>
+          !!s &&
+          typeof s === 'object' &&
+          SPRITZER_SIZES.has((s as SpritzerDetection).size) &&
+          isBox((s as SpritzerDetection).box),
+      );
+      if (sp.length) detections.spritzers = sp;
+    }
+    if (Array.isArray(det.garland)) {
+      const g = det.garland.filter(
+        (x): x is GarlandDetection =>
+          !!x &&
+          typeof x === 'object' &&
+          GARLAND_LENGTHS.has((x as GarlandDetection).length) &&
+          TIERS.has((x as GarlandDetection).tier) &&
+          isBox((x as GarlandDetection).box),
+      );
+      if (g.length) detections.garland = g;
+    }
+    if (Object.keys(detections).length) out.detections = detections;
+  }
+  return out;
+}
+
+export function detectionsHaveContent(d: AnalysisDetections | undefined): boolean {
+  return Boolean(
+    d && (d.miniLights?.length || d.wreaths?.length || d.spritzers?.length || d.garland?.length),
+  );
+}
+
+export function analysisSeedHasContent(seed: AnalysisSeed): boolean {
+  return Boolean((seed.lines && seedLinesHaveContent(seed.lines)) || detectionsHaveContent(seed.detections));
+}
+
+// A normalized box → pixel-space rect, clamped into the photo. Coords round
+// to 2 decimals — sub-pixel float noise has no business living in a scene.
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+// Pixel length of normalized polylines on a w×h photo.
+function lineLengthPx(
+  polys: RooflineSeedLines['santas'],
+  w: number,
+  h: number,
+): number {
+  let total = 0;
+  for (const poly of polys ?? []) {
+    for (let i = 1; i < poly.length; i++) {
+      const dx = (clamp01(poly[i][0]) - clamp01(poly[i - 1][0])) * w;
+      const dy = (clamp01(poly[i][1]) - clamp01(poly[i - 1][1])) * h;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+  return total;
+}
+
+// Derive pixels-per-foot from the AI's own roofline: the drawn line's pixel
+// length ÷ its footage estimate (the same calibration the old street overlay
+// used). Prefers the front gutterline; falls back to ridge+sides. Null when
+// the inputs are missing or implausible.
+export function derivePxPerFoot(seed: AnalysisSeed, w: number, h: number): number | null {
+  const cal = seed.calibration;
+  if (!cal) return null;
+  const candidates: [RooflineSeedLines['santas'], number | undefined][] = [
+    [seed.lines?.santas, cal.santasFootage],
+    [seed.lines?.gingerbread, cal.gingerbreadFootage],
+  ];
+  for (const [polys, feet] of candidates) {
+    if (!polys?.length || typeof feet !== 'number' || !Number.isFinite(feet) || feet <= 0) continue;
+    const px = lineLengthPx(polys, w, h);
+    if (px <= 0) continue;
+    const ppf = px / feet;
+    if (ppf >= MIN_PPF && ppf <= MAX_PPF) return ppf;
+  }
+  return null;
+}
+
+function pxBox(box: NormalizedBox, w: number, h: number) {
+  const x0 = clamp01(box[0]);
+  const y0 = clamp01(box[1]);
+  const x1 = clamp01(box[0] + box[2]);
+  const y1 = clamp01(box[1] + box[3]);
+  return {
+    x: round2(x0 * w),
+    y: round2(y0 * h),
+    width: round2((x1 - x0) * w),
+    height: round2((y1 - y0) * h),
+  };
+}
+
+function detectionItems(d: AnalysisDetections, w: number, h: number): SceneItem[] {
+  const items: SceneItem[] = [];
+
+  (d.miniLights ?? []).forEach((m, i) => {
+    const r = pxBox(m.box, w, h);
+    const stringCount = Math.max(1, Math.round(m.stringCount));
+    if (m.type === 'column') {
+      // Columns stay strand-based (contract A2): a vertical line through the box.
+      const cx = r.x + r.width / 2;
+      const strand: StrandItem = {
+        id: `${SEED_PREFIX}mini-${i + 1}`,
+        yardstickId: null,
+        kind: 'strand',
+        bulbType: 'mini',
+        spacingIn: 6,
+        drawingStyle: 'strand',
+        colorPattern: [...WARM_WHITE],
+        points: [cx, r.y, cx, r.y + r.height],
+        surface: 'column',
+        included: true,
+        wrapStyle: m.wrapStyle,
+        stringCount,
+      };
+      items.push(strand);
+    } else {
+      const area: MiniAreaItem = {
+        id: `${SEED_PREFIX}mini-${i + 1}`,
+        yardstickId: null,
+        kind: 'miniArea',
+        shape: 'box',
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        density: MINI_AREA_DENSITY,
+        colorPattern: [...WARM_WHITE],
+        surface: m.type,
+        included: true,
+        wrapStyle: m.wrapStyle,
+        stringCount,
+      };
+      items.push(area);
+    }
+  });
+
+  (d.wreaths ?? []).forEach((wd, i) => {
+    const r = pxBox(wd.box, w, h);
+    const wreath: WreathItem = {
+      id: `${SEED_PREFIX}wreath-${i + 1}`,
+      yardstickId: null,
+      kind: 'wreath',
+      x: r.x + r.width / 2,
+      y: r.y + r.height / 2,
+      sizeIn: WREATH_VISUAL_SIZE_IN,
+      withLights: true,
+      quoteSize: wd.size,
+      tier: wd.tier,
+      included: true,
+    };
+    items.push(wreath);
+  });
+
+  (d.spritzers ?? []).forEach((sd, i) => {
+    const r = pxBox(sd.box, w, h);
+    const spritzer: SpritzerItem = {
+      id: `${SEED_PREFIX}spritzer-${i + 1}`,
+      yardstickId: null,
+      kind: 'spritzer',
+      x: r.x + r.width / 2,
+      y: r.y + r.height / 2,
+      sizeIn: SPRITZER_VISUAL_SIZE_IN,
+      colorPattern: [...WARM_WHITE],
+      quoteSize: sd.size,
+      included: true,
+    };
+    items.push(spritzer);
+  });
+
+  (d.garland ?? []).forEach((gd, i) => {
+    const r = pxBox(gd.box, w, h);
+    const cy = r.y + r.height / 2;
+    const garland: SceneGarlandItem = {
+      id: `${SEED_PREFIX}garland-${i + 1}`,
+      yardstickId: null,
+      kind: 'garland',
+      points: [r.x, cy, r.x + r.width, cy],
+      drawingStyle: 'strand',
+      withLights: true,
+      quoteLength: gd.length,
+      // No reliable real-world scale at seed time (street calibration is gone,
+      // #35) — default to ONE section; staff set the billed count in the
+      // editor's Quote-binding panel. Under-billing beats silently over-billing.
+      quoteSections: 1,
+      tier: gd.tier,
+      included: true,
+    };
+    items.push(garland);
+  });
+
+  return items;
+}
+
+// Pure: roofline lines via #33's tag-replacement, then per-unit detections via
+// the seed-* id-replacement. Either half being empty is a NO-OP for that half.
+export function seedSceneFromAnalysis(
+  scene: Scene,
+  seed: AnalysisSeed,
+  photoW: number,
+  photoH: number,
+): Scene {
+  if (!Number.isFinite(photoW) || !Number.isFinite(photoH) || photoW <= 0 || photoH <= 0) {
+    return scene;
+  }
+  let out = scene;
+
+  // SCALE FIRST: without a yardstick the renderer guesses 50 px/ft and seeded
+  // wreaths/spritzers render comically large. Derive the real scale from the
+  // AI's roofline estimate and seed a 5 ft yardstick. STAFF CALIBRATION WINS:
+  // any non-seed yardstick in the scene means we leave the array untouched;
+  // otherwise we add (or replace) OUR seed yardstick. Seeded items bind to
+  // yardstickId:null = "the first yardstick", so staff replacing it with their
+  // own front-door box re-scales everything instantly.
+  const ppf = derivePxPerFoot(seed, photoW, photoH);
+  if (ppf != null) {
+    const existingYs: Yardstick[] = Array.isArray(out?.yardsticks) ? out.yardsticks : [];
+    const hasStaffYardstick = existingYs.some((y) => !y.id.startsWith(SEED_PREFIX));
+    if (!hasStaffYardstick) {
+      const width = round2(YARDSTICK_REAL_FEET * ppf);
+      const ys: Yardstick = {
+        id: `${SEED_PREFIX}yardstick-1`,
+        realFeet: YARDSTICK_REAL_FEET,
+        x: round2(photoW * 0.04),
+        y: round2(photoH * 0.74),
+        width,
+        height: round2(width * 0.45), // cosmetic — only width measures
+      };
+      out = { ...out, yardsticks: [ys] };
+    }
+  }
+
+  if (seed.lines && seedLinesHaveContent(seed.lines)) {
+    out = seedRooflineStrands(out, seed.lines, photoW, photoH);
+  }
+
+  if (detectionsHaveContent(seed.detections)) {
+    const existing: SceneItem[] = Array.isArray(out?.items) ? out.items : [];
+    // Replace previously AI-seeded PER-UNIT items: seed-* ids that are not
+    // roofline strands (those belong to the tag rule above). Staff items —
+    // any id without the prefix — always survive.
+    const kept = existing.filter((i) => {
+      if (!i.id.startsWith(SEED_PREFIX)) return true;
+      return isStrand(i) && i.bulbType === 'c9';
+    });
+    out = { ...out, items: [...kept, ...detectionItems(seed.detections!, photoW, photoH)] };
+  }
+
+  return out;
+}
+
+// Seeded-item counts for API feedback / builder status lines.
+export function countSeededItems(scene: Scene): { roofline: number; perUnit: number } {
+  const items: SceneItem[] = Array.isArray(scene?.items) ? scene.items : [];
+  let roofline = 0;
+  let perUnit = 0;
+  for (const i of items) {
+    if (!i.id.startsWith(SEED_PREFIX)) continue;
+    if (isStrand(i) && i.bulbType === 'c9') roofline++;
+    else perUnit++;
+  }
+  return { roofline, perUnit };
+}

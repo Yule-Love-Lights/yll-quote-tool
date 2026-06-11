@@ -21,6 +21,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
+import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -151,28 +152,25 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
   const designPhotoRef = useRef<string | null>(null);
-  // Roofline lines from the latest analysis, waiting for the design to exist
-  // before they can seed (#33 tagging keeps the portal picture-toggle alive).
-  const pendingSeedRef = useRef<{
-    santas: [number, number][][];
-    gingerbread: [number, number][][];
-    winterWonderland: [number, number][][];
-  } | null>(null);
+  // The latest analysis payload (roofline lines + per-unit detections),
+  // waiting for the design to exist before it can seed (#35 Phase 2 — the
+  // bridge auto-design; the roofline half keeps #33's picture-toggle alive).
+  const pendingSeedRef = useRef<AnalysisSeed | null>(null);
 
-  // Push the AI's roofline lines into the design as tagged C9 strands (#33's
-  // replacement semantics: roofline-tagged strands swap out, hand-drawn decor
-  // survives) and remount the editor so it shows them.
-  const seedDesignRoofline = async (id: string, lines: NonNullable<typeof pendingSeedRef.current>) => {
-    if (!lines.santas.length && !lines.gingerbread.length && !lines.winterWonderland.length) return;
+  // Push an analysis payload into the design as scene items (tagged roofline
+  // strands + minis/wreaths/spritzers/garland at the detected spots). Server
+  // replacement rules: roofline by TAG, per-unit by the seed- id prefix —
+  // staff-drawn items always survive. Remounts the editor to show the result.
+  const seedDesignFromAnalysis = async (id: string, seed: AnalysisSeed) => {
     try {
-      const res = await fetch(`/api/designs/${id}/seed-roofline`, {
+      const res = await fetch(`/api/designs/${id}/seed-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seedLines: lines }),
+        body: JSON.stringify({ seed }),
       });
       if (res.ok) setDesignEditorKey((k) => k + 1);
     } catch {
-      // Non-fatal: the design still works, the roofline just isn't pre-drawn.
+      // Non-fatal: the design still works, it just isn't pre-designed.
     }
   };
 
@@ -195,7 +193,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               quoteId: savedQuoteId ?? undefined,
               photoBase64,
               photoMediaType,
-              seedLines: pendingSeedRef.current ?? undefined,
+              // The bridge auto-design (#35 Phase 2): the design is born
+              // already designed from the analysis.
+              seedAnalysis: pendingSeedRef.current ?? undefined,
             }),
           });
           const data = await res.json();
@@ -215,9 +215,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           if (!res.ok) throw new Error(data.error ?? 'Failed to update the design photo');
           designPhotoRef.current = photoBase64;
           if (pendingSeedRef.current) {
-            const lines = pendingSeedRef.current;
+            const seed = pendingSeedRef.current;
             pendingSeedRef.current = null;
-            await seedDesignRoofline(designId, lines);
+            await seedDesignFromAnalysis(designId, seed);
           }
           if (!stale) setDesignEditorKey((k) => k + 1);
         }
@@ -493,12 +493,13 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }
   };
 
-  // Shared: apply analysis result to the form + satellite state + the design's
-  // roofline seed. Used by both manual upload and Google address lookup.
-  // #35 Phase 1: the AI's street roofline lines feed the DESIGN (as tagged C9
-  // strands); its per-unit detections are dropped for now — Phase 2 (the bridge
-  // auto-design) converts them into scene items too, and #8 then upgrades the
-  // AI itself to design directly.
+  // Shared: apply analysis result to the form + satellite state + the design
+  // seed. Used by both manual upload and Google address lookup.
+  // #35 Phase 2 (the bridge auto-design): the AI's street roofline lines AND
+  // its per-unit detections all feed the DESIGN as scene items — the design
+  // opens already designed; staff refine. #8 (Phase 3) upgrades the AI brain
+  // on top of this same plumbing.
+  type DetectionBox = [number, number, number, number];
   type AnalysisResponse = {
     result: {
       santasFootage: number;
@@ -510,6 +511,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
       preferredSource?: 'street' | 'satellite';
+      miniLightDetections?: { type: 'tree' | 'bush' | 'column'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
+      wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
+      spritzerDetections?: { size: string; box: DetectionBox }[];
+      garlandDetections?: { length: string; tier: string; box: DetectionBox }[];
       notes: string;
       confidence: string;
     };
@@ -539,18 +544,33 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setSatelliteSantasLines(r.satelliteSantasLines ?? []);
     setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
     setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
-    // The AI's street roofline lines become tagged C9 strands on the design
-    // (#33). If the design already carries this exact photo (a re-analyze),
-    // seed it directly; otherwise park the lines for the eager design effect.
-    const seedLines = {
-      santas: (r.santasLines ?? []).map((l) => l.points),
-      gingerbread: (r.gingerbreadLines ?? []).map((l) => l.points),
-      winterWonderland: [] as [number, number][][],
+    // The bridge auto-design (#35 Phase 2): roofline lines → tagged C9 strands
+    // (#33) AND per-unit detections → scene items at the detected spots. The
+    // route sanitizes (unknown sizes/tiers/boxes are dropped, not fatal). If
+    // the design already carries this exact photo (a re-analyze), seed it
+    // directly; otherwise park the payload for the eager design effect.
+    const seed: AnalysisSeed = {
+      lines: {
+        santas: (r.santasLines ?? []).map((l) => l.points),
+        gingerbread: (r.gingerbreadLines ?? []).map((l) => l.points),
+        winterWonderland: [],
+      },
+      detections: {
+        miniLights: (r.miniLightDetections ?? []).map((d) => ({
+          type: d.type, wrapStyle: d.wrapStyle, stringCount: d.stringCount, box: d.box,
+        })),
+        wreaths: (r.wreathDetections ?? []).map((d) => ({ size: d.size, tier: d.tier, box: d.box })),
+        spritzers: (r.spritzerDetections ?? []).map((d) => ({ size: d.size, box: d.box })),
+        garland: (r.garlandDetections ?? []).map((d) => ({ length: d.length, tier: d.tier, box: d.box })),
+      } as AnalysisSeed['detections'],
+      // Footage estimates + the drawn lines = pixels-per-foot → the seeded
+      // 5 ft scale yardstick (items render at sane sizes from the start).
+      calibration: { santasFootage: r.santasFootage, gingerbreadFootage: r.gingerbreadFootage },
     };
     if (designId && data.photoBase64 && designPhotoRef.current === data.photoBase64) {
-      void seedDesignRoofline(designId, seedLines);
+      void seedDesignFromAnalysis(designId, seed);
     } else {
-      pendingSeedRef.current = seedLines;
+      pendingSeedRef.current = seed;
     }
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
