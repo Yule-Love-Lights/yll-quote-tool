@@ -57,7 +57,7 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     }
     if (!data) return null;
 
-    const photos = await fetchPortalPhotos(id, data.customer_address);
+    const photos = fetchPortalPhotos(data.customer_address);
     const portal = quoteRowToPortalQuote({ row: data, photos });
     // Attach the linked design (if any) so the hero can render it live (#27
     // Phase 2). Best-effort: a design lookup failure never blocks the quote.

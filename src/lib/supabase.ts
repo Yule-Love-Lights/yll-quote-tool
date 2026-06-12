@@ -21,9 +21,8 @@ export function getSupabaseClient(): SupabaseClient | null {
 }
 
 // Service-role client bypasses RLS. ONLY use from server-side code (never
-// exposed to the browser). Used for renders pipeline writes where the row
-// lifecycle (pending → rendering → ready → approved) would otherwise break
-// the "anon SELECT only approved" policy on read-back.
+// exposed to the browser). Used by server-side reads/writes (portal loader,
+// designs, admin routes) that must see rows the anon policies would hide.
 export function getSupabaseServiceClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
