@@ -6,7 +6,7 @@
 // `santas-roofline` / `gingerbread` / `winter-wonderland`. Those tags are what
 // the portal's picture-toggle keys on (sceneLinks.ts).
 //
-// REPLACEMENT RULE (Jason, S7): the measurement is the source of truth for
+// REPLACEMENT RULE (Jason, S6): the measurement is the source of truth for
 // rooflines (data contract §7 — roofline is measurement-driven). Re-seeding
 // REPLACES every roofline-TAGGED strand, whatever its origin. Untagged strands
 // (hand-drawn C9 decor) and all other item kinds are never touched. Calling
