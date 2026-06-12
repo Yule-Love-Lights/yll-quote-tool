@@ -69,7 +69,7 @@ This does **not** affect running `npm run dev` from a normal terminal. Full deta
 
 ## 2. Environment variables — the complete list (BY NAME)
 
-Derived by scanning the codebase for `process.env.*` (not from memory). **28 distinct variables: 5 PUBLIC (shipped to the browser via the `NEXT_PUBLIC_` prefix) and 23 server-only/secret** (including the framework-provided `NODE_ENV`).
+Derived by scanning the codebase for `process.env.*` (not from memory). **21 distinct variables: 5 PUBLIC (shipped to the browser via the `NEXT_PUBLIC_` prefix) and 16 server-only/secret** (including the framework-provided `NODE_ENV`). *(7 render-pipeline vars — `GEMINI_API_KEY`, `RENDER_MODEL`, `RENDER_VARIANT_MODEL`, `RENDER_VARIANT_CACHE_BUST`, `RENDER_BUDGET_MONTHLY_USD`, `REPLICATE_API_TOKEN`, `REPLICATE_INPAINT_MODEL` — were removed in the #36 Gemini teardown.)*
 
 > **Get the real values out-of-band** (see §3 and the handoff report). Copy `.env.local.example`
 > → `.env.local` and fill them in. **`.env.local` is gitignored — never commit it.**
@@ -79,18 +79,11 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **28 dis
 | Name | Purpose | Where read |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Claude (Sonnet 4.5) vision + quote analysis | `src/lib/claude.ts` |
-| `GEMINI_API_KEY` | Google Gemini image render engine ("Nano Banana") | `src/lib/rendering/gemini.ts` |
-| `RENDER_MODEL` | Default tier for the hero render (`pro`/`flash2`/`flash`) | `gemini.ts` |
-| `RENDER_VARIANT_MODEL` | Tier for per-package portal variant renders | `gemini.ts` |
-| `RENDER_VARIANT_CACHE_BUST` | Optional token to force-regenerate variant renders | `rendering/storage.ts` |
-| `RENDER_BUDGET_MONTHLY_USD` | Monthly Gemini spend cap (orchestrator refuses past it) | `rendering/orchestrator.ts` |
 | `GOOGLE_MAPS_API_KEY` | Geocode + Street View + satellite imagery for address analysis | `src/lib/googleMaps.ts` |
 | `SUPABASE_URL` | Supabase project URL | `src/lib/supabase.ts` |
 | `SUPABASE_ANON_KEY` | Supabase anon key (RLS-bound client; read server-side here) | `supabase.ts` |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Service-role key — bypasses RLS. God-mode. Server-only, never to the browser.** | `supabase.ts` |
-| `REPLICATE_API_TOKEN` | Replicate FLUX inpaint pass (bush mini-lights) | `rendering/inpaint.ts` |
-| `REPLICATE_INPAINT_MODEL` | Optional override of the inpaint model ref | `rendering/inpaint.ts` |
-| `ADMIN_SECRET` | Shared secret gating all admin mutations (`x-admin-secret` header) | 8 API routes (renders, quotes, video, render-variants, homeworks/send) |
+| `ADMIN_SECRET` | Shared secret gating all admin mutations (`x-admin-secret` header) | 4 API routes (quotes, quotes/[id], video, homeworks/send) |
 | `HIGHLEVEL_API_KEY` | HighLevel/GoHighLevel CRM Private Integration token (`pit-…`) | `integrations/highlevel.ts` |
 | `HIGHLEVEL_LOCATION_ID` | HighLevel location (sub-account) ID | `integrations/highlevel.ts` |
 | `HIGHLEVEL_PIPELINE_ID` | Holiday Lights sales pipeline ID | `api/integrations/highlevel/attach/route.ts` |
@@ -120,15 +113,13 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **28 dis
 
 ## 3. Third-party accounts & how to get access
 
-Every external dependency is **config-gated** — the app boots and runs with any subset configured (each integration has an `isXConfigured()` check and degrades gracefully). So you can start with just Supabase + Anthropic + Gemini and add the rest as access arrives.
+Every external dependency is **config-gated** — the app boots and runs with any subset configured (each integration has an `isXConfigured()` check and degrades gracefully). So you can start with just Supabase + Anthropic and add the rest as access arrives.
 
 | Service | What it's for | How you get access |
 |---|---|---|
-| **Supabase** | Postgres DB (quotes, renders, corrections, training, reference assets) + private Storage bucket (`renders`) | Naldo invites you to the Supabase **project** (Supabase dashboard → Project → Settings → Members → Invite). You copy `SUPABASE_URL` + `SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY` from Settings → API. **The service-role key is god-mode — handle per the security note below.** |
+| **Supabase** | Postgres DB (quotes, corrections, training, reference assets, designs) + private Storage bucket (`designs`) | Naldo invites you to the Supabase **project** (Supabase dashboard → Project → Settings → Members → Invite). You copy `SUPABASE_URL` + `SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY` from Settings → API. **The service-role key is god-mode — handle per the security note below.** |
 | **Anthropic (Claude)** | Vision photo analysis + quote measurement (`claude-sonnet-4-5`) | Naldo adds you to the Anthropic **Console** org (console.anthropic.com → Settings → Members) or shares a scoped API key out-of-band. |
-| **Google AI Studio (Gemini)** | The render engine (`gemini-3-pro-image-preview` etc.) — **billing must be attached, no free tier on Pro** | Naldo shares the `GEMINI_API_KEY` out-of-band, or adds you to the Google Cloud project that owns it (aistudio.google.com / Cloud Console IAM). Keep the **$200/mo billing ceiling** in mind. |
-| **Google Maps Platform** | Geocoding + Street View + satellite imagery for address-based analysis | Same `GOOGLE_MAPS_API_KEY` family — Naldo shares it or grants Cloud project access. |
-| **Replicate** | Optional FLUX inpaint pass for bush mini-lights (`REPLICATE_API_TOKEN`) | Naldo shares the token out-of-band, or you create your own at replicate.com → Account → API tokens (then Naldo isn't blocking you). Optional — without it the render runs single-stage. |
+| **Google Maps Platform** | Geocoding + Street View + satellite imagery for address-based analysis | `GOOGLE_MAPS_API_KEY` — Naldo shares it or grants Cloud project access. |
 | **HighLevel / GoHighLevel** | CRM: contact lookup + sales-pipeline sync | Naldo creates a **Private Integration** (app.gohighlevel.com → Settings → Private Integrations → New, scoped to contacts + opportunities + pipelines, read+write) and shares the `pit-…` token + `HIGHLEVEL_LOCATION_ID`. Pipeline/stage IDs come from `listPipelines()`. |
 | **Zapier ↔ home.works** | Estimate hand-off (outbound) + signature callback (inbound), both via Zapier Catch Hooks | Naldo shares the `HOMEWORKS_ZAPIER_WEBHOOK_URL` (must be a `hooks.zapier.com` catch-hook) and the `HOMEWORKS_SIGNED_SECRET`. To edit the Zaps themselves, Naldo invites you to the Zapier account/workspace. |
 | **`ADMIN_SECRET`** | Not a third party — a shared secret you set yourself in `.env.local` to gate admin routes. Naldo shares the value he uses (so prod + your dev agree) or you pick your own for local dev. |
@@ -150,8 +141,7 @@ npm run dev                            # http://localhost:3000  (Claude Code: pr
 
 Useful URLs once it's up:
 - `/quote/new` — operator quote builder (the main internal tool)
-- `/admin/quotes` — quote list + per-quote render review + "send to customer"
-- `/admin/renders` and `/admin/renders/new` — render gallery + smoke-test a render
+- `/admin/quotes` — quote list + edit/portal/video links + "send to customer"
 - `/portal/[quoteId]` — the live customer-facing portal (the Snowglobe design, real DB data)
 
 Then read **`docs/CURRENT_STATE.md`** (what's done vs. half-done vs. fragile) and **`docs/CONVENTIONS.md`** (how to add code without breaking patterns), and load the context snapshot per **`docs/context/README.md`**.
