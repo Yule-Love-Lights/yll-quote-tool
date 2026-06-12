@@ -8,7 +8,6 @@ import type { PortalPhotos } from './photos';
 const PHOTOS: PortalPhotos = {
   beforeUrl: null,
   afterUrl: null,
-  variantUrls: {},
   alt: null,
 };
 

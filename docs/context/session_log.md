@@ -15,7 +15,25 @@ metadata:
 
 ---
 
-### Session 6 (CLOSE) — the full session: #31 → #33+#28 → #35 (both phases) → small-fixes sweep → #36 plan locked. CLOSED at Jason's 5hr usage limit (2026-06-10/11) · CURRENT
+### Session 7 — #36 GEMINI RENDER PIPELINE TEARDOWN: EXECUTED (2026-06-12) · CURRENT
+
+**Picked up from:** S6 close — everything merged to master, #36 plan locked in [[task_ledger]] + recon journal on disk (read at pickup, NOT re-recon'd — the locked-plan flow worked exactly as designed). Branch **`jason/render-teardown`** off master.
+
+**✅ Executed (one sweep, ~45 min):**
+- **DELETED (17 files):** `src/lib/rendering/*` (all 8), the 4 render API routes (`/api/renders`, `/api/renders/[id]`, `/api/quotes/[id]/renders`, `/api/quotes/[id]/render-variants`), the 3 admin render pages, plus `dark/PackageVariantGallery.tsx` + `lib/portal/variantPhoto.ts` — pre-delete greps confirmed BOTH were already orphaned (zero importers; the gallery was apparently never re-mounted after the portal consolidation), and `lib/rendering` had zero importers outside its own routes/pages. Video feature grep: its only "render" hit is a UI-rendering comment — **video stays, untouched**.
+- **MODIFIED:** `portal/photos.ts` → a pure synchronous null-URL fallback builder (renders query gone; `PortalPhotos` keeps `{beforeUrl, afterUrl, alt}` so the adapter seam is stable; loader drops the await + quoteId arg); `variantPhotos`/`PortalVariantPhotos` purged from `types.ts`/`adapter.ts`/`mockQuote.ts`/`adapter.test.ts`; admin-quotes "Renders" nav link removed; 4 stale comments (supabase.ts, designs.ts, admin/quotes, api/quotes) scrubbed of dead-pipeline references.
+- **INFRA:** **`migrations/2026-06-12-drop-renders.sql`** — table-first `DROP TABLE … CASCADE` (takes trigger/indexes/policies with it — individually dropping them first would error on re-run), then the helper function, then the 4 `storage.objects` policies (those survive a UI bucket-delete, so SQL must drop them). FULL-SCHEMA.sql purged of section 5 (renders) + header/refresh-note updated (designs renumbered →5). `.env.local.example` render sections removed.
+- **DOCS:** ONBOARDING (env table 28→21 vars, accounts table, URL list), CURRENT_STATE (teardown banner, flow rewritten around the live design, render-risk bugs closed, SSIM/c9-render-path resolved), CONVENTIONS (Gemini/Replicate rows gone, sharp's role = designs.ts dims, RENDER_PROMPT_VERSION removed, editor-core convention added), context mirrors (render-engine doc got a ⚰️ HISTORICAL banner; secrets doc; README read-order; ledger #36→done + **#18 closed as moot** — the renders RLS can't be unverified if the table doesn't exist).
+- **Gates:** tsc clean · lint 0 errors/**2 warnings** (down from 5 — 3 lived in deleted render files) · **137 tests** (adapter fixture updated; no suites lost — the pipeline never had its own tests).
+- **Verified live (dev server):** deleted routes 404 (`/admin/renders`, `/admin/renders/new`, `/api/renders`); `/`, `/quote/new`, `/admin/quotes`, `/training/new` 200; portal **with** design (fixture `f0c8d731`) renders the live-design hero (signed photoUrl + sceneItemIds + tagged seed strands in payload); portal **without** design (`6524ac2c`) falls back to the static Roslyn hero; `variantPhotos` absent from both payloads; zero server-log errors.
+
+**🔑 Jason's by-hand checklist (after merge):** (1) run `migrations/2026-06-12-drop-renders.sql` in the Supabase SQL editor; (2) delete the `renders` STORAGE BUCKET in the Supabase UI; (3) remove from `.env.local`: `GEMINI_API_KEY`, `RENDER_MODEL`, `RENDER_VARIANT_MODEL`, `RENDER_BUDGET_MONTHLY_USD`, `REPLICATE_API_TOKEN` (the other 2 — `RENDER_VARIANT_CACHE_BUST`, `REPLICATE_INPAINT_MODEL` — aren't set locally); (4) remove the same 7 names from Vercel env vars. **KEEP** `GOOGLE_MAPS_API_KEY` + `ANTHROPIC_API_KEY`.
+
+**NEXT: #8 → Phase 3 — AI auto-design** (make the AI a better designer; the #33+#35 plumbing delivers its output straight into designs). Planning doc: [[task_ai_training_refinement]]. Naldo still owes bow prices (#17).
+
+---
+
+### Session 6 (CLOSE) — the full session: #31 → #33+#28 → #35 (both phases) → small-fixes sweep → #36 plan locked. CLOSED at Jason's 5hr usage limit (2026-06-10/11)
 
 > **Numbering note (Jason's correction at close):** this ENTIRE multi-day conversation = **Session 6** — one conversation, one session (the S4 multi-day precedent). It was mistakenly relabeled "Session 7" mid-conversation; local memory is now renumbered (entries below = segments of ONE session). **Immutable leftovers:** git commit messages from this session permanently say "session 7" — that label = this session (S6). Repo `docs/context/*` + the `seedFromAnalysis.ts` comment were corrected in the session-close docs PR (`jason/session-close-docs`).
 

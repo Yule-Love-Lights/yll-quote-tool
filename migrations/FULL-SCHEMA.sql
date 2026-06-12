@@ -13,16 +13,16 @@
 --   2. photo_corrections — human-corrected analyzer outputs (RLS disabled)
 --   3. training_houses   — confirmed real-install measurements (RLS disabled)
 --   4. reference_assets  — product close-ups for Claude few-shot (RLS disabled)
---   5. renders           — one per generated image (RLS ENABLED + hardened)
---   6. designs           — one editable on-photo light design (RLS disabled)
+--   5. designs           — one editable on-photo light design (RLS disabled)
 -- Storage:
---   renders bucket (+ object RLS: insert/update/delete, NO anon select)
 --   designs bucket (private; served via service-role signed URLs)
 --
--- Last refreshed: 2026-06-05 — added the designs table + bucket (design-tool
---   integration, task #27 Phase 1). Prior refresh 2026-05-29 folded in
---   db/schema.sql (base tables) plus the post-Apr quotes columns
---   (integration/lifecycle/walkthrough video), renders.variant, and the
+-- Last refreshed: 2026-06-12 — REMOVED the renders table + bucket (Gemini
+--   render pipeline teardown, task #36; see 2026-06-12-drop-renders.sql for
+--   tearing down an existing deployment). Prior refresh 2026-06-05 added the
+--   designs table + bucket (design-tool integration, task #27 Phase 1);
+--   2026-05-29 folded in db/schema.sql (base tables) plus the post-Apr quotes
+--   columns (integration/lifecycle/walkthrough video) and the
 --   reference_assets table, so this file alone is a complete rebuild.
 -- =====================================================================
 
@@ -173,116 +173,7 @@ create index if not exists reference_assets_asset_type_idx on reference_assets (
 
 
 -- ---------------------------------------------------------------------
--- 5. renders  (RLS ENABLED — hardened)
--- ---------------------------------------------------------------------
-create table if not exists renders (
-  id uuid primary key default gen_random_uuid(),
-  quote_id uuid,
-  version int not null default 1,
-  style text not null default 'warm-white',
-  model text not null default 'pro',           -- 'pro' | 'flash2' | 'flash'
-  variant text not null default 'full',         -- 'full' | 'santas' | 'ridge' | 'minis' | 'wreaths' | 'spritzers' | 'garland'
-  status text not null default 'pending',       -- 'pending' | 'rendering' | 'ready' | 'approved' | 'rejected' | 'failed'
-  photo_hash text not null,
-  vision_hash text not null,
-  cache_key text not null,
-  source_path text,
-  composite_path text,
-  mask_path text,
-  final_path text,
-  ssim_score numeric,
-  gemini_ms int,
-  gemini_cost_usd numeric,
-  error_message text,
-  approved_at timestamptz,
-  approved_by text,
-  rejected_reason text,
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
--- Existing deployments: add columns + value constraints if missing.
-alter table renders add column if not exists model text not null default 'pro';
-alter table renders drop constraint if exists renders_model_check;
-alter table renders add constraint renders_model_check
-  check (model in ('pro', 'flash2', 'flash'));
-
-alter table renders add column if not exists variant text not null default 'full';
-alter table renders drop constraint if exists renders_variant_check;
-alter table renders add constraint renders_variant_check
-  check (variant in ('full', 'santas', 'ridge', 'minis', 'wreaths', 'spritzers', 'garland'));
-
-create index if not exists renders_quote_id_idx on renders(quote_id);
-create index if not exists renders_status_idx on renders(status);
-create index if not exists renders_cache_key_idx on renders(cache_key);
-create index if not exists renders_created_at_idx on renders(created_at desc);
-
--- One non-rejected row per (quote, variant, style); skips smoke-test renders
--- (quote_id NULL) and rejected/failed attempts so a bad try doesn't block a re-render.
-create unique index if not exists renders_quote_variant_style_uniq
-  on renders (quote_id, variant, style)
-  where quote_id is not null and status not in ('rejected', 'failed');
-
--- Portal lookup: "all approved variants for this quote."
-create index if not exists renders_quote_status_variant_idx
-  on renders (quote_id, status, variant)
-  where quote_id is not null;
-
-create or replace function renders_set_updated_at()
-returns trigger as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$ language plpgsql;
-
-drop trigger if exists renders_updated_at_trigger on renders;
-create trigger renders_updated_at_trigger
-  before update on renders
-  for each row execute function renders_set_updated_at();
-
--- Storage bucket for render artifacts (source/composite/mask/final PNGs).
-insert into storage.buckets (id, name, public)
-values ('renders', 'renders', false)
-on conflict (id) do nothing;
-
--- renders table RLS — hardened: anon may read only approved rows, insert new
--- rows, and update non-approved rows. The pending->ready lifecycle therefore
--- runs via the service-role client (storage.ts).
-alter table renders enable row level security;
-
-drop policy if exists "anon can read approved renders" on renders;
-drop policy if exists "anon full access renders" on renders;
-drop policy if exists "service role full access" on renders;
-drop policy if exists "anon read approved" on renders;
-drop policy if exists "anon insert" on renders;
-drop policy if exists "anon update unapproved" on renders;
-
-create policy "anon read approved" on renders
-  for select using (status = 'approved');
-create policy "anon insert" on renders
-  for insert with check (true);
-create policy "anon update unapproved" on renders
-  for update using (status <> 'approved') with check (true);
-
--- renders storage bucket RLS: insert/update/delete only. NO anon select —
--- artifacts are served via signed URLs (the signer uses a service-role token).
-drop policy if exists "anon insert renders bucket" on storage.objects;
-drop policy if exists "anon read renders bucket" on storage.objects;
-drop policy if exists "anon update renders bucket" on storage.objects;
-drop policy if exists "anon delete renders bucket" on storage.objects;
-
-create policy "anon insert renders bucket" on storage.objects
-  for insert with check (bucket_id = 'renders');
-create policy "anon update renders bucket" on storage.objects
-  for update using (bucket_id = 'renders') with check (bucket_id = 'renders');
-create policy "anon delete renders bucket" on storage.objects
-  for delete using (bucket_id = 'renders');
-
-
--- ---------------------------------------------------------------------
--- 6. designs  (design-tool integration, Path B — task #27 Phase 1)
+-- 5. designs  (design-tool integration, Path B — task #27 Phase 1)
 --    One editable on-photo light design. The `scene` jsonb is the design
 --    tool's Scene shape (yardsticks + items + brightness). A design is an
 --    INDEPENDENT record with its own id and an OPTIONAL link to a quote, so it
@@ -325,7 +216,7 @@ create trigger designs_updated_at_trigger
   for each row execute function designs_set_updated_at();
 
 -- Storage bucket for design artifacts (base house photo + custom-item images).
--- Private; reads go through service-role signed URLs (same pattern as renders).
+-- Private; reads go through service-role signed URLs.
 insert into storage.buckets (id, name, public)
 values ('designs', 'designs', false)
 on conflict (id) do nothing;

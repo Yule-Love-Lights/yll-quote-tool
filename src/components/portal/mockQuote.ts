@@ -4,8 +4,7 @@
 
 import type { PortalQuote } from './types';
 
-// Placeholder imagery — large suburban home via Unsplash. Real renders
-// will flow in from /api/renders/[quoteId]/latest once wired.
+// Placeholder imagery — large suburban home via Unsplash.
 const BEFORE_PHOTO =
   'https://images.unsplash.com/photo-1568605114967-8130f3a36994?auto=format&fit=crop&w=1600&q=80';
 const AFTER_PHOTO =
@@ -23,10 +22,6 @@ export const MOCK_QUOTE: PortalQuote = {
     after: AFTER_PHOTO,
     alt: 'The Smith residence at 45 Main Street, Huntington',
   },
-  // Mock has no per-package variant images — every card falls back to the
-  // 'after' hero. Real production data flows through fetchPortalPhotos
-  // and populates this map from the renders table.
-  variantPhotos: {},
   // The global walkthrough video every customer sees. Real production data
   // uses NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID (with optional per-quote
   // override). This mock mirrors that default so v2/v6 (which read

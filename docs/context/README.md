@@ -60,4 +60,4 @@ No memory-folder setup; the assistant reads them as normal files for that sessio
 
 ## What to read first
 
-Start with **`project_yll_render_engine.md`** — it captures the architecture decisions and hard-won gotchas (exact Gemini model ID, REST response parsing, RLS history) behind the render pipeline, which is the most subtle part of the codebase. Then `user_naldo.md` for owner context. The two `feedback_*` files are environment quirks worth knowing before you run the dev server.
+Start with **`project_quote_tool.md`** + the latest `session_log.md` entry — current state, confirmed decisions, what's next. Then `user_naldo.md` for owner context. The two `feedback_*` files are environment quirks worth knowing before you run the dev server. (`project_yll_render_engine.md` is purely historical — the render pipeline was removed in #36, S7.)

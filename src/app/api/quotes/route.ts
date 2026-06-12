@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 
 // Admin-only routes for listing + bulk-deleting persisted quote rows. Used
 // by /admin/quotes to clean up fake/test entries during development. Delete
-// operations require the same ADMIN_SECRET header the renders admin uses.
+// operations require the shared ADMIN_SECRET header (x-admin-secret).
 
 function checkAdminSecret(req: NextRequest): NextResponse | null {
   const expected = process.env.ADMIN_SECRET;

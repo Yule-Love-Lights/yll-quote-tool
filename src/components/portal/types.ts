@@ -76,24 +76,6 @@ export type PortalVideo = {
   leaderName?: string;   // "Naldo" — shown in the eyebrow label
 };
 
-// Per-package variant images shown on each portal package card. Keyed by
-// the same identifiers the render engine uses (RenderVariant). Each value
-// is a signed URL or undefined (when that variant hasn't been generated
-// or approved). Cards null-check and fall back to the 'full' photo.
-//
-// Why `string` keys here instead of importing RenderVariant: the portal
-// types deliberately don't import from the render engine — keeps the
-// portal frontend swappable without coupling. The adapter populates this
-// map and the cards consume it.
-export type PortalVariantPhotos = {
-  santas?: string;
-  ridge?: string;
-  minis?: string;
-  wreaths?: string;
-  spritzers?: string;
-  garland?: string;
-};
-
 // Frozen at the moment the customer clicks Approve. Lets the post-
 // approval confirmation page show "you booked Package C for $5,400,
 // $2,700 paid" without re-deriving from the package list (which the
@@ -164,12 +146,10 @@ export type PortalQuote = {
   };
   photo: {
     before: string;     // URL of daytime photo
-    after: string;      // URL of render (the 'full' variant)
+    after: string;      // URL of a lit "after" image ('' since #36 — the
+                        // hero renders the live design instead)
     alt: string;
   };
-  // Per-package preview images. Each card on the portal looks up its
-  // own variant here; missing keys fall back to `photo.after`.
-  variantPhotos: PortalVariantPhotos;
   video?: PortalVideo;  // optional — section hides entirely when absent
   packages: PortalPackage[];
   lineItems: PortalLineItem[];

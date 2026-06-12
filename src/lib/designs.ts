@@ -48,7 +48,7 @@ export type DesignWithPhoto = {
 };
 
 const BUCKET = 'designs';
-const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour, matches the renders pipeline.
+const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 export function isValidDesignId(id: unknown): id is string {

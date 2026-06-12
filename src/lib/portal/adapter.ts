@@ -277,7 +277,6 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       after: photos.afterUrl ?? '',
       alt: photos.alt ?? `Photo of ${row.customer_address ?? 'home'}`,
     },
-    variantPhotos: photos.variantUrls,
     video: buildVideo(row),
     packages,
     lineItems,

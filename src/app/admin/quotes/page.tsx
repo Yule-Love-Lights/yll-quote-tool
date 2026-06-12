@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 
-// Admin page for the `quotes` table. Mirrors /admin/renders pattern: list +
-// per-row delete + bulk delete all. Used to clean up fake/test customer rows
-// while we iterate on the quote form.
+// Admin page for the `quotes` table: list + per-row delete + bulk delete
+// all. Used to clean up fake/test customer rows while we iterate on the
+// quote form.
 
 function getAdminSecret(): string | null {
   if (typeof window === 'undefined') return null;
@@ -150,9 +150,6 @@ export default function QuotesAdminPage() {
           <div className="flex gap-2">
             <Link href="/" className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md">
               ← Home
-            </Link>
-            <Link href="/admin/renders" className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md">
-              Renders
             </Link>
             {items.length > 0 && (
               <button

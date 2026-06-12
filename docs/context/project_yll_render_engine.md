@@ -4,6 +4,8 @@ description: Rendering engine for the Ai Quote Tool — generates premium photor
 type: project
 originSessionId: 9a796ca6-9b85-4647-b1fd-90436e9d1ffd
 ---
+> **⚰️ HISTORICAL (2026-06-12): this entire pipeline was REMOVED in task #36** — code (`src/lib/rendering/*`, routes, admin pages), the `renders` table + bucket, and the Gemini/Replicate env vars are all gone. The portal visual is the live Konva design (#27/#35). Keep this doc only as the record of what was built and why; do NOT use it to guide new work.
+
 **Project:** Premium render engine that takes a daytime house photo + Claude Vision detections (polylines, bounding boxes) and outputs a photoreal nighttime "this is what your install will look like" image for the proposal page.
 
 **Why:** The render IS the sales close at this price point (multi-million-dollar LI homes, $1,500+ quotes). Holiday Home Concepts (competitor, Konva-based) ships fake-looking bulbs and illustrated skies; YLL's render needs to feel photographed, not clipart.

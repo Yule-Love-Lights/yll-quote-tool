@@ -13,7 +13,7 @@
 **Reference:**
 - [User — Jason](user_jason.md) — current dev (took over from Naldo); Windows/PowerShell, PR-not-master, GitHub `100levelz`.
 - [User — Naldo](user_naldo.md) — owner; runs Yule Love Lights + Chick-fil-A; builds solo; not a working developer.
-- [Render engine project](project_yll_render_engine.md) — locked render-pipeline decisions + the exact Gemini model-ID / REST-parsing gotchas. Most detailed legacy note.
+- [Render engine project](project_yll_render_engine.md) — ⚰️ HISTORICAL: the Gemini render pipeline was fully REMOVED in #36 (S7, 2026-06-12). Keep only as the record of what was built.
 - [Where to get secrets](project_secrets_access.md) — Vercel env vars are "Sensitive"/unreadable; pull values from the source accounts.
 - [Empty ANTHROPIC_API_KEY gotcha](feedback_claude_code_env_override.md) — the Claude-Code shell sets it to `""`, overriding `.env.local`; unset before `npm run dev`.
 - [Memory/log update cadence](feedback_memory_log_cadence.md) — pause to refresh memory + logs around task completion / before committing.
