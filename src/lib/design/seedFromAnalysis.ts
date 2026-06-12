@@ -73,7 +73,7 @@ export type AnalysisSeed = {
 
 const SEED_PREFIX = 'seed-';
 
-// The seeded scale yardstick (5 ft — Jason's pick, S8). Its WIDTH is the
+// The seeded scale yardstick (5 ft — Jason's pick, S6). Its WIDTH is the
 // measuring dimension (pxPerFoot = width / realFeet — see
 // editor-core/yardstick.ts); height is cosmetic.
 const YARDSTICK_REAL_FEET = 5;
