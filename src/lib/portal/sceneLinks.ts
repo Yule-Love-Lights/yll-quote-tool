@@ -29,6 +29,7 @@ const KIND_TO_CATEGORY: Partial<Record<PortalLineItemKind, ProjectedCategory>> =
   tree: 'mini',
   bush: 'mini',
   column: 'mini',
+  railing: 'mini',
   spritzer: 'spritzer',
   wreath: 'wreath',
   garland: 'garland',

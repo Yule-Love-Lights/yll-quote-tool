@@ -180,8 +180,11 @@ export default function QuotesAdminPage() {
           </div>
         )}
 
+        {/* overflow-x-auto (NOT hidden): the actions column outgrew the
+            viewport — Edit/Portal/Video/Send/Delete — and overflow-hidden was
+            CLIPPING Delete off-screen with no way to reach it (#30). */}
         {items.length > 0 && (
-          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase text-gray-500">
                 <tr>
