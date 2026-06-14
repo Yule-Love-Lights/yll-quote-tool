@@ -8,6 +8,13 @@ type Props = {
   onClose?: () => void;
   /** Embedded (collapsed) editor height in px. Full screen ignores this. */
   height?: number;
+  /**
+   * Handed a flush() that synchronously persists a pending debounced scene save
+   * (#8 Stage A) — the parent awaits it before training capture / pricing so
+   * neither reads a stale scene. Called with null on unmount. Re-fires on each
+   * (re)mount since the editor remounts on re-seed.
+   */
+  onReady?: (flush: (() => Promise<void>) | null) => void;
 };
 
 const BAR_HEIGHT = 40; // px — the React control bar above the editor.
@@ -24,12 +31,18 @@ const BAR_HEIGHT = 40; // px — the React control bar above the editor.
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600 }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
+  // Keep the latest onReady in a ref so the mount effect doesn't depend on it
+  // (a new callback identity each render would needlessly remount the editor).
+  const onReadyRef = useRef(onReady);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
-    let destroy: (() => void) | null = null;
+    let handle: import('./editor-core/editor').EditorHandle | null = null;
     let cancelled = false;
 
     void (async () => {
@@ -40,16 +53,19 @@ export default function DesignEditor({ designId, onClose, height = 600 }: Props)
       // showQuoteBinding: true → the quote embed shows the per-item "Quote
       // binding" panels (surface/included + billed quote spec). The design
       // tool's standalone/dashboard embeds leave it off (#27 A1).
-      destroy = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true });
+      handle = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true });
       if (cancelled) {
-        destroy?.();
-        destroy = null;
+        handle?.();
+        handle = null;
+        return;
       }
+      onReadyRef.current?.(handle.flushSave ? () => handle!.flushSave!() : null);
     })();
 
     return () => {
       cancelled = true;
-      destroy?.();
+      onReadyRef.current?.(null);
+      handle?.();
     };
   }, [designId]);
 
