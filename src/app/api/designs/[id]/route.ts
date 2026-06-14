@@ -1,8 +1,10 @@
 // Per-design endpoints (design-tool integration, Path B — task #27).
 //
 //   GET /api/designs/[id] — load a design (scene + signed base-photo URL).
-//   PUT /api/designs/[id] — update the scene (autosave) and/or link the design
-//                            to a quote ({ scene?, quoteId? }).
+//   PUT /api/designs/[id] — update the scene (autosave), link the design to a
+//                            quote, and/or store the staff's final satellite
+//                            measurement lines ({ scene?, quoteId?,
+//                            satelliteLines? } — #8 Stage A).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -10,8 +12,10 @@ import {
   getDesignWithPhoto,
   updateDesignScene,
   linkDesignToQuote,
+  updateDesignSatelliteLines,
   isValidDesignId,
   type DesignScene,
+  type DesignSatelliteLines,
 } from '@/lib/designs';
 
 export const runtime = 'nodejs';
@@ -30,6 +34,12 @@ function isSceneShape(v: unknown): v is DesignScene {
     Array.isArray((v as Record<string, unknown>).items) &&
     Array.isArray((v as Record<string, unknown>).yardsticks)
   );
+}
+
+function isSatelliteLinesShape(v: unknown): v is DesignSatelliteLines {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  return Array.isArray(o.santas) && Array.isArray(o.gingerbread) && Array.isArray(o.c9);
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -66,15 +76,24 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { scene, quoteId } = body;
-  if (scene === undefined && quoteId === undefined) {
-    return NextResponse.json({ error: 'Nothing to update (provide scene and/or quoteId)' }, { status: 400 });
+  const { scene, quoteId, satelliteLines } = body;
+  if (scene === undefined && quoteId === undefined && satelliteLines === undefined) {
+    return NextResponse.json(
+      { error: 'Nothing to update (provide scene, quoteId, and/or satelliteLines)' },
+      { status: 400 },
+    );
   }
   if (scene !== undefined && !isSceneShape(scene)) {
     return NextResponse.json({ error: 'scene must be an object with items[] and yardsticks[]' }, { status: 400 });
   }
   if (quoteId !== undefined && !isValidDesignId(quoteId)) {
     return NextResponse.json({ error: 'Invalid quoteId' }, { status: 400 });
+  }
+  if (satelliteLines !== undefined && !isSatelliteLinesShape(satelliteLines)) {
+    return NextResponse.json(
+      { error: 'satelliteLines must be an object with santas[]/gingerbread[]/c9[] line arrays' },
+      { status: 400 },
+    );
   }
 
   try {
@@ -90,6 +109,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
           { status: 409 },
         );
       }
+    }
+    if (satelliteLines !== undefined) {
+      const ok = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
+      if (!ok) return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
