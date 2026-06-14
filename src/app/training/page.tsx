@@ -52,6 +52,12 @@ export default function TrainingListPage() {
           </div>
           <div className="flex gap-2">
             <Link
+              href="/training/examples"
+              className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
+            >
+              Training Examples
+            </Link>
+            <Link
               href="/training/corrections"
               className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
             >

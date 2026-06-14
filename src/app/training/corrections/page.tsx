@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { CorrectionListItem, StoredCorrection } from '@/lib/corrections';
+import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
 
 // Review page for saved quote corrections. Shows the measurements Claude
 // learned from and lets you delete a bad one before it biases future quotes.
@@ -87,6 +88,12 @@ export default function CorrectionsListPage() {
             >
               ← Training Houses
             </Link>
+            <Link
+              href="/training/examples"
+              className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
+            >
+              Training Examples
+            </Link>
           </div>
         </div>
 
@@ -151,12 +158,30 @@ export default function CorrectionsListPage() {
                     {detail && detail.id === c.id && (
                       <div className="grid md:grid-cols-2 gap-4">
                         <div>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
+                          {/* The saved red/blue lines + detection boxes drawn ON
+                              the photo (#8 Stage A — was a text list only). */}
+                          <AnnotatedPhoto
                             src={`data:${detail.photo_media_type};base64,${detail.photo_base64}`}
-                            alt="Corrected photo"
-                            className="w-full rounded border border-gray-300"
+                            alt="Corrected photo with saved lines"
+                            lineGroups={[
+                              { color: '#ef4444', segments: detail.corrected_santas_lines ?? [] },
+                              { color: '#3b82f6', segments: detail.corrected_gingerbread_lines ?? [] },
+                              { color: '#f59e0b', segments: detail.corrected_c9_lines ?? [] },
+                            ]}
+                            boxes={[
+                              ...(detail.corrected_mini_light_detections ?? []).map(d => ({ color: '#22c55e', box: d.box })),
+                              ...(detail.corrected_wreath_detections ?? []).map(d => ({ color: '#a855f7', box: d.box })),
+                              ...(detail.corrected_spritzer_detections ?? []).map(d => ({ color: '#a855f7', box: d.box })),
+                              ...(detail.corrected_garland_detections ?? []).map(d => ({ color: '#a855f7', box: d.box })),
+                            ]}
                           />
+                          <p className="mt-1 text-[10px] text-gray-400">
+                            <span style={{ color: '#ef4444' }}>■</span> front ·{' '}
+                            <span style={{ color: '#3b82f6' }}>■</span> ridge+sides ·{' '}
+                            <span style={{ color: '#f59e0b' }}>■</span> C9 ·{' '}
+                            <span style={{ color: '#22c55e' }}>■</span> minis ·{' '}
+                            <span style={{ color: '#a855f7' }}>■</span> wreath/spritzer/garland
+                          </p>
                         </div>
                         <div className="text-xs space-y-2">
                           <Section label="Santa's Roofline (front gutter)">
