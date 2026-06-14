@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { analyzePhoto, correctionToExample, FewShotExample } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
 import { getRecentCorrections } from '@/lib/corrections';
+import { getRecentTrainingExamples, exampleToFewShot } from '@/lib/trainingExamples';
 import { getTrainingFewShot } from '@/lib/training';
 import { getReferenceAssetsForAnalysis } from '@/lib/referenceAssets';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -77,11 +78,21 @@ export async function POST(req: NextRequest) {
     const satelliteFeetPerPixel = metersPerPixel * 3.28084;
 
     // 4. Analyze with Claude using BOTH images as cross-reference
-    const [corrections, trainingHouses, references] = await Promise.all([
+    const [sceneExamples, corrections, trainingHouses, references] = await Promise.all([
+      getRecentTrainingExamples(2),
       getRecentCorrections(2),
       getTrainingFewShot(2, houseStyleHint),
       getReferenceAssetsForAnalysis(2),
     ]);
+    // Scene-based examples (#8 Stage A) take the correction slots first;
+    // legacy photo_corrections only fill what's left (they sunset at the
+    // planned data wipe).
+    const designFewShots = sceneExamples
+      .map(exampleToFewShot)
+      .filter((e): e is NonNullable<typeof e> => e != null);
+    const correctionFill = corrections
+      .slice(0, Math.max(0, 2 - designFewShots.length))
+      .map(correctionToExample);
     const examples: FewShotExample[] = [
       ...trainingHouses
         .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
@@ -114,7 +125,8 @@ export async function POST(req: NextRequest) {
             source: 'training' as const,
           };
         }),
-      ...corrections.map(correctionToExample),
+      ...designFewShots,
+      ...correctionFill,
     ];
     const result = await analyzePhoto(
       streetView.base64,
@@ -144,7 +156,8 @@ export async function POST(req: NextRequest) {
       fewShotCount: examples.length,
       fewShotBreakdown: {
         training: trainingHouses.length,
-        corrections: corrections.length,
+        examples: designFewShots.length,
+        corrections: correctionFill.length,
         references: references.length,
       },
     });

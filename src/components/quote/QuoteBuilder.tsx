@@ -156,6 +156,64 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // waiting for the design to exist before it can seed (#35 Phase 2 — the
   // bridge auto-design; the roofline half keeps #33's picture-toggle alive).
   const pendingSeedRef = useRef<AnalysisSeed | null>(null);
+  // Analysis PROVENANCE for the design (#8 Stage A): the raw AI result +
+  // the satellite image/scale, persisted server-side so training capture
+  // can assemble "what the AI originally said" from a reopened quote.
+  // Parked here when the design doesn't exist yet (same dance as the seed).
+  type AnalysisContext = {
+    analysis?: Record<string, unknown>;
+    satelliteBase64?: string;
+    satelliteMediaType?: string;
+    satelliteFeetPerPixel?: number | null;
+  };
+  const pendingContextRef = useRef<AnalysisContext | null>(null);
+  // designId mirrored in a ref so async callbacks (e.g. the FileReader in the
+  // manual satellite upload) read the CURRENT id at fire time, not the stale
+  // one captured in their closure when a design was created mid-flight.
+  const designIdRef = useRef<string | null>(initialQuote?.designId ?? null);
+  const pushAnalysisContext = async (id: string, ctx: AnalysisContext) => {
+    if (!ctx.analysis && !ctx.satelliteBase64) return;
+    try {
+      await fetch(`/api/designs/${id}/analysis-context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ctx),
+      });
+    } catch {
+      // Non-fatal: quoting works without provenance; only training capture
+      // loses the "original analysis" half for this design.
+    }
+  };
+  // "Save as training example" feedback (#8 Stage A) — covers both the
+  // manual button and the silent auto-capture at Send.
+  const [trainStatus, setTrainStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [trainError, setTrainError] = useState<string | null>(null);
+  // The editor's flushSave (#8 Stage A M6), re-registered on each (re)mount.
+  // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
+  // hasn't persisted yet.
+  const editorFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const captureExample = async (source: 'auto-send' | 'manual') => {
+    if (!savedQuoteId) return;
+    setTrainStatus('saving');
+    setTrainError(null);
+    try {
+      // Persist any pending design edit BEFORE the server reads designs.scene.
+      if (editorFlushRef.current) {
+        try { await editorFlushRef.current(); } catch { /* capture proceeds with last-saved scene */ }
+      }
+      const res = await fetch('/api/training-examples', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
+      setTrainStatus('saved');
+    } catch (err) {
+      setTrainStatus('error');
+      setTrainError(err instanceof Error ? err.message : 'Capture failed');
+    }
+  };
 
   // Push an analysis payload into the design as scene items (tagged roofline
   // strands + minis/wreaths/spritzers/garland at the detected spots). Server
@@ -202,9 +260,21 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           if (!res.ok) throw new Error(data.error ?? 'Failed to create design');
           const id: string | undefined = data?.design?.id;
           if (!id) throw new Error('No design id returned');
-          pendingSeedRef.current = null;
-          designPhotoRef.current = photoBase64;
-          if (!stale) setDesignId(id);
+          // If this run was superseded (photo changed again before create
+          // finished), DON'T consume the parked seed/context or adopt this
+          // design — leave the payloads intact so the replacement run seeds
+          // its own design. The orphaned design row is harmless (no delete
+          // API; same as lingering test designs).
+          if (!stale) {
+            pendingSeedRef.current = null;
+            designPhotoRef.current = photoBase64;
+            if (pendingContextRef.current) {
+              const ctx = pendingContextRef.current;
+              pendingContextRef.current = null;
+              void pushAnalysisContext(id, ctx);
+            }
+            setDesignId(id);
+          }
         } else {
           const res = await fetch(`/api/designs/${designId}/photo`, {
             method: 'POST',
@@ -213,11 +283,18 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error ?? 'Failed to update the design photo');
+          // Superseded run: leave the parked seed/context for the replacement.
+          if (stale) return;
           designPhotoRef.current = photoBase64;
           if (pendingSeedRef.current) {
             const seed = pendingSeedRef.current;
             pendingSeedRef.current = null;
             await seedDesignFromAnalysis(designId, seed);
+          }
+          if (pendingContextRef.current) {
+            const ctx = pendingContextRef.current;
+            pendingContextRef.current = null;
+            void pushAnalysisContext(designId, ctx);
           }
           if (!stale) setDesignEditorKey((k) => k + 1);
         }
@@ -233,6 +310,11 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoBase64, photoMediaType, designId]);
+
+  // Keep the designId ref in lockstep with state for async closures (L6).
+  useEffect(() => {
+    designIdRef.current = designId;
+  }, [designId]);
 
   // Link the design to the quote once the quote has been saved (best-effort).
   useEffect(() => {
@@ -423,6 +505,52 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
     setGeoLng(null);
+    // A parked analysis context belongs to the PREVIOUS house — drop it.
+    pendingContextRef.current = null;
+  };
+
+  // Manual satellite upload (#9): a second photo slot so manually-photographed
+  // houses also carry a satellite into the design + training capture. No known
+  // scale (unlike the Google pull) — staff trace the layout for training value
+  // and type the footage manually; the existing img onLoad sets the aspect.
+  const handleSatelliteSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    // Replacing an auto-measured Google satellite (known scale) discards its
+    // measurement — confirm before clobbering it. Manual-over-manual is silent.
+    if (satellitePreview != null && satelliteFeetPerPixel != null) {
+      const ok = window.confirm(
+        'Replace the Google satellite (with its measured scale) with this uploaded image? The traced roofline + footage will reset.',
+      );
+      if (!ok) { input.value = ''; return; }
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+      input.value = ''; // allow re-picking the same file
+      if (!dataUrl) return;
+      const comma = dataUrl.indexOf(',');
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      const mediaType = file.type.startsWith('image/') ? file.type : 'image/jpeg';
+      setSatellitePreview(dataUrl);
+      setSatelliteSantasLines([]);
+      setSatelliteGingerbreadLines([]);
+      setSatelliteC9Lines([]);
+      setSatelliteFeetPerPixel(null); // manual = no known scale
+      const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
+      // Read the CURRENT design id (L6) — a design may have been created while
+      // this FileReader was decoding. uploadDesignSatellite also clears the
+      // design's stale satellite_lines so a captured example can't overlay old
+      // Google lines on the new image (M4).
+      const id = designIdRef.current;
+      if (id) {
+        void pushAnalysisContext(id, satCtx);
+      } else {
+        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // Re-fetch Street View at a new heading/pitch/fov — lets the user rotate
@@ -567,10 +695,28 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       // 5 ft scale yardstick (items render at sane sizes from the start).
       calibration: { santasFootage: r.santasFootage, gingerbreadFootage: r.gingerbreadFootage },
     };
+    // Provenance for training capture (#8 Stage A): the RAW analysis + the
+    // satellite image/scale, persisted onto the design (parked until it exists).
+    const ctx: AnalysisContext = {
+      analysis: r as unknown as Record<string, unknown>,
+      ...(data.satelliteBase64
+        ? {
+            satelliteBase64: data.satelliteBase64,
+            satelliteMediaType: data.satelliteMediaType ?? 'image/jpeg',
+            satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
+          }
+        : {}),
+    };
     if (designId && data.photoBase64 && designPhotoRef.current === data.photoBase64) {
       void seedDesignFromAnalysis(designId, seed);
+      void pushAnalysisContext(designId, ctx);
     } else {
       pendingSeedRef.current = seed;
+      // MERGE, don't overwrite (H1): a manual satellite parked by
+      // handleSatelliteSelect before Analyze must survive. analyze-photo
+      // carries no satellite of its own, so ctx has only the analysis half;
+      // spreading it last lets a Google satellite (analyze-address) still win.
+      pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...ctx };
     }
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
@@ -632,8 +778,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      setSatellitePreview(null);
-      setGoogleAddress(null);
+      // Do NOT clear the satellite here (H1): handlePhotoSelect already wiped
+      // any prior Google satellite when this street photo was chosen, so the
+      // only satellite that can be present now is a manual one the operator
+      // uploaded for THIS house — clearing it would silently drop the #9 data.
       applyAnalysisResult(data);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
@@ -757,6 +905,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Send failed (${res.status})`);
       setSendStatus('sent');
+      // Auto-capture (#8 Stage A): sending = staff vouching the design is
+      // right, so the staff-final state becomes a training example (replaces
+      // this quote's previous auto snapshot on a re-send). Best-effort.
+      void captureExample('auto-send');
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Send failed');
@@ -775,6 +927,8 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setSendStatus('idle');
     setSendError(null);
     setCopiedUrl(false);
+    setTrainStatus('idle');
+    setTrainError(null);
 
     // Once a quote exists (edit mode, or any Calculate after the first on a
     // new quote), recalculating UPDATES that row in place — no more duplicate
@@ -783,6 +937,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     const inputs = buildQuoteInputs(form, rooflineChoiceOverride);
 
     try {
+      // Flush a pending design edit first (#8 M6): /api/quote projects the
+      // design's scene server-side, so an un-persisted edit would price a
+      // stale design. No-op when nothing's pending.
+      if (designId && editorFlushRef.current) {
+        try { await editorFlushRef.current(); } catch { /* price with last-saved scene */ }
+      }
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -801,6 +961,28 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       setResult(data.result);
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       setSavedQuoteId(newQuoteId);
+      // Persist the staff-confirmed satellite measurement lines onto the
+      // design (#8 Stage A) — Calculate is the "measurement finalized"
+      // moment. Only when a satellite session is actually active: a reopened
+      // quote with no satellite state must NOT clobber stored lines.
+      const satelliteActive =
+        satellitePreview != null &&
+        (satelliteSantasLines.length > 0 || satelliteGingerbreadLines.length > 0 || satelliteC9Lines.length > 0);
+      if (designId && satelliteActive) {
+        void fetch(`/api/designs/${designId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            satelliteLines: {
+              santas: satelliteSantasLines,
+              gingerbread: satelliteGingerbreadLines,
+              c9: satelliteC9Lines,
+              ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
+              ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
+            },
+          }),
+        }).catch(() => {});
+      }
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
       // Attach to HL opportunity in parallel, if an HL contact was picked
       // (skipped when this quote+contact pair is already attached).
@@ -976,6 +1158,27 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   </button>
                 </div>
               )}
+              {/* Manual satellite slot (#9): so a hand-photographed house also
+                  carries a top-down view into the design + training capture.
+                  No auto-scale (that comes from the Google pull only) — staff
+                  type the footage and trace lines for training value. */}
+              <div className="pt-1">
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Satellite photo (optional) — screenshot from Google Maps top-down
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleSatelliteSelect}
+                  className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {satellitePreview != null && satelliteFeetPerPixel == null && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Manual satellite has no known scale — trace the roofline on the Satellite tab for
+                    reference, then type the footage into the fields below.
+                  </p>
+                )}
+              </div>
               {satellitePreview && (
                 <p className="text-xs text-gray-500 italic">
                   Roof measurements come from the Satellite tab below (or type them manually).
@@ -1116,7 +1319,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 {designError && <p className="text-sm text-red-600 mb-2">{designError}</p>}
                 {designId ? (
                   <>
-                    <DesignEditor key={designEditorKey} designId={designId} height={640} />
+                    <DesignEditor
+                      key={designEditorKey}
+                      designId={designId}
+                      height={640}
+                      onReady={(flush) => { editorFlushRef.current = flush; }}
+                    />
                     <p className="text-xs text-gray-400 mt-2">
                       Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
                       quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
@@ -1788,6 +1996,28 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
               </p>
             )}
+
+            {/* ── Training capture (#8 Stage A) ── */}
+            <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-500 flex-1">
+                Sending auto-saves this house as an AI training example. You can also save one now
+                without sending (e.g. to teach an unusual house mid-flow).
+                {trainStatus === 'saved' && (
+                  <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
+                )}
+                {trainStatus === 'error' && (
+                  <span className="ml-1 text-amber-700">Training capture failed: {trainError}</span>
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => void captureExample('manual')}
+                disabled={trainStatus === 'saving' || !savedQuoteId}
+                className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+              >
+                {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
+              </button>
+            </div>
           </div>
         )}
 

@@ -25,6 +25,18 @@ export type DesignScene = Scene;
 
 export const EMPTY_SCENE: DesignScene = { yardsticks: [], items: [] };
 
+// The staff-confirmed satellite measurement state (#8 Stage A). Lines are
+// normalized 0–1 polylines in satellite-image space (the builder's shape);
+// footages are the derived feet at push time so training capture doesn't
+// have to re-run the scale math.
+export type DesignSatelliteLines = {
+  santas: { points: [number, number][]; label: string }[];
+  gingerbread: { points: [number, number][]; label: string }[];
+  c9: { points: [number, number][]; label: string }[];
+  santasFootage?: number;
+  gingerbreadFootage?: number;
+};
+
 export type DesignRow = {
   id: string;
   quote_id: string | null;
@@ -34,6 +46,14 @@ export type DesignRow = {
   scene: DesignScene;
   created_at: string;
   updated_at: string;
+  // Analysis provenance + satellite context (#8 Stage A). Nullable — designs
+  // made before the migration / without an AI run simply have nulls.
+  seed_analysis?: Record<string, unknown> | null;
+  satellite_path?: string | null;
+  satellite_w?: number | null;
+  satellite_h?: number | null;
+  satellite_feet_per_pixel?: number | null;
+  satellite_lines?: DesignSatelliteLines | null;
 };
 
 // What the GET route hands the editor: the row plus a freshly-signed,
@@ -204,6 +224,136 @@ export async function linkDesignToQuote(id: string, quoteId: string): Promise<bo
   return true;
 }
 
+// Normalize an image buffer to a storage-safe type. Supabase + the analyzer
+// only deal in jpeg/png/webp; anything else (gif, heic, bmp, …) is transcoded
+// to JPEG so the stored bytes, the file extension, and the media-type we later
+// hand Claude all AGREE. Returns the (possibly re-encoded) buffer + the
+// canonical contentType + matching extension.
+async function normalizeImage(
+  buf: Buffer,
+  contentType: string,
+): Promise<{ buf: Buffer; contentType: string; ext: string }> {
+  if (contentType === 'image/png') return { buf, contentType, ext: 'png' };
+  if (contentType === 'image/webp') return { buf, contentType, ext: 'webp' };
+  if (contentType === 'image/jpeg') return { buf, contentType, ext: 'jpg' };
+  // Unsupported declared type — re-encode to JPEG so bytes match the label.
+  const jpeg = await sharp(buf).jpeg().toBuffer();
+  return { buf: jpeg, contentType: 'image/jpeg', ext: 'jpg' };
+}
+
+// ─── Analysis provenance (#8 Stage A) ──────────────────────────────────────
+// The builder persists, per design: the AI's raw analysis, the satellite
+// image (+ scale) it measured against, and the staff's final satellite
+// polylines. Training-example capture assembles entirely from these — so a
+// reopened quote can be captured without any client-side state.
+
+// Store the raw PhotoAnalysisResult from the latest analyze. Opaque jsonb —
+// the analyzer owns its shape.
+export async function setDesignAnalysis(
+  id: string,
+  analysis: Record<string, unknown>,
+): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+  const { error } = await sb.from('designs').update({ seed_analysis: analysis }).eq('id', id);
+  if (error) {
+    console.error('Supabase setDesignAnalysis error:', error);
+    return false;
+  }
+  return true;
+}
+
+// Store the satellite image in the private bucket alongside the base photo,
+// plus its dimensions and the deterministic feet-per-pixel scale (null for a
+// manual upload — no known scale, layout-only training value).
+export async function uploadDesignSatellite(
+  id: string,
+  base64: string,
+  contentType: string,
+  feetPerPixel: number | null,
+): Promise<{ path: string; width: number; height: number }> {
+  const sb = getSb();
+  if (!sb) throw new Error('Supabase service role not configured');
+
+  const comma = base64.indexOf(',');
+  const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
+  const rawBuf = Buffer.from(raw, 'base64');
+  const { buf, contentType: storedType, ext } = await normalizeImage(rawBuf, contentType);
+
+  const meta = await sharp(buf).metadata();
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+
+  const path = `${id}/satellite.${ext}`;
+  const { error: upErr } = await sb.storage.from(BUCKET).upload(path, buf, {
+    contentType: storedType,
+    upsert: true,
+  });
+  if (upErr) throw new Error(`uploadDesignSatellite: ${upErr.message}`);
+
+  const { error: rowErr } = await sb
+    .from('designs')
+    .update({
+      satellite_path: path,
+      satellite_w: width,
+      satellite_h: height,
+      satellite_feet_per_pixel: feetPerPixel,
+      // A new satellite image invalidates any previously-traced lines — clear
+      // them so a captured training example can't overlay stale lines on the
+      // new image (M4). Fresh lines arrive later via updateDesignSatelliteLines.
+      satellite_lines: null,
+    })
+    .eq('id', id);
+  if (rowErr) throw new Error(`uploadDesignSatellite (row): ${rowErr.message}`);
+
+  return { path, width, height };
+}
+
+// Store the staff's current satellite measurement polylines (pushed by the
+// builder at Calculate — the natural "measurement finalized" moment).
+export async function updateDesignSatelliteLines(
+  id: string,
+  lines: DesignSatelliteLines,
+): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+  const { error } = await sb.from('designs').update({ satellite_lines: lines }).eq('id', id);
+  if (error) {
+    console.error('Supabase updateDesignSatelliteLines error:', error);
+    return false;
+  }
+  return true;
+}
+
+// Download a private-bucket object back to base64 (training capture snapshots
+// the design's photos INTO the example row so it survives design deletion).
+export async function downloadDesignImageBase64(
+  path: string | null,
+): Promise<{ base64: string; mediaType: string } | null> {
+  if (!path) return null;
+  const sb = getSb();
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.storage.from(BUCKET).download(path);
+    if (error || !data) return null;
+    const buf = Buffer.from(await data.arrayBuffer());
+    // Prefer the true stored content type (the Blob's own type); fall back to
+    // the extension only if the storage layer didn't report one.
+    const blobType = (data.type || '').toLowerCase();
+    let mediaType =
+      blobType === 'image/png' || blobType === 'image/webp' || blobType === 'image/jpeg'
+        ? blobType
+        : '';
+    if (!mediaType) {
+      const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+      mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    }
+    return { base64: buf.toString('base64'), mediaType };
+  } catch {
+    return null;
+  }
+}
+
 // Decode a base64 image, store it in the private bucket, measure it with sharp,
 // and record the path + dimensions on the row. Returns the stored metadata.
 export async function uploadDesignPhoto(
@@ -217,16 +367,16 @@ export async function uploadDesignPhoto(
   // Accept both raw base64 and a full `data:` URI.
   const comma = base64.indexOf(',');
   const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
-  const buf = Buffer.from(raw, 'base64');
+  const rawBuf = Buffer.from(raw, 'base64');
+  const { buf, contentType: storedType, ext } = await normalizeImage(rawBuf, contentType);
 
   const meta = await sharp(buf).metadata();
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
 
-  const ext = contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg';
   const path = `${id}/photo.${ext}`;
   const { error: upErr } = await sb.storage.from(BUCKET).upload(path, buf, {
-    contentType,
+    contentType: storedType,
     upsert: true,
   });
   if (upErr) throw new Error(`uploadDesignPhoto: ${upErr.message}`);
