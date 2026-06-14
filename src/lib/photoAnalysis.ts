@@ -331,7 +331,10 @@ type FewShotExample = {
   garlandDetections?: GarlandDetection[];
   houseStyle?: string;
   aiFailureNotes?: string | null;
-  source: 'correction' | 'training';
+  // 'training' = confirmed install (training_houses); 'correction' = legacy
+  // human-corrected photo (photo_corrections); 'design' = a scene-based
+  // training example captured from a staff-finalized design (#8 Stage A).
+  source: 'correction' | 'training' | 'design';
 };
 
 function correctionToExample(c: StoredCorrection): FewShotExample {
@@ -363,11 +366,18 @@ function buildFewShotMessages(examples: FewShotExample[]) {
     const userContent: Block[] = [];
     const label = ex.source === 'training'
       ? `Completed installation${ex.houseStyle ? ` (${ex.houseStyle})` : ''} — confirmed measurements from takedown.`
-      : 'Human-corrected measurement.';
+      : ex.source === 'design'
+        ? 'Staff-confirmed design from a sent quote — ground-truth layout, measurements, and item placement.'
+        : 'Human-corrected measurement.';
 
+    const photosNote = ex.photos.length > 1
+      ? ex.source === 'design'
+        ? 'Street photo first, then the top-down satellite it was measured against.'
+        : `${ex.photos.length} photos provided — front install first, then alternate angles/details.`
+      : '';
     userContent.push({
       type: 'text',
-      text: `${label} ${ex.photos.length > 1 ? `${ex.photos.length} photos provided — front install first, then alternate angles/details.` : ''}`,
+      text: `${label} ${photosNote}`,
     });
     for (const p of ex.photos) {
       const mt = p.mediaType as ImageMediaType;
@@ -497,11 +507,18 @@ export async function analyzePhoto(
   const fewShotMessages = buildFewShotMessages(fewShotExamples);
   const trainingCount = fewShotExamples.filter(e => e.source === 'training').length;
   const correctionCount = fewShotExamples.filter(e => e.source === 'correction').length;
+  const designCount = fewShotExamples.filter(e => e.source === 'design').length;
   const refsNote = references.length > 0
     ? `\n\nYou have ${references.length} product reference image(s) loaded in the conversation so you can more accurately recognize specific wreath sizes, spritzer shapes, and garland styles.`
     : '';
-  const corrNote = fewShotExamples.length > 0
-    ? `\n\nYou have ${trainingCount} completed-job reference(s) and ${correctionCount} human-corrected example(s) shown in the conversation history below. Completed-job references are CONFIRMED measurements from takedown — highest trust. Match their precision and coordinate style.`
+  // Enumerate every example source so the count is never wrong (a missing
+  // source made the note claim "0 examples" when only design examples loaded).
+  const exampleParts: string[] = [];
+  if (trainingCount) exampleParts.push(`${trainingCount} completed-job reference(s)`);
+  if (designCount) exampleParts.push(`${designCount} staff-confirmed design example(s) from sent quotes`);
+  if (correctionCount) exampleParts.push(`${correctionCount} human-corrected example(s)`);
+  const corrNote = exampleParts.length > 0
+    ? `\n\nYou have ${exampleParts.join(', ')} shown in the conversation history below. Completed-job references and staff-confirmed designs are GROUND TRUTH from real installs — highest trust. Match their precision and coordinate style.`
     : '';
   const satelliteNote = satellite
     ? `\n\nTWO IMAGES WILL BE PROVIDED: (1) street view — front elevation. Use for the STREET-VIEW polylines (santasLines, gingerbreadLines) in streetview coordinates, bushes/trees/columns, wreaths, spritzers. (2) satellite/top-down of the same property. Use for the SATELLITE polylines (satelliteSantasLines, satelliteGingerbreadLines) in satellite image coordinates. Each polyline set lives in its OWN image's coordinate space — do not mix.${
