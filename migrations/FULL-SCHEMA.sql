@@ -14,16 +14,20 @@
 --   3. training_houses   — confirmed real-install measurements (RLS disabled)
 --   4. reference_assets  — product close-ups for Claude few-shot (RLS disabled)
 --   5. designs           — one editable on-photo light design (RLS disabled)
+--   6. training_examples — scene-based AI training snapshots (RLS disabled)
 -- Storage:
 --   designs bucket (private; served via service-role signed URLs)
 --
--- Last refreshed: 2026-06-12 — REMOVED the renders table + bucket (Gemini
---   render pipeline teardown, task #36; see 2026-06-12-drop-renders.sql for
---   tearing down an existing deployment). Prior refresh 2026-06-05 added the
---   designs table + bucket (design-tool integration, task #27 Phase 1);
---   2026-05-29 folded in db/schema.sql (base tables) plus the post-Apr quotes
---   columns (integration/lifecycle/walkthrough video) and the
---   reference_assets table, so this file alone is a complete rebuild.
+-- Last refreshed: 2026-06-12 (second pass) — added the training_examples
+--   table + the designs analysis-provenance/satellite columns (#8 Stage A;
+--   see 2026-06-12-training-examples.sql). Earlier same day: REMOVED the
+--   renders table + bucket (Gemini render pipeline teardown, task #36; see
+--   2026-06-12-drop-renders.sql for tearing down an existing deployment).
+--   Prior refresh 2026-06-05 added the designs table + bucket (design-tool
+--   integration, task #27 Phase 1); 2026-05-29 folded in db/schema.sql (base
+--   tables) plus the post-Apr quotes columns (integration/lifecycle/
+--   walkthrough video) and the reference_assets table, so this file alone is
+--   a complete rebuild.
 -- =====================================================================
 
 
@@ -194,6 +198,19 @@ create table if not exists designs (
   updated_at timestamptz not null default now()
 );
 
+-- Analysis provenance + satellite context (#8 Stage A, 2026-06-12): the AI's
+-- raw analysis from the last analyze, the satellite image it measured against
+-- (path in the designs bucket + dims + deterministic feet-per-pixel), and the
+-- staff's final satellite measurement polylines. Idempotent patch for
+-- existing deployments.
+alter table designs
+  add column if not exists seed_analysis jsonb,
+  add column if not exists satellite_path text,
+  add column if not exists satellite_w integer,
+  add column if not exists satellite_h integer,
+  add column if not exists satellite_feet_per_pixel numeric,
+  add column if not exists satellite_lines jsonb;
+
 alter table designs disable row level security;
 
 -- At most ONE design per quote (linked designs); unlimited UNLINKED designs
@@ -215,8 +232,57 @@ create trigger designs_updated_at_trigger
   before update on designs
   for each row execute function designs_set_updated_at();
 
--- Storage bucket for design artifacts (base house photo + custom-item images).
--- Private; reads go through service-role signed URLs.
+-- Storage bucket for design artifacts (base house photo + satellite image +
+-- custom-item images). Private; reads go through service-role signed URLs.
 insert into storage.buckets (id, name, public)
 values ('designs', 'designs', false)
 on conflict (id) do nothing;
+
+
+-- ---------------------------------------------------------------------
+-- 6. training_examples  (#8 Stage A — scene-based AI training snapshots)
+--    One row = one complete, SELF-CONTAINED "the AI seeded X, staff
+--    corrected to Y" snapshot: both photos copied inline (base64), the raw
+--    AI analysis, the staff's FINAL scene + final measurement inputs.
+--    quote_id/design_id are soft links (SET NULL) so examples survive
+--    deleting the quotes they came from. Service-role access only.
+-- ---------------------------------------------------------------------
+create table if not exists training_examples (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  quote_id uuid references quotes(id) on delete set null,
+  design_id uuid references designs(id) on delete set null,
+  source text not null default 'manual',     -- 'auto-send' | 'manual'
+  excluded boolean not null default false,   -- park an oddball out of the few-shot
+  notes text,
+  address text,
+  street_photo_base64 text,
+  street_media_type text,
+  street_w integer,
+  street_h integer,
+  satellite_base64 text,
+  satellite_media_type text,
+  satellite_w integer,
+  satellite_h integer,
+  satellite_feet_per_pixel numeric,
+  satellite_lines jsonb,                     -- {santas,gingerbread,c9,santasFootage,gingerbreadFootage}
+  original_analysis jsonb,                   -- raw PhotoAnalysisResult; NULL = manual design, no AI run
+  final_scene jsonb not null,
+  final_inputs jsonb not null                -- footages/difficulties subset of QuoteInputs
+);
+
+alter table training_examples drop constraint if exists training_examples_source_check;
+alter table training_examples add constraint training_examples_source_check
+  check (source in ('auto-send', 'manual'));
+
+alter table training_examples disable row level security;
+
+create index if not exists training_examples_created_at_idx
+  on training_examples (created_at desc);
+
+-- Upsert semantics: a quote keeps at most ONE example per source — re-sending
+-- or re-saving REPLACES that snapshot (the latest staff-confirmed state wins).
+-- NOT partial: PostgREST's ON CONFLICT can't infer a partial unique index
+-- (42P10); NULL quote_ids are distinct under unique semantics anyway.
+create unique index if not exists training_examples_quote_source_uniq
+  on training_examples (quote_id, source);
