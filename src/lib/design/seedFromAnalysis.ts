@@ -254,7 +254,7 @@ function pxBox(box: NormalizedBox, w: number, h: number) {
   };
 }
 
-function detectionItems(d: AnalysisDetections, w: number, h: number): SceneItem[] {
+function detectionItems(d: AnalysisDetections, w: number, h: number, ppf: number | null): SceneItem[] {
   const items: SceneItem[] = [];
 
   (d.miniLights ?? []).forEach((m, i) => {
@@ -335,6 +335,16 @@ function detectionItems(d: AnalysisDetections, w: number, h: number): SceneItem[
   (d.garland ?? []).forEach((gd, i) => {
     const r = pxBox(gd.box, w, h);
     const cy = r.y + r.height / 2;
+    // Billed section count from the run's real-world length when a scale is
+    // available (#8 Stage C / C4): runFeet = box width px ÷ pixels-per-foot
+    // (derived from the AI's roofline, same scale that sizes the yardstick),
+    // then sections = ceil(runFeet / section length) — the documented garland
+    // convention ("piece count = ceil(widthFt / 9)", see photoAnalysis). With
+    // no scale (no roofline calibration on this quote) fall back to ONE section;
+    // staff set the count. Under-billing beats silently over-billing.
+    const sectionFeet = gd.length === '4.5ft' ? 4.5 : 9;
+    const quoteSections =
+      ppf && ppf > 0 ? Math.max(1, Math.ceil(r.width / ppf / sectionFeet)) : 1;
     const garland: SceneGarlandItem = {
       id: `${SEED_PREFIX}garland-${i + 1}`,
       yardstickId: null,
@@ -343,10 +353,7 @@ function detectionItems(d: AnalysisDetections, w: number, h: number): SceneItem[
       drawingStyle: 'strand',
       withLights: true,
       quoteLength: gd.length,
-      // No reliable real-world scale at seed time (street calibration is gone,
-      // #35) — default to ONE section; staff set the billed count in the
-      // editor's Quote-binding panel. Under-billing beats silently over-billing.
-      quoteSections: 1,
+      quoteSections,
       tier: gd.tier,
       included: true,
     };
@@ -407,7 +414,7 @@ export function seedSceneFromAnalysis(
       if (!i.id.startsWith(SEED_PREFIX)) return true;
       return isStrand(i) && i.bulbType === 'c9';
     });
-    out = { ...out, items: [...kept, ...detectionItems(seed.detections!, photoW, photoH)] };
+    out = { ...out, items: [...kept, ...detectionItems(seed.detections!, photoW, photoH, ppf)] };
   }
 
   return out;

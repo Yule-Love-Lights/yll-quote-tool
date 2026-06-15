@@ -74,7 +74,7 @@ describe('seedSceneFromAnalysis — conversion', () => {
     expect(spritzer.quoteSize).toBe('24');
   });
 
-  it('garland → a run across the box; quoteSections defaults to 1 (staff set the count)', () => {
+  it('garland → a run across the box; quoteSections falls back to 1 with no scale (FULL_SEED has no calibration)', () => {
     const garland = out.items.find(isGarland) as GarlandItem;
     expect(garland.points).toEqual([200, 262.5, 600, 262.5]);
     expect(garland.quoteLength).toBe('9ft');
@@ -178,6 +178,39 @@ describe('seedSceneFromAnalysis — scale yardstick', () => {
       H,
     ); // 500px / 25ft = 20 px/ft
     expect(out.yardsticks[0]?.width).toBe(100); // 5ft × 20px/ft
+  });
+});
+
+describe('garland sections from scale (#8 Stage C / C4)', () => {
+  // santas line 0.1→0.9 on W=1000 = 800px; AI says 40ft → 20 px/ft.
+  const base = { lines: { santas: [[[0.1, 0.4], [0.9, 0.4]]] as [number, number][][] }, calibration: { santasFootage: 40 } };
+
+  it('derives quoteSections from box width × scale (9ft sections, ceil)', () => {
+    const seed: AnalysisSeed = { ...base, detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    // box width 0.4×1000 = 400px ÷ 20px/ft = 20ft; ceil(20/9) = 3
+    expect(g.quoteSections).toBe(3);
+    expect(g.quoteLength).toBe('9ft');
+  });
+
+  it('uses the 4.5ft section length when the detection is 4.5ft', () => {
+    const seed: AnalysisSeed = { ...base, detections: { garland: [{ length: '4.5ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    // 20ft ÷ 4.5 = 4.44 → ceil = 5
+    expect(g.quoteSections).toBe(5);
+  });
+
+  it('a short run still bills at least 1 section', () => {
+    const seed: AnalysisSeed = { ...base, detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.1, 0.05] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    // 100px ÷ 20 = 5ft; ceil(5/9) = 1
+    expect(g.quoteSections).toBe(1);
+  });
+
+  it('falls back to 1 section when there is no scale (no calibration)', () => {
+    const seed: AnalysisSeed = { detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    expect(g.quoteSections).toBe(1);
   });
 });
 
