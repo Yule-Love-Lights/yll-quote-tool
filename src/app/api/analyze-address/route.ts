@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzePhoto, correctionToExample, FewShotExample } from '@/lib/photoAnalysis';
+import { analyzePhoto } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
-import { getRecentCorrections } from '@/lib/corrections';
-import { getRecentTrainingExamples, exampleToFewShot } from '@/lib/trainingExamples';
-import { getTrainingFewShot } from '@/lib/training';
-import { getReferenceAssetsForAnalysis } from '@/lib/referenceAssets';
+import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import {
   isGoogleMapsConfigured,
@@ -77,57 +74,15 @@ export async function POST(req: NextRequest) {
       Math.pow(2, SAT_ZOOM);
     const satelliteFeetPerPixel = metersPerPixel * 3.28084;
 
-    // 4. Analyze with Claude using BOTH images as cross-reference
-    const [sceneExamples, corrections, trainingHouses, references] = await Promise.all([
-      getRecentTrainingExamples(2),
-      getRecentCorrections(2),
-      getTrainingFewShot(2, houseStyleHint),
-      getReferenceAssetsForAnalysis(2),
-    ]);
-    // Scene-based examples (#8 Stage A) take the correction slots first;
-    // legacy photo_corrections only fill what's left (they sunset at the
-    // planned data wipe).
-    const designFewShots = sceneExamples
-      .map(exampleToFewShot)
-      .filter((e): e is NonNullable<typeof e> => e != null);
-    const correctionFill = corrections
-      .slice(0, Math.max(0, 2 - designFewShots.length))
-      .map(correctionToExample);
-    const examples: FewShotExample[] = [
-      ...trainingHouses
-        .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
-        .map(h => {
-          const ordered = [...h.photos].sort((a, b) => {
-            const order: Record<string, number> = {
-              front_install: 0, front_takedown: 1, side: 2, detail: 3, back: 4, satellite: 5, other: 6,
-            };
-            return (order[a.tag] ?? 9) - (order[b.tag] ?? 9);
-          }).slice(0, 4);
-          return {
-            photos: ordered.map(p => ({
-              base64: p.base64,
-              mediaType: p.mediaType,
-              tag: p.tag,
-              caption: p.caption,
-            })),
-            santasFootage: h.santas_footage!,
-            santasDifficulty: h.santas_difficulty ?? 'medium',
-            santasLines: h.santas_lines ?? [],
-            gingerbreadFootage: h.gingerbread_footage!,
-            gingerbreadDifficulty: h.gingerbread_difficulty ?? 'medium',
-            gingerbreadLines: h.gingerbread_lines ?? [],
-            miniLightDetections: h.mini_light_detections ?? [],
-            wreathDetections: h.wreath_detections ?? [],
-            spritzerDetections: h.spritzer_detections ?? [],
-            garlandDetections: h.garland_detections ?? [],
-            houseStyle: h.house_style ?? undefined,
-            aiFailureNotes: h.ai_failure_notes,
-            source: 'training' as const,
-          };
-        }),
-      ...designFewShots,
-      ...correctionFill,
-    ];
+    // 4. Analyze with Claude using BOTH images as cross-reference. Unified
+    // few-shot (#8 Stage B): similarity-ranked by the street photo when Voyage
+    // + embeddings are available, else recency. The satellite rides along to
+    // analyzePhoto for the satellite-coordinate measurement, separate from
+    // few-shot ranking (which keys on the street view).
+    const { examples, references, breakdown } = await assembleFewShot(
+      houseStyleHint,
+      { base64: streetView.base64, mediaType: streetView.mediaType },
+    );
     const result = await analyzePhoto(
       streetView.base64,
       streetView.mediaType,
@@ -154,12 +109,7 @@ export async function POST(req: NextRequest) {
       lat: geo.lat,
       lng: geo.lng,
       fewShotCount: examples.length,
-      fewShotBreakdown: {
-        training: trainingHouses.length,
-        examples: designFewShots.length,
-        corrections: correctionFill.length,
-        references: references.length,
-      },
+      fewShotBreakdown: breakdown,
     });
   } catch (err) {
     console.error('analyze-address error:', err);

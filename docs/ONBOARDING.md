@@ -80,6 +80,7 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **21 dis
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Claude (Sonnet 4.5) vision + quote analysis | `src/lib/claude.ts` |
 | `GOOGLE_MAPS_API_KEY` | Geocode + Street View + satellite imagery for address analysis | `src/lib/googleMaps.ts` |
+| `VOYAGE_API_KEY` | **Optional** — image embeddings for similarity-based few-shot retrieval (#8 Stage B); unset = recency fallback | `src/lib/embeddings.ts` |
 | `SUPABASE_URL` | Supabase project URL | `src/lib/supabase.ts` |
 | `SUPABASE_ANON_KEY` | Supabase anon key (RLS-bound client; read server-side here) | `supabase.ts` |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Service-role key — bypasses RLS. God-mode. Server-only, never to the browser.** | `supabase.ts` |

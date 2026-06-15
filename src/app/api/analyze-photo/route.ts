@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzePhoto, correctionToExample, FewShotExample } from '@/lib/photoAnalysis';
+import { analyzePhoto } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
-import { getRecentCorrections } from '@/lib/corrections';
-import { getRecentTrainingExamples, exampleToFewShot } from '@/lib/trainingExamples';
-import { getTrainingFewShot } from '@/lib/training';
-import { getReferenceAssetsForAnalysis } from '@/lib/referenceAssets';
+import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
@@ -51,59 +48,13 @@ export async function POST(req: NextRequest) {
   const base64 = Buffer.from(arrayBuffer).toString('base64');
 
   try {
-    const [sceneExamples, corrections, trainingHouses, references] = await Promise.all([
-      getRecentTrainingExamples(2),
-      getRecentCorrections(2),
-      getTrainingFewShot(2, houseStyleHint),
-      getReferenceAssetsForAnalysis(2),
-    ]);
-    // Scene-based examples (#8 Stage A) take the correction slots first;
-    // legacy photo_corrections only fill what's left (they sunset at the
-    // planned data wipe).
-    const designFewShots = sceneExamples
-      .map(exampleToFewShot)
-      .filter((e): e is NonNullable<typeof e> => e != null);
-    const correctionFill = corrections
-      .slice(0, Math.max(0, 2 - designFewShots.length))
-      .map(correctionToExample);
-    const examples: FewShotExample[] = [
-      // Training first (highest trust) so the model weights them as the template
-      ...trainingHouses
-        .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
-        .map(h => {
-          // Include up to 4 photos per training house: front_install + alt angles/details.
-          // Front install always first so the model anchors on the primary reference frame.
-          const ordered = [...h.photos].sort((a, b) => {
-            const order: Record<string, number> = {
-              front_install: 0, front_takedown: 1, side: 2, detail: 3, back: 4, satellite: 5, other: 6,
-            };
-            return (order[a.tag] ?? 9) - (order[b.tag] ?? 9);
-          }).slice(0, 4);
-          return {
-            photos: ordered.map(p => ({
-              base64: p.base64,
-              mediaType: p.mediaType,
-              tag: p.tag,
-              caption: p.caption,
-            })),
-            santasFootage: h.santas_footage!,
-            santasDifficulty: h.santas_difficulty ?? 'medium',
-            santasLines: h.santas_lines ?? [],
-            gingerbreadFootage: h.gingerbread_footage!,
-            gingerbreadDifficulty: h.gingerbread_difficulty ?? 'medium',
-            gingerbreadLines: h.gingerbread_lines ?? [],
-            miniLightDetections: h.mini_light_detections ?? [],
-            wreathDetections: h.wreath_detections ?? [],
-            spritzerDetections: h.spritzer_detections ?? [],
-            garlandDetections: h.garland_detections ?? [],
-            houseStyle: h.house_style ?? undefined,
-            aiFailureNotes: h.ai_failure_notes,
-            source: 'training' as const,
-          };
-        }),
-      ...designFewShots,
-      ...correctionFill,
-    ];
+    // Unified few-shot (#8 Stage B): similarity-ranked by the incoming house
+    // photo when Voyage + embeddings are available, else recency. One shared
+    // assembler for both analyze routes.
+    const { examples, references, breakdown } = await assembleFewShot(
+      houseStyleHint,
+      { base64, mediaType },
+    );
     const result = await analyzePhoto(base64, mediaType, examples, {
       references,
       houseStyleHint,
@@ -113,12 +64,7 @@ export async function POST(req: NextRequest) {
       photoBase64: base64,
       photoMediaType: mediaType,
       fewShotCount: examples.length,
-      fewShotBreakdown: {
-        training: trainingHouses.length,
-        examples: designFewShots.length,
-        corrections: correctionFill.length,
-        references: references.length,
-      },
+      fewShotBreakdown: breakdown,
     });
   } catch (err) {
     console.error('Photo analysis error:', err);
