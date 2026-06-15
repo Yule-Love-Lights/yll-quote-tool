@@ -15,6 +15,7 @@ import {
   exampleToFewShot,
   getRecentTrainingExamples,
   getSimilarTrainingExamples,
+  getCorpusBiasNote,
   type TrainingExampleRow,
 } from './trainingExamples';
 import { getRecentCorrections } from './corrections';
@@ -84,6 +85,9 @@ export type AssembledFewShot = {
   examples: FewShotExample[];
   references: StoredReferenceAsset[];
   ranking: 'similarity' | 'recency';
+  // #8 Stage C (C2): corpus-wide systematic-bias calibration for the system
+  // prompt, or null when the corpus is too small to claim a tendency.
+  biasNote: string | null;
   breakdown: { design: number; training: number; corrections: number; references: number; ranking: 'similarity' | 'recency' };
 };
 
@@ -114,11 +118,12 @@ export async function assembleFewShot(
     ? similarDesign
     : projectDesign(await getRecentTrainingExamples(FEW_SHOT_LIMIT));
 
-  // 3. Other sources in parallel.
-  const [corrections, trainingHouses, references] = await Promise.all([
+  // 3. Other sources + the corpus-wide bias note (#8 Stage C / C2) in parallel.
+  const [corrections, trainingHouses, references, biasNote] = await Promise.all([
     getRecentCorrections(FEW_SHOT_LIMIT),
     getTrainingFewShot(FEW_SHOT_LIMIT, houseStyleHint),
     getReferenceAssetsForAnalysis(REFERENCE_PER_TYPE),
+    getCorpusBiasNote(),
   ]);
 
   // 4. Map the remaining sources to the few-shot shape.
@@ -135,6 +140,7 @@ export async function assembleFewShot(
     examples,
     references,
     ranking,
+    biasNote,
     breakdown: {
       design: design.length,
       training: training.length,

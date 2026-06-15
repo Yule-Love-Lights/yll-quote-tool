@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     // + embeddings are available, else recency. The satellite rides along to
     // analyzePhoto for the satellite-coordinate measurement, separate from
     // few-shot ranking (which keys on the street view).
-    const { examples, references, breakdown } = await assembleFewShot(
+    const { examples, references, biasNote, breakdown } = await assembleFewShot(
       houseStyleHint,
       { base64: streetView.base64, mediaType: streetView.mediaType },
     );
@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
         },
         references,
         houseStyleHint,
+        corpusBiasNote: biasNote,
       },
     );
 

@@ -331,6 +331,11 @@ type FewShotExample = {
   garlandDetections?: GarlandDetection[];
   houseStyle?: string;
   aiFailureNotes?: string | null;
+  // #8 Stage C (C1): a compact "you first guessed X, staff corrected to Y" note
+  // built from the captured seed→final pair (design examples only). Injected
+  // into the example's user turn so the model learns the correction, not just
+  // the final answer. Null/absent when there's no seed to compare against.
+  seedDiffNote?: string | null;
   // 'training' = confirmed install (training_houses); 'correction' = legacy
   // human-corrected photo (photo_corrections); 'design' = a scene-based
   // training example captured from a staff-finalized design (#8 Stage A).
@@ -383,6 +388,10 @@ function buildFewShotMessages(examples: FewShotExample[]) {
       const mt = p.mediaType as ImageMediaType;
       userContent.push({ type: 'image', source: { type: 'base64', media_type: mt, data: p.base64 } });
       if (p.tag) userContent.push({ type: 'text', text: `^ tag: ${p.tag}${p.caption ? ` — ${p.caption}` : ''}` });
+    }
+    // #8 Stage C (C1): teach from the seed→final correction, not just the answer.
+    if (ex.seedDiffNote) {
+      userContent.push({ type: 'text', text: ex.seedDiffNote });
     }
     userContent.push({ type: 'text', text: 'Respond with the confirmed JSON measurements.' });
 
@@ -478,6 +487,9 @@ export type AnalyzeOptions = {
   satellite?: SatelliteReference;
   references?: StoredReferenceAsset[];
   houseStyleHint?: string;
+  // #8 Stage C (C2): a corpus-wide "you systematically tend to X" calibration
+  // block (already prefixed with blank lines), appended to the system prompt.
+  corpusBiasNote?: string | null;
 };
 
 export async function analyzePhoto(
@@ -501,7 +513,7 @@ export async function analyzePhoto(
     throw new Error(`Unsupported image type: ${mediaType}`);
   }
 
-  const { satellite, references = [], houseStyleHint } = options;
+  const { satellite, references = [], houseStyleHint, corpusBiasNote } = options;
 
   const refMessages = buildReferenceMessages(references);
   const fewShotMessages = buildFewShotMessages(fewShotExamples);
@@ -530,7 +542,14 @@ export async function analyzePhoto(
   const styleNote = houseStyleHint
     ? `\n\nHouse style hint from user: ${houseStyleHint}. Prior training examples shown are selected to match this style where possible.`
     : '';
-  const systemPrompt = SYSTEM_PROMPT + refsNote + satelliteNote + styleNote + corrNote;
+  // #8 Stage C (C3): satellite orientation self-check. Flipping the red (front)
+  // and blue (ridge+sides) buckets on the top-down image is the single most
+  // common satellite mistake — force an explicit street-view cross-check before
+  // the model commits. Only relevant when a satellite image is supplied.
+  const satelliteSelfCheck = satellite
+    ? `\n\nSATELLITE ORIENTATION SELF-CHECK (do this BEFORE finalizing the satellite polylines): the top-down view makes it easy to mislabel which edge is the front. (1) Find the road in the satellite image and CONFIRM it against the street-view image — the front roof edge is the one whose plane faces that road. (2) satelliteSantasLines (red) MUST be that road-facing FRONT edge; satelliteGingerbreadLines (blue) are its ridge PLUS the two SIDE edges. (3) Cross-check the result against the street view: if your red/blue assignment would put "front" on an edge the street view clearly shows is a side or the ridge, they are FLIPPED — swap them. A flipped front/side is the single most common satellite error, so verify orientation before answering.`
+    : '';
+  const systemPrompt = SYSTEM_PROMPT + refsNote + satelliteNote + satelliteSelfCheck + styleNote + corrNote + (corpusBiasNote ?? '');
 
   const content: Array<{ type: 'image'; source: { type: 'base64'; media_type: typeof validMediaTypes[number]; data: string } } | { type: 'text'; text: string }> = [
     {

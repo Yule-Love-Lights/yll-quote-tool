@@ -25,6 +25,8 @@ import {
 import { getQuoteRaw } from './quotes';
 import { sceneToFewShotPieces } from './design/sceneToFewShot';
 import { embedImage } from './embeddings';
+import { summarizeSeedFinalDiff } from './seedFinalDiff';
+import { computeBiasSummary, formatBiasNote, type SeedFinalPair } from './seedFinalStats';
 import type { FewShotExample, TrainingExamplePhoto } from './photoAnalysis';
 
 export type TrainingExampleSource = 'auto-send' | 'manual';
@@ -223,6 +225,53 @@ export async function getSimilarTrainingExamples(
   return (data ?? []) as TrainingExampleRow[];
 }
 
+// #8 Stage C (C2): the corpus-wide systematic-bias calibration note for the
+// analyzer prompt. Builds seed→final metric pairs across the seeded examples and
+// aggregates them (see seedFinalStats). Returns null until there are enough
+// seeded pairs to claim a tendency.
+//
+// NOTE: this pulls final_scene per row to recompute the corrected detection
+// counts. Fine at this scale — pre-launch / small library, and Jason wipes the
+// data before launch — and the cap bounds it. If the corpus ever grows large,
+// precompute/cache this summary instead of recomputing per analyze call.
+const BIAS_SAMPLE_CAP = 200;
+export async function getCorpusBiasNote(): Promise<string | null> {
+  const sb = getSb();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('training_examples')
+    .select('original_analysis, final_inputs, final_scene, street_w, street_h')
+    .eq('excluded', false)
+    .not('original_analysis', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(BIAS_SAMPLE_CAP);
+  if (error) {
+    console.error('getCorpusBiasNote error:', error);
+    return null;
+  }
+  type Row = Pick<TrainingExampleRow, 'original_analysis' | 'final_inputs' | 'final_scene' | 'street_w' | 'street_h'>;
+  const pairs: SeedFinalPair[] = [];
+  for (const r of (data ?? []) as Row[]) {
+    // Detection counts come from the projected scene, which needs photo dims.
+    if (!r.street_w || !r.street_h || r.street_w <= 0 || r.street_h <= 0) continue;
+    const pieces = sceneToFewShotPieces(r.final_scene, r.street_w, r.street_h);
+    pairs.push({
+      seed: r.original_analysis,
+      final: {
+        santasFootage: r.final_inputs.santasFootage,
+        gingerbreadFootage: r.final_inputs.gingerbreadFootage,
+        santasDifficulty: r.final_inputs.santasDifficulty,
+        gingerbreadDifficulty: r.final_inputs.gingerbreadDifficulty,
+        miniLightDetections: pieces.miniLightDetections,
+        wreathDetections: pieces.wreathDetections,
+        spritzerDetections: pieces.spritzerDetections,
+        garlandDetections: pieces.garlandDetections,
+      },
+    });
+  }
+  return formatBiasNote(computeBiasSummary(pairs));
+}
+
 export async function listTrainingExamples(limit = 200): Promise<TrainingExampleListItem[]> {
   const sb = getSb();
   if (!sb) return [];
@@ -344,6 +393,21 @@ export function exampleToFewShot(row: TrainingExampleRow): FewShotExample | null
     });
   }
 
+  // #8 Stage C (C1): the seed→final correction note (null when the design
+  // carried no AI seed). Compares the AI's first pass (original_analysis) to the
+  // staff-corrected final, both in analyzer vocabulary.
+  const seedDiffNote = summarizeSeedFinalDiff(row.original_analysis, {
+    santasFootage: row.final_inputs.santasFootage,
+    gingerbreadFootage: row.final_inputs.gingerbreadFootage,
+    santasDifficulty: row.final_inputs.santasDifficulty,
+    gingerbreadDifficulty: row.final_inputs.gingerbreadDifficulty,
+    miniLightDetections: pieces.miniLightDetections,
+    wreathDetections: pieces.wreathDetections,
+    spritzerDetections: pieces.spritzerDetections,
+    garlandDetections: pieces.garlandDetections,
+    satelliteSantasFootage: includeSatellite ? sat?.santasFootage : undefined,
+  });
+
   return {
     photos,
     santasFootage: row.final_inputs.santasFootage,
@@ -363,6 +427,7 @@ export function exampleToFewShot(row: TrainingExampleRow): FewShotExample | null
     spritzerDetections: pieces.spritzerDetections,
     garlandDetections: pieces.garlandDetections,
     aiFailureNotes: row.notes,
+    seedDiffNote,
     source: 'design',
   };
 }
