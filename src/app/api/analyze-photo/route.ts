@@ -51,13 +51,14 @@ export async function POST(req: NextRequest) {
     // Unified few-shot (#8 Stage B): similarity-ranked by the incoming house
     // photo when Voyage + embeddings are available, else recency. One shared
     // assembler for both analyze routes.
-    const { examples, references, breakdown } = await assembleFewShot(
+    const { examples, references, biasNote, breakdown } = await assembleFewShot(
       houseStyleHint,
       { base64, mediaType },
     );
     const result = await analyzePhoto(base64, mediaType, examples, {
       references,
       houseStyleHint,
+      corpusBiasNote: biasNote,
     });
     return NextResponse.json({
       result,
