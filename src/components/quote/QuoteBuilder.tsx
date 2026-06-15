@@ -329,6 +329,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // (#35: the Gemini nighttime-render preview is gone — the live design IS the
   // customer-facing visual now; the app-wide render teardown is task #36.)
   const [fewShotCount, setFewShotCount] = useState(0);
+  const [fewShotRanking, setFewShotRanking] = useState<'similarity' | 'recency'>('recency');
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -655,6 +656,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     lat?: number;
     lng?: number;
     fewShotCount?: number;
+    fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
     const r = data.result;
@@ -725,6 +727,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
+    setFewShotRanking(data.fewShotBreakdown?.ranking ?? 'recency');
   };
 
   const handleLookupAddress = async () => {
@@ -1189,7 +1192,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   <strong className="block mb-1">
                     Analysis complete — measurements auto-filled, roofline drawn on the design.
                     {fewShotCount > 0 && (
-                      <span className="ml-1 font-normal">• Using {fewShotCount} past correction{fewShotCount === 1 ? '' : 's'} as reference</span>
+                      <span className="ml-1 font-normal">
+                        • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference
+                      </span>
                     )}
                   </strong>
                   {analysisNotes}
