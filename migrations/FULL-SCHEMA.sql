@@ -18,7 +18,10 @@
 -- Storage:
 --   designs bucket (private; served via service-role signed URLs)
 --
--- Last refreshed: 2026-06-12 (second pass) — added the training_examples
+-- Last refreshed: 2026-06-15 — added training_examples.embedding vector(1024)
+--   + the match_training_examples RPC + the vector extension (#8 Stage B
+--   image-embedding retrieval; see 2026-06-15-training-example-embeddings.sql).
+--   2026-06-12 (second pass) added the training_examples
 --   table + the designs analysis-provenance/satellite columns (#8 Stage A;
 --   see 2026-06-12-training-examples.sql). Earlier same day: REMOVED the
 --   renders table + bucket (Gemini render pipeline teardown, task #36; see
@@ -286,3 +289,28 @@ create index if not exists training_examples_created_at_idx
 -- (42P10); NULL quote_ids are distinct under unique semantics anyway.
 create unique index if not exists training_examples_quote_source_uniq
   on training_examples (quote_id, source);
+
+-- #8 Stage B — image-embedding similarity retrieval. Each example's street
+-- photo is embedded (Voyage voyage-multimodal-3.5, 1024 dims — under pgvector's
+-- 2000-dim index ceiling; no ANN index needed at this scale). The match RPC
+-- returns the nearest non-excluded examples by cosine distance. App degrades to
+-- recency when the embedding is null, so this is additive.
+create extension if not exists vector;
+alter table training_examples
+  add column if not exists embedding vector(1024);
+
+create or replace function match_training_examples(
+  query_embedding vector(1024),
+  match_count int
+)
+returns setof training_examples
+language sql
+stable
+as $$
+  select *
+  from training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
