@@ -24,6 +24,7 @@ import {
 } from './designs';
 import { getQuoteRaw } from './quotes';
 import { sceneToFewShotPieces } from './design/sceneToFewShot';
+import { embedImage } from './embeddings';
 import type { FewShotExample, TrainingExamplePhoto } from './photoAnalysis';
 
 export type TrainingExampleSource = 'auto-send' | 'manual';
@@ -133,6 +134,14 @@ export async function captureTrainingExample(opts: {
       : {}),
   };
 
+  // #8 Stage B — embed the street photo for similarity retrieval (graceful:
+  // null when Voyage is unconfigured or fails → the row is still saved and
+  // just falls back to recency until a later capture embeds it). Only INCLUDE
+  // the column when we got a vector, so a transient Voyage failure on a
+  // re-capture doesn't clobber a previously-good embedding (upsert only SETs
+  // the columns present in the row).
+  const embedVec = await embedImage(street.base64, street.mediaType, 'document');
+
   const row = {
     quote_id: quote.id,
     design_id: design.id,
@@ -156,6 +165,7 @@ export async function captureTrainingExample(opts: {
     original_analysis: design.seed_analysis ?? null,
     final_scene: scene,
     final_inputs: finalInputs,
+    ...(embedVec ? { embedding: embedVec } : {}),
   };
 
   // Upsert on (quote_id, source): re-sending / re-saving replaces the prior
@@ -172,7 +182,9 @@ export async function captureTrainingExample(opts: {
   return { id: data.id as string };
 }
 
-// The few-shot feed: newest non-excluded examples, full payloads.
+// The few-shot feed (RECENCY): newest non-excluded examples, full payloads.
+// The fallback ranker when similarity isn't available (no Voyage key / the
+// query image didn't embed / no rows carry an embedding yet).
 export async function getRecentTrainingExamples(limit = 2): Promise<TrainingExampleRow[]> {
   const sb = getSb();
   if (!sb) return [];
@@ -184,6 +196,28 @@ export async function getRecentTrainingExamples(limit = 2): Promise<TrainingExam
     .limit(limit);
   if (error) {
     console.error('getRecentTrainingExamples error:', error);
+    return [];
+  }
+  return (data ?? []) as TrainingExampleRow[];
+}
+
+// The few-shot feed (SIMILARITY, #8 Stage B): the non-excluded, embedded
+// examples nearest the query embedding (cosine), closest first — the most
+// visually-similar past houses. Returns [] when no rows are embedded yet
+// (fresh/empty library, or Voyage not set up) so the caller falls back to
+// recency. Uses the match_training_examples RPC from the Stage B migration.
+export async function getSimilarTrainingExamples(
+  queryEmbedding: number[],
+  limit = 8,
+): Promise<TrainingExampleRow[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  const { data, error } = await sb.rpc('match_training_examples', {
+    query_embedding: queryEmbedding,
+    match_count: limit,
+  });
+  if (error) {
+    console.error('getSimilarTrainingExamples error:', error);
     return [];
   }
   return (data ?? []) as TrainingExampleRow[];
