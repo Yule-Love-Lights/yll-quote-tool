@@ -1276,17 +1276,11 @@ export async function renderEditor(
 
   // --- Save (debounced) ---
   let saveTimer: number | null = null;
-  // [yll #8 Stage A] true between an edit and its debounced persist. Lets
-  // flushSave() know whether a save is owed. Relay to the design-tool AI to
-  // upstream (same channel as the window-resize refit).
   let pendingSave = false;
   const savingEl = root.querySelector("#saving") as HTMLElement;
   async function doSave() {
     pendingSave = false;
-    await api.updateDesign(design.id, {
-      scene,
-      name: design.name,
-    });
+    await api.updateDesign(design.id, { scene, name: design.name });
     savingEl.textContent = "Saved";
     window.setTimeout(() => {
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
@@ -1298,9 +1292,7 @@ export async function renderEditor(
     savingEl.textContent = "Saving…";
     saveTimer = window.setTimeout(() => { void doSave(); }, 600);
   }
-  // [yll #8 Stage A] Synchronously persist a pending debounced save NOW.
-  // Callers (training capture, pricing) await this so they never read a scene
-  // that's up to 600ms stale. No-op when nothing is pending.
+  // Synchronously persist a pending debounced save NOW (no-op if none pending).
   async function flushSave() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (pendingSave) await doSave();
@@ -4680,10 +4672,7 @@ export async function renderEditor(
     window.removeEventListener("mouseup", onWindowMouseUpPan);
     ro.disconnect();
     window.removeEventListener("resize", refit);
-    // [yll #8 Stage A] Flush a pending save before teardown instead of dropping
-    // it — the editor remounts on re-seed, and a dropped save would lose the
-    // last edit. Fire-and-forget: doSave captured the current scene already.
-    void flushSave();
+    void flushSave(); // flush a pending save before teardown instead of dropping it
     if (redrawHandle) { cancelAnimationFrame(redrawHandle); redrawHandle = 0; }
     try { stage.destroy(); } catch { /* already gone */ }
   }
@@ -4803,16 +4792,10 @@ export async function renderEditor(
   }
   redrawScene();
 
-  // [yll #8 Stage A] Expose flushSave on the destroy handle (additive — the
-  // design tool's own app ignores it, so the cores stay compatible). The React
-  // shell awaits it before training capture / pricing.
   const handle = destroy as EditorHandle;
   handle.flushSave = flushSave;
   return handle;
 }
-
-// [yll #8 Stage A] The renderEditor handle: the destroy fn plus an optional
-// flushSave to synchronously persist a pending debounced scene save.
 export type EditorHandle = (() => void) & { flushSave?: () => Promise<void> };
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {
