@@ -98,9 +98,35 @@ export default async function PortalPage({
   const { quoteId } = await params;
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
-  const initialPackageId = pickInitialPackageId(quote.packages);
+  // Fallback default package — escalates past B to a tier that clears the
+  // $1,000 minimum so a no-recommendation quote opens approvable (#12).
+  const initialPackageId = pickInitialPackageId(
+    quote.packages,
+    quote.lineItems,
+    quote.minimumOrderSubtotal,
+  );
   const heroAfter = quote.photo.after || FALLBACK_HERO;
   const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
+
+  // Recommended-only initial selection (#12): if staff flagged any line items
+  // as recommended, the portal opens with ONLY those pre-selected. Roofline
+  // keeps its own recommend mechanism, so we ALWAYS union in its recommended
+  // option id (so the customer never lands without a roofline). When nothing is
+  // recommended this stays undefined → today's package-seeded default is used
+  // unchanged.
+  const recommendedItemIds = quote.lineItems
+    .filter((li) => li.recommended)
+    .map((li) => li.id);
+  const initialSelectedItemIds =
+    recommendedItemIds.length > 0
+      ? Array.from(
+          new Set(
+            quote.roofline?.recommendedItemId
+              ? [...recommendedItemIds, quote.roofline.recommendedItemId]
+              : recommendedItemIds,
+          ),
+        )
+      : undefined;
 
   return (
     <main className="relative w-full">
@@ -111,6 +137,7 @@ export default async function PortalPage({
         charges={quote.charges}
         minimumOrderSubtotal={quote.minimumOrderSubtotal}
         initialPackageId={initialPackageId}
+        initialSelectedItemIds={initialSelectedItemIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero

@@ -222,15 +222,37 @@ export function derivePackages(
   ];
 }
 
-// Pick a sensible initial package: 'B' if it has items, else the
-// highest-tier package that actually has items. Avoids the portal landing
-// the customer on an empty card on day one.
-export function pickInitialPackageId(packages: PortalPackage[]): PackageId {
-  const b = packages.find((p) => p.id === 'B');
-  if (b && b.total > 0) return 'B';
-  const c = packages.find((p) => p.id === 'C');
-  if (c && c.total > 0) return 'C';
-  const a = packages.find((p) => p.id === 'A');
-  if (a && a.total > 0) return 'A';
-  return 'D';
+// Pick a sensible initial package for the portal's DEFAULT (fallback) selection.
+//
+// Preference order is B (most popular) → C → A, skipping empty packages. But the
+// default must also let the customer APPROVE without first adding items: if the
+// $1,000 gate is active (minimumSubtotal > 0) we pick the first package in
+// preference order whose PRE-TAX subtotal clears it — e.g. B = roofline + bushes
+// can land under $1,000, so we escalate to C (everything) so the customer opens
+// at/above the minimum (#12). If none clears (shouldn't happen while the gate is
+// active, since it only activates when the full quote already clears it — but
+// defensively) we pick the largest. When the gate is waived/unknown
+// (minimumSubtotal ≤ 0) behavior is unchanged: first available in B→C→A order.
+export function pickInitialPackageId(
+  packages: PortalPackage[],
+  lineItems: PortalLineItem[] = [],
+  minimumSubtotal = 0,
+): PackageId {
+  const priceById = new Map(lineItems.map((li) => [li.id, li.price]));
+  const subtotalOf = (p: PortalPackage) =>
+    p.includedItemIds.reduce((s, id) => s + (priceById.get(id) ?? 0), 0);
+
+  const candidates = (['B', 'C', 'A'] as PackageId[])
+    .map((id) => packages.find((p) => p.id === id))
+    .filter((p): p is PortalPackage => !!p && p.total > 0);
+  if (candidates.length === 0) return 'D';
+
+  // No active gate → today's behavior (first available, B-preferred).
+  if (minimumSubtotal <= 0) return candidates[0].id;
+
+  // Active gate → the first (in preference order) that clears the minimum, so
+  // the customer can approve as-is; else the largest subtotal (closest from below).
+  const clearing = candidates.find((p) => subtotalOf(p) >= minimumSubtotal);
+  if (clearing) return clearing.id;
+  return candidates.reduce((best, p) => (subtotalOf(p) > subtotalOf(best) ? p : best)).id;
 }

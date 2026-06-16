@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, effectiveCharges } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, effectiveCharges, pickInitialPackageId } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
-import type { PortalCharges, SelectionCharges, PortalLineItem } from '@/components/portal/types';
+import type { PortalCharges, SelectionCharges, PortalLineItem, PortalPackage } from '@/components/portal/types';
 
 // Standard tax, no per-job fees — the common case.
 const PLAIN: SelectionCharges = { rushFee: 0, takedown: 0, taxRate: 0.08625 };
@@ -31,6 +31,42 @@ function resultWith(overrides: Partial<QuoteResult>): QuoteResult {
 function item(id: string, price: number): PortalLineItem {
   return { id, kind: 'roofline', label: id, detail: '', price };
 }
+
+function pkg(id: PortalPackage['id'], includedItemIds: string[], total: number): PortalPackage {
+  return { id, name: id, tagline: '', total, deposit: total / 2, includedItemIds };
+}
+
+describe('pickInitialPackageId — fallback default clears the $1,000 minimum (#12)', () => {
+  // Roofline $320 + 3 bushes = B $635 (under $1k); + spritzers + wreath = C $1,175.
+  const lineItems = [
+    item('roofline-santas', 320),
+    item('bush-0', 105), item('bush-1', 105), item('bush-2', 105),
+    item('spritzer-0', 85), item('spritzer-1', 85), item('spritzer-2', 85),
+    item('wreath-0', 285),
+  ];
+  const B = ['roofline-santas', 'bush-0', 'bush-1', 'bush-2']; // 635
+  const C = [...B, 'spritzer-0', 'spritzer-1', 'spritzer-2', 'wreath-0']; // 1175
+  const packages = [pkg('A', ['roofline-santas'], 320), pkg('B', B, 635), pkg('C', C, 1175), pkg('D', [], 0)];
+
+  it('escalates past B to a tier that clears the minimum', () => {
+    expect(pickInitialPackageId(packages, lineItems, 1000)).toBe('C');
+  });
+
+  it('keeps B when B already clears the minimum', () => {
+    const items2 = [item('roofline-santas', 1200)];
+    const pkgs2 = [pkg('B', ['roofline-santas'], 1200), pkg('C', ['roofline-santas'], 1200), pkg('D', [], 0)];
+    expect(pickInitialPackageId(pkgs2, items2, 1000)).toBe('B');
+  });
+
+  it("keeps today's behavior (B-preferred) when the gate is waived or unspecified", () => {
+    expect(pickInitialPackageId(packages, lineItems, 0)).toBe('B');
+    expect(pickInitialPackageId(packages)).toBe('B'); // legacy 1-arg call unchanged
+  });
+
+  it('picks the largest tier when nothing clears (defensive)', () => {
+    expect(pickInitialPackageId(packages, lineItems, 99999)).toBe('C');
+  });
+});
 
 describe('priceSelection — real price, no $1,000 floor (#18)', () => {
   it('returns an all-zero breakdown for an empty or negative selection', () => {
