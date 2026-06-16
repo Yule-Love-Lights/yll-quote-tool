@@ -1218,16 +1218,16 @@ export default function NewTrainingHousePage() {
                         <option value="30noble">30&quot; Noble</option>
                         <option value="36noble">36&quot; Noble</option>
                         <option value="48noble">48&quot; Noble</option>
-                        <option value="36oregon">36&quot; Oregon</option>
+                        <option value="60noble">60&quot; Noble</option>
+                        <option value="72noble">72&quot; Noble</option>
                       </select>
                       <select
                         className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
                         value={d.tier}
                         onChange={e => updateWreathDetection(i, { tier: e.target.value as DecorTier })}
                       >
-                        <option value="labor">Labor</option>
-                        <option value="bow">Bow</option>
-                        <option value="fullDecor">Full Decor</option>
+                        <option value="bow">Non-Decorated</option>
+                        <option value="fullDecor">Decorated</option>
                       </select>
                       <button type="button" onClick={() => deleteWreathDetection(i)}
                         className="text-red-400 hover:text-red-600 font-bold text-lg leading-none">×</button>
@@ -1279,9 +1279,8 @@ export default function NewTrainingHousePage() {
                           value={d.tier}
                           onChange={e => updateGarlandDetection(i, { tier: e.target.value as DecorTier })}
                         >
-                          <option value="labor">Labor</option>
-                          <option value="bow">Bow</option>
-                          <option value="fullDecor">Full Decor</option>
+                          <option value="bow">Non-Decorated</option>
+                          <option value="fullDecor">Decorated</option>
                         </select>
                         <span className="text-xs font-medium text-gray-700 tabular-nums">{pieces}</span>
                         <button type="button" onClick={() => deleteGarlandDetection(i)}

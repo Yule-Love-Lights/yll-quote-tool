@@ -102,7 +102,7 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
     const withStaff: Scene = { ...first, items: [...first.items, staffWreath] };
 
     const reseed: AnalysisSeed = {
-      detections: { wreaths: [{ size: '48noble', tier: 'labor', box: [0.5, 0.5, 0.1, 0.1] }] },
+      detections: { wreaths: [{ size: '48noble', tier: 'bow', box: [0.5, 0.5, 0.1, 0.1] }] },
     };
     const out = seedSceneFromAnalysis(withStaff, reseed, W, H);
 

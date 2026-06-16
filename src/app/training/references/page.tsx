@@ -5,10 +5,10 @@ import Link from 'next/link';
 import type { StoredReferenceAsset, ReferenceAssetType } from '@/lib/referenceAssets';
 
 const SPRITZER_SIZES = ['16', '24', '32'];
-const WREATH_SIZES = ['24noble', '30noble', '36noble', '48noble', '36oregon'];
-const WREATH_TIERS = ['labor', 'bow', 'fullDecor'];
+const WREATH_SIZES = ['24noble', '30noble', '36noble', '48noble', '60noble', '72noble'];
+const WREATH_TIERS = ['bow', 'fullDecor'];
 const GARLAND_SIZES = ['9ft', '6ft'];
-const GARLAND_TIERS = ['labor', 'bow', 'fullDecor'];
+const GARLAND_TIERS = ['bow', 'fullDecor'];
 
 async function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
   const buffer = await file.arrayBuffer();

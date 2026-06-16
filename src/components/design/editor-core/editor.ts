@@ -2534,7 +2534,7 @@ export async function renderEditor(
         const sQS = uniq(sel.map((w) => w.quoteSize ?? ""));
         const sTier = uniq(sel.map((w) => w.tier ?? ""));
         const sInc = uniq(sel.map((w) => w.included ?? true));
-        const WSIZES: [string, string][] = [["24noble", '24" Noble'], ["30noble", '30" Noble'], ["36noble", '36" Noble'], ["48noble", '48" Noble'], ["36oregon", '36" Oregon']];
+        const WSIZES: [string, string][] = [["24noble", '24" Noble'], ["30noble", '30" Noble'], ["36noble", '36" Noble'], ["48noble", '48" Noble'], ["60noble", '60" Noble'], ["72noble", '72" Noble']];
         return `
       <section>
         <h3>Quote binding</h3>
@@ -2546,9 +2546,8 @@ export async function renderEditor(
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Tier</label>
         <select id="sel-wreath-tier" class="yardstick-select">
           <option value="">${sTier.length > 1 ? "— mixed —" : "— none —"}</option>
-          <option value="labor" ${sTier.length === 1 && sTier[0] === "labor" ? "selected" : ""}>Labor only</option>
-          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>With bow</option>
-          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Full decor</option>
+          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>Non-decorated</option>
+          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Decorated</option>
         </select>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
           <input type="checkbox" id="sel-wreath-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
@@ -2753,9 +2752,8 @@ export async function renderEditor(
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Tier</label>
         <select id="sel-garland-tier" class="yardstick-select">
           <option value="">${sTier.length > 1 ? "— mixed —" : "— none —"}</option>
-          <option value="labor" ${sTier.length === 1 && sTier[0] === "labor" ? "selected" : ""}>Labor only</option>
-          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>With bow</option>
-          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Full decor</option>
+          <option value="bow" ${sTier.length === 1 && sTier[0] === "bow" ? "selected" : ""}>Non-decorated</option>
+          <option value="fullDecor" ${sTier.length === 1 && sTier[0] === "fullDecor" ? "selected" : ""}>Decorated</option>
         </select>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
           <input type="checkbox" id="sel-garland-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />

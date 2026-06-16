@@ -9,7 +9,7 @@ export const BUSINESS_RULES = {
   minimumQuoteAmount: 1000,
   rushFeeAmount: 150,
   premiumTakedownFee: 150,
-  taxRate: 0.08625,
+  taxRate: 0.0875,
   depositPercentage: 0.50,
 
   rooflineRates: {
@@ -29,25 +29,32 @@ export const BUSINESS_RULES = {
     '32': 105,
   },
 
+  // Tier keys are internal codes: `bow` = NON-DECORATED (lights; a bow is
+  // included in the price), `fullDecor` = DECORATED (lights + ornaments/ribbon).
+  // The old `labor` tier was retired (#17) — it was imported from an old price
+  // sheet and is not a real product. Display labels live in TIER_LABELS.
   wreathPrices: {
-    '24noble':  { labor: 210, bow: 230, fullDecor: 275 },
-    '30noble':  { labor: 285, bow: 305, fullDecor: 355 },
-    '36noble':  { labor: 315, bow: 350, fullDecor: 400 },
-    '48noble':  { labor: 548, bow: 605, fullDecor: 705 },
-    '36oregon': { labor: 298, bow: 330, fullDecor: 380 },
+    '24noble': { bow: 200,  fullDecor: 275 },
+    '30noble': { bow: 285,  fullDecor: 355 },
+    '36noble': { bow: 315,  fullDecor: 400 },
+    '48noble': { bow: 450,  fullDecor: 705 },
+    '60noble': { bow: 885,  fullDecor: 1130 },
+    '72noble': { bow: 1149, fullDecor: 1455 },
   },
 
+  // Same tier convention as wreaths (`bow` = Non-Decorated, `fullDecor` =
+  // Decorated; `labor` retired in #17). Garland does NOT come with a bow —
+  // customers add bows separately (priced via standaloneBowPrice).
   garlandPrices: {
     noble: {
-      '9ft':   { labor: 165, bow: 195, fullDecor: 250 },
-      '4.5ft': { labor: 135, bow: 0,   fullDecor: 210 },  // TODO: 'bow' tier price still TBD — Naldo to confirm (currently silently prices $0)
+      '9ft':   { bow: 162, fullDecor: 250 },
+      '4.5ft': { bow: 135, fullDecor: 210 },
     },
   },
 
   // Standalone bow — a bow sold on its own, not on a wreath/garland (#28).
-  // TODO: price still TBD — Naldo to confirm (currently prices $0; Jason
-  // approved shipping the category at $0 so drawn bows price + toggle now).
-  standaloneBowPrice: 0,
+  // Flat $35 per bow (Naldo, #17).
+  standaloneBowPrice: 35,
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -73,9 +80,11 @@ export type WreathSize =
   | '30noble'
   | '36noble'
   | '48noble'
-  | '36oregon';
+  | '60noble'
+  | '72noble';
 
-export type DecorTier = 'labor' | 'bow' | 'fullDecor';
+// `bow` = Non-Decorated, `fullDecor` = Decorated (#17; the old `labor` tier was retired).
+export type DecorTier = 'bow' | 'fullDecor';
 
 export type Wreath = {
   size: WreathSize;
@@ -351,17 +360,17 @@ function calculateSpritzers(inputs: QuoteInputs): LineItem[] {
 // ─────────────────────────────────────────────────────────
 
 const WREATH_SIZE_LABELS: Record<WreathSize, string> = {
-  '24noble':  '24" Noble',
-  '30noble':  '30" Noble',
-  '36noble':  '36" Noble',
-  '48noble':  '48" Noble',
-  '36oregon': '36" Oregon',
+  '24noble': '24" Noble',
+  '30noble': '30" Noble',
+  '36noble': '36" Noble',
+  '48noble': '48" Noble',
+  '60noble': '60" Noble',
+  '72noble': '72" Noble',
 };
 
 const TIER_LABELS: Record<DecorTier, string> = {
-  labor:    'Labor Only',
-  bow:      'With Bow',
-  fullDecor: 'Full Decor',
+  bow:       'Non-Decorated',
+  fullDecor: 'Decorated',
 };
 
 function calculateWreaths(inputs: QuoteInputs): LineItem[] {
