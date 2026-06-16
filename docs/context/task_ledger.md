@@ -36,7 +36,8 @@ metadata:
 | 18 | Verify renders RLS — **CLOSED AS MOOT by #36 (S7):** the `renders` table + bucket no longer exist | S | S7 (moot via #36) | ~#4 (old Naldo list) |
 | 9 | Manual satellite upload on `/quote/new` (front + satellite split) — the manual satellite slot feeds the design + training capture (shipped via #8 Stage A) | M | S7 | #28a |
 | 8 | **AI training / designer-brain system** (epic) → detail in [[task_ai_training_refinement]]. **Stage A** capture (PR #30) · **Stage B** Voyage+pgvector similarity retrieval (PR #31) · **Stage C** C1 per-example seed→final diff + C2 corpus bias block + C3 satellite orientation self-check (PR #33) + C4 garland sections from box×scale (PR #34). **C6 (per-detection confidence) intentionally DEFERRED** (revisit once real post-launch correction data shows it's worth the schema + editor-UI cost). All Stage C teaching no-ops until the corpus repopulates post-launch (training data wiped S8). | L (epic) | S7–S8 | #28 |
-| 17 | **Pricing update (Naldo's numbers)** — standalone bow $0→$35; tax 8.625%→8.75%; wreath/garland **"Labor" tier removed** + tiers relabeled (`bow`=Non-Decorated, `fullDecor`=Decorated; internal keys kept); 36" Oregon wreath deleted; wreath non-deco 24/30/36/48 = $200/$285/$315/$450 (deco unchanged) + new 60" ($885/$1130) & 72" ($1149/$1455); garland non-deco 9ft $162 / 4.5ft $135 (deco unchanged). Touched the price book, shared types, AI enums, seed validation, legacy training pages, **shared editor-core dropdowns (RELAY to design tool)**, + tests. NO pending prices left. | M | S8 | #8 |
+| 17 | **Pricing update (Naldo's numbers)** — standalone bow $0→$35; tax 8.625%→8.75%; wreath/garland **"Labor" tier removed** + tiers relabeled (`bow`=Non-Decorated, `fullDecor`=Decorated; internal keys kept); 36" Oregon wreath deleted; wreath non-deco 24/30/36/48 = $200/$285/$315/$450 (deco unchanged) + new 60" ($885/$1130) & 72" ($1149/$1455); garland non-deco 9ft $162 / 4.5ft $135 (deco unchanged). Touched the price book, shared types, AI enums, seed validation, legacy training pages, **shared editor-core dropdowns (RELAY done — design tool mirrored at `6479786`)**, + tests. NO pending prices left. | M | S8 | #8 |
+| 12 | **Operator "recommend items"** — a per-item `recommended` flag (SEPARATE from `included`): builder Quote-Breakdown checkboxes on per-unit + custom rows (roofline keeps its radio) write back to the scene/form; a "Recommended subtotal (customer's starting total)" line + under-$1,000 warning. Portal pre-selects ONLY recommended items + a "Recommended" label (non-rec = optional add-ons); sub-detail line removed. Fallback (none recommended) escalates the default package to clear the $1,000 minimum. **FUTURE:** an "Our Recommendation" package when packages get built. | M | S8 | #19 |
 
 ## 🟡 In planning — NOT building yet
 *(none — #8, #9, #27, #35 all shipped; see ✅ Completed above.)*
@@ -45,7 +46,6 @@ metadata:
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
 | 10 | Portal color/pattern picker (operator default → customer-changeable) | M | | #26 |
-| 12 | Operator "recommend items" checkboxes in the builder | S | low priority — ⚠️ REVIEW before building: raised pre-design-first (S1); with #35 the design + `included` flags may already cover or reshape this | #19 |
 | 13 | Multi-image quoting (manual-only, no AI auto-quote) | L | big | #22 |
 | 14 | Corner-house default → front-door view | M | feasibility TBD | #20 |
 | 15 | Move Street View camera along the road | M | feasibility TBD | #21 |
