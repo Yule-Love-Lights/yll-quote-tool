@@ -15,7 +15,15 @@ metadata:
 
 ---
 
-### Session 8 — #8 STAGE B (similarity retrieval) RE-VERIFIED + SHIPPED (2026-06-15) · CURRENT
+### Session 8 — #8 Stage B→C4 · training-data wipe · #17 pricing · #12 recommend-items (2026-06-15/16) · CLOSED
+
+> **⏹️ SESSION 8 CLOSE (2026-06-16, ~79% usage).** One continuous conversation across 06-15/16 (a PC restart mid-session — one-conversation-one-session convention, so still S8; the next fresh session = **S9**). Details of each piece are in the dated sub-sections below; this is the at-a-glance close.
+>
+> **Shipped this session (MERGED unless noted):** #8 **Stage B** similarity retrieval — re-verified live + merged (PR #31) · **editor-core re-sync** → byte-identical (PR #32) · #8 **Stage C** C1+C2+C3 (PR #33) + **C4** garland sections (PR #34) · **TRAINING-DATA WIPE** (truncated `training_examples`/`photo_corrections`/`training_houses` on prod — clean slate; kept `reference_assets` + quotes/designs) · **#17 pricing overhaul** (PR #35 — Labor tier removed, tiers → Non-Decorated/Decorated, 36" Oregon dropped, 60"/72" wreaths added, tax 8.75%, standalone bow $35; editor-core relay CLOSED @ design-tool `6479786`) · **#12 recommended-items** — built (agent + my review; caught a dead WW checkbox), committed + pushed, **PR OFF MASTER — MERGE PENDING JASON.**
+>
+> **Ending state:** ALL merged to master EXCEPT **#12** (branch `jason/recommended-items-12`, PR open, awaiting Jason's merge). Local `master` = `55d89e1` (has #17, NOT yet #12). Gates green (tsc · lint 0/2 · **207 tests**). DNS fixed this session (Ethernet → 1.1.1.1/8.8.8.8). `VOYAGE_API_KEY` is in `.env.local` + Vercel. No loose threads in-head — all captured here + in [[project_quote_tool]] / [[task_ledger]].
+>
+> **NEXT (S9, cold start):** (1) **merge the #12 PR** if not already, then `git fetch` + ff `master` to pick it up (it's the one thing not on master). (2) Then the broader ledger — **#10** (portal color picker), **#26** (image-box zoom/pan), **#13–#15**, **#29/#32** — + Naldo-pending. **Deferred:** #8 **C6** (per-detection confidence). **Future:** an **"Our Recommendation"** portal package when packages get built. Dev server was on :3000 (restart at pickup — it gets reaped). Editor-core cores byte-identical with the design tool (nothing to relay).
 
 **Picked up from:** S7 close. Branch `jason/few-shot-retrieval` off master `e1ccdc3` (Stage A merged); all Stage B work uncommitted. Ran the close-note verify steps with Jason; dev server already serving :3000 (a prior instance — my fresh start collided + exited, expected).
 
