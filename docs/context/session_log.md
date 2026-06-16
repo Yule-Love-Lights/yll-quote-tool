@@ -15,6 +15,28 @@ metadata:
 
 ---
 
+### Session 9 — #10 portal color/pattern picker (2026-06-16)
+
+**Picked up from:** S8 close. `git fetch` + ff `master` to `0b621f0` (S8 close-docs PR #37 merged); clean. Dev server restarted on :3000 (the prior instance was reaped; one fresh `npm run dev`). Reviewed the broader backlog with Jason — recommended **#10** (customer-facing, #1 priority, decision largely locked) over #26/#29/#32; Jason picked **#10**.
+
+**What #10 is:** the portal "color/pattern picker" — let the customer choose the whole-house light color/pattern and SEE it on their design. Two product forks Jason confirmed up front: (a) **recolor the live preview** (not metadata-only), and (b) **colors + named multi-color patterns** (not solids-only).
+
+**Recon (Explore agent + reads):** colors lived ONLY per-scene-item (`colorPattern` arrays on strand/spritzer/mini-area; `colorOf`/palette in `editor-core/colors.ts`); the quote model, pricing engine, and portal had ZERO color fields — the memory "operator sets a default…" line was aspirational, not code. Render path: `DesignCanvas` → `render-readonly.ts` (`setHidden` live-update pattern = the template for a live color update). `/api/quote` stores `inputs` jsonb verbatim (no allowlist strip) and the engine ignores unknown fields → no migration needed.
+
+**Built (recolor = the crux):** a `setColorOverride` sibling to `setHidden` in `render-readonly` that re-renders the draw layer only (no photo reload); light items recolor via a **shallow clone** of `colorPattern` (`{...item, colorPattern: override}`) so the stored scene is never mutated; wreath/bow/garland/text/pole ignore it. `DesignCanvas` threads `colorOverride` through, live-updating without remounting (array ref stable per scheme). Portal `SelectionContext` holds the chosen scheme + exposes the resolved `colorOverride`; `InteractiveHero` shows a "Light color" swatch row (only when a design is linked). Approve POST + route snapshot the chosen `colorSchemeId` into `approval_snapshot.customerSelection`. Scheme list = one editable array in **`src/lib/design/colorSchemes.ts`** + a pure resolver (`resolveSchemeColorIds`; "as-designed" = null = no override), test asserts every color id is a real palette id.
+
+**⚠️ MID-BUILD DIRECTION CHANGE (Jason, after first verify):** **DROP the builder-side operator-default control entirely** — the portal should ALWAYS default to "As designed." Reverted all operator-default plumbing (the `inputs.colorScheme` field on QuoteInputs/quoteForm/+test, `PortalQuote.defaultColorSchemeId`, the `initialColorSchemeId` provider prop, the QuoteBuilder UI) back to committed state — net diff dropped from ~13 files to **9**. Kept the customer picker + approval-snapshot capture. (The operator-default idea is now the only **deferred** bit of #10.)
+
+**List revised (Jason's exact spec):** rename Cool White → **Pure White**; remove Red & Green / Red & Warm White / Blue & Cool White / Red·White·Blue; add solid **Purple**; add patterns **Champagne** (Warm+Pure White), **Candy Cane** (Pure White, Red, Red), **Christmas** (Green, Green, Red, Red), **Blue & White** (Blue, Blue, Pure White, Pure White). Final 12: As designed · Warm White · Pure White · Red · Green · Blue · Purple · Multicolor · Champagne · Candy Cane · Christmas · Blue & White.
+
+**Verified (DOM via preview tools):** portal picker renders the exact 12-item list, "As designed" default-checked; builder control gone; design editor still mounts. (Couldn't grab a clean pixel screenshot — headless preview can't lay out the full-viewport Konva hero stage — so the final *visual* recolor confirm was Jason's, in his real browser: "Seems good.") Gates: tsc clean · lint 0 errors/2 warnings (pre-existing baseline) · **213 tests** (+6 colorSchemes).
+
+**SHIPPED (Jason's yes):** 4 logical commits on `jason/portal-color-picker-10` (off master `0b621f0`) — `d6906c0` scheme list+test · `42226e7` render override · `7adf001` portal picker+state · `c031554` approval snapshot. Pushed (no `gh` on this machine → compare-link PR). **Jason opened + MERGED PR #38 → master `69cb498`.** ff'd local master; deleted the merged branch.
+
+**STATE:** #10 DONE + MERGED. **Deferred:** #10 operator-default (portal always "As designed") + #8 C6 (per-detection confidence). **NEXT:** the broader ledger — #26 (image-box zoom/pan), #13–#15, #29 (editor cohesion restyle), #32 (spritzer density) — + Naldo-pending. Dev server on :3000.
+
+---
+
 ### Session 8 — #8 Stage B→C4 · training-data wipe · #17 pricing · #12 recommend-items (2026-06-15/16) · CLOSED
 
 > **⏹️ SESSION 8 CLOSE (2026-06-16, ~79% usage).** One continuous conversation across 06-15/16 (a PC restart mid-session — one-conversation-one-session convention, so still S8; the next fresh session = **S9**). Details of each piece are in the dated sub-sections below; this is the at-a-glance close.
