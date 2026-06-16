@@ -20,7 +20,7 @@ const fullForm: QuoteFormData = {
   miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }],
   spritzers: [{ size: '24', quantity: 2 }],
   wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }],
-  garland: [{ length: '9ft', type: 'noble', tier: 'labor', quantity: 2 }],
+  garland: [{ length: '9ft', type: 'noble', tier: 'bow', quantity: 2 }],
   bows: [{ quantity: 2 }],
   customLineItems: [{ label: 'Flagpole wrap', amount: 95, quantity: 2 }],
   takedown: 'premium',

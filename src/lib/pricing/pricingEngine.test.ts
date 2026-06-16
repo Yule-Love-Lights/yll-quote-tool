@@ -25,7 +25,7 @@ describe('BUSINESS_RULES — config guard', () => {
   // Locks the core money constants so an accidental edit fails loudly.
   it('holds the expected core constants', () => {
     expect(BUSINESS_RULES.minimumQuoteAmount).toBe(1000);
-    expect(BUSINESS_RULES.taxRate).toBe(0.08625);
+    expect(BUSINESS_RULES.taxRate).toBe(0.0875);
     expect(BUSINESS_RULES.depositPercentage).toBe(0.5);
     expect(BUSINESS_RULES.rushFeeAmount).toBe(150);
     expect(BUSINESS_RULES.premiumTakedownFee).toBe(150);
@@ -185,32 +185,52 @@ describe('calculateQuote — line-item categories', () => {
     }));
     expect(r.lineItems[0].amount).toBe(355);
   });
+
+  // #17: non-decorated (bow) prices updated, 60"/72" sizes added, Oregon + the
+  // labor tier retired.
+  it('prices non-decorated wreaths and the new 60"/72" sizes', () => {
+    const small = calculateQuote(emptyInputs({
+      wreaths: [{ size: '24noble', tier: 'bow', quantity: 1 }],
+    }));
+    expect(small.lineItems[0].amount).toBe(200);
+    const big = calculateQuote(emptyInputs({
+      wreaths: [
+        { size: '60noble', tier: 'bow', quantity: 1 },       // 885
+        { size: '72noble', tier: 'fullDecor', quantity: 1 }, // 1455
+      ],
+    }));
+    expect(big.lineItems.map((li) => li.amount)).toEqual([885, 1455]);
+  });
+
+  it('prices standalone bows at $35 each (#17)', () => {
+    const r = calculateQuote(emptyInputs({ bows: [{ quantity: 2 }] }));
+    expect(r.lineItems[0].label).toBe('Bows × 2');
+    expect(r.lineItems[0].amount).toBe(70);
+  });
 });
 
 describe('calculateQuote — garland (incl. 4.5ft regression)', () => {
+  // #17: `bow` = Non-Decorated, `fullDecor` = Decorated; the `labor` tier retired.
   it('prices 9ft noble garland by tier', () => {
     const r = calculateQuote(emptyInputs({
-      garland: [{ type: 'noble', length: '9ft', tier: 'labor', quantity: 1 }],
+      garland: [{ type: 'noble', length: '9ft', tier: 'bow', quantity: 1 }],
     }));
-    expect(r.lineItems[0].amount).toBe(165);
+    expect(r.lineItems[0].amount).toBe(162);
   });
 
-  // Regression: 4.5ft was a {0,0,0} placeholder that silently priced at $0.
-  // labor + fullDecor are now real; this guards against a reversion.
-  it('prices 4.5ft noble garland: labor $135, fullDecor $210', () => {
-    const labor = calculateQuote(emptyInputs({
-      garland: [{ type: 'noble', length: '4.5ft', tier: 'labor', quantity: 1 }],
+  // Regression: 4.5ft was a {0,0,0} placeholder that silently priced at $0. Both
+  // tiers are now real ($135 / $210); this guards against a reversion.
+  it('prices 4.5ft noble garland: non-decorated $135, decorated $210', () => {
+    const nonDeco = calculateQuote(emptyInputs({
+      garland: [{ type: 'noble', length: '4.5ft', tier: 'bow', quantity: 1 }],
     }));
-    expect(labor.lineItems[0].amount).toBe(135);
+    expect(nonDeco.lineItems[0].amount).toBe(135);
 
-    const full = calculateQuote(emptyInputs({
+    const deco = calculateQuote(emptyInputs({
       garland: [{ type: 'noble', length: '4.5ft', tier: 'fullDecor', quantity: 1 }],
     }));
-    expect(full.lineItems[0].amount).toBe(210);
+    expect(deco.lineItems[0].amount).toBe(210);
   });
-
-  // The 4.5ft "with bow" price is still pending from Naldo (currently $0).
-  it.todo("set + assert 4.5ft 'with bow' garland price once Naldo confirms it");
 });
 
 describe('calculateQuote — minimum, fees, tax, deposit', () => {
@@ -222,10 +242,10 @@ describe('calculateQuote — minimum, fees, tax, deposit', () => {
     expect(r.minimumApplied).toBe(false);
     expect(r.subtotalAfterDiscount).toBe(85);
     expect(r.taxableAmount).toBe(85);
-    expect(r.taxAmount).toBe(7.33);
-    expect(r.total).toBe(92.33);
-    expect(r.depositAmount).toBe(46.17);
-    expect(r.balanceDue).toBe(46.16);
+    expect(r.taxAmount).toBe(7.44);
+    expect(r.total).toBe(92.44);
+    expect(r.depositAmount).toBe(46.22);
+    expect(r.balanceDue).toBe(46.22);
     // deposit + balance must always reconstruct the total exactly
     expect(r.depositAmount + r.balanceDue).toBeCloseTo(r.total, 2);
   });
@@ -247,18 +267,18 @@ describe('calculateQuote — minimum, fees, tax, deposit', () => {
       miniLightItems: [{ type: 'tree', wrapStyle: 'trunk', stringCount: 3 }], //  135
       spritzers: [{ size: '24', quantity: 2 }],                               //  190
       wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }],         //  355
-      garland: [{ type: 'noble', length: '9ft', tier: 'bow', quantity: 1 }],  //  195
+      garland: [{ type: 'noble', length: '9ft', tier: 'bow', quantity: 1 }],  //  162
       rushFee: true,
       takedown: 'premium',
     }));
     expect(r.lineItems).toHaveLength(5);
-    expect(r.subtotalBeforeDiscount).toBe(2075);
+    expect(r.subtotalBeforeDiscount).toBe(2042);
     expect(r.minimumApplied).toBe(false);
-    expect(r.taxableAmount).toBe(2375); // 2075 + 150 + 150
-    expect(r.taxAmount).toBe(204.84);
-    expect(r.total).toBe(2579.84);
-    expect(r.depositAmount).toBe(1289.92);
-    expect(r.balanceDue).toBe(1289.92);
+    expect(r.taxableAmount).toBe(2342); // 2042 + 150 + 150
+    expect(r.taxAmount).toBe(204.93);
+    expect(r.total).toBe(2546.93);
+    expect(r.depositAmount).toBe(1273.46);
+    expect(r.balanceDue).toBe(1273.47);
   });
 });
 

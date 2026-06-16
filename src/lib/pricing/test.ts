@@ -135,14 +135,14 @@ const job8: QuoteInputs = {
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'easy',
   miniLightItems: [], spritzers: [],
   wreaths: [
-    { size: '24noble',  tier: 'bow',       quantity: 2 },  // $230 × 2 = $460
-    { size: '36noble',  tier: 'fullDecor', quantity: 1 },  // $400 × 1 = $400
-    { size: '36oregon', tier: 'labor',     quantity: 1 },  // $298 × 1 = $298
+    { size: '24noble', tier: 'bow',       quantity: 2 },  // $200 × 2 = $400
+    { size: '36noble', tier: 'fullDecor', quantity: 1 },  // $400 × 1 = $400
+    { size: '60noble', tier: 'bow',       quantity: 1 },  // $885 × 1 = $885
   ],
   garland: [],
   takedown: 'included', rushFee: false,
 };
-// Expected: $460 + $400 + $298 = $1,158
+// Expected: $400 + $400 + $885 = $1,685
 printQuote('Job 8: Wreaths only', calculateQuote(job8));
 
 // ─── Test 9: Garland only ────────────────────────────────────────────────────

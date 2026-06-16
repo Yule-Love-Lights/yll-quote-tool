@@ -91,10 +91,10 @@ const SPRITZER_VISUAL_SIZE_IN = 24;
 
 const MINI_TYPES = new Set(['tree', 'bush', 'column']);
 const WRAP_STYLES = new Set(['canopy', 'trunk']);
-const WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '36oregon']);
+const WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '60noble', '72noble']);
 const SPRITZER_SIZES = new Set(['16', '24', '32']);
 const GARLAND_LENGTHS = new Set(['4.5ft', '9ft']);
-const TIERS = new Set(['labor', 'bow', 'fullDecor']);
+const TIERS = new Set(['bow', 'fullDecor']); // #17: 'labor' retired
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));

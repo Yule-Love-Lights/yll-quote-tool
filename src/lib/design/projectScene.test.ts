@@ -196,18 +196,18 @@ describe('projectScene — spritzers (per-instance, billed size from quoteSize)'
 });
 
 describe('projectScene — wreaths (billed size + tier, ignoring visual size)', () => {
-  it('uses staff-set quoteSize (incl. Oregon variety), IGNORING the drawn 60"', () => {
+  it('uses staff-set quoteSize + tier, IGNORING the drawn visual size', () => {
     const p = projectScene(scene([
-      wreath({ sizeIn: 60, quoteSize: '30noble', tier: 'labor' }),
-      wreath({ sizeIn: 60, quoteSize: '36oregon', tier: 'fullDecor' }),
+      wreath({ sizeIn: 60, quoteSize: '30noble', tier: 'bow' }),
+      wreath({ sizeIn: 60, quoteSize: '48noble', tier: 'fullDecor' }),
     ]));
     expect(p.wreaths).toEqual([
-      { size: '30noble', tier: 'labor', quantity: 1 },
-      { size: '36oregon', tier: 'fullDecor', quantity: 1 },
+      { size: '30noble', tier: 'bow', quantity: 1 },
+      { size: '48noble', tier: 'fullDecor', quantity: 1 },
     ]);
   });
 
-  it('defaults to 36" Noble + With Bow when unset', () => {
+  it('defaults to 36" Noble + Non-Decorated when unset', () => {
     const p = projectScene(scene([wreath({})]));
     expect(p.wreaths).toEqual([{ size: '36noble', tier: 'bow', quantity: 1 }]);
   });
@@ -372,14 +372,14 @@ describe('projectScene — mixed scene preserves order + derived arrays', () => 
       wreath({ id: 'w', quoteSize: '24noble', tier: 'bow' }),
       strand({ id: 'bush', surface: 'bush', stringCount: 2 }),
       spritzer({ id: 'sp', quoteSize: '16' }),
-      garland({ id: 'g', quoteLength: '9ft', quoteSections: 1, tier: 'labor' }),
+      garland({ id: 'g', quoteLength: '9ft', quoteSections: 1, tier: 'bow' }),
       bow({ id: 'b' }), // projects as of #28
     ]));
     expect(p.items.map((i) => i.id)).toEqual(['wreath-w', 'mini-bush', 'spritzer-sp', 'garland-g', 'bow-b']);
     expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 2 }]);
     expect(p.spritzers).toEqual([{ size: '16', quantity: 1 }]);
     expect(p.wreaths).toEqual([{ size: '24noble', tier: 'bow', quantity: 1 }]);
-    expect(p.garland).toEqual([{ length: '9ft', type: 'noble', tier: 'labor', quantity: 1 }]);
+    expect(p.garland).toEqual([{ length: '9ft', type: 'noble', tier: 'bow', quantity: 1 }]);
     expect(p.bows).toEqual([{ quantity: 1 }]);
   });
 });

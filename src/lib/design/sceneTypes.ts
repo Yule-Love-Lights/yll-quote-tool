@@ -45,7 +45,7 @@ export type Surface =
   | 'tree'
   | 'column'
   | 'railing'; // grouped mini-light wraps (A2). Tags today; needs a price-book rate (v0.5) to bill.
-export type Tier = 'labor' | 'bow' | 'fullDecor'; // wreath + garland price tier
+export type Tier = 'bow' | 'fullDecor'; // wreath + garland price tier — bow = Non-Decorated, fullDecor = Decorated (#17; 'labor' retired)
 export type WrapStyle = 'canopy' | 'trunk'; // mini-light wrap style
 
 // Billed mini-light attrs shared by EVERY authoring path (A1 mini strands, A2
@@ -61,7 +61,7 @@ export type MiniBilling = {
 // Quote-binding panel, INDEPENDENT of the item's on-canvas visual size. These
 // mirror the price-book keys in pricingEngine (BUSINESS_RULES) member-for-member.
 export type QuoteSpritzerSize = '16' | '24' | '32';
-export type QuoteWreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '36oregon';
+export type QuoteWreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '60noble' | '72noble';
 export type QuoteGarlandLength = '4.5ft' | '9ft';
 
 export type ItemBase = {

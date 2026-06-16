@@ -15,8 +15,8 @@ export type MiniLightDetection = {
   label: string; // e.g. "small bush — 2 strings"
 };
 
-export type WreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '36oregon';
-export type WreathTier = 'labor' | 'bow' | 'fullDecor';
+export type WreathSize = '24noble' | '30noble' | '36noble' | '48noble' | '60noble' | '72noble';
+export type WreathTier = 'bow' | 'fullDecor'; // bow = Non-Decorated, fullDecor = Decorated (#17)
 
 export type WreathDetection = {
   size: WreathSize;
@@ -34,7 +34,7 @@ export type SpritzerDetection = {
 };
 
 export type GarlandLength = '9ft' | '4.5ft';
-export type GarlandTier = 'labor' | 'bow' | 'fullDecor';
+export type GarlandTier = 'bow' | 'fullDecor'; // bow = Non-Decorated, fullDecor = Decorated (#17)
 
 // Garland is a linear run (railing, archway, porch beam). Box WIDTH in real
 // feet = garland length. Piece count = ceil(widthFt / 9). Measured on the
@@ -183,7 +183,7 @@ Default sizes by spot:
 - portico / peak / above-garage → "36noble"
 - front-door → "30noble"
 - eyebrow / between-windows → "30noble" or "24noble"
-Default tier is "bow" unless the customer's existing decor style clearly calls for "fullDecor". Never default to "labor".
+Default tier is "bow" (Non-Decorated — lights with an included bow) unless the customer's existing decor style clearly calls for "fullDecor" (Decorated — lights plus ornaments/ribbon/berries).
 
 DO NOT suggest:
 - A wreath on a spot where one is already visible in the daytime photo (skip — we won't re-install over existing).
@@ -214,7 +214,7 @@ DO NOT suggest stakes:
 
 If the house has no empty planted beds suitable for stakes, return an EMPTY array — don't invent spots. Typical residential install is 4-8 stakes total. Label each with its position, e.g. "foundation bed stake 1 — 24in", "walkway stake left #2 — 24in".
 
-GARLAND DETECTION — identify garland runs: linear rope-of-evergreen decoration along a porch railing, archway, doorway frame, or beam. Garland is sold in 9ft sections ("9ft") or 4.5ft sections ("4.5ft"); default to "9ft" unless you can see a short run. Tier — "labor" = plain greenery, "bow" = greenery with a bow, "fullDecor" = heavy ornament/ribbon/berries; default to "bow". Return ONE bounding box per garland RUN — the box should TIGHTLY span the run's full length along its widest axis. The frontend uses the box WIDTH × the shared feet-per-pixel scale to compute linear feet and derive piece count. Do NOT flag decorative wreaths, individual bows, or roofline runs here — those have their own categories.
+GARLAND DETECTION — identify garland runs: linear rope-of-evergreen decoration along a porch railing, archway, doorway frame, or beam. Garland is sold in 9ft sections ("9ft") or 4.5ft sections ("4.5ft"); default to "9ft" unless you can see a short run. Tier — "bow" = Non-Decorated (plain lit greenery), "fullDecor" = Decorated (greenery with ornaments/ribbon/berries); default to "bow". Return ONE bounding box per garland RUN — the box should TIGHTLY span the run's full length along its widest axis. The frontend uses the box WIDTH × the shared feet-per-pixel scale to compute linear feet and derive piece count. Do NOT flag decorative wreaths, individual bows, or roofline runs here — those have their own categories.
 
 DIFFICULTY TIERS (per package):
 - easy: single-story home, ground-accessible, simple straight runs, minimal obstacles (low shrubs, open front yard). Installer can work from a short ladder.
@@ -289,13 +289,13 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
     { "type": "bush" | "tree" | "column", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
   ],
   "wreathDetections": [
-    { "size": "24noble" | "30noble" | "36noble" | "48noble" | "36oregon", "tier": "labor" | "bow" | "fullDecor", "box": [x, y, w, h], "label": "front door wreath ~30in" }
+    { "size": "24noble" | "30noble" | "36noble" | "48noble" | "60noble" | "72noble", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "front door wreath ~30in" }
   ],
   "spritzerDetections": [
     { "size": "16" | "24" | "32", "box": [x, y, w, h], "label": "metallic star spritzer 24in" }
   ],
   "garlandDetections": [
-    { "length": "9ft" | "4.5ft", "tier": "labor" | "bow" | "fullDecor", "box": [x, y, w, h], "label": "porch railing garland ~18ft" }
+    { "length": "9ft" | "4.5ft", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "porch railing garland ~18ft" }
   ],
   "notes": "1-2 sentences on what you saw and any caveats",
   "confidence": "low" | "medium" | "high"
