@@ -6,9 +6,10 @@
 // faithful copy of the design tool's editor, so re-syncing an upstream update
 // means overwriting the other files and leaving this one alone.
 //
-// Phase-1 scope: scene load/save + base-photo upload are wired; colors/defaults
-// use built-in constants (no Settings page yet); the custom-upload library is
-// deferred (listUploads → empty, createUpload → throws).
+// Scope: scene load/save + base-photo upload are wired; colors + per-type
+// defaults come from the global app settings (#32, /api/settings); the
+// custom-upload library is deferred (listUploads → empty, createUpload → throws)
+// until #32 Phase 3.
 
 import type {
   Design,
@@ -18,6 +19,7 @@ import type {
   CustomUpload,
 } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from './colors';
+import { fetchAppSettings } from '@/lib/clientSettings';
 
 type DesignPatch = Partial<{
   name: string;
@@ -117,11 +119,13 @@ export function createEditorApi(designId: string): EditorApi {
     },
 
     async getColors() {
-      return DEFAULT_COLORS;
+      const { colors } = await fetchAppSettings();
+      return Array.isArray(colors) && colors.length > 0 ? colors : DEFAULT_COLORS;
     },
 
     async getDefaults() {
-      return {};
+      const { defaults } = await fetchAppSettings();
+      return defaults ?? {};
     },
 
     // Custom-upload library is deferred in Phase 1.

@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import type { Scene } from '@/lib/design/sceneTypes';
+import type { Scene, BulbColor } from '@/lib/design/sceneTypes';
 import type { ReadOnlyDesignController } from './editor-core/render-readonly';
+import { setPalette } from './editor-core/colors';
+import { setRenderSettings, type RenderSettings } from './editor-core/renderSettings';
 
 type Props = {
   scene: Scene;
@@ -17,12 +19,19 @@ type Props = {
    * items recolor to, or null for "as designed". Updated live (no remount).
    */
   colorOverride?: string[] | null;
+  /**
+   * Global app settings (#32) applied before render so the customer sees what
+   * staff configured: the editable palette + render tunables (e.g. spritzer
+   * density). Omitted ⇒ editor-core factory defaults.
+   */
+  palette?: BulbColor[];
+  renderSettings?: RenderSettings;
 };
 
 // Read-only React wrapper that mounts the live design render (Konva) into a
 // host div, client-side only (dynamic import keeps Konva out of SSR). Used by
 // the portal hero to show the customer's actual design. View-only — no editing.
-export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride }: Props) {
+export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride, palette, renderSettings }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ReadOnlyDesignController | null>(null);
 
@@ -39,6 +48,10 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
       if (!host) return;
       const { renderReadOnlyDesign } = await import('./editor-core/render-readonly');
       if (cancelled) return;
+      // Apply global app settings (#32) before rendering so the portal matches
+      // what staff configured (palette + spritzer density, etc.).
+      if (palette && palette.length > 0) setPalette(palette);
+      if (renderSettings) setRenderSettings(renderSettings);
       const ctrl = await renderReadOnlyDesign(host, {
         scene,
         photoUrl,

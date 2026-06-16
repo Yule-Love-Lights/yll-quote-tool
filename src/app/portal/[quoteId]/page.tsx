@@ -44,6 +44,7 @@ import {
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import type { PortalQuote } from '@/components/portal/types';
+import { getAppSettings } from '@/lib/appSettings';
 
 type Params = { quoteId: string };
 
@@ -98,6 +99,9 @@ export default async function PortalPage({
   const { quoteId } = await params;
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
+  // Global app settings (#32) — applied to the live design render so the customer
+  // sees the configured palette + render tunables (e.g. spritzer density).
+  const appSettings = await getAppSettings();
   // Fallback default package — escalates past B to a tier that clears the
   // $1,000 minimum so a no-recommendation quote opens approvable (#12).
   const initialPackageId = pickInitialPackageId(
@@ -148,6 +152,8 @@ export default async function PortalPage({
           packages={quote.packages}
           lineItemCount={quote.lineItems.length}
           design={quote.design}
+          palette={appSettings.colors}
+          renderSettings={appSettings.render}
         />
 
         {/* 2. Walkthrough video — global default or per-quote override */}
