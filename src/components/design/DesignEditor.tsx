@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import Link from 'next/link';
+import { applyAppSettings } from '@/lib/clientSettings';
 import './design-editor.css';
 
 type Props = {
@@ -49,6 +51,11 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       const host = hostRef.current;
       if (!host) return;
       const { renderEditor } = await import('./editor-core/editor');
+      if (cancelled) return;
+      // Apply the global palette + render settings (#32) before the editor draws
+      // so it renders with the configured palette/spritzer density. The editor
+      // also re-reads the palette via the storage seam (same cached fetch).
+      await applyAppSettings();
       if (cancelled) return;
       // showQuoteBinding: true → the quote embed shows the per-item "Quote
       // binding" panels (surface/included + billed quote spec). The design
@@ -130,6 +137,9 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       >
         <span className="text-xs font-medium text-[#9aa3b2]">Design editor</span>
         <div className="flex items-center gap-2">
+          <Link href="/settings" target="_blank" className={barBtn}>
+            ⚙ Settings
+          </Link>
           <button type="button" onClick={() => setExpanded((e) => !e)} className={barBtn}>
             {expanded ? '✕ Exit full screen' : '⛶ Full screen'}
           </button>

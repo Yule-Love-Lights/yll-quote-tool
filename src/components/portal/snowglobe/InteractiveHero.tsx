@@ -27,6 +27,8 @@ import { PlayCircle, MapPin, Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
+import type { BulbColor } from '@/lib/design/sceneTypes';
+import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { COLOR_SCHEMES } from '@/lib/design/colorSchemes';
 import { colorOf } from '@/components/design/editor-core/colors';
 
@@ -58,6 +60,10 @@ export type InteractiveHeroProps = {
   // Linked design (#27 Phase 2). When present, the hero renders it live
   // instead of the static `afterUrl` image, with a daytime/lit toggle.
   design?: PortalDesign;
+  // Global app settings (#32) applied to the live render so the customer sees
+  // the configured palette + render tunables.
+  palette?: BulbColor[];
+  renderSettings?: RenderSettings;
 };
 
 export function InteractiveHero({
@@ -68,6 +74,8 @@ export function InteractiveHero({
   packages,
   lineItemCount,
   design,
+  palette,
+  renderSettings,
 }: InteractiveHeroProps) {
   const {
     packageId,
@@ -144,6 +152,8 @@ export function InteractiveHero({
             photoH={design.photoH}
             hiddenIds={hiddenSceneItemIds}
             colorOverride={colorOverride}
+            palette={palette}
+            renderSettings={renderSettings}
             className="portal-snow-stage-photo absolute inset-0"
           />
         )
