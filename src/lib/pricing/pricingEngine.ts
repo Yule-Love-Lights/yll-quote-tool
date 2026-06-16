@@ -125,6 +125,10 @@ export type CustomLineItem = {
   amount: number; // unit price
   quantity?: number; // default 1
   description?: string;
+  // Staff-set "advised for this home" flag (#12). Pre-selects this custom item
+  // on the customer portal + shows a "Recommended" label. Default false.
+  // Pricing ignores it; it only rides along to the portal via the adapter.
+  recommended?: boolean;
 };
 
 // Santa's (front roofline) and Gingerbread (front + ridge + sides) are

@@ -70,6 +70,10 @@ export type ItemBase = {
   // --- binding additions (§4) ---
   surface?: Surface | null; // absent/null = unmapped (renders, no line item)
   included?: boolean; // default true; portal selection state
+  // Staff-set "advised for this home" flag (#12). SEPARATE from `included`
+  // (which is "is it in the quote at all"): `recommended` pre-selects the item
+  // on the customer portal and shows a "Recommended" label. Default false.
+  recommended?: boolean;
 };
 
 export type StrandItem = ItemBase & MiniBilling & {

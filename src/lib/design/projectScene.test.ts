@@ -173,6 +173,30 @@ describe('projectScene — included flag', () => {
   });
 });
 
+describe('projectScene — recommended flag (#12)', () => {
+  it('carries recommended from each scene item onto its projected line item', () => {
+    const p = projectScene(scene([
+      strand({ id: 'b1', surface: 'bush', recommended: true }),
+      wreath({ id: 'w1', recommended: true }),
+      spritzer({ id: 's1' }), // not recommended
+      garland({ id: 'g1', recommended: true }),
+      bow({ id: 'bo1' }), // not recommended
+    ]));
+    const byId = Object.fromEntries(p.items.map((i) => [i.id, i.recommended]));
+    expect(byId['mini-b1']).toBe(true);
+    expect(byId['wreath-w1']).toBe(true);
+    expect(byId['spritzer-s1']).toBeUndefined();
+    expect(byId['garland-g1']).toBe(true);
+    expect(byId['bow-bo1']).toBeUndefined();
+  });
+
+  it('does not affect the per-category pricing arrays', () => {
+    const p = projectScene(scene([strand({ surface: 'bush', stringCount: 2, recommended: true })]));
+    // recommended rides on `items` only — the engine inputs are unchanged.
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 2 }]);
+  });
+});
+
 describe('projectScene — spritzers (per-instance, billed size from quoteSize)', () => {
   it('uses the staff-set quoteSize, IGNORING the visual sizeIn', () => {
     // Visual 48", billed 32" — proves the drawn size is irrelevant to price.

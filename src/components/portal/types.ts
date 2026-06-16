@@ -42,6 +42,11 @@ export type PortalLineItem = {
   // items in the live portal render. Undefined ⇒ no linked design item (legacy
   // quotes, custom line items, or an untagged item).
   sceneItemIds?: string[];
+  // Staff flagged this item as "recommended" for this home (#12). When any line
+  // item is recommended, the portal opens with ONLY the recommended ones
+  // pre-selected and shows a "Recommended" label on each. NEVER set on roofline
+  // option items (roofline keeps its own recommend mechanism — PortalRoofline).
+  recommended?: boolean;
 };
 
 // The mutually-exclusive roofline group for the portal (#17 Phase 2). Present
