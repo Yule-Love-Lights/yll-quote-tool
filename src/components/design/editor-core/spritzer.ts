@@ -2,6 +2,7 @@ import Konva from "konva";
 // VENDOR ADAPTATION (Path B): types from our local sceneTypes, not ../api.
 import type { SpritzerItem } from "@/lib/design/sceneTypes";
 import { colorOf } from "./colors";
+import { getRenderSettings } from "./renderSettings";
 
 // Procedurally renders a spritzer: a radial spray of glowing rays from a
 // central point, each ray ending in a tip bulb, all blended onto the photo
@@ -32,8 +33,10 @@ export function createSpritzer(
   // Ray density scales with the RENDERED radius (not sizeIn) so the angular
   // spacing between ray tips stays constant at every size; small spritzers get
   // proportionally fewer rays instead of collapsing into a blob. Clamped 7..36.
-  // (0.45 keeps a 24" spritzer at ~22 rays.)
-  const numRays = Math.max(7, Math.min(36, Math.round(radiusPx * 0.45)));
+  // The per-pixel factor is an app-wide RENDER setting (#32, default 0.45 ≈ ~22
+  // rays on a 24" spritzer); getRenderSettings() returns the default until the
+  // app applies stored settings at init.
+  const numRays = Math.max(7, Math.min(36, Math.round(radiusPx * getRenderSettings().spritzerRayDensity)));
   const rng = makeRng(item.id);
 
   // ----- Soft outer halo -----
