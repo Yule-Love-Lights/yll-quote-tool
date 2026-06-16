@@ -15,7 +15,7 @@ metadata:
 
 ---
 
-### Session 9 — #10 portal color/pattern picker (2026-06-16)
+### Session 9 — #10 portal color/pattern picker · #26 measurement-box zoom/pan (2026-06-16)
 
 **Picked up from:** S8 close. `git fetch` + ff `master` to `0b621f0` (S8 close-docs PR #37 merged); clean. Dev server restarted on :3000 (the prior instance was reaped; one fresh `npm run dev`). Reviewed the broader backlog with Jason — recommended **#10** (customer-facing, #1 priority, decision largely locked) over #26/#29/#32; Jason picked **#10**.
 
@@ -33,7 +33,13 @@ metadata:
 
 **SHIPPED (Jason's yes):** 4 logical commits on `jason/portal-color-picker-10` (off master `0b621f0`) — `d6906c0` scheme list+test · `42226e7` render override · `7adf001` portal picker+state · `c031554` approval snapshot. Pushed (no `gh` on this machine → compare-link PR). **Jason opened + MERGED PR #38 → master `69cb498`.** ff'd local master; deleted the merged branch.
 
-**STATE:** #10 DONE + MERGED. **Deferred:** #10 operator-default (portal always "As designed") + #8 C6 (per-detection confidence). **NEXT:** the broader ledger — #26 (image-box zoom/pan), #13–#15, #29 (editor cohesion restyle), #32 (spritzer density) — + Naldo-pending. Dev server on :3000.
+**── LEDGER HOUSEKEEPING (Jason, between #10 and #26) ──** Added a new **🗄️ Shelved** section to [[task_ledger]] for planned-but-dropped tasks: **#15** (Street View camera along the road — not worth building) and **#16** (wire prod CRM + home.works — NOT integrating home.works into this tool; the approve route's Zapier hook stays in code, unused). **#10 operator-default settled as won't-do.** Synced to `docs/context` (PR #40).
+
+**── #26 MEASUREMENT-BOX ZOOM/PAN — BUILT + MERGED ──** Jason picked #26 next; chose **both surfaces** (shared hook). Recon (Explore agent): post-#35, the quote/new **Street/Design** tab is the Konva editor (already has camera zoom/pan → out of scope); the real targets are the two `<img>`+SVG boxes — quote/new **Satellite tab** + **/training/new** markup — both normalized-0–1 coords, `getBoundingClientRect` drag math, static SVG `viewBox 0 0 1 1` + `vectorEffect=non-scaling-stroke`. **Built** `src/lib/useImageZoomPan.ts` (+ unit tests): wheel = cursor-anchored zoom (clamped 1–4×), drag empty = pan (clamped so the scaled image always fills the box), Reset view + zoom-%. **Key correctness move:** the CSS transform is applied to the SAME element whose `getBoundingClientRect` drives the point math, so every existing click/drag handler stays correct at any zoom — zero handler changes. Point handles `stopPropagation` so grabbing a point never pans; zoom/pan pause while placing points. **Two bugs hit + fixed mid-build:** (1) React-Compiler `react-hooks/refs` (v7) tainted the hook's whole return when it handed back a RefObject/callback-ref → restructured to the **consumer-owns-the-ref** pattern (`useImageZoomPan(wrapperRef, opts)`, returns only plain values); (2) the wheel listener attached once at mount when the conditionally-rendered box's ref was still null → made the attach effect run **every render** (cheap remove+add) so it binds when the box appears. **Verified:** unit tests (8) + live in-browser (injected a test photo into /training/new, dispatched a wheel event → transform went scale 1 → 1.82 → back to 1, Reset toggled) + Jason confirmed zoom+pan work on BOTH pages in his real browser. Gates: tsc · lint 0/2 (baseline) · **221 tests**. **SHIPPED:** 2 commits on `jason/measurement-zoom-pan-26` (`eb9cccd` hook+test · `957cc49` wiring); **MERGED PR #41 → master `0c1128b`.** ff'd local; branch deleted.
+
+**── PROCESS NOTE (Jason, S9):** send verification + PR links as **clickable Markdown links** (`[url](url)`), NOT bare URLs or inside backticks (backticks render as non-clickable code). Updated [[verify-handoff-before-commit]].
+
+**STATE:** #10 + #26 DONE + MERGED (all S9 work on master `0c1128b`). **Deferred:** #8 C6 (per-detection confidence). **Won't-do:** #10 operator-default. **Shelved:** #15, #16. **NEXT:** the broader ledger — #13/#14, #29 (editor cohesion restyle), #32 (spritzer density) — + Naldo-pending. Dev server on :3000 (preview-managed, serverId 67deb8ee).
 
 ---
 
