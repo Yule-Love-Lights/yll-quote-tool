@@ -26,6 +26,7 @@ import type {
 } from './types';
 import { sumSelectedItems } from './format';
 import { priceSelection, effectiveCharges } from '@/lib/portal/derivePackages';
+import { DEFAULT_COLOR_SCHEME_ID, resolveSchemeColorIds } from '@/lib/design/colorSchemes';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -66,6 +67,15 @@ type SelectionContextValue = {
    * they always render. Empty for quotes with no linked design.
    */
   hiddenSceneItemIds: Set<string>;
+  /**
+   * Customer-facing light color/pattern selection (#10): the active scheme id,
+   * a setter, and the resolved color-id override the live render applies (null =
+   * "as designed", no recolor). Always starts at "as designed"; the customer
+   * switches it on the portal and the choice is frozen into the approval snapshot.
+   */
+  colorSchemeId: string;
+  setColorScheme: (id: string) => void;
+  colorOverride: string[] | null;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -169,6 +179,17 @@ export function SelectionProvider({
   const [takedownSelected, setTakedownSelected] = useState<boolean>(charges.takedown.defaultOn);
   const toggleRush = useCallback(() => setRushSelected((v) => !v), []);
   const toggleTakedown = useCallback(() => setTakedownSelected((v) => !v), []);
+
+  // Light color/pattern (#10). Always starts at "as designed" (render the colors
+  // the operator drew); the customer can switch on the portal and the live design
+  // recolors. The resolved override array is stable per scheme (from the
+  // COLOR_SCHEMES constant), so passing it to DesignCanvas only re-renders the
+  // draw layer when it changes.
+  const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
+  const colorOverride = useMemo(
+    () => resolveSchemeColorIds(colorSchemeId),
+    [colorSchemeId],
+  );
 
   const selectPackage = useCallback(
     (id: PackageId) => {
@@ -276,6 +297,9 @@ export function SelectionProvider({
     toggleItem,
     isItemSelected,
     hiddenSceneItemIds,
+    colorSchemeId,
+    setColorScheme,
+    colorOverride,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;

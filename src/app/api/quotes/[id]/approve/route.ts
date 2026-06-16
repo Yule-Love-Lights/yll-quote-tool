@@ -79,6 +79,7 @@ type ApproveBody = {
   currentDeposit?: number;
   rushSelected?: boolean;
   takedownSelected?: boolean;
+  colorSchemeId?: string;
 };
 
 // The snapshot shape — stored in the approval_snapshot jsonb column.
@@ -96,6 +97,7 @@ type ApprovalSnapshot = {
     currentDepositUsd: number;
     rushSelected: boolean;      // #4 — customer's rush add-on choice
     takedownSelected: boolean;  // #4 — customer's premium-takedown choice
+    colorSchemeId: string;      // #10 — customer's light color/pattern choice
   };
   customer: {
     fullName: string | null;
@@ -151,6 +153,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // toggle-inclusive amount is already in currentTotal/currentDeposit.
   const rushSelected = body.rushSelected === true;
   const takedownSelected = body.takedownSelected === true;
+  // #10 — the customer's light color/pattern choice. A short scheme id; recorded
+  // in the snapshot as the authoritative record of what they approved. Defaults
+  // to 'as-designed' when absent (older clients / no design).
+  const colorSchemeId =
+    typeof body.colorSchemeId === 'string' && body.colorSchemeId.trim()
+      ? body.colorSchemeId.trim().slice(0, 64)
+      : 'as-designed';
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
@@ -197,6 +206,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       currentDepositUsd: currentDeposit,
       rushSelected,
       takedownSelected,
+      colorSchemeId,
     },
     customer: {
       fullName: quote.customer_name,

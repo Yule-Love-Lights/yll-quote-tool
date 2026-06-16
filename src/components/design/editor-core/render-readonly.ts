@@ -44,13 +44,22 @@ export type ReadOnlyDesignOptions = {
    * render everything. Update live without remounting via the returned setHidden.
    */
   hiddenIds?: Set<string> | null;
+  /**
+   * Whole-house light color/pattern OVERRIDE (#10 — customer color picker): a
+   * list of palette color ids the light items (strands, spritzers, mini-areas)
+   * recolor to, cycled per bulb. null/undefined ⇒ no override (render the
+   * operator's authored per-item colors). Update live via setColorOverride.
+   */
+  colorOverride?: string[] | null;
 };
 
-// Handle returned to the React wrapper: tear down, or update the hidden set
-// in place (re-renders only the draw layer — no photo reload / no flicker).
+// Handle returned to the React wrapper: tear down, or update the hidden set /
+// color override in place (re-renders only the draw layer — no photo reload /
+// no flicker).
 export type ReadOnlyDesignController = {
   destroy: () => void;
   setHidden: (ids: Set<string> | null) => void;
+  setColorOverride: (ids: string[] | null) => void;
 };
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {
@@ -71,6 +80,9 @@ export async function renderReadOnlyDesign(
   const brightness = opts.brightness ?? scene.brightness ?? 50;
   // Mutable so the React wrapper can update the toggle filter without remounting.
   let hidden: Set<string> | null = opts.hiddenIds ?? null;
+  // Mutable whole-house color override (#10). null ⇒ render as authored.
+  let colorOverride: string[] | null =
+    opts.colorOverride && opts.colorOverride.length > 0 ? opts.colorOverride : null;
 
   // Konva clears its container on mount; `host` is a dedicated, empty div.
   const stage = new Konva.Stage({
@@ -164,18 +176,21 @@ export async function renderReadOnlyDesign(
     for (const item of scene.items) {
       if (hidden && hidden.has(item.id)) continue;
       let g: Konva.Group | null = null;
-      if (isStrand(item)) g = renderStrand(item, ppfBound(item.yardstickId));
+      // Light items (strand, spritzer, mini-area) recolor to the whole-house
+      // override (#10) by swapping their colorPattern — a shallow clone so the
+      // stored scene is never mutated. Non-light items ignore the override.
+      if (isStrand(item)) g = renderStrand(colorOverride ? { ...item, colorPattern: colorOverride } : item, ppfBound(item.yardstickId));
       else if (isWreath(item)) g = createWreath(item, ppfActive(), requestRedraw);
       else if (isBow(item)) g = createBow(item, ppfActive(), requestRedraw);
       else if (isGarland(item)) g = renderGarland(item, ppfBound(item.yardstickId), requestRedraw);
-      else if (isSpritzer(item)) g = createSpritzer(item, ppfActive());
+      else if (isSpritzer(item)) g = createSpritzer(colorOverride ? { ...item, colorPattern: colorOverride } : item, ppfActive());
       else if (isText(item)) g = renderText(item, ppfActive());
       else if (isCustom(item)) g = createCustom(item, ppfActive(), requestRedraw);
       else if (isPole(item)) g = createPole(item, ppfActive());
       // A2 Mini-Area scatter-fill (bushes/canopy). Uses its bound yardstick like
       // strands (the fill density is area/scale-dependent). miniGroup has no
       // geometry — its member strands render on their own.
-      else if (isMiniArea(item)) g = renderMiniArea(item, ppfBound(item.yardstickId));
+      else if (isMiniArea(item)) g = renderMiniArea(colorOverride ? { ...item, colorPattern: colorOverride } : item, ppfBound(item.yardstickId));
       if (g) {
         g.listening(false);
         drawLayer.add(g);
@@ -193,7 +208,7 @@ export async function renderReadOnlyDesign(
         } catch {
           /* gone */
         }
-        return { destroy: () => {}, setHidden: () => {} };
+        return { destroy: () => {}, setHidden: () => {}, setColorOverride: () => {} };
       }
       photoW = photoW || img.naturalWidth;
       photoH = photoH || img.naturalHeight;
@@ -238,5 +253,13 @@ export async function renderReadOnlyDesign(
     renderItems();
   }
 
-  return { destroy, setHidden };
+  // Update the whole-house color override live (#10 color picker) — re-render the
+  // draw layer only (no photo reload / flicker), exactly like setHidden.
+  function setColorOverride(ids: string[] | null) {
+    if (destroyed) return;
+    colorOverride = ids && ids.length > 0 ? ids : null;
+    renderItems();
+  }
+
+  return { destroy, setHidden, setColorOverride };
 }

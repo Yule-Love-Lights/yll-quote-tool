@@ -37,6 +37,9 @@ type ApprovalSnapshotJson = {
     selectedItemIds?: string[];
     currentTotalUsd?: number;
     currentDepositUsd?: number;
+    // The light color/pattern the customer approved with (#10). Optional/back-
+    // compat: older snapshots predate it.
+    colorSchemeId?: string;
   };
 };
 
