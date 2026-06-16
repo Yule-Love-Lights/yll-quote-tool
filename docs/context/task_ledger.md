@@ -48,7 +48,6 @@ metadata:
 |---|------|------|-------|-------|
 | 13 | Multi-image quoting (manual-only, no AI auto-quote) | L | big | #22 |
 | 14 | Corner-house default → front-door view | M | feasibility TBD | #20 |
-| 15 | Move Street View camera along the road | M | feasibility TBD | #21 |
 | 26 | **Scroll-wheel zoom + pan inside the measurement image box** (the street/satellite editing area). Today you can only ctrl-zoom the whole browser; staff want to scroll-zoom + pan just the image for precise line/decoration placement. NOTE: that box is an `<img>` + **SVG overlay** + draggable point-handles (NOT an HTML `<canvas>`), so zoom must transform image+overlay together and coexist with point-dragging (wheel=zoom, drag handle=edit point, drag empty=pan). Applies to quote/new + training/new. | M | quote/new + training/new (new, raised S3) | — |
 | 29 | **Restyle the embedded design editor to match the quote tool (the "Option A" cohesion pass)** — Jason's explicit want (S4). Phase 1 dropped the design tool's editor in AS-IS via **Option B** (its own vanilla side panels, wrapped in a React shell — fast, low-risk). This task is the follow-on cleanup: rebuild those side panels/buttons in the quote tool's React+Tailwind style so the editor looks/feels native, wired to the shared engine. Same functionality — a rebuild of the controls, not a reskin; needs testing. Ties into the shared `editor-core`/`EditorStorage` work (see [[project_integration]]). | M–L | design editor (new, raised S4) — future cohesion pass | — |
 | 32 | **Make the spritzer ray-density factor editable in Settings** — the `0.45` rays-per-pixel constant in `editor-core/spritzer.ts` (`numRays = radiusPx * 0.45`) is hard-coded. Jason wants it tunable from the editor Settings page when that's built. Small; folds into the deferred Settings work (palette/per-type defaults). Shared editor → coordinate w/ design-tool AI. | S | design editor (new, raised S4) | — |
@@ -56,7 +55,6 @@ metadata:
 ## ⏸️ Pending / needs Naldo (blocked — not active dev)
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
-| 16 | Wire prod CRM + home.works | M | on hold — likely intentional during testing | #5 |
 | 19 | Dormant portals decision (keep dark/concierge components?) | S | | #6 |
 | 20 | Dev Supabase environment | S | | #7 |
 | 21 | HighLevel stage mapping | S | | #9 |
@@ -64,4 +62,11 @@ metadata:
 | 23 | Phone/video assets | S | | #11 |
 | 24 | Apply migration + image cleanup | S | | #14 |
 
-> Note: #8 fully shipped through Stage C/C4 (only **C6** = per-detection confidence deferred); #9/#10/#12/#17/#27/#35 also shipped. **Active dev = the 🔜 Backlog** (#13–#15, plus 26/29/32). Sizes are Jason-confirmed (don't silently adjust). No external blockers outstanding (#17 prices all in). **#10 deferred bit:** an operator-set default color (portal currently always opens "As designed") — revisit if Naldo wants staff to pre-pick the customer's starting color.
+## 🗄️ Shelved — planned but dropped (never started; kept for reference, not active dev)
+*Tasks we decided NOT to build, parked here instead of deleted in case they come back.*
+| # | Task | Size | Why dropped | Old # |
+|---|------|------|-------------|-------|
+| 15 | Move Street View camera along the road | M | Dropped S9 (Jason) — not worth building. Was: feasibility TBD. Un-shelve if it ever becomes worth it. | #21 |
+| 16 | Wire prod CRM + home.works | M | Dropped S9 (Jason) — NOT integrating home.works into this quote tool. (The approve route still has a home.works Zapier hook in code, but it's not being wired up; CRM/HighLevel work, if any, would be re-scoped as a new task.) | #5 |
+
+> Note: #8 fully shipped through Stage C/C4 (only **C6** = per-detection confidence deferred); #9/#10/#12/#17/#27/#35 also shipped. **Active dev = the 🔜 Backlog** (#13/#14, plus 26/29/32). Sizes are Jason-confirmed (don't silently adjust). No external blockers outstanding (#17 prices all in). **#15** (Street View camera along the road) **shelved S9** → see 🗄️ Shelved. The **#10 operator-default** idea is settled as **won't-do** — the portal always opening "As designed" is the intended behavior (Jason, S9).
