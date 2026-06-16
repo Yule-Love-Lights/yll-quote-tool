@@ -38,6 +38,7 @@ metadata:
 | 8 | **AI training / designer-brain system** (epic) → detail in [[task_ai_training_refinement]]. **Stage A** capture (PR #30) · **Stage B** Voyage+pgvector similarity retrieval (PR #31) · **Stage C** C1 per-example seed→final diff + C2 corpus bias block + C3 satellite orientation self-check (PR #33) + C4 garland sections from box×scale (PR #34). **C6 (per-detection confidence) intentionally DEFERRED** (revisit once real post-launch correction data shows it's worth the schema + editor-UI cost). All Stage C teaching no-ops until the corpus repopulates post-launch (training data wiped S8). | L (epic) | S7–S8 | #28 |
 | 17 | **Pricing update (Naldo's numbers)** — standalone bow $0→$35; tax 8.625%→8.75%; wreath/garland **"Labor" tier removed** + tiers relabeled (`bow`=Non-Decorated, `fullDecor`=Decorated; internal keys kept); 36" Oregon wreath deleted; wreath non-deco 24/30/36/48 = $200/$285/$315/$450 (deco unchanged) + new 60" ($885/$1130) & 72" ($1149/$1455); garland non-deco 9ft $162 / 4.5ft $135 (deco unchanged). Touched the price book, shared types, AI enums, seed validation, legacy training pages, **shared editor-core dropdowns (RELAY done — design tool mirrored at `6479786`)**, + tests. NO pending prices left. | M | S8 | #8 |
 | 12 | **Operator "recommend items"** — a per-item `recommended` flag (SEPARATE from `included`): builder Quote-Breakdown checkboxes on per-unit + custom rows (roofline keeps its radio) write back to the scene/form; a "Recommended subtotal (customer's starting total)" line + under-$1,000 warning. Portal pre-selects ONLY recommended items + a "Recommended" label (non-rec = optional add-ons); sub-detail line removed. Fallback (none recommended) escalates the default package to clear the $1,000 minimum. **FUTURE:** an "Our Recommendation" package when packages get built. | M | S8 | #19 |
+| 10 | **Portal color/pattern picker** — CUSTOMER-facing swatch row on the portal hero; picking a whole-house color/pattern RECOLORS the live design in real time (`render-readonly` `colorOverride`/`setColorOverride` overrides light items' `colorPattern` at render time — strand/spritzer/mini-area only; shallow clone, scene never mutated; "As designed" = no override). Choice frozen into `approval_snapshot.customerSelection.colorSchemeId`. Single editable `COLOR_SCHEMES` list in `lib/design/colorSchemes.ts` (12: As designed/Warm White/Pure White/Red/Green/Blue/Purple/Multicolor/Champagne/Candy Cane/Christmas/Blue & White). **Operator-default DROPPED** (Jason, S9 — portal always defaults to "As designed"; no builder control, no data-model field). No pricing impact, no migration. PR #38. | M | S9 | #26 |
 
 ## 🟡 In planning — NOT building yet
 *(none — #8, #9, #27, #35 all shipped; see ✅ Completed above.)*
@@ -45,7 +46,6 @@ metadata:
 ## 🔜 Backlog — active dev (priority order)
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
-| 10 | Portal color/pattern picker (operator default → customer-changeable) | M | | #26 |
 | 13 | Multi-image quoting (manual-only, no AI auto-quote) | L | big | #22 |
 | 14 | Corner-house default → front-door view | M | feasibility TBD | #20 |
 | 15 | Move Street View camera along the road | M | feasibility TBD | #21 |
@@ -64,4 +64,4 @@ metadata:
 | 23 | Phone/video assets | S | | #11 |
 | 24 | Apply migration + image cleanup | S | | #14 |
 
-> Note: #8 is fully shipped through Stage C/C4 (only **C6** = per-detection confidence is deferred); #9/#27/#35 also shipped. **Active dev = the 🔜 Backlog** (priority 10 → 15, plus 26/29/32). Sizes are Jason-confirmed (don't silently adjust). Biggest external blocker: **#17 (Naldo's bow prices).**
+> Note: #8 fully shipped through Stage C/C4 (only **C6** = per-detection confidence deferred); #9/#10/#12/#17/#27/#35 also shipped. **Active dev = the 🔜 Backlog** (#13–#15, plus 26/29/32). Sizes are Jason-confirmed (don't silently adjust). No external blockers outstanding (#17 prices all in). **#10 deferred bit:** an operator-set default color (portal currently always opens "As designed") — revisit if Naldo wants staff to pre-pick the customer's starting color.
