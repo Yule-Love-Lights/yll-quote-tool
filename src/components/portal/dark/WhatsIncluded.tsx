@@ -156,8 +156,16 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
                     <span className={`block font-display text-[17px] md:text-[18px] font-semibold leading-[1.3] tracking-[-0.005em] ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
                       {item.label}
                     </span>
-                    <span className={`block text-[14px] mt-0.5 ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
-                      {item.detail}
+                    {/* "Recommended" badge (#12) — replaces the old detail line.
+                        Always-rendered block reserves the line so flagging an
+                        item recommended doesn't shift layout; text is blank
+                        (a non-breaking space) when not recommended. Gold accent
+                        matches the selected "Included" badge. */}
+                    <span
+                      className="block text-[11px] font-semibold tracking-[0.14em] uppercase mt-0.5"
+                      style={{ color: '#E8B862' }}
+                    >
+                      {item.recommended ? 'Recommended' : ' '}
                     </span>
                   </span>
                   <span className="shrink-0 text-right">

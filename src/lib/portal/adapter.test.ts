@@ -29,7 +29,7 @@ function emptyInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
   };
 }
 
-function rowWith(result: QuoteResult | null): QuoteRowForPortal {
+function rowWith(result: QuoteResult | null, inputs: QuoteInputs | null = null): QuoteRowForPortal {
   return {
     id: '00000000-0000-0000-0000-000000000000',
     customer_name: 'Test Customer',
@@ -37,6 +37,7 @@ function rowWith(result: QuoteResult | null): QuoteRowForPortal {
     customer_phone: null,
     customer_email: null,
     result,
+    inputs,
     total: result?.total ?? null,
     video_kind: null,
     video_src: null,
@@ -48,8 +49,8 @@ function rowWith(result: QuoteResult | null): QuoteRowForPortal {
   };
 }
 
-function portalFrom(result: QuoteResult | null) {
-  return quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS });
+function portalFrom(result: QuoteResult | null, inputs: QuoteInputs | null = null) {
+  return quoteRowToPortalQuote({ row: rowWith(result, inputs), photos: PHOTOS });
 }
 
 // ── Mutually-exclusive roofline as line items (#17 Phase 2) ────────────────
@@ -138,5 +139,47 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     expect(portal.roofline).toBeUndefined();
     // The single roofline stays a normal line item, with its footage label intact.
     expect(portal.lineItems.some((li) => li.kind === 'roofline')).toBe(true);
+  });
+});
+
+// ── Per-item `recommended` flag on portal line items (#12) ─────────────────
+
+describe('quoteRowToPortalQuote — recommended flag on custom line items (#12)', () => {
+  it('carries recommended from inputs.customLineItems onto the matching portal row', () => {
+    const inputs = emptyInputs({
+      customLineItems: [
+        { label: 'Pathway stakes', amount: 200, quantity: 1, recommended: true },
+        { label: 'Timer upgrade', amount: 50, quantity: 1 }, // not recommended
+      ],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+
+    const stakes = portal.lineItems.find((li) => li.label === 'Pathway stakes')!;
+    const timer = portal.lineItems.find((li) => li.label === 'Timer upgrade')!;
+    expect(stakes.recommended).toBe(true);
+    expect(timer.recommended).toBeUndefined();
+  });
+
+  it('matches the engine label for a quantity > 1 custom item', () => {
+    const inputs = emptyInputs({
+      customLineItems: [{ label: 'Wreath hook', amount: 10, quantity: 3, recommended: true }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    // Engine label is "<label> × <qty>".
+    const row = portal.lineItems.find((li) => li.label === 'Wreath hook × 3')!;
+    expect(row.recommended).toBe(true);
+  });
+
+  it('marks no rows recommended when inputs are absent (legacy rows)', () => {
+    const inputs = emptyInputs({
+      customLineItems: [{ label: 'Pathway stakes', amount: 200, recommended: true }],
+    });
+    const result = calculateQuote(inputs);
+    // No inputs passed (the loader couldn't supply them) → no recommendation.
+    const portal = portalFrom(result, null)!;
+    const stakes = portal.lineItems.find((li) => li.label === 'Pathway stakes')!;
+    expect(stakes.recommended).toBeUndefined();
   });
 });

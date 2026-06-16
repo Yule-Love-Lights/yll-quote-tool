@@ -8,6 +8,11 @@ import type {
   RooflineDifficulty,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
+import { buildPortalLineItems } from '@/lib/portal/adapter';
+import { attachSceneLinks } from '@/lib/portal/sceneLinks';
+import type { PortalLineItem } from '@/components/portal/types';
+import type { Scene } from '@/lib/design/sceneTypes';
 import {
   type QuoteFormData,
   type FormCustomer,
@@ -148,6 +153,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
+  // The live design scene, fetched after each Calculate so the Quote Breakdown
+  // can map each line-item row → its scene item(s) and show the "recommended"
+  // checkbox (#12). Empty/no-design → only custom rows are toggleable (their
+  // flag lives in form state). Bumped via designEditorKey so a write-back +
+  // remount re-fetches the patched scene.
+  const [breakdownScene, setBreakdownScene] = useState<Scene | null>(null);
+  // True while a per-item recommended write-back (scene PUT) is in flight, so
+  // the checkboxes disable to prevent racing PUTs.
+  const [recommendBusy, setRecommendBusy] = useState(false);
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -1034,6 +1048,140 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }
   };
 
+  // ─── Per-item "recommended" flag (#12) ───────────────────────────────────
+  // Load the live design scene whenever a result lands (or after a write-back
+  // remount) so the breakdown can link each line-item row to its scene item(s).
+  // No design → null (only custom rows are then toggleable). Best-effort.
+  useEffect(() => {
+    let stale = false;
+    // Defer so the setState isn't synchronous within the effect body
+    // (project rule: react-hooks/set-state-in-effect is an error).
+    queueMicrotask(() => {
+      if (stale) return;
+      if (!result || !designId) {
+        setBreakdownScene(null);
+        return;
+      }
+      void (async () => {
+        try {
+          const res = await fetch(`/api/designs/${designId}`);
+          const data = await res.json();
+          if (!res.ok) return;
+          const scene: Scene | undefined = data?.design?.scene;
+          if (!stale && scene) setBreakdownScene(scene);
+        } catch {
+          // Non-fatal: the breakdown still renders; only the design-item
+          // checkboxes are unavailable until the next load.
+        }
+      })();
+    });
+    return () => { stale = true; };
+  }, [result, designId, designEditorKey]);
+
+  // Portal line items WITH scene links + the per-item `recommended` flag,
+  // computed from the current result + the live scene. Aligns 1:1-by-order with
+  // the breakdown's non-roofline rows (buildPortalLineItems prepends the
+  // roofline OPTION rows and drops the billed roofline; the breakdown filters
+  // the billed roofline the same way — so dropping the option ids leaves the
+  // same rows in the same order).
+  const breakdownLinked: PortalLineItem[] = (() => {
+    if (!result) return [];
+    const inputs = buildQuoteInputs(form);
+    const { lineItems, roofline } = buildPortalLineItems(result, inputs);
+    const linked = breakdownScene ? attachSceneLinks(lineItems, breakdownScene) : lineItems;
+    const optionIds = new Set(roofline?.itemIds ?? []);
+    return linked.filter((li) => !optionIds.has(li.id));
+  })();
+
+  // #12: the "recommended subtotal" = what the customer's portal opens with when
+  // staff have recommended items = the checked per-unit/custom items PLUS the
+  // recommended roofline (the portal always pre-selects it). Lets staff confirm
+  // the recommendation clears the $1,000 minimum before sending.
+  const recommendedCount = breakdownLinked.filter((li) => li.recommended).length;
+  const recommendedRooflineAmount =
+    result?.rooflineChoice === 'santas'
+      ? result.rooflineOptions?.santas?.amount ?? 0
+      : result?.rooflineChoice === 'gingerbread'
+        ? result.rooflineOptions?.gingerbread?.amount ?? 0
+        : 0;
+  const recommendedSubtotal =
+    breakdownLinked.reduce((s, li) => (li.recommended ? s + li.price : s), 0) +
+    recommendedRooflineAmount;
+
+  // The engine emits one row per VALID custom line item, last, in order, with a
+  // deterministic label. Map each to its index in form.customLineItems so a
+  // checkbox toggle on a custom breakdown row writes back to the right form
+  // entry. Built in the same order the engine consumes them.
+  const customRowMatchers: { label: string; formIndex: number }[] = form.customLineItems
+    .map((c, formIndex) => ({ c, formIndex }))
+    .filter(({ c }) =>
+      c &&
+      typeof c.label === 'string' &&
+      c.label.trim().length > 0 &&
+      typeof c.amount === 'number' &&
+      Number.isFinite(c.amount) &&
+      c.amount >= 0,
+    )
+    .map(({ c, formIndex }) => {
+      const qty =
+        typeof c.quantity === 'number' && Number.isFinite(c.quantity) && c.quantity >= 1
+          ? Math.floor(c.quantity)
+          : 1;
+      const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
+      return { label, formIndex };
+    });
+
+  // Write back a per-item recommended toggle. For a DESIGN row: flush the editor
+  // first (avoid racing the autosave), GET the live scene, patch `recommended`
+  // on the target scene item id(s), PUT it, then remount the editor + refetch.
+  // For a CUSTOM row: flip it in form state (persists on the next Calculate,
+  // consistent with how custom edits already work).
+  const toggleDesignItemRecommended = async (sceneItemIds: string[], next: boolean) => {
+    if (!designId || recommendBusy || sceneItemIds.length === 0) return;
+    setRecommendBusy(true);
+    try {
+      // Persist any pending edit so we read + patch the freshest scene.
+      if (editorFlushRef.current) {
+        try { await editorFlushRef.current(); } catch { /* proceed with last-saved scene */ }
+      }
+      const getRes = await fetch(`/api/designs/${designId}`);
+      const getData = await getRes.json();
+      if (!getRes.ok) throw new Error(getData.error ?? 'Could not load the design');
+      const scene: Scene = getData?.design?.scene ?? { yardsticks: [], items: [] };
+      const targets = new Set(sceneItemIds);
+      const items = Array.isArray(scene.items) ? scene.items : [];
+      const patched: Scene = {
+        ...scene,
+        items: items.map((it) => {
+          // Direct hit: the projected line item maps to this scene item.
+          if (targets.has(it.id)) return { ...it, recommended: next };
+          // A grouped railing (#27 A2): projectScene reads `recommended` from
+          // the GROUP item but its sceneItemIds are the MEMBER ids — so flag the
+          // group whose members this row controls, or the flag won't round-trip.
+          if (it.kind === 'miniGroup' && it.memberIds.length > 0 && it.memberIds.every((m) => targets.has(m))) {
+            return { ...it, recommended: next };
+          }
+          return it;
+        }),
+      };
+      const putRes = await fetch(`/api/designs/${designId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene: patched }),
+      });
+      if (!putRes.ok) {
+        const putData = await putRes.json().catch(() => ({}));
+        throw new Error(putData.error ?? 'Could not save recommendation');
+      }
+      // Remount the editor + re-fetch the scene (also refreshes DesignSummary).
+      setDesignEditorKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save recommendation');
+    } finally {
+      setRecommendBusy(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-3xl mx-auto">
@@ -1856,16 +2004,74 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             )}
 
             {/* Line items (the recommended roofline is shown in the option box
-                above, so it's filtered out here to avoid listing it twice). */}
+                above, so it's filtered out here to avoid listing it twice).
+                Each per-unit / custom row gets a "Recommended" checkbox (#12):
+                checking it advises the customer (pre-selected + labeled on the
+                portal). Roofline keeps its own "recommend one" radio above —
+                NOT this checkbox. */}
             <div className="mb-4 space-y-1.5">
-              {result.lineItems
-                .filter((item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')))
-                .map((item, i) => (
-                  <div key={i} className="flex justify-between text-sm">
-                    <span className="text-gray-700">{item.label}</span>
-                    <span className="font-medium tabular-nums">{usd(item.amount)}</span>
-                  </div>
-                ))}
+              {(() => {
+                // Per-unit kinds whose `recommended` flag round-trips through the
+                // projection. Winter Wonderland / roofline rows carry scene links
+                // too but are measurement-driven (kept on the roofline radio, not
+                // projected), so they must NOT get a per-item checkbox.
+                const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
+                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow',
+                ]);
+                const rows = result.lineItems.filter(
+                  (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
+                );
+                let customCursor = 0; // consume custom matchers in order
+                return rows.map((item, i) => {
+                  const linked = breakdownLinked[i];
+                  const sceneItemIds = linked?.sceneItemIds;
+                  let checkbox: React.ReactNode = null;
+                  if (designId && sceneItemIds && sceneItemIds.length > 0 && linked && RECOMMENDABLE_KINDS.has(linked.kind)) {
+                    // Design-driven per-unit row → toggle persists on the scene.
+                    const checked = !!linked?.recommended;
+                    checkbox = (
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer accent-green-600"
+                        checked={checked}
+                        disabled={recommendBusy}
+                        onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
+                        aria-label={`Recommend ${item.label}`}
+                        title="Recommend this item to the customer"
+                      />
+                    );
+                  } else {
+                    // Maybe a custom row → match by the engine label, in order.
+                    const matchAt = customRowMatchers.findIndex(
+                      (m, idx) => idx >= customCursor && m.label === item.label,
+                    );
+                    if (matchAt >= 0) {
+                      const { formIndex } = customRowMatchers[matchAt];
+                      customCursor = matchAt + 1;
+                      const checked = !!form.customLineItems[formIndex]?.recommended;
+                      checkbox = (
+                        <input
+                          type="checkbox"
+                          className="cursor-pointer accent-green-600"
+                          checked={checked}
+                          onChange={() => updateCustomLineItem(formIndex, { recommended: !checked })}
+                          aria-label={`Recommend ${item.label}`}
+                          title="Recommend this item to the customer (saves on Calculate)"
+                        />
+                      );
+                    }
+                  }
+                  return (
+                    <div key={i} className="flex justify-between items-center text-sm gap-2">
+                      <span className="flex items-center gap-2 text-gray-700">
+                        {checkbox}
+                        {item.label}
+                      </span>
+                      <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                    </div>
+                  );
+                });
+              })()}
             </div>
 
             {/* Subtotals */}
@@ -1893,7 +2099,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 </div>
               )}
               <div className="flex justify-between">
-                <span>Tax (8.625% on {usd(result.taxableAmount)})</span>
+                <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(result.taxableAmount)})</span>
                 <span className="tabular-nums">{usd(result.taxAmount)}</span>
               </div>
             </div>
@@ -1914,6 +2120,34 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(result.balanceDue)}</p>
                 </div>
               </div>
+            </div>
+
+            {/* #12: recommended-only subtotal — what the customer's portal opens
+                with when staff recommend items (the checked items + the
+                recommended roofline). Lets staff confirm it clears the $1,000
+                minimum before sending. */}
+            <div className="border-t border-gray-200 mt-3 pt-3 text-sm">
+              {recommendedCount > 0 ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">
+                      Recommended subtotal <span className="text-gray-400">(customer&apos;s starting total)</span>
+                    </span>
+                    <span className="tabular-nums font-semibold text-gray-800">{usd(recommendedSubtotal)}</span>
+                  </div>
+                  {result.subtotalBeforeDiscount >= BUSINESS_RULES.minimumQuoteAmount &&
+                    recommendedSubtotal < BUSINESS_RULES.minimumQuoteAmount && (
+                      <p className="text-xs text-red-600 mt-1">
+                        ⚠ Under the {usd(BUSINESS_RULES.minimumQuoteAmount)} minimum — the customer can&apos;t approve until they add{' '}
+                        {usd(BUSINESS_RULES.minimumQuoteAmount - recommendedSubtotal)} more. Recommend additional items before sending.
+                      </p>
+                    )}
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">
+                  No items recommended — the customer&apos;s portal opens with the default selection (auto-set to clear the {usd(BUSINESS_RULES.minimumQuoteAmount)} minimum).
+                </p>
+              )}
             </div>
           </div>
         )}

@@ -9,7 +9,7 @@
 // If the DB schema or pricing engine output ever changes shape, fix the
 // mapping here, not in components. This is the contract.
 
-import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { CustomLineItem, QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
 import type {
   PackageId,
   PortalApproval,
@@ -49,6 +49,11 @@ export type QuoteRowForPortal = {
   customer_phone: string | null;
   customer_email: string | null;
   result: QuoteResult | null;
+  // The quote's saved inputs (jsonb). Needed for the per-item `recommended`
+  // flag on CUSTOM line items (#12): the flag lives on inputs.customLineItems,
+  // NOT in result.lineItems. Optional/back-compat — old rows without it just
+  // never mark custom rows recommended.
+  inputs: QuoteInputs | null;
   total: number | null;
   video_kind: string | null;        // 'youtube' | 'mp4' | null
   video_src: string | null;
@@ -82,12 +87,45 @@ function deriveFirstName(fullName: string | null): string {
   return first || 'there';
 }
 
-function buildLineItems(result: QuoteResult): PortalLineItem[] {
+// Recover the per-item `recommended` flag for CUSTOM line items (#12). The flag
+// lives on inputs.customLineItems (NOT result.lineItems), and the engine emits
+// custom rows last, in order, with a deterministic label. So we rebuild the same
+// valid-custom-item list the engine builds (same filter + label) and zip it to
+// the engine's custom result rows in order — returning a Map<engineLabel,
+// recommended>. Matching by label keeps it robust if other categories' rows
+// happen to interleave.
+function recommendedByCustomLabel(inputs: QuoteInputs | null): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  const customs = inputs?.customLineItems;
+  if (!Array.isArray(customs)) return out;
+  for (const c of customs as CustomLineItem[]) {
+    if (
+      !c ||
+      typeof c.label !== 'string' ||
+      c.label.trim().length === 0 ||
+      typeof c.amount !== 'number' ||
+      !Number.isFinite(c.amount) ||
+      c.amount < 0
+    ) {
+      continue; // mirror the engine's calculateCustomLineItems filter
+    }
+    const qty =
+      typeof c.quantity === 'number' && Number.isFinite(c.quantity) && c.quantity >= 1
+        ? Math.floor(c.quantity)
+        : 1;
+    const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
+    if (c.recommended) out.set(label, true);
+  }
+  return out;
+}
+
+function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): PortalLineItem[] {
   // Defensive: old rows or partial saves may have a missing / non-array
   // lineItems field. Treat as empty so the portal still renders (the
   // packages will all show "—" and the customer can pick "Build Your
   // Own" with nothing — surfaced as a clearly empty quote).
   const items = Array.isArray(result.lineItems) ? result.lineItems : [];
+  const customRecommended = recommendedByCustomLabel(inputs);
 
   // Track per-kind counts so each item gets a unique, deterministic id.
   const counts: Partial<Record<PortalLineItemKind, number>> = {};
@@ -98,7 +136,7 @@ function buildLineItems(result: QuoteResult): PortalLineItem[] {
       const { kind, detail } = parseLineItem(raw.label);
       const idx = counts[kind] ?? 0;
       counts[kind] = idx + 1;
-      return {
+      const item: PortalLineItem = {
         id: buildLineItemId(kind, idx),
         kind,
         // Legacy shim: quotes created before the "Gingerbread Ridge" → "Gingerbread"
@@ -109,6 +147,11 @@ function buildLineItems(result: QuoteResult): PortalLineItem[] {
         detail,
         price: raw.amount,
       };
+      // A custom line item flagged `recommended` by staff (#12). Matched by the
+      // engine's exact label (custom labels never contain "Gingerbread Ridge",
+      // so the shim above is a no-op for them).
+      if (customRecommended.get(raw.label)) item.recommended = true;
+      return item;
     });
 }
 
@@ -133,11 +176,11 @@ function isBilledRoofline(label: string): boolean {
 //
 // Legacy rows (no rooflineOptions, or no billed roofline) keep their existing
 // single roofline line item untouched and `roofline` is undefined.
-function buildPortalLineItems(result: QuoteResult): {
+export function buildPortalLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): {
   lineItems: PortalLineItem[];
   roofline?: PortalRoofline;
 } {
-  const all = buildLineItems(result);
+  const all = buildLineItems(result, inputs);
   const opts = result.rooflineOptions;
   const choice = result.rooflineChoice;
 
@@ -250,7 +293,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // Without a pricing result there's nothing to show — caller should 404.
   if (!row.result) return null;
 
-  const { lineItems, roofline } = buildPortalLineItems(row.result);
+  const { lineItems, roofline } = buildPortalLineItems(row.result, row.inputs);
   // The A/B/C package tiers and the $1,000 gate threshold bundle only the
   // RECOMMENDED roofline — never both options. Excluding the non-recommended
   // option keeps a tier from selecting two rooflines at once, and keeps the

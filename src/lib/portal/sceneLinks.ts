@@ -45,18 +45,25 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   const wwIds = idsForSurface('winter-wonderland');
 
   // Per-category projection queues, consumed in order to match the line items.
+  // Each entry carries the scene-item ids AND the `recommended` flag (#12) from
+  // the projected item, so design-driven recommended items reach the portal.
+  type ProjEntry = { sceneItemIds: string[]; recommended?: boolean };
   const proj = projectScene(scene);
-  const queue: Record<ProjectedCategory, string[][]> = {
-    mini: proj.items.filter((p) => p.category === 'mini').map((p) => p.sceneItemIds),
-    spritzer: proj.items.filter((p) => p.category === 'spritzer').map((p) => p.sceneItemIds),
-    wreath: proj.items.filter((p) => p.category === 'wreath').map((p) => p.sceneItemIds),
-    garland: proj.items.filter((p) => p.category === 'garland').map((p) => p.sceneItemIds),
-    bow: proj.items.filter((p) => p.category === 'bow').map((p) => p.sceneItemIds),
+  const toEntries = (cat: ProjectedCategory): ProjEntry[] =>
+    proj.items.filter((p) => p.category === cat).map((p) => ({ sceneItemIds: p.sceneItemIds, recommended: p.recommended }));
+  const queue: Record<ProjectedCategory, ProjEntry[]> = {
+    mini: toEntries('mini'),
+    spritzer: toEntries('spritzer'),
+    wreath: toEntries('wreath'),
+    garland: toEntries('garland'),
+    bow: toEntries('bow'),
   };
   const cursor: Record<ProjectedCategory, number> = { mini: 0, spritzer: 0, wreath: 0, garland: 0, bow: 0 };
 
   return lineItems.map((li) => {
-    // Roofline tiers (synthesized by the adapter with stable ids).
+    // Roofline tiers (synthesized by the adapter with stable ids). Roofline
+    // keeps its OWN recommend mechanism (PortalRoofline) — never the per-item
+    // `recommended` flag — so we only attach scene links here.
     if (li.id === 'roofline-santas') return { ...li, sceneItemIds: santasIds };
     if (li.id === 'roofline-gingerbread') return { ...li, sceneItemIds: [...santasIds, ...gingerIds] };
     // Winter Wonderland parses to kind 'ridge'; the Gingerbread roofline (also
@@ -65,8 +72,14 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
 
     const cat = KIND_TO_CATEGORY[li.kind];
     if (cat) {
-      const ids = queue[cat][cursor[cat]++];
-      if (ids) return { ...li, sceneItemIds: ids };
+      const entry = queue[cat][cursor[cat]++];
+      if (entry) {
+        // Carry `recommended` from the projected scene item. Custom rows (no
+        // scene link) keep whatever `recommended` the adapter already set.
+        return entry.recommended
+          ? { ...li, sceneItemIds: entry.sceneItemIds, recommended: true }
+          : { ...li, sceneItemIds: entry.sceneItemIds };
+      }
     }
     return li; // custom / unknown / unmatched → no scene link
   });

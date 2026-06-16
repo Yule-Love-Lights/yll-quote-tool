@@ -70,6 +70,23 @@ type SelectionContextValue = {
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
 
+// Pure initial-selection seed (extracted so it's unit-testable without rendering
+// React). The recommended-only path (#12): when staff flagged items as
+// recommended, the portal opens with EXACTLY those line items selected (custom
+// 'D') instead of the initial package's bundle. When the list is absent/empty,
+// behavior is unchanged — seed from the initial package's includedItemIds.
+export function computeInitialSelection(
+  packages: PortalPackage[],
+  initialPackageId: PackageId,
+  initialSelectedItemIds?: string[],
+): { packageId: PackageId; selectedItemIds: string[] } {
+  if (Array.isArray(initialSelectedItemIds) && initialSelectedItemIds.length > 0) {
+    return { packageId: 'D', selectedItemIds: [...initialSelectedItemIds] };
+  }
+  const initial = packages.find((p) => p.id === initialPackageId);
+  return { packageId: initialPackageId, selectedItemIds: initial?.includedItemIds ?? [] };
+}
+
 export function useSelection(): SelectionContextValue {
   const ctx = useContext(SelectionContext);
   if (!ctx) throw new Error('useSelection must be inside <SelectionProvider>');
@@ -90,6 +107,14 @@ export type SelectionProviderProps = {
   // when waived because staff sent a sub-$1,000 quote).
   minimumOrderSubtotal: number;
   initialPackageId?: PackageId;
+  // Recommended-only initial selection (#12). When present & NON-EMPTY, the
+  // portal opens with EXACTLY these line items selected (Build Your Own / 'D')
+  // instead of the initial package's bundle — staff-advised items pre-checked,
+  // everything else an optional add-on. When absent/empty, behavior is
+  // unchanged (the initialPackageId path seeds from the package). The portal
+  // page should union in the roofline's recommended id so the customer never
+  // lands without a roofline.
+  initialSelectedItemIds?: string[];
   children: React.ReactNode;
 };
 
@@ -100,6 +125,7 @@ export function SelectionProvider({
   charges,
   minimumOrderSubtotal,
   initialPackageId = 'B',
+  initialSelectedItemIds,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -123,11 +149,18 @@ export function SelectionProvider({
     return m;
   }, [packages]);
 
-  const [packageId, setPackageId] = useState<PackageId>(initialPackageId);
-  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(() => {
-    const initial = packages.find((p) => p.id === initialPackageId);
-    return new Set(initial?.includedItemIds ?? []);
-  });
+  // Recommended-only seed (#12) vs the unchanged package-seeded default — see
+  // computeInitialSelection. Computed once for the initial state.
+  const initialSeed = useMemo(
+    () => computeInitialSelection(packages, initialPackageId, initialSelectedItemIds),
+    // Initial seed only — recomputing on prop change would clobber live edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [packageId, setPackageId] = useState<PackageId>(initialSeed.packageId);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(
+    () => new Set(initialSeed.selectedItemIds),
+  );
 
   // Rush + premium-takedown toggles (#4). Seeded from the staff quote's
   // defaults; the customer can flip either. NEVER changed by selectPackage —

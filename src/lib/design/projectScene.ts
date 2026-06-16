@@ -55,12 +55,15 @@ const DEFAULT_GARLAND_TIER = 'fullDecor' as const; // no bow, with decor
 // One projected line item + the scene item(s) it controls. `input` is the exact
 // shape the pricing engine consumes for that category (quantity is per-instance:
 // 1, except garland where it's the staff-set section count).
+// `recommended` (#12) rides along from the source scene item so the portal can
+// pre-select + label staff-advised items. Optional/additive — undefined unless
+// staff flagged the scene item.
 export type ProjectedLineItem =
-  | { id: string; category: 'mini'; sceneItemIds: string[]; input: MiniLightItem }
-  | { id: string; category: 'spritzer'; sceneItemIds: string[]; input: Spritzer }
-  | { id: string; category: 'wreath'; sceneItemIds: string[]; input: Wreath }
-  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland }
-  | { id: string; category: 'bow'; sceneItemIds: string[]; input: BowLineInput };
+  | { id: string; category: 'mini'; sceneItemIds: string[]; input: MiniLightItem; recommended?: boolean }
+  | { id: string; category: 'spritzer'; sceneItemIds: string[]; input: Spritzer; recommended?: boolean }
+  | { id: string; category: 'wreath'; sceneItemIds: string[]; input: Wreath; recommended?: boolean }
+  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland; recommended?: boolean }
+  | { id: string; category: 'bow'; sceneItemIds: string[]; input: BowLineInput; recommended?: boolean };
 
 export type Projection = {
   // Ready to drop into QuoteInputs. The builder adds roofline footage, takedown,
@@ -113,7 +116,7 @@ export function projectScene(scene: Scene): Projection {
       // (measurement-driven, NOT projected); no surface = unmapped.
       const s = asMiniSurface(item.surface);
       if (s) {
-        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item), recommended: item.recommended });
       }
       continue;
     }
@@ -122,7 +125,7 @@ export function projectScene(scene: Scene): Projection {
     if (isMiniArea(item)) {
       const s = asMiniSurface(item.surface);
       if (s) {
-        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item) });
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds: [item.id], input: miniInput(s, item), recommended: item.recommended });
       }
       continue;
     }
@@ -133,7 +136,7 @@ export function projectScene(scene: Scene): Projection {
       const s = asMiniSurface(item.surface);
       if (s) {
         const sceneItemIds = item.memberIds.length > 0 ? [...item.memberIds] : [item.id];
-        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds, input: miniInput(s, item) });
+        items.push({ id: `mini-${item.id}`, category: 'mini', sceneItemIds, input: miniInput(s, item), recommended: item.recommended });
       }
       continue;
     }
@@ -144,6 +147,7 @@ export function projectScene(scene: Scene): Projection {
         category: 'spritzer',
         sceneItemIds: [item.id],
         input: { size: item.quoteSize ?? DEFAULT_SPRITZER_SIZE, quantity: 1 },
+        recommended: item.recommended,
       });
       continue;
     }
@@ -158,6 +162,7 @@ export function projectScene(scene: Scene): Projection {
           tier: item.tier ?? DEFAULT_WREATH_TIER,
           quantity: 1,
         },
+        recommended: item.recommended,
       });
       continue;
     }
@@ -174,6 +179,7 @@ export function projectScene(scene: Scene): Projection {
           tier: item.tier ?? DEFAULT_GARLAND_TIER,
           quantity: sections,
         },
+        recommended: item.recommended,
       });
       continue;
     }
@@ -182,7 +188,7 @@ export function projectScene(scene: Scene): Projection {
     // one "Bow" line item = one toggle. No tag needed (a bow is always a bow);
     // flat price each (drawn size is visual-only; rate TBD by Naldo, $0 today).
     if (isBow(item)) {
-      items.push({ id: `bow-${item.id}`, category: 'bow', sceneItemIds: [item.id], input: { quantity: 1 } });
+      items.push({ id: `bow-${item.id}`, category: 'bow', sceneItemIds: [item.id], input: { quantity: 1 }, recommended: item.recommended });
       continue;
     }
 

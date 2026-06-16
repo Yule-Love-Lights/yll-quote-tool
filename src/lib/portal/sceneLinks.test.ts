@@ -87,3 +87,44 @@ describe('attachSceneLinks', () => {
     expect(lineItems[0].sceneItemIds).toBeUndefined();
   });
 });
+
+describe('attachSceneLinks — carries recommended (#12)', () => {
+  const scene: Scene = {
+    yardsticks: [],
+    items: [
+      strand('b1', 'bush', { stringCount: 1, recommended: true }),
+      strand('b2', 'bush', { stringCount: 1 }), // not recommended
+      wreath('wr1'),
+    ] as SceneItem[],
+  };
+  // mark the wreath recommended
+  (scene.items[2] as { recommended?: boolean }).recommended = true;
+
+  const lineItems: PortalLineItem[] = [
+    li('bush-1', 'bush'),
+    li('bush-2', 'bush'),
+    li('wreath-1', 'wreath'),
+  ];
+
+  const out = attachSceneLinks(lineItems, scene);
+  const byId = Object.fromEntries(out.map((l) => [l.id, l]));
+
+  it('sets recommended on the rows whose scene item is recommended', () => {
+    expect(byId['bush-1'].recommended).toBe(true);
+    expect(byId['wreath-1'].recommended).toBe(true);
+  });
+
+  it('leaves recommended unset on rows whose scene item is not recommended', () => {
+    expect(byId['bush-2'].recommended).toBeUndefined();
+  });
+
+  it('never marks roofline option rows recommended (own mechanism)', () => {
+    const rfScene: Scene = {
+      yardsticks: [],
+      items: [strand('rs1', 'santas-roofline', { recommended: true })] as SceneItem[],
+    };
+    const rfOut = attachSceneLinks([li('roofline-santas', 'roofline')], rfScene);
+    // roofline strands aren't projected, so no recommended leaks onto the option row.
+    expect(rfOut[0].recommended).toBeUndefined();
+  });
+});
