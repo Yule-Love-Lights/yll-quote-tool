@@ -13,6 +13,7 @@ import type {
   GarlandLength,
 } from '@/lib/pricing/pricingEngine';
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
+import { useImageZoomPan } from '@/lib/useImageZoomPan';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type LineSegment = { points: [number, number][]; label: string };
@@ -206,6 +207,10 @@ export default function NewTrainingHousePage() {
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   const [boxDrag, setBoxDrag] = useState<{ kind: DetectionKind; idx: number; mode: BoxDragMode; startX: number; startY: number; startBox: [number, number, number, number] } | null>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
+  // Scroll-wheel zoom + drag-to-pan for the photo markup box (#26). Paused while
+  // placing points (addMode) so clicks add points.
+  const markupWrapperRef = useRef<HTMLDivElement>(null);
+  const markupZoom = useImageZoomPan(markupWrapperRef, { disabled: !!addMode });
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
 
   const activePhoto = photos[activePhotoIdx];
@@ -748,10 +753,27 @@ export default function NewTrainingHousePage() {
               )}
             </div>
 
+            {/* Zoom/pan controls (#26) */}
+            <div className="flex items-center justify-between mb-1.5 text-[11px] text-gray-500">
+              <span>Scroll to zoom · drag to pan{markupZoom.isZoomed ? ` · ${Math.round(markupZoom.zoom * 100)}%` : ''}</span>
+              {markupZoom.isZoomed && (
+                <button type="button" onClick={markupZoom.reset}
+                  className="font-medium border border-gray-300 hover:border-gray-500 rounded px-2 py-0.5 bg-white">
+                  Reset view
+                </button>
+              )}
+            </div>
+            {/* Outer clip box — owns wheel-zoom + drag-to-pan (#26). */}
+            <div
+              ref={markupWrapperRef}
+              {...markupZoom.panHandlers}
+              className="relative w-full overflow-hidden rounded-md"
+            >
             <div
               ref={imgContainerRef}
               onClick={addMode ? handleImageClick : undefined}
-              className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
+              style={markupZoom.transformStyle}
+              className={`relative w-full ${addMode ? 'cursor-crosshair' : markupZoom.isZoomed ? 'cursor-grab' : ''}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -917,7 +939,7 @@ export default function NewTrainingHousePage() {
                 <div key={`sh-${li}-${pi}`}
                   className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                   style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                  onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
+                  onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
                   onDoubleClick={() => deletePoint('santas', li, pi)}
                   title="Drag to move • Double-click to delete" />
               )))}
@@ -925,7 +947,7 @@ export default function NewTrainingHousePage() {
                 <div key={`gh-${li}-${pi}`}
                   className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                   style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                  onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
+                  onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
                   onDoubleClick={() => deletePoint('gingerbread', li, pi)}
                   title="Drag to move • Double-click to delete" />
               )))}
@@ -933,7 +955,7 @@ export default function NewTrainingHousePage() {
                 <div key={`c9h-${li}-${pi}`}
                   className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                   style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                  onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
+                  onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
                   onDoubleClick={() => deletePoint('c9', li, pi)}
                   title="Drag to move • Double-click to delete" />
               )))}
@@ -942,6 +964,7 @@ export default function NewTrainingHousePage() {
                   className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
                   style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }} />
               ))}
+            </div>
             </div>
 
             {/* Add-line controls */}

@@ -27,6 +27,7 @@ import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { useImageZoomPan } from '@/lib/useImageZoomPan';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -376,6 +377,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
+  // Scroll-wheel zoom + drag-to-pan for the satellite measurement box (#26).
+  // Pan/zoom are paused while placing points (addMode) so clicks add points.
+  const satWrapperRef = useRef<HTMLDivElement>(null);
+  const satZoom = useImageZoomPan(satWrapperRef, { disabled: !!addMode });
 
   // Tracks whether C9 lines existed on the previous effect run, so deleting
   // the last C9 line resets the derived footage instead of leaving a stale
@@ -1502,10 +1507,27 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                     <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
                       <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
                     </div>
+                    {/* Zoom/pan controls (#26) */}
+                    <div className="flex items-center justify-between mb-1.5 text-[11px] text-gray-500">
+                      <span>Scroll to zoom · drag to pan{satZoom.isZoomed ? ` · ${Math.round(satZoom.zoom * 100)}%` : ''}</span>
+                      {satZoom.isZoomed && (
+                        <button type="button" onClick={satZoom.reset}
+                          className="font-medium border border-gray-300 hover:border-gray-500 rounded px-2 py-0.5 bg-white">
+                          Reset view
+                        </button>
+                      )}
+                    </div>
+                    {/* Outer clip box — owns wheel-zoom + drag-to-pan (#26). */}
+                    <div
+                      ref={satWrapperRef}
+                      {...satZoom.panHandlers}
+                      className="relative w-full overflow-hidden rounded-md"
+                    >
                     <div
                       ref={imgContainerRef}
                       onClick={addMode ? handleImageClick : undefined}
-                      className={`relative w-full ${addMode ? 'cursor-crosshair' : ''}`}
+                      style={satZoom.transformStyle}
+                      className={`relative w-full ${addMode ? 'cursor-crosshair' : satZoom.isZoomed ? 'cursor-grab' : ''}`}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
@@ -1577,7 +1599,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           key={`sh-${li}-${pi}`}
                           className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                           style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
+                          onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('santas', li, pi)}
                           title="Drag to move • Double-click to delete"
                         />
@@ -1587,7 +1609,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           key={`gh-${li}-${pi}`}
                           className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                           style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
+                          onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('gingerbread', li, pi)}
                           title="Drag to move • Double-click to delete"
                         />
@@ -1597,7 +1619,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           key={`c9h-${li}-${pi}`}
                           className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
                           style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
-                          onPointerDown={e => { e.preventDefault(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
+                          onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('c9', li, pi)}
                           title="Drag to move • Double-click to delete"
                         />
@@ -1609,6 +1631,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
                         />
                       ))}
+                    </div>
                     </div>
 
                     {/* Add-line controls */}
