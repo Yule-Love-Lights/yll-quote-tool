@@ -16,6 +16,7 @@ import {
 } from '@/components/design/editor-core/renderSettings';
 import { DEFAULTS_TABS, mergeToolDefaults } from '@/lib/settings/toolDefaults';
 import { DefaultsTabPanel } from '@/components/settings/DefaultsTabPanel';
+import { CustomLibrary } from '@/components/settings/CustomLibrary';
 import { invalidateAppSettings } from '@/lib/clientSettings';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
@@ -125,13 +126,17 @@ export default function SettingsPage() {
       ) : tab === 'rendering' ? (
         <RenderingTab render={render} setRender={setRender} onSave={() => save({ render })} />
       ) : (
-        <DefaultsTabPanel
-          sectionKeys={DEFAULTS_TABS.find((t) => t.id === tab)?.sectionKeys ?? []}
-          defaults={defaults}
-          setDefaults={setDefaults}
-          palette={colors}
-          onSave={() => save({ defaults })}
-        />
+        <>
+          <DefaultsTabPanel
+            sectionKeys={DEFAULTS_TABS.find((t) => t.id === tab)?.sectionKeys ?? []}
+            defaults={defaults}
+            setDefaults={setDefaults}
+            palette={colors}
+            onSave={() => save({ defaults })}
+          />
+          {/* The Custom tab also manages the global graphic library (#32 Phase 3). */}
+          {tab === 'custom' && <CustomLibrary />}
+        </>
       )}
 
       {status !== 'idle' && (
