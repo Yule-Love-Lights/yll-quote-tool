@@ -17,6 +17,14 @@ metadata:
 
 ### Session 9 — #10 color picker · #26 zoom/pan · #32 Settings menu (complete) (2026-06-16/17)
 
+> **⏹️ SESSION 9 CLOSE (2026-06-17, ~85% usage).** One continuous conversation; next fresh session = **S10**. At-a-glance close (details in the dated sub-sections below):
+>
+> **Shipped + MERGED to master (`448a94f`):** **#10** portal color/pattern picker (PR #38) · **#26** measurement-box zoom/pan (PR #41) · **#32** full Settings menu — Ph1 persistence+render seam (PR #43), Ph2 per-type seed defaults (PR #44), Ph3 custom graphic library (PR #46) · ledger housekeeping (#15/#16 **shelved**, #10 operator-default **won't-do**, PR #40) · docs/context syncs (#39/#42/#45/#47). Gates green throughout (tsc · lint 0/2 · **242 tests**). Migrations applied to prod Supabase: `app_settings`, `custom_uploads` + public `custom-uploads` bucket.
+>
+> **🚀 PROD IS NOW LIVE + CURRENT (big fix this session).** Discovered prod (quote.yulelovelights.com) had been frozen at an **Apr 23** build for ~7 weeks — Vercel's Git was connected to the wrong/broken repo (`naldoven/yll-quote-tool`, "Project Link not found") instead of the org repo `Yule-Love-Lights/yll-quote-tool`, so nothing auto-deployed. **Jason reconnected** Vercel → org repo, triggered a deploy, and **added the missing env vars** (`HIGHLEVEL_*` ×7 + `NEXT_PUBLIC_PORTAL_*` ×5) so prod matches dev. All of S9 verified live on prod. Full detail + the "if prod looks stale" playbook in [[deploy-vercel]] (NEW memory).
+>
+> **Ending state:** master clean + current; prod live; nothing uncommitted in the repo. **NEXT (S10):** **#22** (real Google reviews) is mid-scope and PAUSED — NOT Naldo-blocked (Jason will provide data); recommended approach = curated config; I asked Jason for the rating/count/reviews-URL/quotes (see the #22 sub-section). Then the broader backlog: **#13** (multi-image, L), **#14** (corner-house view), **#29** (editor cohesion restyle — the new `/settings` React+Tailwind UI is a style reference). **Deferred:** #8 C6. **Process:** send links as **bare URLs**, not Markdown ([[verify-handoff-before-commit]] corrected). Dev server: was preview-managed on :3000 (reaped at close; restart on pickup).
+
 **Picked up from:** S8 close. `git fetch` + ff `master` to `0b621f0` (S8 close-docs PR #37 merged); clean. Dev server restarted on :3000 (the prior instance was reaped; one fresh `npm run dev`). Reviewed the broader backlog with Jason — recommended **#10** (customer-facing, #1 priority, decision largely locked) over #26/#29/#32; Jason picked **#10**.
 
 **What #10 is:** the portal "color/pattern picker" — let the customer choose the whole-house light color/pattern and SEE it on their design. Two product forks Jason confirmed up front: (a) **recolor the live preview** (not metadata-only), and (b) **colors + named multi-color patterns** (not solids-only).

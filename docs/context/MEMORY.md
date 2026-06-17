@@ -15,6 +15,7 @@
 - [User — Naldo](user_naldo.md) — owner; runs Yule Love Lights + Chick-fil-A; builds solo; not a working developer.
 - [Render engine project](project_yll_render_engine.md) — ⚰️ HISTORICAL: the Gemini render pipeline was fully REMOVED in #36 (S7, 2026-06-12). Keep only as the record of what was built.
 - [Where to get secrets](project_secrets_access.md) — Vercel env vars are "Sensitive"/unreadable; pull values from the source accounts.
+- [Deployment — Vercel + Supabase](project_deploy_vercel.md) — prod = quote.yulelovelights.com (Vercel, `master` auto-deploy) on real Supabase. **Check first if prod looks stale or shows "X not configured":** the Git-connection gotcha that froze prod ~7 weeks (wrong repo), env-var parity (`.env.local` ⇄ Vercel), `NEXT_PUBLIC_*` baked at build, never add `SUPABASE_DB_URL`.
 - [Empty ANTHROPIC_API_KEY gotcha](feedback_claude_code_env_override.md) — the Claude-Code shell sets it to `""`, overriding `.env.local`; unset before `npm run dev`.
 - [Memory/log update cadence](feedback_memory_log_cadence.md) — pause to refresh memory + logs around task completion / before committing.
 - [Verify-before-commit handoff](feedback_verify_handoff.md) — at task end, give Jason **full clickable URLs** + test steps to self-verify BEFORE committing; wait for his go-ahead.
