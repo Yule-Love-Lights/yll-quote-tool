@@ -13,7 +13,7 @@ metadata:
 
 ## Current state at a glance
 - **Pre-launch.** This tool is NOT customer-facing or used internally yet. The live customer flow today is **home.works** (separate system). So changes here are lower-risk — we're building *toward* launch.
-- Deployed on **Vercel** (`yll-quote-tool`, Production tracks `master` → quote.yulelovelights.com), but not yet shown to customers.
+- Deployed on **Vercel** (`yll-quote-tool`, Production tracks `master` → quote.yulelovelights.com), but not yet shown to customers. **Prod is LIVE + current as of S9** — it had silently been frozen at an Apr 23 build for ~7 weeks (Vercel Git was connected to the wrong repo); reconnected to `Yule-Love-Lights/yll-quote-tool` + env vars synced S9. See [[deploy-vercel]] (incl. the "if prod looks stale" playbook).
 - Runs locally on **Next 16.2.6** (Turbopack), connected to the **real Supabase** (~55 real/test quotes). `.env.local` is filled on Jason's machine (values: see `project_secrets_access.md`).
 - Gates all green: `npx tsc --noEmit`, `npm run lint`, `npm test` (Vitest).
 
@@ -44,7 +44,7 @@ metadata:
 - Empty `ANTHROPIC_API_KEY` in the Claude-Code shell overrides `.env.local` → Claude routes 503. Unset it before `npm run dev`.
 - `react-hooks/set-state-in-effect` is at **error**; the fix pattern for legit effects is a `queueMicrotask`/rAF defer.
 - Vercel env vars are all **"Sensitive"** (unreadable) — pull secret values from source accounts (`project_secrets_access.md`).
-- Vercel prod lacks the `HIGHLEVEL_*` vars + uses mismatched home.works var names → prod CRM/home.works are off. Prod CRM = on hold; **home.works = dropped (#16 shelved, S9).**
+- Vercel env parity (see [[deploy-vercel]]): S9 added the `HIGHLEVEL_*` (×7) + `NEXT_PUBLIC_PORTAL_*` (×5) vars to prod so it matches dev's `.env.local`. home.works still off (mismatched var names + **dropped, #16**). "Works on dev, 'X not configured' on prod" = a missing Vercel env var; `NEXT_PUBLIC_*` are baked at build (redeploy after adding); never add `SUPABASE_DB_URL` to Vercel.
 
 ## Task list → see the master ledger
 The full task list (done / planning / backlog / Naldo-pending) lives in **[[task_ledger.md]]** — the single source of truth, renumbered into one clean sequence on 2026-06-05 (now #1–#28) with an Old-# column mapping to the historical numbers in this log + PR titles. **Next BUILD (S4): task #27 — the design-tool integration (Path B)**, starting Phase 1 from the LOCKED [[project_integration_data_contract.md]]. #8 (training-system) planning is DONE (feeds #27 Phase 3). Update the ledger as work lands.
@@ -85,7 +85,7 @@ The full task list (done / planning / backlog / Naldo-pending) lives in **[[task
 
 **Immediate next:**
 1. **All shipped + MERGED:** #8 Stage A→C4, #17 pricing (PR #35), #12 recommended-items (PR #36), **#10 color picker (PR #38), #26 zoom/pan (PR #41)** (S9). Only **#8 C6 (per-detection confidence) deferred.** (#10 operator-default = won't-do; portal always "As designed".) Detail: [[task_ai_training_refinement]] (#8) + [[task_ledger]].
-2. Next: the broader ledger — **#13** (multi-image, L), **#14** (corner-house view), **#29** (editor cohesion restyle — the #32 `/settings` React+Tailwind UI is a style reference) — + Naldo-pending. (#32 fully shipped S9.) **docs/context** synced through #32 Phase 1+2 (PR #45); the #32-complete sync is the next docs PR. (#15 + #16 shelved S9 — see 🗄️ Shelved in [[task_ledger]].) When portal packages get built, add the **"Our Recommendation"** package (note below).
+2. **Resume point: #22 (real Google reviews) — mid-scope, PAUSED at S9 close.** NOT Naldo-blocked (Jason will supply the data). Recommended approach = **curated config** (the portal's GoogleReviews section is hardcoded mock today; `Review = {name, neighborhood, body}` + overall rating + totalReviews + reviewsUrl). I asked Jason for: rating, total count, the "read all reviews" URL, and the featured review quotes (name/town/text) — build a small config the portal reads. (Live Google Places API for rating/count is the optional alt.) Then the broader ledger — **#13** (multi-image, L), **#14** (corner-house view), **#29** (editor cohesion restyle — the #32 `/settings` React+Tailwind UI is a style reference) — + Naldo-pending. **#32 fully shipped + LIVE on prod (S9).** (#15 + #16 shelved S9 — see 🗄️ Shelved in [[task_ledger]].) When portal packages get built, add the **"Our Recommendation"** package (note below).
 **Tracked — editor-core #17 relay CLOSED (S8):** the design tool mirrored the wreath/garland dropdown + type changes verbatim at **`6479786`** (Tier `bow|fullDecor`, labels Non-decorated/Decorated, Labor dropped; QuoteWreathSize drops 36oregon + adds 60noble/72noble; both dropdowns). Cores byte-identical again; tsc clean their side. (They couldn't run an in-browser dropdown check — purely declarative gated UI, low-risk; eyeball ours when convenient.)
 - **FUTURE (when building portal packages):** add an **"Our Recommendation"** package/tier that the #12 staff-recommended selection falls under (Jason, S8). Not now — note for the packages-config work. The A/B/C tiers are still placeholders.
 
