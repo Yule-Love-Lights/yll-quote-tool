@@ -8,8 +8,8 @@
 //
 // Scope: scene load/save + base-photo upload are wired; colors + per-type
 // defaults come from the global app settings (#32, /api/settings); the
-// custom-upload library is deferred (listUploads → empty, createUpload → throws)
-// until #32 Phase 3.
+// custom-upload library is backed by /api/uploads + the public custom-uploads
+// bucket (#32 Phase 3).
 
 import type {
   Design,
@@ -128,14 +128,26 @@ export function createEditorApi(designId: string): EditorApi {
       return defaults ?? {};
     },
 
-    // Custom-upload library is deferred in Phase 1.
+    // Custom-upload library (#32 Phase 3) — backed by /api/uploads + the public
+    // custom-uploads bucket. Shared across all designs.
     async listUploads() {
-      return [];
+      const res = await fetch('/api/uploads');
+      if (!res.ok) return [];
+      return res.json();
     },
-    async createUpload() {
-      throw new Error('Custom uploads are not available yet');
+    async createUpload(file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/uploads', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `upload failed: ${res.status}`);
+      }
+      return res.json();
     },
-    async deleteUpload() {
+    async deleteUpload(id) {
+      const res = await fetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`delete failed: ${res.status}`);
       return { ok: true as const };
     },
   };
