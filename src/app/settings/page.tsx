@@ -7,27 +7,32 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { BulbColor } from '@/lib/design/sceneTypes';
+import type { BulbColor, ToolDefaults } from '@/lib/design/sceneTypes';
 import type { AppSettings } from '@/lib/appSettings';
 import { DEFAULT_COLORS, suggestGlow } from '@/components/design/editor-core/colors';
 import {
   DEFAULT_RENDER_SETTINGS,
   type RenderSettings,
 } from '@/components/design/editor-core/renderSettings';
+import { DEFAULTS_TABS, mergeToolDefaults } from '@/lib/settings/toolDefaults';
+import { DefaultsTabPanel } from '@/components/settings/DefaultsTabPanel';
 import { invalidateAppSettings } from '@/lib/clientSettings';
 
-type Tab = 'palette' | 'rendering';
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 
-const TABS: { id: Tab; label: string }[] = [
+// Palette + the per-type defaults tabs (Lights/Decor/Text/Poles/Custom) + the
+// global render tab.
+const TABS: { id: string; label: string }[] = [
   { id: 'palette', label: 'Palette' },
+  ...DEFAULTS_TABS.map((t) => ({ id: t.id, label: t.label })),
   { id: 'rendering', label: 'Rendering' },
 ];
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState<Tab>('palette');
+  const [tab, setTab] = useState<string>('palette');
   const [colors, setColors] = useState<BulbColor[]>(DEFAULT_COLORS);
   const [render, setRender] = useState<RenderSettings>(DEFAULT_RENDER_SETTINGS);
+  const [defaults, setDefaults] = useState<ToolDefaults>(() => mergeToolDefaults(null));
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -42,6 +47,7 @@ export default function SettingsPage() {
         if (cancelled) return;
         if (Array.isArray(s.colors) && s.colors.length > 0) setColors(s.colors);
         if (s.render) setRender(s.render);
+        setDefaults(mergeToolDefaults(s.defaults));
       } catch {
         // Keep factory defaults on load failure; the user can still save.
       } finally {
@@ -54,7 +60,7 @@ export default function SettingsPage() {
   }, []);
 
   const save = useCallback(
-    async (patch: Partial<Pick<AppSettings, 'colors' | 'render'>>) => {
+    async (patch: Partial<Pick<AppSettings, 'colors' | 'render' | 'defaults'>>) => {
       setStatus('saving');
       setErrorMsg(null);
       try {
@@ -70,6 +76,7 @@ export default function SettingsPage() {
         const s = (await res.json()) as AppSettings;
         if (Array.isArray(s.colors)) setColors(s.colors);
         if (s.render) setRender(s.render);
+        setDefaults(mergeToolDefaults(s.defaults));
         // Editor + portal re-read settings on their next mount.
         invalidateAppSettings();
         setStatus('saved');
@@ -115,8 +122,16 @@ export default function SettingsPage() {
         <p className="text-sm text-gray-500 py-10 text-center">Loading settings…</p>
       ) : tab === 'palette' ? (
         <PaletteTab colors={colors} setColors={setColors} onSave={() => save({ colors })} />
-      ) : (
+      ) : tab === 'rendering' ? (
         <RenderingTab render={render} setRender={setRender} onSave={() => save({ render })} />
+      ) : (
+        <DefaultsTabPanel
+          sectionKeys={DEFAULTS_TABS.find((t) => t.id === tab)?.sectionKeys ?? []}
+          defaults={defaults}
+          setDefaults={setDefaults}
+          palette={colors}
+          onSave={() => save({ defaults })}
+        />
       )}
 
       {status !== 'idle' && (
