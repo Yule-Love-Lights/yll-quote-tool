@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, effectiveCharges, pickInitialPackageId } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, effectiveCharges, pickInitialPackageId } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PortalCharges, SelectionCharges, PortalLineItem, PortalPackage } from '@/components/portal/types';
 
@@ -125,6 +125,39 @@ describe('minimumOrderSubtotal — the portal approval gate threshold (#18)', ()
 
   it('is waived (0) for an empty quote', () => {
     expect(minimumOrderSubtotal([])).toBe(0);
+  });
+});
+
+describe('orderMinimumStatus — the $1,000 gate counts rush + takedown, not just items (#47)', () => {
+  const taxRate = 0.0875;
+
+  it('a $1,000 item subtotal alone clears the gate', () => {
+    const price = priceSelection(1000, { rushFee: 0, takedown: 0, taxRate });
+    expect(orderMinimumStatus(price, 1000)).toEqual({ meetsMinimum: true, amountToMinimum: 0 });
+  });
+
+  it('items under $1,000 are pushed over the line by the rush/takedown fees (#47 — the bug)', () => {
+    // $950 of items + $50 rush = $1,000 taxable → the gate is met even though
+    // the item subtotal alone ($950) is under the minimum.
+    const price = priceSelection(950, { rushFee: 50, takedown: 0, taxRate });
+    expect(orderMinimumStatus(price, 1000)).toEqual({ meetsMinimum: true, amountToMinimum: 0 });
+  });
+
+  it('still short when items + fees fall under the minimum, and reports the remaining amount', () => {
+    const price = priceSelection(800, { rushFee: 50, takedown: 25, taxRate }); // taxable 875
+    expect(orderMinimumStatus(price, 1000)).toEqual({ meetsMinimum: false, amountToMinimum: 125 });
+  });
+
+  it('a fees-only "order" (no items selected) never meets the minimum', () => {
+    // priceSelection zeroes everything when the item subtotal is 0, so the
+    // fees don't sneak the customer past the gate without picking any items.
+    const price = priceSelection(0, { rushFee: 200, takedown: 200, taxRate });
+    expect(orderMinimumStatus(price, 1000)).toEqual({ meetsMinimum: false, amountToMinimum: 1000 });
+  });
+
+  it('a waived minimum (0) is met by any non-empty selection', () => {
+    const price = priceSelection(300, { rushFee: 0, takedown: 0, taxRate });
+    expect(orderMinimumStatus(price, 0)).toEqual({ meetsMinimum: true, amountToMinimum: 0 });
   });
 });
 
