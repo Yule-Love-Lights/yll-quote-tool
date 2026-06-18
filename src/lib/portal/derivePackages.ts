@@ -23,6 +23,7 @@
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 import type {
+  InstallTiming,
   PackageId,
   PortalCharges,
   PortalLineItem,
@@ -79,11 +80,13 @@ export function effectiveCharges(
   charges: PortalCharges,
   rushOn: boolean,
   takedownOn: boolean,
+  discountRate = 0,
 ): SelectionCharges {
   return {
     rushFee: rushOn ? charges.rush.amount : 0,
     takedown: takedownOn ? charges.takedown.amount : 0,
     taxRate: charges.taxRate,
+    discountRate,
   };
 }
 
@@ -98,15 +101,19 @@ export function priceSelection(
   charges: SelectionCharges,
 ): SelectionPrice {
   if (subtotal <= 0) {
-    return { subtotal: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0 };
+    return { subtotal: 0, discount: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0 };
   }
 
-  const taxable = subtotal + charges.rushFee + charges.takedown;
+  // Early-install promo (#40): a percentage off the item subtotal, applied
+  // before the per-job fees and tax. 0 when no timing discount is selected.
+  const discount = round2(subtotal * (charges.discountRate ?? 0));
+  const taxable = subtotal - discount + charges.rushFee + charges.takedown;
   const tax = round2(taxable * charges.taxRate);
   const total = round2(taxable + tax);
   const deposit = round2(total * BUSINESS_RULES.depositPercentage);
   return {
     subtotal,
+    discount,
     rushFee: charges.rushFee,
     takedown: charges.takedown,
     taxable,
@@ -125,21 +132,31 @@ export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
   return sum >= BUSINESS_RULES.minimumQuoteAmount ? BUSINESS_RULES.minimumQuoteAmount : 0;
 }
 
-// Evaluate the portal approval gate for a priced selection (#18 gate, #47).
-// The minimum is measured against the PRE-TAX TAXABLE total — the item subtotal
-// PLUS the rush + premium-takedown fees — not the item subtotal alone, so a
-// selection that only reaches the minimum once a fee is toggled on still clears
-// the gate (#47). Still requires a non-empty selection: a fees-only "order"
-// with no items can never meet the minimum (priceSelection zeroes everything
-// when the item subtotal is 0). Returns whether the gate is met and the dollars
-// still needed (0 once met).
+// Evaluate the portal approval gate for a priced selection (#18 gate, #47, #40).
+// The minimum is measured against the PRE-TAX, PRE-DISCOUNT taxable total — the
+// item subtotal PLUS the rush + premium-takedown fees (#47), but BEFORE any
+// early-install promo discount (#40) — so a fee pushes a borderline order over
+// the line, while a promo discount never re-blocks an order that already
+// qualified. Still requires a non-empty selection: a fees-only "order" with no
+// items can never meet the minimum (priceSelection zeroes everything when the
+// item subtotal is 0). Returns whether the gate is met and the dollars still
+// needed (0 once met).
 export function orderMinimumStatus(
   price: SelectionPrice,
   minimum: number,
 ): { meetsMinimum: boolean; amountToMinimum: number } {
-  const meetsMinimum = price.subtotal > 0 && price.taxable >= minimum;
-  const amountToMinimum = Math.max(0, minimum - price.taxable);
+  const basis = price.subtotal + price.rushFee + price.takedown;
+  const meetsMinimum = price.subtotal > 0 && basis >= minimum;
+  const amountToMinimum = Math.max(0, minimum - basis);
   return { meetsMinimum, amountToMinimum };
+}
+
+// Resolve the customer's early-install timing choice (#40) into a discount rate
+// off the order subtotal. 'none' (or an unknown value) → 0.
+export function installDiscountRate(timing: InstallTiming): number {
+  if (timing === 'september') return BUSINESS_RULES.earlyInstallDiscounts.september;
+  if (timing === 'october') return BUSINESS_RULES.earlyInstallDiscounts.october;
+  return 0;
 }
 
 function totalsFor(

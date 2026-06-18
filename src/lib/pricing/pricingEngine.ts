@@ -12,6 +12,15 @@ export const BUSINESS_RULES = {
   taxRate: 0.0875,
   depositPercentage: 0.50,
 
+  // Early-install promo discounts (#40) — a customer-selected percentage off
+  // the order subtotal for letting us install roof lights in the off-peak
+  // window: September (mid–late) or anytime in October. Mutually exclusive
+  // with the rush-install fee.
+  earlyInstallDiscounts: {
+    september: 0.15,
+    october: 0.10,
+  },
+
   rooflineRates: {
     easy: 8,
     medium: 10,

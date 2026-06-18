@@ -80,6 +80,8 @@ type ApproveBody = {
   rushSelected?: boolean;
   takedownSelected?: boolean;
   colorSchemeId?: string;
+  installTiming?: 'none' | 'september' | 'october';
+  installDiscountUsd?: number;
 };
 
 // The snapshot shape — stored in the approval_snapshot jsonb column.
@@ -98,6 +100,8 @@ type ApprovalSnapshot = {
     rushSelected: boolean;      // #4 — customer's rush add-on choice
     takedownSelected: boolean;  // #4 — customer's premium-takedown choice
     colorSchemeId: string;      // #10 — customer's light color/pattern choice
+    installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
+    installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
   customer: {
     fullName: string | null;
@@ -160,6 +164,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     typeof body.colorSchemeId === 'string' && body.colorSchemeId.trim()
       ? body.colorSchemeId.trim().slice(0, 64)
       : 'as-designed';
+  // #40 — the customer's early-install timing choice + the resulting discount.
+  // Recorded in the snapshot (the authoritative record of what they approved);
+  // the discounted amount is already baked into currentTotal/currentDeposit.
+  const installTiming =
+    body.installTiming === 'september' || body.installTiming === 'october'
+      ? body.installTiming
+      : 'none';
+  const installDiscountUsd =
+    typeof body.installDiscountUsd === 'number' && body.installDiscountUsd >= 0
+      ? body.installDiscountUsd
+      : 0;
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
@@ -207,6 +222,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       rushSelected,
       takedownSelected,
       colorSchemeId,
+      installTiming,
+      installDiscountUsd,
     },
     customer: {
       fullName: quote.customer_name,

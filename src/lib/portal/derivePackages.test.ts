@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, effectiveCharges, pickInitialPackageId } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PortalCharges, SelectionCharges, PortalLineItem, PortalPackage } from '@/components/portal/types';
 
@@ -71,10 +71,10 @@ describe('pickInitialPackageId — fallback default clears the $1,000 minimum (#
 describe('priceSelection — real price, no $1,000 floor (#18)', () => {
   it('returns an all-zero breakdown for an empty or negative selection', () => {
     expect(priceSelection(0, PLAIN)).toEqual({
-      subtotal: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0,
+      subtotal: 0, discount: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0,
     });
     expect(priceSelection(-50, PLAIN)).toEqual({
-      subtotal: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0,
+      subtotal: 0, discount: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0,
     });
   });
 
@@ -109,6 +109,42 @@ describe('priceSelection — real price, no $1,000 floor (#18)', () => {
     expect(p.subtotal + p.rushFee + p.takedown).toBe(p.taxable);
     expect(p.taxable + p.tax).toBeCloseTo(p.total, 2);
     expect(p.deposit).toBeCloseTo(p.total * BUSINESS_RULES.depositPercentage, 2);
+  });
+});
+
+describe('priceSelection — early-install discount (#40)', () => {
+  const taxRate = 0.0875;
+
+  it('takes the percentage off the item subtotal before tax', () => {
+    // $1,000 of items, 15% September discount → $150 off → $850 taxable.
+    const p = priceSelection(1000, { rushFee: 0, takedown: 0, taxRate, discountRate: 0.15 });
+    expect(p.subtotal).toBe(1000);
+    expect(p.discount).toBe(150);
+    expect(p.taxable).toBe(850);
+    expect(p.tax).toBe(74.38); // 850 * 0.0875 = 74.375 → 74.38
+    expect(p.total).toBe(924.38);
+    expect(p.deposit).toBe(462.19);
+  });
+
+  it('discounts the items, not the premium-takedown fee (which can coexist)', () => {
+    // $1,000 items − 15% ($150) + $150 takedown = $1,000 taxable.
+    const p = priceSelection(1000, { rushFee: 0, takedown: 150, taxRate, discountRate: 0.15 });
+    expect(p.discount).toBe(150);
+    expect(p.takedown).toBe(150);
+    expect(p.taxable).toBe(1000);
+  });
+
+  it('no discount when the rate is 0 or absent', () => {
+    expect(priceSelection(1000, { rushFee: 0, takedown: 0, taxRate, discountRate: 0 }).discount).toBe(0);
+    expect(priceSelection(1000, { rushFee: 0, takedown: 0, taxRate }).discount).toBe(0);
+  });
+});
+
+describe('installDiscountRate — Sep/Oct early-install rates (#40)', () => {
+  it('maps the timing choice to its rate', () => {
+    expect(installDiscountRate('september')).toBe(0.15);
+    expect(installDiscountRate('october')).toBe(0.10);
+    expect(installDiscountRate('none')).toBe(0);
   });
 });
 
@@ -159,6 +195,14 @@ describe('orderMinimumStatus — the $1,000 gate counts rush + takedown, not jus
     const price = priceSelection(300, { rushFee: 0, takedown: 0, taxRate });
     expect(orderMinimumStatus(price, 0)).toEqual({ meetsMinimum: true, amountToMinimum: 0 });
   });
+
+  it('an early-install discount does NOT lower the gate (#40 — measured pre-discount)', () => {
+    // $1,000 of items with a 15% September discount → $850 taxable, but the gate
+    // is measured on the pre-discount $1,000 so the order still qualifies.
+    const price = priceSelection(1000, { rushFee: 0, takedown: 0, taxRate, discountRate: 0.15 });
+    expect(price.taxable).toBe(850);
+    expect(orderMinimumStatus(price, 1000)).toEqual({ meetsMinimum: true, amountToMinimum: 0 });
+  });
 });
 
 describe('chargesFromResult — per-quote fee config (#4)', () => {
@@ -199,9 +243,13 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
   };
 
   it('includes a fee amount only when its toggle is on', () => {
-    expect(effectiveCharges(config, true, false)).toEqual({ rushFee: 150, takedown: 0, taxRate: 0.08625 });
-    expect(effectiveCharges(config, false, true)).toEqual({ rushFee: 0, takedown: 200, taxRate: 0.08625 });
-    expect(effectiveCharges(config, true, true)).toEqual({ rushFee: 150, takedown: 200, taxRate: 0.08625 });
-    expect(effectiveCharges(config, false, false)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625 });
+    expect(effectiveCharges(config, true, false)).toEqual({ rushFee: 150, takedown: 0, taxRate: 0.08625, discountRate: 0 });
+    expect(effectiveCharges(config, false, true)).toEqual({ rushFee: 0, takedown: 200, taxRate: 0.08625, discountRate: 0 });
+    expect(effectiveCharges(config, true, true)).toEqual({ rushFee: 150, takedown: 200, taxRate: 0.08625, discountRate: 0 });
+    expect(effectiveCharges(config, false, false)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0 });
+  });
+
+  it('passes through an early-install discount rate (#40)', () => {
+    expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15 });
   });
 });

@@ -17,25 +17,33 @@ function AddOnToggle({
   title,
   blurb,
   amount,
+  disabled = false,
+  disabledHint,
 }: {
   selected: boolean;
   onToggle: () => void;
   title: string;
   blurb: string;
   amount: number;
+  disabled?: boolean;
+  disabledHint?: string;
 }) {
   return (
     <li>
       <button
         type="button"
         aria-pressed={selected}
+        disabled={disabled}
+        title={disabled ? disabledHint : undefined}
         onClick={onToggle}
         className={[
-          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,opacity] duration-300 text-left border',
+          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity] duration-300 text-left border',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
-          selected
-            ? 'bg-[#1F2A23] border-[#3C4F43]'
-            : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100',
+          disabled
+            ? 'opacity-40 cursor-not-allowed bg-[#18221C]/40 border-[#243029]'
+            : selected
+              ? 'bg-[#1F2A23] border-[#3C4F43] cursor-pointer'
+              : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100 cursor-pointer',
         ].join(' ')}
       >
         <span
@@ -54,6 +62,70 @@ function AddOnToggle({
             </span>
             <span className={`font-display text-[16px] font-semibold tabular-nums ${selected ? 'text-[#E8B862]' : 'text-[#7B7361]'}`}>
               +{formatUsd(amount)}
+            </span>
+          </span>
+          <span className={`block text-[13px] mt-1 leading-[1.5] ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
+            {blurb}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
+// Customer-selectable early-install discount (Sep/Oct) — #40. Mutually
+// exclusive with each other and with rush install (disabled while rush is on).
+function DiscountToggle({
+  selected,
+  disabled,
+  onToggle,
+  title,
+  blurb,
+  percentLabel,
+  disabledHint,
+}: {
+  selected: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+  title: string;
+  blurb: string;
+  percentLabel: string;
+  disabledHint?: string;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        aria-pressed={selected}
+        disabled={disabled}
+        title={disabled ? disabledHint : undefined}
+        onClick={onToggle}
+        className={[
+          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity] duration-300 text-left border',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
+          disabled
+            ? 'opacity-40 cursor-not-allowed bg-[#18221C]/40 border-[#243029]'
+            : selected
+              ? 'bg-[#1F2A23] border-[#3C4F43] cursor-pointer'
+              : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100 cursor-pointer',
+        ].join(' ')}
+      >
+        <span
+          aria-hidden
+          className={[
+            'shrink-0 mt-0.5 w-6 h-6 rounded-md flex items-center justify-center transition-colors duration-300 border',
+            selected ? 'bg-[#E8B862] border-[#E8B862]' : 'bg-transparent border-[#3C4F43]',
+          ].join(' ')}
+        >
+          {selected && <Check className="w-4 h-4 text-[#0B140F]" aria-hidden />}
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="flex items-baseline justify-between gap-3">
+            <span className={`font-display text-[17px] md:text-[18px] font-semibold ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
+              {title}
+            </span>
+            <span className={`font-display text-[16px] font-semibold ${selected ? 'text-[#86C9A0]' : 'text-[#7B7361]'}`}>
+              −{percentLabel}
             </span>
           </span>
           <span className={`block text-[13px] mt-1 leading-[1.5] ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
@@ -98,6 +170,10 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
     takedownAmount,
     toggleRush,
     toggleTakedown,
+    installTiming,
+    toggleInstallTiming,
+    septemberDiscountRate,
+    octoberDiscountRate,
   } = useSelection();
 
   return (
@@ -199,6 +275,8 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
               title="Rush install"
               blurb="Bump your install to the front of the queue."
               amount={rushAmount}
+              disabled={installTiming !== 'none'}
+              disabledHint="Not available with an early-install discount."
             />
             <AddOnToggle
               selected={takedownSelected}
@@ -208,6 +286,42 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
               amount={takedownAmount}
             />
           </ul>
+        </div>
+
+        {/* Early-install discount (#40) — Sep/Oct roof-light install for a
+         * percentage off the order. Mutually exclusive with each other and with
+         * rush install. The note spells out exactly what "early install" means. */}
+        <div className="mt-10 md:mt-12">
+          <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
+            Install early &amp; save
+          </p>
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+            <DiscountToggle
+              selected={installTiming === 'september'}
+              disabled={rushSelected}
+              onToggle={() => toggleInstallTiming('september')}
+              title="September install"
+              blurb="We hang your roof lights in mid–late September."
+              percentLabel={`${Math.round(septemberDiscountRate * 100)}% off`}
+              disabledHint="Not available with rush install."
+            />
+            <DiscountToggle
+              selected={installTiming === 'october'}
+              disabled={rushSelected}
+              onToggle={() => toggleInstallTiming('october')}
+              title="October install"
+              blurb="We hang your roof lights anytime in October."
+              percentLabel={`${Math.round(octoberDiscountRate * 100)}% off`}
+              disabledHint="Not available with rush install."
+            />
+          </ul>
+          <p className="mt-3 text-[13px] text-[#A89F87] leading-[1.6] max-w-2xl">
+            <span className="text-[#E0D7C1] font-semibold">What early install means:</span> we put up your{' '}
+            <span className="text-[#E0D7C1]">roof lights only</span>{' '}in mid–late September or anytime in October —
+            everything else (wreaths, garland, trees, columns, railings, spritzers) still goes up in November. Your
+            lights stay off until you&apos;re ready to turn them on. Pick a month and that&apos;s when we install — the
+            discount requires the install to happen that month.
+          </p>
         </div>
 
         {/* Totals — ties the line items above out to the all-in price:
@@ -220,6 +334,12 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
               <dt>Subtotal</dt>
               <dd className="tabular-nums text-[#E0D7C1]">{formatUsd(breakdown.subtotal)}</dd>
             </div>
+            {breakdown.discount > 0 && (
+              <div className="flex justify-between text-[#86C9A0]">
+                <dt>{installTiming === 'september' ? 'September' : 'October'} install discount</dt>
+                <dd className="tabular-nums">−{formatUsd(breakdown.discount)}</dd>
+              </div>
+            )}
             {breakdown.rushFee > 0 && (
               <div className="flex justify-between text-[#A89F87]">
                 <dt>Rush fee</dt>
