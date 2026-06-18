@@ -12,8 +12,9 @@
 //     removing the toggled one.
 //   - Pricing ALWAYS derives from the selected items via priceSelection
 //     (subtotal + rush/takedown + tax), so tiers and custom stay consistent.
-//   - Approval is gated until the pre-tax subtotal reaches the order
-//     minimum ($1,000, or 0 when waived); see meetsMinimum / amountToMinimum.
+//   - Approval is gated until the pre-tax total (item subtotal + rush +
+//     premium-takedown) reaches the order minimum ($1,000, or 0 when waived);
+//     see meetsMinimum / amountToMinimum (#47 — the fees count toward it).
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type {
@@ -25,7 +26,7 @@ import type {
   SelectionPrice,
 } from './types';
 import { sumSelectedItems } from './format';
-import { priceSelection, effectiveCharges } from '@/lib/portal/derivePackages';
+import { priceSelection, effectiveCharges, orderMinimumStatus } from '@/lib/portal/derivePackages';
 import { DEFAULT_COLOR_SCHEME_ID, resolveSchemeColorIds } from '@/lib/design/colorSchemes';
 
 type SelectionContextValue = {
@@ -41,7 +42,7 @@ type SelectionContextValue = {
   breakdown: SelectionPrice;
   /** pre-tax subtotal required to approve ($1,000, or 0 when waived) */
   minimumOrderSubtotal: number;
-  /** true once the selection is non-empty AND at/above the order minimum */
+  /** true once the selection is non-empty AND its pre-tax total (items + rush + takedown) is at/above the order minimum (#47) */
   meetsMinimum: boolean;
   /** dollars still needed to reach the minimum (0 once met) */
   amountToMinimum: number;
@@ -268,8 +269,11 @@ export function SelectionProvider({
     [currentSubtotal, charges, rushSelected, takedownSelected],
   );
 
-  const meetsMinimum = currentSubtotal > 0 && currentSubtotal >= minimumOrderSubtotal;
-  const amountToMinimum = Math.max(0, minimumOrderSubtotal - currentSubtotal);
+  // #47 — the $1,000 gate counts the rush + premium-takedown fees too, not just
+  // the item subtotal. orderMinimumStatus measures the pre-tax taxable total
+  // (items + fees) against the minimum, so a selection that only reaches $1,000
+  // once a fee is toggled on still clears the gate.
+  const { meetsMinimum, amountToMinimum } = orderMinimumStatus(breakdown, minimumOrderSubtotal);
 
   const activeName = useMemo(() => {
     if (packageId === 'D') return 'Build Your Own';

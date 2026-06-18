@@ -125,6 +125,23 @@ export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
   return sum >= BUSINESS_RULES.minimumQuoteAmount ? BUSINESS_RULES.minimumQuoteAmount : 0;
 }
 
+// Evaluate the portal approval gate for a priced selection (#18 gate, #47).
+// The minimum is measured against the PRE-TAX TAXABLE total — the item subtotal
+// PLUS the rush + premium-takedown fees — not the item subtotal alone, so a
+// selection that only reaches the minimum once a fee is toggled on still clears
+// the gate (#47). Still requires a non-empty selection: a fees-only "order"
+// with no items can never meet the minimum (priceSelection zeroes everything
+// when the item subtotal is 0). Returns whether the gate is met and the dollars
+// still needed (0 once met).
+export function orderMinimumStatus(
+  price: SelectionPrice,
+  minimum: number,
+): { meetsMinimum: boolean; amountToMinimum: number } {
+  const meetsMinimum = price.subtotal > 0 && price.taxable >= minimum;
+  const amountToMinimum = Math.max(0, minimum - price.taxable);
+  return { meetsMinimum, amountToMinimum };
+}
+
 function totalsFor(
   itemIds: string[],
   lineItems: PortalLineItem[],
