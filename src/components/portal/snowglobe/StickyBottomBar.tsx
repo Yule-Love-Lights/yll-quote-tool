@@ -28,6 +28,8 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
     packageId,
     selectedItemIds,
     colorSchemeId,
+    installTiming,
+    breakdown,
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -54,6 +56,8 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
           rushSelected,
           takedownSelected,
           colorSchemeId,
+          installTiming,
+          installDiscountUsd: breakdown.discount,
         }),
       });
       // 409 = already approved — still route to the celebration page.

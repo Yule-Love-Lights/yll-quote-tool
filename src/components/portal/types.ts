@@ -97,12 +97,19 @@ export type PortalApproval = {
   selectedItemCount: number; // for a "X items included" line
 };
 
+// The customer's early-install timing choice on the portal (#40). Picking
+// September or October applies a percentage discount to the order subtotal and
+// is mutually exclusive with the rush-install add-on. 'none' = the standard
+// mid-Nov–early-Dec install with no discount.
+export type InstallTiming = 'none' | 'september' | 'october';
+
 // Effective per-job charges fed into priceSelection: the actual dollar
 // amounts to add (0 when a fee is toggled off) plus the quote's tax rate.
 export type SelectionCharges = {
   rushFee: number;   // dollars to add (0 when off)
   takedown: number;  // dollars to add (0 when off)
   taxRate: number;   // effective rate for this quote, e.g. 0.08625
+  discountRate?: number; // early-install promo rate off the subtotal (#40); 0/undefined when none
 };
 
 // Per-quote fee config for the portal. Rush + premium-takedown are
@@ -123,9 +130,10 @@ export type PortalCharges = {
 // minimum is enforced as an approval gate (see minimumOrderSubtotal).
 export type SelectionPrice = {
   subtotal: number;  // pre-tax sum of the selected line items
+  discount: number;  // early-install promo discount off the subtotal (#40); 0 when none
   rushFee: number;   // dollars (0 when not on this quote)
   takedown: number;  // dollars (0 when not on this quote)
-  taxable: number;   // subtotal + rushFee + takedown
+  taxable: number;   // subtotal − discount + rushFee + takedown
   tax: number;       // dollars
   total: number;     // tax-inclusive total the customer pays
   deposit: number;   // 50% of total, due today

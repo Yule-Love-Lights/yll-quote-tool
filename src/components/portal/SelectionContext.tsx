@@ -18,6 +18,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type {
+  InstallTiming,
   PackageId,
   PortalCharges,
   PortalPackage,
@@ -26,7 +27,8 @@ import type {
   SelectionPrice,
 } from './types';
 import { sumSelectedItems } from './format';
-import { priceSelection, effectiveCharges, orderMinimumStatus } from '@/lib/portal/derivePackages';
+import { priceSelection, effectiveCharges, orderMinimumStatus, installDiscountRate } from '@/lib/portal/derivePackages';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import { DEFAULT_COLOR_SCHEME_ID, resolveSchemeColorIds } from '@/lib/design/colorSchemes';
 
 type SelectionContextValue = {
@@ -56,6 +58,14 @@ type SelectionContextValue = {
   takedownAmount: number;
   toggleRush: () => void;
   toggleTakedown: () => void;
+  /** the customer's early-install timing choice (#40); mutually exclusive with rush */
+  installTiming: InstallTiming;
+  /** select/deselect a Sep/Oct early-install discount (clicking the active one clears it); turns rush off */
+  toggleInstallTiming: (choice: 'september' | 'october') => void;
+  /** September early-install discount rate (e.g. 0.15) for the toggle label */
+  septemberDiscountRate: number;
+  /** October early-install discount rate (e.g. 0.10) for the toggle label */
+  octoberDiscountRate: number;
   /** name of the active package ("Build Your Own" when custom) */
   activeName: string;
   selectPackage: (id: PackageId) => void;
@@ -178,8 +188,20 @@ export function SelectionProvider({
   // only the staff default + these toggles control them.
   const [rushSelected, setRushSelected] = useState<boolean>(charges.rush.defaultOn);
   const [takedownSelected, setTakedownSelected] = useState<boolean>(charges.takedown.defaultOn);
-  const toggleRush = useCallback(() => setRushSelected((v) => !v), []);
+  // Early-install timing discount (#40). Mutually exclusive with the rush
+  // add-on: selecting a Sep/Oct discount clears rush, and turning rush on
+  // clears the discount. Always starts at 'none' (standard install, no discount).
+  const [installTiming, setInstallTiming] = useState<InstallTiming>('none');
+  const toggleRush = useCallback(() => {
+    // Turning rush ON clears any early-install discount (mutually exclusive #40).
+    if (!rushSelected) setInstallTiming('none');
+    setRushSelected((v) => !v);
+  }, [rushSelected]);
   const toggleTakedown = useCallback(() => setTakedownSelected((v) => !v), []);
+  const toggleInstallTiming = useCallback((choice: 'september' | 'october') => {
+    setInstallTiming((cur) => (cur === choice ? 'none' : choice));
+    setRushSelected(false); // early-install and rush are mutually exclusive (#40)
+  }, []);
 
   // Light color/pattern (#10). Always starts at "as designed" (render the colors
   // the operator drew); the customer can switch on the portal and the live design
@@ -265,8 +287,11 @@ export function SelectionProvider({
   // Effective fees reflect the live toggle state; the breakdown re-prices
   // whenever the selection OR a fee toggle changes.
   const breakdown = useMemo(
-    () => priceSelection(currentSubtotal, effectiveCharges(charges, rushSelected, takedownSelected)),
-    [currentSubtotal, charges, rushSelected, takedownSelected],
+    () => priceSelection(
+      currentSubtotal,
+      effectiveCharges(charges, rushSelected, takedownSelected, installDiscountRate(installTiming)),
+    ),
+    [currentSubtotal, charges, rushSelected, takedownSelected, installTiming],
   );
 
   // #47 — the $1,000 gate counts the rush + premium-takedown fees too, not just
@@ -296,6 +321,10 @@ export function SelectionProvider({
     takedownAmount: charges.takedown.amount,
     toggleRush,
     toggleTakedown,
+    installTiming,
+    toggleInstallTiming,
+    septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
+    octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
     activeName,
     selectPackage,
     toggleItem,
