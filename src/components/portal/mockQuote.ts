@@ -184,7 +184,7 @@ export const MOCK_TEAM = {
   // "Naldo" is the friendly short form used in CTAs ("Text Naldo directly").
   // The company bio refers to the founder by his full name, Naldoven.
   leaderName: 'Naldo',
-  phone: '(555) 123-4567',
+  phone: '(631) 517-0186',
   // Real team photo — the full crew in front of the branded YLL trailer.
   // Wide group shot, rendered in a landscape frame in the About section.
   photo: '/team.jpeg',
