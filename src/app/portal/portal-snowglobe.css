@@ -78,6 +78,19 @@
   filter: brightness(var(--brightness, 0.85)) contrast(1.08) saturate(1.02);
 }
 
+/* Mobile (#57): the full-height cover stage shows the photo's whole height, so
+ * a wide house photo includes a lot of sky up top. On phones, shift the photo
+ * UP (pure vertical translate — no scaling, so the sides stay fully intact and
+ * nothing of the house is cropped left/right). The sky clips off the top via
+ * the stage's overflow:hidden; the small gap this opens at the very bottom sits
+ * behind the price/tier overlay, so it isn't visible. Tune the offset to taste. */
+@media (max-width: 640px) {
+  .portal-snow-stage-photo,
+  .portal-snow-stage-photo[data-ready='true'] {
+    transform: translateY(-8%);
+  }
+}
+
 /* Warm amber bloom that scales with package level — uses screen blend
  * to feel like real light rather than a painted overlay */
 .portal-snow-stage-bloom {

@@ -29,24 +29,6 @@ import { formatUsd } from '../format';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
-import { COLOR_SCHEMES } from '@/lib/design/colorSchemes';
-import { colorOf } from '@/components/design/editor-core/colors';
-
-// Build a CSS swatch background from a scheme's color ids. null/empty ("as
-// designed") → a neutral two-tone chip that reads as "no override". Single color
-// → solid; multi → even-segment diagonal gradient so the pattern is visible.
-function schemeSwatch(colorIds: string[] | null): React.CSSProperties {
-  if (!colorIds || colorIds.length === 0) {
-    return { background: 'linear-gradient(135deg, #c9c2b0 0 50%, #6f6a5c 50% 100%)' };
-  }
-  const hexes = colorIds.map((id) => colorOf(id).hex);
-  if (hexes.length === 1) return { background: hexes[0] };
-  const stops = hexes
-    .map((h, i) => `${h} ${(i / hexes.length) * 100}% ${((i + 1) / hexes.length) * 100}%`)
-    .join(', ');
-  return { background: `linear-gradient(135deg, ${stops})` };
-}
-
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -84,8 +66,6 @@ export function InteractiveHero({
     currentDeposit,
     selectedItemIds,
     hiddenSceneItemIds,
-    colorSchemeId,
-    setColorScheme,
     colorOverride,
   } = useSelection();
   const [ready, setReady] = useState(false);
@@ -225,46 +205,6 @@ export function InteractiveHero({
       {/* Bottom content — headline + price + package selector */}
       <div className="absolute bottom-0 left-0 right-0 pb-safe z-10">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-8 md:pb-14">
-          {/* Light color/pattern picker (#10) — recolors the live design in
-              real time. Only shown when a design is linked (recolor needs a
-              live scene). */}
-          {design && (
-            <div className="mb-5 md:mb-6">
-              <p className="text-[10px] md:text-[11px] font-semibold tracking-[0.22em] uppercase text-[#F4ECD8]/70 mb-2">
-                Light color
-              </p>
-              <div
-                role="radiogroup"
-                aria-label="Choose your light color"
-                className="flex flex-wrap gap-2"
-              >
-                {COLOR_SCHEMES.map((s) => {
-                  const active = colorSchemeId === s.id;
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      onClick={() => setColorScheme(s.id)}
-                      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] md:text-[12px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] ${
-                        active
-                          ? 'border-[#FFB744] bg-[#FFB744]/15 text-[#F4ECD8]'
-                          : 'border-[#F4ECD8]/25 text-[#F4ECD8]/80 hover:border-[#FFB744]/60 hover:text-[#F4ECD8]'
-                      }`}
-                    >
-                      <span
-                        aria-hidden
-                        className="w-3.5 h-3.5 rounded-full ring-1 ring-white/40 shrink-0"
-                        style={schemeSwatch(s.colorIds)}
-                      />
-                      {s.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 items-end">
             {/* Headline + live price */}
             <div className="md:col-span-7">
