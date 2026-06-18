@@ -39,13 +39,17 @@ function requireConfig(): { apiKey: string; locationId: string } {
   return { apiKey, locationId };
 }
 
-async function ghlFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function ghlFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  version: string = API_VERSION_HEADER,
+): Promise<T> {
   const { apiKey } = requireConfig();
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Authorization': `Bearer ${apiKey}`,
-      'Version': API_VERSION_HEADER,
+      'Version': version,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       ...(init.headers ?? {}),
@@ -199,6 +203,37 @@ export async function updateOpportunityStage(
   return json.opportunity;
 }
 
+// ─── Opportunity update (stage + card fields) ──────────────────────────────
+// Generalizes updateOpportunityStage: set any of stage / name / monetary value
+// on an existing card. Used by "Send Quote" (#37) to advance the card to Bid
+// Sent AND refresh its title ("FirstName LastName") + value (quote total) in
+// one call. Only the provided fields are sent — undefined fields are left
+// untouched (so we never blank out an existing value). We intentionally do NOT
+// touch `source` here: on an existing card it records where the lead came from.
+export type UpdateOpportunityFields = {
+  pipelineStageId?: string;
+  name?: string;
+  monetaryValue?: number;
+};
+
+export async function updateOpportunity(
+  opportunityId: string,
+  fields: UpdateOpportunityFields,
+): Promise<HighLevelOpportunity> {
+  const body: Record<string, unknown> = {};
+  if (fields.pipelineStageId !== undefined) body.pipelineStageId = fields.pipelineStageId;
+  if (fields.name !== undefined) body.name = fields.name;
+  if (fields.monetaryValue !== undefined) body.monetaryValue = fields.monetaryValue;
+  const json = await ghlFetch<{ opportunity: HighLevelOpportunity }>(
+    `/opportunities/${encodeURIComponent(opportunityId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    },
+  );
+  return json.opportunity;
+}
+
 // ─── Pipelines list (one-time setup helper) ───────────────────────────────
 // Not called from production code — used manually via a dev script to
 // discover pipelineId + stage IDs so we can set the env vars.
@@ -206,6 +241,63 @@ export async function updateOpportunityStage(
 export async function listPipelines(): Promise<unknown> {
   const { locationId } = requireConfig();
   return ghlFetch(`/opportunities/pipelines?locationId=${encodeURIComponent(locationId)}`);
+}
+
+// ─── Conversations: send SMS / Email ───────────────────────────────────────
+// Deliver the portal link to the customer through GHL so it lands in the
+// Conversations tab (#37). The conversations API historically uses a different
+// Version header than contacts/opportunities. Success = no throw; the raw send
+// result is returned for logging/debugging.
+//
+// ⚠️ The exact request shape (Version, fromNumber / emailFrom / replyTo field
+// names) is confirmed by a live test send — adjust here if the live probe shows
+// GHL expects different keys.
+const CONVERSATIONS_API_VERSION = '2021-04-15';
+
+type SendMessageResult = { messageId?: string; conversationId?: string; [k: string]: unknown };
+
+export async function sendSms(input: {
+  contactId: string;
+  message: string;
+  fromNumber?: string; // E.164, e.g. +16315170186; omit to use the location default
+}): Promise<SendMessageResult> {
+  return ghlFetch<SendMessageResult>(
+    '/conversations/messages',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'SMS',
+        contactId: input.contactId,
+        message: input.message,
+        ...(input.fromNumber ? { fromNumber: input.fromNumber } : {}),
+      }),
+    },
+    CONVERSATIONS_API_VERSION,
+  );
+}
+
+export async function sendEmail(input: {
+  contactId: string;
+  subject: string;
+  html: string;
+  emailFrom?: string; // e.g. "Yule Love Lights <sales@yulelovelights.com>" — sets the from + reply-to
+}): Promise<SendMessageResult> {
+  // NOTE: GHL's `replyTo` field is an enum (not an address) — passing an email
+  // there 422s. The from address (emailFrom) is what replies route back to.
+  return ghlFetch<SendMessageResult>(
+    '/conversations/messages',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'Email',
+        contactId: input.contactId,
+        subject: input.subject,
+        html: input.html,
+        ...(input.emailFrom ? { emailFrom: input.emailFrom } : {}),
+      }),
+    },
+    CONVERSATIONS_API_VERSION,
+  );
 }
 
 // ─── Mapper: HighLevel → CrmContact ───────────────────────────────────────
