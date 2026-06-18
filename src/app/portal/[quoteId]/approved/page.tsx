@@ -50,6 +50,19 @@ export default async function PortalApprovedPage({
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
+  // #39/#40 — the booking summary reflects the customer's actual choices.
+  // Install window follows the Sep/Oct early-install pick; takedown follows the
+  // premium-takedown add-on (premium pulls everything down before Jan 9).
+  // Optional-chained so the dev MOCK_QUOTE (no approval) renders the standard
+  // windows.
+  const installWindow =
+    quote.approval?.installTiming === 'september'
+      ? 'Mid-Late September'
+      : quote.approval?.installTiming === 'october'
+        ? 'October'
+        : 'Mid-November – Early December';
+  const takedownWindow = quote.approval?.takedownSelected ? 'Before Jan 9' : 'Jan 9 – Feb 3';
+
   const nextSteps: Array<{
     icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
     title: string;
@@ -63,12 +76,12 @@ export default async function PortalApprovedPage({
     {
       icon: Truck,
       title: 'Our team installs',
-      body: '2–4 hours on-site. Clips only — no nails, no staples, no damage.',
+      body: '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
     },
     {
       icon: PackageOpen,
       title: 'We take everything down',
-      body: 'Takedown runs Jan 9 – Feb 3. Lights, clips, extensions — all gone.',
+      body: `Takedown runs ${takedownWindow}. Lights, clips, extensions — all gone.`,
     },
   ];
 
@@ -117,7 +130,7 @@ export default async function PortalApprovedPage({
                   Install window
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#F4ECD8] mt-1">
-                  Mid-November – Early December
+                  {installWindow}
                 </dd>
               </div>
               <div>
@@ -125,7 +138,7 @@ export default async function PortalApprovedPage({
                   Takedown
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#F4ECD8] mt-1">
-                  Jan 9 – Feb 3
+                  {takedownWindow}
                 </dd>
               </div>
               <div>
@@ -221,7 +234,7 @@ export default async function PortalApprovedPage({
             Questions between now and install day?
           </p>
           <h3 className="font-display text-[26px] md:text-[32px] font-semibold text-[#F4ECD8]">
-            Text {leaderName} directly.
+            Text Us Directly.
           </h3>
           <a
             href={telHref}
@@ -247,7 +260,7 @@ export default async function PortalApprovedPage({
       <footer className="w-full bg-[#060B0F] border-t border-[#1F2A23]">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-12 text-center">
           <p className="text-[12px] leading-[1.65] text-[#7B7361] max-w-[65ch] mx-auto">
-            A receipt was emailed. Your deposit is fully refundable up until the morning of your install.
+            Your deposit is fully refundable up until the morning of your install.
           </p>
         </div>
       </footer>

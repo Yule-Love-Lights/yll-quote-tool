@@ -40,6 +40,10 @@ type ApprovalSnapshotJson = {
     // The light color/pattern the customer approved with (#10). Optional/back-
     // compat: older snapshots predate it.
     colorSchemeId?: string;
+    // The premium-takedown (#4) + Sep/Oct early-install (#40) choices the
+    // customer approved with. Optional/back-compat: older snapshots predate them.
+    takedownSelected?: boolean;
+    installTiming?: 'none' | 'september' | 'october';
   };
 };
 
@@ -247,6 +251,11 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
     selectedItemCount: Array.isArray(sel?.selectedItemIds)
       ? sel.selectedItemIds.length
       : 0,
+    installTiming:
+      sel?.installTiming === 'september' || sel?.installTiming === 'october'
+        ? sel.installTiming
+        : 'none',
+    takedownSelected: sel?.takedownSelected === true,
   };
 }
 

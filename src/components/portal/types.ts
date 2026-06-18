@@ -95,6 +95,8 @@ export type PortalApproval = {
   totalUsd: number;          // amount the customer saw at approval time
   depositUsd: number;        // amount paid up front
   selectedItemCount: number; // for a "X items included" line
+  installTiming: InstallTiming; // #40 — Sep/Oct early-install choice (or 'none')
+  takedownSelected: boolean;    // #4 — premium (before-Jan-9) takedown chosen
 };
 
 // The customer's early-install timing choice on the portal (#40). Picking
