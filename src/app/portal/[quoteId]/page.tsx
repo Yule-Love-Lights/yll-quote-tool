@@ -24,6 +24,7 @@ import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo
 import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
+import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
@@ -155,6 +156,11 @@ export default async function PortalPage({
           palette={appSettings.colors}
           renderSettings={appSettings.render}
         />
+
+        {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
+            below the packages so the swatches don't overlap the photo on a phone.
+            Only when a design is linked (recolor needs a live scene). */}
+        {quote.design && <LightColorPicker />}
 
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}
