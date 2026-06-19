@@ -1,14 +1,13 @@
-// Portal v2 DARK — Risk Reversal. Six guarantees on dark cards.
+// Portal v2 DARK — Risk Reversal. Five guarantees on dark cards.
 // Icon badges are subtly outlined (not filled gold — that's reserved
 // for the selection state). Evergreen-tinted backgrounds keep it
 // distinct from the "What's Included" band.
 
-import { CheckCircle2, Wrench, Lightbulb, Calendar, Home, ShieldCheck } from 'lucide-react';
+import { Wrench, Lightbulb, Calendar, Home, ShieldCheck } from 'lucide-react';
 
 type Guarantee = { icon: React.ComponentType<{ className?: string }>; label: string };
 
 const GUARANTEES: Guarantee[] = [
-  { icon: CheckCircle2,  label: 'Full refund anytime before install day.' },
   { icon: Wrench,        label: 'Free maintenance all season — 48-hour fix guarantee.' },
   { icon: Lightbulb,     label: 'Every bulb guaranteed — we replace burnouts free.' },
   { icon: Calendar,      label: 'Standard takedown included (Jan 9 – Feb 3).' },

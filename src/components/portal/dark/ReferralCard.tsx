@@ -75,7 +75,7 @@ export function ReferralCard({ quoteId }: ReferralCardProps) {
       </div>
 
       <p id="portal-dark-referral-help" className="mt-3 text-[12px] leading-[1.55] text-[#A89F87]">
-        Every neighbor who books earns you $100 off next season — no limit, auto-applied to your account.
+        Every neighbor who books earns you $150 off next season — no limit, auto-applied to your account.
       </p>
     </div>
   );

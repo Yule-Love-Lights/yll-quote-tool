@@ -3,9 +3,10 @@
 //
 // This is the SNOWGLOBE design: the home's photo becomes the product —
 // tap a package, watch the lights come on. Wired to real DB data
-// (loadPortalQuote) with the production approve flow: the StickyBottomBar
-// POSTs to /api/quotes/[id]/approve (home.works + HighLevel) then routes
-// to /portal/[id]/approved.
+// (loadPortalQuote) with the approve flow: the StickyBottomBar POSTs to
+// /api/quotes/[id]/approve (freezes the approval snapshot, then texts/emails
+// the customer and emails staff to collect the 50% deposit — pre-Valor
+// placeholder) then routes to /portal/[id]/approved.
 //
 // The first screen is the InteractiveHero; below the fold it composes the
 // dark-theme sections (WhatsIncluded, RiskReversal, …). The interactive

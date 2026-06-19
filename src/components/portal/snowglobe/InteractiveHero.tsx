@@ -229,7 +229,7 @@ export function InteractiveHero({
                 <span className="text-[13px] md:text-[14px] text-[#F4ECD8]/75">
                   incl. tax ·{' '}
                   <span className="tabular-nums text-[#FFD07A]">{formatUsd(displayDeposit)}</span>{' '}
-                  deposit today
+                  deposit
                 </span>
               </div>
             </div>

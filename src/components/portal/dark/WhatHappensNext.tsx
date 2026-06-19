@@ -15,8 +15,7 @@ const STEPS: Step[] = [
   {
     icon: CheckCircle2,
     title: 'Approve your quote',
-    body: 'Pay a 50% deposit — your slot is locked in.',
-    tag: 'Today',
+    body: 'We reach out to collect your 50% deposit and lock in your slot.',
   },
   {
     icon: MessageSquare,
