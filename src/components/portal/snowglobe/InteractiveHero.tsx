@@ -62,6 +62,7 @@ export function InteractiveHero({
   const {
     packageId,
     selectPackage,
+    locked,
     currentTotal,
     currentDeposit,
     selectedItemIds,
@@ -237,12 +238,13 @@ export function InteractiveHero({
             {/* Package selector */}
             <div className="md:col-span-5">
               <p className="text-[10px] md:text-[11px] font-semibold tracking-[0.22em] uppercase text-[#F4ECD8]/70 mb-2.5">
-                Tap to re-illuminate
+                {locked ? 'Your selected package' : 'Tap to re-illuminate'}
               </p>
               <div
                 role="radiogroup"
                 aria-label="Choose your lighting package"
-                className="grid grid-cols-2 gap-2 md:gap-2.5"
+                aria-disabled={locked || undefined}
+                className={`grid grid-cols-2 gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
               >
                 {packages.map((p) => (
                   <button

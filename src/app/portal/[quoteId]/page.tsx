@@ -23,6 +23,7 @@ import { notFound } from 'next/navigation';
 import { InteractiveHero } from '@/components/portal/snowglobe/InteractiveHero';
 import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo';
 import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
+import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
@@ -101,6 +102,10 @@ export default async function PortalPage({
   const { quoteId } = await params;
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
+  // #43 — once the customer has approved, the portal reads as BOOKED rather than
+  // re-shoppable: a banner up top + the sticky bar's Approve CTA becomes a
+  // "View confirmation" link (the approval snapshot drives /approved).
+  const isApproved = !!quote.approval;
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   const appSettings = await getAppSettings();
@@ -136,6 +141,9 @@ export default async function PortalPage({
 
   return (
     <main className="relative w-full">
+      {isApproved && (
+        <BookedBanner quoteId={quoteId} approvedAt={quote.approval?.approvedAt} />
+      )}
       <SelectionProvider
         packages={quote.packages}
         lineItems={quote.lineItems}
@@ -144,6 +152,7 @@ export default async function PortalPage({
         minimumOrderSubtotal={quote.minimumOrderSubtotal}
         initialPackageId={initialPackageId}
         initialSelectedItemIds={initialSelectedItemIds}
+        locked={isApproved}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
@@ -210,7 +219,7 @@ export default async function PortalPage({
         <Disclaimer />
 
         {/* Sticky floating pill bar — real approve flow, always last in tree */}
-        <StickyBottomBar quoteId={quoteId} />
+        <StickyBottomBar quoteId={quoteId} approved={isApproved} />
       </SelectionProvider>
     </main>
   );
