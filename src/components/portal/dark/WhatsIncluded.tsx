@@ -361,7 +361,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
               <dd className="font-display font-semibold tabular-nums text-[#F4ECD8]">{formatUsd(breakdown.total)}</dd>
             </div>
             <div className="flex justify-between text-[13px]">
-              <dt className="text-[#A89F87]">Deposit today (50%)</dt>
+              <dt className="text-[#A89F87]">Deposit (50%)</dt>
               <dd className="tabular-nums text-[#E8B862]">{formatUsd(breakdown.deposit)}</dd>
             </div>
           </dl>
