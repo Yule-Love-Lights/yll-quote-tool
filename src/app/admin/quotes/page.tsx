@@ -178,7 +178,7 @@ export default function QuotesAdminPage() {
         )}
 
         {/* overflow-x-auto (NOT hidden): the actions column outgrew the
-            viewport — Edit/Portal/Video/Send/Delete — and overflow-hidden was
+            viewport — Edit/Portal/Send/Delete — and overflow-hidden was
             CLIPPING Delete off-screen with no way to reach it (#30). */}
         {items.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
@@ -232,12 +232,6 @@ export default function QuotesAdminPage() {
                           className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
                         >
                           Portal ↗
-                        </Link>
-                        <Link
-                          href={`/admin/quotes/${q.id}/video`}
-                          className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
-                        >
-                          Video
                         </Link>
                         <button
                           disabled={busy === q.id || busy === 'ALL' || !!q.customer_approved_at}
