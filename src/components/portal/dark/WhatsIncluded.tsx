@@ -174,6 +174,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
     toggleInstallTiming,
     septemberDiscountRate,
     octoberDiscountRate,
+    locked,
   } = useSelection();
 
   return (
@@ -193,12 +194,14 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
             Your {activeName} — line by line.
           </h2>
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
-            Toggle anything off to remove it and we&apos;ll update your total automatically.
+            {locked
+              ? "This is your booked quote — here's everything included, line by line."
+              : "Toggle anything off to remove it and we'll update your total automatically."}
           </p>
           <p className="mt-3 text-[13px] text-[#7B7361]">Prices shown are before tax.</p>
         </div>
 
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+        <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${locked ? 'pointer-events-none' : ''}`}>
           {items.map((item) => {
             const Icon = ICONS[item.kind] ?? Sparkles;
             const selected = isItemSelected(item.id);
@@ -264,7 +267,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
          * package. Toggling either updates the totals + the approval. */}
-        <div className="mt-10 md:mt-12">
+        <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Optional add-ons
           </p>
@@ -291,7 +294,7 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
         {/* Early-install discount (#40) — Sep/Oct roof-light install for a
          * percentage off the order. Mutually exclusive with each other and with
          * rush install. The note spells out exactly what "early install" means. */}
-        <div className="mt-10 md:mt-12">
+        <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save
           </p>

@@ -27,7 +27,7 @@ function schemeSwatch(colorIds: string[] | null): React.CSSProperties {
 }
 
 export function LightColorPicker() {
-  const { colorSchemeId, setColorScheme } = useSelection();
+  const { colorSchemeId, setColorScheme, locked } = useSelection();
   return (
     <section
       aria-labelledby="portal-color-heading"
@@ -46,7 +46,8 @@ export function LightColorPicker() {
         <div
           role="radiogroup"
           aria-label="Choose your light color"
-          className="flex flex-wrap gap-2 md:gap-2.5"
+          aria-disabled={locked || undefined}
+          className={`flex flex-wrap gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
         >
           {COLOR_SCHEMES.map((s) => {
             const active = colorSchemeId === s.id;

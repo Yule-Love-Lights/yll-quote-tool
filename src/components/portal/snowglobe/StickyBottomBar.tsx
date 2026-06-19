@@ -13,9 +13,12 @@ import { formatUsd } from '../format';
 
 export type StickyBottomBarProps = {
   quoteId: string;
+  /** #43 — when the quote is already approved the bar becomes a "booked" state
+   *  (no actionable Approve CTA) linking to the confirmation page. */
+  approved?: boolean;
 };
 
-export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
+export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarProps) {
   const {
     activeName,
     currentTotal,
@@ -75,6 +78,33 @@ export function StickyBottomBar({ quoteId }: StickyBottomBarProps) {
       setSubmitting(false);
     }
   };
+
+  // #43 — already approved: show a non-actionable "booked" state instead of the
+  // Approve CTA, with a link back to the confirmation page. (Hooks above still
+  // run unconditionally; this just swaps the rendered bar.)
+  if (approved) {
+    return (
+      <div className="portal-snow-sticky" role="region" aria-label="Booking confirmation">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-display text-[15px] md:text-[17px] font-bold text-[#F4ECD8]">
+            ✓ You&apos;re booked
+          </span>
+          <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
+            we&apos;ll be in touch about your deposit
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => router.push(`/portal/${quoteId}/approved`)}
+          aria-label="View your booking confirmation"
+          className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
+        >
+          View confirmation
+          <ArrowRight className="w-4 h-4" aria-hidden />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div

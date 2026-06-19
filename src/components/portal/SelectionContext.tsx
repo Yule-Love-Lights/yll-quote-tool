@@ -87,6 +87,10 @@ type SelectionContextValue = {
   colorSchemeId: string;
   setColorScheme: (id: string) => void;
   colorOverride: string[] | null;
+  /** #43 — true once the quote is approved: the portal is READ-ONLY. Every
+   *  selection setter below becomes a no-op, and consumers disable their
+   *  controls so a booked customer can't change packages/items/fees/colors. */
+  locked: boolean;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -136,6 +140,9 @@ export type SelectionProviderProps = {
   // page should union in the roofline's recommended id so the customer never
   // lands without a roofline.
   initialSelectedItemIds?: string[];
+  // #43 — when true the portal is read-only (the quote is already approved):
+  // all selection setters no-op and consumers render their controls disabled.
+  locked?: boolean;
   children: React.ReactNode;
 };
 
@@ -147,6 +154,7 @@ export function SelectionProvider({
   minimumOrderSubtotal,
   initialPackageId = 'B',
   initialSelectedItemIds,
+  locked = false,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -305,6 +313,11 @@ export function SelectionProvider({
     return packagesById.get(packageId)?.name ?? '';
   }, [packageId, packagesById]);
 
+  // #43 — when the quote is approved the portal is read-only: every selection
+  // setter is swapped for this no-op so nothing can change, regardless of any
+  // stray clickable control. (Belt-and-suspenders with the disabled controls.)
+  const noop = useCallback(() => {}, []);
+
   const value: SelectionContextValue = {
     packageId,
     selectedItemIds,
@@ -319,20 +332,21 @@ export function SelectionProvider({
     takedownSelected,
     rushAmount: charges.rush.amount,
     takedownAmount: charges.takedown.amount,
-    toggleRush,
-    toggleTakedown,
+    toggleRush: locked ? noop : toggleRush,
+    toggleTakedown: locked ? noop : toggleTakedown,
     installTiming,
-    toggleInstallTiming,
+    toggleInstallTiming: locked ? noop : toggleInstallTiming,
     septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
     octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
     activeName,
-    selectPackage,
-    toggleItem,
+    selectPackage: locked ? noop : selectPackage,
+    toggleItem: locked ? noop : toggleItem,
     isItemSelected,
     hiddenSceneItemIds,
     colorSchemeId,
-    setColorScheme,
+    setColorScheme: locked ? noop : setColorScheme,
     colorOverride,
+    locked,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
