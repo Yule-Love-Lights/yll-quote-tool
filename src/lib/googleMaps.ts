@@ -50,7 +50,11 @@ export async function fetchStreetView(
   opts?: { size?: string; fov?: number; heading?: number; pitch?: number },
 ): Promise<FetchedImage> {
   const key = getKey();
-  const size = opts?.size ?? '640x640';
+  // Landscape 8:5 (#62). Width caps at 640px on the standard tier, so a
+  // rectangular front elevation = same width, less height. At fov 80° the
+  // shorter canvas just trims sky/ground (vertical fov ≈ 80°·400/640 ≈ 50°),
+  // keeping the house width + roofline in frame — vs the old square 640x640.
+  const size = opts?.size ?? '640x400';
   const fov = opts?.fov ?? 80;
   const headingParam = opts?.heading != null ? `&heading=${opts.heading}` : '';
   const pitchParam = opts?.pitch != null ? `&pitch=${opts.pitch}` : '';
