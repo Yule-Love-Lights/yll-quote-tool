@@ -107,14 +107,17 @@
 .portal-snow-stage-bloom[data-level='B'] { opacity: 0.72; }
 .portal-snow-stage-bloom[data-level='C'] { opacity: 1.0; }
 
-/* Bottom legibility gradient */
+/* Top + bottom legibility gradient. Top band darkened (#61) because the
+   "Here's your home" heading now sits up there, over the photo's sky which can
+   be near-white (esp. in daylight mode, which gets no brightness filter). */
 .portal-snow-stage-scrim {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background: linear-gradient(to bottom,
-    rgba(6,11,15,0.40) 0%,
-    rgba(6,11,15,0.00) 30%,
+    rgba(6,11,15,0.62) 0%,
+    rgba(6,11,15,0.34) 12%,
+    rgba(6,11,15,0.00) 34%,
     rgba(6,11,15,0.00) 52%,
     rgba(6,11,15,0.75) 92%,
     rgba(6,11,15,0.92) 100%);

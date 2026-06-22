@@ -2,9 +2,9 @@
 
 // Portal v6 — WalkthroughVideo. Snowglobe-styled variant: slightly
 // narrower to feel like a product-page feature row, uses the v6 amber
-// accent (#FFB744) instead of v2's gold (#E8B862). Anchors at id
-// "portal-snow-walkthrough" so the InteractiveHero's "Watch
-// walkthrough" button can scroll to it.
+// accent (#FFB744) instead of v2's gold (#E8B862). Keeps the id
+// "portal-snow-walkthrough" as a stable section anchor for deep-linking
+// (the in-hero "Watch walkthrough" scroll button was removed in #61).
 
 import { useState } from 'react';
 import { Play, Clock } from 'lucide-react';

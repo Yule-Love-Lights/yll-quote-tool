@@ -7,6 +7,7 @@
 // targets. Recolors the live design in real time via SelectionContext; the
 // portal page renders this only when a design is linked.
 
+import { Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { COLOR_SCHEMES } from '@/lib/design/colorSchemes';
 import { colorOf } from '@/components/design/editor-core/colors';
@@ -27,7 +28,8 @@ function schemeSwatch(colorIds: string[] | null): React.CSSProperties {
 }
 
 export function LightColorPicker() {
-  const { colorSchemeId, setColorScheme, locked } = useSelection();
+  const { colorSchemeId, setColorScheme, locked, showDaylight, toggleDaylight, daylightAvailable } =
+    useSelection();
   return (
     <section
       aria-labelledby="portal-color-heading"
@@ -43,6 +45,20 @@ export function LightColorPicker() {
         <p className="text-[14px] md:text-[15px] text-[#A89F87] mb-4">
           Pick a color or pattern — your design recolors instantly above.
         </p>
+        {/* #61 — daytime⇄lit view toggle, moved here from the hero top bar. Drives
+            the hero's day/night view via SelectionContext. Only when a base photo
+            exists to switch to. */}
+        {daylightAvailable && (
+          <button
+            type="button"
+            onClick={toggleDaylight}
+            aria-pressed={showDaylight}
+            className="inline-flex items-center gap-1.5 py-2 mb-3 text-[13px] md:text-[14px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm"
+          >
+            <Sun className="w-4 h-4" aria-hidden />
+            {showDaylight ? 'See the lights' : 'See it in daylight'}
+          </button>
+        )}
         <div
           role="radiogroup"
           aria-label="Choose your light color"

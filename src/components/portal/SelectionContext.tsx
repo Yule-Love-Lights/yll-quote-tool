@@ -91,6 +91,13 @@ type SelectionContextValue = {
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
   locked: boolean;
+  /** #61 — daytime⇄lit-design view toggle, lifted out of the hero so the Light
+   *  Color section can drive the hero's day/night view. `daylightAvailable` is
+   *  false when there's no base photo to switch to. NOT affected by `locked` —
+   *  it's a view toggle, not a selection change. */
+  showDaylight: boolean;
+  toggleDaylight: () => void;
+  daylightAvailable: boolean;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -143,6 +150,8 @@ export type SelectionProviderProps = {
   // #43 — when true the portal is read-only (the quote is already approved):
   // all selection setters no-op and consumers render their controls disabled.
   locked?: boolean;
+  // #61 — whether the linked design has a base photo to toggle to (daytime view).
+  daylightAvailable?: boolean;
   children: React.ReactNode;
 };
 
@@ -155,6 +164,7 @@ export function SelectionProvider({
   initialPackageId = 'B',
   initialSelectedItemIds,
   locked = false,
+  daylightAvailable = false,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -221,6 +231,11 @@ export function SelectionProvider({
     () => resolveSchemeColorIds(colorSchemeId),
     [colorSchemeId],
   );
+
+  // #61 — daytime⇄lit-design view toggle, lifted from the hero so the Light Color
+  // section can flip the hero's day/night view. View-only (never gated by locked).
+  const [showDaylight, setShowDaylight] = useState(false);
+  const toggleDaylight = useCallback(() => setShowDaylight((v) => !v), []);
 
   const selectPackage = useCallback(
     (id: PackageId) => {
@@ -347,6 +362,9 @@ export function SelectionProvider({
     setColorScheme: locked ? noop : setColorScheme,
     colorOverride,
     locked,
+    showDaylight,
+    toggleDaylight,
+    daylightAvailable,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
