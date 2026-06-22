@@ -23,7 +23,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
 import dynamic from 'next/dynamic';
-import { PlayCircle, MapPin, Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
@@ -34,7 +33,6 @@ const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: f
 
 export type InteractiveHeroProps = {
   firstName: string;
-  address: string;
   afterUrl: string;
   alt: string;
   packages: PortalPackage[];
@@ -50,7 +48,6 @@ export type InteractiveHeroProps = {
 
 export function InteractiveHero({
   firstName,
-  address,
   afterUrl,
   alt,
   packages,
@@ -68,10 +65,9 @@ export function InteractiveHero({
     selectedItemIds,
     hiddenSceneItemIds,
     colorOverride,
+    showDaylight,
   } = useSelection();
   const [ready, setReady] = useState(false);
-  // Daytime ⇄ lit-design toggle (only shown when a design with a photo exists).
-  const [showBefore, setShowBefore] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   const prevId = useRef<PackageId>(packageId);
 
@@ -101,13 +97,6 @@ export function InteractiveHero({
   const displayTotal = currentTotal;
   const displayDeposit = currentDeposit;
 
-  const scrollToVideo = () => {
-    document.getElementById('portal-snow-walkthrough')?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    });
-  };
-
   return (
     <section
       aria-labelledby="portal-snow-hero-heading"
@@ -115,7 +104,7 @@ export function InteractiveHero({
     >
       {/* Photo layer — the live design when one is linked, else the static render */}
       {design ? (
-        showBefore && design.photoUrl ? (
+        showDaylight && design.photoUrl ? (
           // Before: the plain daytime photo (the design's base image).
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -172,34 +161,23 @@ export function InteractiveHero({
       {/* Bottom legibility scrim */}
       <div aria-hidden className="portal-snow-stage-scrim" />
 
-      {/* Top-left eyebrow */}
+      {/* Top — design heading (moved up from the bottom in #61) */}
       <div className="absolute top-0 left-0 right-0 pt-safe z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 md:pt-8 flex items-center justify-between gap-4">
-          <p className="flex items-center gap-1.5 text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#F4ECD8]/85">
-            <MapPin className="w-3.5 h-3.5 text-[#FFB744]" aria-hidden />
-            {address.split(',').slice(-2, -1)[0]?.trim() ?? 'Long Island'}, NY
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-[max(1.5rem,env(safe-area-inset-top))] md:pt-10">
+          <p
+            className="text-[11px] md:text-[12px] font-semibold tracking-[0.20em] uppercase text-[#FFB744] mb-2 md:mb-2.5"
+            style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}
+          >
+            Your design
           </p>
-          <div className="flex items-center gap-3 md:gap-4">
-            {design && design.photoUrl && (
-              <button
-                type="button"
-                onClick={() => setShowBefore((v) => !v)}
-                aria-pressed={showBefore}
-                className="inline-flex items-center gap-1.5 text-[12px] md:text-[13px] font-semibold text-[#F4ECD8]/85 hover:text-[#FFB744] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm px-2 py-1"
-              >
-                <Sun className="w-4 h-4" aria-hidden />
-                {showBefore ? 'See the lights' : 'See it in daylight'}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={scrollToVideo}
-              className="inline-flex items-center gap-1.5 text-[12px] md:text-[13px] font-semibold text-[#F4ECD8]/85 hover:text-[#FFB744] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm px-2 py-1"
-            >
-              <PlayCircle className="w-4 h-4" aria-hidden />
-              Watch walkthrough
-            </button>
-          </div>
+          <h1
+            id="portal-snow-hero-heading"
+            className="font-display text-[34px] leading-[1.04] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
+            style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
+          >
+            Here&apos;s your home,{' '}
+            <span className="italic text-[#FFD07A]">{firstName}</span>.
+          </h1>
         </div>
       </div>
 
@@ -207,20 +185,9 @@ export function InteractiveHero({
       <div className="absolute bottom-0 left-0 right-0 pb-safe z-10">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-8 md:pb-14">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 items-end">
-            {/* Headline + live price */}
+            {/* Live price (the "Here's your home" heading moved to the top in #61) */}
             <div className="md:col-span-7">
-              <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.20em] uppercase text-[#FFB744] mb-2.5">
-                Your design
-              </p>
-              <h1
-                id="portal-snow-hero-heading"
-                className="font-display text-[36px] leading-[1.04] md:text-[58px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em]"
-                style={{ textShadow: '0 2px 28px rgba(0,0,0,0.55)' }}
-              >
-                Here&apos;s your home,{' '}
-                <span className="italic text-[#FFD07A]">{firstName}</span>.
-              </h1>
-              <div className="mt-5 flex items-baseline gap-3 flex-wrap">
+              <div className="flex items-baseline gap-3 flex-wrap">
                 <span
                   className="portal-snow-price font-display text-[36px] md:text-[52px] font-bold text-[#F4ECD8]"
                   style={{ textShadow: '0 2px 18px rgba(0,0,0,0.6)' }}

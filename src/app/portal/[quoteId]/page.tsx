@@ -153,11 +153,11 @@ export default async function PortalPage({
         initialPackageId={initialPackageId}
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
+        daylightAvailable={!!quote.design?.photoUrl}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
           firstName={quote.customer.firstName}
-          address={quote.customer.address}
           afterUrl={heroAfter}
           alt={heroAlt}
           packages={quote.packages}
