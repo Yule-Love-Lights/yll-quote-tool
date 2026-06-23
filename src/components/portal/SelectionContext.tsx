@@ -140,12 +140,12 @@ export type SelectionProviderProps = {
   minimumOrderSubtotal: number;
   initialPackageId?: PackageId;
   // Recommended-only initial selection (#12). When present & NON-EMPTY, the
-  // portal opens with EXACTLY these line items selected (Build Your Own / 'D')
-  // instead of the initial package's bundle — staff-advised items pre-checked,
-  // everything else an optional add-on. When absent/empty, behavior is
-  // unchanged (the initialPackageId path seeds from the package). The portal
-  // page should union in the roofline's recommended id so the customer never
-  // lands without a roofline.
+  // portal opens with EXACTLY these line items selected (custom 'D') instead of
+  // the initial package's bundle — staff-advised items pre-checked, everything
+  // else an optional add-on. When absent/empty, behavior is unchanged (the
+  // initialPackageId path seeds from the package). This set is the "Our
+  // Recommendation" package's includedItemIds, built upstream by
+  // applyOurRecommendation (which already unions in the recommended roofline).
   initialSelectedItemIds?: string[];
   // #43 — when true the portal is read-only (the quote is already approved):
   // all selection setters no-op and consumers render their controls disabled.
@@ -161,7 +161,7 @@ export function SelectionProvider({
   roofline,
   charges,
   minimumOrderSubtotal,
-  initialPackageId = 'B',
+  initialPackageId = 'A',
   initialSelectedItemIds,
   locked = false,
   daylightAvailable = false,
@@ -243,8 +243,12 @@ export function SelectionProvider({
       if (!pkg) return;
       setPackageId(id);
       if (id === 'D') {
-        // Custom — keep whatever the user currently has selected.
-        // No-op on selectedItemIds.
+        // "Our Recommendation": load the staff-recommended set when present.
+        // When D is the empty "Build Your Own" card (no recommendation), keep
+        // whatever the customer currently has selected.
+        if (pkg.includedItemIds.length > 0) {
+          setSelectedItemIds(new Set(pkg.includedItemIds));
+        }
         return;
       }
       setSelectedItemIds(new Set(pkg.includedItemIds));
@@ -323,10 +327,21 @@ export function SelectionProvider({
   // once a fee is toggled on still clears the gate.
   const { meetsMinimum, amountToMinimum } = orderMinimumStatus(breakdown, minimumOrderSubtotal);
 
+  // The active package's display name. For the custom slot (D): show the
+  // recommendation name only while the selection still matches it; once the
+  // customer diverges (or there was no recommendation) it reads "Build Your Own".
   const activeName = useMemo(() => {
-    if (packageId === 'D') return 'Build Your Own';
-    return packagesById.get(packageId)?.name ?? '';
-  }, [packageId, packagesById]);
+    const pkg = packagesById.get(packageId);
+    if (packageId === 'D') {
+      const recIds = pkg?.includedItemIds ?? [];
+      const matchesRec =
+        recIds.length > 0 &&
+        recIds.length === selectedItemIds.size &&
+        recIds.every((id) => selectedItemIds.has(id));
+      return matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+    }
+    return pkg?.name ?? '';
+  }, [packageId, packagesById, selectedItemIds]);
 
   // #43 — when the quote is approved the portal is read-only: every selection
   // setter is swapped for this no-op so nothing can change, regardless of any

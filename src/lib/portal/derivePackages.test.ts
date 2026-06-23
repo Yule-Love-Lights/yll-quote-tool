@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId, derivePackages, applyOurRecommendation } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
-import type { PortalCharges, SelectionCharges, PortalLineItem, PortalPackage } from '@/components/portal/types';
+import type { PortalCharges, SelectionCharges, PortalLineItem, PortalLineItemKind, PortalPackage, PortalRoofline } from '@/components/portal/types';
 
 // Standard tax, no per-job fees — the common case.
 const PLAIN: SelectionCharges = { rushFee: 0, takedown: 0, taxRate: 0.08625 };
@@ -32,6 +32,16 @@ function item(id: string, price: number): PortalLineItem {
   return { id, kind: 'roofline', label: id, detail: '', price };
 }
 
+// Kind-varied line item for tier-composition tests.
+function li(id: string, kind: PortalLineItemKind, price: number): PortalLineItem {
+  return { id, kind, label: id, detail: '', price };
+}
+
+const ROOFLINE_GROUP: PortalRoofline = {
+  itemIds: ['roofline-santas', 'roofline-gingerbread'],
+  recommendedItemId: 'roofline-santas',
+};
+
 function pkg(id: PortalPackage['id'], includedItemIds: string[], total: number): PortalPackage {
   return { id, name: id, tagline: '', total, deposit: total / 2, includedItemIds };
 }
@@ -48,23 +58,147 @@ describe('pickInitialPackageId — fallback default clears the $1,000 minimum (#
   const C = [...B, 'spritzer-0', 'spritzer-1', 'spritzer-2', 'wreath-0']; // 1175
   const packages = [pkg('A', ['roofline-santas'], 320), pkg('B', B, 635), pkg('C', C, 1175), pkg('D', [], 0)];
 
-  it('escalates past B to a tier that clears the minimum', () => {
+  it('escalates to the first tier that clears the minimum (A and B both short)', () => {
     expect(pickInitialPackageId(packages, lineItems, 1000)).toBe('C');
   });
 
-  it('keeps B when B already clears the minimum', () => {
+  it('takes the first clearing tier in A→B→C order (skips empty A)', () => {
     const items2 = [item('roofline-santas', 1200)];
     const pkgs2 = [pkg('B', ['roofline-santas'], 1200), pkg('C', ['roofline-santas'], 1200), pkg('D', [], 0)];
     expect(pickInitialPackageId(pkgs2, items2, 1000)).toBe('B');
   });
 
-  it("keeps today's behavior (B-preferred) when the gate is waived or unspecified", () => {
-    expect(pickInitialPackageId(packages, lineItems, 0)).toBe('B');
-    expect(pickInitialPackageId(packages)).toBe('B'); // legacy 1-arg call unchanged
+  it('defaults to Tier 1 (A) when the gate is waived or unspecified (Jason S12)', () => {
+    expect(pickInitialPackageId(packages, lineItems, 0)).toBe('A');
+    expect(pickInitialPackageId(packages)).toBe('A'); // legacy 1-arg call → Tier 1
   });
 
   it('picks the largest tier when nothing clears (defensive)', () => {
     expect(pickInitialPackageId(packages, lineItems, 99999)).toBe('C');
+  });
+});
+
+describe('derivePackages — tier composition (Jason S12)', () => {
+  // Charges don't matter for composition (only includedItemIds); a zeroed
+  // QuoteResult prices with the business tax rate, which is fine here.
+  const result = resultWith({});
+
+  it('Tier 1 = Santa\'s + cheapest spritzers to clear $1,000; Tier 2 swaps in Gingerbread', () => {
+    const lineItems = [
+      li('roofline-santas', 'roofline', 600),
+      li('roofline-gingerbread', 'ridge', 900),
+      li('spritzer-0', 'spritzer', 150),
+      li('spritzer-1', 'spritzer', 150),
+      li('spritzer-2', 'spritzer', 150),
+      li('wreath-0', 'wreath', 300),
+    ];
+    const pkgs = derivePackages(lineItems, result, ROOFLINE_GROUP);
+    const A = pkgs.find((p) => p.id === 'A')!;
+    const B = pkgs.find((p) => p.id === 'B')!;
+    const C = pkgs.find((p) => p.id === 'C')!;
+    // 600 + 150 + 150 + 150 = 1050 ≥ 1000 → 3 spritzers (wreath never reached).
+    expect(A.includedItemIds).toEqual(['roofline-santas', 'spritzer-0', 'spritzer-1', 'spritzer-2']);
+    // Tier 2 inherits Tier 1 with Santa's → Gingerbread.
+    expect(B.includedItemIds).toEqual(['roofline-gingerbread', 'spritzer-0', 'spritzer-1', 'spritzer-2']);
+    // Tier 3 = everything on Gingerbread (never Santa's, never both).
+    expect(C.includedItemIds).toContain('roofline-gingerbread');
+    expect(C.includedItemIds).not.toContain('roofline-santas');
+    expect(C.includedItemIds).toEqual(
+      expect.arrayContaining(['spritzer-0', 'spritzer-1', 'spritzer-2', 'wreath-0']),
+    );
+    // D is the empty Build-Your-Own slot until applyOurRecommendation runs.
+    expect(pkgs.find((p) => p.id === 'D')!.includedItemIds).toEqual([]);
+  });
+
+  it('keeps only the spritzers needed when roofline + all spritzers already clears $1,000', () => {
+    const lineItems = [
+      li('roofline-santas', 'roofline', 800),
+      li('roofline-gingerbread', 'ridge', 1200),
+      li('spritzer-0', 'spritzer', 150),
+      li('spritzer-1', 'spritzer', 150),
+      li('spritzer-2', 'spritzer', 150),
+    ];
+    const A = derivePackages(lineItems, result, ROOFLINE_GROUP).find((p) => p.id === 'A')!;
+    // 800 + 150 = 950 (< 1000), + 150 = 1100 (≥ 1000) → 2 spritzers; the 3rd is trimmed.
+    expect(A.includedItemIds).toEqual(['roofline-santas', 'spritzer-0', 'spritzer-1']);
+  });
+
+  it('is the roofline alone when Santa\'s already clears $1,000', () => {
+    const lineItems = [
+      li('roofline-santas', 'roofline', 1100),
+      li('roofline-gingerbread', 'ridge', 1600),
+      li('spritzer-0', 'spritzer', 150),
+    ];
+    const A = derivePackages(lineItems, result, ROOFLINE_GROUP).find((p) => p.id === 'A')!;
+    expect(A.includedItemIds).toEqual(['roofline-santas']);
+  });
+
+  it('falls back to extras (cheapest-first) when roofline + all spritzers is under $1,000', () => {
+    const lineItems = [
+      li('roofline-santas', 'roofline', 400),
+      li('roofline-gingerbread', 'ridge', 700),
+      li('spritzer-0', 'spritzer', 100),
+      li('bush-0', 'bush', 200),
+      li('tree-0', 'tree', 350),
+    ];
+    const A = derivePackages(lineItems, result, ROOFLINE_GROUP).find((p) => p.id === 'A')!;
+    // 400 + spritzer 100 = 500 (all spritzers in); extras cheapest-first: + bush 200
+    // = 700, + tree 350 = 1050 ≥ 1000.
+    expect(A.includedItemIds).toEqual(['roofline-santas', 'spritzer-0', 'bush-0', 'tree-0']);
+  });
+
+  it('omits Tier 2 entirely when the quote has no distinct Gingerbread option', () => {
+    const lineItems = [
+      li('roofline-santas', 'roofline', 1100),
+      li('spritzer-0', 'spritzer', 150),
+    ];
+    const onlySantas: PortalRoofline = { itemIds: ['roofline-santas'], recommendedItemId: 'roofline-santas' };
+    const pkgs = derivePackages(lineItems, result, onlySantas);
+    // Tier 2 would byte-duplicate Tier 1 (nothing to swap to) and over-promise a
+    // Gingerbread upgrade, so it's dropped — the visible tiers stay A, C, D.
+    expect(pkgs.map((p) => p.id)).toEqual(['A', 'C', 'D']);
+    expect(pkgs.find((p) => p.id === 'B')).toBeUndefined();
+    expect(pkgs.find((p) => p.id === 'A')!.includedItemIds).toEqual(['roofline-santas']);
+    // Tier 3 still exists and carries everything (roofline + the spritzer).
+    expect(pkgs.find((p) => p.id === 'C')!.includedItemIds).toEqual(['roofline-santas', 'spritzer-0']);
+  });
+});
+
+describe('applyOurRecommendation — the "Our Recommendation" (D) card (#12, Jason S12)', () => {
+  const charges: PortalCharges = {
+    taxRate: 0, // keep the math simple — total === subtotal
+    rush: { amount: 150, defaultOn: false },
+    takedown: { amount: 150, defaultOn: false },
+  };
+  const basePackages: PortalPackage[] = [
+    pkg('A', ['roofline-santas'], 0),
+    pkg('B', [], 0),
+    pkg('C', [], 0),
+    { ...pkg('D', [], 0), name: 'Build Your Own' },
+  ];
+
+  it('populates D with the recommended items + recommended roofline when staff recommended some', () => {
+    const lineItems: PortalLineItem[] = [
+      li('roofline-santas', 'roofline', 600),
+      { ...li('wreath-0', 'wreath', 300), recommended: true },
+      li('bush-0', 'bush', 100),
+    ];
+    const D = applyOurRecommendation(basePackages, lineItems, ROOFLINE_GROUP, charges).find((p) => p.id === 'D')!;
+    expect(D.name).toBe('Our Recommendation');
+    expect(D.recommended).toBe(true);
+    expect(new Set(D.includedItemIds)).toEqual(new Set(['wreath-0', 'roofline-santas']));
+    expect(D.total).toBe(900); // 300 + 600, taxRate 0
+  });
+
+  it('leaves D as the empty "Build Your Own" card when nothing is recommended', () => {
+    const lineItems: PortalLineItem[] = [
+      li('roofline-santas', 'roofline', 600),
+      li('wreath-0', 'wreath', 300),
+    ];
+    const D = applyOurRecommendation(basePackages, lineItems, ROOFLINE_GROUP, charges).find((p) => p.id === 'D')!;
+    expect(D.name).toBe('Build Your Own');
+    expect(D.includedItemIds).toEqual([]);
+    expect(D.recommended).toBeUndefined();
   });
 });
 

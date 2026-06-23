@@ -119,24 +119,16 @@ export default async function PortalPage({
   const heroAfter = quote.photo.after || FALLBACK_HERO;
   const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
 
-  // Recommended-only initial selection (#12): if staff flagged any line items
-  // as recommended, the portal opens with ONLY those pre-selected. Roofline
-  // keeps its own recommend mechanism, so we ALWAYS union in its recommended
-  // option id (so the customer never lands without a roofline). When nothing is
-  // recommended this stays undefined → today's package-seeded default is used
-  // unchanged.
-  const recommendedItemIds = quote.lineItems
-    .filter((li) => li.recommended)
-    .map((li) => li.id);
+  // Recommended initial selection (#12): the "Our Recommendation" (D) package is
+  // populated upstream (applyOurRecommendation in the loader) with the staff-
+  // recommended items + the recommended roofline. When it has items, open the
+  // portal on that set (computeInitialSelection switches to custom 'D'); when
+  // staff recommended nothing, D is the empty "Build Your Own" card and we fall
+  // back to the package-seeded default (Tier 1 — see pickInitialPackageId).
+  const ourRecommendation = quote.packages.find((p) => p.id === 'D');
   const initialSelectedItemIds =
-    recommendedItemIds.length > 0
-      ? Array.from(
-          new Set(
-            quote.roofline?.recommendedItemId
-              ? [...recommendedItemIds, quote.roofline.recommendedItemId]
-              : recommendedItemIds,
-          ),
-        )
+    ourRecommendation && ourRecommendation.includedItemIds.length > 0
+      ? ourRecommendation.includedItemIds
       : undefined;
 
   return (
