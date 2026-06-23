@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzePhoto } from '@/lib/photoAnalysis';
+import { analyzePhoto, ANALYZER_UNAVAILABLE_MESSAGE } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
 import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -47,29 +47,39 @@ export async function POST(req: NextRequest) {
   const arrayBuffer = await file.arrayBuffer();
   const base64 = Buffer.from(arrayBuffer).toString('base64');
 
+  // FAIL-SAFE (analyzer outage): if Claude is down we still return the uploaded
+  // photo with result: null so the client loads it for manual design — the staff
+  // already have this image, and a Claude outage must not block them.
+  // Unified few-shot (#8 Stage B): similarity-ranked by the incoming house photo
+  // when Voyage + embeddings are available, else recency.
+  let result: Awaited<ReturnType<typeof analyzePhoto>> | null = null;
+  let analysisError: string | undefined;
+  let fewShotCount = 0;
+  let fewShotBreakdown: { ranking?: 'similarity' | 'recency' } | undefined;
   try {
-    // Unified few-shot (#8 Stage B): similarity-ranked by the incoming house
-    // photo when Voyage + embeddings are available, else recency. One shared
-    // assembler for both analyze routes.
     const { examples, references, biasNote, breakdown } = await assembleFewShot(
       houseStyleHint,
       { base64, mediaType },
     );
-    const result = await analyzePhoto(base64, mediaType, examples, {
+    result = await analyzePhoto(base64, mediaType, examples, {
       references,
       houseStyleHint,
       corpusBiasNote: biasNote,
     });
-    return NextResponse.json({
-      result,
-      photoBase64: base64,
-      photoMediaType: mediaType,
-      fewShotCount: examples.length,
-      fewShotBreakdown: breakdown,
-    });
+    fewShotCount = examples.length;
+    fewShotBreakdown = breakdown;
   } catch (err) {
-    console.error('Photo analysis error:', err);
-    const message = err instanceof Error ? err.message : 'Failed to analyze photo';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('analyze-photo: AI analysis failed — returning photo for manual design:', err);
+    analysisError = ANALYZER_UNAVAILABLE_MESSAGE;
   }
+
+  return NextResponse.json({
+    result,
+    analysisUnavailable: result === null,
+    analysisError,
+    photoBase64: base64,
+    photoMediaType: mediaType,
+    fewShotCount,
+    fewShotBreakdown,
+  });
 }

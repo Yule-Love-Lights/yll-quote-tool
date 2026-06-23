@@ -140,6 +140,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  // Degraded-but-recoverable notice (e.g. the analyzer is down): the photos load
+  // and staff design manually. Distinct from analysisError (hard/blocking).
+  const [analysisWarning, setAnalysisWarning] = useState<string | null>(null);
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
 
@@ -511,6 +514,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setPhotoPreview(URL.createObjectURL(file));
     setAnalysisNotes(null);
     setAnalysisError(null);
+    setAnalysisWarning(null);
     // Reset stale state from any prior Google/address analysis so the manual
     // upload doesn't silently reuse satellite lines, base64, or calibration.
     setSatellitePreview(null);
@@ -585,6 +589,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     const nextFov = patch.fov ?? svFov;
     setRecapturing(true);
     setAnalysisError(null);
+    setAnalysisWarning(null);
     try {
       const res = await fetch('/api/streetview', {
         method: 'POST',
@@ -621,6 +626,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     if (!photoBase64 || !photoMediaType) return;
     setAnalyzing(true);
     setAnalysisError(null);
+    setAnalysisWarning(null);
     setAnalysisNotes(null);
     try {
       // Reconstruct a File-like blob so the existing /api/analyze-photo flow works.
@@ -633,7 +639,16 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      applyAnalysisResult(data);
+      if (data.result) {
+        applyAnalysisResult(data);
+      } else {
+        // FAIL-SAFE: analyzer unavailable on re-analyze — keep the existing photo
+        // + design intact and just surface the notice (nothing to re-seed).
+        setAnalysisWarning(
+          data.analysisError ??
+            'The auto-design analyzer is temporarily unavailable — keep designing manually, or try Re-analyze again shortly.',
+        );
+      }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -649,7 +664,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // on top of this same plumbing.
   type DetectionBox = [number, number, number, number];
   type AnalysisResponse = {
-    result: {
+    result?: {
       santasFootage: number;
       santasDifficulty: 'easy' | 'medium' | 'hard';
       gingerbreadFootage: number;
@@ -665,7 +680,11 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       garlandDetections?: { length: string; tier: string; box: DetectionBox }[];
       notes: string;
       confidence: string;
-    };
+    } | null;
+    // Fail-safe: present when the analyzer was unavailable (result is null) — the
+    // imagery still came back so staff can design manually.
+    analysisError?: string;
+    analysisUnavailable?: boolean;
     photoBase64?: string;
     photoMediaType?: string;
     satelliteBase64?: string;
@@ -678,6 +697,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
+    if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
     const r = data.result;
     // The AI's footage estimates pre-fill the inputs; satellite lines (when
     // present) take over via the measurement effect, and staff can always type.
@@ -757,6 +777,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     }
     setLookingUp(true);
     setAnalysisError(null);
+    setAnalysisWarning(null);
     setAnalysisNotes(null);
     try {
       const res = await fetch('/api/analyze-address', {
@@ -779,7 +800,23 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       setSvHeading(null);
       setSvPitch(0);
       setSvFov(80);
-      applyAnalysisResult(data);
+      if (data.result) {
+        applyAnalysisResult(data);
+      } else {
+        // FAIL-SAFE: the analyzer was unavailable (e.g. Claude down). The imagery
+        // still came back — load the street photo into the editor (the eager
+        // design effect creates the design from it) so staff design MANUALLY, and
+        // keep the satellite + its scale for manual measurement. Skip the seed.
+        setPhotoBase64(data.photoBase64 ?? null);
+        setPhotoMediaType(data.photoMediaType ?? null);
+        setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+        setFewShotCount(0);
+        setViewMode('design');
+        setAnalysisWarning(
+          data.analysisError ??
+            'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
+        );
+      }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
     } finally {
@@ -791,6 +828,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     if (!photoFile) return;
     setAnalyzing(true);
     setAnalysisError(null);
+    setAnalysisWarning(null);
     setAnalysisNotes(null);
 
     const fd = new FormData();
@@ -804,7 +842,21 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       // any prior Google satellite when this street photo was chosen, so the
       // only satellite that can be present now is a manual one the operator
       // uploaded for THIS house — clearing it would silently drop the #9 data.
-      applyAnalysisResult(data);
+      if (data.result) {
+        applyAnalysisResult(data);
+      } else {
+        // FAIL-SAFE: analyzer unavailable. Load the uploaded photo into the editor
+        // (it isn't loaded until now — handlePhotoSelect nulls photoBase64) so
+        // staff design MANUALLY. Skip the seed.
+        setPhotoBase64(data.photoBase64 ?? null);
+        setPhotoMediaType(data.photoMediaType ?? null);
+        setFewShotCount(0);
+        setViewMode('design');
+        setAnalysisWarning(
+          data.analysisError ??
+            'The auto-design analyzer is temporarily unavailable — your photo is loaded; design the house manually.',
+        );
+      }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -1351,6 +1403,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                     )}
                   </strong>
                   {analysisNotes}
+                </div>
+              )}
+              {analysisWarning && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                  <strong className="block mb-1">Auto-design unavailable — design manually</strong>
+                  {analysisWarning}
                 </div>
               )}
               {analysisError && (
