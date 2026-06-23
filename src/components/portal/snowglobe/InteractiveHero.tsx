@@ -98,11 +98,23 @@ export function InteractiveHero({
   const displayTotal = currentTotal;
   const displayDeposit = currentDeposit;
 
+  // Match the mobile media box to the photo's actual aspect (#65 review): the box
+  // cover-fits the photo, so an exact aspect = no crop in ANY direction for any
+  // uploaded photo, not just the 8/5 Street View. Fallback to 8/5 when unknown.
+  const mediaAspect =
+    design?.photoW && design?.photoH ? `${design.photoW} / ${design.photoH}` : undefined;
+
   return (
     <section
       aria-labelledby="portal-snow-hero-heading"
       className="portal-snow-stage"
     >
+      {/* Media box — photo + effects + heading. On mobile it's aspect-locked to the
+          photo (full house, no crop, no letterbox); on desktop it fills the stage. */}
+      <div
+        className="portal-snow-stage-media"
+        style={mediaAspect ? ({ ['--media-aspect' as string]: mediaAspect } as React.CSSProperties) : undefined}
+      >
       {/* Photo layer — the live design when one is linked, else the static render */}
       {design ? (
         showDaylight && design.photoUrl ? (
@@ -173,7 +185,7 @@ export function InteractiveHero({
           </p>
           <h1
             id="portal-snow-hero-heading"
-            className="font-display text-[34px] leading-[1.04] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
+            className="font-display text-[26px] leading-[1.06] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
           >
             Here&apos;s your home,{' '}
@@ -181,9 +193,11 @@ export function InteractiveHero({
           </h1>
         </div>
       </div>
+      </div>{/* /.portal-snow-stage-media */}
 
-      {/* Bottom content — headline + price + package selector */}
-      <div className="absolute bottom-0 left-0 right-0 pb-safe z-10">
+      {/* Bottom content — price + package selector. On mobile it flows BELOW the
+          aspect-locked photo box; on desktop it overlays the bottom of the stage. */}
+      <div className="relative z-10 md:absolute md:bottom-0 md:left-0 md:right-0 pb-safe">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-8 md:pb-14">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 items-end">
             {/* Live price (the "Here's your home" heading moved to the top in #61) */}

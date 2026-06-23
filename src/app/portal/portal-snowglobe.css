@@ -47,6 +47,15 @@
   background: var(--ys-bg);
 }
 
+/* Wraps the photo + effects + heading. Fills the stage on desktop; on mobile it
+ * becomes an aspect-locked box (see the media query) so the landscape designed
+ * photo shows the FULL house width with no side-crop and no letterbox (Jason S12). */
+.portal-snow-stage-media {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
 .portal-snow-stage-photo {
   position: absolute;
   inset: 0;
@@ -78,16 +87,35 @@
   filter: brightness(var(--brightness, 0.85)) contrast(1.08) saturate(1.02);
 }
 
-/* Mobile (#57): the full-height cover stage shows the photo's whole height, so
- * a wide house photo includes a lot of sky up top. On phones, shift the photo
- * UP (pure vertical translate — no scaling, so the sides stay fully intact and
- * nothing of the house is cropped left/right). The sky clips off the top via
- * the stage's overflow:hidden; the small gap this opens at the very bottom sits
- * behind the price/tier overlay, so it isn't visible. Tune the offset to taste. */
+/* Mobile (Jason S12): a tall full-height stage cover-CROPS THE SIDES of a
+ * landscape designed photo (worse since #62 pulls Street View as 640x400). On
+ * phones, drop the full-height stage and aspect-lock the media box to the photo
+ * (8:5) so the whole house width shows with no side-crop and no letterbox; the
+ * price + package cards then flow BELOW the photo instead of overlaying it.
+ * (Supersedes the #57 translateY sky-shift, which only moved it vertically and
+ * couldn't fix the cover-fit side-crop. `transform:none` also drops the 2%
+ * ken-burns zoom so the aspect-locked photo stays pixel-exact — no crop.) */
 @media (max-width: 640px) {
+  .portal-snow-stage {
+    height: auto;
+    min-height: 0;
+  }
+  .portal-snow-stage-media {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    /* Match the photo's real aspect (set inline from photoW/photoH) so cover-fit
+     * crops nothing in any direction; 8/5 fallback for the 640x400 Street View. */
+    aspect-ratio: var(--media-aspect, 8 / 5);
+  }
+  /* A gentle zoom-in + downward nudge for nicer phone framing (Jason S12): the
+   * house reads a bit larger and sits a little lower under the heading. The zoom
+   * overflows the media box (clipped by its overflow:hidden), so it trims a small
+   * amount off the edges — keep it modest so the house sides stay in frame.
+   * Two knobs to taste: scale() = zoom, translateY() = how far down. */
   .portal-snow-stage-photo,
   .portal-snow-stage-photo[data-ready='true'] {
-    transform: translateY(-8%);
+    transform: scale(1.12) translateY(4%);
   }
 }
 
