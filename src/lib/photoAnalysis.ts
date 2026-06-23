@@ -2,6 +2,12 @@ import { getClaudeClient } from './claude';
 import { StoredCorrection } from './corrections';
 import type { StoredReferenceAsset } from './referenceAssets';
 
+// Fail-safe (analyzer outage): when the Claude analysis fails, the analyze
+// routes still return the Street View + satellite imagery so staff can design
+// the house manually. This is the user-facing message for that degraded state.
+export const ANALYZER_UNAVAILABLE_MESSAGE =
+  "The auto-design analyzer is temporarily unavailable, so the design wasn't auto-generated. Your photos are loaded — design the house manually and Calculate, or click Analyze again in a few minutes to retry the auto-design.";
+
 export type LineSegment = {
   points: [number, number][]; // normalized 0-1 coords: [[x1,y1], [x2,y2], ...]
   label: string;               // e.g. "front gutter ~40ft"
@@ -577,7 +583,7 @@ export async function analyzePhoto(
   });
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-6',
     max_tokens: 2048,
     system: systemPrompt,
     messages: [

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzePhoto } from '@/lib/photoAnalysis';
+import { analyzePhoto, ANALYZER_UNAVAILABLE_MESSAGE } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
 import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -46,11 +46,17 @@ export async function POST(req: NextRequest) {
   }
   const houseStyleHint = body.houseStyle?.trim() || undefined;
 
+  // ── 1. Fetch imagery (geocode + Street View + satellite) ──────────────────
+  // A failure here is genuinely blocking (bad address / no imagery / Google
+  // down) — return an error.
+  let geo: Awaited<ReturnType<typeof geocodeAddress>>;
+  let streetView: Awaited<ReturnType<typeof fetchStreetView>>;
+  let satellite: Awaited<ReturnType<typeof fetchSatellite>>;
+  let satelliteFeetPerPixel: number;
   try {
-    // 1. Geocode the address
-    const geo = await geocodeAddress(address);
+    geo = await geocodeAddress(address);
 
-    // 2. Confirm Street View exists at this location
+    // Confirm Street View exists at this location
     const svExists = await hasStreetView(geo.lat, geo.lng);
     if (!svExists) {
       return NextResponse.json(
@@ -59,8 +65,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Fetch both images in parallel
-    const [streetView, satellite] = await Promise.all([
+    // Fetch both images in parallel
+    [streetView, satellite] = await Promise.all([
       fetchStreetView(geo.lat, geo.lng),
       fetchSatellite(geo.lat, geo.lng),
     ]);
@@ -72,18 +78,30 @@ export async function POST(req: NextRequest) {
     const metersPerPixel =
       (156543.03392 * Math.cos((geo.lat * Math.PI) / 180)) /
       Math.pow(2, SAT_ZOOM);
-    const satelliteFeetPerPixel = metersPerPixel * 3.28084;
+    satelliteFeetPerPixel = metersPerPixel * 3.28084;
+  } catch (err) {
+    console.error('analyze-address imagery fetch failed:', err);
+    const message = err instanceof Error ? err.message : 'Failed to fetch imagery for this address';
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 
-    // 4. Analyze with Claude using BOTH images as cross-reference. Unified
-    // few-shot (#8 Stage B): similarity-ranked by the street photo when Voyage
-    // + embeddings are available, else recency. The satellite rides along to
-    // analyzePhoto for the satellite-coordinate measurement, separate from
-    // few-shot ranking (which keys on the street view).
+  // ── 2. Analyze with Claude (#8 few-shot) — FAIL-SAFE ──────────────────────
+  // If the analyzer is unavailable (e.g. Claude is down/overloaded) we still
+  // return the imagery with result: null so the client can load the photos and
+  // staff design the house MANUALLY. A Claude outage must not block the quote.
+  // Unified few-shot: similarity-ranked by the street photo when Voyage +
+  // embeddings are available, else recency; the satellite rides along to
+  // analyzePhoto for satellite-coordinate measurement (separate from ranking).
+  let result: Awaited<ReturnType<typeof analyzePhoto>> | null = null;
+  let analysisError: string | undefined;
+  let fewShotCount = 0;
+  let fewShotBreakdown: { ranking?: 'similarity' | 'recency' } | undefined;
+  try {
     const { examples, references, biasNote, breakdown } = await assembleFewShot(
       houseStyleHint,
       { base64: streetView.base64, mediaType: streetView.mediaType },
     );
-    const result = await analyzePhoto(
+    result = await analyzePhoto(
       streetView.base64,
       streetView.mediaType,
       examples,
@@ -98,23 +116,26 @@ export async function POST(req: NextRequest) {
         corpusBiasNote: biasNote,
       },
     );
-
-    return NextResponse.json({
-      result,
-      photoBase64: streetView.base64,
-      photoMediaType: streetView.mediaType,
-      satelliteBase64: satellite.base64,
-      satelliteMediaType: satellite.mediaType,
-      satelliteFeetPerPixel,
-      formattedAddress: geo.formattedAddress,
-      lat: geo.lat,
-      lng: geo.lng,
-      fewShotCount: examples.length,
-      fewShotBreakdown: breakdown,
-    });
+    fewShotCount = examples.length;
+    fewShotBreakdown = breakdown;
   } catch (err) {
-    console.error('analyze-address error:', err);
-    const message = err instanceof Error ? err.message : 'Failed to analyze address';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('analyze-address: AI analysis failed — returning imagery for manual design:', err);
+    analysisError = ANALYZER_UNAVAILABLE_MESSAGE;
   }
+
+  return NextResponse.json({
+    result,
+    analysisUnavailable: result === null,
+    analysisError,
+    photoBase64: streetView.base64,
+    photoMediaType: streetView.mediaType,
+    satelliteBase64: satellite.base64,
+    satelliteMediaType: satellite.mediaType,
+    satelliteFeetPerPixel,
+    formattedAddress: geo.formattedAddress,
+    lat: geo.lat,
+    lng: geo.lng,
+    fewShotCount,
+    fewShotBreakdown,
+  });
 }
