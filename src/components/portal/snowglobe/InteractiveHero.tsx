@@ -66,6 +66,7 @@ export function InteractiveHero({
     hiddenSceneItemIds,
     colorOverride,
     showDaylight,
+    activeName,
   } = useSelection();
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
@@ -213,7 +214,7 @@ export function InteractiveHero({
                 aria-disabled={locked || undefined}
                 className={`grid grid-cols-2 gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                {packages.map((p) => (
+                {packages.map((p, i) => (
                   <button
                     key={p.id}
                     type="button"
@@ -223,23 +224,30 @@ export function InteractiveHero({
                     data-active={packageId === p.id}
                     className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
                   >
+                    {/* Internal ids stay A/B/C/D; the customer sees "Tier N" by
+                        position (so omitting an unavailable tier stays contiguous)
+                        + "Custom" for D. The "· recommended" badge and the D name
+                        track the live selection so they don't out-claim the
+                        sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' ? 'Custom' : `Tier ${p.id}`}
-                      {p.recommended && (
+                      {p.id === 'D' ? 'Custom' : `Tier ${i + 1}`}
+                      {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
-                          · most popular
+                          · recommended
                         </span>
                       )}
                     </span>
                     <span className="font-display text-[17px] md:text-[18px] font-semibold text-[#F4ECD8] leading-[1.15] mt-0.5">
-                      {p.name}
+                      {p.id === 'D' && packageId === 'D' ? activeName : p.name}
                     </span>
                     <span className="portal-snow-price text-[14px] md:text-[15px] font-semibold text-[#F4ECD8]/85 mt-1">
-                      {p.id === 'D' && packageId === 'D'
-                        ? formatUsd(currentTotal)
-                        : p.id === 'D'
-                          ? 'You pick'
-                          : formatUsd(p.total)}
+                      {p.id === 'D'
+                        ? packageId === 'D'
+                          ? formatUsd(currentTotal)
+                          : p.includedItemIds.length > 0
+                            ? formatUsd(p.total)
+                            : 'You pick'
+                        : formatUsd(p.total)}
                     </span>
                   </button>
                 ))}

@@ -2092,12 +2092,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 NOT this checkbox. */}
             <div className="mb-4 space-y-1.5">
               {(() => {
-                // Per-unit kinds whose `recommended` flag round-trips through the
-                // projection. Winter Wonderland / roofline rows carry scene links
-                // too but are measurement-driven (kept on the roofline radio, not
-                // projected), so they must NOT get a per-item checkbox.
+                // Per-unit kinds that get a "Recommended" checkbox. Most round-trip
+                // their `recommended` flag through the projection; Winter Wonderland
+                // ('ridge') is measurement-driven (not projected), so its flag rides
+                // on its scene strands instead — attachSceneLinks carries it to the
+                // portal (Jason S12). The Santa's/Gingerbread roofline OPTIONS keep
+                // their own "recommend one" radio above and are filtered out of these
+                // rows, so 'ridge' here only ever matches Winter Wonderland.
                 const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
-                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow',
+                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow', 'ridge',
                 ]);
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),

@@ -306,16 +306,18 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   if (!row.result) return null;
 
   const { lineItems, roofline } = buildPortalLineItems(row.result, row.inputs);
-  // The A/B/C package tiers and the $1,000 gate threshold bundle only the
-  // RECOMMENDED roofline — never both options. Excluding the non-recommended
-  // option keeps a tier from selecting two rooflines at once, and keeps the
-  // gate-waiver sum from double-counting a roofline the customer can't both have.
+  // The $1,000 gate threshold (minimumOrderSubtotal) sums only ONE roofline —
+  // never both options — so a quote with Santa's + Gingerbread isn't double-
+  // counted into clearing a minimum the customer can only pick one roofline for.
   const tierLineItems = roofline
     ? lineItems.filter(
         (li) => !(roofline.itemIds.includes(li.id) && li.id !== roofline.recommendedItemId),
       )
     : lineItems;
-  const packages = derivePackages(tierLineItems, row.result);
+  // Tier composition (Jason S12) needs BOTH roofline options so Tier 1 can be
+  // Santa's and Tier 2 Gingerbread regardless of which staff recommended;
+  // derivePackages guarantees no single tier ever selects both.
+  const packages = derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
 
   return {

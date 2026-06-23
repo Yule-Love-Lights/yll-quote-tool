@@ -43,6 +43,14 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   const santasIds = idsForSurface('santas-roofline');
   const gingerIds = idsForSurface('gingerbread');
   const wwIds = idsForSurface('winter-wonderland');
+  // Winter Wonderland is measurement-driven (NOT projected), so its `recommended`
+  // flag (#12) rides on its scene strands rather than a ProjectedLineItem. Carry
+  // it through on the WW line item so the portal's "Our Recommendation" can
+  // include WW when staff check it in the builder (Jason S12). Santa's/Gingerbread
+  // keep their own recommend mechanism (PortalRoofline) and never read this.
+  const wwRecommended = items.some(
+    (i) => isStrand(i) && i.surface === 'winter-wonderland' && i.recommended === true,
+  );
 
   // Per-category projection queues, consumed in order to match the line items.
   // Each entry carries the scene-item ids AND the `recommended` flag (#12) from
@@ -68,7 +76,10 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
     if (li.id === 'roofline-gingerbread') return { ...li, sceneItemIds: [...santasIds, ...gingerIds] };
     // Winter Wonderland parses to kind 'ridge'; the Gingerbread roofline (also
     // 'ridge') is already handled above by id, so any remaining 'ridge' is WW.
-    if (li.kind === 'ridge') return { ...li, sceneItemIds: wwIds };
+    if (li.kind === 'ridge')
+      return wwRecommended
+        ? { ...li, sceneItemIds: wwIds, recommended: true }
+        : { ...li, sceneItemIds: wwIds };
 
     const cat = KIND_TO_CATEGORY[li.kind];
     if (cat) {

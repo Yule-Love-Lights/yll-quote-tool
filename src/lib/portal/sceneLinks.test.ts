@@ -127,4 +127,23 @@ describe('attachSceneLinks — carries recommended (#12)', () => {
     // roofline strands aren't projected, so no recommended leaks onto the option row.
     expect(rfOut[0].recommended).toBeUndefined();
   });
+
+  it('carries recommended onto the Winter Wonderland (ridge) row from its strands (Jason S12)', () => {
+    const wwScene: Scene = {
+      yardsticks: [],
+      items: [strand('ww1', 'winter-wonderland', { recommended: true })] as SceneItem[],
+    };
+    const wwOut = attachSceneLinks([li('ridge-2', 'ridge')], wwScene);
+    expect(wwOut[0].sceneItemIds).toEqual(['ww1']);
+    expect(wwOut[0].recommended).toBe(true);
+  });
+
+  it('leaves Winter Wonderland un-recommended when its strands are not flagged', () => {
+    const wwScene: Scene = {
+      yardsticks: [],
+      items: [strand('ww1', 'winter-wonderland')] as SceneItem[],
+    };
+    const wwOut = attachSceneLinks([li('ridge-2', 'ridge')], wwScene);
+    expect(wwOut[0].recommended).toBeUndefined();
+  });
 });

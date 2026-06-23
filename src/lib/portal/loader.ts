@@ -15,6 +15,7 @@ import { quoteRowToPortalQuote, type QuoteRowForPortal } from './adapter';
 import { fetchPortalPhotos } from './photos';
 import { getDesignByQuote } from '@/lib/designs';
 import { attachSceneLinks } from './sceneLinks';
+import { applyOurRecommendation } from './derivePackages';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -73,12 +74,22 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
           };
           // Link line items ⇄ scene items so the portal can hide a drawn item
           // when its line item is toggled off (#27 D). Additive — same ids, just
-          // gains sceneItemIds; packages/selection are unaffected.
+          // gains sceneItemIds AND the design-driven `recommended` flag (#12).
           portal.lineItems = attachSceneLinks(portal.lineItems, design.scene);
         }
       } catch (err) {
         console.error('[loadPortalQuote] design lookup failed:', err);
       }
+      // Populate the "Our Recommendation" (D) card from the staff-recommended
+      // line items (#12, Jason S12). Runs after attachSceneLinks so design-driven
+      // recommended flags are attached; also covers custom-item recommendations
+      // the adapter set. No-op (D stays "Build Your Own") when nothing is flagged.
+      portal.packages = applyOurRecommendation(
+        portal.packages,
+        portal.lineItems,
+        portal.roofline,
+        portal.charges,
+      );
     }
     return portal;
   } catch (err) {

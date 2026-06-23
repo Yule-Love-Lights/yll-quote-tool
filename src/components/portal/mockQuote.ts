@@ -46,33 +46,36 @@ export const MOCK_QUOTE: PortalQuote = {
     { id: 'garland', kind: 'garland', label: '9ft Noble Garland with Bow', detail: '2 pieces', price: 390 },
     { id: 'spritzers', kind: 'spritzer', label: '24" Spritzers', detail: '3 stakes', price: 255 },
   ],
+  // Tiers mirror derivePackages (Jason S12): Tier 1 = Santa's (900) + spritzers
+  // (255) to clear $1,000; Tier 2 = the same set on Gingerbread (1440); Tier 3 =
+  // everything on Gingerbread; D = "Build Your Own" (no staff rec in the mock).
+  // Totals are tax-inclusive at 8.625%.
   packages: [
     {
       id: 'A',
       name: 'Classic Glow',
-      tagline: 'Roofline only. Clean, simple, elegant.',
-      total: 1480,
-      deposit: 740,
-      includedItemIds: ['roofline-santas'],
+      tagline: "Santa's roofline + spritzers. Clean, simple, elegant.",
+      total: 1254.62, // (900 + 255) * 1.08625
+      deposit: 627.31,
+      includedItemIds: ['roofline-santas', 'spritzers'],
     },
     {
       id: 'B',
       name: 'Full Festive',
-      tagline: 'Roofline + trees and bushes. Most popular.',
-      total: 2150,
-      deposit: 1075,
-      recommended: true,
-      includedItemIds: ['roofline-santas', 'tree-l', 'tree-r', 'bush-1', 'bush-2'],
+      tagline: 'Gingerbread roofline + spritzers. The fuller look.',
+      total: 1841.19, // (1440 + 255) * 1.08625
+      deposit: 920.6,
+      includedItemIds: ['roofline-gingerbread', 'spritzers'],
     },
     {
       id: 'C',
       name: 'The Full Yule',
-      tagline: 'Everything — roofline, trees, bushes, wreaths, garland.',
-      total: 2985,
-      deposit: 1492.5,
-      aLaCarteTotal: 3170,
+      tagline: 'Everything — Gingerbread roofline, trees, wreaths, garland and more.',
+      total: 3139.26, // 2890 * 1.08625, rounded to cents
+      deposit: 1569.63,
+      aLaCarteTotal: 2890,
       includedItemIds: [
-        'roofline-santas',
+        'roofline-gingerbread',
         'tree-l',
         'tree-r',
         'bush-1',
@@ -86,14 +89,14 @@ export const MOCK_QUOTE: PortalQuote = {
       id: 'D',
       name: 'Build Your Own',
       tagline: 'Custom — toggle anything.',
-      total: 0, // computed from selected items at runtime
+      total: 0, // populated by applyOurRecommendation when staff recommend items
       deposit: 0,
       includedItemIds: [],
     },
   ],
   // The mutually-exclusive roofline group (#17 Phase 2): Santa's + Gingerbread
-  // both render as grid line items; picking one deselects the other. Default
-  // (and the only one bundled into the A/B/C tiers) is the staff pick, Santa's.
+  // both render as grid line items; picking one deselects the other. The staff
+  // pick (recommendedItemId) is the default-selected roofline for toggling.
   roofline: {
     itemIds: ['roofline-santas', 'roofline-gingerbread'],
     recommendedItemId: 'roofline-santas',

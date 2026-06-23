@@ -1,24 +1,28 @@
-// Default B1(b) — auto-derive A/B/C/D packages from a single QuoteResult.
+// Auto-derive the FOUR portal packages from a single QuoteResult (Jason S12).
 //
-// The pricing engine produces ONE total. The portal shows FOUR tiers.
-// Until packages become a first-class DB concept, we bucket the existing
-// line items into three escalating sets and let the customer pick:
+// The pricing engine produces ONE total; the portal shows four tiers, derived
+// per-quote from the line items:
 //
-//   A "Classic Glow"    → rooflines + ridges only (the silhouette)
-//   B "Full Festive"    → A + trees + bushes + columns (bones + greenery)
-//   C "Full Yule"       → B + wreaths + garland + spritzers (everything)
-//   D "Build Your Own"  → empty; runtime-derived from selected items
+//   A "Classic Glow"       → Santa's roofline + the cheapest spritzers (then
+//                            other extras) needed to clear the $1,000 minimum.
+//                            If roofline + spritzers already clears it, only the
+//                            spritzers needed are kept (closest to $1,000 above).
+//   B "Full Festive"       → Tier A's exact item set with Santa's swapped for
+//                            the Gingerbread roofline (front + ridge + sides).
+//   C "The Full Yule"      → everything, on the Gingerbread roofline (never
+//                            Santa's, never both — they're mutually exclusive).
+//   D "Our Recommendation" → the staff-recommended items (#12) + recommended
+//                            roofline; populated by applyOurRecommendation once
+//                            the recommended flags are attached (loader). Falls
+//                            back to an empty "Build Your Own" when staff
+//                            recommended nothing.
 //
-// Per-package totals include the same per-job add-ons as the original
-// quote (rush fee, premium takedown, sales tax) so the customer pays
-// the same operational charges regardless of which tier they pick. The
-// only thing that varies between A/B/C is the bundled line-item subtotal.
-//
-// Per-package totals are the REAL tax-inclusive price of the bucket's items
-// (no $1,000 floor — the minimum is a customer-side approval gate on the
-// portal, not a silent bump; see minimumOrderSubtotal). Empty packages (no
-// items in this quote that match the bucket) get total: 0 so they render as
-// "—" and can't be selected.
+// Per-package totals include the same per-job add-ons as the original quote
+// (rush fee, premium takedown, sales tax) so the customer pays the same
+// operational charges regardless of tier; only the bundled line-item subtotal
+// varies. Totals are the REAL tax-inclusive price of the bundle (no $1,000
+// floor — the minimum is a customer-side approval gate, not a silent bump; see
+// minimumOrderSubtotal).
 
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
@@ -27,16 +31,18 @@ import type {
   PackageId,
   PortalCharges,
   PortalLineItem,
-  PortalLineItemKind,
   PortalPackage,
+  PortalRoofline,
   SelectionCharges,
   SelectionPrice,
 } from '@/components/portal/types';
 
-// Which kinds belong to which tier. Tiers stack — B includes A's kinds, etc.
-const TIER_A_KINDS: ReadonlySet<PortalLineItemKind> = new Set(['roofline', 'ridge']);
-const TIER_B_EXTRA: ReadonlySet<PortalLineItemKind> = new Set(['tree', 'bush', 'column', 'railing']);
-const TIER_C_EXTRA: ReadonlySet<PortalLineItemKind> = new Set(['wreath', 'garland', 'spritzer', 'bow']);
+// Stable line-item ids the adapter assigns to the two mutually-exclusive
+// roofline options (see buildPortalLineItems). Tier composition keys off these
+// directly so Tier 1 is always Santa's and Tier 2 is always Gingerbread,
+// independent of which one staff recommended.
+const SANTAS_ID = 'roofline-santas';
+const GINGERBREAD_ID = 'roofline-gingerbread';
 
 function effectiveTaxRate(result: QuoteResult): number {
   // Prefer the actual ratio from this specific quote (handles future cases
@@ -172,25 +178,92 @@ function totalsFor(
   return priceSelection(subtotal, charges);
 }
 
+// Resolve the two roofline option ids for this quote. Prefers the stable ids the
+// adapter assigns (Santa's / Gingerbread). Falls back, for legacy rows with no
+// roofline group, to the single roofline-kind line item so the tiers still build.
+function resolveRooflineIds(
+  lineItems: PortalLineItem[],
+  roofline?: PortalRoofline,
+): { santasId: string | null; gingerId: string | null } {
+  if (roofline) {
+    const has = (id: string) =>
+      roofline.itemIds.includes(id) && lineItems.some((li) => li.id === id);
+    return {
+      santasId: has(SANTAS_ID) ? SANTAS_ID : null,
+      gingerId: has(GINGERBREAD_ID) ? GINGERBREAD_ID : null,
+    };
+  }
+  const legacy = lineItems.find((li) => li.kind === 'roofline');
+  return { santasId: legacy?.id ?? null, gingerId: null };
+}
+
+// Tier 1 "Classic Glow": the chosen roofline plus the cheapest spritzers — then
+// other extras — needed to clear the $1,000 minimum. If the roofline + spritzers
+// already clear it, only the spritzers needed are kept (so the tier lands as
+// close to $1,000 from above as possible). If even everything can't reach
+// $1,000, all of it is included (the gate auto-waives for sub-$1,000 quotes).
+function buildEntryTier(
+  lineItems: PortalLineItem[],
+  rooflineId: string | null,
+  isRooflineOption: (id: string) => boolean,
+  threshold: number,
+): string[] {
+  const selected: string[] = [];
+  let subtotal = 0;
+  if (rooflineId) {
+    const roof = lineItems.find((li) => li.id === rooflineId);
+    if (roof) {
+      selected.push(roof.id);
+      subtotal += roof.price;
+    }
+  }
+  if (subtotal >= threshold) return selected; // roofline alone clears the minimum
+
+  const byPriceAsc = (a: PortalLineItem, b: PortalLineItem) => a.price - b.price;
+  const spritzers = lineItems
+    .filter((li) => !isRooflineOption(li.id) && li.kind === 'spritzer')
+    .sort(byPriceAsc);
+  const extras = lineItems
+    .filter((li) => !isRooflineOption(li.id) && li.kind !== 'spritzer')
+    .sort(byPriceAsc);
+  // Spritzers first (the Classic Glow content), then other extras only if
+  // spritzers can't get the tier to $1,000. Cheapest-first keeps the bundle to
+  // the fewest, smallest add-ons that clear the gate — not a strict minimal-
+  // dollar overshoot (which would differ only when add-on prices vary).
+  for (const li of [...spritzers, ...extras]) {
+    selected.push(li.id);
+    subtotal += li.price;
+    if (subtotal >= threshold) break;
+  }
+  return selected;
+}
+
 export function derivePackages(
   lineItems: PortalLineItem[],
   result: QuoteResult,
+  roofline?: PortalRoofline,
 ): PortalPackage[] {
-  const idsForTierA = lineItems
-    .filter((li) => TIER_A_KINDS.has(li.kind))
-    .map((li) => li.id);
+  const { santasId, gingerId } = resolveRooflineIds(lineItems, roofline);
+  const isRooflineOption = (id: string) => id === santasId || id === gingerId;
+  const entryRooflineId = santasId ?? gingerId; // Tier 1 — Santa's preferred
+  const fullRooflineId = gingerId ?? santasId; // Tier 2/3 — Gingerbread preferred
+  const threshold = BUSINESS_RULES.minimumQuoteAmount;
 
-  const idsForTierB = lineItems
-    .filter((li) => TIER_A_KINDS.has(li.kind) || TIER_B_EXTRA.has(li.kind))
-    .map((li) => li.id);
+  // Tier 1 — Santa's + the cheapest spritzers/extras needed to clear $1,000.
+  const idsForTierA = buildEntryTier(lineItems, entryRooflineId, isRooflineOption, threshold);
 
+  // Tier 2 — Tier 1's exact set with Santa's swapped for Gingerbread (Jason S12).
+  // When there's no distinct Gingerbread option, Tier 2 equals Tier 1.
+  const idsForTierB =
+    entryRooflineId && fullRooflineId && entryRooflineId !== fullRooflineId
+      ? idsForTierA.map((id) => (id === entryRooflineId ? fullRooflineId : id))
+      : idsForTierA;
+
+  // Tier 3 — everything, on the Gingerbread roofline. Drop the Santa's option
+  // only when Gingerbread exists, so the tier never selects two rooflines.
+  const excludeRooflineId = gingerId ? santasId : null;
   const idsForTierC = lineItems
-    .filter(
-      (li) =>
-        TIER_A_KINDS.has(li.kind) ||
-        TIER_B_EXTRA.has(li.kind) ||
-        TIER_C_EXTRA.has(li.kind),
-    )
+    .filter((li) => li.id !== excludeRooflineId)
     .map((li) => li.id);
 
   // Package cards reflect the STAFF quote, so price them with the staff-default
@@ -202,71 +275,112 @@ export function derivePackages(
   const b = totalsFor(idsForTierB, lineItems, charges);
   const c = totalsFor(idsForTierC, lineItems, charges);
 
-  // Tier C "à la carte" reference — what the bundle WOULD cost if the
-  // customer bought everything individually. Currently same as the bundle
-  // (no bundle discount applied yet). The portal renders "you save $X" only
-  // when aLaCarteTotal > total, which happens once we wire bundle discounts.
-  const tierCSubtotal = lineItems
-    .filter((li) => idsForTierC.includes(li.id))
-    .reduce((s, li) => s + li.price, 0);
+  // Tier 3 "à la carte" reference — what the bundle WOULD cost individually.
+  // Same as the bundle until bundle discounts land (then the portal shows "you
+  // save $X" when aLaCarteTotal > total).
+  const tierCPrice = new Map(lineItems.map((li) => [li.id, li.price]));
+  const tierCSubtotal = idsForTierC.reduce((s, id) => s + (tierCPrice.get(id) ?? 0), 0);
   const aLaCarteTotal = tierCSubtotal > 0 ? tierCSubtotal : undefined;
 
-  // "Recommended" goes on the middle tier IF it has items; otherwise on the
-  // most-stocked tier so the page never has zero recommendations.
-  const recommendedId: PackageId =
-    b.total > 0 ? 'B' : c.total > 0 ? 'C' : a.total > 0 ? 'A' : 'D';
+  // Tier 2 only exists when there's a distinct Gingerbread roofline to upgrade
+  // to. On a Santa's-only (or roofline-less) quote it would byte-duplicate Tier 1
+  // while its name promises a Gingerbread upgrade — so we omit it and the portal
+  // renumbers the visible tiers (Jason S12). Common quotes carry both rooflines.
+  const hasDistinctGingerbread =
+    !!entryRooflineId && !!fullRooflineId && entryRooflineId !== fullRooflineId;
+
+  const tierA: PortalPackage = {
+    id: 'A',
+    name: 'Classic Glow',
+    tagline: "Santa's roofline + the essentials. Clean, simple, elegant.",
+    total: a.total,
+    deposit: a.deposit,
+    includedItemIds: idsForTierA,
+  };
+  const tierC: PortalPackage = {
+    id: 'C',
+    name: 'The Full Yule',
+    tagline: 'Everything — Gingerbread roofline, trees, wreaths, garland and more.',
+    total: c.total,
+    deposit: c.deposit,
+    includedItemIds: idsForTierC,
+    aLaCarteTotal,
+  };
+  const tierD: PortalPackage = {
+    id: 'D',
+    name: 'Build Your Own',
+    tagline: 'Custom — toggle anything.',
+    total: 0, // populated by applyOurRecommendation when staff recommended items
+    deposit: 0,
+    includedItemIds: [],
+  };
+
+  if (!hasDistinctGingerbread) return [tierA, tierC, tierD];
 
   return [
-    {
-      id: 'A',
-      name: 'Classic Glow',
-      tagline: 'Roofline only. Clean, simple, elegant.',
-      total: a.total,
-      deposit: a.deposit,
-      includedItemIds: idsForTierA,
-      recommended: recommendedId === 'A',
-    },
+    tierA,
     {
       id: 'B',
       name: 'Full Festive',
-      tagline: 'Roofline + trees and bushes. Most popular.',
+      tagline: 'Gingerbread roofline + the essentials. The fuller look.',
       total: b.total,
       deposit: b.deposit,
       includedItemIds: idsForTierB,
-      recommended: recommendedId === 'B',
     },
-    {
-      id: 'C',
-      name: 'The Full Yule',
-      tagline: 'Everything — roofline, trees, bushes, wreaths, garland.',
-      total: c.total,
-      deposit: c.deposit,
-      includedItemIds: idsForTierC,
-      aLaCarteTotal,
-      recommended: recommendedId === 'C',
-    },
-    {
-      id: 'D',
-      name: 'Build Your Own',
-      tagline: 'Custom — toggle anything.',
-      total: 0, // computed at runtime by SelectionContext from selected items
-      deposit: 0,
-      includedItemIds: [],
-    },
+    tierC,
+    tierD,
   ];
 }
 
-// Pick a sensible initial package for the portal's DEFAULT (fallback) selection.
+// Populate the 4th "Our Recommendation" (D) card from the staff-recommended line
+// items (#12). Runs in the loader AFTER attachSceneLinks, because design-driven
+// `recommended` flags are only attached there; it also picks up custom-item
+// recommendations the adapter sets. When nothing is recommended, D stays the
+// empty "Build Your Own" card (Jason S12). The recommended roofline is always
+// unioned in so the customer never lands without a roofline.
+export function applyOurRecommendation(
+  packages: PortalPackage[],
+  lineItems: PortalLineItem[],
+  roofline: PortalRoofline | undefined,
+  charges: PortalCharges,
+): PortalPackage[] {
+  const recIds = lineItems.filter((li) => li.recommended).map((li) => li.id);
+  if (recIds.length === 0) return packages;
+
+  const ids = Array.from(
+    new Set(
+      roofline?.recommendedItemId ? [...recIds, roofline.recommendedItemId] : recIds,
+    ),
+  );
+  const effective = effectiveCharges(charges, charges.rush.defaultOn, charges.takedown.defaultOn);
+  const { total, deposit } = totalsFor(ids, lineItems, effective);
+
+  return packages.map((p) =>
+    p.id === 'D'
+      ? {
+          ...p,
+          name: 'Our Recommendation',
+          tagline: 'Hand-picked by our team for your home.',
+          total,
+          deposit,
+          includedItemIds: ids,
+          recommended: true,
+        }
+      : p,
+  );
+}
+
+// Pick a sensible initial package for the portal's DEFAULT (fallback) selection,
+// used only when staff recommended nothing (otherwise the portal opens on the
+// "Our Recommendation" set — see applyOurRecommendation + the portal page).
 //
-// Preference order is B (most popular) → C → A, skipping empty packages. But the
-// default must also let the customer APPROVE without first adding items: if the
-// $1,000 gate is active (minimumSubtotal > 0) we pick the first package in
-// preference order whose PRE-TAX subtotal clears it — e.g. B = roofline + bushes
-// can land under $1,000, so we escalate to C (everything) so the customer opens
-// at/above the minimum (#12). If none clears (shouldn't happen while the gate is
-// active, since it only activates when the full quote already clears it — but
-// defensively) we pick the largest. When the gate is waived/unknown
-// (minimumSubtotal ≤ 0) behavior is unchanged: first available in B→C→A order.
+// Preference order is Tier 1 → Tier 2 → Tier 3 (A → B → C), skipping empty
+// packages, so a no-recommendation quote defaults to Classic Glow (Jason S12).
+// Tier 1 is built to clear the $1,000 minimum, so it normally wins outright; the
+// gate-aware fallback stays a safety net: when the gate is active
+// (minimumSubtotal > 0) we pick the first package in preference order whose
+// PRE-TAX subtotal clears it, and if none clears (defensive) the largest. When
+// the gate is waived/unknown (minimumSubtotal ≤ 0) we take the first available.
 export function pickInitialPackageId(
   packages: PortalPackage[],
   lineItems: PortalLineItem[] = [],
@@ -276,12 +390,12 @@ export function pickInitialPackageId(
   const subtotalOf = (p: PortalPackage) =>
     p.includedItemIds.reduce((s, id) => s + (priceById.get(id) ?? 0), 0);
 
-  const candidates = (['B', 'C', 'A'] as PackageId[])
+  const candidates = (['A', 'B', 'C'] as PackageId[])
     .map((id) => packages.find((p) => p.id === id))
     .filter((p): p is PortalPackage => !!p && p.total > 0);
   if (candidates.length === 0) return 'D';
 
-  // No active gate → today's behavior (first available, B-preferred).
+  // No active gate → first available in preference order (Tier-1-preferred).
   if (minimumSubtotal <= 0) return candidates[0].id;
 
   // Active gate → the first (in preference order) that clears the minimum, so
