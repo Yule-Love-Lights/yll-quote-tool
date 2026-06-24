@@ -22,6 +22,7 @@ import {
   inputsToFormData,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
+import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
 
@@ -90,6 +91,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export type QuoteBuilderInitial = {
   quoteId: string;
   customer: StoredCustomer;
+  serviceType: ServiceType | null;
   inputs: Partial<QuoteInputs>;
   result: QuoteResult | null;
   designId: string | null;
@@ -104,7 +106,9 @@ export type QuoteBuilderInitial = {
 export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBuilderInitial }) {
   const editMode = initialQuote != null;
   const [form, setForm] = useState<QuoteFormData>(() =>
-    initialQuote ? inputsToFormData(initialQuote.customer, initialQuote.inputs) : initialFormData,
+    initialQuote
+      ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
+      : initialFormData,
   );
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
@@ -1025,6 +1029,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         // drives it (decision 2a fallback).
         body: JSON.stringify({
           customer: form.customer,
+          serviceType: form.serviceType,
           inputs,
           quoteId: existingQuoteId ?? undefined,
           designId: designId ?? undefined,
@@ -1092,7 +1097,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         headers: { 'Content-Type': 'application/json' },
         // quoteId → re-price that quote in place; falls back to a fresh save
         // if the quote wasn't persisted (Supabase unconfigured).
-        body: JSON.stringify({ customer: form.customer, inputs, quoteId: savedQuoteId ?? undefined, designId: designId ?? undefined }),
+        body: JSON.stringify({ customer: form.customer, serviceType: form.serviceType, inputs, quoteId: savedQuoteId ?? undefined, designId: designId ?? undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -1311,6 +1316,36 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 <input className={inp} placeholder="123 Main St, Smithtown, NY 11787"
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
+            </div>
+
+            {/* Service type (#58 Phase 2b) — which line this quote belongs to.
+                Defaults to Holiday; drives the dashboard's per-service sections. */}
+            <div className="mt-4">
+              <label className={lbl}>Service type</label>
+              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Service type">
+                {SERVICE_TYPES.map(st => {
+                  const selected = form.serviceType === st;
+                  return (
+                    <button
+                      key={st}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setForm(f => ({ ...f, serviceType: st }))}
+                      className={`px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+                        selected
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {SERVICE_TYPE_LABELS[st]}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
+              </p>
             </div>
           </Section>
 

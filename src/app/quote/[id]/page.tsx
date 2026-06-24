@@ -31,6 +31,7 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
           phone: quote.customer_phone,
           email: quote.customer_email,
         },
+        serviceType: quote.service_type,
         inputs: quote.inputs ?? {},
         result: quote.result,
         designId: design?.id ?? null,
