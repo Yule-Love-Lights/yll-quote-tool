@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState, use } from 'react';
 import Link from 'next/link';
+import { OperatorShell } from '@/components/OperatorShell';
 
 type VideoKind = 'youtube' | 'mp4';
 
@@ -192,11 +193,11 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
     !busy && (tab === 'youtube' ? ytInput.trim().length >= 11 : mp4Url.trim().startsWith('https://'));
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="quotes">
       <div className="max-w-3xl mx-auto">
         <div className="flex justify-between items-start mb-6 gap-4 flex-wrap">
           <div>
-            <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
               Yule Love Lights — Admin
             </p>
             <h1 className="text-2xl font-bold text-gray-900">Walkthrough Video</h1>
@@ -463,6 +464,6 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
           </>
         )}
       </div>
-    </div>
+    </OperatorShell>
   );
 }

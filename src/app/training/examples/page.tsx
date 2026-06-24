@@ -11,6 +11,7 @@ import Link from 'next/link';
 import type { TrainingExampleListItem, TrainingExampleRow } from '@/lib/trainingExamples';
 import { sceneToFewShotPieces } from '@/lib/design/sceneToFewShot';
 import AnnotatedPhoto, { type OverlayBox } from '@/components/training/AnnotatedPhoto';
+import { OperatorShell } from '@/components/OperatorShell';
 
 const RED = '#ef4444'; // Santa's / front
 const BLUE = '#3b82f6'; // Gingerbread / ridge+sides
@@ -112,11 +113,11 @@ export default function TrainingExamplesPage() {
     new Date(iso).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="training">
       <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <div>
-            <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
               Yule Love Lights
             </p>
             <h1 className="text-2xl font-bold text-gray-900">Training Examples</h1>
@@ -231,7 +232,7 @@ export default function TrainingExamplesPage() {
           })}
         </div>
       </div>
-    </div>
+    </OperatorShell>
   );
 }
 

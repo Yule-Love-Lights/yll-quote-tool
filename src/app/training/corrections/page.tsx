@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { CorrectionListItem, StoredCorrection } from '@/lib/corrections';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
+import { OperatorShell } from '@/components/OperatorShell';
 
 // Review page for saved quote corrections. Shows the measurements Claude
 // learned from and lets you delete a bad one before it biases future quotes.
@@ -69,11 +70,11 @@ export default function CorrectionsListPage() {
   const fmtDate = (iso: string) => new Date(iso).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="training">
       <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <div>
-            <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
               Yule Love Lights
             </p>
             <h1 className="text-2xl font-bold text-gray-900">Saved Corrections</h1>
@@ -244,7 +245,7 @@ export default function CorrectionsListPage() {
           })}
         </div>
       </div>
-    </div>
+    </OperatorShell>
   );
 }
 
