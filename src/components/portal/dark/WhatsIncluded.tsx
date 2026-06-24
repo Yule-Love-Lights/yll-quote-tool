@@ -6,9 +6,12 @@
 // for the sticky bar CTA.
 
 import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Check } from 'lucide-react';
-import type { PortalLineItem, PortalLineItemKind } from '../types';
+import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
+import type { BulbColor } from '@/lib/design/sceneTypes';
+import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
+import { DesignReprise } from './DesignReprise';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -152,9 +155,15 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
 
 export type WhatsIncludedProps = {
   items: PortalLineItem[];
+  // Linked design (#27 Phase 2) + global app settings (#32), passed through so the
+  // second on-page design render (#50) can sit between the items and the add-ons.
+  // Absent ⇒ no second render (legacy / no-design quotes).
+  design?: PortalDesign;
+  palette?: BulbColor[];
+  renderSettings?: RenderSettings;
 };
 
-export function WhatsIncluded({ items }: WhatsIncludedProps) {
+export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsIncludedProps) {
   const {
     isItemSelected,
     toggleItem,
@@ -263,6 +272,13 @@ export function WhatsIncluded({ items }: WhatsIncludedProps) {
             );
           })}
         </ul>
+
+        {/* Second design render (#50) — the lit design with live selection, so the
+            customer sees their choices without scrolling back to the hero. Only
+            when a design is linked; lazy-mounts its Konva canvas for phone perf. */}
+        {design && (
+          <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
+        )}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
