@@ -3,12 +3,47 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* ─── Brand color values ─────────────────────────────────────────────
+   * Lifted from portal-dark.css so the operator UI and the customer
+   * portal share one source of truth. The portal's .portal-dark-root
+   * class still defines its own --yd-* alias variables (which keep
+   * those values) for backwards compat with the rest of portal-dark.css.
+   * Do not edit a value here without also auditing the portal. */
+  --brand-cream:        #F4ECD8;
+  --brand-cream-2:      #E0D7C1;
+  --brand-cream-dim:    #A89F87;
+  --brand-evergreen:    #0B140F;
+  --brand-evergreen-2:  #18221C;
+  --brand-evergreen-3:  #2E3D34;
+  --brand-gold:         #E8B862;
+  --brand-gold-bright:  #F5CC7A;
+  --brand-gold-deep:    #7A5E20;
+  --brand-red:          #C8313D;
+  --brand-red-bright:   #D8434F;
+  --brand-red-deep:     #8F1D26;
+
+  /* ─── Operator surface tokens (light theme using the brand) ──────────
+   * Applied via the .operator-surface class on body. The customer portal
+   * has its own .portal-dark-root scope (inside src/app/portal/layout.tsx)
+   * which overrides these on portal routes — so adding the class to the
+   * root body is safe and won't bleed into the portal. */
+  --op-bg:            #FAF6EC;   /* off-cream, page background */
+  --op-bg-raised:     #FFFFFF;   /* card backgrounds */
+  --op-bg-hover:      var(--brand-cream);
+  --op-border:        rgba(11, 20, 15, 0.10); /* evergreen 10% */
+  --op-border-mid:    rgba(11, 20, 15, 0.18);
+  --op-text:          var(--brand-evergreen);
+  --op-text-2:        var(--brand-evergreen-3);
+  --op-text-dim:      #5B6B5F;
+  --op-primary:       var(--brand-evergreen);
+  --op-accent:        var(--brand-gold);
+  --op-danger:        var(--brand-red);
+
   /* This is a light-themed app: the operator/admin UI uses white cards and
      light backgrounds, and the customer portal skins set their own colors.
      Pin the color scheme to light so the OS's dark mode can't flip default
-     text to near-white on our white surfaces (which made text unreadable).
-     The leftover create-next-app `prefers-color-scheme: dark` override that
-     used to live here was the cause and has been removed. */
+     text to near-white on our white surfaces (which made text unreadable). */
   color-scheme: light;
 }
 
@@ -23,4 +58,13 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ─── Operator surface base ──────────────────────────────────────────────
+ * Applied to <body> in src/app/layout.tsx so every non-portal route gets
+ * the cream/evergreen brand surface. The portal's own layout wraps
+ * children in .portal-dark-root which overrides bg + text. */
+body.operator-surface {
+  background: var(--op-bg);
+  color: var(--op-text);
 }
