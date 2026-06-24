@@ -30,13 +30,13 @@ export async function POST(req: NextRequest) {
   // service_type is optional in the request; when present it must be one of
   // the known values. Absent → default to holiday on a new save, leave
   // untouched on an update (handled below).
-  if (rawServiceType !== undefined && asServiceType(rawServiceType) === null) {
+  const serviceType = asServiceType(rawServiceType);
+  if (rawServiceType !== undefined && serviceType === null) {
     return NextResponse.json(
       { error: "serviceType must be 'holiday', 'permanent', or 'event'" },
       { status: 400 },
     );
   }
-  const serviceType = asServiceType(rawServiceType);
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
