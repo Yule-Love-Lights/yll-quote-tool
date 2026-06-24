@@ -1,10 +1,16 @@
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { computeKpis } from '@/lib/dashboard/metrics';
 import { computeWorklist } from '@/lib/dashboard/worklist';
+import {
+  computeHolidayBreakdown,
+  computePermanentSummary,
+  computeEventSummary,
+} from '@/lib/dashboard/serviceMetrics';
 import { OperatorNav } from '@/components/dashboard/OperatorNav';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { Worklist } from '@/components/dashboard/Worklist';
+import { ServiceSections } from '@/components/dashboard/ServiceSections';
 
 // Always render fresh — the dashboard reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
@@ -14,6 +20,9 @@ export default async function DashboardPage() {
   const now = new Date();
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
+  const holiday = computeHolidayBreakdown(quotes);
+  const permanent = computePermanentSummary(quotes);
+  const event = computeEventSummary(quotes);
 
   return (
     <>
@@ -22,6 +31,7 @@ export default async function DashboardPage() {
         <DashboardHeader />
         <KpiStrip kpis={kpis} />
         <Worklist items={worklist} />
+        <ServiceSections holiday={holiday} permanent={permanent} event={event} />
       </main>
     </>
   );
