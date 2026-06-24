@@ -48,6 +48,7 @@ import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
+import { fetchGoogleReviews } from '@/lib/googleReviews';
 
 type Params = { quoteId: string };
 
@@ -102,6 +103,10 @@ export default async function PortalPage({
   const { quoteId } = await params;
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
+  // #22 — live Google reviews (rating + featured 5-star testimonials). Null when
+  // GOOGLE_PLACE_ID isn't set, the Places API call fails, or Google returns no
+  // usable reviews → the section keeps its mock block below.
+  const liveReviews = await fetchGoogleReviews();
   // #43 — once the customer has approved, the portal reads as BOOKED rather than
   // re-shoppable: a banner up top + the sticky bar's Approve CTA becomes a
   // "View confirmation" link (the approval snapshot drives /approved).
@@ -190,12 +195,15 @@ export default async function PortalPage({
           badges={team.badges}
         />
 
-        {/* 7. Google Reviews */}
+        {/* 7. Google Reviews — live from the Google Business Profile (#22)
+            when configured; mock block as the graceful fallback. liveReviews is
+            all-or-nothing, so the headline rating and the testimonials always
+            come from the same source (never live rating + mock quotes). */}
         <GoogleReviews
-          rating={4.9}
-          totalReviews={187}
-          reviews={MOCK_REVIEWS}
-          reviewsUrl={GMB_REVIEWS_URL}
+          rating={liveReviews?.rating ?? 4.9}
+          totalReviews={liveReviews?.totalReviews ?? 187}
+          reviews={liveReviews?.reviews ?? MOCK_REVIEWS}
+          reviewsUrl={liveReviews?.reviewsUrl ?? GMB_REVIEWS_URL}
         />
 
         {/* 8. Gallery */}
