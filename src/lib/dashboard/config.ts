@@ -12,4 +12,7 @@ export const DASHBOARD_CONFIG = {
   sentNoReplyStaleDays: 3,
   /** Cap how many worklist rows we render (newest-first). */
   worklistMaxRows: 25,
+  /** Holiday season goal — total bookings target. The "47/50 homes" example
+   *  from VISION.md §5 lands here. Edit when Naldo raises/lowers the target. */
+  holidaySeasonGoalHomes: 50,
 } as const;

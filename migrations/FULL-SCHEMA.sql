@@ -65,11 +65,24 @@ alter table quotes
   add column if not exists video_src text,
   add column if not exists video_poster text,
   add column if not exists video_title text,
-  add column if not exists video_duration_sec integer;
+  add column if not exists video_duration_sec integer,
+  -- service_type (added 2026-06-24, #58 Phase 2a): Holiday/Permanent/Event
+  -- categorization powering the dashboard per-service sections. text + CHECK
+  -- rather than a PG enum so adding values later is a simple ALTER (no
+  -- ALTER TYPE dance). Nullable; the app reads NULL as 'holiday' (the legacy
+  -- default), and the migration backfills existing rows to 'holiday'.
+  add column if not exists service_type text;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
   check (video_kind is null or video_kind in ('youtube', 'mp4'));
+
+alter table quotes drop constraint if exists quotes_service_type_check;
+alter table quotes add constraint quotes_service_type_check
+  check (service_type is null or service_type in ('holiday', 'permanent', 'event'));
+
+-- Backfill legacy NULLs to 'holiday' (idempotent).
+update quotes set service_type = 'holiday' where service_type is null;
 
 alter table quotes disable row level security;
 
@@ -82,6 +95,7 @@ create index if not exists quotes_awaiting_customer_idx
   on quotes (quote_sent_at desc) where quote_sent_at is not null and customer_approved_at is null;
 create index if not exists quotes_signed_idx
   on quotes (homeworks_signed_at desc) where homeworks_signed_at is not null;
+create index if not exists quotes_service_type_idx on quotes (service_type);
 
 
 -- ---------------------------------------------------------------------
