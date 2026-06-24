@@ -19,6 +19,7 @@ function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
     homeworks_sent_at: null,
     homeworks_signed_at: null,
     highlevel_contact_id: null,
+    service_type: null,
     ...over,
   };
 }
