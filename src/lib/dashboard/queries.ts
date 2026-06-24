@@ -16,7 +16,8 @@ export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuot
     .select(
       'id, customer_name, customer_email, customer_phone, total, ' +
         'created_at, quote_sent_at, customer_approved_at, ' +
-        'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id',
+        'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
+        'service_type',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
