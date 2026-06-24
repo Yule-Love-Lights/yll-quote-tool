@@ -10,6 +10,7 @@ import type { QuoteInputs } from './pricing/pricingEngine';
 // A fully-populated form, exercising every mapped field.
 const fullForm: QuoteFormData = {
   customer: { name: 'Jane Doe', address: '12 Elm St', phone: '555-0101', email: 'jane@x.com' },
+  serviceType: 'event', // non-default, to exercise the field
   santasFootage: 120,
   santasDifficulty: 'hard',
   gingerbreadFootage: 80,
@@ -59,7 +60,8 @@ describe('buildQuoteInputs', () => {
 describe('inputsToFormData', () => {
   it('round-trips a fully-populated form', () => {
     const inputs = buildQuoteInputs(fullForm);
-    const hydrated = inputsToFormData(fullForm.customer, inputs);
+    // serviceType rides its own column, so it's passed separately (not via inputs).
+    const hydrated = inputsToFormData(fullForm.customer, inputs, fullForm.serviceType);
     expect(hydrated).toEqual(fullForm);
   });
 
@@ -71,7 +73,7 @@ describe('inputsToFormData', () => {
       discountType: 'percentage',
       discountAmount: 0,
     };
-    const hydrated = inputsToFormData(form.customer, buildQuoteInputs(form));
+    const hydrated = inputsToFormData(form.customer, buildQuoteInputs(form), form.serviceType);
     // rooflineChoice is omitted (not present as undefined) on both sides.
     expect('rooflineChoice' in hydrated).toBe(false);
     expect(hydrated).toEqual({ ...form, rooflineChoice: undefined });
@@ -117,6 +119,14 @@ describe('inputsToFormData', () => {
   it('survives null/garbage inputs with the blank form', () => {
     const hydrated = inputsToFormData(null, null);
     expect(hydrated).toEqual(initialFormData);
+  });
+
+  it('hydrates serviceType from the passed value, defaulting to holiday', () => {
+    expect(inputsToFormData({}, {}, 'permanent').serviceType).toBe('permanent');
+    expect(inputsToFormData({}, {}, 'event').serviceType).toBe('event');
+    // legacy/uncategorized rows (null or omitted) → holiday
+    expect(inputsToFormData({}, {}, null).serviceType).toBe('holiday');
+    expect(inputsToFormData({}, {}).serviceType).toBe('holiday');
   });
 
   it('strips the Anonymous / (no address) sentinels back to blank fields', () => {
