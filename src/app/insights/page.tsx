@@ -1,0 +1,60 @@
+import { listQuotesForDashboard } from '@/lib/dashboard/queries';
+import { monthlyRevenue, revenueByService, computeInsightStats } from '@/lib/dashboard/insights';
+import { OperatorShell } from '@/components/OperatorShell';
+import { KpiCard } from '@/components/dashboard/KpiCard';
+import { MonthlyRevenueChart, ServiceDonut } from '@/components/dashboard/insightsCharts';
+
+export const dynamic = 'force-dynamic';
+
+function money(n: number | null): string {
+  if (n == null) return '—';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+function pct(n: number | null): string {
+  return n == null ? '—' : `${Math.round(n * 100)}%`;
+}
+function days(n: number | null): string {
+  if (n == null) return '—';
+  if (n < 1) return `${(n * 24).toFixed(1)} hr`;
+  return `${n.toFixed(1)} d`;
+}
+
+export default async function InsightsPage() {
+  const quotes = await listQuotesForDashboard(500);
+  const now = new Date();
+  const months = monthlyRevenue(quotes, now, 12);
+  const byService = revenueByService(quotes);
+  const stats = computeInsightStats(quotes);
+
+  return (
+    <OperatorShell active="insights">
+      <div className="max-w-6xl mx-auto w-full">
+        <header className="mb-6">
+          <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
+            Insights
+          </p>
+          <h1 className="text-3xl font-semibold" style={{ color: 'var(--op-text)' }}>Insights</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--op-text-dim)' }}>
+            Native metrics from this tool&apos;s quotes. (Operational metrics — collected revenue,
+            installs — arrive with the home.works integration.)
+          </p>
+        </header>
+
+        <section aria-label="Headline metrics" className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+          <KpiCard label="Close ratio" value={pct(stats.closeRatio)} sub="approved / reached" />
+          <KpiCard label="Avg job value" value={money(stats.avgJobValue)} sub="approved quotes" />
+          <KpiCard label="Avg quote value" value={money(stats.avgQuoteValue)} sub="all quotes" />
+          <KpiCard label="Time to close" value={days(stats.timeToCloseDays)} sub="created → approved" />
+          <KpiCard label="Total booked" value={money(stats.totalBooked)} sub="lifetime" />
+        </section>
+
+        <div className="mb-3">
+          <MonthlyRevenueChart points={months} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <ServiceDonut slices={byService} />
+        </div>
+      </div>
+    </OperatorShell>
+  );
+}
