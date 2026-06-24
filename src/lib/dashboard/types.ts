@@ -94,3 +94,28 @@ export type EventSummary = {
   /** Lifetime approved event revenue. */
   bookedRevenue: number;
 };
+
+/** The latest lifecycle state of a customer's most recent quote. */
+export type CustomerStatus = 'draft' | 'sent' | 'approved';
+
+/** One customer = all quotes that share a stable customer key (#58 Phase 3).
+ *  Aggregated from the quotes table — no separate customers table. */
+export type CustomerSummary = {
+  /** Stable grouping key (HL contact id, else email/phone/name). */
+  key: string;
+  /** HL contact id when present — drives the live detail link; null for walk-ins. */
+  contactId: string | null;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  /** How many quotes this customer has. */
+  quoteCount: number;
+  /** Lifetime booked spend = sum of `total` across this customer's APPROVED quotes. */
+  bookedSpend: number;
+  /** ISO timestamp of their most recent quote (by created_at). */
+  latestQuoteAt: string;
+  /** Lifecycle status of that most recent quote. */
+  latestStatus: CustomerStatus;
+  /** Id of that most recent quote (for a deep link). */
+  latestQuoteId: string;
+};
