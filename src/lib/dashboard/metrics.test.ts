@@ -107,6 +107,30 @@ describe('computeKpis — active quotes / customers', () => {
     );
     expect(k.activeCustomers).toBe(4); // hl1, a@x.com, 555-0100, Solo
   });
+
+  it('keys on highlevel_contact_id ahead of email (same contact, different emails → one customer)', () => {
+    const recentSent = new Date(NOW.getTime() - 1 * 86400_000).toISOString();
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: recentSent, highlevel_contact_id: 'h1', customer_email: 'a@x.com' }),
+        makeQuote({ quote_sent_at: recentSent, highlevel_contact_id: 'h1', customer_email: 'b@x.com' }),
+      ],
+      NOW,
+    );
+    expect(k.activeCustomers).toBe(1); // contact id wins over the differing emails
+  });
+
+  it('keys on email ahead of phone (same email, different phones → one customer)', () => {
+    const recentSent = new Date(NOW.getTime() - 1 * 86400_000).toISOString();
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: recentSent, customer_email: 'a@x.com', customer_phone: '555-0001' }),
+        makeQuote({ quote_sent_at: recentSent, customer_email: 'a@x.com', customer_phone: '555-0002' }),
+      ],
+      NOW,
+    );
+    expect(k.activeCustomers).toBe(1); // email wins over the differing phones
+  });
 });
 
 describe('computeKpis — turnaround + conversion', () => {
@@ -130,7 +154,7 @@ describe('computeKpis — turnaround + conversion', () => {
     expect(k.avgTurnaroundDays).toBeNull();
   });
 
-  it('conversion rate = approved / sent across all-time', () => {
+  it('conversion rate = approved / reached (sent-or-approved) across all-time', () => {
     const k = computeKpis(
       [
         makeQuote({ quote_sent_at: '2026-01-01T00:00:00Z', customer_approved_at: '2026-01-05T00:00:00Z' }),
@@ -143,7 +167,21 @@ describe('computeKpis — turnaround + conversion', () => {
     expect(k.conversionRate).toBe(0.5);
   });
 
-  it('conversion is null when no quote has been sent', () => {
+  it('stays in [0,1] when a quote is approved but was never marked sent (offline close)', () => {
+    // /approve stamps customer_approved_at WITHOUT quote_sent_at. The old
+    // approved/sent ratio produced 2.0 (200%) here — regression guard.
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: '2026-01-01T00:00:00Z', customer_approved_at: '2026-01-05T00:00:00Z' }),
+        makeQuote({ quote_sent_at: null, customer_approved_at: '2026-02-01T00:00:00Z' }), // approved, never sent
+      ],
+      NOW,
+    );
+    expect(k.conversionRate).toBe(1); // 2 reached, 2 approved → 1.0, not 2.0
+    expect(k.conversionRate).toBeLessThanOrEqual(1);
+  });
+
+  it('conversion is null when no quote has reached a customer', () => {
     const k = computeKpis([makeQuote({ quote_sent_at: null })], NOW);
     expect(k.conversionRate).toBeNull();
   });

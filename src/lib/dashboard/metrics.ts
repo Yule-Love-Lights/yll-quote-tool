@@ -24,7 +24,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
   let bookedRevenue = 0;
   let bookedRevenueRecent = 0;
   let activeQuotes = 0;
-  let sentCount = 0;
+  let reachedCount = 0; // quotes that reached the customer (sent OR approved) — conversion denominator
   let approvedCount = 0;
   let turnaroundSum = 0;
   let turnaroundN = 0;
@@ -42,8 +42,13 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
       approvedCount += 1;
     }
 
+    // A quote "reached the customer" if it was sent OR approved. Approval implies
+    // it reached them even when quote_sent_at was never stamped (in-person /
+    // imported / offline close — /approve sets customer_approved_at only). Using
+    // this as the conversion denominator keeps the rate in [0,1].
+    if (sentAt || approvedAt) reachedCount += 1;
+
     if (sentAt) {
-      sentCount += 1;
       // Avg turnaround uses created→sent for every sent quote (no window).
       turnaroundSum += daysBetween(sentAt, q.created_at);
       turnaroundN += 1;
@@ -62,6 +67,6 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     activeQuotes,
     activeCustomers: activeCustomerKeys.size,
     avgTurnaroundDays: turnaroundN > 0 ? turnaroundSum / turnaroundN : null,
-    conversionRate: sentCount > 0 ? approvedCount / sentCount : null,
+    conversionRate: reachedCount > 0 ? approvedCount / reachedCount : null,
   };
 }

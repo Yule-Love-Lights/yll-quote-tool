@@ -46,6 +46,27 @@ describe('computeWorklist — draft-stale', () => {
     expect(out[0].quoteId).toBe('q1');
     expect(out[0].href).toBe('/quote/q1');
   });
+
+  it('does NOT nag a won quote that was approved without ever being marked sent', () => {
+    // /approve sets customer_approved_at but not quote_sent_at (offline close).
+    // The old draft branch keyed only off !quote_sent_at → it wrongly showed
+    // this won deal as a stale "never sent" draft. Regression guard.
+    const old = new Date(NOW.getTime() - 174 * 86400_000).toISOString();
+    const out = computeWorklist(
+      [makeQuote({ created_at: old, quote_sent_at: null, customer_approved_at: '2026-03-01T00:00:00Z' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('surfaces a draft exactly at the draftStaleDays boundary (uses ≥)', () => {
+    const exactly = new Date(
+      NOW.getTime() - DASHBOARD_CONFIG.draftStaleDays * 86400_000,
+    ).toISOString();
+    const out = computeWorklist([makeQuote({ id: 'qb', created_at: exactly })], NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe('draft-stale');
+  });
 });
 
 describe('computeWorklist — sent-no-reply', () => {

@@ -96,6 +96,22 @@ describe('computeHolidayBreakdown — totals', () => {
     expect(out.goal.goal).toBe(DASHBOARD_CONFIG.holidaySeasonGoalHomes);
     expect(out.goal.booked).toBe(1);
   });
+
+  it('attributes a booking to its INSTALL month (homeworks_signed_at), not its approval month', () => {
+    // Approved Sep, installed (signed) Oct → both booked+installed land in 2026-10,
+    // NOT 2026-09. Locks the documented install-month-preference rule.
+    const out = computeHolidayBreakdown([
+      makeQuote({
+        service_type: 'holiday',
+        customer_approved_at: '2026-09-10T00:00:00Z',
+        homeworks_signed_at: '2026-10-05T00:00:00Z',
+      }),
+    ]);
+    expect(out.byMonth.find(b => b.key === '2026-09')).toBeUndefined();
+    expect(out.byMonth.find(b => b.key === '2026-10')).toEqual(
+      expect.objectContaining({ booked: 1, installed: 1 }),
+    );
+  });
 });
 
 describe('computePermanentSummary', () => {

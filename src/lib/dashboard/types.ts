@@ -36,14 +36,16 @@ export type Kpis = {
   activeCustomers: number;
   /** Average days between created_at and quote_sent_at across all sent quotes; null if no sent quotes. */
   avgTurnaroundDays: number | null;
-  /** approved / sent ratio across all-time, as a 0–1 number; null if no sent quotes. */
+  /** Conversion = approved ÷ (quotes that reached a customer = sent OR approved),
+   *  all-time. Always in [0,1]; null if no quote has reached a customer. Counting
+   *  approved-but-never-sent quotes in the denominator avoids a >100% rate. */
   conversionRate: number | null;
 };
 
 /** Kinds of worklist rows. Phase 1 ships two; more added in later phases. */
 export type WorklistKind =
-  | 'draft-stale'      // quote created, never sent, > config.draftStaleDays
-  | 'sent-no-reply';   // quote sent, not yet approved, > config.sentNoReplyStaleDays
+  | 'draft-stale'      // not approved, never sent, age ≥ config.draftStaleDays
+  | 'sent-no-reply';   // sent, not approved, age ≥ config.sentNoReplyStaleDays
 
 export type WorklistItem = {
   kind: WorklistKind;
