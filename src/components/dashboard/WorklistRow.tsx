@@ -1,0 +1,32 @@
+import Link from 'next/link';
+import type { WorklistItem } from '@/lib/dashboard/types';
+
+const KIND_LABEL: Record<WorklistItem['kind'], string> = {
+  'draft-stale': 'Draft',
+  'sent-no-reply': 'No reply',
+};
+
+export function WorklistRow({ item }: { item: WorklistItem }) {
+  return (
+    <Link
+      href={item.href}
+      className="flex items-center gap-4 px-4 py-3 border-t transition-colors hover:opacity-90"
+      style={{ borderColor: 'var(--op-border)' }}
+    >
+      <span
+        className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded"
+        style={{
+          background: item.kind === 'sent-no-reply' ? 'var(--op-danger)' : 'var(--brand-gold)',
+          color: item.kind === 'sent-no-reply' ? 'var(--brand-cream)' : 'var(--brand-evergreen)',
+        }}
+      >
+        {KIND_LABEL[item.kind]}
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="font-medium truncate" style={{ color: 'var(--op-text)' }}>{item.title}</div>
+        <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{item.subtitle}</div>
+      </div>
+      <span aria-hidden style={{ color: 'var(--op-text-dim)' }}>→</span>
+    </Link>
+  );
+}
