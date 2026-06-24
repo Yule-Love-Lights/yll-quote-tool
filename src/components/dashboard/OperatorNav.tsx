@@ -5,15 +5,21 @@ type NavItem = { label: string; href: string };
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/' },
   { label: 'Quotes', href: '/admin/quotes' },
+  { label: 'Customers', href: '/customers' },
   { label: 'New quote', href: '/quote/new' },
   { label: 'Training', href: '/training' },
   { label: 'Settings', href: '/settings' },
 ];
 
-export function OperatorNav({ active }: { active: 'home' | 'quotes' | 'new' | 'training' | 'settings' }) {
+export function OperatorNav({
+  active,
+}: {
+  active: 'home' | 'quotes' | 'customers' | 'new' | 'training' | 'settings';
+}) {
   const isActive = (href: string) =>
     (active === 'home' && href === '/') ||
     (active === 'quotes' && href === '/admin/quotes') ||
+    (active === 'customers' && href === '/customers') ||
     (active === 'new' && href === '/quote/new') ||
     (active === 'training' && href === '/training') ||
     (active === 'settings' && href === '/settings');
