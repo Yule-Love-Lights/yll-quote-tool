@@ -29,6 +29,7 @@ const fullForm: QuoteFormData = {
   discountEnabled: true,
   discountType: 'percentage',
   discountAmount: 20,
+  waiveMinimum: true, // non-default, to exercise the field
 };
 
 describe('buildQuoteInputs', () => {
@@ -54,6 +55,11 @@ describe('buildQuoteInputs', () => {
     expect('discount' in buildQuoteInputs({ ...fullForm, discountEnabled: false })).toBe(false);
     const flat = buildQuoteInputs({ ...fullForm, discountType: 'flat', discountAmount: 150 });
     expect(flat.discount).toEqual({ type: 'flat', amount: 150 });
+  });
+
+  it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
+    expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
+    expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
   });
 });
 
@@ -127,6 +133,12 @@ describe('inputsToFormData', () => {
     // legacy/uncategorized rows (null or omitted) → holiday
     expect(inputsToFormData({}, {}, null).serviceType).toBe('holiday');
     expect(inputsToFormData({}, {}).serviceType).toBe('holiday');
+  });
+
+  it('hydrates waiveMinimum, defaulting to false when absent (#59)', () => {
+    expect(inputsToFormData({}, { waiveMinimum: true }).waiveMinimum).toBe(true);
+    expect(inputsToFormData({}, { waiveMinimum: false }).waiveMinimum).toBe(false);
+    expect(inputsToFormData({}, {}).waiveMinimum).toBe(false); // legacy row
   });
 
   it('strips the Anonymous / (no address) sentinels back to blank fields', () => {

@@ -48,6 +48,9 @@ export type QuoteFormData = {
   discountEnabled: boolean;
   discountType: 'percentage' | 'flat';
   discountAmount: number;
+  // Staff override (#59): waive the $1,000 portal approval gate for this quote
+  // (lets the customer approve a selection under $1,000). Rides the inputs jsonb.
+  waiveMinimum: boolean;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -70,6 +73,7 @@ export const initialFormData: QuoteFormData = {
   discountEnabled: false,
   discountType: 'percentage',
   discountAmount: 0,
+  waiveMinimum: false,
 };
 
 // Form → engine inputs. `rooflineChoiceOverride` lets the breakdown's staff-pick
@@ -98,6 +102,8 @@ export function buildQuoteInputs(
     customLineItems: form.customLineItems,
     takedown: form.takedown,
     rushFee: form.rushFee,
+    // Only stored when set (#59) — absent in the inputs jsonb means not waived.
+    ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
     ...(form.discountEnabled && {
       discount: {
         type: form.discountType,
@@ -175,5 +181,6 @@ export function inputsToFormData(
     discountType: d?.type ?? 'percentage',
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
+    waiveMinimum: i.waiveMinimum ?? false,
   };
 }
