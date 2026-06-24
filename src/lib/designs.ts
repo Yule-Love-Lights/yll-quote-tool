@@ -25,6 +25,27 @@ export type DesignScene = Scene;
 
 export const EMPTY_SCENE: DesignScene = { yardsticks: [], items: [] };
 
+// Default starting brightness for a NEWLY-CREATED design (#67). The base photo
+// lands pre-dimmed so the strung lights pop and staff don't lower it by hand on
+// every quote. Scale is 0–100 where 50 = neutral (no tint) and lower = darker;
+// render-readonly paints a dark overlay below 50 (~25 ≈ a ~50% darken — a
+// deep "dusk" look; Jason's pick). Staff can still slider it up, or double-click
+// the slider to reset to 50. TUNE the look by changing this one number.
+// NOTE: brightness is a persisted scene field, so this also dims the portal's
+// lit design render — which is the intended nighttime look (and matches what
+// staff already did by hand). Only NEW designs are affected; existing ones keep
+// whatever brightness they were saved with.
+export const DEFAULT_DESIGN_BRIGHTNESS = 25;
+
+// The seed scene a new design is created with: empty geometry + the dimmed
+// default. Used ONLY at creation — the missing-scene fallbacks
+// (getDesignWithPhoto, the re-seed routes) deliberately keep EMPTY_SCENE so an
+// existing design is never force-dimmed. A factory (not a shared const) so each
+// new design gets its OWN fresh arrays — no cross-design mutation hazard.
+function newDesignScene(): DesignScene {
+  return { yardsticks: [], items: [], brightness: DEFAULT_DESIGN_BRIGHTNESS };
+}
+
 // The staff-confirmed satellite measurement state (#8 Stage A). Lines are
 // normalized 0–1 polylines in satellite-image space (the builder's shape);
 // footages are the derived feet at push time so training capture doesn't
@@ -118,7 +139,7 @@ export async function createDesign(opts: {
     .from('designs')
     .insert({
       quote_id: opts.quoteId ?? null,
-      scene: EMPTY_SCENE,
+      scene: newDesignScene(),
     })
     .select('id')
     .single();
@@ -142,7 +163,7 @@ export async function createDesign(opts: {
             ? { lines: opts.seedLines }
             : null;
       if (seed && photo.width > 0 && photo.height > 0) {
-        const scene = seedSceneFromAnalysis(EMPTY_SCENE, seed, photo.width, photo.height);
+        const scene = seedSceneFromAnalysis(newDesignScene(), seed, photo.width, photo.height);
         await updateDesignScene(id, scene);
       }
     } catch (err) {
