@@ -342,11 +342,12 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
     charges: chargesFromResult(row.result),
-    // The $1,000 approval gate threshold (0 when the quote's items total
-    // under $1,000 — staff override). Enforced on the portal, not in pricing.
-    // Uses tierLineItems so a quote with two roofline options (only one of
-    // which is ever selected) isn't double-counted into clearing the minimum.
-    minimumOrderSubtotal: minimumOrderSubtotal(tierLineItems),
+    // The $1,000 approval gate threshold. 0 when EITHER (a) staff checked
+    // "waive the $1,000 minimum" on this quote (#59 — inputs.waiveMinimum), or
+    // (b) the quote's items already total under $1,000 (the existing auto-waive
+    // in minimumOrderSubtotal()). Enforced on the portal, not in pricing. Uses
+    // tierLineItems so a two-roofline quote isn't double-counted.
+    minimumOrderSubtotal: row.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems),
     weeklyBookings,
     seasonCapacity: {
       installedThisWeek: weeklyBookings,

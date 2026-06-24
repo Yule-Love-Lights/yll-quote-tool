@@ -1348,6 +1348,23 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
               </p>
             </div>
+
+            {/* Waive the $1,000 minimum (#59) — staff override so the customer
+                can approve a selection under $1,000 on the portal. */}
+            <label className="mt-4 flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.waiveMinimum}
+                onChange={e => set('waiveMinimum', e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm font-medium text-gray-700">Waive the $1,000 minimum</span>
+                <span className="block text-xs text-gray-500">
+                  Lets the customer approve a selection under $1,000 on the portal — even if this quote&apos;s items total more.
+                </span>
+              </span>
+            </label>
           </Section>
 
           {/* ── Photo Analysis ── */}

@@ -176,6 +176,11 @@ export interface QuoteInputs {
   takedown: Takedown;
   rushFee: boolean;
   discount?: Discount;
+  /** Staff override (#59): when true, the portal's $1,000 approval gate is
+   *  waived (minimumOrderSubtotal → 0) so the customer can approve a selection
+   *  under $1,000 even on a quote whose items total ≥ $1,000. NOT a pricing
+   *  input — the engine ignores it; it rides the stored `inputs` jsonb. */
+  waiveMinimum?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────
