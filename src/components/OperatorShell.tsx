@@ -1,6 +1,6 @@
 import { OperatorNav } from './dashboard/OperatorNav';
 
-export type OperatorArea = 'home' | 'quotes' | 'customers' | 'new' | 'training' | 'settings';
+export type OperatorArea = 'home' | 'insights' | 'quotes' | 'customers' | 'new' | 'training' | 'settings';
 
 // Shared chrome for every internal operator page: the branded top nav (links to
 // every area) on the cream operator surface. Wrap a page's content in this so

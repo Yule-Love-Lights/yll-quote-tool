@@ -4,6 +4,7 @@ type NavItem = { label: string; href: string };
 
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/' },
+  { label: 'Insights', href: '/insights' },
   { label: 'Quotes', href: '/admin/quotes' },
   { label: 'Customers', href: '/customers' },
   { label: 'New quote', href: '/quote/new' },
@@ -14,10 +15,11 @@ const ITEMS: NavItem[] = [
 export function OperatorNav({
   active,
 }: {
-  active: 'home' | 'quotes' | 'customers' | 'new' | 'training' | 'settings';
+  active: 'home' | 'insights' | 'quotes' | 'customers' | 'new' | 'training' | 'settings';
 }) {
   const isActive = (href: string) =>
     (active === 'home' && href === '/') ||
+    (active === 'insights' && href === '/insights') ||
     (active === 'quotes' && href === '/admin/quotes') ||
     (active === 'customers' && href === '/customers') ||
     (active === 'new' && href === '/quote/new') ||
