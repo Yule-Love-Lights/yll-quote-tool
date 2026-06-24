@@ -7,8 +7,9 @@ function daysBetween(later: string, earlier: string): number {
   return (new Date(later).getTime() - new Date(earlier).getTime()) / MS_PER_DAY;
 }
 
-/** Stable customer key: HL contact id wins; otherwise email, phone, then name. */
-function customerKey(q: DashboardQuote): string {
+/** Stable customer key: HL contact id wins; otherwise email, phone, then name.
+ *  Shared with the Customers aggregation (lib/dashboard/customers.ts). */
+export function customerKey(q: DashboardQuote): string {
   return q.highlevel_contact_id
     ?? q.customer_email
     ?? q.customer_phone
