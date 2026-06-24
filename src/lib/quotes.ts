@@ -1,5 +1,6 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
+import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 
 export type QuoteListItem = {
   id: string;
@@ -73,6 +74,7 @@ export async function saveQuote(
   customer: Customer,
   inputs: QuoteInputs,
   result: QuoteResult,
+  serviceType: ServiceType = DEFAULT_SERVICE_TYPE,
 ): Promise<{ id: string } | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
@@ -84,6 +86,7 @@ export async function saveQuote(
       customer_address: blankToNull(customer.address) ?? '(no address)',
       customer_phone: blankToNull(customer.phone),
       customer_email: blankToNull(customer.email),
+      service_type: serviceType,
       inputs,
       result,
       total: result.total,
@@ -108,6 +111,9 @@ export async function updateQuote(
   inputs: QuoteInputs,
   result: QuoteResult,
   customer?: Customer,
+  // Only written when provided — omitting it leaves the stored service_type
+  // untouched (so a re-price that doesn't carry it can't reset the column).
+  serviceType?: ServiceType,
 ): Promise<{ id: string } | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
@@ -118,6 +124,7 @@ export async function updateQuote(
       inputs,
       result,
       total: result.total,
+      ...(serviceType ? { service_type: serviceType } : {}),
       ...(customer
         ? {
             customer_name: blankToNull(customer.name) ?? 'Anonymous',
@@ -147,6 +154,7 @@ export type QuoteRaw = {
   customer_address: string | null;
   customer_phone: string | null;
   customer_email: string | null;
+  service_type: ServiceType | null;
   inputs: Partial<QuoteInputs>;
   result: QuoteResult | null;
   quote_sent_at: string | null;
@@ -160,7 +168,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, inputs, result, quote_sent_at, customer_approved_at',
+      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at',
     )
     .eq('id', id)
     .maybeSingle();

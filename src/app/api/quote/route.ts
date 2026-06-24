@@ -3,6 +3,7 @@ import { calculateQuote, QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
+import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -23,7 +24,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId } = body as Record<string, unknown>;
+  const { customer, inputs, quoteId, designId, serviceType: rawServiceType } =
+    body as Record<string, unknown>;
+
+  // service_type is optional in the request; when present it must be one of
+  // the known values. Absent → default to holiday on a new save, leave
+  // untouched on an update (handled below).
+  const serviceType = asServiceType(rawServiceType);
+  if (rawServiceType !== undefined && serviceType === null) {
+    return NextResponse.json(
+      { error: "serviceType must be 'holiday', 'permanent', or 'event'" },
+      { status: 400 },
+    );
+  }
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -90,8 +103,15 @@ export async function POST(req: NextRequest) {
     // carried a customer object — omitting it must not reset the stored
     // name/address to the Anonymous sentinels.
     const saved = isUpdate
-      ? await updateQuote(quoteId as string, quoteInputs, result, customer ? safeCustomer : undefined)
-      : await saveQuote(safeCustomer, quoteInputs, result);
+      ? await updateQuote(
+          quoteId as string,
+          quoteInputs,
+          result,
+          customer ? safeCustomer : undefined,
+          // undefined → leave the stored service_type untouched on update.
+          serviceType ?? undefined,
+        )
+      : await saveQuote(safeCustomer, quoteInputs, result, serviceType ?? DEFAULT_SERVICE_TYPE);
     return NextResponse.json({
       customer: safeCustomer,
       result,

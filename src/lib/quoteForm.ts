@@ -10,6 +10,7 @@ import type {
   CustomLineItem,
   Takedown,
 } from './pricing/pricingEngine';
+import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -21,6 +22,9 @@ export type FormCustomer = { name: string; address: string; phone: string; email
 
 export type QuoteFormData = {
   customer: FormCustomer;
+  // Service line this quote belongs to (#58 Phase 2b). Holiday by default;
+  // rides the quotes.service_type column, NOT the pricing inputs jsonb.
+  serviceType: ServiceType;
   santasFootage: number;
   santasDifficulty: RooflineDifficulty;
   gingerbreadFootage: number;
@@ -48,6 +52,7 @@ export type QuoteFormData = {
 
 export const initialFormData: QuoteFormData = {
   customer: { name: '', address: '', phone: '', email: '' },
+  serviceType: DEFAULT_SERVICE_TYPE,
   santasFootage: 0,
   santasDifficulty: 'medium',
   gingerbreadFootage: 0,
@@ -137,6 +142,9 @@ function fractionToWholePercent(fraction: number): number {
 export function inputsToFormData(
   customer: StoredCustomer | null | undefined,
   inputs: Partial<QuoteInputs> | null | undefined,
+  // service_type rides its own quotes column (not the inputs jsonb), so the
+  // edit page passes it separately. Undefined/legacy rows default to holiday.
+  serviceType?: ServiceType | null,
 ): QuoteFormData {
   const i = inputs ?? {};
   const d = i.discount;
@@ -147,6 +155,7 @@ export function inputsToFormData(
       phone: customerField(customer?.phone),
       email: customerField(customer?.email),
     },
+    serviceType: serviceType ?? DEFAULT_SERVICE_TYPE,
     santasFootage: i.santasFootage ?? 0,
     santasDifficulty: i.santasDifficulty ?? 'medium',
     gingerbreadFootage: i.gingerbreadFootage ?? 0,
