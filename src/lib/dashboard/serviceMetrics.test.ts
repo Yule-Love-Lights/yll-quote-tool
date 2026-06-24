@@ -1,0 +1,136 @@
+import { describe, it, expect } from 'vitest';
+import {
+  computeHolidayBreakdown,
+  computePermanentSummary,
+  computeEventSummary,
+  serviceTypeOf,
+} from './serviceMetrics';
+import type { DashboardQuote } from './types';
+import { DASHBOARD_CONFIG } from './config';
+
+function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
+  return {
+    id: crypto.randomUUID(),
+    customer_name: 'Test',
+    customer_email: null,
+    customer_phone: null,
+    total: 1000,
+    created_at: '2026-09-01T12:00:00Z',
+    quote_sent_at: null,
+    customer_approved_at: null,
+    homeworks_sent_at: null,
+    homeworks_signed_at: null,
+    highlevel_contact_id: null,
+    service_type: null,
+    ...over,
+  };
+}
+
+describe('serviceTypeOf — fallback', () => {
+  it('returns the literal when set', () => {
+    expect(serviceTypeOf(makeQuote({ service_type: 'permanent' }))).toBe('permanent');
+    expect(serviceTypeOf(makeQuote({ service_type: 'event' }))).toBe('event');
+    expect(serviceTypeOf(makeQuote({ service_type: 'holiday' }))).toBe('holiday');
+  });
+  it('treats NULL as holiday (legacy default)', () => {
+    expect(serviceTypeOf(makeQuote({ service_type: null }))).toBe('holiday');
+  });
+});
+
+describe('computeHolidayBreakdown — totals', () => {
+  it('counts only approved holiday quotes as booked', () => {
+    const out = computeHolidayBreakdown(
+      [
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-10T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-10-15T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday', customer_approved_at: null }), // not booked
+        makeQuote({ service_type: 'permanent', customer_approved_at: '2026-09-01T00:00:00Z' }), // wrong service
+        makeQuote({ service_type: null, customer_approved_at: '2026-11-01T00:00:00Z' }),       // NULL → holiday
+      ],
+    );
+    expect(out.bookedTotal).toBe(3);
+  });
+
+  it('counts only signed holiday quotes as installed (homeworks_signed_at proxy)', () => {
+    const out = computeHolidayBreakdown(
+      [
+        makeQuote({
+          service_type: 'holiday',
+          customer_approved_at: '2026-09-10T00:00:00Z',
+          homeworks_signed_at: '2026-10-01T00:00:00Z',
+        }),
+        makeQuote({
+          service_type: 'holiday',
+          customer_approved_at: '2026-09-10T00:00:00Z',
+          homeworks_signed_at: null, // booked but not installed
+        }),
+      ],
+    );
+    expect(out.installedTotal).toBe(1);
+  });
+
+  it('groups booked + installed by install month (YYYY-MM key, label, stable order)', () => {
+    const out = computeHolidayBreakdown(
+      [
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-05T00:00:00Z', homeworks_signed_at: '2026-09-25T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-20T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-10-01T00:00:00Z', homeworks_signed_at: '2026-10-10T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-12-01T00:00:00Z' }),
+      ],
+    );
+    const sepBucket = out.byMonth.find(b => b.key === '2026-09');
+    const octBucket = out.byMonth.find(b => b.key === '2026-10');
+    const decBucket = out.byMonth.find(b => b.key === '2026-12');
+    expect(sepBucket).toEqual(expect.objectContaining({ booked: 2, installed: 1 }));
+    expect(octBucket).toEqual(expect.objectContaining({ booked: 1, installed: 1 }));
+    expect(decBucket).toEqual(expect.objectContaining({ booked: 1, installed: 0 }));
+    // Stable chronological order
+    const keys = out.byMonth.map(b => b.key);
+    expect(keys).toEqual([...keys].sort());
+  });
+
+  it('goal mirrors config + total booked', () => {
+    const out = computeHolidayBreakdown(
+      [makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-10T00:00:00Z' })],
+    );
+    expect(out.goal.goal).toBe(DASHBOARD_CONFIG.holidaySeasonGoalHomes);
+    expect(out.goal.booked).toBe(1);
+  });
+});
+
+describe('computePermanentSummary', () => {
+  it('inCare = count of approved permanent quotes; pending = sent-not-approved', () => {
+    const out = computePermanentSummary(
+      [
+        makeQuote({ service_type: 'permanent', customer_approved_at: '2026-09-10T00:00:00Z', total: 13000 }),
+        makeQuote({ service_type: 'permanent', customer_approved_at: '2026-10-10T00:00:00Z', total: 11000 }),
+        makeQuote({ service_type: 'permanent', quote_sent_at: '2026-11-01T00:00:00Z' }),
+        makeQuote({ service_type: 'holiday',   customer_approved_at: '2026-09-15T00:00:00Z' }), // wrong service
+      ],
+    );
+    expect(out.inCare).toBe(2);
+    expect(out.pending).toBe(1);
+    expect(out.bookedRevenue).toBe(24000);
+  });
+
+  it('handles empty / no permanent quotes', () => {
+    const out = computePermanentSummary([makeQuote({ service_type: 'holiday' })]);
+    expect(out).toEqual({ inCare: 0, pending: 0, bookedRevenue: 0 });
+  });
+});
+
+describe('computeEventSummary', () => {
+  it('booked / pending / revenue from event quotes only', () => {
+    const out = computeEventSummary(
+      [
+        makeQuote({ service_type: 'event', customer_approved_at: '2026-10-01T00:00:00Z', total: 4800 }),
+        makeQuote({ service_type: 'event', quote_sent_at: '2026-11-01T00:00:00Z' }),
+        makeQuote({ service_type: 'event', quote_sent_at: '2026-11-01T00:00:00Z', customer_approved_at: '2026-11-05T00:00:00Z', total: 6000 }),
+        makeQuote({ service_type: 'permanent', customer_approved_at: '2026-10-01T00:00:00Z' }),
+      ],
+    );
+    expect(out.booked).toBe(2);
+    expect(out.pending).toBe(1);
+    expect(out.bookedRevenue).toBe(10800);
+  });
+});
