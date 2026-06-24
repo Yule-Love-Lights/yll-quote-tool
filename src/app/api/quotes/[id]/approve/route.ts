@@ -26,30 +26,26 @@
 // error — and routes the customer to /portal/[id]/approved anyway. This
 // also guarantees the notifications below fire at most once.
 //
-// TEMPORARY (pre-Valor) deposit flow — what happens here:
+// What happens here (Valor deposit flow, #38):
 //   1. Load quote row from DB
 //   2. Build + save the approval_snapshot + customer_approved_at FIRST, so the
-//      approval is never lost even if the messaging below fails
-//   3. Text + email the CUSTOMER: "you're approved — we'll reach out to collect
-//      your 50% deposit and lock in your install date"
-//   4. Email OURSELVES (the sales@ GHL contact) to go collect the deposit
-//   All messaging is best-effort and non-fatal. Per Jason there is NO GHL stage
-//   move on approve — the card stays at "Bid Sent"; the internal email is the
-//   staff signal. When Valor lands (#38), the payment step runs before this and
-//   the receipt + any GHL move fire on payment-confirmed instead.
+//      approval is never lost even if the messaging below fails. The snapshot is
+//      also the authoritative deposit amount the /pay step later charges.
+//   3. Email OURSELVES (the sales@ GHL contact) that the customer is approving +
+//      paying their deposit online now — best-effort, non-fatal.
+// There is NO GHL stage move and NO customer-facing message here: the customer
+// pays their 50% deposit online next (embedded Passage.js checkout → POST
+// /api/quotes/[id]/pay), and the CUSTOMER receipt + the GHL move to ⏰Approved
+// fire only when Valor's webhook confirms the deposit actually landed.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import {
-  sendSms,
   sendEmail,
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
 import {
-  APPROVAL_EMAIL_SUBJECT,
-  approvalSmsBody,
-  approvalEmailHtml,
   internalApprovalEmailSubject,
   internalApprovalEmailHtml,
 } from '@/lib/integrations/quoteMessages';
@@ -259,56 +255,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Approval is now recorded. Notify the customer and ourselves — all
-  // best-effort, because a messaging hiccup must never undo the approval.
-  let customerSmsSent = false;
-  let customerEmailSent = false;
+  // Approval is now recorded. Notify ourselves — best-effort, because a
+  // messaging hiccup must never undo the approval. The CUSTOMER hears nothing
+  // here: they go straight into the embedded deposit checkout, and their receipt
+  // fires on Valor's payment-confirmed webhook instead.
   let internalEmailSent = false;
   let messageError: string | undefined;
 
   if (isHighLevelConfigured()) {
-    const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
     const portalUrl = `${baseUrl}/portal/${id}`;
     const adminUrl = `${baseUrl}/quote/${id}`;
-    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
     const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
-    const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
     const depositUsd = quote.result?.depositAmount ?? currentDeposit;
     const totalUsd = quote.result?.total ?? quote.total ?? currentTotal;
 
-    // 1. Customer — confirm approval + that we'll reach out for the deposit.
-    //    SMS needs the contact to have a phone (real customers do); a 422 there
-    //    is non-fatal. Both messages land in the GHL Conversations tab.
-    if (quote.highlevel_contact_id) {
-      try {
-        await sendSms({
-          contactId: quote.highlevel_contact_id,
-          message: approvalSmsBody(firstName, depositUsd, phone),
-          fromNumber,
-        });
-        customerSmsSent = true;
-      } catch (err) {
-        console.warn('[api/quotes/:id/approve] customer SMS failed:', hlErrorMessage(err));
-        messageError = hlErrorMessage(err);
-      }
-      try {
-        await sendEmail({
-          contactId: quote.highlevel_contact_id,
-          subject: APPROVAL_EMAIL_SUBJECT,
-          html: approvalEmailHtml(firstName, depositUsd, portalUrl, phone),
-          emailFrom,
-        });
-        customerEmailSent = true;
-      } catch (err) {
-        console.warn('[api/quotes/:id/approve] customer email failed:', hlErrorMessage(err));
-        messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
-      }
-    }
-
-    // 2. Ourselves — email the "go collect the deposit" notification to the
-    //    internal GHL contact (sales@, HIGHLEVEL_INTERNAL_CONTACT_ID). Skipped
-    //    cleanly if the var isn't set.
+    // Email the internal GHL contact (sales@, HIGHLEVEL_INTERNAL_CONTACT_ID)
+    // that the customer is approving + paying their deposit online now. The
+    // second "deposit received" alert fires from the webhook once it lands.
+    // Skipped cleanly if the var isn't set.
     const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
     if (internalContactId) {
       try {
@@ -334,7 +299,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         internalEmailSent = true;
       } catch (err) {
         console.warn('[api/quotes/:id/approve] internal email failed:', hlErrorMessage(err));
-        messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
+        messageError = hlErrorMessage(err);
       }
     }
   }
@@ -342,8 +307,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({
     ok: true,
     approvedAt,
-    customerSmsSent,
-    customerEmailSent,
     internalEmailSent,
     messageError,
   });

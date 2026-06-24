@@ -124,3 +124,96 @@ export function internalApprovalEmailHtml(input: {
     `<p><a href="${input.portalUrl}">Customer portal →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');
 }
+
+// ─── Payment-confirmed notifications (Valor deposit flow, #38 / #42) ─────────
+// Sent only when Valor's webhook confirms the 50% deposit actually landed
+// (response_code "00"). These REPLACE the pre-Valor approve-time messages above
+// as the customer's confirmation — they now pay online, so this is a real
+// receipt, not a "we'll reach out" placeholder.
+
+export const RECEIPT_EMAIL_SUBJECT = 'Your deposit is confirmed — you’re booked! 🎄';
+
+// Customer SMS confirming the deposit posted. Whole-dollar amount; points them
+// at the booked/confirmation page.
+export function receiptSmsBody(firstName: string, depositUsd: number, phone: string): string {
+  return `Hi ${firstName}! 🎄 We received your ${usd(depositUsd)} deposit — you're officially booked with Yule Love Lights. We'll be in touch about your install date. Questions? Call or text ${phone}.`;
+}
+
+// Customer receipt email. Includes the deposit amount, the official Valor
+// receipt link when present, and the portal/confirmation link.
+export function receiptEmailHtml(input: {
+  firstName: string;
+  depositUsd: number;
+  totalUsd: number;
+  receiptUrl: string | null;
+  confirmationUrl: string;
+  phone: string;
+}): string {
+  const name = escapeHtml(input.firstName);
+  const balance = Math.max(0, input.totalUsd - input.depositUsd);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>Thank you — your deposit is confirmed and your holiday lighting is officially booked! 🎄</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Deposit paid</td><td style="padding:2px 0;"><strong>${usdExact(
+      input.depositUsd,
+    )}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Order total</td><td style="padding:2px 0;"><strong>${usdExact(
+      input.totalUsd,
+    )}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Balance due at install</td><td style="padding:2px 0;"><strong>${usdExact(
+      balance,
+    )}</strong></td></tr>`,
+    `</table>`,
+    input.receiptUrl
+      ? `<p>Your official payment receipt: <a href="${escapeHtml(input.receiptUrl)}">view receipt →</a></p>`
+      : '',
+    `<p>We'll be in touch to confirm your install date. You can view your booking anytime here:</p>`,
+    `<p><a href="${input.confirmationUrl}">View my booking →</a></p>`,
+    `<p>The remaining balance is collected after your install is complete — nothing to do now.</p>`,
+    `<p>Questions? Just reply here or text/call us at ${escapeHtml(input.phone)}.</p>`,
+    `<p>Warm wishes,<br>Yule Love Lights team</p>`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+// Internal "deposit received" alert — the second staff notification (the first
+// fires on approve). Confirms money actually landed + carries the txn details
+// for reconciliation against the Valor portal.
+export function internalPaidEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `✅ Deposit received: ${who}`;
+}
+
+export function internalPaidEmailHtml(input: {
+  customerName: string | null;
+  depositUsd: number;
+  totalUsd: number;
+  txnId: string | null;
+  approvalCode: string | null;
+  receiptUrl: string | null;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const balance = Math.max(0, input.totalUsd - input.depositUsd);
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong> just paid their 50% deposit online — they're booked.</p>`,
+    `<p><strong>Note:</strong> their card is saved in the Valor Vault. Charge the remaining balance (${usdExact(
+      balance,
+    )}) MANUALLY in the Valor portal after install.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Deposit paid', usdExact(input.depositUsd)),
+    row('Order total', usdExact(input.totalUsd)),
+    row('Balance due', usdExact(balance)),
+    row('Transaction id', escapeHtml(input.txnId || '—')),
+    row('Approval code', escapeHtml(input.approvalCode || '—')),
+    `</table>`,
+    input.receiptUrl
+      ? `<p><a href="${escapeHtml(input.receiptUrl)}">Valor receipt →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`
+      : `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
