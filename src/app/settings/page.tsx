@@ -18,6 +18,7 @@ import { DEFAULTS_TABS, mergeToolDefaults } from '@/lib/settings/toolDefaults';
 import { DefaultsTabPanel } from '@/components/settings/DefaultsTabPanel';
 import { CustomLibrary } from '@/components/settings/CustomLibrary';
 import { invalidateAppSettings } from '@/lib/clientSettings';
+import { OperatorShell } from '@/components/OperatorShell';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -91,7 +92,9 @@ export default function SettingsPage() {
   );
 
   return (
-    <main className="max-w-3xl mx-auto px-4 py-8">
+    <OperatorShell active="settings">
+      <main className="max-w-3xl mx-auto">
+
       <div className="flex items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
@@ -152,6 +155,7 @@ export default function SettingsPage() {
         </p>
       )}
     </main>
+    </OperatorShell>
   );
 }
 

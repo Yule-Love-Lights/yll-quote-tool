@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { OperatorShell } from '@/components/OperatorShell';
 import type {
   Spritzer,
   Wreath,
@@ -567,7 +568,7 @@ export default function NewTrainingHousePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="training">
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
           <Link href="/training" className="text-xs text-gray-500 hover:text-gray-700">← Back to Training Database</Link>
@@ -1386,6 +1387,6 @@ export default function NewTrainingHousePage() {
           </Link>
         </div>
       </div>
-    </div>
+    </OperatorShell>
   );
 }

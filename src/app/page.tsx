@@ -6,7 +6,7 @@ import {
   computePermanentSummary,
   computeEventSummary,
 } from '@/lib/dashboard/serviceMetrics';
-import { OperatorNav } from '@/components/dashboard/OperatorNav';
+import { OperatorShell } from '@/components/OperatorShell';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { Worklist } from '@/components/dashboard/Worklist';
@@ -25,14 +25,13 @@ export default async function DashboardPage() {
   const event = computeEventSummary(quotes);
 
   return (
-    <>
-      <OperatorNav active="home" />
-      <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8">
+    <OperatorShell active="home">
+      <div className="max-w-6xl mx-auto w-full">
         <DashboardHeader />
         <KpiStrip kpis={kpis} />
         <Worklist items={worklist} />
         <ServiceSections holiday={holiday} permanent={permanent} event={event} />
-      </main>
-    </>
+      </div>
+    </OperatorShell>
   );
 }

@@ -23,6 +23,7 @@ import {
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
 
@@ -1245,12 +1246,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="new">
       <div className="max-w-3xl mx-auto">
 
         {/* Header */}
         <div className="mb-6">
-          <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
+          <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
             Yule Love Lights
           </p>
           <div className="flex items-center gap-3">
@@ -2380,6 +2381,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         )}
 
       </div>
-    </div>
+    </OperatorShell>
   );
 }

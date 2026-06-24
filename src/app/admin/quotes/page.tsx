@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
+import { OperatorShell } from '@/components/OperatorShell';
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -135,11 +136,11 @@ export default function QuotesAdminPage() {
   const fmtMoney = (n: number | null) => (n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <OperatorShell active="quotes">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <div>
-            <p className="text-xs font-semibold text-green-600 uppercase tracking-widest mb-1">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
               Yule Love Lights — Admin
             </p>
             <h1 className="text-2xl font-bold text-gray-900">Quotes</h1>
@@ -263,6 +264,6 @@ export default function QuotesAdminPage() {
           </div>
         )}
       </div>
-    </div>
+    </OperatorShell>
   );
 }
