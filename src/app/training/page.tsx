@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { TrainingListItem } from '@/lib/training';
 import { OperatorShell } from '@/components/OperatorShell';
+import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 
 export default function TrainingListPage() {
   const [items, setItems] = useState<TrainingListItem[]>([]);
@@ -41,6 +42,7 @@ export default function TrainingListPage() {
   return (
     <OperatorShell active="training">
       <div className="max-w-5xl mx-auto">
+        <SettingsSubNav active="training" />
         <div className="flex justify-between items-center mb-6">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
