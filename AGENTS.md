@@ -16,3 +16,30 @@ Staleness guards (the graph is a point-in-time snapshot and drifts):
 
 - Treat it as a **map for orientation, not ground truth** — verify any file / function / line it cites against the live code before acting on it.
 - If it seems unaware of recent work, fall back to grep/read.
+
+# Multi-dev collaboration (Jason + Naldo)
+
+Two devs work in this repo on **different machines**. **Naldo owns the dashboard** (the `/` homepage, task #58); **Jason owns everything else** (portal, quote builder, pricing engine, design editor, training, settings). Both **PR into `master` — never commit to `master` directly** — and run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) green before committing. New-machine setup → `docs/context/ONBOARDING_NALDO.md`.
+
+## Branches
+- Prefix every branch with your name: **`jason/<desc>`** or **`naldo/<desc>`** (e.g. `naldo/dashboard-shell`). Instant attribution, no name clashes.
+- Branch off fresh `master` (pull first); keep PRs small; merge `master` back in if a branch lives more than a day.
+
+## Area ownership
+| Owner | Files |
+|---|---|
+| **Naldo** | `src/app/page.tsx`, `src/components/dashboard/**`, `src/app/api/dashboard/**`, `src/lib/dashboard/**` |
+| **Jason** | `src/app/portal/**`, `src/components/portal/**`, `src/app/quote/**`, `src/components/quote/**`, pricing (`pricingEngine` / `BUSINESS_RULES`), `src/components/design/**` + `editor-core/**`, training, settings |
+| **SHARED — claim it first** | `src/app/layout.tsx`, `globals.css`, `package.json` + lockfile, the data layer (`src/lib/quotes.ts`, `designs.ts`, `supabase*`), shared types (`sceneTypes.ts`), tsconfig / eslint / next config |
+
+*Reading* a shared file (e.g. importing from `src/lib/quotes.ts`) is always fine; only **editing** a SHARED file needs a heads-up to the other owner first.
+
+## Review / merge
+- **Own-area PRs: self-merge** — a PR that touches only your own area can be merged without waiting.
+- **SHARED-file PRs: the other owner reviews first** before merge.
+
+## Shared memory (docs/context ⇄ local)
+Each machine's local `~/.claude/.../memory` seeds from + syncs back to the repo's `docs/context/` (the canonical mirror). To stop the two machines clobbering each other:
+- **Session logs are per-dev** — Jason writes `session_log.md`, Naldo writes `session_log_naldo.md`. **Only ever edit your OWN log.** Read both at session start.
+- **`task_ledger.md` + `project_quote_tool.md` stay unified** (one source of truth). Before copying local → `docs/context`, **branch your sync off a fresh `git pull origin master`** so your PR is only your delta on top of the latest shared state — git auto-merges non-overlapping edits; you only hand-resolve a literal same-line clash.
+- **Sync = a PR off fresh master at your own session close** (PR-not-master applies to docs too). Seed a machine (pull master → copy `docs/context/*` to local) only when local has nothing unsynced.
