@@ -167,8 +167,15 @@ export default async function PortalPage({
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}
 
-        {/* 3. What's Included — line-item toggles feed the hero + sticky price */}
-        <WhatsIncluded items={quote.lineItems} />
+        {/* 3. What's Included — line-item toggles feed the hero + sticky price.
+            Also hosts the second on-page design render (#50) between the items
+            and the add-ons (passes the design + app settings through). */}
+        <WhatsIncluded
+          items={quote.lineItems}
+          design={quote.design}
+          palette={appSettings.colors}
+          renderSettings={appSettings.render}
+        />
 
         {/* 4. Risk Reversal */}
         <RiskReversal />
