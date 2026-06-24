@@ -214,6 +214,28 @@ describe('garland sections from scale (#8 Stage C / C4)', () => {
   });
 });
 
+describe('seedSceneFromAnalysis — preserves scene brightness (#67 auto-dim)', () => {
+  // New designs are created pre-dimmed (designs.ts DEFAULT_DESIGN_BRIGHTNESS).
+  // The analyzed path must carry that brightness through every spread so the
+  // auto-dim survives roofline-line seeding, the seeded yardstick, and the
+  // per-unit detections — otherwise an analyzed design would render at neutral.
+  const dimmed = (): Scene => ({ yardsticks: [], items: [], brightness: 35 });
+  const FULL_CAL_SEED: AnalysisSeed = { ...FULL_SEED, calibration: { santasFootage: 40 } };
+
+  it('survives the full analyzed seed (lines + seeded yardstick + detections)', () => {
+    const out = seedSceneFromAnalysis(dimmed(), FULL_CAL_SEED, W, H);
+    expect(out.brightness).toBe(35);
+    expect(out.items.length).toBeGreaterThan(0); // proves we went through the spread paths
+    expect(out.yardsticks).toHaveLength(1); // the seeded-yardstick spread preserved it too
+  });
+
+  it('survives an empty (no-op) seed and a detections-only seed', () => {
+    expect(seedSceneFromAnalysis(dimmed(), {}, W, H).brightness).toBe(35);
+    const det: AnalysisSeed = { detections: { spritzers: [{ size: '24', box: [0.7, 0.7, 0.1, 0.1] }] } };
+    expect(seedSceneFromAnalysis(dimmed(), det, W, H).brightness).toBe(35);
+  });
+});
+
 describe('sanitizeAnalysisSeed', () => {
   it('keeps valid calibration numbers, drops non-positive/garbage ones', () => {
     const out = sanitizeAnalysisSeed({
