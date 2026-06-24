@@ -19,6 +19,7 @@ import { DefaultsTabPanel } from '@/components/settings/DefaultsTabPanel';
 import { CustomLibrary } from '@/components/settings/CustomLibrary';
 import { invalidateAppSettings } from '@/lib/clientSettings';
 import { OperatorShell } from '@/components/OperatorShell';
+import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -94,6 +95,7 @@ export default function SettingsPage() {
   return (
     <OperatorShell active="settings">
       <main className="max-w-3xl mx-auto">
+      <SettingsSubNav active="settings" />
 
       <div className="flex items-center justify-between gap-4 mb-6">
         <div>

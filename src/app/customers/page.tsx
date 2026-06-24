@@ -65,7 +65,7 @@ export default async function CustomersPage() {
         </header>
 
         <div
-          className="rounded-lg border overflow-hidden"
+          className="rounded-lg border overflow-x-auto"
           style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
         >
           {customers.length === 0 ? (

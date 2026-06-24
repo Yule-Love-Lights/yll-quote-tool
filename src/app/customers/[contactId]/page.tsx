@@ -132,13 +132,14 @@ export default async function CustomerDetailPage({
 
         {/* Quote history (this tool's data) */}
         <section
-          className="rounded-lg border overflow-hidden"
+          className="rounded-lg border"
           style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
         >
           <h2 className="text-sm font-semibold px-4 pt-4 pb-2" style={{ color: 'var(--op-text)' }}>Quote history</h2>
           {quotes.length === 0 ? (
             <div className="p-6 text-sm text-center" style={{ color: 'var(--op-text-dim)' }}>No quotes for this customer.</div>
           ) : (
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
                 <tr>
@@ -164,6 +165,7 @@ export default async function CustomerDetailPage({
                   ))}
               </tbody>
             </table>
+            </div>
           )}
         </section>
       </div>

@@ -1,0 +1,32 @@
+import Link from 'next/link';
+
+// Sub-navigation for the Settings area: Training lives under Settings now
+// (per the nav restructure). Rendered at the top of /settings + /training.
+const ITEMS = [
+  { label: 'Settings', href: '/settings', key: 'settings' as const },
+  { label: 'Training', href: '/training', key: 'training' as const },
+];
+
+export function SettingsSubNav({ active }: { active: 'settings' | 'training' }) {
+  return (
+    <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>
+      {ITEMS.map(item => {
+        const on = item.key === active;
+        return (
+          <Link
+            key={item.key}
+            href={item.href}
+            className="px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors"
+            style={
+              on
+                ? { borderColor: 'var(--brand-evergreen)', color: 'var(--op-text)' }
+                : { borderColor: 'transparent', color: 'var(--op-text-dim)' }
+            }
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
