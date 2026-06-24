@@ -1,11 +1,11 @@
 // Shared types for the dashboard. Kept in one place so metrics, worklist,
 // queries, and components all agree on the shape of a dashboard quote row.
 
-/** Service line a quote belongs to (per docs/dashboard/VISION.md §4). */
-export type ServiceType = 'holiday' | 'permanent' | 'event';
-
-/** All known service types in canonical display order. */
-export const SERVICE_TYPES: readonly ServiceType[] = ['holiday', 'permanent', 'event'] as const;
+// ServiceType is owned by the canonical src/lib/serviceType.ts (so the quote
+// builder + data layer + dashboard share one definition). Re-exported here so
+// existing dashboard imports from './types' keep working.
+export { type ServiceType, SERVICE_TYPES } from '@/lib/serviceType';
+import type { ServiceType } from '@/lib/serviceType';
 
 /** A `quotes` row trimmed to the columns the dashboard actually reads. */
 export type DashboardQuote = {
