@@ -836,6 +836,30 @@ export async function renderEditor(
     });
   }
 
+  // Every transform/drag bake funnels its "persist + re-render" tail through
+  // here. The redraw and the undo commit are DEFERRED and COALESCED into ONE
+  // microtask per gesture. Why: a MULTI-item drag moves every selected node
+  // together — Konva's Transformer proxies the drag to all attached nodes and
+  // startDrag()s them, so each selected node fires its OWN dragend → its OWN
+  // bake. Every sibling must fold its new position into the scene BEFORE we
+  // re-render; a synchronous redrawScene() on the first dragend would destroy
+  // the not-yet-baked sibling nodes and they'd snap back to their old spot —
+  // the multi-select-move bug (#72). Coalescing commit() also makes a whole
+  // multi-move a single undo step. Single-item bakes behave exactly as before,
+  // just one microtask later (imperceptible — microtasks run before paint).
+  let bakeFinalizeScheduled = false;
+  function finishBake() {
+    scheduleSave();
+    if (bakeFinalizeScheduled) return;
+    bakeFinalizeScheduled = true;
+    queueMicrotask(() => {
+      bakeFinalizeScheduled = false;
+      if (destroyed) return;
+      commit();
+      redrawScene();
+    });
+  }
+
   // The pole's Transformer only exposes the top-center anchor, so dragging
   // it scales group.scaleY and keeps the base (bottom-center) anchored.
   // Bake scaleY into heightIn, reset scale, accept group's x/y as the new
@@ -855,9 +879,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Same shape as wreath/bow/text bake — average X/Y scale into widthIn so
@@ -881,9 +903,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Same wreath-style bake: average scale into sizeIn, reset, commit. Rotation
@@ -906,9 +926,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Same shape as wreath/bow bake — average the X/Y scale into sizeIn and
@@ -931,9 +949,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Bake a miniArea move/resize back into the item. Box: position → x/y, scale →
@@ -968,9 +984,7 @@ export async function renderEditor(
     }
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // After a Transformer move/rotate (no resize — anchors disabled for garland),
@@ -998,9 +1012,7 @@ export async function renderEditor(
         i.id === garlandId && isGarland(i) ? { ...i, points: newPts } : i,
       ),
     };
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Bake the Transformer's scale into the wreath's stored sizeIn so the next
@@ -1022,9 +1034,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // Same as bakeTransformIntoWreath but for bows. keepRatio is on for bows too,
@@ -1046,9 +1056,7 @@ export async function renderEditor(
     };
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // After the user drags a Transformer anchor on a yardstick, bake the scale into
@@ -1071,9 +1079,7 @@ export async function renderEditor(
     // Reset the group transform so the next redraw uses identity scale.
     group.scaleX(1);
     group.scaleY(1);
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   // After a Transformer move/scale/rotate, fold the group's transform back into the strand's
@@ -1098,9 +1104,7 @@ export async function renderEditor(
       ...scene,
       items: scene.items.map((s) => (s.id === strandId ? { ...s, points: newPts } : s)),
     };
-    scheduleSave();
-    commit();
-    redrawScene();
+    finishBake();
   }
 
   function clearSelection() {
@@ -1192,6 +1196,9 @@ export async function renderEditor(
     if (selectedIds.size === 0) return;
     scene = { ...scene, items: scene.items.filter((s) => !selectedIds.has(s.id)) };
     selectedIds.clear();
+    // Discrete keyboard action — not a multi-node Transformer gesture — so the
+    // redraw stays SYNCHRONOUS here. finishBake()'s deferred coalescing is only
+    // needed for the drag/transform bakes that fire one dragend per node (#72).
     scheduleSave();
     commit();
     redrawScene();
@@ -1269,6 +1276,9 @@ export async function renderEditor(
     scene = { ...scene, items: [...scene.items, ...newItems] };
     selectedIds = new Set(newItems.map((i) => i.id));
     selectedYardstickId = null;
+    // Discrete keyboard action (not a multi-node Transformer gesture) → the
+    // redraw stays SYNCHRONOUS; finishBake()'s coalescing is only for the
+    // per-node drag/transform bakes (#72).
     scheduleSave();
     commit();
     redrawScene();
