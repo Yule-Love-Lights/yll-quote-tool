@@ -334,8 +334,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // 2. Ourselves — email the "go collect the deposit" notification to the
     //    internal GHL contact (sales@, HIGHLEVEL_INTERNAL_CONTACT_ID). Skipped
     //    cleanly if the var isn't set.
+    //    #38: SKIPPED when the online checkout is ON — staff shouldn't get an
+    //    "approved, go collect" email on the click. The customer pays online
+    //    next, and the webhook sends the staff "✅ deposit received" alert on the
+    //    actual payment instead. With checkout OFF (placeholder) it still fires.
     const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
-    if (internalContactId) {
+    if (!isValorCheckoutEnabled() && internalContactId) {
       try {
         await sendEmail({
           contactId: internalContactId,
