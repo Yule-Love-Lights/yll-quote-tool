@@ -71,6 +71,9 @@ export type QuoteRowForPortal = {
   video_duration_sec: number | null;
   customer_approved_at: string | null;
   approval_snapshot: ApprovalSnapshotJson | null;
+  // When the deposit webhook confirmed payment (#38). NULL = approved but not
+  // yet paid. Optional for back-compat with older callers/tests.
+  deposit_paid_at?: string | null;
 };
 
 // Scarcity context comes from environment variables (per design B3).
@@ -246,6 +249,7 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
       : Math.round(totalUsd * 0.5);
   return {
     approvedAt: snap?.approvedAt ?? row.customer_approved_at,
+    depositPaidAt: row.deposit_paid_at ?? null,
     packageId,
     packageName: sel?.activeName?.trim() || `Package ${packageId}`,
     totalUsd,

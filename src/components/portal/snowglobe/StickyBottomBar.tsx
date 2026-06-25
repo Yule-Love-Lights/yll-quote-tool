@@ -14,18 +14,26 @@ import { DepositCheckout } from './DepositCheckout';
 
 export type StickyBottomBarProps = {
   quoteId: string;
-  /** #43 — when the quote is already approved the bar becomes a "booked" state
-   *  (no actionable Approve CTA) linking to the confirmation page. */
+  /** #43 — the customer has approved (the snapshot is frozen). When checkout is
+   *  ON this alone is NOT "booked" — they still owe the deposit (see `booked`). */
   approved?: boolean;
-  /** #38 — whether the embedded deposit checkout is enabled. Computed on the
-   *  SERVER (portal page) and passed in, so it's never a stale build-time value. */
+  /** #38 — the END state: deposit paid (checkout on) or simply approved (checkout
+   *  off). Drives the "You're booked" bar. */
+  booked?: boolean;
+  /** #38 — whether the deposit checkout is enabled. Computed on the SERVER
+   *  (portal page) and passed in, so it's never a stale build-time value. */
   checkoutEnabled?: boolean;
+  /** #38 — the frozen deposit amount from the approval snapshot (what /pay will
+   *  actually charge). Shown in the "complete your deposit" bar so it matches. */
+  approvedDepositUsd?: number;
 };
 
 export function StickyBottomBar({
   quoteId,
   approved = false,
+  booked = false,
   checkoutEnabled = false,
+  approvedDepositUsd,
 }: StickyBottomBarProps) {
   const {
     activeName,
@@ -144,10 +152,43 @@ export function StickyBottomBar({
     }
   };
 
-  // #43 — already approved: show a non-actionable "booked" state instead of the
-  // Approve CTA, with a link back to the confirmation page. (Hooks above still
-  // run unconditionally; this just swaps the rendered bar.)
-  if (approved) {
+  // #38 — approved but the deposit isn't paid yet (online checkout on). Show a
+  // "complete your deposit" bar that re-opens the hosted checkout. The selection
+  // is already frozen, so we go straight to the checkout (no re-approve).
+  const pendingPayment = approved && !booked && checkoutEnabled;
+  if (pendingPayment) {
+    return (
+      <>
+        {showCheckout && (
+          <DepositCheckout quoteId={quoteId} onClose={() => setShowCheckout(false)} />
+        )}
+        <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
+              {formatUsd(approvedDepositUsd ?? currentDeposit)}
+            </span>
+            <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
+              deposit due to lock in your install
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowCheckout(true)}
+            aria-label="Complete your deposit"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
+          >
+            Complete deposit
+            <ArrowRight className="w-4 h-4" aria-hidden />
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  // #43/#38 — booked: deposit paid (checkout on) or simply approved (checkout
+  // off). Show a non-actionable "booked" state with a link to the confirmation
+  // page. (Hooks above still run unconditionally; this just swaps the bar.)
+  if (booked) {
     return (
       <div className="portal-snow-sticky" role="region" aria-label="Booking confirmation">
         <div className="flex items-center gap-2 min-w-0">
@@ -155,7 +196,7 @@ export function StickyBottomBar({
             ✓ You&apos;re booked
           </span>
           <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
-            we&apos;ll be in touch about your deposit
+            {checkoutEnabled ? 'your deposit is in' : "we'll be in touch about your deposit"}
           </span>
         </div>
         <button

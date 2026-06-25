@@ -90,6 +90,7 @@ export type PortalVideo = {
 // translated into camelCase here for the frontend.
 export type PortalApproval = {
   approvedAt: string;        // ISO timestamp
+  depositPaidAt?: string | null; // #38 — set once the deposit webhook confirms; null = approved-but-unpaid
   packageId: PackageId;
   packageName: string;       // "Build Your Own", "Santa's Classic", etc.
   totalUsd: number;          // amount the customer saw at approval time

@@ -246,7 +246,11 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     epage: 1, // hosted-page mode — must always be 1
     surcharge: 0,
     tax: 0,
-    ignore_surcharge_calc: 0,
+    // 1 = charge EXACTLY `amount`; do NOT let Valor re-apply the merchant
+    // portal's surcharge/tax on top. Our deposit already includes tax, so 0
+    // (the default, "calculate fee from portal") double-charged tax + added a
+    // card-difference surcharge — the customer must pay the deposit we showed.
+    ignore_surcharge_calc: 1,
     shipping_country: 'US',
     customer_name: input.customerName?.trim() || 'Customer',
     success_url: input.successUrl,
