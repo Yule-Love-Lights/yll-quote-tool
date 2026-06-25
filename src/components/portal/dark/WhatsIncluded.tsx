@@ -289,10 +289,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
         {design &&
           (!!design.satelliteUrl && selectDrawableLineGroups(design.satelliteLines).length > 0 ? (
             <div
-              className="mt-10 md:mt-12 lg:[width:min(1500px,calc(100vw_-_4rem))] lg:[margin-inline-start:calc((100%_-_min(1500px,calc(100vw_-_4rem)))/2)]"
+              className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
             >
-              <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-center lg:gap-10">
+              {/* Outer full-bleeds to the viewport on lg (no transform — keeps it
+                  out of the Konva render's stacking concerns); the inner re-centers
+                  with mx-auto + a max width, so the pair is centered on the PAGE
+                  regardless of the surrounding column. justify-center then centers
+                  the two cards within. */}
+              <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
                 <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="lg:w-fit lg:flex-none" inRow />
                 <SatelliteRoofView design={design} className="lg:w-fit lg:flex-none" inRow />
               </div>
