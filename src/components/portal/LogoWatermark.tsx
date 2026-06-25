@@ -39,7 +39,7 @@ export function LogoWatermark({ className = '' }: Props) {
         'h-auto w-[23%] min-w-[84px] max-w-[340px] md:w-[16%] md:max-w-[240px] ' +
         className
       }
-      style={{ opacity: 0.22, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.4))' }}
+      style={{ opacity: 0.35, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.4))' }}
     />
   );
 }
