@@ -38,8 +38,10 @@ type ApprovalSnapshotJson = {
     currentTotalUsd?: number;
     currentDepositUsd?: number;
     // The light color/pattern the customer approved with (#10). Optional/back-
-    // compat: older snapshots predate it.
+    // compat: older snapshots predate it. #49: a build-your-own pattern (color
+    // ids) when colorSchemeId === 'custom'.
     colorSchemeId?: string;
+    customPattern?: string[];
     // The premium-takedown (#4) + Sep/Oct early-install (#40) choices the
     // customer approved with. Optional/back-compat: older snapshots predate them.
     takedownSelected?: boolean;

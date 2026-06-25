@@ -31,6 +31,7 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
     packageId,
     selectedItemIds,
     colorSchemeId,
+    customPattern,
     installTiming,
     breakdown,
   } = useSelection();
@@ -94,6 +95,7 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
           rushSelected,
           takedownSelected,
           colorSchemeId,
+          customPattern,
           installTiming,
           installDiscountUsd: breakdown.discount,
         }),

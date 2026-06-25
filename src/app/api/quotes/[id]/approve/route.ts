@@ -54,6 +54,7 @@ import {
   internalApprovalEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { CUSTOM_SCHEME_ID, sanitizeCustomPattern } from '@/lib/design/colorSchemes';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -89,6 +90,7 @@ type ApproveBody = {
   rushSelected?: boolean;
   takedownSelected?: boolean;
   colorSchemeId?: string;
+  customPattern?: unknown; // #49 — build-your-own pattern (sanitized server-side)
   installTiming?: 'none' | 'september' | 'october';
   installDiscountUsd?: number;
 };
@@ -109,6 +111,7 @@ type ApprovalSnapshot = {
     rushSelected: boolean;      // #4 — customer's rush add-on choice
     takedownSelected: boolean;  // #4 — customer's premium-takedown choice
     colorSchemeId: string;      // #10 — customer's light color/pattern choice
+    customPattern: string[];    // #49 — build-your-own pattern (color ids), [] unless colorSchemeId === 'custom'
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
@@ -173,6 +176,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     typeof body.colorSchemeId === 'string' && body.colorSchemeId.trim()
       ? body.colorSchemeId.trim().slice(0, 64)
       : 'as-designed';
+  // #49 — build-your-own pattern, sanitized (valid palette ids only, capped).
+  // Only meaningful when they chose 'custom'; empty otherwise.
+  const customPattern =
+    colorSchemeId === CUSTOM_SCHEME_ID ? sanitizeCustomPattern(body.customPattern) : [];
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -231,6 +238,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       rushSelected,
       takedownSelected,
       colorSchemeId,
+      customPattern,
       installTiming,
       installDiscountUsd,
     },

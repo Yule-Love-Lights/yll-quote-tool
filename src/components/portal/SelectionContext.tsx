@@ -29,7 +29,12 @@ import type {
 import { sumSelectedItems } from './format';
 import { priceSelection, effectiveCharges, orderMinimumStatus, installDiscountRate } from '@/lib/portal/derivePackages';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
-import { DEFAULT_COLOR_SCHEME_ID, resolveSchemeColorIds } from '@/lib/design/colorSchemes';
+import {
+  DEFAULT_COLOR_SCHEME_ID,
+  resolveSchemeColorIds,
+  CUSTOM_SCHEME_ID,
+  sanitizeCustomPattern,
+} from '@/lib/design/colorSchemes';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -92,6 +97,13 @@ type SelectionContextValue = {
   colorSchemeId: string;
   setColorScheme: (id: string) => void;
   colorOverride: string[] | null;
+  /**
+   * Build-your-own custom pattern (#49): the customer's ordered list of palette
+   * color ids. Active when colorSchemeId === 'custom' — it then drives
+   * colorOverride (the live recolor) instead of a preset.
+   */
+  customPattern: string[];
+  setCustomPattern: (ids: string[]) => void;
   /** #43 — true once the quote is approved: the portal is READ-ONLY. Every
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
@@ -236,10 +248,17 @@ export function SelectionProvider({
   // COLOR_SCHEMES constant), so passing it to DesignCanvas only re-renders the
   // draw layer when it changes.
   const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
-  const colorOverride = useMemo(
-    () => resolveSchemeColorIds(colorSchemeId),
-    [colorSchemeId],
-  );
+  const [customPattern, setCustomPattern] = useState<string[]>([]);
+  // Custom pattern (#49) drives the override when its scheme is active; otherwise
+  // resolve the preset. Sanitize the custom list so an invalid/empty pattern can
+  // never reach the renderer (empty → null = "as designed", no recolor).
+  const colorOverride = useMemo(() => {
+    if (colorSchemeId === CUSTOM_SCHEME_ID) {
+      const clean = sanitizeCustomPattern(customPattern);
+      return clean.length > 0 ? clean : null;
+    }
+    return resolveSchemeColorIds(colorSchemeId);
+  }, [colorSchemeId, customPattern]);
 
   // #61 — daytime⇄lit-design view toggle, lifted from the hero so the Light Color
   // section can flip the hero's day/night view. View-only (never gated by locked).
@@ -399,6 +418,8 @@ export function SelectionProvider({
     colorSchemeId,
     setColorScheme: locked ? noop : setColorScheme,
     colorOverride,
+    customPattern,
+    setCustomPattern: locked ? noop : setCustomPattern,
     locked,
     showDaylight,
     toggleDaylight,
