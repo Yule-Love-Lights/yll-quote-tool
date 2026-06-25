@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { listQuotesForDashboard } from '@/lib/dashboard/queries';
+import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
+import { buildCustomerActivity } from '@/lib/dashboard/activity';
 import { statusOf } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
+import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
@@ -47,6 +49,11 @@ export default async function CustomerDetailPage({
   const quotes: DashboardQuote[] = (await listQuotesForDashboard(500)).filter(
     q => q.highlevel_contact_id === contactId,
   );
+
+  // Activity feed: per-view events (best-effort — a missing quote_view_events
+  // table never breaks the page) merged with each quote's lifecycle timestamps.
+  const viewEvents = await getViewEventsForQuotes(quotes.map(q => q.id));
+  const activity = buildCustomerActivity(quotes, viewEvents);
 
   // Live HighLevel record. Best-effort — a CRM hiccup must not 404 a customer
   // who has quotes here.
@@ -168,6 +175,9 @@ export default async function CustomerDetailPage({
             </div>
           )}
         </section>
+
+        {/* Activity timeline: every customer view + each quote's lifecycle. */}
+        <CustomerActivityFeed events={activity} />
       </div>
     </OperatorShell>
   );

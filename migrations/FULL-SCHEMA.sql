@@ -106,6 +106,18 @@ create index if not exists quotes_service_type_idx on quotes (service_type);
 create index if not exists quotes_viewed_idx
   on quotes (viewed_at desc) where viewed_at is not null;
 
+-- Per-view event log (customer activity feed, 2026-06-25). One row per customer
+-- open of a quote portal — powers the /customers/[id] activity timeline (every
+-- view, not just the #68 aggregate). Lifecycle events come from the quotes row.
+create table if not exists quote_view_events (
+  id uuid primary key default gen_random_uuid(),
+  quote_id uuid not null references quotes(id) on delete cascade,
+  viewed_at timestamptz not null default now()
+);
+alter table quote_view_events disable row level security;
+create index if not exists quote_view_events_quote_idx
+  on quote_view_events (quote_id, viewed_at desc);
+
 
 -- ---------------------------------------------------------------------
 -- 2. photo_corrections
