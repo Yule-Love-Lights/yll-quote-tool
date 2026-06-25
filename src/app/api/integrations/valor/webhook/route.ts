@@ -47,6 +47,7 @@ import {
   internalPaidEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -78,7 +79,20 @@ type QuoteRow = {
 // GET — a reachability/liveness check (some webhook verifiers probe with GET).
 // Carries no payload + does nothing, so it's safe to always answer 200.
 export async function GET() {
-  return NextResponse.json({ ok: true, service: 'valor-webhook' });
+  // Lightweight diagnostic (no secrets): surfaces what the SERVER sees so we can
+  // confirm config took effect by just opening this URL in a browser.
+  //  • checkoutEnabled — is the customer deposit checkout flag ON as read here?
+  //  • checkoutFlagPresent — is the flag env var set at all in this deployment
+  //    (distinguishes "wrong Vercel env scope / not set" from "set but value odd")
+  //  • secretConfigured / isDemo — webhook secret present? charging staging vs prod?
+  return NextResponse.json({
+    ok: true,
+    service: 'valor-webhook',
+    checkoutEnabled: isValorCheckoutEnabled(),
+    checkoutFlagPresent: isValorCheckoutFlagPresent(),
+    secretConfigured: !!process.env.VALOR_WEBHOOK_SECRET,
+    isDemo: process.env.VALOR_IS_DEMO !== 'false',
+  });
 }
 
 export async function POST(req: NextRequest) {
