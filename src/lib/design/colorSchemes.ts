@@ -44,14 +44,13 @@ export const DEFAULT_COLOR_SCHEME_ID = 'as-designed';
 export const COLOR_SCHEMES: ColorScheme[] = [
   // ── Solids ──
   // "Staff's pick" = the as-designed render (no override): the look our team
-  // composed for this house. The single-solid Red / Green / Purple presets were
-  // removed as customer options (they read garish as a whole-house wash) — those
-  // colors still appear within Staff's pick and remain buildable in "Build your
-  // own". Their ids stay reserved so any older quote saved as one falls back here.
+  // composed for this house. The single-solid Red / Green / Purple / Blue presets
+  // were removed as customer options (they read garish as a whole-house wash) —
+  // those colors still appear within Staff's pick and remain buildable in "Build
+  // your own". Their ids stay reserved so any older quote saved as one falls back here.
   { id: 'as-designed', label: "Staff's pick", colorIds: null },
   { id: 'warm-white',  label: 'Warm White',  colorIds: ['warm-white'] },
   { id: 'cool-white',  label: 'Pure White',  colorIds: ['cool-white'] },
-  { id: 'blue',        label: 'Blue',        colorIds: ['blue'] },
   // ── Patterns (bulbs cycle the listed ids in order) ──
   { id: 'multicolor',  label: 'Multicolor',  colorIds: ['red', 'green', 'blue', 'yellow', 'pink'] },
   { id: 'champagne',   label: 'Champagne',   colorIds: ['warm-white', 'cool-white'] },
