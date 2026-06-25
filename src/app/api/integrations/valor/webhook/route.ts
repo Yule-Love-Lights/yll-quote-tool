@@ -99,6 +99,19 @@ export async function POST(req: NextRequest) {
   // carry a response_code + txn id, so this can never swallow an actual payment.
   const looksLikeTransaction = !!(event.txnId || event.responseCode);
   if (!looksLikeTransaction) {
+    // Log the top-level KEY NAMES (never values — no card-data leak) so that a
+    // REAL transaction whose field names differ from our parser (a CONFIRM:
+    // seam) is visible here instead of being silently treated as a probe.
+    let topKeys: string[] = [];
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === 'object') topKeys = Object.keys(parsed).slice(0, 40);
+    } catch {
+      /* non-JSON probe */
+    }
+    console.log(
+      `[valor/webhook] probe/no-transaction-fields (200 ack); top-level keys: [${topKeys.join(', ')}]`,
+    );
     return NextResponse.json({ ok: true, verification: true });
   }
 
@@ -123,6 +136,18 @@ export async function POST(req: NextRequest) {
     timestamp: req.headers.get('valor-timestamp'),
     secret,
   });
+  // Observability for the live CONFIRM: test + ongoing support/reconciliation.
+  // Safe to log: transaction METADATA only (no card data, never the secret).
+  // `sigOk` is the headline — it confirms our HMAC base/secret match Valor's.
+  console.log(
+    `[valor/webhook] signed txn: ${JSON.stringify({
+      sigOk: ok,
+      responseCode: event.responseCode,
+      approved: event.approved,
+      hasTxnId: !!event.txnId,
+      hasOrderRef: !!event.orderRef,
+    })}`,
+  );
   if (!ok) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
