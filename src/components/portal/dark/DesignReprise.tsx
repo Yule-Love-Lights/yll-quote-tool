@@ -11,7 +11,7 @@
 // — it only renders once the card scrolls near the viewport (Intersection
 // Observer), avoiding a second always-on Konva stage on initial page load.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
 import { LogoWatermark } from '../LogoWatermark';
@@ -31,6 +31,10 @@ export type DesignRepriseProps = {
   // Root wrapper classes — defaults to its own top margin, but the caller can
   // override (e.g. to '' when placed inside a grid that owns the spacing, #51).
   className?: string;
+  // #51 side-by-side row: at lg+ the image card becomes a fixed height
+  // (var(--row-h), set by the parent row) with width derived from the photo's
+  // aspect, so it lines up at the same height as the satellite card next to it.
+  inRow?: boolean;
 };
 
 export function DesignReprise({
@@ -38,6 +42,7 @@ export function DesignReprise({
   palette,
   renderSettings,
   className = 'mt-10 md:mt-12',
+  inRow = false,
 }: DesignRepriseProps) {
   // Live selection (#27 D / #10): which drawn items are hidden + the chosen
   // light-color override. Shared with the hero via SelectionContext, so this
@@ -91,6 +96,10 @@ export function DesignReprise({
   // fallback for the 640x400 Street View when dimensions are unknown.
   const aspectRatio =
     design.photoW && design.photoH ? `${design.photoW} / ${design.photoH}` : '8 / 5';
+  // Numeric aspect (w/h) for the #51 row: card width = row-height × this, so the
+  // card lands at a definite width at the fixed row height (a block's width:auto
+  // ignores aspect-ratio, so we compute it explicitly).
+  const cardAr = design.photoW && design.photoH ? design.photoW / design.photoH : 8 / 5;
 
   return (
     // Decorative for assistive tech: this is a redundant visual of the hero's
@@ -103,8 +112,12 @@ export function DesignReprise({
       </p>
       <div
         ref={wrapRef}
-        className="relative w-full max-h-[70vh] overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C]"
-        style={{ aspectRatio }}
+        className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
+          inRow
+            ? 'w-full max-h-[70vh] lg:max-h-none lg:[height:var(--row-h)] lg:[width:calc(var(--row-h)*var(--card-ar))]'
+            : 'w-full max-h-[70vh]'
+        }`}
+        style={{ aspectRatio, ['--card-ar']: cardAr } as CSSProperties}
       >
         {mounted && (
           <DesignCanvas
