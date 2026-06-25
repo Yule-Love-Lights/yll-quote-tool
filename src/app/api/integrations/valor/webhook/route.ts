@@ -142,8 +142,14 @@ export async function POST(req: NextRequest) {
 
   // Record the payment FIRST — before any messaging — so a confirmed deposit is
   // never lost to a downstream hiccup (same pattern as /approve and /signed).
+  //
+  // ATOMIC CLAIM: the update is conditional on `deposit_paid_at IS NULL`, so when
+  // Valor fires concurrent retries (it retries up to 3×) exactly ONE request
+  // flips the row and proceeds to the side effects — the others update 0 rows and
+  // bail as "already paid". Without this, two retries could both pass the
+  // null-check above before either writes and double-fire the receipt + CRM move.
   const paidAt = new Date().toISOString();
-  const { error: stampErr } = await sb
+  const { data: claimed, error: stampErr } = await sb
     .from('quotes')
     .update({
       deposit_paid_at: paidAt,
@@ -153,7 +159,9 @@ export async function POST(req: NextRequest) {
       valor_receipt_url: event.receiptUrl,
       valor_payment_raw: event.raw,
     })
-    .eq('id', quote.id);
+    .eq('id', quote.id)
+    .is('deposit_paid_at', null)
+    .select('id');
 
   if (stampErr) {
     console.error('[api/integrations/valor/webhook] paid stamp failed:', stampErr);
@@ -161,6 +169,12 @@ export async function POST(req: NextRequest) {
       { error: `Failed to record payment: ${stampErr.message}` },
       { status: 500 },
     );
+  }
+
+  // Lost the race to a concurrent retry — it already recorded the payment and
+  // (will) fire the side effects. Acknowledge without double-firing.
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
   }
 
   // ── Best-effort side effects (payment is already recorded) ────────────────
