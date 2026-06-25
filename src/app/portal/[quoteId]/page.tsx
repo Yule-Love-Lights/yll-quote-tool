@@ -186,6 +186,9 @@ export default async function PortalPage({
         {/* 4. Risk Reversal */}
         <RiskReversal />
 
+        {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
+        <TrustSection />
+
         {/* 5. What Happens Next */}
         <WhatHappensNext />
 
@@ -222,9 +225,6 @@ export default async function PortalPage({
           photo={team.photo}
           phone={team.phone}
         />
-
-        {/* 11.5 Trust / social proof (#70) — real client partners + press */}
-        <TrustSection />
 
         {/* 12. Disclaimer */}
         <Disclaimer />

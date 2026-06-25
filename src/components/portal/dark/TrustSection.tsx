@@ -1,21 +1,23 @@
-// Portal v2 DARK — Trust / social-proof section (#70). Sits at the bottom of the
-// customer portal (below the contact card, above the disclaimer).
-//
-// Two rows of social proof on the dark theme:
+// Portal v2 DARK — Trust / social-proof section (#70). Two auto-scrolling
+// marquees of social proof, placed between "Your Protection" (RiskReversal) and
+// "What Happens Next" on the customer portal:
 //  - "Trusted Decorating Partner With": real commercial CLIENTS we've decorated
-//    for, shown as their logos (Naldo-supplied, recolored to a uniform brand
-//    green, white backgrounds knocked out, in public/partners/).
-//  - "As Seen In": press mentions as cream wordmarks (the press image files in
-//    public/references are mixed-quality / square-no-transparency, so they don't
-//    silhouette cleanly on dark — wordmarks read consistently).
+//    for (logos in public/partners/, uniform brand green, white/box backgrounds
+//    knocked out).
+//  - "As Seen In": news outlets that featured us (same green treatment).
 //
-// Brands confirmed by Naldo (S13) as REAL clients — safe to display (showing
-// non-clients would be false advertising). To add/remove a partner: drop a
-// transparent PNG in public/partners/ and edit the PARTNERS list below.
+// Brands confirmed by Naldo (S13) as REAL clients/press — safe to display.
+//
+// Marquee: pure-CSS (see .trust-marquee in portal-dark.css). The row is
+// duplicated into two identical groups and the track is translated by one group
+// width, so it loops seamlessly with no JS. Pauses on hover; honours
+// prefers-reduced-motion (falls back to a manual horizontal scroll). The whole
+// marquee is aria-hidden (decorative duplication); an sr-only list carries the
+// real brand names for assistive tech.
 
-type Partner = { name: string; file: string };
+type Brand = { name: string; file: string };
 
-const PARTNERS: Partner[] = [
+const PARTNERS: Brand[] = [
   { name: 'Marriott', file: 'marriott.png' },
   { name: 'Wells Fargo', file: 'wells-fargo.png' },
   { name: 'CVS', file: 'cvs.png' },
@@ -28,60 +30,45 @@ const PARTNERS: Partner[] = [
   { name: 'BottleBuy', file: 'bottlebuy.png' },
 ];
 
-const PRESS = ['Newsday', 'News 12 Long Island', '1010 WINS', 'iHeart Radio'];
+const PRESS: Brand[] = [
+  { name: 'Newsday', file: 'newsday.png' },
+  { name: 'News 12 Long Island', file: 'news12.png' },
+  { name: '1010 WINS', file: '1010wins.png' },
+  { name: 'iHeart Radio', file: 'iheart.png' },
+];
 
-function PartnerLogos() {
+function LogoMarquee({ label, items, reps }: { label: string; items: Brand[]; reps: number }) {
+  // One marquee "group" repeats the logo set enough times to exceed the viewport
+  // width (so there's never a gap); the track holds two identical groups.
+  const group: Brand[] = [];
+  for (let r = 0; r < reps; r++) group.push(...items);
   return (
     <div>
       <p className="text-center text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-6">
-        Trusted Decorating Partner With
+        {label}
       </p>
-      <div
-        role="list"
-        aria-label="Client partners"
-        className="portal-dark-snap-x flex items-center justify-start md:justify-center gap-8 md:gap-x-12 md:gap-y-7 md:flex-wrap overflow-x-auto md:overflow-visible pb-1 md:pb-0 -mx-4 px-4 md:mx-0 md:px-0"
-      >
-        {PARTNERS.map((p) => (
-          <div key={p.file} role="listitem" className="shrink-0">
-            {/* Decorative-ish but keep the brand name as alt for a11y. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={`/partners/${p.file}`}
-              alt={p.name}
-              loading="lazy"
-              className="h-7 md:h-9 w-auto max-w-[150px] object-contain opacity-90"
-            />
-          </div>
+      <ul className="sr-only">
+        {items.map((b) => (
+          <li key={b.file}>{b.name}</li>
         ))}
-      </div>
-    </div>
-  );
-}
-
-function PressWordmarks() {
-  return (
-    <div>
-      <p className="text-center text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-5">
-        As Seen In
-      </p>
-      <div
-        role="list"
-        aria-label="Press mentions"
-        className="portal-dark-snap-x flex items-center justify-start md:justify-center gap-6 md:gap-10 overflow-x-auto md:overflow-visible md:flex-wrap pb-1 md:pb-0 -mx-4 px-4 md:mx-0 md:px-0"
-      >
-        {PRESS.map((name, i) => (
-          <div key={name} role="listitem" className="flex items-center gap-6 md:gap-10 shrink-0">
-            <span className="font-display italic text-[17px] sm:text-[19px] leading-none whitespace-nowrap text-[#E0D7C1]/90">
-              {name}
-            </span>
-            {i < PRESS.length - 1 && (
-              <span
-                aria-hidden
-                className="w-[3px] h-[3px] rounded-full bg-[#E8B862]/70 shadow-[0_0_6px_rgba(232,184,98,0.5)]"
-              />
-            )}
-          </div>
-        ))}
+      </ul>
+      <div className="trust-marquee" aria-hidden="true">
+        <div className="trust-marquee-track">
+          {[0, 1].map((g) => (
+            <div className="trust-marquee-group" key={g}>
+              {group.map((b, i) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={`${g}-${i}`}
+                  src={`/partners/${b.file}`}
+                  alt=""
+                  loading="lazy"
+                  className="trust-marquee-logo"
+                />
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -94,8 +81,8 @@ export function TrustSection() {
         Trusted by leading brands and featured in the press
       </h2>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-20 flex flex-col gap-12 md:gap-14">
-        <PartnerLogos />
-        <PressWordmarks />
+        <LogoMarquee label="Trusted Decorating Partner With" items={PARTNERS} reps={1} />
+        <LogoMarquee label="As Seen In" items={PRESS} reps={3} />
       </div>
     </section>
   );
