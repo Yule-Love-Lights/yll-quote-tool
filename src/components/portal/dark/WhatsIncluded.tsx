@@ -12,6 +12,7 @@ import type { RenderSettings } from '@/components/design/editor-core/renderSetti
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
+import { SatelliteRoofView } from './SatelliteRoofView';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -281,6 +282,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
         {design && (
           <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
         )}
+
+        {/* Satellite roof view (#51) — top-down photo + the roofline lines, so the
+            customer sees exactly where the roof lights go. Sits under the lit
+            render, above the add-ons (Naldo's placement). Self-hides when the
+            quote has no satellite image / no traced lines. */}
+        {design && <SatelliteRoofView design={design} />}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a

@@ -87,6 +87,14 @@ export type DesignWithPhoto = {
   photoUrl: string | null;
   photoW: number | null;
   photoH: number | null;
+  // Top-down satellite roof view (#51) — a freshly-signed URL for the private
+  // satellite image plus its dims + the red/blue/green roofline polylines
+  // (normalized 0–1). All nullable: designs without a satellite (manual upload /
+  // pre-migration / never-Calculated) carry nulls and the portal hides the view.
+  satelliteUrl: string | null;
+  satelliteW: number | null;
+  satelliteH: number | null;
+  satelliteLines: DesignSatelliteLines | null;
 };
 
 const BUCKET = 'designs';
@@ -192,13 +200,23 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
 export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | null> {
   const row = await getDesign(id);
   if (!row) return null;
+  // Sign the base photo and the satellite image in parallel (both private-bucket
+  // paths; signDesignPhoto returns null for a missing path or on any failure).
+  const [photoUrl, satelliteUrl] = await Promise.all([
+    signDesignPhoto(row.photo_path),
+    signDesignPhoto(row.satellite_path ?? null),
+  ]);
   return {
     id: row.id,
     quoteId: row.quote_id,
     scene: row.scene ?? EMPTY_SCENE,
-    photoUrl: await signDesignPhoto(row.photo_path),
+    photoUrl,
     photoW: row.photo_w,
     photoH: row.photo_h,
+    satelliteUrl,
+    satelliteW: row.satellite_w ?? null,
+    satelliteH: row.satellite_h ?? null,
+    satelliteLines: row.satellite_lines ?? null,
   };
 }
 
