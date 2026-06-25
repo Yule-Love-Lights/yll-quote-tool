@@ -71,6 +71,13 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
             photoUrl: design.photoUrl,
             photoW: design.photoW,
             photoH: design.photoH,
+            // Satellite roof view (#51) — carried through so WhatsIncluded can
+            // show the top-down image + roofline lines. Null/absent fields make
+            // the section hide.
+            satelliteUrl: design.satelliteUrl,
+            satelliteW: design.satelliteW,
+            satelliteH: design.satelliteH,
+            satelliteLines: design.satelliteLines,
           };
           // Link line items ⇄ scene items so the portal can hide a drawn item
           // when its line item is toggled off (#27 D). Additive — same ids, just
