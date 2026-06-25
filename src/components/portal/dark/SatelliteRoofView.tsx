@@ -16,21 +16,33 @@
 // drawable traced lines — i.e. manual-upload / pre-migration / never-"Calculated"
 // quotes.
 
+import type { CSSProperties } from 'react';
 import type { PortalDesign } from '../types';
 import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
 
 export function SatelliteRoofView({
   design,
   className = 'mt-10 md:mt-12',
+  inRow = false,
 }: {
   design: PortalDesign;
   // Root wrapper classes — defaults to its own top margin; the caller can
   // override (e.g. to '' when placed in the side-by-side grid, #51).
   className?: string;
+  // #51 side-by-side row: at lg+ the (square) image becomes a fixed height
+  // (var(--row-h), set by the parent row) so it matches the front-view card's
+  // height. The img keeps its natural aspect (h-full w-auto) so the SVG overlay
+  // stays pixel-aligned to the roof — no object-cover/contain distortion.
+  inRow?: boolean;
 }) {
-  const { satelliteUrl, satelliteLines } = design;
+  const { satelliteUrl, satelliteLines, satelliteW, satelliteH } = design;
   const groups = selectDrawableLineGroups(satelliteLines);
   if (!satelliteUrl || groups.length === 0) return null;
+
+  // Numeric aspect (w/h) for the #51 row: card width = row-height × this. Square
+  // satellite pulls → 1. The img fills the matched-aspect card, so the overlay
+  // stays pixel-aligned.
+  const cardAr = satelliteW && satelliteH ? satelliteW / satelliteH : 1;
 
   return (
     <section className={className} aria-labelledby="portal-dark-satellite-heading">
@@ -40,12 +52,19 @@ export function SatelliteRoofView({
       >
         Where the lights go
       </p>
-      <div className="relative w-full max-w-[640px] overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C]">
+      <div
+        className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
+          inRow
+            ? 'w-full max-w-[640px] lg:max-w-none lg:[height:var(--row-h)] lg:[width:calc(var(--row-h)*var(--card-ar))]'
+            : 'w-full max-w-[640px]'
+        }`}
+        style={inRow ? ({ ['--card-ar']: cardAr } as CSSProperties) : undefined}
+      >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={satelliteUrl}
           alt="Satellite view of your home with the roofline lighting plan marked"
-          className="block w-full h-auto select-none"
+          className={`block select-none ${inRow ? 'w-full h-auto lg:h-full lg:w-full' : 'w-full h-auto'}`}
           draggable={false}
           loading="lazy"
         />

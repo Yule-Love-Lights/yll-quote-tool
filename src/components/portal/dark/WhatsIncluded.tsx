@@ -5,6 +5,7 @@
 // dim out with muted cream. No red anywhere — keeps red reserved
 // for the sticky bar CTA.
 
+import type { CSSProperties } from 'react';
 import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
@@ -279,15 +280,22 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
 
         {/* Front (lit) design render (#50) + the satellite roof view (#51).
             When the quote HAS satellite roofline data, show the two side by side
-            on desktop (stacked on mobile) — the lit "front view" next to the
-            top-down "where the lights go" view. Without satellite data, the lit
-            render stays full-width on its own. Both lazy-mount / self-hide as
-            before; the grid owns the top margin so the children pass className="". */}
+            on DESKTOP (lg+) — the lit "front view" next to the top-down "where
+            the lights go" view — both set to the SAME height (var(--row-h)) so
+            they look uniform, each width derived from its own aspect (no crop).
+            The row breaks OUT wider than the content column so the images span
+            the page; on tablet/mobile they stack full-width. Without satellite
+            data, the lit render stays full-width on its own. */}
         {design &&
           (!!design.satelliteUrl && selectDrawableLineGroups(design.satelliteLines).length > 0 ? (
-            <div className="mt-10 md:mt-12 grid grid-cols-1 gap-8 md:grid-cols-2 md:items-start">
-              <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" />
-              <SatelliteRoofView design={design} className="" />
+            <div
+              className="mt-10 md:mt-12 lg:[width:min(1500px,calc(100vw_-_4rem))] lg:[margin-inline-start:calc((100%_-_min(1500px,calc(100vw_-_4rem)))/2)]"
+              style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
+            >
+              <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-center lg:gap-10">
+                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="lg:w-fit lg:flex-none" inRow />
+                <SatelliteRoofView design={design} className="lg:w-fit lg:flex-none" inRow />
+              </div>
             </div>
           ) : (
             <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
