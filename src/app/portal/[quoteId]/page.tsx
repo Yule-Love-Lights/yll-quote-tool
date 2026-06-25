@@ -35,6 +35,7 @@ import { Gallery } from '@/components/portal/dark/Gallery';
 import { Philanthropy } from '@/components/portal/dark/Philanthropy';
 import { FAQ } from '@/components/portal/dark/FAQ';
 import { PersonalContact } from '@/components/portal/dark/PersonalContact';
+import { TrustSection } from '@/components/portal/dark/TrustSection';
 import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import {
@@ -221,6 +222,9 @@ export default async function PortalPage({
           photo={team.photo}
           phone={team.phone}
         />
+
+        {/* 11.5 Trust / social proof (#70) — real client partners + press */}
+        <TrustSection />
 
         {/* 12. Disclaimer */}
         <Disclaimer />
