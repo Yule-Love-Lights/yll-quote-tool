@@ -144,6 +144,10 @@ export type CustomLineItem = {
 // MUTUALLY EXCLUSIVE — the customer picks one on the portal (or none). #17.
 export type RooflineChoice = 'santas' | 'gingerbread' | 'none';
 
+// Early-install promo timing (#40). 'september' = 15% off, 'october' = 10% off
+// the item subtotal; 'none'/undefined = standard install, no discount.
+export type EarlyInstallTiming = 'none' | 'september' | 'october';
+
 export interface QuoteInputs {
   // Front roofline footage (the "red" line) — Santa's on its own, and the
   // front component of Gingerbread.
@@ -176,6 +180,15 @@ export interface QuoteInputs {
   takedown: Takedown;
   rushFee: boolean;
   discount?: Discount;
+  /** Staff override (#59): when true, the portal's $1,000 approval gate is
+   *  waived (minimumOrderSubtotal → 0) so the customer can approve a selection
+   *  under $1,000 even on a quote whose items total ≥ $1,000. NOT a pricing
+   *  input — the engine ignores it; it rides the stored `inputs` jsonb. */
+  waiveMinimum?: boolean;
+  // Early-install promo (#40). When 'september'/'october', a percentage discount
+  // (BUSINESS_RULES.earlyInstallDiscounts) comes off the item subtotal and the
+  // rush-install fee is suppressed (mutually exclusive). Absent/'none' = no promo.
+  installTiming?: EarlyInstallTiming;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -195,6 +208,8 @@ export interface QuoteResult {
   lineItems: LineItem[];
   subtotalBeforeDiscount: number;
   discountAmount: number;
+  // Early-install promo discount (#40), in dollars; 0 when no install timing set.
+  earlyInstallDiscountAmount: number;
   subtotalAfterDiscount: number;
   minimumApplied: boolean;
   rushFeeAmount: number;
@@ -513,15 +528,31 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   }
 
   const postDiscount = subtotalBeforeDiscount - discountAmount;
+
+  // Early-install promo (#40): Sep 15% / Oct 10% off the ITEM SUBTOTAL, mirroring
+  // the portal's priceSelection (off the subtotal, before fees + tax). Absent or
+  // 'none' → 0, so quotes priced before this field are unaffected.
+  const earlyInstallRate =
+    inputs.installTiming === 'september'
+      ? BUSINESS_RULES.earlyInstallDiscounts.september
+      : inputs.installTiming === 'october'
+        ? BUSINESS_RULES.earlyInstallDiscounts.october
+        : 0;
+  const earlyInstallDiscountAmount =
+    Math.round(subtotalBeforeDiscount * earlyInstallRate * 100) / 100;
+
   // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
   // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
   // customer-side approval gate on the portal instead (see lib/portal/adapter
   // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
   // preserve the home.works payload contract (downstream still reads the flag).
   const minimumApplied = false;
-  const subtotalAfterDiscount = postDiscount;
+  const subtotalAfterDiscount = postDiscount - earlyInstallDiscountAmount;
 
-  const rushFeeAmount = inputs.rushFee ? BUSINESS_RULES.rushFeeAmount : 0;
+  // Early-install and the rush-install fee are mutually exclusive (#40): an
+  // early-install quote never also charges rush.
+  const rushFeeAmount =
+    inputs.rushFee && earlyInstallRate === 0 ? BUSINESS_RULES.rushFeeAmount : 0;
   const takedownAmount = inputs.takedown === 'premium' ? BUSINESS_RULES.premiumTakedownFee : 0;
 
   const taxableAmount = subtotalAfterDiscount + rushFeeAmount + takedownAmount;
@@ -534,6 +565,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     lineItems,
     subtotalBeforeDiscount,
     discountAmount,
+    earlyInstallDiscountAmount,
     subtotalAfterDiscount,
     minimumApplied,
     rushFeeAmount,

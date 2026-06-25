@@ -25,6 +25,7 @@ import Image from 'next/image';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
+import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
@@ -165,6 +166,10 @@ export function InteractiveHero({
         className="portal-snow-stage-bloom"
         data-level={packageId}
       />
+
+      {/* Brand watermark (#45) — sits over the photo, outside the brightness-
+          filtered photo element so it stays consistent across packages. */}
+      <LogoWatermark />
 
       {/* One-shot warm flash on every package change */}
       {flashKey > 0 && (

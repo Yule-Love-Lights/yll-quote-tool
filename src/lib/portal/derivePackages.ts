@@ -87,12 +87,14 @@ export function effectiveCharges(
   rushOn: boolean,
   takedownOn: boolean,
   discountRate = 0,
+  discountFlat = 0,
 ): SelectionCharges {
   return {
     rushFee: rushOn ? charges.rush.amount : 0,
     takedown: takedownOn ? charges.takedown.amount : 0,
     taxRate: charges.taxRate,
     discountRate,
+    discountFlat,
   };
 }
 
@@ -110,9 +112,13 @@ export function priceSelection(
     return { subtotal: 0, discount: 0, rushFee: 0, takedown: 0, taxable: 0, tax: 0, total: 0, deposit: 0 };
   }
 
-  // Early-install promo (#40): a percentage off the item subtotal, applied
-  // before the per-job fees and tax. 0 when no timing discount is selected.
-  const discount = round2(subtotal * (charges.discountRate ?? 0));
+  // Discount off the item subtotal, before the per-job fees + tax: an early-install
+  // promo OR a manual % (discountRate) and/or a manual flat $ (discountFlat).
+  // Capped so it never exceeds the subtotal. 0 when no discount applies.
+  const discount = Math.min(
+    subtotal,
+    round2(subtotal * (charges.discountRate ?? 0) + (charges.discountFlat ?? 0)),
+  );
   const taxable = subtotal - discount + charges.rushFee + charges.takedown;
   const tax = round2(taxable * charges.taxRate);
   const total = round2(taxable + tax);

@@ -29,6 +29,8 @@ const fullForm: QuoteFormData = {
   discountEnabled: true,
   discountType: 'percentage',
   discountAmount: 20,
+  waiveMinimum: true, // non-default, to exercise the field
+  installTiming: 'none', // manual-discount path; early-install has its own tests
 };
 
 describe('buildQuoteInputs', () => {
@@ -54,6 +56,23 @@ describe('buildQuoteInputs', () => {
     expect('discount' in buildQuoteInputs({ ...fullForm, discountEnabled: false })).toBe(false);
     const flat = buildQuoteInputs({ ...fullForm, discountType: 'flat', discountAmount: 150 });
     expect(flat.discount).toEqual({ type: 'flat', amount: 150 });
+  });
+
+  it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
+    expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
+    expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
+  });
+
+  it('sends installTiming only when a month is picked; omits it for none (#40)', () => {
+    expect(buildQuoteInputs({ ...fullForm, installTiming: 'october' }).installTiming).toBe('october');
+    expect('installTiming' in buildQuoteInputs({ ...fullForm, installTiming: 'none' })).toBe(false);
+  });
+
+  it('drops the manual discount when an early-install month is picked (mutually exclusive #40)', () => {
+    // discountEnabled is on, but picking a month must NOT also send a manual discount.
+    const inputs = buildQuoteInputs({ ...fullForm, discountEnabled: true, installTiming: 'september' });
+    expect(inputs.installTiming).toBe('september');
+    expect('discount' in inputs).toBe(false);
   });
 });
 
@@ -127,6 +146,35 @@ describe('inputsToFormData', () => {
     // legacy/uncategorized rows (null or omitted) → holiday
     expect(inputsToFormData({}, {}, null).serviceType).toBe('holiday');
     expect(inputsToFormData({}, {}).serviceType).toBe('holiday');
+  });
+
+  it('hydrates waiveMinimum, defaulting to false when absent (#59)', () => {
+    expect(inputsToFormData({}, { waiveMinimum: true }).waiveMinimum).toBe(true);
+    expect(inputsToFormData({}, { waiveMinimum: false }).waiveMinimum).toBe(false);
+    expect(inputsToFormData({}, {}).waiveMinimum).toBe(false); // legacy row
+  });
+
+  it('hydrates installTiming and opens "Apply discount" for an early-install quote (#40)', () => {
+    const sep = inputsToFormData({}, { installTiming: 'september' });
+    expect(sep.installTiming).toBe('september');
+    expect(sep.discountEnabled).toBe(true); // the toggle is open so the month shows
+    expect(inputsToFormData({}, { installTiming: 'october' }).installTiming).toBe('october');
+    const legacy = inputsToFormData({}, {});
+    expect(legacy.installTiming).toBe('none');
+    expect(legacy.discountEnabled).toBe(false);
+  });
+
+  it('round-trips an early-install quote (no manual discount)', () => {
+    const form: QuoteFormData = {
+      ...fullForm,
+      rushFee: false, // early-install clears rush (mutually exclusive)
+      discountEnabled: true,
+      discountType: 'percentage',
+      discountAmount: 0,
+      installTiming: 'october',
+    };
+    const hydrated = inputsToFormData(form.customer, buildQuoteInputs(form), form.serviceType);
+    expect(hydrated).toEqual(form);
   });
 
   it('strips the Anonymous / (no address) sentinels back to blank fields', () => {
