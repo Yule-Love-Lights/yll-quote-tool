@@ -197,11 +197,19 @@ export default function QuotesAdminPage() {
               </thead>
               <tbody>
                 {items.map(q => {
+                  // Lifecycle badge (highest state wins). "Viewed" (#68) sits
+                  // between Sent and Approved — a sent quote the customer has
+                  // opened. Its tooltip shows the open count + last-open time.
                   const status = q.customer_approved_at
                     ? { label: 'Approved', className: 'bg-green-100 text-green-700' }
-                    : q.quote_sent_at
-                      ? { label: 'Sent', className: 'bg-blue-100 text-blue-700' }
-                      : null;
+                    : q.viewed_at
+                      ? { label: 'Viewed', className: 'bg-purple-100 text-purple-700' }
+                      : q.quote_sent_at
+                        ? { label: 'Sent', className: 'bg-blue-100 text-blue-700' }
+                        : null;
+                  const viewedTitle = q.viewed_at
+                    ? `Opened ${q.view_count ?? 1}×${q.last_viewed_at ? ` — last ${fmtDate(q.last_viewed_at)}` : ''}`
+                    : undefined;
                   return (
                     <tr key={q.id} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(q.created_at)}</td>
@@ -209,7 +217,10 @@ export default function QuotesAdminPage() {
                         <div className="flex items-center gap-2">
                           <span>{q.customer_name ?? '—'}</span>
                           {status && (
-                            <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}>
+                            <span
+                              title={status.label === 'Viewed' ? viewedTitle : undefined}
+                              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}
+                            >
                               {status.label}
                             </span>
                           )}
