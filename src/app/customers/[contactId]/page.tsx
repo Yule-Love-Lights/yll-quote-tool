@@ -151,6 +151,7 @@ export default async function CustomerDetailPage({
               <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
                 <tr>
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
+                  <th className="text-left px-3 py-2 font-semibold">Quote</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
                   <th className="px-3 py-2"></th>
@@ -163,6 +164,7 @@ export default async function CustomerDetailPage({
                   .map(q => (
                     <tr key={q.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                       <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(q.created_at)}</td>
+                      <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.id.slice(0, 8)}</td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">

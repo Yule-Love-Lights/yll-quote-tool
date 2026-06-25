@@ -187,6 +187,7 @@ export default function QuotesAdminPage() {
               <thead className="bg-gray-50 text-xs uppercase text-gray-500">
                 <tr>
                   <th className="text-left px-3 py-2">Created</th>
+                  <th className="text-left px-3 py-2">Quote</th>
                   <th className="text-left px-3 py-2">Name</th>
                   <th className="text-left px-3 py-2">Address</th>
                   <th className="text-left px-3 py-2">Phone</th>
@@ -213,6 +214,7 @@ export default function QuotesAdminPage() {
                   return (
                     <tr key={q.id} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(q.created_at)}</td>
+                      <td className="px-3 py-2 text-xs font-mono text-gray-500 whitespace-nowrap" title={`Quote ID: ${q.id}`}>{q.id.slice(0, 8)}</td>
                       <td className="px-3 py-2 text-gray-700">
                         <div className="flex items-center gap-2">
                           <span>{q.customer_name ?? '—'}</span>
