@@ -118,6 +118,12 @@ export default async function PortalPage({
   // sticky bar's Approve either opens the embedded deposit checkout (on) or
   // routes to the booked page (off). Server-read avoids a stale baked value.
   const checkoutEnabled = isValorCheckoutEnabled();
+  // #38 — with online checkout ON, "booked" means the deposit was actually PAID
+  // (the webhook stamped deposit_paid_at). Approval alone is NOT booked — an
+  // approved-but-unpaid customer still owes the deposit and must be able to pay.
+  // With checkout OFF (the placeholder flow), approval is the end state.
+  const isPaid = !!quote.approval?.depositPaidAt;
+  const isBooked = checkoutEnabled ? isPaid : isApproved;
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   const appSettings = await getAppSettings();
@@ -147,7 +153,7 @@ export default async function PortalPage({
     <main className="relative w-full">
       {/* #68 — records the customer's open (client-side, fire-and-forget). */}
       <QuoteViewTracker quoteId={quoteId} />
-      {isApproved && (
+      {isBooked && (
         <BookedBanner quoteId={quoteId} approvedAt={quote.approval?.approvedAt} />
       )}
       <SelectionProvider
@@ -239,7 +245,13 @@ export default async function PortalPage({
         <Disclaimer />
 
         {/* Sticky floating pill bar — real approve flow, always last in tree */}
-        <StickyBottomBar quoteId={quoteId} approved={isApproved} checkoutEnabled={checkoutEnabled} />
+        <StickyBottomBar
+          quoteId={quoteId}
+          approved={isApproved}
+          booked={isBooked}
+          checkoutEnabled={checkoutEnabled}
+          approvedDepositUsd={quote.approval?.depositUsd}
+        />
       </SelectionProvider>
     </main>
   );
