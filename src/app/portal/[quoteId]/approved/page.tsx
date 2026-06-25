@@ -61,22 +61,30 @@ export default async function PortalApprovedPage({
         : 'Mid-November – Early December';
   const takedownWindow = quote.approval?.takedownSelected ? 'Starting Jan 1' : 'Jan 9 – Feb 3';
 
-  // Pre-Valor placeholder: no online payment yet. We confirm the approval and
-  // tell the customer we'll reach out to collect their 50% deposit. Show the
-  // deposit amount from the approval snapshot when we have it.
+  // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
   const depositPhrase = depositUsd > 0 ? ` (about ${formatUsd(depositUsd)})` : '';
+  // #38 — once the deposit webhook confirms payment this becomes the "you're
+  // BOOKED" page (deposit received) instead of the placeholder "we'll reach out
+  // to collect it". Drives the headline, intro line, and step 1 below.
+  const isPaid = !!quote.approval?.depositPaidAt;
 
   const nextSteps: Array<{
     icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
     title: string;
     body: string;
   }> = [
-    {
-      icon: CreditCard,
-      title: 'We reach out to collect your deposit',
-      body: `A quick call or text to take your 50% deposit${depositPhrase} and confirm your install date — that locks in your spot.`,
-    },
+    isPaid
+      ? {
+          icon: CreditCard,
+          title: 'Deposit received',
+          body: `We've got your 50% deposit${depositPhrase} — your spot is locked in. The remaining balance is collected after your install is complete.`,
+        }
+      : {
+          icon: CreditCard,
+          title: 'We reach out to collect your deposit',
+          body: `A quick call or text to take your 50% deposit${depositPhrase} and confirm your install date — that locks in your spot.`,
+        },
     {
       icon: MessageSquare,
       title: 'We text you the day before',
@@ -101,24 +109,33 @@ export default async function PortalApprovedPage({
       <section aria-labelledby="snow-approved-headline" className="relative w-full">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 md:pt-32 pb-10 md:pb-14 text-center">
           <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-4">
-            Quote approved · Quote {formatQuoteRef(quote.id)}
+            Quote {isPaid ? 'booked' : 'approved'} · Quote {formatQuoteRef(quote.id)}
           </p>
           <h1
             id="snow-approved-headline"
             className="font-display text-[40px] leading-[1.05] md:text-[68px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em]"
             style={{ textShadow: '0 0 36px rgba(255,183,68,0.22)' }}
           >
-            <span aria-hidden>🎄</span> You&apos;re approved!
+            <span aria-hidden>🎄</span> You&apos;re {isPaid ? 'booked' : 'approved'}!
           </h1>
           <p className="font-display italic text-[20px] md:text-[24px] text-[#E0D7C1] mt-4">
             Here&apos;s what happens next.
           </p>
-          <p className="mt-6 text-[16px] md:text-[17px] text-[#A89F87] max-w-xl mx-auto leading-[1.65]">
-            Thanks,{' '}
-            <span className="font-semibold text-[#E0D7C1]">{quote.customer.firstName}</span>. We&apos;ve
-            got your approval — we&apos;ll reach out shortly to collect your 50% deposit{depositPhrase} and
-            lock in your install date.
-          </p>
+          {isPaid ? (
+            <p className="mt-6 text-[16px] md:text-[17px] text-[#A89F87] max-w-xl mx-auto leading-[1.65]">
+              Thanks,{' '}
+              <span className="font-semibold text-[#E0D7C1]">{quote.customer.firstName}</span>. Your
+              deposit{depositPhrase} is in and your install is locked in — you&apos;re officially
+              booked. We&apos;ll be in touch to confirm your install date.
+            </p>
+          ) : (
+            <p className="mt-6 text-[16px] md:text-[17px] text-[#A89F87] max-w-xl mx-auto leading-[1.65]">
+              Thanks,{' '}
+              <span className="font-semibold text-[#E0D7C1]">{quote.customer.firstName}</span>. We&apos;ve
+              got your approval — we&apos;ll reach out shortly to collect your 50% deposit{depositPhrase} and
+              lock in your install date.
+            </p>
+          )}
         </div>
       </section>
 
