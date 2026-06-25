@@ -23,8 +23,8 @@ export function selectDrawableLineGroups(
 ): SatelliteLineGroup[] {
   if (!lines) return [];
   const groups: SatelliteLineGroup[] = [
-    { key: 'santas', color: '#ef4444', label: 'Front roofline', lines: lines.santas ?? [] },
-    { key: 'gingerbread', color: '#3b82f6', label: 'Ridge & sides', lines: lines.gingerbread ?? [] },
+    { key: 'santas', color: '#ef4444', label: 'Santa Roofline', lines: lines.santas ?? [] },
+    { key: 'gingerbread', color: '#3b82f6', label: 'Gingerbread', lines: lines.gingerbread ?? [] },
     { key: 'c9', color: '#10b981', label: 'C9 roofline', lines: lines.c9 ?? [] },
   ];
   return groups
