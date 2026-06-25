@@ -28,9 +28,17 @@ export type DesignRepriseProps = {
   // render tunables (e.g. spritzer density).
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
+  // Root wrapper classes — defaults to its own top margin, but the caller can
+  // override (e.g. to '' when placed inside a grid that owns the spacing, #51).
+  className?: string;
 };
 
-export function DesignReprise({ design, palette, renderSettings }: DesignRepriseProps) {
+export function DesignReprise({
+  design,
+  palette,
+  renderSettings,
+  className = 'mt-10 md:mt-12',
+}: DesignRepriseProps) {
   // Live selection (#27 D / #10): which drawn items are hidden + the chosen
   // light-color override. Shared with the hero via SelectionContext, so this
   // canvas updates the moment the customer toggles an item or a color above.
@@ -89,7 +97,7 @@ export function DesignReprise({ design, palette, renderSettings }: DesignReprise
     // design (a canvas with no text content). The hero + the toggleable item
     // list already convey everything, so hide this duplicate region from screen
     // readers rather than announcing an empty canvas + duplicate caption.
-    <div className="mt-10 md:mt-12" aria-hidden="true">
+    <div className={className} aria-hidden="true">
       <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
         Your home, lit up
       </p>

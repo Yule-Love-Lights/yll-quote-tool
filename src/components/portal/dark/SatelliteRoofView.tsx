@@ -19,13 +19,21 @@
 import type { PortalDesign } from '../types';
 import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
 
-export function SatelliteRoofView({ design }: { design: PortalDesign }) {
+export function SatelliteRoofView({
+  design,
+  className = 'mt-10 md:mt-12',
+}: {
+  design: PortalDesign;
+  // Root wrapper classes — defaults to its own top margin; the caller can
+  // override (e.g. to '' when placed in the side-by-side grid, #51).
+  className?: string;
+}) {
   const { satelliteUrl, satelliteLines } = design;
   const groups = selectDrawableLineGroups(satelliteLines);
   if (!satelliteUrl || groups.length === 0) return null;
 
   return (
-    <section className="mt-10 md:mt-12" aria-labelledby="portal-dark-satellite-heading">
+    <section className={className} aria-labelledby="portal-dark-satellite-heading">
       <p
         id="portal-dark-satellite-heading"
         className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3"
