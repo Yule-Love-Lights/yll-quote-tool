@@ -10,7 +10,7 @@
 --
 -- Tables:
 --   1. quotes            — one per quote (RLS disabled; anon client)
---   2. photo_corrections — human-corrected analyzer outputs (RLS disabled)
+--   2. photo_corrections — REMOVED S13 (legacy corrections system retired; see the tombstone below)
 --   3. training_houses   — confirmed real-install measurements (RLS disabled)
 --   4. reference_assets  — product close-ups for Claude few-shot (RLS disabled)
 --   5. designs           — one editable on-photo light design (RLS disabled)
@@ -174,7 +174,7 @@ create index if not exists training_houses_address_idx on training_houses (addre
 -- 4. reference_assets
 --    Product close-ups (spritzer/wreath/garland) injected into Claude calls
 --    as few-shot context. Reached via the anon client, so RLS is disabled to
---    match photo_corrections / training_houses. (See referenceAssets.ts.)
+--    match training_houses / training_examples. (See referenceAssets.ts.)
 -- ---------------------------------------------------------------------
 create table if not exists reference_assets (
   id uuid primary key default gen_random_uuid(),
