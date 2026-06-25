@@ -115,6 +115,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `Failed to record view: ${stampErr.message}` }, { status: 500 });
   }
 
+  // Append a row to the per-view event log so the customer activity feed can show
+  // EVERY open, not just the aggregate above. Best-effort: a failure here (e.g.
+  // the quote_view_events table not yet migrated) must not fail the view — the
+  // aggregate is already recorded.
+  const { error: eventErr } = await sb
+    .from('quote_view_events')
+    .insert({ quote_id: id, viewed_at: now });
+  if (eventErr) {
+    console.warn('[api/quotes/:id/view] event-log insert failed:', eventErr.message);
+  }
+
   // Email staff on every open (#68). Non-fatal — the view is already recorded.
   let emailSent = false;
   let emailError: string | undefined;
