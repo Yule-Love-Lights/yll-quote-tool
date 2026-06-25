@@ -1,18 +1,18 @@
-// Mint a Valor client token for the customer's 50% deposit checkout (#38).
+// Start the customer's 50% deposit payment via Valor's HOSTED payment page (#38).
 //
 // POST /api/quotes/[id]/pay
 // Body: none required (the amount is taken from the frozen approval snapshot,
 //       NOT from the client — we never let the browser dictate what we charge).
 // Response:
-//   { ok: true, clientToken, amountUsd, orderRef, isDemo }
+//   { ok: true, redirectUrl, amountUsd, orderRef }
 //   { error: string, code?: string }
 //
 // Flow context: the customer clicks Approve (which freezes the approval
-// snapshot), then the embedded checkout calls this endpoint to obtain a
-// short-lived Valor clientToken. Passage.js uses that token to collect the card
-// IN THE BROWSER and send it straight to Valor (card never touches our server →
-// SAQ-A). Valor then confirms the payment via webhook — that webhook, not this
-// call, is what marks the quote booked.
+// snapshot), then the checkout calls this endpoint. We ask Valor for a HOSTED
+// payment page and return its URL; the browser redirects there, the customer
+// pays on Valor's own page (card never touches our server → SAQ-A), and Valor
+// returns them to success_url/failure_url. Valor's webhook — not this call —
+// is what actually marks the quote booked.
 //
 // Idempotency: a quote already paid returns 409. Re-opening the checkout for an
 // unpaid quote reuses the same valor_order_ref so the webhook mapping is stable.
@@ -20,7 +20,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { rateLimitResponse } from '@/lib/rateLimit';
-import { getClientToken, isValorConfigured, ValorError } from '@/lib/integrations/valor';
+import { createHostedPageSale, isValorConfigured, ValorError } from '@/lib/integrations/valor';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -94,13 +94,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Stable reference echoed back by Valor's webhook so it can find this quote.
-  // Reuse an existing one (re-opened checkout) to keep the mapping stable.
+  // Stable reference echoed back by Valor's webhook (as the invoicenumber) so it
+  // can find this quote. Reuse an existing one (re-opened checkout) to keep the
+  // mapping stable.
   const orderRef = quote.valor_order_ref ?? `q${randomBytes(8).toString('hex')}`;
 
   // Record the reference + the amount we're about to ask Valor to charge, before
-  // we hand a token to the browser — so the webhook can verify the confirmed
-  // amount against what we intended.
+  // we send the customer to the hosted page — so the webhook can verify the
+  // confirmed amount against what we intended.
   const { error: stampErr } = await sb
     .from('quotes')
     .update({ valor_order_ref: orderRef, deposit_amount_usd: depositUsd })
@@ -113,21 +114,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Where Valor returns the customer after they pay (or fail/cancel). The
+  // booked page is gated to an approved quote; the portal page lets them retry.
+  const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+  const successUrl = `${baseUrl}/portal/${id}/approved`;
+  const failureUrl = `${baseUrl}/portal/${id}`;
+
   try {
-    const { clientToken } = await getClientToken({
+    const { url } = await createHostedPageSale({
       amountUsd: depositUsd,
       orderRef,
-      saveCard: true, // auto-vault for the later manual balance charge
+      successUrl,
+      failureUrl,
       customerEmail: quote.customer_email,
       customerName: quote.customer_name,
     });
-    const isDemo = process.env.VALOR_IS_DEMO !== 'false';
-    return NextResponse.json({ ok: true, clientToken, amountUsd: depositUsd, orderRef, isDemo });
+    return NextResponse.json({ ok: true, redirectUrl: url, amountUsd: depositUsd, orderRef });
   } catch (err) {
-    const msg = err instanceof ValorError ? err.message : err instanceof Error ? err.message : 'Unknown Valor error';
-    console.error('[api/quotes/:id/pay] getClientToken failed:', msg);
+    const msg =
+      err instanceof ValorError ? err.message : err instanceof Error ? err.message : 'Unknown Valor error';
+    console.error('[api/quotes/:id/pay] createHostedPageSale failed:', msg);
     return NextResponse.json(
-      { error: 'Could not start payment. Please try again.', code: 'token-failed' },
+      { error: 'Could not start payment. Please try again.', code: 'hosted-page-failed' },
       { status: 502 },
     );
   }

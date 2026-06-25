@@ -1,7 +1,7 @@
-// Tests for the deposit pay-token endpoint (#38). The card never touches our
-// server, so the only logic to prove here is the GUARDS + that the deposit
-// amount comes from the frozen approval snapshot (never the client). Supabase
-// and the Valor client are mocked.
+// Tests for the deposit /pay endpoint (#38, hosted-page flow). The card never
+// touches our server, so the only logic to prove here is the GUARDS + that the
+// deposit amount comes from the frozen approval snapshot (never the client) +
+// the return URLs point back at this quote. Supabase + the Valor client mocked.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
@@ -9,7 +9,11 @@ import type { NextRequest } from 'next/server';
 const { sbRef, valor } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   valor: {
-    getClientToken: vi.fn(async () => ({ clientToken: 'ctok_live_abc', raw: {} })),
+    createHostedPageSale: vi.fn(async () => ({
+      url: 'https://securelink.valorpaytech.com/hosted/abc123',
+      uid: 'uid_1',
+      raw: {},
+    })),
     configured: { value: true },
   },
 }));
@@ -20,7 +24,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 vi.mock('@/lib/integrations/valor', () => ({
-  getClientToken: valor.getClientToken,
+  createHostedPageSale: valor.createHostedPageSale,
   isValorConfigured: () => valor.configured.value,
   ValorError: class ValorError extends Error {},
 }));
@@ -80,7 +84,7 @@ beforeEach(() => {
 });
 
 describe('POST /api/quotes/[id]/pay', () => {
-  it('mints a client token for the snapshot deposit amount (never the client)', async () => {
+  it('returns a hosted-page URL for the snapshot deposit amount (never the client)', async () => {
     const { client, updatePayloads } = makeSb({ ...APPROVED_QUOTE });
     sbRef.current = client;
 
@@ -88,14 +92,19 @@ describe('POST /api/quotes/[id]/pay', () => {
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    expect(json.clientToken).toBe('ctok_live_abc');
+    expect(json.redirectUrl).toBe('https://securelink.valorpaytech.com/hosted/abc123');
     expect(json.amountUsd).toBe(1350);
     expect(json.orderRef).toMatch(/^q[0-9a-f]{16}$/);
-    // amount handed to Valor came from the snapshot, not the request body
-    expect(valor.getClientToken).toHaveBeenCalledWith(
-      expect.objectContaining({ amountUsd: 1350, saveCard: true }),
+    // amount handed to Valor came from the snapshot, not the request body; the
+    // success/failure return URLs point back at this quote's pages
+    expect(valor.createHostedPageSale).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountUsd: 1350,
+        successUrl: `https://quote.example.com/portal/${ID}/approved`,
+        failureUrl: `https://quote.example.com/portal/${ID}`,
+      }),
     );
-    // order ref + intended amount stamped before the token is returned
+    // order ref + intended amount stamped before we send them to the hosted page
     expect(updatePayloads[0]).toMatchObject({ deposit_amount_usd: 1350 });
     expect(updatePayloads[0].valor_order_ref).toMatch(/^q[0-9a-f]{16}$/);
   });
@@ -128,7 +137,7 @@ describe('POST /api/quotes/[id]/pay', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('already-paid');
-    expect(valor.getClientToken).not.toHaveBeenCalled();
+    expect(valor.createHostedPageSale).not.toHaveBeenCalled();
   });
 
   it('409s when the quote has not been approved yet (no snapshot deposit)', async () => {
@@ -143,7 +152,7 @@ describe('POST /api/quotes/[id]/pay', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('approve-first');
-    expect(valor.getClientToken).not.toHaveBeenCalled();
+    expect(valor.createHostedPageSale).not.toHaveBeenCalled();
   });
 
   it('404s when the quote does not exist', async () => {
