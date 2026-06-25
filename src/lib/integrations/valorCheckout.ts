@@ -1,22 +1,21 @@
 // Single source of truth for the #38 customer-facing deposit-checkout feature
-// flag. The embedded Passage.js checkout ships DARK (off) and is flipped on only
-// after the end-to-end staging test passes — so merging the checkout code never
-// changes what live customers see.
+// flag. Read on the SERVER at request time — the portal page passes the result
+// to StickyBottomBar as a prop, and the approve route reads it directly. That
+// avoids the build-time inlining gotcha a NEXT_PUBLIC_ client read would have
+// (those bake into the browser bundle, so a cache-reused redeploy keeps the old
+// value). As a runtime server read, flipping the env var just needs a redeploy.
 //
-// When OFF (default):
-//   • StickyBottomBar → Approve behaves as today (records approval → routes to
-//     the booked page; no embedded card form).
-//   • approve route   → sends the "we'll reach out to collect your deposit"
-//     customer SMS/email (the pre-Valor placeholder messaging).
-// When ON:
-//   • StickyBottomBar → Approve opens the embedded 50% deposit checkout.
-//   • approve route   → sends NO customer message (the receipt fires from the
-//     Valor payment-confirmed webhook instead).
+// Accepts EITHER `VALOR_CHECKOUT_ENABLED` or the `NEXT_PUBLIC_` variant, so an
+// already-set `NEXT_PUBLIC_VALOR_CHECKOUT_ENABLED=true` keeps working (read here
+// at runtime on the server, not relied upon in the browser bundle).
 //
-// NEXT_PUBLIC_ so the SAME value is readable in the browser (StickyBottomBar)
-// and on the server (approve route). NOTE: NEXT_PUBLIC_ vars are inlined into
-// the client bundle at BUILD time, so flipping this requires a REDEPLOY to take
-// effect on the client — not just an env-var change.
+// When OFF (default): Approve → booked page; the approve route sends the "we'll
+// reach out to collect your deposit" placeholder messaging.
+// When ON: Approve → embedded deposit checkout; the receipt fires from the Valor
+// payment-confirmed webhook instead.
 export function isValorCheckoutEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_VALOR_CHECKOUT_ENABLED === 'true';
+  return (
+    process.env.VALOR_CHECKOUT_ENABLED === 'true' ||
+    process.env.NEXT_PUBLIC_VALOR_CHECKOUT_ENABLED === 'true'
+  );
 }
