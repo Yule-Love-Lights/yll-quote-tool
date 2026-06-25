@@ -35,6 +35,11 @@ export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuot
  * not existing yet — so the customer page still renders (showing lifecycle
  * events) before this feature's migration is applied. Server-only.
  */
+// Cap on view rows per customer. Ordered newest-first, so hitting the cap drops
+// only the OLDEST views — the feed still shows the most recent ones. 1000 opens
+// for one customer is well beyond any realistic case; if it's ever hit we log it.
+const VIEW_EVENTS_LIMIT = 1000;
+
 export async function getViewEventsForQuotes(quoteIds: string[]): Promise<ViewEventRow[]> {
   if (quoteIds.length === 0) return [];
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -45,12 +50,18 @@ export async function getViewEventsForQuotes(quoteIds: string[]): Promise<ViewEv
       .select('quote_id, viewed_at')
       .in('quote_id', quoteIds)
       .order('viewed_at', { ascending: false })
-      .limit(1000);
+      .limit(VIEW_EVENTS_LIMIT);
     if (error) {
       console.warn('getViewEventsForQuotes (table not migrated yet?):', error.message);
       return [];
     }
-    return (data ?? []) as unknown as ViewEventRow[];
+    const rows = (data ?? []) as unknown as ViewEventRow[];
+    if (rows.length === VIEW_EVENTS_LIMIT) {
+      console.warn(
+        `getViewEventsForQuotes: hit the ${VIEW_EVENTS_LIMIT}-row cap; oldest views are not shown.`,
+      );
+    }
+    return rows;
   } catch (err) {
     console.warn('getViewEventsForQuotes failed:', err);
     return [];

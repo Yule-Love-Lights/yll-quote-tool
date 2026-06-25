@@ -57,6 +57,15 @@ describe('buildCustomerActivity', () => {
     expect(ev.some((e) => e.kind === 'viewed')).toBe(false);
   });
 
+  it('breaks an exact-timestamp tie newest-stage-first (approved, viewed, sent, created)', () => {
+    const t = '2026-06-24T12:00:00Z';
+    const ev = buildCustomerActivity(
+      [quote({ id: 'q1', created_at: t, quote_sent_at: t, customer_approved_at: t })],
+      [{ quote_id: 'q1', viewed_at: t }],
+    );
+    expect(ev.map((e) => e.kind)).toEqual(['approved', 'viewed', 'sent', 'created']);
+  });
+
   it('interleaves events across multiple quotes by timestamp', () => {
     const ev = buildCustomerActivity(
       [

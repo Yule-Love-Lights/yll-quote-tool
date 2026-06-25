@@ -11,14 +11,20 @@ const PILL: Record<ActivityKind, { label: string; cls: string }> = {
   approved: { label: 'Approved', cls: 'bg-emerald-600 text-white' },
 };
 
+// This is a server component, so toLocaleString runs on the server (UTC on
+// Vercel). Pin to Eastern (Long Island) + an "ET" marker so staff see the real
+// local open time, not a UTC time misread as local.
 function fmtDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return (
+    new Date(iso).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'America/New_York',
+    }) + ' ET'
+  );
 }
 
 export function CustomerActivityFeed({ events }: { events: ActivityEvent[] }) {

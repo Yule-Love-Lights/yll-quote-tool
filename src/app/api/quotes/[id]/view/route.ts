@@ -118,7 +118,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Append a row to the per-view event log so the customer activity feed can show
   // EVERY open, not just the aggregate above. Best-effort: a failure here (e.g.
   // the quote_view_events table not yet migrated) must not fail the view — the
-  // aggregate is already recorded.
+  // aggregate is already recorded. (Because this is best-effort, the event log
+  // and the #68 view_count aggregate can drift apart on a failed insert; the feed
+  // is a timeline, not the authoritative count.)
   const { error: eventErr } = await sb
     .from('quote_view_events')
     .insert({ quote_id: id, viewed_at: now });

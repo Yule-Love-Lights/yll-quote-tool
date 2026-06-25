@@ -24,8 +24,9 @@ export type ActivityQuote = {
 // A row from the quote_view_events log.
 export type ViewEventRow = { quote_id: string; viewed_at: string };
 
-// Order when two events share a timestamp: lifecycle reads naturally
-// created -> sent -> viewed -> approved within the same instant.
+// Tie-break when two events share an exact timestamp. The comparator below
+// applies this DESCENDING (newest stage first), so a same-instant tie emits
+// approved -> viewed -> sent -> created — the right order for a newest-first feed.
 const KIND_ORDER: Record<ActivityKind, number> = {
   created: 0,
   sent: 1,
