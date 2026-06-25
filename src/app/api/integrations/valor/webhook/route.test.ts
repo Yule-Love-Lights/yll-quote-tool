@@ -237,6 +237,23 @@ describe('Valor webhook — rejects', () => {
     expect(res.status).toBe(503);
   });
 
+  it('acks 200 and ignores a validly-signed txn that maps to no quote (unrelated sale)', async () => {
+    // A normal terminal sale on the same EPI: signature is valid, but there's no
+    // quote with this order ref. We must NOT 404 (Valor would retry every such
+    // sale) — ack + ignore, no side effects.
+    const { client, updatePayloads } = makeSb(null, []);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ignored).toBe('no-matching-quote');
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+  });
+
   it('acknowledges a declined transaction without booking it', async () => {
     const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;

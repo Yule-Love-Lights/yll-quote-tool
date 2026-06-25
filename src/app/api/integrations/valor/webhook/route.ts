@@ -127,11 +127,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
 
+  // Valor sends a webhook for EVERY transaction on this EPI — including normal
+  // terminal / Virtual-Terminal sales that did NOT originate from our checkout
+  // (those carry no order ref, or one we don't recognize). A transaction we
+  // can't tie to a quote is not ours to act on: the signature already verified,
+  // so acknowledge 200 and IGNORE it rather than 404-ing (which would make Valor
+  // pointlessly retry every unrelated sale). A signed-but-unmatched APPROVED txn
+  // is logged loudly in case it ever signals a real booking we failed to map.
   if (!event.orderRef) {
-    return NextResponse.json(
-      { error: 'Webhook missing order reference', code: 'no-order-ref' },
-      { status: 400 },
-    );
+    return NextResponse.json({ ok: true, ignored: 'no-order-ref' });
   }
 
   const sb = getSupabaseServiceClient()!;
@@ -144,11 +148,12 @@ export async function POST(req: NextRequest) {
     .single<QuoteRow>();
 
   if (fetchErr || !quote) {
-    // 404 lets Valor retry in case of a read-after-write race on order-ref.
-    return NextResponse.json(
-      { error: `No quote for order ref: ${fetchErr?.message ?? 'no row'}` },
-      { status: 404 },
-    );
+    if (event.approved) {
+      console.warn(
+        `[api/integrations/valor/webhook] APPROVED txn with unmatched order ref "${event.orderRef}" — no quote found (${fetchErr?.message ?? 'no row'})`,
+      );
+    }
+    return NextResponse.json({ ok: true, ignored: 'no-matching-quote' });
   }
 
   // Idempotency — already recorded as paid. Don't re-fire side effects.
