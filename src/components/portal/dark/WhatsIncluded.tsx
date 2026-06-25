@@ -298,8 +298,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
                   regardless of the surrounding column. justify-center then centers
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
-                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="lg:w-fit lg:flex-none" inRow />
-                <SatelliteRoofView design={design} className="lg:w-fit lg:flex-none" inRow />
+                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
+                <SatelliteRoofView design={design} className="" inRow />
               </div>
             </div>
           ) : (
