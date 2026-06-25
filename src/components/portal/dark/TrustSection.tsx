@@ -28,6 +28,7 @@ const PARTNERS: Brand[] = [
   { name: "Leslie's", file: 'leslies.png' },
   { name: 'Orangetheory', file: 'orangetheory.png' },
   { name: 'BottleBuy', file: 'bottlebuy.png' },
+  { name: 'BluStreet Exotics', file: 'blustreet.png' },
 ];
 
 const PRESS: Brand[] = [
