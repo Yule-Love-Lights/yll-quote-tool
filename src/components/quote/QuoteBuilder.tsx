@@ -1457,6 +1457,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
 
           {/* ── House — Design (street) + Satellite measurement (#35) ── */}
           {(designId || photoPreview || satellitePreview || designBusy) ? (
+            /* #44 — break this section out wider than the form's max-w-3xl so the
+               embedded editor (vanilla sidebar + Konva canvas) isn't squished and
+               uses the empty L/R space on desktop. Centered via width + an
+               auto-centering inline-start margin — deliberately NOT a CSS
+               transform: a transformed ancestor would become the containing block
+               for the editor's position:fixed full-screen overlay and break it.
+               Width is capped to the viewport minus a gutter so it never overflows
+               into a horizontal scrollbar; below lg it stays within the form column. */
+            <div className="lg:[width:min(1120px,calc(100vw_-_3rem))] lg:[margin-inline-start:calc((100%_-_min(1120px,calc(100vw_-_3rem)))/2)]">
             <Section title="House — Design & Measure">
               {/* Tab switcher. Both panes stay MOUNTED across switches (CSS
                   hidden) so the design editor and the satellite lines never
@@ -1859,6 +1868,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 )}
               </div>
             </Section>
+            </div>
           ) : null}
 
           {/* ── Santa's — Front Gutterline ── */}
