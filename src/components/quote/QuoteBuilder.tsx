@@ -1265,6 +1265,16 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 Sent
               </span>
             ) : null}
+            {/* Quote ID — appears once the quote exists (after the first Calculate
+                on a new quote, or immediately when editing a saved one). */}
+            {savedQuoteId && (
+              <span
+                className="text-[11px] font-mono text-gray-500 bg-gray-100 px-2 py-0.5 rounded whitespace-nowrap"
+                title={`Quote ID: ${savedQuoteId}`}
+              >
+                ID {savedQuoteId.slice(0, 8)}
+              </span>
+            )}
           </div>
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
