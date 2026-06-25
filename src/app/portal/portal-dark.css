@@ -198,3 +198,58 @@
     animation: none !important;
   }
 }
+
+/* ── Trust section marquee (#70) — auto-scrolling logo rows ───────────────── */
+.trust-marquee {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+}
+.trust-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: trust-marquee-scroll 45s linear infinite;
+}
+.trust-marquee:hover .trust-marquee-track {
+  animation-play-state: paused;
+}
+.trust-marquee-group {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.trust-marquee-logo {
+  height: 28px;
+  width: auto;
+  max-width: 150px;
+  object-fit: contain;
+  margin: 0 1.5rem;
+  opacity: 0.9;
+  flex: 0 0 auto;
+}
+@media (min-width: 768px) {
+  .trust-marquee-logo {
+    height: 36px;
+    margin: 0 2.25rem;
+  }
+}
+/* Two identical groups; translate by exactly one group width for a seamless
+   loop. -50% → 0 makes the logos travel left-to-right (per Naldo). */
+@keyframes trust-marquee-scroll {
+  from {
+    transform: translateX(-50%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trust-marquee-track {
+    animation: none;
+  }
+  .trust-marquee {
+    overflow-x: auto;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}

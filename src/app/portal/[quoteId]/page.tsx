@@ -35,6 +35,7 @@ import { Gallery } from '@/components/portal/dark/Gallery';
 import { Philanthropy } from '@/components/portal/dark/Philanthropy';
 import { FAQ } from '@/components/portal/dark/FAQ';
 import { PersonalContact } from '@/components/portal/dark/PersonalContact';
+import { TrustSection } from '@/components/portal/dark/TrustSection';
 import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import {
@@ -185,6 +186,9 @@ export default async function PortalPage({
 
         {/* 4. Risk Reversal */}
         <RiskReversal />
+
+        {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
+        <TrustSection />
 
         {/* 5. What Happens Next */}
         <WhatHappensNext />
