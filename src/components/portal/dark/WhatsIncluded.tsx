@@ -5,6 +5,7 @@
 // dim out with muted cream. No red anywhere — keeps red reserved
 // for the sticky bar CTA.
 
+import type { CSSProperties } from 'react';
 import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
@@ -12,6 +13,8 @@ import type { RenderSettings } from '@/components/design/editor-core/renderSetti
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
+import { SatelliteRoofView } from './SatelliteRoofView';
+import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -275,12 +278,33 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
           })}
         </ul>
 
-        {/* Second design render (#50) — the lit design with live selection, so the
-            customer sees their choices without scrolling back to the hero. Only
-            when a design is linked; lazy-mounts its Konva canvas for phone perf. */}
-        {design && (
-          <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
-        )}
+        {/* Front (lit) design render (#50) + the satellite roof view (#51).
+            When the quote HAS satellite roofline data, show the two side by side
+            on DESKTOP (lg+) — the lit "front view" next to the top-down "where
+            the lights go" view — both set to the SAME height (var(--row-h)) so
+            they look uniform, each width derived from its own aspect (no crop).
+            The row breaks OUT wider than the content column so the images span
+            the page; on tablet/mobile they stack full-width. Without satellite
+            data, the lit render stays full-width on its own. */}
+        {design &&
+          (!!design.satelliteUrl && selectDrawableLineGroups(design.satelliteLines).length > 0 ? (
+            <div
+              className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
+              style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
+            >
+              {/* Outer full-bleeds to the viewport on lg (no transform — keeps it
+                  out of the Konva render's stacking concerns); the inner re-centers
+                  with mx-auto + a max width, so the pair is centered on the PAGE
+                  regardless of the surrounding column. justify-center then centers
+                  the two cards within. */}
+              <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
+                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
+                <SatelliteRoofView design={design} className="" inRow />
+              </div>
+            </div>
+          ) : (
+            <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
+          ))}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a

@@ -151,11 +151,30 @@ export type SelectionPrice = {
 // #27 Phase 2). When present, the portal hero renders it live (read-only)
 // instead of the static render image. `scene` is the design tool's Scene;
 // `photoUrl` is a signed, time-limited URL to the design's base photo.
+// One traced roofline polyline in satellite-image space — points are
+// normalized 0–1 (fractions of the satellite image's width/height). Mirrors the
+// geometry of lib/designs' DesignSatelliteLines (portal-local by design; we only
+// need the shape to draw, not the footage).
+export type PortalSatelliteLine = { points: [number, number][]; label: string };
+export type PortalSatelliteLines = {
+  santas: PortalSatelliteLine[];       // front roofline (red)
+  gingerbread: PortalSatelliteLine[];  // ridge & sides (blue)
+  c9: PortalSatelliteLine[];           // C9 roofline (green)
+};
+
 export type PortalDesign = {
   scene: Scene;
   photoUrl: string | null;
   photoW: number | null;
   photoH: number | null;
+  // Top-down satellite roof view (#51): the signed satellite image + its dims +
+  // the roofline polylines, so the portal can show the customer exactly where
+  // the roof lights go. Optional — quotes without a satellite (manual upload /
+  // pre-migration / never-Calculated) omit these and the section hides.
+  satelliteUrl?: string | null;
+  satelliteW?: number | null;
+  satelliteH?: number | null;
+  satelliteLines?: PortalSatelliteLines | null;
 };
 
 export type PortalQuote = {
