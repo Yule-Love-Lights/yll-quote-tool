@@ -1,5 +1,4 @@
 import { getClaudeClient } from './claude';
-import { StoredCorrection } from './corrections';
 import type { StoredReferenceAsset } from './referenceAssets';
 
 // Fail-safe (analyzer outage): when the Claude analysis fails, the analyze
@@ -319,7 +318,7 @@ export type TrainingExamplePhoto = {
 };
 
 type FewShotExample = {
-  // Support multi-photo training houses OR single-photo corrections.
+  // Support multi-photo training houses and scene-based design examples.
   photos: TrainingExamplePhoto[];
   santasFootage: number;
   santasDifficulty: 'easy' | 'medium' | 'hard';
@@ -342,30 +341,10 @@ type FewShotExample = {
   // into the example's user turn so the model learns the correction, not just
   // the final answer. Null/absent when there's no seed to compare against.
   seedDiffNote?: string | null;
-  // 'training' = confirmed install (training_houses); 'correction' = legacy
-  // human-corrected photo (photo_corrections); 'design' = a scene-based
+  // 'training' = confirmed install (training_houses); 'design' = a scene-based
   // training example captured from a staff-finalized design (#8 Stage A).
-  source: 'correction' | 'training' | 'design';
+  source: 'training' | 'design';
 };
-
-function correctionToExample(c: StoredCorrection): FewShotExample {
-  return {
-    photos: [{ base64: c.photo_base64, mediaType: c.photo_media_type, tag: 'front_install' }],
-    santasFootage: c.corrected_santas_footage,
-    santasDifficulty: c.corrected_santas_difficulty,
-    santasLines: c.corrected_santas_lines,
-    gingerbreadFootage: c.corrected_gingerbread_footage,
-    gingerbreadDifficulty: c.corrected_gingerbread_difficulty,
-    gingerbreadLines: c.corrected_gingerbread_lines,
-    satelliteSantasLines: c.corrected_satellite_santas_lines ?? [],
-    satelliteGingerbreadLines: c.corrected_satellite_gingerbread_lines ?? [],
-    miniLightDetections: c.corrected_mini_light_detections ?? [],
-    wreathDetections: c.corrected_wreath_detections ?? [],
-    spritzerDetections: c.corrected_spritzer_detections ?? [],
-    garlandDetections: c.corrected_garland_detections ?? [],
-    source: 'correction',
-  };
-}
 
 function buildFewShotMessages(examples: FewShotExample[]) {
   type Block =
@@ -375,11 +354,9 @@ function buildFewShotMessages(examples: FewShotExample[]) {
 
   for (const ex of examples) {
     const userContent: Block[] = [];
-    const label = ex.source === 'training'
-      ? `Completed installation${ex.houseStyle ? ` (${ex.houseStyle})` : ''} — confirmed measurements from takedown.`
-      : ex.source === 'design'
-        ? 'Staff-confirmed design from a sent quote — ground-truth layout, measurements, and item placement.'
-        : 'Human-corrected measurement.';
+    const label = ex.source === 'design'
+      ? 'Staff-confirmed design from a sent quote — ground-truth layout, measurements, and item placement.'
+      : `Completed installation${ex.houseStyle ? ` (${ex.houseStyle})` : ''} — confirmed measurements from takedown.`;
 
     const photosNote = ex.photos.length > 1
       ? ex.source === 'design'
@@ -481,7 +458,7 @@ function buildReferenceMessages(references: StoredReferenceAsset[]) {
   ];
 }
 
-export { correctionToExample, type FewShotExample };
+export { type FewShotExample };
 
 export type SatelliteReference = {
   base64: string;
@@ -524,7 +501,6 @@ export async function analyzePhoto(
   const refMessages = buildReferenceMessages(references);
   const fewShotMessages = buildFewShotMessages(fewShotExamples);
   const trainingCount = fewShotExamples.filter(e => e.source === 'training').length;
-  const correctionCount = fewShotExamples.filter(e => e.source === 'correction').length;
   const designCount = fewShotExamples.filter(e => e.source === 'design').length;
   const refsNote = references.length > 0
     ? `\n\nYou have ${references.length} product reference image(s) loaded in the conversation so you can more accurately recognize specific wreath sizes, spritzer shapes, and garland styles.`
@@ -534,7 +510,6 @@ export async function analyzePhoto(
   const exampleParts: string[] = [];
   if (trainingCount) exampleParts.push(`${trainingCount} completed-job reference(s)`);
   if (designCount) exampleParts.push(`${designCount} staff-confirmed design example(s) from sent quotes`);
-  if (correctionCount) exampleParts.push(`${correctionCount} human-corrected example(s)`);
   const corrNote = exampleParts.length > 0
     ? `\n\nYou have ${exampleParts.join(', ')} shown in the conversation history below. Completed-job references and staff-confirmed designs are GROUND TRUTH from real installs — highest trust. Match their precision and coordinate style.`
     : '';

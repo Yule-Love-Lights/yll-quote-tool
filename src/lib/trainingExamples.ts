@@ -10,9 +10,9 @@
 //   'manual'    — the explicit "Save as training example" button.
 // A quote keeps at most one example per source (partial unique index).
 //
-// These rows feed the analyzer's few-shot via exampleToFewShot(), taking
-// precedence over the legacy photo_corrections (which only fill remaining
-// slots until Jason's planned full data wipe retires them).
+// These rows feed the analyzer's few-shot via exampleToFewShot() — the
+// scene-based training library (the legacy photo_corrections system was
+// retired; see migrations/2026-06-25-drop-photo-corrections.sql).
 
 import { getSupabaseServiceClient } from './supabase';
 import {

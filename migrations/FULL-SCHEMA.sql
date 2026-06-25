@@ -128,38 +128,11 @@ create index if not exists quote_view_events_quote_idx
 
 
 -- ---------------------------------------------------------------------
--- 2. photo_corrections
+-- 2. photo_corrections — REMOVED (S13)
+--    The legacy corrections system was retired (superseded by the
+--    training_examples few-shot library). Drop migration:
+--    migrations/2026-06-25-drop-photo-corrections.sql
 -- ---------------------------------------------------------------------
-create table if not exists photo_corrections (
-  id uuid primary key default gen_random_uuid(),
-  created_at timestamp with time zone default now(),
-  photo_base64 text not null,
-  photo_media_type text not null,
-  original_analysis jsonb not null,
-  corrected_santas_footage numeric(10, 2) not null,
-  corrected_santas_difficulty text not null,
-  corrected_santas_lines jsonb not null,
-  corrected_gingerbread_footage numeric(10, 2) not null,
-  corrected_gingerbread_difficulty text not null,
-  corrected_gingerbread_lines jsonb not null,
-  corrected_mini_light_detections jsonb not null default '[]'::jsonb,
-  notes text
-);
-
--- Extra correction fields the quote/new page now captures (all nullable).
-alter table photo_corrections
-  add column if not exists corrected_mini_light_detections jsonb not null default '[]'::jsonb,
-  add column if not exists corrected_c9_lines jsonb,
-  add column if not exists corrected_winter_wonderland_footage numeric,
-  add column if not exists corrected_satellite_santas_lines jsonb,
-  add column if not exists corrected_satellite_gingerbread_lines jsonb,
-  add column if not exists corrected_satellite_c9_lines jsonb,
-  add column if not exists corrected_wreath_detections jsonb,
-  add column if not exists corrected_spritzer_detections jsonb,
-  add column if not exists corrected_garland_detections jsonb;
-
-alter table photo_corrections disable row level security;
-create index if not exists photo_corrections_created_at_idx on photo_corrections (created_at desc);
 
 
 -- ---------------------------------------------------------------------

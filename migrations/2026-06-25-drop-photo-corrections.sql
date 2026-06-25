@@ -1,0 +1,11 @@
+-- Drop the legacy photo_corrections table (S13).
+--
+-- The "corrections" system is fully retired. It was superseded by the
+-- training_examples few-shot library (#8 Stage A): nothing in the app writes
+-- corrections anymore (the /api/save-correction route + the /training/corrections
+-- review page + lib/corrections.ts were all removed), and the few-shot assembler
+-- no longer reads them. The table is empty (training data was wiped, and there
+-- has been no writer since), so this drops no live data.
+--
+-- Index drops with the table; CASCADE is unnecessary (nothing references it).
+drop table if exists photo_corrections;
