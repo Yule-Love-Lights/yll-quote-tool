@@ -111,7 +111,8 @@ export type SelectionCharges = {
   rushFee: number;   // dollars to add (0 when off)
   takedown: number;  // dollars to add (0 when off)
   taxRate: number;   // effective rate for this quote, e.g. 0.08625
-  discountRate?: number; // early-install promo rate off the subtotal (#40); 0/undefined when none
+  discountRate?: number; // promo/manual-% rate off the subtotal; 0/undefined when none
+  discountFlat?: number; // flat $ off the subtotal (manual flat discount); 0/undefined when none
 };
 
 // Per-quote fee config for the portal. Rush + premium-takedown are
@@ -124,6 +125,11 @@ export type PortalCharges = {
   taxRate: number;   // effective rate for this quote, e.g. 0.08625
   rush: { amount: number; defaultOn: boolean };
   takedown: { amount: number; defaultOn: boolean };
+  // Staff "Apply discount" from the builder, flowed to the live portal price so
+  // the customer sees + gets it. rate = fraction off the subtotal (percentage),
+  // flat = dollars off (flat). Both 0 / absent = no manual discount. Mutually
+  // exclusive with the early-install promo (one discount per quote).
+  manualDiscount?: { rate: number; flat: number };
 };
 
 // Full price breakdown for a selection, so the portal can show a
@@ -132,7 +138,7 @@ export type PortalCharges = {
 // minimum is enforced as an approval gate (see minimumOrderSubtotal).
 export type SelectionPrice = {
   subtotal: number;  // pre-tax sum of the selected line items
-  discount: number;  // early-install promo discount off the subtotal (#40); 0 when none
+  discount: number;  // total discount off the subtotal (early-install OR manual); 0 when none
   rushFee: number;   // dollars (0 when not on this quote)
   takedown: number;  // dollars (0 when not on this quote)
   taxable: number;   // subtotal − discount + rushFee + takedown

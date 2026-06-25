@@ -66,6 +66,11 @@ type SelectionContextValue = {
   septemberDiscountRate: number;
   /** October early-install discount rate (e.g. 0.10) for the toggle label */
   octoberDiscountRate: number;
+  /** Staff "Apply discount" (#40): when set, the early-install picker is hidden
+   *  and this fixed %/flat discount applies instead. null when none. */
+  manualDiscount: { rate: number; flat: number } | null;
+  /** convenience: true when a staff manual discount is in effect (picker hidden) */
+  hasManualDiscount: boolean;
   /** name of the active package ("Build Your Own" when custom) */
   activeName: string;
   selectPackage: (id: PackageId) => void;
@@ -315,14 +320,26 @@ export function SelectionProvider({
     [selectedItemIds, priceMap],
   );
 
+  // One discount per quote: a staff manual discount (fixed %/flat) OR the
+  // customer's early-install pick (#40). When a manual discount is set, the
+  // early-install picker is hidden so installTiming stays 'none' — but guard here
+  // too so the two can never stack.
+  const manualDiscount = charges.manualDiscount ?? null;
+  const hasManualDiscount =
+    !!manualDiscount && (manualDiscount.rate > 0 || manualDiscount.flat > 0);
+
   // Effective fees reflect the live toggle state; the breakdown re-prices
   // whenever the selection OR a fee toggle changes.
   const breakdown = useMemo(
-    () => priceSelection(
-      currentSubtotal,
-      effectiveCharges(charges, rushSelected, takedownSelected, installDiscountRate(installTiming)),
-    ),
-    [currentSubtotal, charges, rushSelected, takedownSelected, installTiming],
+    () => {
+      const rate = hasManualDiscount ? manualDiscount!.rate : installDiscountRate(installTiming);
+      const flat = hasManualDiscount ? manualDiscount!.flat : 0;
+      return priceSelection(
+        currentSubtotal,
+        effectiveCharges(charges, rushSelected, takedownSelected, rate, flat),
+      );
+    },
+    [currentSubtotal, charges, rushSelected, takedownSelected, installTiming, hasManualDiscount, manualDiscount],
   );
 
   // #47 — the $1,000 gate counts the rush + premium-takedown fees too, not just
@@ -372,6 +389,8 @@ export function SelectionProvider({
     toggleInstallTiming: locked ? noop : toggleInstallTiming,
     septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
     octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
+    manualDiscount,
+    hasManualDiscount,
     activeName,
     selectPackage: locked ? noop : selectPackage,
     toggleItem: locked ? noop : toggleItem,

@@ -324,6 +324,13 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // locked, approved portal could show a price based on the staff's offer rather
   // than what the customer actually confirmed.
   const approval = buildApproval(row);
+  // Staff "Apply discount" from the builder → flowed to the live portal price so
+  // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
+  // flat as dollars. Mutually exclusive with the early-install promo (one per quote).
+  const d = row.inputs?.discount;
+  const manualDiscount = d
+    ? { rate: d.type === 'percentage' ? d.amount : 0, flat: d.type === 'flat' ? d.amount : 0 }
+    : { rate: 0, flat: 0 };
 
   return {
     id: row.id,
@@ -346,7 +353,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Per-job charges so the custom "Build Your Own" total is priced the
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
-    charges: chargesFromResult(row.result),
+    charges: { ...chargesFromResult(row.result), manualDiscount },
     // The $1,000 approval gate threshold. 0 when EITHER (a) staff checked
     // "waive the $1,000 minimum" on this quote (#59 — inputs.waiveMinimum), or
     // (b) the quote's items already total under $1,000 (the existing auto-waive
