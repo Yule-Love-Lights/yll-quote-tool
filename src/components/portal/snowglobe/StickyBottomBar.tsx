@@ -11,16 +11,22 @@ import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DepositCheckout } from './DepositCheckout';
-import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
 export type StickyBottomBarProps = {
   quoteId: string;
   /** #43 — when the quote is already approved the bar becomes a "booked" state
    *  (no actionable Approve CTA) linking to the confirmation page. */
   approved?: boolean;
+  /** #38 — whether the embedded deposit checkout is enabled. Computed on the
+   *  SERVER (portal page) and passed in, so it's never a stale build-time value. */
+  checkoutEnabled?: boolean;
 };
 
-export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarProps) {
+export function StickyBottomBar({
+  quoteId,
+  approved = false,
+  checkoutEnabled = false,
+}: StickyBottomBarProps) {
   const {
     activeName,
     currentTotal,
@@ -39,11 +45,10 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  // #38 — when the customer-checkout flag is on, Approve opens the embedded
-  // deposit checkout instead of routing to the booked page. Off by default
-  // (the code ships dark; flipped on after the staging test).
+  // #38 — when the customer-checkout flag is on (server-computed, passed as a
+  // prop), Approve opens the embedded deposit checkout instead of routing to the
+  // booked page. Off by default (the code ships dark; flipped on after testing).
   const [showCheckout, setShowCheckout] = useState(false);
-  const checkoutEnabled = isValorCheckoutEnabled();
   const router = useRouter();
 
   // Fire a one-shot "interested" signal when the customer DELIBERATELY engages

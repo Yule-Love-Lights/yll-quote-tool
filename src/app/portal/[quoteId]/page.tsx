@@ -51,6 +51,7 @@ import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
+import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
 type Params = { quoteId: string };
 
@@ -113,6 +114,10 @@ export default async function PortalPage({
   // re-shoppable: a banner up top + the sticky bar's Approve CTA becomes a
   // "View confirmation" link (the approval snapshot drives /approved).
   const isApproved = !!quote.approval;
+  // #38 — read the customer-checkout flag on the server (request time), so the
+  // sticky bar's Approve either opens the embedded deposit checkout (on) or
+  // routes to the booked page (off). Server-read avoids a stale baked value.
+  const checkoutEnabled = isValorCheckoutEnabled();
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   const appSettings = await getAppSettings();
@@ -234,7 +239,7 @@ export default async function PortalPage({
         <Disclaimer />
 
         {/* Sticky floating pill bar — real approve flow, always last in tree */}
-        <StickyBottomBar quoteId={quoteId} approved={isApproved} />
+        <StickyBottomBar quoteId={quoteId} approved={isApproved} checkoutEnabled={checkoutEnabled} />
       </SelectionProvider>
     </main>
   );
