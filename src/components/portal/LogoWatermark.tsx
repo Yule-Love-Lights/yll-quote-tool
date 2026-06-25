@@ -31,7 +31,10 @@ export function LogoWatermark({ className = '' }: Props) {
       draggable={false}
       className={
         'pointer-events-none select-none absolute z-20 top-[3%] right-[3%] ' +
-        'h-auto w-[14%] min-w-[64px] max-w-[150px] ' +
+        // Size (Naldo S13): ~2× bigger on desktop, ~+30% on mobile vs the first
+        // pass. % of the photo box, clamped so it never gets tiny on phones or
+        // huge on ultra-wide. ≈84–90px on a phone, ≈290–340px on a desktop hero.
+        'h-auto w-[23%] min-w-[84px] max-w-[340px] ' +
         className
       }
       style={{ opacity: 0.22, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.4))' }}
