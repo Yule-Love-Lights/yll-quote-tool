@@ -274,6 +274,31 @@ describe('priceSelection — early-install discount (#40)', () => {
   });
 });
 
+describe('priceSelection — manual discount flows to the portal', () => {
+  const taxRate = 0.0875;
+
+  it('applies a manual percentage off the subtotal (same path as early-install)', () => {
+    // $1,000 of items, staff 20% → $200 off → $800 taxable.
+    const p = priceSelection(1000, { rushFee: 0, takedown: 0, taxRate, discountRate: 0.2 });
+    expect(p.discount).toBe(200);
+    expect(p.taxable).toBe(800);
+  });
+
+  it('applies a manual flat dollar discount off the subtotal', () => {
+    // $1,000 of items, staff $150 flat off → $850 taxable.
+    const p = priceSelection(1000, { rushFee: 0, takedown: 0, taxRate, discountFlat: 150 });
+    expect(p.discount).toBe(150);
+    expect(p.taxable).toBe(850);
+  });
+
+  it('never discounts below $0 (a flat discount is capped at the subtotal)', () => {
+    const p = priceSelection(100, { rushFee: 0, takedown: 0, taxRate, discountFlat: 250 });
+    expect(p.discount).toBe(100); // capped at the $100 subtotal
+    expect(p.taxable).toBe(0);
+    expect(p.total).toBe(0);
+  });
+});
+
 describe('installDiscountRate — Sep/Oct early-install rates (#40)', () => {
   it('maps the timing choice to its rate', () => {
     expect(installDiscountRate('september')).toBe(0.15);
@@ -377,13 +402,14 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
   };
 
   it('includes a fee amount only when its toggle is on', () => {
-    expect(effectiveCharges(config, true, false)).toEqual({ rushFee: 150, takedown: 0, taxRate: 0.08625, discountRate: 0 });
-    expect(effectiveCharges(config, false, true)).toEqual({ rushFee: 0, takedown: 200, taxRate: 0.08625, discountRate: 0 });
-    expect(effectiveCharges(config, true, true)).toEqual({ rushFee: 150, takedown: 200, taxRate: 0.08625, discountRate: 0 });
-    expect(effectiveCharges(config, false, false)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0 });
+    expect(effectiveCharges(config, true, false)).toEqual({ rushFee: 150, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 0 });
+    expect(effectiveCharges(config, false, true)).toEqual({ rushFee: 0, takedown: 200, taxRate: 0.08625, discountRate: 0, discountFlat: 0 });
+    expect(effectiveCharges(config, true, true)).toEqual({ rushFee: 150, takedown: 200, taxRate: 0.08625, discountRate: 0, discountFlat: 0 });
+    expect(effectiveCharges(config, false, false)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 0 });
   });
 
-  it('passes through an early-install discount rate (#40)', () => {
-    expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15 });
+  it('passes through a discount rate and a flat discount', () => {
+    expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15, discountFlat: 0 });
+    expect(effectiveCharges(config, false, false, 0, 100)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 100 });
   });
 });

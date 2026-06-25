@@ -319,6 +319,18 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // derivePackages guarantees no single tier ever selects both.
   const packages = derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
+  // Computed up front so the seeded install-timing can prefer the customer's
+  // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
+  // locked, approved portal could show a price based on the staff's offer rather
+  // than what the customer actually confirmed.
+  const approval = buildApproval(row);
+  // Staff "Apply discount" from the builder → flowed to the live portal price so
+  // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
+  // flat as dollars. Mutually exclusive with the early-install promo (one per quote).
+  const d = row.inputs?.discount;
+  const manualDiscount = d
+    ? { rate: d.type === 'percentage' ? d.amount : 0, flat: d.type === 'flat' ? d.amount : 0 }
+    : { rate: 0, flat: 0 };
 
   return {
     id: row.id,
@@ -341,18 +353,26 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Per-job charges so the custom "Build Your Own" total is priced the
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
-    charges: chargesFromResult(row.result),
+    charges: { ...chargesFromResult(row.result), manualDiscount },
     // The $1,000 approval gate threshold. 0 when EITHER (a) staff checked
     // "waive the $1,000 minimum" on this quote (#59 — inputs.waiveMinimum), or
     // (b) the quote's items already total under $1,000 (the existing auto-waive
     // in minimumOrderSubtotal()). Enforced on the portal, not in pricing. Uses
     // tierLineItems so a two-roofline quote isn't double-counted.
     minimumOrderSubtotal: row.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems),
+    // Seeds the portal's install-timing (#40): the customer's APPROVED choice on a
+    // booked quote, else the staff-set default so an active quote opens with the
+    // Sep/Oct discount pre-selected (the customer can still change it).
+    installTiming: approval
+      ? approval.installTiming
+      : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
+        ? row.inputs.installTiming
+        : 'none',
     weeklyBookings,
     seasonCapacity: {
       installedThisWeek: weeklyBookings,
       bookedThroughDate,
     },
-    approval: buildApproval(row),
+    approval,
   };
 }

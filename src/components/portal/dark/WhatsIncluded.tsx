@@ -183,6 +183,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
     toggleInstallTiming,
     septemberDiscountRate,
     octoberDiscountRate,
+    hasManualDiscount,
+    manualDiscount,
     locked,
   } = useSelection();
 
@@ -309,7 +311,9 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
 
         {/* Early-install discount (#40) — Sep/Oct roof-light install for a
          * percentage off the order. Mutually exclusive with each other and with
-         * rush install. The note spells out exactly what "early install" means. */}
+         * rush install. HIDDEN when a staff manual discount is set (one discount
+         * per quote — the "Your discount" banner below shows that instead). */}
+        {!hasManualDiscount && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save
@@ -342,6 +346,36 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
             discount requires the install to happen that month.
           </p>
         </div>
+        )}
+
+        {/* Staff manual discount — when set, the early-install picker is hidden
+         * and the customer sees their discount here + in the price tie-out
+         * below. One discount per quote. */}
+        {hasManualDiscount && manualDiscount && breakdown.discount > 0 && (
+          <div className="mt-10 md:mt-12">
+            <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
+              Your discount
+            </p>
+            <div className="rounded-2xl border border-[#E8B862]/40 bg-[#1B1409] p-4 md:p-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[#F4ECD8] font-semibold text-[17px] md:text-[19px]">
+                  {/* Flat label uses the APPLIED amount (breakdown.discount) so it can
+                      never disagree with the figure beside it when the flat discount
+                      exceeds the live subtotal (priceSelection caps it). */}
+                  {manualDiscount.rate > 0
+                    ? `${Math.round(manualDiscount.rate * 100)}% off`
+                    : `${formatUsd(breakdown.discount)} off`}{' '}applied
+                </p>
+                <p className="text-[13px] text-[#A89F87] mt-1 leading-[1.6]">
+                  A special discount on your quote — already reflected in your total below.
+                </p>
+              </div>
+              <span className="text-[#E8B862] font-display font-semibold text-[20px] md:text-[24px] tabular-nums whitespace-nowrap">
+                −{formatUsd(breakdown.discount)}
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Totals — ties the line items above out to the all-in price:
          * Subtotal (+ any per-job fees) + tax = Total, with the 50% deposit
@@ -355,7 +389,11 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
             </div>
             {breakdown.discount > 0 && (
               <div className="flex justify-between text-[#86C9A0]">
-                <dt>{installTiming === 'september' ? 'September' : 'October'} install discount</dt>
+                <dt>
+                  {hasManualDiscount
+                    ? 'Discount'
+                    : `${installTiming === 'september' ? 'September' : 'October'} install discount`}
+                </dt>
                 <dd className="tabular-nums">−{formatUsd(breakdown.discount)}</dd>
               </div>
             )}
