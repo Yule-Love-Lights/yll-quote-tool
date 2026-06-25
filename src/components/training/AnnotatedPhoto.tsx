@@ -2,8 +2,7 @@
 
 // Photo + measurement overlay for the training review pages (#8 Stage A).
 // Draws normalized-0–1 polylines (rooflines) and boxes (detections) over a
-// base64 photo — the visual spot-check the old corrections page never had
-// (it listed line labels as text only).
+// base64 photo — a visual spot-check of the saved measurements.
 
 import type { LineSegment } from '@/lib/photoAnalysis';
 

@@ -71,7 +71,7 @@ Why it matters: the pricing engine, scene projection, and portal adapter are all
 
 - **`sharp`** reads image dimensions server-side on design-photo upload (`src/lib/designs.ts`). *(Its old compositing/masking role died with the render pipeline, #36 — keep the dependency.)*
 - **Storage:** the private **`designs`** bucket (base house photos + custom-item images), 1-hour signed URLs via the service-role client.
-- **Other tables store images inline as base64** in jsonb/text (`photo_corrections.photo_base64`, `training_houses.photos[]`, `reference_assets.base64`) — not in Storage. Keep that consistent unless you migrate them.
+- **Other tables store images inline as base64** in jsonb/text (`training_houses.photos[]`, `reference_assets.base64`) — not in Storage. Keep that consistent unless you migrate them.
 - **Source asset weight:** the real install photos in `public/references/` are multi-MB PNGs (one is ~4MB). Next/Image optimizes them for customers, but the **dev image optimizer can stall** on a page that loads ~11 at once. Compressing the source files to WebP is a known cleanup (LCP win) — flagged in the portal work.
 - **Frontend images:** prefer `next/image`. Allowed remote hosts are allow-listed in `next.config.ts` (`images.remotePatterns`); add a host there before hotlinking it. Image `qualities` must be allow-listed too (`images.qualities` includes `85` for the snowglobe hero).
 

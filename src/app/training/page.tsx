@@ -61,12 +61,6 @@ export default function TrainingListPage() {
               Training Examples
             </Link>
             <Link
-              href="/training/corrections"
-              className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
-            >
-              Corrections
-            </Link>
-            <Link
               href="/training/references"
               className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
             >

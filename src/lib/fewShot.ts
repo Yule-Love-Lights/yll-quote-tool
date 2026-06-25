@@ -18,11 +18,10 @@ import {
   getCorpusBiasNote,
   type TrainingExampleRow,
 } from './trainingExamples';
-import { getRecentCorrections } from './corrections';
 import { getTrainingFewShot, type StoredTrainingHouse } from './training';
 import { getReferenceAssetsForAnalysis, type StoredReferenceAsset } from './referenceAssets';
 import { embedImage } from './embeddings';
-import { correctionToExample, type FewShotExample } from './photoAnalysis';
+import { type FewShotExample } from './photoAnalysis';
 
 // The one tunable knob: how many house examples to feed per analyze call.
 // 8 is the few-shot sweet spot — past it returns diminish and latency (image
@@ -63,22 +62,20 @@ function trainingHouseToExample(h: StoredTrainingHouse): FewShotExample {
 export type FewShotSources = {
   design: FewShotExample[];      // scene-based examples, ranked best-first (similarity or recency)
   training: FewShotExample[];    // confirmed training houses, recency/style-ranked
-  corrections: FewShotExample[]; // legacy photo_corrections (sunset at the data wipe)
 };
 
-// PURE: pick ≤ limit examples and ORDER them best-last. Ground-truth sources
-// (design → training) fill the cap first; legacy corrections only pad a thin
-// library. Output order matters: the model weights the END of the context most
-// (and the very start; "lost in the middle"), so the strongest example sits
-// LAST. `design` arrives best-first (closest match first), so it's REVERSED to
-// put the closest match dead last; lower-trust sources go earlier.
+// PURE: pick ≤ limit examples and ORDER them best-last. Design fills the cap
+// first, then training pads any remaining slots. Output order matters: the
+// model weights the END of the context most (and the very start; "lost in the
+// middle"), so the strongest example sits LAST. `design` arrives best-first
+// (closest match first), so it's REVERSED to put the closest match dead last;
+// lower-trust training goes earlier.
 export function selectFewShot(sources: FewShotSources, limit: number): FewShotExample[] {
   const design = sources.design.slice(0, limit);
   const training = sources.training.slice(0, Math.max(0, limit - design.length));
-  const corrections = sources.corrections.slice(0, Math.max(0, limit - design.length - training.length));
-  // Earliest (least weight) → latest (most weight): corrections, then training,
-  // then design with its closest match last.
-  return [...corrections, ...training, ...[...design].reverse()];
+  // Earliest (least weight) → latest (most weight): training, then design with
+  // its closest match last.
+  return [...training, ...[...design].reverse()];
 }
 
 export type AssembledFewShot = {
@@ -88,7 +85,7 @@ export type AssembledFewShot = {
   // #8 Stage C (C2): corpus-wide systematic-bias calibration for the system
   // prompt, or null when the corpus is too small to claim a tendency.
   biasNote: string | null;
-  breakdown: { design: number; training: number; corrections: number; references: number; ranking: 'similarity' | 'recency' };
+  breakdown: { design: number; training: number; references: number; ranking: 'similarity' | 'recency' };
 };
 
 // Fetch + rank + cap the few-shot for an analyze call. `queryImage` is the
@@ -119,8 +116,7 @@ export async function assembleFewShot(
     : projectDesign(await getRecentTrainingExamples(FEW_SHOT_LIMIT));
 
   // 3. Other sources + the corpus-wide bias note (#8 Stage C / C2) in parallel.
-  const [corrections, trainingHouses, references, biasNote] = await Promise.all([
-    getRecentCorrections(FEW_SHOT_LIMIT),
+  const [trainingHouses, references, biasNote] = await Promise.all([
     getTrainingFewShot(FEW_SHOT_LIMIT, houseStyleHint),
     getReferenceAssetsForAnalysis(REFERENCE_PER_TYPE),
     getCorpusBiasNote(),
@@ -130,10 +126,9 @@ export async function assembleFewShot(
   const training = trainingHouses
     .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
     .map(trainingHouseToExample);
-  const correctionExamples = corrections.map(correctionToExample);
 
   // 5. Select + order.
-  const examples = selectFewShot({ design, training, corrections: correctionExamples }, FEW_SHOT_LIMIT);
+  const examples = selectFewShot({ design, training }, FEW_SHOT_LIMIT);
   const ranking: 'similarity' | 'recency' = usedSimilarity ? 'similarity' : 'recency';
 
   return {
@@ -144,7 +139,6 @@ export async function assembleFewShot(
     breakdown: {
       design: design.length,
       training: training.length,
-      corrections: correctionExamples.length,
       references: references.length,
       ranking,
     },
