@@ -184,8 +184,9 @@ export const MOCK_FAQ = [
 ];
 
 export const MOCK_TEAM = {
-  // "Naldo" is the friendly short form used in CTAs ("Text Naldo directly").
+  // "Naldo" is the friendly short form used elsewhere (e.g. the WalkthroughVideo intro).
   // The company bio refers to the founder by his full name, Naldoven.
+  // The main portal contact card uses the team voice ("Reach out to the Yule Love Lights Team").
   leaderName: 'Naldo',
   phone: '(631) 517-0186',
   // Real team photo — the full crew in front of the branded YLL trailer.

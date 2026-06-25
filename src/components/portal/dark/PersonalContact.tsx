@@ -31,7 +31,7 @@ export function PersonalContact({ leaderName, photo, phone }: PersonalContactPro
           </div>
           <div className="flex-1">
             <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-1.5">
-              Questions? Text {leaderName} directly
+              Questions? Reach out to the Yule Love Lights Team
             </p>
             <h2 id="portal-dark-contact-heading" className="font-display">
               <a
