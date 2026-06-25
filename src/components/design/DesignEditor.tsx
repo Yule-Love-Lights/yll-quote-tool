@@ -101,6 +101,27 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
     return () => window.removeEventListener('keydown', onKey);
   }, [expanded]);
 
+  // "F" toggles full screen (#44) — the ideal flow is pull/upload → analyze →
+  // press F → full-screen editor with the house ready. F (not spacebar) because
+  // the editor core already owns Space for hold-to-pan the canvas (editor.ts) —
+  // overloading Space would fight panning, and inside full screen you still need
+  // Space to pan the enlarged canvas. F has no collision (the editor core only
+  // handles Space / Esc / Enter / Ctrl-combos / Delete), so it's a safe toggle.
+  // Guards: ignore while typing in a field, ignore when a modifier is held (so
+  // Ctrl/Cmd+F browser-find still works), and ignore auto-repeat from a held key.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'f' && e.key !== 'F') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      e.preventDefault();
+      setExpanded((v) => !v);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // The host just changed size (full-screen toggle) — nudge the editor to refit
   // its canvas to the new box. The editor also has a ResizeObserver, but a
   // window resize is a reliable, explicit trigger across environments. Fire
@@ -140,8 +161,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
           <Link href="/settings" target="_blank" className={barBtn}>
             ⚙ Settings
           </Link>
-          <button type="button" onClick={() => setExpanded((e) => !e)} className={barBtn}>
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className={barBtn}
+            title={expanded ? 'Exit full screen (F or Esc)' : 'Full screen (F)'}
+          >
             {expanded ? '✕ Exit full screen' : '⛶ Full screen'}
+            <span className="ml-1 opacity-60">(F)</span>
           </button>
           {onClose && (
             <button
