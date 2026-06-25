@@ -14,6 +14,11 @@ export type QuoteListItem = {
   // and to short-circuit the "Send to customer" button when already sent.
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  // View receipt (#68): when the customer opened their portal link. Admin shows
+  // a "Viewed" badge (with the count + last-open time on hover).
+  viewed_at: string | null;
+  last_viewed_at: string | null;
+  view_count: number | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -23,7 +28,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, viewed_at, last_viewed_at, view_count',
     )
     .order('created_at', { ascending: false })
     .limit(limit);

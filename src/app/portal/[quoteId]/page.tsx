@@ -38,6 +38,7 @@ import { PersonalContact } from '@/components/portal/dark/PersonalContact';
 import { TrustSection } from '@/components/portal/dark/TrustSection';
 import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
+import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import {
   MOCK_QUOTE,
   MOCK_GALLERY_ITEMS,
@@ -139,6 +140,8 @@ export default async function PortalPage({
 
   return (
     <main className="relative w-full">
+      {/* #68 — records the customer's open (client-side, fire-and-forget). */}
+      <QuoteViewTracker quoteId={quoteId} />
       {isApproved && (
         <BookedBanner quoteId={quoteId} approvedAt={quote.approval?.approvedAt} />
       )}

@@ -124,3 +124,45 @@ export function internalApprovalEmailHtml(input: {
     `<p><a href="${input.portalUrl}">Customer portal →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');
 }
+
+// ─── View receipt (#68) ─────────────────────────────────────────────────────
+// Sent to the internal GHL contact each time the customer opens their portal
+// link, so staff know the quote is being looked at (a warm-lead signal to
+// follow up). Fires per open; the count tells you how engaged they are.
+
+export function internalViewedEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `👀 Quote viewed: ${who}`;
+}
+
+export function internalViewedEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  viewCount: number;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  // "1st time" / "2nd time" / "3rd time" / "Nth time".
+  const n = input.viewCount;
+  const ord =
+    n % 100 >= 11 && n % 100 <= 13
+      ? `${n}th`
+      : `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] || 'th'}`;
+  return [
+    `<p><strong>${name}</strong> just opened their quote (their <strong>${ord}</strong> time).</p>`,
+    `<p>Good moment to follow up while it's top of mind.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    row('Times opened', String(n)),
+    `</table>`,
+    `<p><a href="${input.portalUrl}">Customer portal →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
