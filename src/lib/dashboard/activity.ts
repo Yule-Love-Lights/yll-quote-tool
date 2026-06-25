@@ -3,7 +3,7 @@
 // with the per-view event log (quote_view_events) into one timeline, newest
 // first. Pure + testable; the page fetches the rows and renders the result.
 
-export type ActivityKind = 'created' | 'sent' | 'approved' | 'viewed';
+export type ActivityKind = 'created' | 'sent' | 'approved' | 'viewed' | 'interested';
 
 export type ActivityEvent = {
   kind: ActivityKind;
@@ -21,17 +21,20 @@ export type ActivityQuote = {
   total: number | null;
 };
 
-// A row from the quote_view_events log.
-export type ViewEventRow = { quote_id: string; viewed_at: string };
+// A row from the quote_view_events log. `kind` is 'viewed' or 'interested'
+// (absent on rows written before the kind column existed → treated as 'viewed').
+export type ViewEventRow = { quote_id: string; viewed_at: string; kind?: string | null };
 
 // Tie-break when two events share an exact timestamp. The comparator below
 // applies this DESCENDING (newest stage first), so a same-instant tie emits
-// approved -> viewed -> sent -> created — the right order for a newest-first feed.
+// approved -> interested -> viewed -> sent -> created — the order for a
+// newest-first feed (a customer views, gets interested, then approves).
 const KIND_ORDER: Record<ActivityKind, number> = {
   created: 0,
   sent: 1,
   viewed: 2,
-  approved: 3,
+  interested: 3,
+  approved: 4,
 };
 
 export function buildCustomerActivity(
@@ -53,7 +56,7 @@ export function buildCustomerActivity(
     // Defensive: ignore a view row that isn't one of this customer's quotes.
     if (!knownQuote.has(v.quote_id)) continue;
     events.push({
-      kind: 'viewed',
+      kind: v.kind === 'interested' ? 'interested' : 'viewed',
       at: v.viewed_at,
       quoteId: v.quote_id,
       total: totalByQuote.get(v.quote_id) ?? null,

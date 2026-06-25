@@ -6,7 +6,7 @@
 // the InteractiveHero's tabs.
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
@@ -37,6 +37,24 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const router = useRouter();
+
+  // Fire a one-shot "interested" signal when the customer engages the Approve
+  // button — hovers it (desktop) or focuses/taps it (mobile) — without
+  // necessarily approving. Surfaces as an "Interested" row on the staff activity
+  // feed. Fire-and-forget + ref-guarded so it posts at most once per page load.
+  const interestFiredRef = useRef(false);
+  const flagInterest = () => {
+    if (interestFiredRef.current) return;
+    interestFiredRef.current = true;
+    fetch(`/api/quotes/${encodeURIComponent(quoteId)}/interested`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      keepalive: true,
+    }).catch(() => {
+      /* best-effort — must never disrupt the customer */
+    });
+  };
 
   // Real approval: POST the selection to /api/quotes/[id]/approve, which
   // freezes the snapshot, then texts/emails the customer and emails us to
@@ -141,6 +159,8 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
       <button
         type="button"
         onClick={onApprove}
+        onMouseEnter={flagInterest}
+        onFocus={flagInterest}
         disabled={submitting || !meetsMinimum}
         aria-label="Approve quote"
         className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
