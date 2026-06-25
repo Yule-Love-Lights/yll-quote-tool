@@ -1,0 +1,211 @@
+// Sandbox integration test for the Valor payment webhook (#38). Proves the
+// booked → receipt → CRM-move orchestration end-to-end WITHOUT a real Valor
+// account or database: a correctly-signed fake webhook is POSTed at the handler
+// with Supabase + HighLevel mocked. Also locks in the atomic idempotency guard
+// (concurrent retries must not double-fire side effects).
+//
+// This is the "prove the flow today" harness — it does NOT replace the live
+// staging test (which confirms Valor's real field names against the CONFIRM:
+// seams), but it gives us confidence the server-side logic is correct now.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createHmac } from 'crypto';
+import type { NextRequest } from 'next/server';
+
+// ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
+const { sbRef, hl } = vi.hoisted(() => ({
+  sbRef: { current: null as unknown },
+  hl: {
+    sendSms: vi.fn(async () => ({})),
+    sendEmail: vi.fn(async () => ({})),
+    updateOpportunityStage: vi.fn(async () => ({})),
+    configured: { value: true },
+  },
+}));
+
+vi.mock('@/lib/supabase', () => ({
+  isSupabaseServiceConfigured: () => true,
+  getSupabaseServiceClient: () => sbRef.current,
+}));
+
+vi.mock('@/lib/integrations/highlevel', () => ({
+  sendSms: hl.sendSms,
+  sendEmail: hl.sendEmail,
+  updateOpportunityStage: hl.updateOpportunityStage,
+  isHighLevelConfigured: () => hl.configured.value,
+  HighLevelError: class HighLevelError extends Error {},
+}));
+
+import { POST } from './route';
+
+// ── Fake Supabase query builder ─────────────────────────────────────────────
+// Handles the two chains the route uses:
+//   read:  from().select().eq().single()              -> { data: quote }
+//   write: from().update().eq().eq().is().select('id') -> { data: claimRows }
+// The builder is thenable; only the write path awaits it directly, so `then`
+// resolves the claim result while `single()` resolves the read.
+type Quote = Record<string, unknown> | null;
+function makeSb(quote: Quote, claimRows: Array<{ id: string }>) {
+  const updatePayloads: Array<Record<string, unknown>> = [];
+  const builder: Record<string, unknown> = {};
+  let isUpdate = false;
+  Object.assign(builder, {
+    from: () => builder,
+    select: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      isUpdate = true;
+      updatePayloads.push(payload);
+      return builder;
+    },
+    eq: () => builder,
+    is: () => builder,
+    single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
+    then: (resolve: (v: unknown) => void) => {
+      const res = isUpdate ? { data: claimRows, error: null } : { data: quote, error: null };
+      isUpdate = false;
+      resolve(res);
+    },
+  });
+  return { client: builder, updatePayloads };
+}
+
+const SECRET = 'test-webhook-secret';
+
+function makeReq(rawBody: string, headers: Record<string, string>): NextRequest {
+  return {
+    text: async () => rawBody,
+    headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+    nextUrl: { origin: 'https://quote.example.com' },
+  } as unknown as NextRequest;
+}
+
+// Build a correctly-signed webhook request for a given payload.
+function signedReq(payload: Record<string, unknown>, opts: { secret?: string } = {}) {
+  const rawBody = JSON.stringify(payload);
+  const ts = String(Math.floor(Date.now() / 1000));
+  const sig = createHmac('sha256', opts.secret ?? SECRET).update(`${ts}.${rawBody}`).digest('hex');
+  return makeReq(rawBody, { 'valor-signature': sig, 'valor-timestamp': ts });
+}
+
+const APPROVED_PAYLOAD = {
+  txn_id: 'TXN-123',
+  response_code: '00',
+  amount: '1350.00',
+  approval_code: 'AUTH99',
+  receipt_url: 'https://valor/receipt/123',
+  vault_token: 'vault_abc',
+  order_id: 'qdeadbeef',
+};
+
+const QUOTE = {
+  id: 'quote-1',
+  customer_name: 'Jordan Smith',
+  customer_phone: '+15551234567',
+  customer_email: 'jordan@example.com',
+  total: 2700,
+  result: { total: 2700, depositAmount: 1350 },
+  highlevel_contact_id: 'contact-1',
+  highlevel_opportunity_id: 'opp-1',
+  deposit_paid_at: null,
+  deposit_amount_usd: 1350,
+  approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 1350 } },
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  hl.configured.value = true;
+  process.env.VALOR_WEBHOOK_SECRET = SECRET;
+  process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED = 'stage-approved';
+  process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+  process.env.PORTAL_BASE_URL = 'https://quote.example.com';
+});
+
+describe('Valor webhook — happy path', () => {
+  it('books the quote, stamps payment, and fires receipt + CRM move', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+
+    // payment stamped with the Valor fields
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).toMatchObject({
+      valor_txn_id: 'TXN-123',
+      valor_vault_token: 'vault_abc',
+      valor_approval_code: 'AUTH99',
+      valor_receipt_url: 'https://valor/receipt/123',
+    });
+    expect(updatePayloads[0].deposit_paid_at).toBeTruthy();
+
+    // CRM move + customer receipt (sms + email) + internal "paid" email
+    expect(hl.updateOpportunityStage).toHaveBeenCalledWith('opp-1', 'stage-approved');
+    expect(hl.sendSms).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledTimes(2); // customer receipt + internal alert
+  });
+});
+
+describe('Valor webhook — idempotency (the fix)', () => {
+  it('does NOT double-fire side effects when the atomic claim loses the race', async () => {
+    // Conditional update returns 0 rows → a concurrent retry already claimed it.
+    const { client } = makeSb({ ...QUOTE }, []);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyPaid).toBe(true);
+    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits when the quote is already marked paid', async () => {
+    const { client } = makeSb({ ...QUOTE, deposit_paid_at: '2026-06-25T00:00:00Z' }, []);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(json.alreadyPaid).toBe(true);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+});
+
+describe('Valor webhook — rejects', () => {
+  it('401s on an invalid signature', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    const req = signedReq(APPROVED_PAYLOAD, { secret: 'wrong-secret' });
+
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('503s when VALOR_WEBHOOK_SECRET is not configured', async () => {
+    delete process.env.VALOR_WEBHOOK_SECRET;
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(503);
+  });
+
+  it('acknowledges a declined transaction without booking it', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '05' }));
+    const json = await res.json();
+
+    expect(json.booked).toBe(false);
+    expect(json.declined).toBe(true);
+    expect(updatePayloads).toHaveLength(0); // never stamped paid
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+});
