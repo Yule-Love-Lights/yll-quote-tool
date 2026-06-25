@@ -2010,75 +2010,69 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               </label>
             </div>
 
-            {/* Early-install discount (#40) — staff offers the customer a Sep/Oct
-                install promo (15% / 10% off the subtotal). Mutually exclusive with
-                the rush fee. Drives the engine discount AND seeds the customer's
-                portal install-timing so they see it pre-applied. */}
-            <div className="mb-5">
-              <p className={lbl}>Early-install discount</p>
-              <div className="flex flex-wrap gap-6 mt-1.5">
-                {([
-                  { v: 'none', label: 'None' },
-                  { v: 'september', label: 'September — 15% off' },
-                  { v: 'october', label: 'October — 10% off' },
-                ] as const).map(opt => (
-                  <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="installTiming"
-                      value={opt.v}
-                      checked={form.installTiming === opt.v}
-                      onChange={() => {
-                        set('installTiming', opt.v);
-                        if (opt.v !== 'none') set('rushFee', false);
-                      }}
-                    />
-                    {opt.label}
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-gray-400 mt-1">
-                Applies the promo to this quote and pre-selects the month on the customer&apos;s portal. Mutually exclusive with the rush fee.
-              </p>
-            </div>
-
-            {/* Discount */}
+            {/* Discount — a manual %/flat discount OR an early-install promo (#40),
+                all under one "Apply discount" toggle. Pick Percentage / Flat dollar
+                (enter an amount) or a Sep/Oct early-install month (fixed 15% / 10%).
+                Early-install is mutually exclusive with the rush fee, drives the
+                engine discount, and seeds the customer's portal install-timing. */}
             <div>
               <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
                 <input type="checkbox" checked={form.discountEnabled}
-                  onChange={e => set('discountEnabled', e.target.checked)} />
+                  onChange={e => {
+                    set('discountEnabled', e.target.checked);
+                    // Closing the discount section clears any early-install promo too.
+                    if (!e.target.checked) set('installTiming', 'none');
+                  }} />
                 Apply discount
               </label>
               {form.discountEnabled && (
-                <div className="pl-6 flex flex-wrap items-center gap-5">
-                  <div className="flex gap-5">
+                <div className="pl-6 space-y-3">
+                  <div className="flex flex-wrap items-center gap-5">
                     <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountType" value="percentage"
-                        checked={form.discountType === 'percentage'}
-                        onChange={() => set('discountType', 'percentage')} />
+                      <input type="radio" name="discountKind"
+                        checked={form.installTiming === 'none' && form.discountType === 'percentage'}
+                        onChange={() => { set('installTiming', 'none'); set('discountType', 'percentage'); }} />
                       Percentage
                     </label>
                     <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountType" value="flat"
-                        checked={form.discountType === 'flat'}
-                        onChange={() => set('discountType', 'flat')} />
+                      <input type="radio" name="discountKind"
+                        checked={form.installTiming === 'none' && form.discountType === 'flat'}
+                        onChange={() => { set('installTiming', 'none'); set('discountType', 'flat'); }} />
                       Flat dollar
                     </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input type="radio" name="discountKind"
+                        checked={form.installTiming === 'september'}
+                        onChange={() => { set('installTiming', 'september'); set('rushFee', false); }} />
+                      September — 15% off
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input type="radio" name="discountKind"
+                        checked={form.installTiming === 'october'}
+                        onChange={() => { set('installTiming', 'october'); set('rushFee', false); }} />
+                      October — 10% off
+                    </label>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number" min="0"
-                      max={form.discountType === 'percentage' ? '100' : undefined}
-                      step="0.01"
-                      className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
-                      value={form.discountAmount || ''}
-                      placeholder={form.discountType === 'percentage' ? '20' : '100'}
-                      onChange={e => set('discountAmount', Number(e.target.value))}
-                    />
-                    <span className="text-xs text-gray-400">
-                      {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
-                    </span>
-                  </div>
+                  {form.installTiming === 'none' ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0"
+                        max={form.discountType === 'percentage' ? '100' : undefined}
+                        step="0.01"
+                        className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
+                        value={form.discountAmount || ''}
+                        placeholder={form.discountType === 'percentage' ? '20' : '100'}
+                        onChange={e => set('discountAmount', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-gray-400">
+                        {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400">
+                      Pre-selects {form.installTiming === 'september' ? 'September' : 'October'} on the customer&apos;s portal; mutually exclusive with the rush fee.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
