@@ -10,6 +10,16 @@ metadata:
 
 > Naldo's per-session log. **Append-only; newest entry on top.** This is the dashboard-area (#58) continuity thread — Jason's thread is `session_log.md`. Each dev edits ONLY their own log so the two machines never clobber each other (see the "Multi-dev collaboration" section in `AGENTS.md`). The shared `task_ledger.md` + `project_quote_tool.md` stay unified.
 
+### Naldo S2 (global S13) — ValorPay payment (#38) build + logo watermark (#45) (2026-06-25)
+
+> Driven from a Claude Code **web/cloud session** (keyless box — only code + GitHub; no DB/Vercel access from the VM, so the migration + env vars were Naldo-side actions). Both deliverables built but **NEITHER merged/live** — kept in their current ledger sections, not Completed.
+
+- **#38 ValorPay deposit integration BUILT (PR #84, draft/open, not merged).** New: `src/lib/integrations/valor.ts` (client-token mint + HMAC-SHA256 webhook verify + defensive payload parse), `POST /api/quotes/[id]/pay` (deposit amount from the frozen approval snapshot, never the browser), `POST /api/integrations/valor/webhook` (THE source of truth for "booked" — verify → idempotent mark-paid → GHL ⏰Approved → receipt + staff "paid" email), `DepositCheckout.tsx` (Passage.js embedded card form, SAQ-A). approve route reworked (snapshot + internal alert only; customer receipt moved to payment-confirmed → covers #42, completes #43 paid branch). Auto-vault ON. Migration `2026-06-24-quotes-add-valor-payment.sql` (6 cols + 2 indexes). Gates green (tsc · lint 0 · 350 tests · build). Valor docs host bot-blocks fetch → wire shapes isolated behind `CONFIRM:` seams, parsed defensively.
+- **Naldo-side this session:** applied the prod DB migration via the Supabase SQL editor; set `VALOR_APP_ID`/`VALOR_APP_KEY`/`VALOR_EPI` in Vercel; emailed Valor support for webhook enablement + the signing secret.
+- **#38 still BLOCKED (do NOT merge):** `VALOR_WEBHOOK_SECRET` pending from Valor (lynchpin — no confirm/book without it) → live staging test of the `CONFIRM:` shapes → flip `VALOR_IS_DEMO=false` → Jason review. Merging now = a regression (Approve → checkout 503s).
+- **#45 logo watermark BUILT (PR #86, open, not merged).** `LogoWatermark.tsx` overlay on the portal hero + reprise renders. Ships **TOP-RIGHT** (Jason said top-left, but that collides with the #61 heading — flagged for his sign-off). Verified on the Vercel preview; size bumped per Naldo (≈2× desktop / +30% mobile). Pending Naldo eyeball + Jason review.
+- **Process:** ran a 4-agent reconcile workflow to verify both PRs vs git + audit the ledger (no drift found) before writing this. Both PRs under PR-activity subscription + an hourly self-check; neither merged/live yet.
+
 ### Naldo S1 — machine setup + dashboard (#58) Phase 1/2a/2b + operator UI consistency (2026-06-24)
 
 > Naldo's first session. Machine onboarded (origin → org repo, ff to master, npm install, identity, memory seeded from `docs/context/`). graphify not installed → skipped. Dev server on :3000; gates green at start.
