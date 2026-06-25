@@ -7,10 +7,7 @@
 // `.portal-snow-stage-photo` element on purpose, so the per-package brightness
 // filter + scale transition never dim or wobble the brand mark.
 //
-// Placement (#45): mobile = TOP-RIGHT (clean on phones); desktop = TOP-LEFT
-// (Naldo's call from the preview — matches Jason's original note). The #61 hero
-// heading ("Here's your home, {name}") also sits top-left on desktop, so the
-// mark shares that zone; nudge top/left or z-index if it ever crowds the text.
+// Placement (#45): TOP-RIGHT on all sizes (Naldo S4 — was desktop top-left).
 // Render-time tunables (corner, size, opacity) — adjust + eyeball the preview.
 
 const WATERMARK_SRC = '/yule-site-logo-2.png';
@@ -31,8 +28,8 @@ export function LogoWatermark({ className = '' }: Props) {
       aria-hidden
       draggable={false}
       className={
-        // Mobile = top-right; desktop = top-left (Naldo S13, from the preview).
-        'pointer-events-none select-none absolute z-20 top-[3%] right-[3%] md:left-[3%] md:right-auto ' +
+        // Top-right on all sizes (Naldo S4 — dropped the desktop top-left override).
+        'pointer-events-none select-none absolute z-20 top-[3%] right-[3%] ' +
         // Size (Naldo S13): mobile kept at the +30% pass (≈84–90px on a phone);
         // desktop dialed back ~30% smaller via the md override (≈205–240px on a
         // desktop hero, was ≈290–340px). % of the photo box, clamped both ends.
