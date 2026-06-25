@@ -71,7 +71,14 @@ alter table quotes
   -- rather than a PG enum so adding values later is a simple ALTER (no
   -- ALTER TYPE dance). Nullable; the app reads NULL as 'holiday' (the legacy
   -- default), and the migration backfills existing rows to 'holiday'.
-  add column if not exists service_type text;
+  add column if not exists service_type text,
+  -- view receipt (added 2026-06-25, #68): when the customer opens their portal
+  -- link, /api/quotes/[id]/view stamps these so the admin table shows a "Viewed"
+  -- badge and staff get a GHL email per open. viewed_at = first open,
+  -- last_viewed_at = most recent, view_count = total opens.
+  add column if not exists viewed_at timestamptz,
+  add column if not exists last_viewed_at timestamptz,
+  add column if not exists view_count integer not null default 0;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -96,6 +103,8 @@ create index if not exists quotes_awaiting_customer_idx
 create index if not exists quotes_signed_idx
   on quotes (homeworks_signed_at desc) where homeworks_signed_at is not null;
 create index if not exists quotes_service_type_idx on quotes (service_type);
+create index if not exists quotes_viewed_idx
+  on quotes (viewed_at desc) where viewed_at is not null;
 
 
 -- ---------------------------------------------------------------------
