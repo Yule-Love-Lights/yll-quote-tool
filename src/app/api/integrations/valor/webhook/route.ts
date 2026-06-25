@@ -31,6 +31,7 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import {
   parseWebhookEvent,
   verifyWebhookSignature,
+  isValorConfigured,
 } from '@/lib/integrations/valor';
 import {
   sendSms,
@@ -92,6 +93,15 @@ export async function GET() {
     checkoutFlagPresent: isValorCheckoutFlagPresent(),
     secretConfigured: !!process.env.VALOR_WEBHOOK_SECRET,
     isDemo: process.env.VALOR_IS_DEMO !== 'false',
+    // Valor API creds the /pay step needs to mint a checkout token (presence
+    // only, never values). valorApiConfigured must be true for the card form
+    // to load; the per-key flags pinpoint which one is missing.
+    valorApiConfigured: isValorConfigured(),
+    valorEnv: {
+      appId: !!process.env.VALOR_APP_ID,
+      appKey: !!process.env.VALOR_APP_KEY,
+      epi: !!process.env.VALOR_EPI,
+    },
   });
 }
 
