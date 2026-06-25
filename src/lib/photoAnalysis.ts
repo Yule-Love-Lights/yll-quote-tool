@@ -510,7 +510,7 @@ export async function analyzePhoto(
   const exampleParts: string[] = [];
   if (trainingCount) exampleParts.push(`${trainingCount} completed-job reference(s)`);
   if (designCount) exampleParts.push(`${designCount} staff-confirmed design example(s) from sent quotes`);
-  const corrNote = exampleParts.length > 0
+  const examplesNote = exampleParts.length > 0
     ? `\n\nYou have ${exampleParts.join(', ')} shown in the conversation history below. Completed-job references and staff-confirmed designs are GROUND TRUTH from real installs — highest trust. Match their precision and coordinate style.`
     : '';
   const satelliteNote = satellite
@@ -530,7 +530,7 @@ export async function analyzePhoto(
   const satelliteSelfCheck = satellite
     ? `\n\nSATELLITE ORIENTATION SELF-CHECK (do this BEFORE finalizing the satellite polylines): the top-down view makes it easy to mislabel which edge is the front. (1) Find the road in the satellite image and CONFIRM it against the street-view image — the front roof edge is the one whose plane faces that road. (2) satelliteSantasLines (red) MUST be that road-facing FRONT edge; satelliteGingerbreadLines (blue) are its ridge PLUS the two SIDE edges. (3) Cross-check the result against the street view: if your red/blue assignment would put "front" on an edge the street view clearly shows is a side or the ridge, they are FLIPPED — swap them. A flipped front/side is the single most common satellite error, so verify orientation before answering.`
     : '';
-  const systemPrompt = SYSTEM_PROMPT + refsNote + satelliteNote + satelliteSelfCheck + styleNote + corrNote + (corpusBiasNote ?? '');
+  const systemPrompt = SYSTEM_PROMPT + refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
 
   const content: Array<{ type: 'image'; source: { type: 'base64'; media_type: typeof validMediaTypes[number]; data: string } } | { type: 'text'; text: string }> = [
     {
