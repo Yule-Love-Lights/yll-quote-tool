@@ -45,7 +45,11 @@ export function SatelliteRoofView({
   const cardAr = satelliteW && satelliteH ? satelliteW / satelliteH : 1;
 
   return (
-    <section className={className} aria-labelledby="portal-dark-satellite-heading">
+    <section
+      className={`${className} ${inRow ? 'lg:flex-none lg:[width:calc(var(--row-h)*var(--card-ar))]' : ''}`}
+      style={inRow ? ({ ['--card-ar']: cardAr } as CSSProperties) : undefined}
+      aria-labelledby="portal-dark-satellite-heading"
+    >
       <p
         id="portal-dark-satellite-heading"
         className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3"
@@ -55,10 +59,9 @@ export function SatelliteRoofView({
       <div
         className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
           inRow
-            ? 'w-full max-w-[640px] lg:max-w-none lg:[height:var(--row-h)] lg:[width:calc(var(--row-h)*var(--card-ar))]'
+            ? 'w-full max-w-[640px] lg:w-full lg:max-w-none lg:[height:var(--row-h)]'
             : 'w-full max-w-[640px]'
         }`}
-        style={inRow ? ({ ['--card-ar']: cardAr } as CSSProperties) : undefined}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img

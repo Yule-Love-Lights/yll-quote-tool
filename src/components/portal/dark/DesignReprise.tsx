@@ -106,7 +106,11 @@ export function DesignReprise({
     // design (a canvas with no text content). The hero + the toggleable item
     // list already convey everything, so hide this duplicate region from screen
     // readers rather than announcing an empty canvas + duplicate caption.
-    <div className={className} aria-hidden="true">
+    <div
+      className={`${className} ${inRow ? 'lg:flex-none lg:[width:calc(var(--row-h)*var(--card-ar))]' : ''}`}
+      style={inRow ? ({ ['--card-ar']: cardAr } as CSSProperties) : undefined}
+      aria-hidden="true"
+    >
       <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
         Your home, lit up
       </p>
@@ -114,10 +118,10 @@ export function DesignReprise({
         ref={wrapRef}
         className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
           inRow
-            ? 'w-full max-h-[70vh] lg:max-h-none lg:[height:var(--row-h)] lg:[width:calc(var(--row-h)*var(--card-ar))]'
+            ? 'w-full max-h-[70vh] lg:w-full lg:max-h-none lg:[height:var(--row-h)]'
             : 'w-full max-h-[70vh]'
         }`}
-        style={{ aspectRatio, ['--card-ar']: cardAr } as CSSProperties}
+        style={{ aspectRatio }}
       >
         {mounted && (
           <DesignCanvas
