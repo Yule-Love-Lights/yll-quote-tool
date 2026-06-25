@@ -151,6 +151,7 @@ export default async function PortalPage({
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
+        initialInstallTiming={quote.installTiming}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero

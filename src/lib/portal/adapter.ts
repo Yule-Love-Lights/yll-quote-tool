@@ -319,6 +319,11 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // derivePackages guarantees no single tier ever selects both.
   const packages = derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
+  // Computed up front so the seeded install-timing can prefer the customer's
+  // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
+  // locked, approved portal could show a price based on the staff's offer rather
+  // than what the customer actually confirmed.
+  const approval = buildApproval(row);
 
   return {
     id: row.id,
@@ -348,11 +353,19 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // in minimumOrderSubtotal()). Enforced on the portal, not in pricing. Uses
     // tierLineItems so a two-roofline quote isn't double-counted.
     minimumOrderSubtotal: row.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems),
+    // Seeds the portal's install-timing (#40): the customer's APPROVED choice on a
+    // booked quote, else the staff-set default so an active quote opens with the
+    // Sep/Oct discount pre-selected (the customer can still change it).
+    installTiming: approval
+      ? approval.installTiming
+      : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
+        ? row.inputs.installTiming
+        : 'none',
     weeklyBookings,
     seasonCapacity: {
       installedThisWeek: weeklyBookings,
       bookedThroughDate,
     },
-    approval: buildApproval(row),
+    approval,
   };
 }

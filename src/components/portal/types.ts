@@ -179,6 +179,9 @@ export type PortalQuote = {
   // ($1,000), or 0 when waived (staff sent a sub-$1,000 quote). See
   // minimumOrderSubtotal() in lib/portal/derivePackages.
   minimumOrderSubtotal: number;
+  // Staff-set early-install promo (#40): seeds the customer's portal timing so
+  // they see the Sep/Oct discount pre-applied. 'none'/undefined = no promo set.
+  installTiming?: InstallTiming;
   weeklyBookings: number;    // real scarcity — pulled from DB in production
   seasonCapacity: {
     installedThisWeek: number;

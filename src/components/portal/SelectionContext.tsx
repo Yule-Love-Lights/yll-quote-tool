@@ -152,6 +152,9 @@ export type SelectionProviderProps = {
   locked?: boolean;
   // #61 — whether the linked design has a base photo to toggle to (daytime view).
   daylightAvailable?: boolean;
+  // Staff-set early-install promo (#40): the customer's timing starts here so the
+  // Sep/Oct discount shows pre-applied (they can still change it). Default 'none'.
+  initialInstallTiming?: InstallTiming;
   children: React.ReactNode;
 };
 
@@ -165,6 +168,7 @@ export function SelectionProvider({
   initialSelectedItemIds,
   locked = false,
   daylightAvailable = false,
+  initialInstallTiming = 'none',
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -209,7 +213,7 @@ export function SelectionProvider({
   // Early-install timing discount (#40). Mutually exclusive with the rush
   // add-on: selecting a Sep/Oct discount clears rush, and turning rush on
   // clears the discount. Always starts at 'none' (standard install, no discount).
-  const [installTiming, setInstallTiming] = useState<InstallTiming>('none');
+  const [installTiming, setInstallTiming] = useState<InstallTiming>(initialInstallTiming);
   const toggleRush = useCallback(() => {
     // Turning rush ON clears any early-install discount (mutually exclusive #40).
     if (!rushSelected) setInstallTiming('none');

@@ -30,6 +30,7 @@ const fullForm: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 20,
   waiveMinimum: true, // non-default, to exercise the field
+  installTiming: 'september', // non-default, to exercise the field
 };
 
 describe('buildQuoteInputs', () => {
@@ -60,6 +61,11 @@ describe('buildQuoteInputs', () => {
   it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
     expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
     expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
+  });
+
+  it('sends installTiming only when a month is picked; omits it for none (#40)', () => {
+    expect(buildQuoteInputs({ ...fullForm, installTiming: 'october' }).installTiming).toBe('october');
+    expect('installTiming' in buildQuoteInputs({ ...fullForm, installTiming: 'none' })).toBe(false);
   });
 });
 
@@ -139,6 +145,12 @@ describe('inputsToFormData', () => {
     expect(inputsToFormData({}, { waiveMinimum: true }).waiveMinimum).toBe(true);
     expect(inputsToFormData({}, { waiveMinimum: false }).waiveMinimum).toBe(false);
     expect(inputsToFormData({}, {}).waiveMinimum).toBe(false); // legacy row
+  });
+
+  it('hydrates installTiming, defaulting to none when absent (#40)', () => {
+    expect(inputsToFormData({}, { installTiming: 'september' }).installTiming).toBe('september');
+    expect(inputsToFormData({}, { installTiming: 'october' }).installTiming).toBe('october');
+    expect(inputsToFormData({}, {}).installTiming).toBe('none'); // legacy row
   });
 
   it('strips the Anonymous / (no address) sentinels back to blank fields', () => {

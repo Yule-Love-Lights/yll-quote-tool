@@ -1348,23 +1348,6 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
               </p>
             </div>
-
-            {/* Waive the $1,000 minimum (#59) — staff override so the customer
-                can approve a selection under $1,000 on the portal. */}
-            <label className="mt-4 flex items-start gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.waiveMinimum}
-                onChange={e => set('waiveMinimum', e.target.checked)}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="text-sm font-medium text-gray-700">Waive the $1,000 minimum</span>
-                <span className="block text-xs text-gray-500">
-                  Lets the customer approve a selection under $1,000 on the portal — even if this quote&apos;s items total more.
-                </span>
-              </span>
-            </label>
           </Section>
 
           {/* ── Photo Analysis ── */}
@@ -2018,9 +2001,45 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             <div className="mb-5">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={form.rushFee}
-                  onChange={e => set('rushFee', e.target.checked)} />
+                  onChange={e => {
+                    set('rushFee', e.target.checked);
+                    // Rush + early-install are mutually exclusive (#40).
+                    if (e.target.checked) set('installTiming', 'none');
+                  }} />
                 Rush fee — add $150
               </label>
+            </div>
+
+            {/* Early-install discount (#40) — staff offers the customer a Sep/Oct
+                install promo (15% / 10% off the subtotal). Mutually exclusive with
+                the rush fee. Drives the engine discount AND seeds the customer's
+                portal install-timing so they see it pre-applied. */}
+            <div className="mb-5">
+              <p className={lbl}>Early-install discount</p>
+              <div className="flex flex-wrap gap-6 mt-1.5">
+                {([
+                  { v: 'none', label: 'None' },
+                  { v: 'september', label: 'September — 15% off' },
+                  { v: 'october', label: 'October — 10% off' },
+                ] as const).map(opt => (
+                  <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="installTiming"
+                      value={opt.v}
+                      checked={form.installTiming === opt.v}
+                      onChange={() => {
+                        set('installTiming', opt.v);
+                        if (opt.v !== 'none') set('rushFee', false);
+                      }}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Applies the promo to this quote and pre-selects the month on the customer&apos;s portal. Mutually exclusive with the rush fee.
+              </p>
             </div>
 
             {/* Discount */}
@@ -2062,6 +2081,26 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Waive the $1,000 minimum (#59) — staff override so the customer can
+                approve a selection under $1,000 on the portal. Lives with the other
+                quote-wide options (takedown / rush / discount). */}
+            <div className="mt-5">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.waiveMinimum}
+                  onChange={e => set('waiveMinimum', e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="text-sm font-medium text-gray-700">Waive the $1,000 minimum</span>
+                  <span className="block text-xs text-gray-500">
+                    Lets the customer approve a selection under $1,000 on the portal — even if this quote&apos;s items total more.
+                  </span>
+                </span>
+              </label>
             </div>
           </Section>
 
@@ -2221,6 +2260,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 <div className="flex justify-between text-green-600">
                   <span>Discount</span>
                   <span className="tabular-nums">−{usd(result.discountAmount)}</span>
+                </div>
+              )}
+              {result.earlyInstallDiscountAmount > 0 && (
+                <div className="flex justify-between text-green-600">
+                  <span>Early-install discount</span>
+                  <span className="tabular-nums">−{usd(result.earlyInstallDiscountAmount)}</span>
                 </div>
               )}
               {result.rushFeeAmount > 0 && (

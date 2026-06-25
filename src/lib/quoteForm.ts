@@ -9,6 +9,7 @@ import type {
   BowLineInput,
   CustomLineItem,
   Takedown,
+  EarlyInstallTiming,
 } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 
@@ -51,6 +52,9 @@ export type QuoteFormData = {
   // Staff override (#59): waive the $1,000 portal approval gate for this quote
   // (lets the customer approve a selection under $1,000). Rides the inputs jsonb.
   waiveMinimum: boolean;
+  // Early-install promo (#40) staff pick: 'none' | 'september' (15%) | 'october'
+  // (10%). Drives the engine discount + seeds the customer's portal timing.
+  installTiming: EarlyInstallTiming;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -74,6 +78,7 @@ export const initialFormData: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 0,
   waiveMinimum: false,
+  installTiming: 'none',
 };
 
 // Form → engine inputs. `rooflineChoiceOverride` lets the breakdown's staff-pick
@@ -104,6 +109,8 @@ export function buildQuoteInputs(
     rushFee: form.rushFee,
     // Only stored when set (#59) — absent in the inputs jsonb means not waived.
     ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
+    // Early-install promo (#40) — only sent when staff picked a month.
+    ...(form.installTiming !== 'none' ? { installTiming: form.installTiming } : {}),
     ...(form.discountEnabled && {
       discount: {
         type: form.discountType,
@@ -182,5 +189,6 @@ export function inputsToFormData(
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
+    installTiming: i.installTiming ?? 'none',
   };
 }

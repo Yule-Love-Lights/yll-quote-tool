@@ -438,3 +438,45 @@ describe('calculateQuote — standalone bows (#28; price TBD by Naldo, $0 for no
     expect(calculateQuote(emptyInputs()).lineItems).toHaveLength(0);
   });
 });
+
+describe('calculateQuote — early-install promo (#40)', () => {
+  // $1,200 item subtotal (100ft hard roofline) to make the percentages obvious.
+  function base(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
+    return emptyInputs({ santasFootage: 100, santasDifficulty: 'hard', ...overrides });
+  }
+
+  it('takes 15% off the subtotal for a September install', () => {
+    const r = calculateQuote(base({ installTiming: 'september' }));
+    expect(r.subtotalBeforeDiscount).toBe(1200);
+    expect(r.earlyInstallDiscountAmount).toBe(180); // 1200 × 0.15
+    expect(r.subtotalAfterDiscount).toBe(1020);
+    expect(r.taxableAmount).toBe(1020);
+  });
+
+  it('takes 10% off the subtotal for an October install', () => {
+    const r = calculateQuote(base({ installTiming: 'october' }));
+    expect(r.earlyInstallDiscountAmount).toBe(120); // 1200 × 0.10
+    expect(r.subtotalAfterDiscount).toBe(1080);
+  });
+
+  it('applies no discount when timing is absent or none (back-compat)', () => {
+    expect(calculateQuote(base()).earlyInstallDiscountAmount).toBe(0);
+    expect(calculateQuote(base()).subtotalAfterDiscount).toBe(1200);
+    expect(calculateQuote(base({ installTiming: 'none' })).earlyInstallDiscountAmount).toBe(0);
+  });
+
+  it('suppresses the rush fee when an early-install promo is active (mutually exclusive)', () => {
+    expect(calculateQuote(base({ rushFee: true })).rushFeeAmount).toBe(BUSINESS_RULES.rushFeeAmount);
+    const both = calculateQuote(base({ rushFee: true, installTiming: 'september' }));
+    expect(both.rushFeeAmount).toBe(0);
+  });
+
+  it('stacks with a manual percentage discount — each off the subtotal', () => {
+    const r = calculateQuote(
+      base({ installTiming: 'october', discount: { type: 'percentage', amount: 0.1 } }),
+    );
+    expect(r.discountAmount).toBe(120); // manual 10% of 1200
+    expect(r.earlyInstallDiscountAmount).toBe(120); // early-install 10% of 1200
+    expect(r.subtotalAfterDiscount).toBe(960); // 1200 − 120 − 120
+  });
+});
