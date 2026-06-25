@@ -192,6 +192,117 @@ function extractClientToken(json: unknown): string | null {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
+// ─── Hosted Page Sale (ePage) ───────────────────────────────────────────────
+// The chosen integration (#38): instead of embedding card fields, we ask Valor
+// for a HOSTED payment page and redirect the customer there. The card is
+// collected on Valor's own page — it NEVER touches our server (SAQ-A), no token
+// handoff, no Passage.js. Valor returns the customer to success_url/failure_url
+// and fires the confirmation webhook (which is what actually books the quote).
+//
+// Endpoint (confirmed from the Hosted Page Sale docs): POST a JSON body to
+//   {host}/?pagesale=         on the DEFAULT https port (:443) — NOT :4430.
+// Body uses appid/appkey (no underscores) like GetClientToken. epage MUST be 1.
+// invoicenumber carries OUR order ref so the webhook can map back to the quote.
+// Response: { error_no:"S00", url:"<hosted page>", uid:"…" }.
+const PAGESALE_STAGING_BASE = 'https://securelink-staging.valorpaytech.com';
+const PAGESALE_PROD_BASE = 'https://securelink.valorpaytech.com';
+
+export type HostedPageInput = {
+  amountUsd: number; // the 50% deposit, computed server-side from the snapshot
+  orderRef: string; // our reference → invoicenumber → echoed by the webhook
+  successUrl: string; // Valor redirects here after a successful payment
+  failureUrl: string; // …and here on failure/cancel
+  customerName?: string | null;
+  customerEmail?: string | null;
+  orderDescription?: string;
+};
+
+export type HostedPageResult = {
+  url: string; // the Valor-hosted payment page to redirect the customer to
+  uid: string | null;
+  raw: unknown;
+};
+
+export async function createHostedPageSale(input: HostedPageInput): Promise<HostedPageResult> {
+  const appId = process.env.VALOR_APP_ID;
+  const appKey = process.env.VALOR_APP_KEY;
+  const epi = process.env.VALOR_EPI;
+  if (!appId || !appKey || !epi) {
+    throw new ValorError('Valor not configured. Set VALOR_APP_ID, VALOR_APP_KEY and VALOR_EPI');
+  }
+  const isDemo = process.env.VALOR_IS_DEMO !== 'false';
+  const base = (
+    process.env.VALOR_PAGESALE_BASE_URL || (isDemo ? PAGESALE_STAGING_BASE : PAGESALE_PROD_BASE)
+  ).replace(/\/+$/, '');
+
+  const body: Record<string, unknown> = {
+    appid: appId,
+    appkey: appKey,
+    epi,
+    txn_type: 'sale',
+    amount: Math.round(input.amountUsd * 100) / 100, // dollars, 2dp (e.g. 551.91)
+    invoicenumber: input.orderRef,
+    orderdescription: (input.orderDescription || 'Yule Love Lights deposit').slice(0, 50),
+    epage: 1, // hosted-page mode — must always be 1
+    surcharge: 0,
+    tax: 0,
+    ignore_surcharge_calc: 0,
+    shipping_country: 'US',
+    customer_name: input.customerName?.trim() || 'Customer',
+    success_url: input.successUrl,
+    failure_url: input.failureUrl,
+    redirect_url: input.successUrl,
+    notification_status: '0',
+    ...(input.customerEmail ? { email: input.customerEmail } : {}),
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/?pagesale=`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new ValorError(
+      `Valor Hosted Page request failed: ${err instanceof Error ? err.message : 'network error'}`,
+    );
+  }
+
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    throw new ValorError(
+      `Valor Hosted Page → ${res.status}: ${text.slice(0, 400)}`,
+      res.status,
+      text.slice(0, 2000),
+    );
+  }
+
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    throw new ValorError(`Valor Hosted Page returned non-JSON: ${text.slice(0, 200)}`);
+  }
+
+  const o = (json && typeof json === 'object' ? json : {}) as Record<string, unknown>;
+  const data = (o.data && typeof o.data === 'object' ? (o.data as Record<string, unknown>) : o) ?? o;
+  const pageUrl =
+    pickString(data.url) ??
+    pickString(o.url) ??
+    pickString(data.redirect_url) ??
+    pickString(data.paymentUrl);
+  if (!pageUrl) {
+    // Body carries error_no/error_code when it fails — surface it (no secrets).
+    throw new ValorError(`Valor Hosted Page response missing url: ${text.slice(0, 300)}`);
+  }
+  return { url: pageUrl, uid: pickString(data.uid) ?? pickString(o.uid), raw: json };
+}
+
+function pickString(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
 // ─── Webhook signature verification ─────────────────────────────────────────
 // Valor signs each webhook with HMAC-SHA256 using the Secret Key generated when
 // "Authentication" is enabled in Settings → WebHook. Headers:
@@ -322,7 +433,17 @@ export function parseWebhookEvent(rawBody: string): ValorWebhookEvent {
       'token',
       'customer_token',
     ),
-    orderRef: pick(inner, 'order_id', 'orderId', 'order_ref', 'orderRef', 'invoice', 'invoice_id'),
+    orderRef: pick(
+      inner,
+      'order_id',
+      'orderId',
+      'order_ref',
+      'orderRef',
+      'invoicenumber', // hosted-page sale echoes our ref here
+      'invoice_number',
+      'invoice',
+      'invoice_id',
+    ),
     raw: json,
   };
 }
