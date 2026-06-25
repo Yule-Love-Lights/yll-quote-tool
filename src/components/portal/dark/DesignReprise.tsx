@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
+import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
@@ -110,6 +111,8 @@ export function DesignReprise({ design, palette, renderSettings }: DesignReprise
             className="absolute inset-0"
           />
         )}
+        {/* Brand watermark (#45) — corner overlay on the reprise render too. */}
+        <LogoWatermark />
       </div>
       <p className="mt-3 text-[13px] text-[#A89F87] leading-[1.6]">
         Updates live as you adjust your selections above.
