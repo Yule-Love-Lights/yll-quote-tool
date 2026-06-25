@@ -8,6 +8,7 @@ const PILL: Record<ActivityKind, { label: string; cls: string }> = {
   created: { label: 'Created', cls: 'bg-gray-100 text-gray-600' },
   sent: { label: 'Sent', cls: 'bg-blue-100 text-blue-700' },
   viewed: { label: 'Viewed', cls: 'bg-green-100 text-green-700' },
+  interested: { label: 'Interested', cls: 'bg-amber-100 text-amber-800' },
   approved: { label: 'Approved', cls: 'bg-emerald-600 text-white' },
 };
 

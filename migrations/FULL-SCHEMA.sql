@@ -109,12 +109,20 @@ create index if not exists quotes_viewed_idx
 -- Per-view event log (customer activity feed, 2026-06-25). One row per customer
 -- open of a quote portal — powers the /customers/[id] activity timeline (every
 -- view, not just the #68 aggregate). Lifecycle events come from the quotes row.
+-- `kind` (2026-06-25): 'viewed' (read receipt) or 'interested' (the customer
+-- hovered/tapped Approve without approving — a hot-lead signal).
 create table if not exists quote_view_events (
   id uuid primary key default gen_random_uuid(),
   quote_id uuid not null references quotes(id) on delete cascade,
-  viewed_at timestamptz not null default now()
+  viewed_at timestamptz not null default now(),
+  kind text not null default 'viewed'
 );
 alter table quote_view_events disable row level security;
+alter table quote_view_events
+  add column if not exists kind text not null default 'viewed';
+alter table quote_view_events drop constraint if exists quote_view_events_kind_check;
+alter table quote_view_events add constraint quote_view_events_kind_check
+  check (kind in ('viewed', 'interested'));
 create index if not exists quote_view_events_quote_idx
   on quote_view_events (quote_id, viewed_at desc);
 

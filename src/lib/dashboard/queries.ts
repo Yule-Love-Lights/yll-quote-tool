@@ -47,7 +47,9 @@ export async function getViewEventsForQuotes(quoteIds: string[]): Promise<ViewEv
   try {
     const { data, error } = await sb
       .from('quote_view_events')
-      .select('quote_id, viewed_at')
+      // select('*') (not a named list) so the `kind` column is included when it
+      // exists but the query doesn't error before that migration is applied.
+      .select('*')
       .in('quote_id', quoteIds)
       .order('viewed_at', { ascending: false })
       .limit(VIEW_EVENTS_LIMIT);

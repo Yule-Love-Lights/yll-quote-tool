@@ -6,7 +6,7 @@
 // the InteractiveHero's tabs.
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
@@ -37,6 +37,41 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const router = useRouter();
+
+  // Fire a one-shot "interested" signal when the customer DELIBERATELY engages
+  // the Approve button — a sustained hover (desktop) or a focus/tap (mobile) —
+  // without necessarily approving. Surfaces as an "Interested" row on the staff
+  // activity feed. Fire-and-forget + ref-guarded so it posts at most once.
+  // The listeners live on a wrapper span (below), not the button, so they still
+  // fire when the button is DISABLED (selection under the $1,000 minimum) — the
+  // strongest "leaning in" signal. A ~500ms dwell on hover avoids false-positives
+  // from a cursor incidentally passing over the always-present sticky bar; focus
+  // (deliberate keyboard/tap) fires immediately.
+  const interestFiredRef = useRef(false);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flagInterest = () => {
+    if (interestFiredRef.current) return;
+    interestFiredRef.current = true;
+    fetch(`/api/quotes/${encodeURIComponent(quoteId)}/interested`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      keepalive: true,
+    }).catch(() => {
+      /* best-effort — must never disrupt the customer */
+    });
+  };
+  const startHoverIntent = () => {
+    if (interestFiredRef.current || hoverTimerRef.current) return;
+    hoverTimerRef.current = setTimeout(flagInterest, 500);
+  };
+  const cancelHoverIntent = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  };
+  useEffect(() => cancelHoverIntent, []);
 
   // Real approval: POST the selection to /api/quotes/[id]/approve, which
   // freezes the snapshot, then texts/emails the customer and emails us to
@@ -138,6 +173,14 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
         </span>
       </div>
 
+      {/* Wrapper carries the interest listeners so they fire even when the
+          button is disabled (under the $1,000 minimum). */}
+      <span
+        className="inline-flex"
+        onMouseEnter={startHoverIntent}
+        onMouseLeave={cancelHoverIntent}
+        onFocus={flagInterest}
+      >
       <button
         type="button"
         onClick={onApprove}
@@ -160,6 +203,7 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
           </>
         )}
       </button>
+      </span>
     </div>
   );
 }

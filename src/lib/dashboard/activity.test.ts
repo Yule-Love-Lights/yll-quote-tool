@@ -48,6 +48,19 @@ describe('buildCustomerActivity', () => {
     expect(ev[0].total).toBe(50);
   });
 
+  it('collapses multiple interested rows for one quote to a single (earliest) event', () => {
+    const ev = buildCustomerActivity(
+      [quote({ id: 'q1', created_at: '2026-06-24T10:00:00Z', quote_sent_at: '2026-06-24T11:00:00Z' })],
+      [
+        { quote_id: 'q1', viewed_at: '2026-06-25T12:00:00Z', kind: 'interested' },
+        { quote_id: 'q1', viewed_at: '2026-06-25T09:00:00Z', kind: 'interested' },
+      ],
+    );
+    const interested = ev.filter((e) => e.kind === 'interested');
+    expect(interested).toHaveLength(1);
+    expect(interested[0].at).toBe('2026-06-25T09:00:00Z'); // earliest kept
+  });
+
   it('ignores view rows for quotes not in the set', () => {
     const ev = buildCustomerActivity(
       [quote({ id: 'q1', created_at: '2026-06-24T10:00:00Z' })],
@@ -55,6 +68,19 @@ describe('buildCustomerActivity', () => {
     );
     expect(ev.every((e) => e.quoteId === 'q1')).toBe(true);
     expect(ev.some((e) => e.kind === 'viewed')).toBe(false);
+  });
+
+  it('maps kind=interested to an "interested" event; missing/other kind stays "viewed"', () => {
+    const ev = buildCustomerActivity(
+      [quote({ id: 'q1', created_at: '2026-06-24T10:00:00Z' })],
+      [
+        { quote_id: 'q1', viewed_at: '2026-06-25T09:00:00Z', kind: 'interested' },
+        { quote_id: 'q1', viewed_at: '2026-06-24T20:00:00Z', kind: 'viewed' },
+        { quote_id: 'q1', viewed_at: '2026-06-24T19:00:00Z' }, // no kind -> viewed
+      ],
+    );
+    const logEvents = ev.filter((e) => e.kind === 'interested' || e.kind === 'viewed');
+    expect(logEvents.map((e) => e.kind)).toEqual(['interested', 'viewed', 'viewed']);
   });
 
   it('breaks an exact-timestamp tie newest-stage-first (approved, viewed, sent, created)', () => {
