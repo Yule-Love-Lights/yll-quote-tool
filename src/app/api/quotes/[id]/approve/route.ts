@@ -60,6 +60,7 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
+import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -300,7 +301,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // 1. Customer — confirm approval + that we'll reach out for the deposit.
     //    SMS needs the contact to have a phone (real customers do); a 422 there
     //    is non-fatal. Both messages land in the GHL Conversations tab.
-    if (quote.highlevel_contact_id) {
+    //    #38: SKIPPED when the embedded checkout is ON — the customer pays their
+    //    deposit online next and gets their receipt from the payment-confirmed
+    //    webhook instead, so this "we'll reach out to collect it" message would
+    //    be wrong. With the checkout OFF (today) it fires as the placeholder.
+    if (!isValorCheckoutEnabled() && quote.highlevel_contact_id) {
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,

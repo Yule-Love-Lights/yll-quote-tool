@@ -10,6 +10,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
+import { DepositCheckout } from './DepositCheckout';
+import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
 export type StickyBottomBarProps = {
   quoteId: string;
@@ -37,6 +39,11 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // #38 — when the customer-checkout flag is on, Approve opens the embedded
+  // deposit checkout instead of routing to the booked page. Off by default
+  // (the code ships dark; flipped on after the staging test).
+  const [showCheckout, setShowCheckout] = useState(false);
+  const checkoutEnabled = isValorCheckoutEnabled();
   const router = useRouter();
 
   // Fire a one-shot "interested" signal when the customer DELIBERATELY engages
@@ -74,10 +81,12 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   };
   useEffect(() => cancelHoverIntent, []);
 
-  // Real approval: POST the selection to /api/quotes/[id]/approve, which
-  // freezes the snapshot, then texts/emails the customer and emails us to
-  // collect the 50% deposit (pre-Valor placeholder). Navigate to the
-  // celebration page on any ok=true (messaging is best-effort).
+  // Real approval: POST the selection to /api/quotes/[id]/approve, which freezes
+  // the snapshot. Then, with the checkout flag ON, open the embedded 50% deposit
+  // checkout (payment — not the click — is what books the quote; Valor's webhook
+  // flips it to booked + fires the receipt). With the flag OFF, fall back to
+  // today's behavior: navigate to the celebration page (the approve route having
+  // texted/emailed the customer about collecting the deposit).
   const onApprove = async () => {
     if (submitting || !meetsMinimum) return;
     setSubmitting(true);
@@ -100,16 +109,30 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
           installDiscountUsd: breakdown.discount,
         }),
       });
-      // 409 = already approved — still route to the celebration page.
+      // 409 = already approved. With checkout ON, open the deposit checkout
+      // anyway (/pay routes onward if the deposit is already paid); with it OFF,
+      // route straight to the celebration page (today's behavior).
       if (res.status === 409) {
-        router.push(`/portal/${quoteId}/approved`);
+        if (checkoutEnabled) {
+          setShowCheckout(true);
+          setSubmitting(false);
+        } else {
+          router.push(`/portal/${quoteId}/approved`);
+        }
         return;
       }
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(body.error ?? `Request failed: ${res.status}`);
       }
-      router.push(`/portal/${quoteId}/approved`);
+      // Approval recorded. ON → open the embedded 50% deposit checkout; OFF →
+      // celebration page (the pre-Valor placeholder flow).
+      if (checkoutEnabled) {
+        setShowCheckout(true);
+        setSubmitting(false);
+      } else {
+        router.push(`/portal/${quoteId}/approved`);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong — please try again.');
       setSubmitting(false);
@@ -144,11 +167,15 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
   }
 
   return (
-    <div
-      className="portal-snow-sticky"
-      role="region"
-      aria-label="Approval bar with live total"
-    >
+    <>
+      {showCheckout && (
+        <DepositCheckout quoteId={quoteId} onClose={() => setShowCheckout(false)} />
+      )}
+      <div
+        className="portal-snow-sticky"
+        role="region"
+        aria-label="Approval bar with live total"
+      >
       {errorMsg && (
         <p
           role="alert"
@@ -206,6 +233,7 @@ export function StickyBottomBar({ quoteId, approved = false }: StickyBottomBarPr
         )}
       </button>
       </span>
-    </div>
+      </div>
+    </>
   );
 }
