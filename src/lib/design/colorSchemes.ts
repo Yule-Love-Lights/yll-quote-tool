@@ -93,13 +93,24 @@ const BUILDABLE_SET = new Set(BUILDABLE_COLOR_IDS);
 
 // Sanitize a customer-built pattern from any source (client body / stored
 // snapshot): keep only valid buildable color ids, in order, capped at
-// MAX_CUSTOM_PATTERN. Returns [] for anything invalid.
+// MAX_CUSTOM_PATTERN. Returns [] for anything invalid. The scan itself is bounded
+// (slice up front) so an attacker-controlled megabyte array can't drive unbounded
+// work — a real client never sends more than MAX_CUSTOM_PATTERN ids anyway.
 export function sanitizeCustomPattern(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const out: string[] = [];
-  for (const v of input) {
+  for (const v of input.slice(0, MAX_CUSTOM_PATTERN * 4)) {
     if (out.length >= MAX_CUSTOM_PATTERN) break;
     if (typeof v === 'string' && BUILDABLE_SET.has(v)) out.push(v);
   }
   return out;
+}
+
+// Known scheme ids = the presets + 'custom'. The approve route validates an
+// incoming colorSchemeId against this before freezing it into the snapshot, so a
+// junk id can't be persisted as "what the customer approved" (rendering already
+// falls back safely, but the authoritative record should be a real id).
+const KNOWN_SCHEME_IDS = new Set<string>([...COLOR_SCHEMES.map((s) => s.id), CUSTOM_SCHEME_ID]);
+export function isKnownColorSchemeId(id: unknown): id is string {
+  return typeof id === 'string' && KNOWN_SCHEME_IDS.has(id);
 }

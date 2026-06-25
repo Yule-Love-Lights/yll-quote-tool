@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   COLOR_SCHEMES,
+  CUSTOM_SCHEME_ID,
   DEFAULT_COLOR_SCHEME_ID,
   getColorScheme,
   resolveSchemeColorIds,
   BUILDABLE_COLOR_IDS,
   MAX_CUSTOM_PATTERN,
   sanitizeCustomPattern,
+  isKnownColorSchemeId,
 } from './colorSchemes';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
 
@@ -74,5 +76,15 @@ describe('build-your-own custom pattern (#49)', () => {
   it('caps at MAX_CUSTOM_PATTERN', () => {
     const long = Array.from({ length: MAX_CUSTOM_PATTERN + 5 }, () => 'red');
     expect(sanitizeCustomPattern(long)).toHaveLength(MAX_CUSTOM_PATTERN);
+  });
+
+  it('isKnownColorSchemeId accepts presets + custom, rejects junk', () => {
+    expect(isKnownColorSchemeId(DEFAULT_COLOR_SCHEME_ID)).toBe(true);
+    expect(isKnownColorSchemeId(CUSTOM_SCHEME_ID)).toBe(true);
+    for (const s of COLOR_SCHEMES) expect(isKnownColorSchemeId(s.id)).toBe(true);
+    expect(isKnownColorSchemeId('foo-bar')).toBe(false);
+    expect(isKnownColorSchemeId('')).toBe(false);
+    expect(isKnownColorSchemeId(null)).toBe(false);
+    expect(isKnownColorSchemeId(42)).toBe(false);
   });
 });

@@ -54,7 +54,12 @@ import {
   internalApprovalEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { CUSTOM_SCHEME_ID, sanitizeCustomPattern } from '@/lib/design/colorSchemes';
+import {
+  CUSTOM_SCHEME_ID,
+  DEFAULT_COLOR_SCHEME_ID,
+  isKnownColorSchemeId,
+  sanitizeCustomPattern,
+} from '@/lib/design/colorSchemes';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -170,16 +175,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const rushSelected = body.rushSelected === true;
   const takedownSelected = body.takedownSelected === true;
   // #10 — the customer's light color/pattern choice. A short scheme id; recorded
-  // in the snapshot as the authoritative record of what they approved. Defaults
-  // to 'as-designed' when absent (older clients / no design).
-  const colorSchemeId =
-    typeof body.colorSchemeId === 'string' && body.colorSchemeId.trim()
-      ? body.colorSchemeId.trim().slice(0, 64)
-      : 'as-designed';
+  // in the snapshot as the authoritative record of what they approved. Validated
+  // against the known scheme set (presets + 'custom'); anything unknown/absent
+  // falls back to 'as-designed' (older clients / no design / junk POST).
+  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId)
+    ? body.colorSchemeId
+    : DEFAULT_COLOR_SCHEME_ID;
   // #49 — build-your-own pattern, sanitized (valid palette ids only, capped).
   // Only meaningful when they chose 'custom'; empty otherwise.
   const customPattern =
-    colorSchemeId === CUSTOM_SCHEME_ID ? sanitizeCustomPattern(body.customPattern) : [];
+    requestedSchemeId === CUSTOM_SCHEME_ID ? sanitizeCustomPattern(body.customPattern) : [];
+  // Collapse an empty custom selection back to the default so the frozen snapshot
+  // is self-consistent: 'custom' with zero colors renders identically to
+  // 'as-designed', so we store 'as-designed' rather than a contradictory record.
+  const colorSchemeId =
+    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
+      ? DEFAULT_COLOR_SCHEME_ID
+      : requestedSchemeId;
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.

@@ -12,6 +12,7 @@ import { useSelection } from '../SelectionContext';
 import {
   COLOR_SCHEMES,
   CUSTOM_SCHEME_ID,
+  DEFAULT_COLOR_SCHEME_ID,
   BUILDABLE_COLOR_IDS,
   MAX_CUSTOM_PATTERN,
 } from '@/lib/design/colorSchemes';
@@ -56,7 +57,21 @@ export function LightColorPicker() {
     setColorScheme(CUSTOM_SCHEME_ID);
     setCustomPattern([...customPattern, id]);
   };
-  const removeAt = (i: number) => setCustomPattern(customPattern.filter((_, idx) => idx !== i));
+  // Removing the last color (or Clear) exits custom mode back to "As designed" so
+  // the highlighted radio matches what's on screen — an empty custom pattern
+  // renders identically to as-designed, so leaving 'custom' selected would show a
+  // gold-highlighted chip over an unchanged picture.
+  const clearCustom = () => {
+    if (locked) return;
+    setCustomPattern([]);
+    setColorScheme(DEFAULT_COLOR_SCHEME_ID);
+  };
+  const removeAt = (i: number) => {
+    if (locked) return;
+    const next = customPattern.filter((_, idx) => idx !== i);
+    setCustomPattern(next);
+    if (next.length === 0) setColorScheme(DEFAULT_COLOR_SCHEME_ID);
+  };
 
   return (
     <section
@@ -157,13 +172,15 @@ export function LightColorPicker() {
                     key={`${id}-${i}`}
                     type="button"
                     onClick={() => removeAt(i)}
-                    aria-label={`Remove ${colorLabel(id)} from your pattern`}
+                    aria-label={`Position ${i + 1}: ${colorLabel(id)} — tap to remove`}
                     className="group relative w-7 h-7 rounded-full ring-1 ring-white/40 cursor-pointer hover:ring-white/80 transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862]"
                     style={{ background: colorOf(id).hex }}
                   >
+                    {/* × delete cue — visible on hover (desktop) and always shown
+                        on touch devices, which have no hover state. */}
                     <span
                       aria-hidden
-                      className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#0D1519] text-[#F4ECD8] text-[9px] leading-[14px] text-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#0D1519] text-[#F4ECD8] text-[9px] leading-[14px] text-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
                     >
                       ×
                     </span>
@@ -171,13 +188,16 @@ export function LightColorPicker() {
                 ))}
                 <button
                   type="button"
-                  onClick={() => setCustomPattern([])}
+                  onClick={clearCustom}
                   className="text-[12px] text-[#A89F87] hover:text-[#F4ECD8] underline ml-1 cursor-pointer"
                 >
                   Clear
                 </button>
               </div>
             )}
+            <p className="text-[11px] font-semibold tracking-[0.12em] uppercase text-[#7E8B80] mb-1.5">
+              Add a color
+            </p>
             <div className="flex flex-wrap gap-2" aria-label="Add a color to your pattern">
               {BUILDABLE_COLOR_IDS.map((id) => (
                 <button
@@ -193,7 +213,7 @@ export function LightColorPicker() {
               ))}
             </div>
             {atMax && (
-              <p className="text-[11px] text-[#A89F87] mt-2">
+              <p role="status" aria-live="polite" className="text-[11px] text-[#A89F87] mt-2">
                 That&apos;s the max ({MAX_CUSTOM_PATTERN} colors) — remove one to add another.
               </p>
             )}
