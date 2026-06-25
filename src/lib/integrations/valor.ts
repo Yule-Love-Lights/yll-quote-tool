@@ -44,7 +44,9 @@ import { createHmac, timingSafeEqual } from 'crypto';
 // until Naldo explicitly flips VALOR_IS_DEMO=false in prod. CONFIRM the prod
 // host — staging is the documented securelink-staging:4430.
 const STAGING_BASE = 'https://securelink-staging.valorpaytech.com:4430';
-const PROD_BASE = 'https://securelink.valorpaytech.com';
+// Live gateway is on port 4430 too (NOT 443) — a bare https://securelink…/ hits
+// the Apache front and 404s. Confirmed via the live test (#38 S14).
+const PROD_BASE = 'https://securelink.valorpaytech.com:4430';
 
 export class ValorError extends Error {
   constructor(message: string, public status?: number, public body?: string) {
@@ -120,25 +122,31 @@ export type ClientTokenResult = {
 export async function getClientToken(input: ClientTokenInput): Promise<ClientTokenResult> {
   const cfg = requireConfig();
 
-  // CONFIRM: endpoint path + exact body field names at live test. Kept in one
-  // object so a rename is a single edit.
-  const body = {
-    app_id: cfg.appId,
-    app_key: cfg.appKey,
-    epi: cfg.epi,
-    amount: formatAmount(input.amountUsd),
-    order_id: input.orderRef,
-    save_card: input.saveCard === false ? false : true,
-    ...(input.customerEmail ? { email: input.customerEmail } : {}),
-    ...(input.customerName ? { name: input.customerName } : {}),
-  };
+  // Valor's GetClientToken is a FORM-ENCODED POST to the gateway ROOT (not a
+  // JSON POST to /clienttoken — that 404s on the Apache front). Confirmed param
+  // names: appid/appkey/epi/txn_type (no underscores). We pass amount so the
+  // charge is server-set, and order_id so our reference round-trips to the
+  // confirmation webhook. (save_card/email/name ride along; harmless if ignored.)
+  const form = new URLSearchParams();
+  form.set('appid', cfg.appId);
+  form.set('appkey', cfg.appKey);
+  form.set('epi', cfg.epi);
+  form.set('txn_type', 'sale');
+  form.set('amount', formatAmount(input.amountUsd));
+  form.set('order_id', input.orderRef);
+  if (input.saveCard !== false) form.set('save_card', '1');
+  if (input.customerEmail) form.set('email', input.customerEmail);
+  if (input.customerName) form.set('name', input.customerName);
 
   let res: Response;
   try {
-    res = await fetch(`${cfg.baseUrl}/clienttoken`, {
+    res = await fetch(`${cfg.baseUrl}/`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: form.toString(),
     });
   } catch (err) {
     throw new ValorError(
