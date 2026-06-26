@@ -4,6 +4,15 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# Default coding practice — the Karpathy guidelines
+
+Adopt these four principles by default when writing, reviewing, or refactoring **non-trivial** code (use judgment on trivial one-liners / typo fixes — don't over-apply rigor). Full detail in the `karpathy-guidelines` skill (`.claude/skills/karpathy-guidelines/SKILL.md`).
+
+1. **Think before coding** — state assumptions; if multiple interpretations exist, surface them instead of picking silently; push back when a simpler approach exists; stop and ask when something's unclear.
+2. **Simplicity first** — minimum code that solves the problem; no speculative features / abstractions / config / error-handling that wasn't asked for. If 200 lines could be 50, rewrite it.
+3. **Surgical changes** — touch only what the request requires; match existing style; don't refactor or reformat unrelated code; flag unrelated dead code rather than deleting it; clean up only orphans your own change created.
+4. **Goal-driven execution** — turn tasks into verifiable success criteria (e.g. a failing test → make it pass) and loop until they're met; state a brief plan for multi-step work.
+
 # Codebase navigation — prefer the graphify graph for big-picture questions
 
 A `graphify-out/` knowledge graph of `src/` may exist locally. It's **gitignored — per-machine, never committed**, so a fresh clone / another machine won't have one until it's built: `/graphify src` (free for code, ~seconds). The optional post-commit auto-rebuild hook (`graphify hook install`, also per-machine) then keeps it fresh on every commit.
