@@ -162,6 +162,7 @@ export type PortalSatelliteLines = {
   santas: PortalSatelliteLine[];       // front roofline (red)
   gingerbread: PortalSatelliteLine[];  // ridge & sides (blue)
   c9: PortalSatelliteLine[];           // C9 roofline (green)
+  stake?: PortalSatelliteLine[];       // stake lighting (purple) — optional (older designs lack it)
 };
 
 export type PortalDesign = {

@@ -55,6 +55,9 @@ export type DesignSatelliteLines = {
   santas: { points: [number, number][]; label: string }[];
   gingerbread: { points: [number, number][]; label: string }[];
   c9: { points: [number, number][]; label: string }[];
+  // Stake Lighting satellite runs — own channel, parallel to c9 (Winter
+  // Wonderland). Optional so designs saved before Stake Lighting still load.
+  stake?: { points: [number, number][]; label: string }[];
   santasFootage?: number;
   gingerbreadFootage?: number;
 };

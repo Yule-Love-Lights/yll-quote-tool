@@ -39,7 +39,15 @@ function isSceneShape(v: unknown): v is DesignScene {
 function isSatelliteLinesShape(v: unknown): v is DesignSatelliteLines {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
-  return Array.isArray(o.santas) && Array.isArray(o.gingerbread) && Array.isArray(o.c9);
+  // `stake` (Stake Lighting) is OPTIONAL — kept tolerant so designs/clients
+  // saved before Stake Lighting (no stake key) still validate; only its type is
+  // checked when present.
+  return (
+    Array.isArray(o.santas) &&
+    Array.isArray(o.gingerbread) &&
+    Array.isArray(o.c9) &&
+    (o.stake === undefined || Array.isArray(o.stake))
+  );
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
