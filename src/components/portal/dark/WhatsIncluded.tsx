@@ -6,7 +6,7 @@
 // for the sticky bar CTA.
 
 import type { CSSProperties } from 'react';
-import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Check } from 'lucide-react';
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
@@ -154,6 +154,7 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   column: Sparkles,
   bow: Ribbon,
   railing: Fence,
+  'stake-lighting': Lightbulb,
 };
 
 export type WhatsIncludedProps = {

@@ -168,8 +168,9 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
 }
 
 // The engine's single billed roofline — Santa's ("…Roofline…") or Gingerbread
-// (incl. the legacy "Gingerbread Ridge" wording). NOT Winter Wonderland, which
-// is independent C9 and stays a line item even though it parses to 'ridge'.
+// (incl. the legacy "Gingerbread Ridge" wording). NOT Winter Wonderland or Stake
+// Lighting, which are independent and stay line items (WW parses to 'ridge',
+// Stake to its own 'stake-lighting' kind; neither label matches below).
 // Matched by label (not kind) so an unparseable item — which falls back to
 // kind 'roofline' — is never mistaken for the roofline.
 function isBilledRoofline(label: string): boolean {

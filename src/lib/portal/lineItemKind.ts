@@ -4,6 +4,7 @@
 //   "Santa's Roofline – 180ft (medium)"
 //   "Gingerbread – 90ft (medium)"
 //   "Winter Wonderland – 50ft (easy)"
+//   "Stake Lighting – 50ft (medium)"
 //   "Tree – canopy wrap, 4 strings"
 //   "Bush – canopy wrap, 2 strings"
 //   "Column – canopy wrap, 1 string"
@@ -35,6 +36,7 @@ const RAILING_RE = /^Railing\b/i;
 // contain "With Bow" mid-string and must keep matching their own kinds.
 const BOW_RE = /^Bows?\b/i;
 const RIDGE_RE = /(Gingerbread|Ridge|Wonderland)/i; // Gingerbread (ridge) OR Winter Wonderland
+const STAKE_RE = /Stake Lighting/i; // independent stake-lighting runs — its OWN kind/icon
 const ROOFLINE_RE = /Roofline/i;
 const SPRITZER_RE = /Spritzer/i;
 const WREATH_RE = /Wreath/i;
@@ -56,6 +58,10 @@ export function parseLineItem(label: string): ParsedLineItem {
   // "Gingerbread" (the ridge product, renamed from "Gingerbread Ridge") is
   // matched explicitly so it classifies as 'ridge', not 'roofline'. Detail = "N ft".
   if (RIDGE_RE.test(label)) return { kind: 'ridge', detail: extractFootage(label) };
+  // Stake Lighting — its own independent kind (not part of the roofline family).
+  // "Stake Lighting" contains no Gingerbread/Ridge/Wonderland/Roofline token, so
+  // it would otherwise fall through to the 'roofline' fallback; classify it here.
+  if (STAKE_RE.test(label)) return { kind: 'stake-lighting', detail: extractFootage(label) };
   if (ROOFLINE_RE.test(label)) return { kind: 'roofline', detail: extractFootage(label) };
 
   // Spritzers — detail = "N × 24\""

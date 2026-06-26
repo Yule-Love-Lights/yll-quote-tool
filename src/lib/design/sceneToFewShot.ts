@@ -169,7 +169,8 @@ export function sceneToFewShotPieces(
           const pts = normalizePoints(item.points, photoW, photoH);
           if (pts.length >= 2) out.gingerbreadLines.push({ points: pts, label: 'ridge + sides (staff-confirmed)' });
         }
-        // winter-wonderland C9 runs have no slot in the example shape — skip.
+        // winter-wonderland + stake-lighting C9 runs have no slot in the example
+        // shape — skip (both are manual-only categories, not AI-trained).
         continue;
       }
       // Mini strands wrapped on a surface → detections. Railing strands (and

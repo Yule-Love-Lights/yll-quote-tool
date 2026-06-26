@@ -3,7 +3,7 @@
 // normalized 0–1) into an EXISTING design as scene items. Used on re-analyze,
 // when the design already carries the analyzed photo.
 //
-// Body: { seed: { lines?: {santas?,gingerbread?,winterWonderland?},
+// Body: { seed: { lines?: {santas?,gingerbread?,winterWonderland?,stakeLighting?},
 //                 detections?: {miniLights?,wreaths?,spritzers?,garland?} } }
 //
 // Replacement rules (seedSceneFromAnalysis): roofline-TAGGED strands swap by

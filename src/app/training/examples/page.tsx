@@ -278,6 +278,7 @@ function ExampleDetail({ example }: { example: TrainingExampleRow }) {
                 { color: RED, segments: sat?.santas ?? [] },
                 { color: BLUE, segments: sat?.gingerbread ?? [] },
                 { color: AMBER, segments: sat?.c9 ?? [] },
+                { color: PURPLE, segments: sat?.stake ?? [] },
               ]}
             />
           </div>
@@ -291,6 +292,9 @@ function ExampleDetail({ example }: { example: TrainingExampleRow }) {
             Ridge+Sides {example.final_inputs.gingerbreadFootage} ft ({example.final_inputs.gingerbreadDifficulty})
             {(example.final_inputs.winterWonderlandFootage ?? 0) > 0 && (
               <> · C9 {example.final_inputs.winterWonderlandFootage} ft</>
+            )}
+            {(example.final_inputs.stakeLightingFootage ?? 0) > 0 && (
+              <> · Stake {example.final_inputs.stakeLightingFootage} ft</>
             )}
           </div>
           {sat?.santasFootage != null && (

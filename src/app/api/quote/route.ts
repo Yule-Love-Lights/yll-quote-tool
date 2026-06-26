@@ -50,13 +50,13 @@ export async function POST(req: NextRequest) {
   }
   const q = inputs as Record<string, unknown>;
 
-  const footageFields = ['santasFootage', 'gingerbreadFootage', 'winterWonderlandFootage'] as const;
+  const footageFields = ['santasFootage', 'gingerbreadFootage', 'winterWonderlandFootage', 'stakeLightingFootage'] as const;
   for (const f of footageFields) {
     if (!isNonNegNumber(q[f])) {
       return NextResponse.json({ error: `${f} must be a non-negative number` }, { status: 400 });
     }
   }
-  const difficultyFields = ['santasDifficulty', 'gingerbreadDifficulty', 'winterWonderlandDifficulty'] as const;
+  const difficultyFields = ['santasDifficulty', 'gingerbreadDifficulty', 'winterWonderlandDifficulty', 'stakeLightingDifficulty'] as const;
   for (const f of difficultyFields) {
     if (!VALID_DIFFICULTIES.includes(q[f] as string)) {
       return NextResponse.json({ error: `Invalid ${f}` }, { status: 400 });

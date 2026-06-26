@@ -36,6 +36,7 @@ describe('attachSceneLinks', () => {
       strand('rs1', 'santas-roofline'),
       strand('rg1', 'gingerbread'),
       strand('ww1', 'winter-wonderland'),
+      strand('stk1', 'stake-lighting'),
       strand('b1', 'bush', { stringCount: 2 }),
       strand('b2', 'bush', { stringCount: 1 }),
       spritzer('sp1'),
@@ -48,6 +49,7 @@ describe('attachSceneLinks', () => {
     li('roofline-santas', 'roofline'),
     li('roofline-gingerbread', 'ridge'),
     li('ridge-2', 'ridge'), // Winter Wonderland
+    li('stake-lighting-1', 'stake-lighting'),
     li('bush-1', 'bush'),
     li('bush-2', 'bush'),
     li('spritzer-1', 'spritzer'),
@@ -69,6 +71,10 @@ describe('attachSceneLinks', () => {
 
   it('Winter Wonderland links to winter-wonderland strands', () => {
     expect(byId['ridge-2']).toEqual(['ww1']);
+  });
+
+  it('Stake Lighting links to stake-lighting strands by its own kind', () => {
+    expect(byId['stake-lighting-1']).toEqual(['stk1']);
   });
 
   it('per-unit items link by category order', () => {
@@ -145,5 +151,15 @@ describe('attachSceneLinks — carries recommended (#12)', () => {
     };
     const wwOut = attachSceneLinks([li('ridge-2', 'ridge')], wwScene);
     expect(wwOut[0].recommended).toBeUndefined();
+  });
+
+  it('carries recommended onto the Stake Lighting row from its strands', () => {
+    const stakeScene: Scene = {
+      yardsticks: [],
+      items: [strand('stk1', 'stake-lighting', { recommended: true })] as SceneItem[],
+    };
+    const stakeOut = attachSceneLinks([li('stake-lighting-1', 'stake-lighting')], stakeScene);
+    expect(stakeOut[0].sceneItemIds).toEqual(['stk1']);
+    expect(stakeOut[0].recommended).toBe(true);
   });
 });

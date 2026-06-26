@@ -76,6 +76,8 @@ function baseInputs(over: Partial<QuoteInputs> = {}): QuoteInputs {
     gingerbreadDifficulty: 'medium',
     winterWonderlandFootage: 0,
     winterWonderlandDifficulty: 'medium',
+    stakeLightingFootage: 0,
+    stakeLightingDifficulty: 'medium',
     miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 9 }], // a "form" item
     spritzers: [],
     wreaths: [],
@@ -139,7 +141,7 @@ describe('projectScene — mini-light wraps (strand + surface bush/tree/column)'
 });
 
 describe('projectScene — roofline + unmapped strands are NOT projected', () => {
-  it.each<Surface>(['santas-roofline', 'gingerbread', 'winter-wonderland'])(
+  it.each<Surface>(['santas-roofline', 'gingerbread', 'winter-wonderland', 'stake-lighting'])(
     'skips roofline strand surface=%s (measurement-driven)',
     (surface) => {
       const p = projectScene(scene([strand({ bulbType: 'c9', surface })]));

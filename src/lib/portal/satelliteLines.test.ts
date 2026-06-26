@@ -50,6 +50,18 @@ describe('selectDrawableLineGroups (#51)', () => {
     ]);
   });
 
+  it('includes the stake group (purple) after c9 when it has lines', () => {
+    const lines: PortalSatelliteLines = { ...empty, stake: [line(2)] };
+    const groups = selectDrawableLineGroups(lines);
+    const stake = groups.find((g) => g.key === 'stake');
+    expect(stake).toBeTruthy();
+    expect(stake!.color).toBe('#a855f7');
+    expect(stake!.label).toBe('Stake Lighting');
+    // render order: santas -> gingerbread -> c9 -> stake
+    expect(selectDrawableLineGroups({ ...empty, santas: [line(2)], c9: [line(2)], stake: [line(2)] }).map((g) => g.key))
+      .toEqual(['santas', 'c9', 'stake']);
+  });
+
   it('tolerates a missing line-group key (treats it as empty)', () => {
     // A malformed row from the DB may omit a key entirely.
     const lines = { santas: [line(2)] } as unknown as PortalSatelliteLines;

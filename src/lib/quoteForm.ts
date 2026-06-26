@@ -32,6 +32,8 @@ export type QuoteFormData = {
   gingerbreadDifficulty: RooflineDifficulty;
   winterWonderlandFootage: number;
   winterWonderlandDifficulty: RooflineDifficulty;
+  stakeLightingFootage: number;
+  stakeLightingDifficulty: RooflineDifficulty;
   // Staff's recommended roofline (the portal default). Undefined → the engine
   // auto-picks the option closest to the $1,000 minimum (#17). Set via the
   // breakdown's recommend radios.
@@ -66,6 +68,8 @@ export const initialFormData: QuoteFormData = {
   gingerbreadDifficulty: 'medium',
   winterWonderlandFootage: 0,
   winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0,
+  stakeLightingDifficulty: 'easy', // Stake Lighting defaults to Easy / $6/ft (Naldo)
   miniLightItems: [],
   spritzers: [],
   wreaths: [],
@@ -96,6 +100,8 @@ export function buildQuoteInputs(
     gingerbreadDifficulty: form.gingerbreadDifficulty,
     winterWonderlandFootage: form.winterWonderlandFootage,
     winterWonderlandDifficulty: form.winterWonderlandDifficulty,
+    stakeLightingFootage: form.stakeLightingFootage,
+    stakeLightingDifficulty: form.stakeLightingDifficulty,
     // Only sent when staff has explicitly recommended one — otherwise the
     // engine auto-picks (closest to the $1,000 minimum).
     ...(effectiveRooflineChoice ? { rooflineChoice: effectiveRooflineChoice } : {}),
@@ -178,6 +184,8 @@ export function inputsToFormData(
     gingerbreadDifficulty: i.gingerbreadDifficulty ?? 'medium',
     winterWonderlandFootage: i.winterWonderlandFootage ?? 0,
     winterWonderlandDifficulty: i.winterWonderlandDifficulty ?? 'medium',
+    stakeLightingFootage: i.stakeLightingFootage ?? 0,
+    stakeLightingDifficulty: i.stakeLightingDifficulty ?? 'easy',
     ...(i.rooflineChoice ? { rooflineChoice: i.rooflineChoice } : {}),
     miniLightItems: i.miniLightItems ?? [],
     spritzers: i.spritzers ?? [],

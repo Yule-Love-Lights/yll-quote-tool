@@ -28,12 +28,14 @@ export type RooflineSeedLines = {
   santas?: NormalizedPolyline[];
   gingerbread?: NormalizedPolyline[];
   winterWonderland?: NormalizedPolyline[];
+  stakeLighting?: NormalizedPolyline[];
 };
 
 const ROOFLINE_SURFACES: ReadonlySet<string> = new Set([
   'santas-roofline',
   'gingerbread',
   'winter-wonderland',
+  'stake-lighting',
 ]);
 
 // The editor's C9 creation defaults (editor.ts tool defaults) so seeded strands
@@ -62,7 +64,7 @@ export function sanitizeSeedLines(input: unknown): RooflineSeedLines {
   const out: RooflineSeedLines = {};
   if (!input || typeof input !== 'object') return out;
   const o = input as Record<string, unknown>;
-  for (const key of ['santas', 'gingerbread', 'winterWonderland'] as const) {
+  for (const key of ['santas', 'gingerbread', 'winterWonderland', 'stakeLighting'] as const) {
     const raw = o[key];
     if (!Array.isArray(raw)) continue;
     const polys = raw
@@ -75,7 +77,10 @@ export function sanitizeSeedLines(input: unknown): RooflineSeedLines {
 
 export function seedLinesHaveContent(lines: RooflineSeedLines): boolean {
   return Boolean(
-    lines.santas?.length || lines.gingerbread?.length || lines.winterWonderland?.length,
+    lines.santas?.length ||
+      lines.gingerbread?.length ||
+      lines.winterWonderland?.length ||
+      lines.stakeLighting?.length,
   );
 }
 
@@ -126,6 +131,7 @@ export function seedRooflineStrands(
     ...strandsFor(lines.santas, 'santas-roofline', 'santas', photoW, photoH),
     ...strandsFor(lines.gingerbread, 'gingerbread', 'gingerbread', photoW, photoH),
     ...strandsFor(lines.winterWonderland, 'winter-wonderland', 'ww', photoW, photoH),
+    ...strandsFor(lines.stakeLighting, 'stake-lighting', 'stake', photoW, photoH),
   ];
 
   return { ...scene, items: [...kept, ...seeded] };

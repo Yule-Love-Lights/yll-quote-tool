@@ -32,6 +32,9 @@ export type TrainingHousePayload = {
   gingerbreadLines: LineSegment[];
   winterWonderlandFootage?: number;
   winterWonderlandDifficulty?: 'easy' | 'medium' | 'hard';
+  stakeLightingFootage?: number;
+  stakeLightingDifficulty?: 'easy' | 'medium' | 'hard';
+  stakeLines?: LineSegment[];
   miniLightDetections: MiniLightDetection[];
   wreathDetections?: WreathDetection[];
   spritzerDetections?: SpritzerDetection[];
@@ -64,6 +67,9 @@ export type StoredTrainingHouse = {
   gingerbread_lines: LineSegment[];
   winter_wonderland_footage: number | null;
   winter_wonderland_difficulty: 'easy' | 'medium' | 'hard' | null;
+  stake_lighting_footage: number | null;
+  stake_lighting_difficulty: 'easy' | 'medium' | 'hard' | null;
+  stake_lines: LineSegment[] | null;
   mini_light_detections: MiniLightDetection[];
   wreath_detections: WreathDetection[];
   spritzer_detections: SpritzerDetection[];
@@ -105,6 +111,9 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
       gingerbread_lines: payload.gingerbreadLines,
       winter_wonderland_footage: payload.winterWonderlandFootage ?? null,
       winter_wonderland_difficulty: payload.winterWonderlandDifficulty ?? null,
+      stake_lighting_footage: payload.stakeLightingFootage ?? null,
+      stake_lighting_difficulty: payload.stakeLightingDifficulty ?? null,
+      stake_lines: payload.stakeLines ?? [],
       mini_light_detections: payload.miniLightDetections,
       wreath_detections: payload.wreathDetections ?? [],
       spritzer_detections: payload.spritzerDetections ?? [],

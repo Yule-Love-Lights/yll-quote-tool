@@ -7,7 +7,7 @@
 import type { PortalSatelliteLine, PortalSatelliteLines } from '@/components/portal/types';
 
 export type SatelliteLineGroup = {
-  key: 'santas' | 'gingerbread' | 'c9';
+  key: 'santas' | 'gingerbread' | 'c9' | 'stake';
   color: string;
   label: string;
   lines: PortalSatelliteLine[];
@@ -26,6 +26,7 @@ export function selectDrawableLineGroups(
     { key: 'santas', color: '#ef4444', label: 'Santa Roofline', lines: lines.santas ?? [] },
     { key: 'gingerbread', color: '#3b82f6', label: 'Gingerbread', lines: lines.gingerbread ?? [] },
     { key: 'c9', color: '#10b981', label: 'C9 roofline', lines: lines.c9 ?? [] },
+    { key: 'stake', color: '#a855f7', label: 'Stake Lighting', lines: lines.stake ?? [] },
   ];
   return groups
     .map((g) => ({ ...g, lines: (g.lines ?? []).filter(isDrawable) }))

@@ -47,6 +47,8 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
         gingerbreadDifficulty: 'medium',
         winterWonderlandFootage: 0,
         winterWonderlandDifficulty: 'medium',
+        stakeLightingFootage: 0,
+        stakeLightingDifficulty: 'medium',
         miniLightItems: p.miniLightItems,
         spritzers: p.spritzers,
         wreaths: p.wreaths,

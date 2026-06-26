@@ -369,6 +369,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [satelliteSantasLines, setSatelliteSantasLines] = useState<LineSegment[]>([]);
   const [satelliteGingerbreadLines, setSatelliteGingerbreadLines] = useState<LineSegment[]>([]);
   const [satelliteC9Lines, setSatelliteC9Lines] = useState<LineSegment[]>([]);
+  const [satelliteStakeLines, setSatelliteStakeLines] = useState<LineSegment[]>([]);
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -380,7 +381,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [viewMode, setViewMode] = useState<'design' | 'satellite'>('design');
 
   // Drag state for editing satellite polyline points
-  type LineType = 'santas' | 'gingerbread' | 'c9';
+  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake';
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
@@ -394,6 +395,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // the last C9 line resets the derived footage instead of leaving a stale
   // value behind. (Manual entry without any lines is still preserved.)
   const hadC9LinesRef = useRef(false);
+  const hadStakeLinesRef = useRef(false);
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -403,26 +405,33 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     const sFt = Math.round(polylineLength(satelliteSantasLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
     const gFt = Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
     const c9Ft = Math.round(polylineLength(satelliteC9Lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
+    const stakeFt = Math.round(polylineLength(satelliteStakeLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5;
     // When C9 lines are drawn, footage tracks them. When the last line is
     // deleted (had lines on the previous run, none now), reset footage to 0 —
     // it was derived from those lines. When no lines were ever drawn, leave
-    // winterWonderlandFootage alone so the manual input still works.
+    // winterWonderlandFootage alone so the manual input still works. Stake
+    // Lighting mirrors this exactly against its own field.
     const hasC9Lines = satelliteC9Lines.length > 0;
     const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
     hadC9LinesRef.current = hasC9Lines;
+    const hasStakeLines = satelliteStakeLines.length > 0;
+    const stakeTarget = hasStakeLines ? stakeFt : hadStakeLinesRef.current ? 0 : null;
+    hadStakeLinesRef.current = hasStakeLines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
       const sameRoof = f.santasFootage === sFt && f.gingerbreadFootage === gFt;
       const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
-      if (sameRoof && sameC9) return f;
+      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget;
+      if (sameRoof && sameC9 && sameStake) return f;
       return {
         ...f,
         santasFootage: sFt,
         gingerbreadFootage: gFt,
         ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
+        ...(stakeTarget != null ? { stakeLightingFootage: stakeTarget } : {}),
       };
     }));
-  }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteFeetPerPixel, satelliteAspect]);
+  }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
 
   // Footage readout for the satellite tab.
   const satFootage = {
@@ -435,11 +444,13 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const getSetter = (type: LineType) => {
     if (type === 'santas') return setSatelliteSantasLines;
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
+    if (type === 'stake') return setSatelliteStakeLines;
     return setSatelliteC9Lines;
   };
   const activeSantasLines = satelliteSantasLines;
   const activeGingerbreadLines = satelliteGingerbreadLines;
   const activeC9Lines = satelliteC9Lines;
+  const activeStakeLines = satelliteStakeLines;
 
   useEffect(() => {
     if (!dragging) return;
@@ -526,6 +537,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     setSatelliteSantasLines([]);
     setSatelliteGingerbreadLines([]);
     setSatelliteC9Lines([]);
+    setSatelliteStakeLines([]);
     setSatelliteFeetPerPixel(null);
     setGoogleAddress(null);
     setPhotoBase64(null);
@@ -566,6 +578,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       setSatelliteSantasLines([]);
       setSatelliteGingerbreadLines([]);
       setSatelliteC9Lines([]);
+      setSatelliteStakeLines([]);
       setSatelliteFeetPerPixel(null); // manual = no known scale
       const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
       // Read the CURRENT design id (L6) — a design may have been created while
@@ -728,6 +741,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         santas: (r.santasLines ?? []).map((l) => l.points),
         gingerbread: (r.gingerbreadLines ?? []).map((l) => l.points),
         winterWonderland: [],
+        stakeLighting: [],
       },
       detections: {
         miniLights: (r.miniLightDetections ?? []).map((d) => ({
@@ -1047,7 +1061,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       // quote with no satellite state must NOT clobber stored lines.
       const satelliteActive =
         satellitePreview != null &&
-        (satelliteSantasLines.length > 0 || satelliteGingerbreadLines.length > 0 || satelliteC9Lines.length > 0);
+        (satelliteSantasLines.length > 0 || satelliteGingerbreadLines.length > 0 || satelliteC9Lines.length > 0 || satelliteStakeLines.length > 0);
       if (designId && satelliteActive) {
         void fetch(`/api/designs/${designId}`, {
           method: 'PUT',
@@ -1057,6 +1071,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               santas: satelliteSantasLines,
               gingerbread: satelliteGingerbreadLines,
               c9: satelliteC9Lines,
+              stake: satelliteStakeLines,
               ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
               ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
             },
@@ -1695,11 +1710,23 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                             vectorEffect="non-scaling-stroke"
                           />
                         ))}
+                        {activeStakeLines.map((line, i) => (
+                          <polyline
+                            key={`stake-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#a855f7"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
                         {pendingPoints.length > 0 && (
                           <polyline
                             points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                             fill="none"
-                            stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
+                            stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
                             strokeWidth="3"
                             strokeDasharray="6 4"
                             vectorEffect="non-scaling-stroke"
@@ -1737,10 +1764,20 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           title="Drag to move • Double-click to delete"
                         />
                       )))}
+                      {!addMode && activeStakeLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                        <div
+                          key={`stakeh-${li}-${pi}`}
+                          className="absolute w-4 h-4 rounded-full bg-purple-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'stake', lineIdx: li, ptIdx: pi }); }}
+                          onDoubleClick={() => deletePoint('stake', li, pi)}
+                          title="Drag to move • Double-click to delete"
+                        />
+                      )))}
                       {pendingPoints.map(([x, y], i) => (
                         <div
                           key={`pp-${i}`}
-                          className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
+                          className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : addMode === 'stake' ? 'bg-purple-500' : 'bg-emerald-500'} border-2 border-white shadow`}
                           style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
                         />
                       ))}
@@ -1751,7 +1788,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                     {addMode ? (
                       <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                         <span className="text-sm text-yellow-900">
-                          Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
+                          Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : addMode === 'stake' ? 'stake run (purple)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                         </span>
                         <div className="flex gap-2">
                           <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
@@ -1778,11 +1815,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                           className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
                           + Add C9 Run
                         </button>
+                        <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
+                          className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                          + Add Stake Run
+                        </button>
                       </div>
                     )}
 
-                    {/* Per-line edit panels — front gutterline / ridge+sides / C9s. */}
-                    <div className="mt-4 grid grid-cols-3 gap-4">
+                    {/* Per-line edit panels — front gutterline / ridge+sides / C9s / Stake. */}
+                    <div className="mt-4 grid grid-cols-2 gap-4">
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-red-500 rounded"></span>
@@ -1861,6 +1902,44 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                               <span className="text-xs text-gray-500">ft</span>
                               <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
                                 onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                                <option value="easy">Easy</option>
+                                <option value="medium">Medium</option>
+                                <option value="hard">Hard</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-1 bg-purple-500 rounded"></span>
+                          <span className="text-sm font-semibold text-gray-800">Stake Lighting — {form.stakeLightingFootage}ft</span>
+                        </div>
+                        {activeStakeLines.length > 0 ? (
+                          <ul className="space-y-1 ml-6">
+                            {activeStakeLines.map((line, i) => (
+                              <li key={`stakel-${i}`} className="flex items-center gap-2 text-xs">
+                                <input
+                                  value={line.label}
+                                  onChange={e => updateLineLabel('stake', i, e.target.value)}
+                                  className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                                />
+                                <span className="text-gray-400">{line.points.length}pts</span>
+                                <button type="button" onClick={() => deleteLine('stake', i)}
+                                  className="text-red-400 hover:text-red-600 font-bold">×</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="ml-6">
+                            <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
+                            <div className="flex items-center gap-2">
+                              <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
+                                value={form.stakeLightingFootage || ''}
+                                onChange={e => set('stakeLightingFootage', Number(e.target.value))} />
+                              <span className="text-xs text-gray-500">ft</span>
+                              <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.stakeLightingDifficulty}
+                                onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
                                 <option value="easy">Easy</option>
                                 <option value="medium">Medium</option>
                                 <option value="hard">Hard</option>
@@ -1957,6 +2036,33 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 </div>
               </div>
               {form.winterWonderlandFootage === 0 && (
+                <p className="mt-2 text-xs text-amber-500">Footage is 0 — not included in quote</p>
+              )}
+            </Section>
+          </div>
+
+          {/* ── Stake Lighting ── independent staked ground runs (own $6/$7/$8 rates) */}
+          <div className={`transition-opacity ${form.stakeLightingFootage === 0 ? 'opacity-50' : ''}`}>
+            <Section title="Stake Lighting">
+              <p className="text-xs text-gray-400 mb-3">Enter manually — staked ground runs.</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={lbl}>Linear Footage</label>
+                  <input className={inp} type="number" min="0" placeholder="0"
+                    value={form.stakeLightingFootage || ''}
+                    onChange={e => set('stakeLightingFootage', Number(e.target.value))} />
+                </div>
+                <div>
+                  <label className={lbl}>Difficulty</label>
+                  <select className={sel} value={form.stakeLightingDifficulty}
+                    onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
+                    <option value="easy">Easy — $6/ft</option>
+                    <option value="medium">Medium — $7/ft</option>
+                    <option value="hard">Hard — $8/ft</option>
+                  </select>
+                </div>
+              </div>
+              {form.stakeLightingFootage === 0 && (
                 <p className="mt-2 text-xs text-amber-500">Footage is 0 — not included in quote</p>
               )}
             </Section>
@@ -2206,7 +2312,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 // their own "recommend one" radio above and are filtered out of these
                 // rows, so 'ridge' here only ever matches Winter Wonderland.
                 const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
-                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow', 'ridge',
+                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
                 ]);
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
