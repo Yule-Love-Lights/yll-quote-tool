@@ -128,7 +128,7 @@ export default function NewTrainingHousePage() {
   const [wwDifficulty, setWwDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
   const [c9Lines, setC9Lines] = useState<LineSegment[]>([]);
   const [stakeFootage, setStakeFootage] = useState<number | ''>('');
-  const [stakeDifficulty, setStakeDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
+  const [stakeDifficulty, setStakeDifficulty] = useState<'easy'|'medium'|'hard'>('easy');
   const [stakeLines, setStakeLines] = useState<LineSegment[]>([]);
 
   // Detections

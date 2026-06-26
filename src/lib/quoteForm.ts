@@ -69,7 +69,7 @@ export const initialFormData: QuoteFormData = {
   winterWonderlandFootage: 0,
   winterWonderlandDifficulty: 'medium',
   stakeLightingFootage: 0,
-  stakeLightingDifficulty: 'medium',
+  stakeLightingDifficulty: 'easy', // Stake Lighting defaults to Easy / $6/ft (Naldo)
   miniLightItems: [],
   spritzers: [],
   wreaths: [],
@@ -185,7 +185,7 @@ export function inputsToFormData(
     winterWonderlandFootage: i.winterWonderlandFootage ?? 0,
     winterWonderlandDifficulty: i.winterWonderlandDifficulty ?? 'medium',
     stakeLightingFootage: i.stakeLightingFootage ?? 0,
-    stakeLightingDifficulty: i.stakeLightingDifficulty ?? 'medium',
+    stakeLightingDifficulty: i.stakeLightingDifficulty ?? 'easy',
     ...(i.rooflineChoice ? { rooflineChoice: i.rooflineChoice } : {}),
     miniLightItems: i.miniLightItems ?? [],
     spritzers: i.spritzers ?? [],

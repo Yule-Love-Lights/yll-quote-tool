@@ -144,7 +144,7 @@ describe('inputsToFormData', () => {
     expect(hydrated.discountEnabled).toBe(false);
     expect(hydrated.santasFootage).toBe(90);
     expect(hydrated.stakeLightingFootage).toBe(0); // newer field → blank-form default
-    expect(hydrated.stakeLightingDifficulty).toBe('medium');
+    expect(hydrated.stakeLightingDifficulty).toBe('easy'); // Stake Lighting defaults to Easy
   });
 
   it('survives null/garbage inputs with the blank form', () => {
