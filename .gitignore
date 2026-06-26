@@ -40,8 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# claude code local tooling (launch config, session settings)
-.claude/
+# claude code local tooling (launch config, session settings) — but DO track shared project skills
+.claude/*
+!.claude/skills/
 
 # graphify knowledge-graph output (generated, local)
 graphify-out/
