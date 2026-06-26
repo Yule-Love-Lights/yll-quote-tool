@@ -4,6 +4,15 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# Default coding practice — the Karpathy guidelines
+
+Adopt these four principles by default when writing, reviewing, or refactoring **non-trivial** code (use judgment on trivial one-liners / typo fixes — don't over-apply rigor). Full detail in the `karpathy-guidelines` skill (`.claude/skills/karpathy-guidelines/SKILL.md`).
+
+1. **Think before coding** — state assumptions; if multiple interpretations exist, surface them instead of picking silently; push back when a simpler approach exists; stop and ask when something's unclear.
+2. **Simplicity first** — minimum code that solves the problem; no speculative features / abstractions / config / error-handling that wasn't asked for. If 200 lines could be 50, rewrite it.
+3. **Surgical changes** — touch only what the request requires; match existing style; don't refactor or reformat unrelated code; flag unrelated dead code rather than deleting it; clean up only orphans your own change created.
+4. **Goal-driven execution** — turn tasks into verifiable success criteria (e.g. a failing test → make it pass) and loop until they're met; state a brief plan for multi-step work.
+
 # Codebase navigation — prefer the graphify graph for big-picture questions
 
 A `graphify-out/` knowledge graph of `src/` may exist locally. It's **gitignored — per-machine, never committed**, so a fresh clone / another machine won't have one until it's built: `/graphify src` (free for code, ~seconds). The optional post-commit auto-rebuild hook (`graphify hook install`, also per-machine) then keeps it fresh on every commit.
@@ -45,3 +54,15 @@ Each machine's local `~/.claude/.../memory` seeds from + syncs back to the repo'
 - **Session logs are per-dev** — Jason writes `session_log.md`, Naldo writes `session_log_naldo.md`. **Only ever edit your OWN log.** Read both at session start.
 - **`task_ledger.md` + `project_quote_tool.md` stay unified** (one source of truth). Before copying local → `docs/context`, **branch your sync off a fresh `git pull origin master`** so your PR is only your delta on top of the latest shared state — git auto-merges non-overlapping edits; you only hand-resolve a literal same-line clash.
 - **Sync = a PR off fresh master at your own session close** (PR-not-master applies to docs too). Seed a machine (pull master → copy `docs/context/*` to local) only when local has nothing unsynced.
+
+# Big decisions — OFFER the LLM Council, never auto-run it
+
+A project skill, **`llm-council`** (`.claude/skills/llm-council/SKILL.md`), runs a question through 5 independent advisors → anonymized peer review → a chairman verdict. It's valuable for **high-stakes, genuinely-uncertain calls** — task sequencing, architecture, customer-facing tradeoffs, "should we do X or Y."
+
+**An AI assistant must NEVER run the council automatically.** Three reasons: each run spawns ~11 sub-agents (real token cost); "big decision" is a judgment call (auto-running guesses wrong and fires on the wrong things); and an unprompted council is a heavy mid-work interrupt. Instead, when a genuinely council-worthy decision comes up:
+
+1. **Prompt the dev** (Jason or Naldo) — flag that this looks like a council-worthy decision.
+2. **Give your recommendation** on whether it's actually worth running here, and why or why not.
+3. **Wait for an explicit yes/no.** Run the council ONLY on a "yes."
+
+Don't raise it for small / reversible / obvious calls — that's noise. The dev can always trigger it themselves any time ("council this", "pressure-test this", "war room this").

@@ -249,6 +249,10 @@ export async function renderEditor(
   let dragPts: number[] | null = null;
   // Trace polyline state (for "trace" mode) — accumulates committed points; last entry tracks the cursor.
   let tracePts: number[] | null = null;
+  // #63: the existing item a strand-draw gesture started ON TOP of (if any). On a
+  // click without a real drag we select it; on a drag we draw through it. Reset on
+  // each mousedown, consumed on mouseup.
+  let drawOverItemId: string | null = null;
   let drawPreview: Konva.Line | null = null;
   // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
   let scattershotStart: { x: number; y: number } | null = null;
@@ -630,10 +634,19 @@ export async function renderEditor(
       } else {
         continue;
       }
+      g.setAttr("itemId", item.id);
+      // #63: in strand-draw mode items render non-draggable, so a press-drag draws
+      // THROUGH them instead of moving them (no drag arms → no dragend/bake). The
+      // tool-change handlers redrawScene(), so this flag is always fresh.
+      if (isStrandDrawContext()) g.draggable(false);
       g.on("click tap", (e) => {
         e.cancelBubble = true;
         // While tracing, clicks must continue the polyline — never select.
         if (tracePts) return;
+        // #63: in strand-draw mode, selection is decided by the deferred
+        // mousedown/mouseup draw logic (drag = draw-through, click = select) —
+        // don't also select here.
+        if (isStrandDrawContext()) return;
         // In bistro draw mode, clicks on poles must NOT select — they
         // start (or end) a bistro span. Without this, after dragging a
         // span from pole A to pole B the click event on pole B would
@@ -1650,6 +1663,7 @@ export async function renderEditor(
           ensureUploadsLoaded().then(() => renderSidebar());
         }
         renderSidebar();
+        redrawScene(); // #63: refresh item draggable flags for the new tool context
       }),
     );
     sb.querySelectorAll("#bulb-types button").forEach((b) =>
@@ -1664,6 +1678,7 @@ export async function renderEditor(
         const spacings = SPACINGS[tool.bulbType];
         if (!spacings.includes(tool.spacingIn)) tool.spacingIn = spacings[Math.floor(spacings.length / 2)];
         renderSidebar();
+        redrawScene(); // #63: bistro vs non-bistro flips strand-draw context
       }),
     );
     sb.querySelectorAll("#decor-types button").forEach((b) =>
@@ -1673,6 +1688,7 @@ export async function renderEditor(
         cancelInProgress();
         applyDefaultsForCurrentType();
         renderSidebar();
+        redrawScene(); // #63: garland vs other decor flips strand-draw context
       }),
     );
     sb.querySelectorAll("#garland-sizes button").forEach((b) =>
@@ -1691,6 +1707,7 @@ export async function renderEditor(
         cancelInProgress();
         tool.drawingStyle = (b as HTMLElement).dataset.style as DrawingStyle;
         renderSidebar();
+        redrawScene(); // #63: garland drawingStyle changes flip strand-draw context
       }),
     );
     sb.querySelector("#select-all-garlands")?.addEventListener("click", () => {
@@ -1990,6 +2007,7 @@ export async function renderEditor(
           tool.drawingStyle = s as DrawingStyle;
         }
         renderSidebar();
+        redrawScene(); // #63: drawingStyle/scattershot changes flip strand-draw context
       }),
     );
     sb.querySelectorAll("#colors button").forEach((b) =>
@@ -3771,6 +3789,9 @@ export async function renderEditor(
     (root.querySelector("#tool-draw") as HTMLElement).classList.toggle("active", m === "draw");
     (root.querySelector("#tool-select") as HTMLElement).classList.toggle("active", m === "select");
     stage.container().style.cursor = m === "select" ? "crosshair" : "";
+    // #63: the item draggable flag depends on draw-vs-select mode — refresh it so
+    // it's current before the next canvas gesture.
+    redrawScene();
   }
   (root.querySelector("#tool-draw") as HTMLElement).addEventListener("click", () => setToolMode("draw"));
   (root.querySelector("#tool-select") as HTMLElement).addEventListener("click", () => setToolMode("select"));
@@ -4235,9 +4256,37 @@ export async function renderEditor(
     return tool.category === "decor" && tool.decorType === "garland";
   }
 
+  // #63: true when the active gesture is a click-drag "strand" draw (lights
+  // non-bistro, or garland). In this context a press that starts on an existing
+  // item draws THROUGH it on a drag, or selects it on a click without a drag — so
+  // items render non-draggable (no move, no drag ever arms) and the per-item
+  // select-guards are bypassed. Read live; the tool-change handlers redrawScene()
+  // so the draggable flag this gates stays fresh across tool switches.
+  function isStrandDrawContext(): boolean {
+    return (
+      toolMode === "draw" &&
+      tool.drawingStyle === "strand" &&
+      !tool.scattershot &&
+      ((tool.category === "lights" && tool.bulbType !== "bistro") || drawingGarland())
+    );
+  }
+
+  // #63: select the item a strand-draw click (no real drag) landed on — the
+  // deferred half of the draw-vs-select decision. Mirrors the item click
+  // handler's additive logic. Caller resets drawOverItemId + redraws.
+  function selectDrawOverItem(native: MouseEvent) {
+    if (!drawOverItemId) return;
+    const additive = !!(native && (native.shiftKey || native.metaKey || native.ctrlKey));
+    selectedYardstickId = null;
+    if (!additive) selectedIds.clear();
+    if (additive && selectedIds.has(drawOverItemId)) selectedIds.delete(drawOverItemId);
+    else selectedIds.add(drawOverItemId);
+  }
+
   function cancelInProgress() {
     dragPts = null;
     tracePts = null;
+    drawOverItemId = null;
     drawPreview?.destroy();
     drawPreview = null;
     if (scattershotStart) {
@@ -4294,45 +4343,64 @@ export async function renderEditor(
     // Click on an existing yardstick (to drag it) — don't start drawing.
     if (e.target.findAncestor(".yardstick", true)) return;
 
-    // Click on a strand group — selection handler runs; suppress draw.
-    // EXCEPT when a trace polyline is in progress: that click must continue the
-    // trace, not select. The strand's own click handler is guarded to skip
-    // selection while tracing, and we want to fall through to the trace logic.
-    if (e.target.findAncestor(".strand", true) && !tracePts) return;
+    // #63 Option A: in strand-draw mode, a gesture that starts on an existing item
+    // draws THROUGH it (on a drag) or selects it (on a click without a drag). We
+    // record the item under the cursor and fall through to the draw pipeline; the
+    // select-vs-draw decision is deferred to mouseup. In every other mode the
+    // per-item guards below bail so the item's own click handler selects it.
+    drawOverItemId = null;
+    if (isStrandDrawContext()) {
+      const overItem =
+        e.target.findAncestor(".strand", true) ||
+        e.target.findAncestor(".garland", true) ||
+        e.target.findAncestor(".miniArea", true) ||
+        e.target.findAncestor(".wreath", true) ||
+        e.target.findAncestor(".bow", true) ||
+        e.target.findAncestor(".spritzer", true) ||
+        e.target.findAncestor(".pole", true) ||
+        e.target.findAncestor(".text", true) ||
+        e.target.findAncestor(".custom", true);
+      if (overItem) drawOverItemId = (overItem.getAttr("itemId") as string | undefined) ?? null;
+      // fall through to the draw pipeline below (skip the per-item return-guards).
+    } else {
+      // Click on a strand group — selection handler runs; suppress draw. EXCEPT
+      // when a trace polyline is in progress: that click must continue the trace.
+      if (e.target.findAncestor(".strand", true) && !tracePts) return;
 
-    // Click on an existing wreath — let its click handler select it; don't draw.
-    if (e.target.findAncestor(".wreath", true)) return;
+      // Click on an existing wreath — let its click handler select it; don't draw.
+      if (e.target.findAncestor(".wreath", true)) return;
 
-    // Click on an existing bow — same deal.
-    if (e.target.findAncestor(".bow", true)) return;
+      // Click on an existing bow — same deal.
+      if (e.target.findAncestor(".bow", true)) return;
 
-    // Click on an existing garland — let its click handler select it; don't draw.
-    // (Exception while a trace is in progress, same as for strands.)
-    if (e.target.findAncestor(".garland", true) && !tracePts) return;
+      // Click on an existing garland — let its click handler select it; don't draw.
+      // (Exception while a trace is in progress, same as for strands.)
+      if (e.target.findAncestor(".garland", true) && !tracePts) return;
 
-    // Click on an existing spritzer — same deal as wreath/bow.
-    if (e.target.findAncestor(".spritzer", true)) return;
+      // Click on an existing spritzer — same deal as wreath/bow.
+      if (e.target.findAncestor(".spritzer", true)) return;
 
-    // Click on an existing mini-light area — let its click handler select it;
-    // don't fall through to the place/draw pipeline (which would drop a
-    // duplicate box and destroy the pressed group mid-gesture). Same trace
-    // exception as strands/garlands: mid-trace clicks continue the polyline.
-    if (e.target.findAncestor(".miniArea", true) && !tracePts) return;
+      // Click on an existing mini-light area — let its click handler select it;
+      // don't fall through to the place/draw pipeline (which would drop a
+      // duplicate box and destroy the pressed group mid-gesture). Same trace
+      // exception as strands/garlands: mid-trace clicks continue the polyline.
+      if (e.target.findAncestor(".miniArea", true) && !tracePts) return;
 
-    // Click on an existing text item — same.
-    if (e.target.findAncestor(".text", true)) return;
+      // Click on an existing text item — same.
+      if (e.target.findAncestor(".text", true)) return;
 
-    // Click on an existing custom-upload item — same.
-    if (e.target.findAncestor(".custom", true)) return;
+      // Click on an existing custom-upload item — same.
+      if (e.target.findAncestor(".custom", true)) return;
 
-    // Click on an existing pole — normally bails out so the pole gets
-    // selected. EXCEPTION: in bistro draw mode the user is connecting
-    // poles with light spans, so clicks on poles must fall through to the
-    // strand-drawing pipeline (and the start point of the span will be
-    // wherever they clicked on the pole).
-    const drawingBistroNow =
-      tool.category === "lights" && tool.bulbType === "bistro" && toolMode === "draw";
-    if (e.target.findAncestor(".pole", true) && !drawingBistroNow) return;
+      // Click on an existing pole — normally bails out so the pole gets
+      // selected. EXCEPTION: in bistro draw mode the user is connecting
+      // poles with light spans, so clicks on poles must fall through to the
+      // strand-drawing pipeline (and the start point of the span will be
+      // wherever they clicked on the pole).
+      const drawingBistroNow =
+        tool.category === "lights" && tool.bulbType === "bistro" && toolMode === "draw";
+      if (e.target.findAncestor(".pole", true) && !drawingBistroNow) return;
+    }
 
     // Click on either Transformer (anchor handles) — suppress draw.
     if (e.target.findAncestor("Transformer", true)) return;
@@ -4356,7 +4424,9 @@ export async function renderEditor(
     }
 
     // Click on the empty photo background → deselect any current selection.
-    if (selectedIds.size > 0 || selectedYardstickId) {
+    // (#63: but NOT when a strand-draw gesture started on top of an item — that
+    // must begin the draw, not get swallowed by a deselect.)
+    if ((selectedIds.size > 0 || selectedYardstickId) && !drawOverItemId) {
       clearSelection();
       return;
     }
@@ -4507,7 +4577,7 @@ export async function renderEditor(
     }
   });
 
-  stage.on("mouseup touchend", () => {
+  stage.on("mouseup touchend", (e) => {
     if (marqueeStart && marqueePreview) {
       const p = imagePoint();
       if (p) {
@@ -4579,10 +4649,24 @@ export async function renderEditor(
       if (Math.hypot(dx, dy) >= 6) {
         if (drawingGarland()) commitGarland(dragPts);
         else commitStrand(dragPts);
+      } else if (drawOverItemId) {
+        // #63 Option A: a click without a real drag that started on an existing
+        // item selects that item (the deferred select-vs-draw decision), instead
+        // of committing a zero-length strand.
+        selectDrawOverItem(e.evt as MouseEvent);
       }
       dragPts = null;
       drawPreview?.destroy();
       drawPreview = null;
+      drawOverItemId = null;
+      redrawScene();
+    } else if (drawOverItemId) {
+      // #63: a strand-draw press started on an item but no drag ever armed — e.g.
+      // the press landed on the item's overhang OUTSIDE the photo bounds, so the
+      // mousedown inPhoto guard returned before dragPts was set. Still honor it as
+      // a click-select of that item (it would have selected pre-#63).
+      selectDrawOverItem(e.evt as MouseEvent);
+      drawOverItemId = null;
       redrawScene();
     }
   });
