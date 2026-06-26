@@ -35,7 +35,8 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 *Reading* a shared file (e.g. importing from `src/lib/quotes.ts`) is always fine; only **editing** a SHARED file needs a heads-up to the other owner first.
 
 ## Review / merge
-- **Own-area PRs: self-merge** — a PR that touches only your own area can be merged without waiting.
+- **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge.
+- **Own-area PRs: no cross-review needed** — a PR touching only your own area doesn't need the *other* owner's review (your own dev's go to merge still applies, per above).
 - **SHARED-file PRs: the other owner reviews first** before merge.
 - **Always merge current, never stale.** Before merging ANY PR, `git fetch`. If `master` has advanced past the branch's base, bring the branch up to date with `master` (merge `master` in or rebase, resolve any conflicts) and **re-run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) on the updated branch** before merging. Never merge a branch whose green gates predate the current `master` — a clean text-merge can still be a logical regression when `master` changed underneath (e.g. a renamed export, a changed type, new business rules). This applies even to same-day branches, and strengthens the "merge `master` back in if a branch lives more than a day" guidance above into a hard pre-merge step. (Merging on GitHub combines the branch with origin's *current* `master` regardless of your local state, so this is about updating the **branch**, not just pulling local `master`.)
 
