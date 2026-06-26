@@ -11,6 +11,8 @@ function emptyInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
     gingerbreadDifficulty: 'medium',
     winterWonderlandFootage: 0,
     winterWonderlandDifficulty: 'medium',
+    stakeLightingFootage: 0,
+    stakeLightingDifficulty: 'medium',
     miniLightItems: [],
     spritzers: [],
     wreaths: [],
@@ -161,6 +163,26 @@ describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)',
     const labels = r.lineItems.map((li) => li.label).join(' | ');
     expect(labels).toContain("Santa's Roofline");
     expect(labels).toContain('Winter Wonderland');
+  });
+
+  it('Stake Lighting bills independently at its own $6/$7/$8 rates', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',                  // Santa's 1000
+      rooflineChoice: 'santas',
+      stakeLightingFootage: 100, stakeLightingDifficulty: 'medium',    // 100 × $7 = 700
+    }));
+    const stake = r.lineItems.find((li) => li.label.startsWith('Stake Lighting –'));
+    expect(stake).toBeTruthy();
+    expect(stake!.amount).toBe(700);
+    // Independent of the roofline choice — Santa's still bills alongside it.
+    expect(r.lineItems.map((li) => li.label).join(' | ')).toContain("Santa's Roofline");
+  });
+
+  it('Stake Lighting uses $6 easy / $8 hard, distinct from the roofline table', () => {
+    const easy = calculateQuote(emptyInputs({ stakeLightingFootage: 100, stakeLightingDifficulty: 'easy' }));
+    const hard = calculateQuote(emptyInputs({ stakeLightingFootage: 100, stakeLightingDifficulty: 'hard' }));
+    expect(easy.lineItems.find((li) => li.label.startsWith('Stake Lighting –'))!.amount).toBe(600);
+    expect(hard.lineItems.find((li) => li.label.startsWith('Stake Lighting –'))!.amount).toBe(800);
   });
 });
 

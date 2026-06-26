@@ -17,6 +17,8 @@ const fullForm: QuoteFormData = {
   gingerbreadDifficulty: 'easy',
   winterWonderlandFootage: 40,
   winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 60,
+  stakeLightingDifficulty: 'hard',
   rooflineChoice: 'gingerbread',
   miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }],
   spritzers: [{ size: '24', quantity: 2 }],
@@ -40,6 +42,14 @@ describe('buildQuoteInputs', () => {
     expect(inputs.rooflineChoice).toBe('gingerbread');
     expect(inputs.discount).toEqual({ type: 'percentage', amount: 0.2 });
     expect(inputs.customLineItems).toEqual(fullForm.customLineItems);
+    expect(inputs.stakeLightingFootage).toBe(60);
+    expect(inputs.stakeLightingDifficulty).toBe('hard');
+  });
+
+  it('round-trips Stake Lighting through inputs → form', () => {
+    const restored = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm));
+    expect(restored.stakeLightingFootage).toBe(60);
+    expect(restored.stakeLightingDifficulty).toBe('hard');
   });
 
   it('omits rooflineChoice when staff has not recommended one', () => {
@@ -126,13 +136,15 @@ describe('inputsToFormData', () => {
       garland: [],
       takedown: 'included',
       rushFee: false,
-    } as QuoteInputs;
+    } as unknown as QuoteInputs; // genuinely missing newer fields (stakeLighting, etc.)
     const hydrated = inputsToFormData({ name: 'Bob' }, old);
     expect(hydrated.customLineItems).toEqual([]);
     expect(hydrated.bows).toEqual([]); // pre-#28 quotes have no bows field
     expect('rooflineChoice' in hydrated).toBe(false);
     expect(hydrated.discountEnabled).toBe(false);
     expect(hydrated.santasFootage).toBe(90);
+    expect(hydrated.stakeLightingFootage).toBe(0); // newer field → blank-form default
+    expect(hydrated.stakeLightingDifficulty).toBe('medium');
   });
 
   it('survives null/garbage inputs with the blank form', () => {

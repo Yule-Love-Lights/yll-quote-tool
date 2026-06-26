@@ -29,6 +29,7 @@ const job1: QuoteInputs = {
   santasFootage: 120, santasDifficulty: 'easy',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'medium',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [], spritzers: [], wreaths: [], garland: [],
   takedown: 'included', rushFee: false,
 };
@@ -40,6 +41,7 @@ const job2: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'medium',
   gingerbreadFootage: 120, gingerbreadDifficulty: 'medium',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [], spritzers: [], wreaths: [], garland: [],
   takedown: 'included', rushFee: false,
 };
@@ -51,6 +53,7 @@ const job3: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'medium',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'medium',
   winterWonderlandFootage: 150, winterWonderlandDifficulty: 'hard',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [], spritzers: [], wreaths: [], garland: [],
   takedown: 'premium', rushFee: true,
   discount: { type: 'percentage', amount: 0.10 },
@@ -66,6 +69,7 @@ const job4: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'easy',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'easy',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'easy',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [
     { type: 'tree', wrapStyle: 'trunk',  stringCount: 4 },  // $45 × 4 = $180
     { type: 'tree', wrapStyle: 'trunk',  stringCount: 3 },  // $45 × 3 = $135
@@ -84,6 +88,7 @@ const job5: QuoteInputs = {
   santasFootage: 100, santasDifficulty: 'medium',      // 100 × $10 = $1,000
   gingerbreadFootage: 60, gingerbreadDifficulty: 'medium', // 60 × $10 = $600
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [
     { type: 'tree',   wrapStyle: 'trunk',  stringCount: 5 },  // $225
     { type: 'column', wrapStyle: 'canopy', stringCount: 2 },  // $70
@@ -100,6 +105,7 @@ const job6: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'easy',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'easy',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'easy',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [],
   spritzers: [
     { size: '16', quantity: 1 },   // $85 × 1 = $85
@@ -117,6 +123,7 @@ const job7: QuoteInputs = {
   santasFootage: 80, santasDifficulty: 'medium',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'medium',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [
     { type: 'tree', wrapStyle: 'trunk', stringCount: 4 },   // $180
     { type: 'bush', wrapStyle: 'canopy', stringCount: 2 },  // $70
@@ -133,6 +140,7 @@ const job8: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'easy',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'easy',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'easy',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [], spritzers: [],
   wreaths: [
     { size: '24noble', tier: 'bow',       quantity: 2 },  // $200 × 2 = $400
@@ -150,6 +158,7 @@ const job9: QuoteInputs = {
   santasFootage: 0, santasDifficulty: 'easy',
   gingerbreadFootage: 0, gingerbreadDifficulty: 'easy',
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'easy',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [], spritzers: [], wreaths: [],
   garland: [
     { length: '9ft', type: 'noble', tier: 'bow',       quantity: 3 },  // $195 × 3 = $585
@@ -165,6 +174,7 @@ const job10: QuoteInputs = {
   santasFootage: 130, santasDifficulty: 'medium',       // 130 × $10 = $1,300
   gingerbreadFootage: 80, gingerbreadDifficulty: 'easy', //  80 × $8  = $640
   winterWonderlandFootage: 0, winterWonderlandDifficulty: 'medium',
+  stakeLightingFootage: 0, stakeLightingDifficulty: 'medium',
   miniLightItems: [
     { type: 'tree', wrapStyle: 'trunk',  stringCount: 4 },  // $180
     { type: 'bush', wrapStyle: 'canopy', stringCount: 2 },  // $70

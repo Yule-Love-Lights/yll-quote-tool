@@ -76,6 +76,8 @@ function baseInputs(over: Partial<QuoteInputs> = {}): QuoteInputs {
     gingerbreadDifficulty: 'medium',
     winterWonderlandFootage: 0,
     winterWonderlandDifficulty: 'medium',
+    stakeLightingFootage: 0,
+    stakeLightingDifficulty: 'medium',
     miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 9 }], // a "form" item
     spritzers: [],
     wreaths: [],

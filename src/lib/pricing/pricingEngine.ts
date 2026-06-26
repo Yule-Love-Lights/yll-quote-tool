@@ -27,6 +27,14 @@ export const BUSINESS_RULES = {
     hard: 12,
   },
 
+  // Stake Lighting (independent staked ground runs) — its OWN per-ft rate table,
+  // distinct from the roofline rates above (Naldo, 2026-06-26).
+  stakeLightingRates: {
+    easy: 6,
+    medium: 7,
+    hard: 8,
+  },
+
   miniLightRates: {
     canopy: 35,   // circles around plant — bushes, small trees, columns
     trunk: 45,    // up trunks and branches — larger trees
@@ -161,6 +169,10 @@ export interface QuoteInputs {
   gingerbreadDifficulty: RooflineDifficulty;
   winterWonderlandFootage: number;
   winterWonderlandDifficulty: RooflineDifficulty;
+  // Stake Lighting (staked ground runs) — independent of the roofline choice,
+  // billed at its own $6/$7/$8 rates. Parallel sibling of Winter Wonderland.
+  stakeLightingFootage: number;
+  stakeLightingDifficulty: RooflineDifficulty;
   // The roofline the quote defaults to (operator's pick). When omitted the
   // engine infers it from footage (Gingerbread if there's ridge/sides, else
   // Santa's, else none); the portal can switch it — see QuoteResult.rooflineOptions.
@@ -336,6 +348,22 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
   ];
 }
 
+// Stake Lighting (staked ground runs) — INDEPENDENT of the Santa's/Gingerbread
+// choice, like Winter Wonderland, but billed at its own $6/$7/$8 rate table.
+// Part of the "rest of the quote." The label must NOT contain Wonderland/
+// Roofline/Gingerbread/Ridge or the portal lineItemKind parser mis-classifies it.
+function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
+  if (inputs.stakeLightingFootage <= 0) return [];
+  return [
+    {
+      label: `Stake Lighting – ${inputs.stakeLightingFootage}ft (${inputs.stakeLightingDifficulty})`,
+      amount: Math.round(
+        inputs.stakeLightingFootage * BUSINESS_RULES.stakeLightingRates[inputs.stakeLightingDifficulty],
+      ),
+    },
+  ];
+}
+
 // ─────────────────────────────────────────────────────────
 // Mini lights calculation (trees / bushes / columns)
 // ─────────────────────────────────────────────────────────
@@ -496,6 +524,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   // the recommended roofline can be auto-picked relative to the $1,000 minimum.
   const restItems: LineItem[] = [
     ...calculateWinterWonderland(inputs),
+    ...calculateStakeLighting(inputs),
     ...calculateMiniLights(inputs),
     ...calculateSpritzers(inputs),
     ...calculateWreaths(inputs),
