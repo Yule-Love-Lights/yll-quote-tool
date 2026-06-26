@@ -7,10 +7,8 @@ export const DEFAULT_COLORS: BulbColor[] = [
   // 'cool-white' is the pale-blue white shown to customers as "Pure White" (its
   // portal scheme label). Labeled "Pure White" here too for consistency.
   { id: "cool-white", label: "Pure White", hex: "#e0eaff", glow: "#ffffff", builtin: true },
-  // ⚠️ DESIGN TOOL: "Cool White" (#cee1e7) is the faceted cool-white product. It
-  // must ALSO be added to the standalone design tool's palette (the Konva app /
-  // docs/design-tool-context) so the two palettes stay in sync — for now it only
-  // lives here in the quote tool.
+  // "Cool White" (#cee1e7) is the faceted cool-white product. Kept in sync with
+  // the standalone design tool's palette (client/src/editor/colors.ts).
   { id: "cool-white-faceted", label: "Cool White", hex: "#cee1e7", glow: "#eef5f8", builtin: true },
   { id: "black",      label: "Black",      hex: "#000000", glow: "#666666", builtin: true },
   { id: "red",        label: "Red",        hex: "#ff2a2a", glow: "#ff6a6a", builtin: true },
