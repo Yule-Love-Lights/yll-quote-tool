@@ -45,3 +45,15 @@ Each machine's local `~/.claude/.../memory` seeds from + syncs back to the repo'
 - **Session logs are per-dev** — Jason writes `session_log.md`, Naldo writes `session_log_naldo.md`. **Only ever edit your OWN log.** Read both at session start.
 - **`task_ledger.md` + `project_quote_tool.md` stay unified** (one source of truth). Before copying local → `docs/context`, **branch your sync off a fresh `git pull origin master`** so your PR is only your delta on top of the latest shared state — git auto-merges non-overlapping edits; you only hand-resolve a literal same-line clash.
 - **Sync = a PR off fresh master at your own session close** (PR-not-master applies to docs too). Seed a machine (pull master → copy `docs/context/*` to local) only when local has nothing unsynced.
+
+# Big decisions — OFFER the LLM Council, never auto-run it
+
+A project skill, **`llm-council`** (`.claude/skills/llm-council/SKILL.md`), runs a question through 5 independent advisors → anonymized peer review → a chairman verdict. It's valuable for **high-stakes, genuinely-uncertain calls** — task sequencing, architecture, customer-facing tradeoffs, "should we do X or Y."
+
+**An AI assistant must NEVER run the council automatically.** Three reasons: each run spawns ~11 sub-agents (real token cost); "big decision" is a judgment call (auto-running guesses wrong and fires on the wrong things); and an unprompted council is a heavy mid-work interrupt. Instead, when a genuinely council-worthy decision comes up:
+
+1. **Prompt the dev** (Jason or Naldo) — flag that this looks like a council-worthy decision.
+2. **Give your recommendation** on whether it's actually worth running here, and why or why not.
+3. **Wait for an explicit yes/no.** Run the council ONLY on a "yes."
+
+Don't raise it for small / reversible / obvious calls — that's noise. The dev can always trigger it themselves any time ("council this", "pressure-test this", "war room this").
