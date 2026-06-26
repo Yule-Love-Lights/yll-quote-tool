@@ -38,9 +38,9 @@ export type ColorScheme = {
 // "as designed" — render exactly what the operator drew, no recolor surprise.
 export const DEFAULT_COLOR_SCHEME_ID = 'as-designed';
 
-// NOTE: scheme labels are customer-facing and can differ from the palette ids —
-// e.g. id 'cool-white' shows as "Cool White", id 'pure-white' as "Pure White".
-// Ids stay stable so saved patterns + the editor palette keep matching.
+// NOTE: 'cool-white' is the palette id; the customer-facing label is "Pure
+// White" (the real product name). The id stays 'cool-white' so it keeps matching
+// the editor palette + any saved patterns — only the label is customer-facing.
 export const COLOR_SCHEMES: ColorScheme[] = [
   // ── Solids ──
   // "Staff's pick" = the as-designed render (no override): the look our team
@@ -48,11 +48,9 @@ export const COLOR_SCHEMES: ColorScheme[] = [
   // were removed as customer options (they read garish as a whole-house wash) —
   // those colors still appear within Staff's pick and remain buildable in "Build
   // your own". Their ids stay reserved so any older quote saved as one falls back here.
-  // The three whites: Warm (amber), Pure (neutral white), Cool (blue tint).
   { id: 'as-designed', label: "Staff's pick", colorIds: null },
   { id: 'warm-white',  label: 'Warm White',  colorIds: ['warm-white'] },
-  { id: 'pure-white',  label: 'Pure White',  colorIds: ['pure-white'] },
-  { id: 'cool-white',  label: 'Cool White',  colorIds: ['cool-white'] },
+  { id: 'cool-white',  label: 'Pure White',  colorIds: ['cool-white'] },
   // ── Patterns (bulbs cycle the listed ids in order) ──
   { id: 'multicolor',  label: 'Multicolor',  colorIds: ['red', 'green', 'blue', 'yellow', 'pink'] },
   { id: 'champagne',   label: 'Champagne',   colorIds: ['warm-white', 'cool-white'] },

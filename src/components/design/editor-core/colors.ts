@@ -4,7 +4,6 @@ import type { BulbColor } from "@/lib/design/sceneTypes";
 // and as the target of the Settings → "Reset to defaults" button.
 export const DEFAULT_COLORS: BulbColor[] = [
   { id: "warm-white", label: "Warm White", hex: "#ffdca8", glow: "#fff2d4", builtin: true },
-  { id: "pure-white", label: "Pure White", hex: "#ffffff", glow: "#ffffff", builtin: true },
   { id: "cool-white", label: "Cool White", hex: "#e0eaff", glow: "#ffffff", builtin: true },
   { id: "black",      label: "Black",      hex: "#000000", glow: "#666666", builtin: true },
   { id: "red",        label: "Red",        hex: "#ff2a2a", glow: "#ff6a6a", builtin: true },
