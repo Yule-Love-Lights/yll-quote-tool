@@ -91,6 +91,15 @@ export function DesignReprise({
     };
   }, [mounted]);
 
+  // "Click here to change colors" — jump the customer up to the LightColorPicker
+  // band (#10/#48, id="light-color") and move focus there for keyboard/SR users.
+  const goToColors = () => {
+    const el = document.getElementById('light-color');
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  };
+
   // Lock the card to the photo's real aspect so the cover-fit render crops
   // nothing — the whole house shows (matches the #66 hero decision). 8/5
   // fallback for the 640x400 Street View when dimensions are unknown.
@@ -102,20 +111,20 @@ export function DesignReprise({
   const cardAr = design.photoW && design.photoH ? design.photoW / design.photoH : 8 / 5;
 
   return (
-    // Decorative for assistive tech: this is a redundant visual of the hero's
-    // design (a canvas with no text content). The hero + the toggleable item
-    // list already convey everything, so hide this duplicate region from screen
-    // readers rather than announcing an empty canvas + duplicate caption.
+    // Only the canvas itself is decorative (a redundant visual of the hero's
+    // design with no text content), so aria-hidden lives on the image wrapper
+    // below — NOT the whole region — because the "Click here to change colors"
+    // link is a real control that keyboard/screen-reader users must reach.
     <div
       className={`${className} ${inRow ? 'lg:flex-none lg:[width:calc(var(--row-h)*var(--card-ar))]' : ''}`}
       style={inRow ? ({ ['--card-ar']: cardAr } as CSSProperties) : undefined}
-      aria-hidden="true"
     >
       <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
         Your home, lit up
       </p>
       <div
         ref={wrapRef}
+        aria-hidden="true"
         className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
           inRow
             ? 'w-full max-h-[70vh] lg:w-full lg:max-h-none lg:[height:var(--row-h)]'
@@ -139,9 +148,13 @@ export function DesignReprise({
         {/* Brand watermark (#45) — corner overlay on the reprise render too. */}
         <LogoWatermark />
       </div>
-      <p className="mt-3 text-[13px] text-[#A89F87] leading-[1.6]">
-        Updates live as you adjust your selections above.
-      </p>
+      <button
+        type="button"
+        onClick={goToColors}
+        className="mt-3 inline-flex items-center text-[13px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] underline underline-offset-2 leading-[1.6] cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] rounded-sm"
+      >
+        Click here to change colors
+      </button>
     </div>
   );
 }

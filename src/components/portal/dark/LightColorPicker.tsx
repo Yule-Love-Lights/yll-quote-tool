@@ -75,8 +75,13 @@ export function LightColorPicker() {
 
   return (
     <section
+      id="light-color"
+      tabIndex={-1}
       aria-labelledby="portal-color-heading"
-      className="w-full bg-[#0D1519] border-y border-[#1F2A23]"
+      // scroll-mt gives a little breathing room when the "Click here to change
+      // colors" link (DesignReprise) scrolls this band into view; tabIndex + the
+      // suppressed focus outline let that link move keyboard/SR focus here.
+      className="w-full bg-[#0D1519] border-y border-[#1F2A23] scroll-mt-6 focus:outline-none"
     >
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-10">
         <p
