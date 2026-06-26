@@ -79,6 +79,17 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+// Ensure every built-in default color is present (matched by id). Built-ins can't
+// be deleted (designs reference them), so a built-in absent from a stored palette
+// is always one added to DEFAULT_COLORS *after* that palette was saved — surface it
+// so new built-ins show up in Settings + the customer portal with no data migration.
+// Never overrides an operator's recolored/renamed built-in; just appends the missing ones.
+function withMissingBuiltins(colors: BulbColor[]): BulbColor[] {
+  const have = new Set(colors.map((c) => c.id));
+  const missing = DEFAULT_COLORS.filter((c) => !have.has(c.id));
+  return missing.length > 0 ? [...colors, ...missing] : colors;
+}
+
 // Read all settings, merging stored values over the factory defaults so a
 // missing key or unconfigured field never breaks a render.
 export async function getAppSettings(): Promise<AppSettings> {
@@ -91,7 +102,7 @@ export async function getAppSettings(): Promise<AppSettings> {
   }
   const map = new Map<string, unknown>((data ?? []).map((r) => [r.key as string, r.value]));
   return {
-    colors: normalizeColors(map.get('colors')) ?? DEFAULT_COLORS,
+    colors: withMissingBuiltins(normalizeColors(map.get('colors')) ?? DEFAULT_COLORS),
     defaults: isPlainObject(map.get('defaults')) ? (map.get('defaults') as ToolDefaults) : {},
     render: { ...DEFAULT_RENDER_SETTINGS, ...sanitizeRender(map.get('render')) },
   };

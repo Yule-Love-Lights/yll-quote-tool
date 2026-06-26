@@ -51,6 +51,7 @@ export const COLOR_SCHEMES: ColorScheme[] = [
   { id: 'as-designed', label: "Staff's pick", colorIds: null },
   { id: 'warm-white',  label: 'Warm White',  colorIds: ['warm-white'] },
   { id: 'cool-white',  label: 'Pure White',  colorIds: ['cool-white'] },
+  { id: 'cool-white-faceted', label: 'Cool White', colorIds: ['cool-white-faceted'] },
   // ── Patterns (bulbs cycle the listed ids in order) ──
   { id: 'multicolor',  label: 'Multicolor',  colorIds: ['red', 'green', 'blue', 'yellow', 'pink'] },
   { id: 'champagne',   label: 'Champagne',   colorIds: ['warm-white', 'cool-white'] },
