@@ -43,6 +43,7 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   const santasIds = idsForSurface('santas-roofline');
   const gingerIds = idsForSurface('gingerbread');
   const wwIds = idsForSurface('winter-wonderland');
+  const stakeIds = idsForSurface('stake-lighting');
   // Winter Wonderland is measurement-driven (NOT projected), so its `recommended`
   // flag (#12) rides on its scene strands rather than a ProjectedLineItem. Carry
   // it through on the WW line item so the portal's "Our Recommendation" can
@@ -50,6 +51,12 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   // keep their own recommend mechanism (PortalRoofline) and never read this.
   const wwRecommended = items.some(
     (i) => isStrand(i) && i.surface === 'winter-wonderland' && i.recommended === true,
+  );
+  // Stake Lighting is also measurement-driven (NOT projected) and has its OWN
+  // portal kind 'stake-lighting' (unlike WW which reuses 'ridge'), so its scene
+  // link + recommended flag are recovered cleanly by kind below.
+  const stakeRecommended = items.some(
+    (i) => isStrand(i) && i.surface === 'stake-lighting' && i.recommended === true,
   );
 
   // Per-category projection queues, consumed in order to match the line items.
@@ -80,6 +87,11 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
       return wwRecommended
         ? { ...li, sceneItemIds: wwIds, recommended: true }
         : { ...li, sceneItemIds: wwIds };
+    // Stake Lighting — its own kind, linked by the 'stake-lighting' surface tag.
+    if (li.kind === 'stake-lighting')
+      return stakeRecommended
+        ? { ...li, sceneItemIds: stakeIds, recommended: true }
+        : { ...li, sceneItemIds: stakeIds };
 
     const cat = KIND_TO_CATEGORY[li.kind];
     if (cat) {
