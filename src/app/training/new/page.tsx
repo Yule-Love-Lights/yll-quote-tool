@@ -30,7 +30,7 @@ type WreathDetection = { size: WreathSize; tier: DecorTier; box: [number, number
 type SpritzerDetection = { size: SpritzerSize; box: [number, number, number, number]; label: string };
 type GarlandDetection = { length: GarlandLength; tier: DecorTier; box: [number, number, number, number]; label: string };
 
-type LineType = 'santas' | 'gingerbread' | 'c9';
+type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake';
 type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
 type DetectionKind = 'mini' | 'wreath' | 'spritzer' | 'garland';
 
@@ -127,6 +127,9 @@ export default function NewTrainingHousePage() {
   const [wwFootage, setWwFootage] = useState<number | ''>('');
   const [wwDifficulty, setWwDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
   const [c9Lines, setC9Lines] = useState<LineSegment[]>([]);
+  const [stakeFootage, setStakeFootage] = useState<number | ''>('');
+  const [stakeDifficulty, setStakeDifficulty] = useState<'easy'|'medium'|'hard'>('medium');
+  const [stakeLines, setStakeLines] = useState<LineSegment[]>([]);
 
   // Detections
   const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
@@ -176,9 +179,11 @@ export default function NewTrainingHousePage() {
     const sFt = Math.round(polylineLength(santasLines, imgAspect) * fpu / 5) * 5;
     const gFt = Math.round(polylineLength(gingerbreadLines, imgAspect) * fpu / 5) * 5;
     const cFt = Math.round(polylineLength(c9Lines, imgAspect) * fpu / 5) * 5;
+    const stFt = Math.round(polylineLength(stakeLines, imgAspect) * fpu / 5) * 5;
     const nextSantas = santasLines.length > 0 && sFt > 0 ? sFt : null;
     const nextGinger = gingerbreadLines.length > 0 && gFt > 0 ? gFt : null;
     const nextC9 = c9Lines.length > 0 && cFt > 0 ? cFt : null;
+    const nextStake = stakeLines.length > 0 && stFt > 0 ? stFt : null;
     if (nextSantas != null && nextSantas !== santasFootage) {
       skipCalibRef.current = true;
       setSantasFootage(nextSantas);
@@ -191,8 +196,12 @@ export default function NewTrainingHousePage() {
       skipCalibRef.current = true;
       setWwFootage(nextC9);
     }
+    if (nextStake != null && nextStake !== stakeFootage) {
+      skipCalibRef.current = true;
+      setStakeFootage(nextStake);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [santasLines, gingerbreadLines, c9Lines, imgAspect]);
+  }, [santasLines, gingerbreadLines, c9Lines, stakeLines, imgAspect]);
 
   const calcStringsFromBox = (box: [number, number, number, number]): number => {
     if (!feetPerUnit) return 1;
@@ -247,6 +256,7 @@ export default function NewTrainingHousePage() {
   const getSetter = (type: LineType) => {
     if (type === 'santas') return setSantasLines;
     if (type === 'gingerbread') return setGingerbreadLines;
+    if (type === 'stake') return setStakeLines;
     return setC9Lines;
   };
 
@@ -541,6 +551,9 @@ export default function NewTrainingHousePage() {
           gingerbreadLines,
           winterWonderlandFootage: wwFootage || undefined,
           winterWonderlandDifficulty: wwDifficulty,
+          stakeLightingFootage: stakeFootage || undefined,
+          stakeLightingDifficulty: stakeDifficulty,
+          stakeLines,
           miniLightDetections: miniLightsToSave,
           wreathDetections,
           spritzerDetections,
@@ -803,9 +816,14 @@ export default function NewTrainingHousePage() {
                     fill="none" stroke="#10b981" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke" />
                 ))}
+                {stakeLines.map((line, i) => (
+                  <polyline key={`stake-${i}`} points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                    fill="none" stroke="#a855f7" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke" />
+                ))}
                 {pendingPoints.length > 0 && (
                   <polyline points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
-                    fill="none" stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : '#10b981'}
+                    fill="none" stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
                     strokeWidth="3" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
                 )}
               </svg>
@@ -960,9 +978,17 @@ export default function NewTrainingHousePage() {
                   onDoubleClick={() => deletePoint('c9', li, pi)}
                   title="Drag to move • Double-click to delete" />
               )))}
+              {!addMode && stakeLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                <div key={`stakeh-${li}-${pi}`}
+                  className="absolute w-4 h-4 rounded-full bg-purple-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
+                  style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                  onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'stake', lineIdx: li, ptIdx: pi }); }}
+                  onDoubleClick={() => deletePoint('stake', li, pi)}
+                  title="Drag to move • Double-click to delete" />
+              )))}
               {pendingPoints.map(([x, y], i) => (
                 <div key={`pp-${i}`}
-                  className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : 'bg-emerald-500'} border-2 border-white shadow`}
+                  className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : addMode === 'stake' ? 'bg-purple-500' : 'bg-emerald-500'} border-2 border-white shadow`}
                   style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }} />
               ))}
             </div>
@@ -972,7 +998,7 @@ export default function NewTrainingHousePage() {
             {addMode ? (
               <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
                 <span className="text-sm text-yellow-900">
-                  Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
+                  Adding new {addMode === 'santas' ? 'front gutterline (red)' : addMode === 'gingerbread' ? 'ridge / side line (blue)' : addMode === 'stake' ? 'stake run (purple)' : 'C9 run (green)'} — click on the photo to add points ({pendingPoints.length} placed).
                 </span>
                 <div className="flex gap-2">
                   <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
@@ -995,11 +1021,15 @@ export default function NewTrainingHousePage() {
                   className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
                   + Add C9 Run
                 </button>
+                <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
+                  className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                  + Add Stake Run
+                </button>
               </div>
             )}
 
-            {/* Per-line edit panels — Front Gutterline / Ridge+Sides / C9s */}
-            <div className="mt-4 grid grid-cols-3 gap-4">
+            {/* Per-line edit panels — Front Gutterline / Ridge+Sides / C9s / Stake */}
+            <div className="mt-4 grid grid-cols-2 gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-4 h-1 bg-red-500 rounded"></span>
@@ -1078,6 +1108,44 @@ export default function NewTrainingHousePage() {
                       <span className="text-xs text-gray-500">ft</span>
                       <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={wwDifficulty}
                         onChange={e => setWwDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-4 h-1 bg-purple-500 rounded"></span>
+                  <span className="text-sm font-semibold text-gray-800">Stake Lighting — {typeof stakeFootage === 'number' ? stakeFootage : 0}ft</span>
+                </div>
+                {stakeLines.length > 0 ? (
+                  <ul className="space-y-1 ml-6">
+                    {stakeLines.map((line, i) => (
+                      <li key={`stakel-${i}`} className="flex items-center gap-2 text-xs">
+                        <input
+                          value={line.label}
+                          onChange={e => updateLineLabel('stake', i, e.target.value)}
+                          className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                        />
+                        <span className="text-gray-400">{line.points.length}pts</span>
+                        <button type="button" onClick={() => deleteLine('stake', i)}
+                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="ml-6">
+                    <p className="text-xs text-gray-400 mb-2">No segments — draw on photo, or enter manually:</p>
+                    <div className="flex items-center gap-2">
+                      <input className="border border-gray-200 rounded px-2 py-1 text-xs w-20" type="number" min="0" placeholder="0"
+                        value={stakeFootage || ''}
+                        onChange={e => setStakeFootage(e.target.value ? Number(e.target.value) : '')} />
+                      <span className="text-xs text-gray-500">ft</span>
+                      <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={stakeDifficulty}
+                        onChange={e => setStakeDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                         <option value="easy">Easy</option>
                         <option value="medium">Medium</option>
                         <option value="hard">Hard</option>
@@ -1327,7 +1395,7 @@ export default function NewTrainingHousePage() {
           <p className="text-xs text-gray-400 mb-3">
             Final confirmed numbers. Auto-populated from polylines above. Override if the drawn lines don&apos;t capture reality.
           </p>
-          <div className="grid grid-cols-[1fr_1fr_1fr] gap-3">
+          <div className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-3">
             <div>
               <label className={lbl}>Gutterline ft</label>
               <input className={inp} type="number" value={santasFootage}
@@ -1344,6 +1412,11 @@ export default function NewTrainingHousePage() {
                 onChange={e => setWwFootage(e.target.value ? Number(e.target.value) : '')} />
             </div>
             <div>
+              <label className={lbl}>Stake ft</label>
+              <input className={inp} type="number" value={stakeFootage}
+                onChange={e => setStakeFootage(e.target.value ? Number(e.target.value) : '')} />
+            </div>
+            <div>
               <label className={lbl}>Gutterline Difficulty</label>
               <select className={sel} value={santasDifficulty} onChange={e => setSantasDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                 <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
@@ -1358,6 +1431,12 @@ export default function NewTrainingHousePage() {
             <div>
               <label className={lbl}>C9s Difficulty</label>
               <select className={sel} value={wwDifficulty} onChange={e => setWwDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
+                <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
+              </select>
+            </div>
+            <div>
+              <label className={lbl}>Stake Difficulty</label>
+              <select className={sel} value={stakeDifficulty} onChange={e => setStakeDifficulty(e.target.value as 'easy'|'medium'|'hard')}>
                 <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
               </select>
             </div>

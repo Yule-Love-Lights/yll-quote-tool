@@ -39,6 +39,7 @@ export type TrainingExampleInputs = {
   gingerbreadFootage: number;
   gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
   winterWonderlandFootage?: number;
+  stakeLightingFootage?: number;
 };
 
 export type TrainingExampleRow = {
@@ -133,6 +134,9 @@ export async function captureTrainingExample(opts: {
     gingerbreadDifficulty: asDifficulty(inputs.gingerbreadDifficulty),
     ...(typeof inputs.winterWonderlandFootage === 'number'
       ? { winterWonderlandFootage: inputs.winterWonderlandFootage }
+      : {}),
+    ...(typeof inputs.stakeLightingFootage === 'number'
+      ? { stakeLightingFootage: inputs.stakeLightingFootage }
       : {}),
   };
 
