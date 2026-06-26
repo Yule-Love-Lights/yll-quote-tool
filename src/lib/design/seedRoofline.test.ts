@@ -78,6 +78,22 @@ describe('seedRooflineStrands', () => {
     expect(strands.filter((s) => s.surface === 'winter-wonderland')).toHaveLength(1);
   });
 
+  it('seeds stake-lighting polylines into tagged C9 strands (own surface + id prefix)', () => {
+    const out = seedRooflineStrands(
+      emptyScene(),
+      { stakeLighting: [[[0.2, 0.9], [0.8, 0.9]]] },
+      W,
+      H,
+    );
+    const stakes = out.items.filter(isStrand).filter((s) => s.surface === 'stake-lighting');
+    expect(stakes).toHaveLength(1);
+    expect(stakes[0].id).toBe('seed-stake-1');
+    expect(stakes[0].bulbType).toBe('c9');
+    expect(stakes[0].points).toEqual([128, 432, 512, 432]); // ×640 / ×480
+    // stake-lighting counts as a roofline-tagged strand (replaced on re-seed).
+    expect(countRooflineStrands(out)).toBe(1);
+  });
+
   it('REPLACES all roofline-tagged strands (any origin) but keeps untagged + other items', () => {
     const sceneBefore: Scene = {
       yardsticks: [],
@@ -146,6 +162,12 @@ describe('sanitizeSeedLines', () => {
       extraneous: true,
     });
     expect(out).toEqual({ santas: [[[0, 0.5], [0.5, 0.25]]] });
+    expect(seedLinesHaveContent(out)).toBe(true);
+  });
+
+  it('parses the stakeLighting channel', () => {
+    const out = sanitizeSeedLines({ stakeLighting: [[[0.2, 0.9], [0.8, 0.9]]] });
+    expect(out).toEqual({ stakeLighting: [[[0.2, 0.9], [0.8, 0.9]]] });
     expect(seedLinesHaveContent(out)).toBe(true);
   });
 

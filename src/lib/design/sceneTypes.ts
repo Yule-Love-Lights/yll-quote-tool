@@ -41,6 +41,7 @@ export type Surface =
   | 'santas-roofline' // front roof edges (Santa's)
   | 'gingerbread' // the sides + ridge increment Gingerbread adds
   | 'winter-wonderland' // extra/custom C9 runs
+  | 'stake-lighting' // independent stake-lighting runs (manual ft × difficulty, own portal kind)
   | 'bush'
   | 'tree'
   | 'column'
