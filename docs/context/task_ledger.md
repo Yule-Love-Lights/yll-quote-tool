@@ -13,6 +13,8 @@ metadata:
 >
 > **CONVENTION (Jason likes this):** when a task completes, move it to ✅ Completed and ALWAYS record the **session it shipped in** in the `Shipped` column (matching `session_log.md` numbering — S1, S2, S3, …; use a range like S2–S3 if it spanned sessions). Keep this for every task going forward.
 
+> **⚠️ DESIGN-TOOL RELAY PENDING (2026-06-25, Naldo → Jason):** a new **"Cool White"** bulb color (`cool-white-faceted` · hex `#cee1e7` · glow `#eef5f8`) was added to the QUOTE TOOL — palette `editor-core/colors.ts` `DEFAULT_COLORS` + the portal "Cool White" Light-Color chip (`colorSchemes.ts`) + buildable in Build-your-own. **PR #133 → master, LIVE & verified on prod.** It must ALSO be mirrored into the **standalone design tool's palette** (the Konva app / `docs/design-tool-context`) so the two stay byte-in-sync — same relay convention as #71/#73. Until then the design tool won't offer Cool White. *(Same PR also added `withMissingBuiltins` to `getAppSettings` so a newly-added built-in now auto-propagates into a stored prod palette — fixes the "new color missing from Settings" bug that forced an earlier revert.)*
+
 ## ✅ Completed
 | # | Task | Size | Shipped | Old # |
 |---|------|------|---------|-------|
