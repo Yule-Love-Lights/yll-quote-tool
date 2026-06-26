@@ -141,7 +141,7 @@ describe('projectScene — mini-light wraps (strand + surface bush/tree/column)'
 });
 
 describe('projectScene — roofline + unmapped strands are NOT projected', () => {
-  it.each<Surface>(['santas-roofline', 'gingerbread', 'winter-wonderland'])(
+  it.each<Surface>(['santas-roofline', 'gingerbread', 'winter-wonderland', 'stake-lighting'])(
     'skips roofline strand surface=%s (measurement-driven)',
     (surface) => {
       const p = projectScene(scene([strand({ bulbType: 'c9', surface })]));

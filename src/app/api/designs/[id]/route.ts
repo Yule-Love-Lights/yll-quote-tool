@@ -99,7 +99,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   if (satelliteLines !== undefined && !isSatelliteLinesShape(satelliteLines)) {
     return NextResponse.json(
-      { error: 'satelliteLines must be an object with santas[]/gingerbread[]/c9[] line arrays' },
+      { error: 'satelliteLines must be an object with santas[]/gingerbread[]/c9[] (and optional stake[]) line arrays' },
       { status: 400 },
     );
   }

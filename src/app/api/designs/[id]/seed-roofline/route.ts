@@ -1,6 +1,6 @@
 // POST /api/designs/[id]/seed-roofline — re-seed an existing design's roofline
 // strands from the builder's measurement polylines (#33 "Sync roofline from
-// measurement"). Body: { seedLines: { santas?, gingerbread?, winterWonderland? } }
+// measurement"). Body: { seedLines: { santas?, gingerbread?, winterWonderland?, stakeLighting? } }
 // (normalized 0–1 polylines).
 //
 // Replacement rule: every roofline-TAGGED strand is replaced by the incoming
