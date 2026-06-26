@@ -18,9 +18,9 @@ import {
 } from '@/lib/design/colorSchemes';
 import { colorOf } from '@/components/design/editor-core/colors';
 
-// Customer-facing color label (cool-white is shown as the product name "Pure White").
+// Customer-facing color label — the palette label (e.g. "Cool White", "Pure White").
 function colorLabel(id: string): string {
-  return id === 'cool-white' ? 'Pure White' : colorOf(id).label;
+  return colorOf(id).label;
 }
 
 // Build a CSS swatch background from a scheme's color ids. null/empty ("as
