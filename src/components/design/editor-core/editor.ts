@@ -1300,10 +1300,31 @@ export async function renderEditor(
   // --- Save (debounced) ---
   let saveTimer: number | null = null;
   let pendingSave = false;
+  let retryTimer: number | null = null;
   const savingEl = root.querySelector("#saving") as HTMLElement;
   async function doSave() {
+    // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
+    // non-2xx. Previously pendingSave was cleared BEFORE the await and there was
+    // no try/catch, so a failed save dropped the billable edit while the pill
+    // still read "Saved". Keep pendingSave true until the write actually lands;
+    // on failure surface an honest state + schedule a backoff retry (the PUT
+    // writes the whole scene, so a later retry self-heals).
+    try {
+      await api.updateDesign(design.id, { scene, name: design.name });
+    } catch {
+      if (destroyed) return;
+      pendingSave = true; // edit not persisted — keep it queued
+      savingEl.textContent = "Save failed — retry";
+      if (!retryTimer) {
+        retryTimer = window.setTimeout(() => { retryTimer = null; void doSave(); }, 4000);
+      }
+      return;
+    }
+    // Don't touch the (possibly detached) DOM if we were torn down mid-flight.
+    if (destroyed) { pendingSave = false; return; }
     pendingSave = false;
-    await api.updateDesign(design.id, { scene, name: design.name });
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    clearUnsavedBanner(); // a successful write clears any stale "unsaved" marker
     savingEl.textContent = "Saved";
     window.setTimeout(() => {
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
@@ -1319,6 +1340,24 @@ export async function renderEditor(
   async function flushSave() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (pendingSave) await doSave();
+  }
+  // AUDIT FIX (editor-autosave-honest-failure): non-blocking banner shown when a
+  // prior teardown flush may have failed to persist (marker set in destroy()).
+  // Cleared on the next successful doSave().
+  function clearUnsavedBanner() {
+    try { localStorage.removeItem("editorUnsavedDesign"); } catch { /* storage unavailable */ }
+    root.querySelector("#unsaved-banner")?.remove();
+  }
+  function showUnsavedBannerIfNeeded() {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem("editorUnsavedDesign"); } catch { /* storage unavailable */ }
+    if (stored !== design.id) return;
+    if (root.querySelector("#unsaved-banner")) return;
+    const banner = document.createElement("div");
+    banner.id = "unsaved-banner";
+    banner.className = "unsaved-banner";
+    banner.textContent = "Some earlier edits may not have saved. Make any change to re-save.";
+    root.querySelector(".editor")?.prepend(banner);
   }
 
   // --- Sidebar ---
@@ -2583,6 +2622,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-wreath-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((w) => w.quoteSize === undefined || w.tier === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed size/tier set — will default to 36" Noble Non-decorated.</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
@@ -2789,6 +2831,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-garland-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((g) => g.quoteLength === undefined || g.tier === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed length/tier set — will default to 9 ft Decorated.</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
@@ -2937,6 +2982,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-spritzer-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((s) => s.quoteSize === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed size set — will default to 24".</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
@@ -3614,6 +3662,10 @@ export async function renderEditor(
     const idx = scene.yardsticks.findIndex((y) => y.id === ys.id);
     const label = yardstickLabel(idx);
     const ppf = pxPerFoot(ys);
+    const axis = ys.axis === "height" ? "height" : "width";
+    const measuredPx = axis === "height" ? ys.height : ys.width;
+    const otherAxis = axis === "height" ? "width" : "height";
+    const otherPx = otherAxis === "height" ? ys.height : ys.width;
     const stranded = allStrands().filter((s) => (yardstickForStrand(s)?.id ?? null) === ys.id);
     const otherYardsticks = scene.yardsticks.filter((y) => y.id !== ys.id);
 
@@ -3625,10 +3677,17 @@ export async function renderEditor(
         </div>
       </section>
       <section>
-        <h3>Real-world width <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
+        <h3>Real-world length <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
         <input type="number" id="ys-feet" min="0.5" step="0.5" value="${ys.realFeet}" />
         <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">
-          Drag a real-world feature on the photo (door, window, garage) and enter its true width here.
+          Drag a real-world feature on the photo (door width, garage height, downspout) and enter its true length here.
+        </div>
+      </section>
+      <section>
+        <h3>Measured along <span style="float:right;color:var(--text);font-weight:400">${axis} · ${Math.round(measuredPx)} px</span></h3>
+        <button id="ys-flip-axis" style="width:100%">Use ${otherAxis} instead (${Math.round(otherPx)} px)</button>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">
+          The ${ys.realFeet} ft is mapped to the box's <strong>${axis}</strong>. If you measured the other side, flip this so the scale is right.
         </div>
       </section>
       <section>
@@ -3663,6 +3722,20 @@ export async function renderEditor(
     feetInput.addEventListener("change", () => {
       commit();
       renderSidebar(); // update the panel header/labels
+    });
+
+    sb.querySelector("#ys-flip-axis")!.addEventListener("click", () => {
+      // Swap which drawn side `realFeet` measures. Rescales everything tied to
+      // this yardstick (strands/garlands read px/ft through pxPerFoot).
+      scene = {
+        ...scene,
+        yardsticks: scene.yardsticks.map((y) =>
+          y.id === ys.id ? { ...y, axis: otherAxis } : y,
+        ),
+      };
+      commit();
+      requestCanvasRedraw();
+      renderSidebar();
     });
 
     sb.querySelector("#ys-delete")!.addEventListener("click", () => {
@@ -3807,7 +3880,7 @@ export async function renderEditor(
       alert("Upload a photo first.");
       return;
     }
-    const ftStr = prompt("How many real-world feet wide is the rectangle you're about to draw? (e.g. a door = 3, a garage door = 16)");
+    const ftStr = prompt("How many real-world feet is the LONGER side of the rectangle you're about to draw? Drag it ALONG the feature you're measuring — wide for a door/garage width, tall for a downspout or garage-door height. (e.g. a door width = 3, a garage-door height = 7)");
     if (!ftStr) return;
     const ft = Number(ftStr);
     if (!ft || ft <= 0) return;
@@ -4611,6 +4684,12 @@ export async function renderEditor(
             y: Math.min(p.y, ysDragStart.y),
             width: w,
             height: h,
+            // Measure along the LONGER drawn side — the operator drags the box
+            // ALONG the feature they're measuring, so the long axis is the one
+            // `realFeet` describes. Operator can flip this in the sidebar if the
+            // reference was the shorter side (e.g. a wide-but-short box whose
+            // entered width is the short side). Ties default to width.
+            axis: h > w ? "height" : "width",
           };
           scene = { ...scene, yardsticks: [...scene.yardsticks, ys] };
           activeYardstickId = ys.id;
@@ -4766,7 +4845,15 @@ export async function renderEditor(
     window.removeEventListener("mouseup", onWindowMouseUpPan);
     ro.disconnect();
     window.removeEventListener("resize", refit);
-    void flushSave(); // flush a pending save before teardown instead of dropping it
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // AUDIT FIX (editor-autosave-honest-failure): destroy() runs on
+    // hashchange/unmount (NOT beforeunload), so the flush can still complete
+    // async — but if it rejects we must not drop it silently with an unhandled
+    // rejection. Persist a marker so the next mount of this design warns the
+    // user; the next successful save clears it.
+    flushSave().catch(() => {
+      try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+    });
     if (redrawHandle) { cancelAnimationFrame(redrawHandle); redrawHandle = 0; }
     try { stage.destroy(); } catch { /* already gone */ }
   }
@@ -4885,6 +4972,9 @@ export async function renderEditor(
     await loadPhoto(design.photoUrl, design.photoW, design.photoH);
   }
   redrawScene();
+  // AUDIT FIX (editor-autosave-honest-failure): warn if a prior teardown flush
+  // for THIS design may not have persisted (marker set in destroy()).
+  showUnsavedBannerIfNeeded();
 
   const handle = destroy as EditorHandle;
   handle.flushSave = flushSave;

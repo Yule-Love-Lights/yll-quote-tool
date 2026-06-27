@@ -17,7 +17,9 @@
 //     monetaryValue?: number    (quote total, used as deal value if we create)
 //   }
 // Response:
-//   { opportunityId: string, created: boolean }    — on success
+//   { opportunityId: string, created: boolean, linked: boolean }    — on success
+//        (linked:false means the GHL card exists but the local quote row could
+//         not be updated — retry is safe and re-attaches to the same open card)
 //   { error: string, code?: string }               — on failure
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -95,8 +97,10 @@ export async function POST(req: NextRequest) {
     });
 
     // Write-back: link the GHL IDs onto our quote row. If this fails we
-    // still return success — the opportunity exists on GHL's side, we just
-    // lost the local link. An admin reconciliation job could fix later.
+    // still return 200 — the opportunity exists on GHL's side, we just
+    // lost the local link. We report `linked:false` so the operator UI can
+    // surface "card created but not linked — retry safe" (a retry re-finds the
+    // same open card and re-attaches, so no hard 500 is needed).
     const sb = getSupabaseServiceClient()!;
     const { error: updateErr } = await sb
       .from('quotes')
@@ -106,10 +110,15 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', body.quoteId);
     if (updateErr) {
-      console.warn('[api/integrations/highlevel/attach] DB link failed:', updateErr.message);
+      // Audit fix (#53): escalate warn → error and include quoteId + opportunity.id
+      // so the orphaned GHL card (exists remotely, unlinked locally) is discoverable.
+      console.error(
+        '[api/integrations/highlevel/attach] DB link failed — orphaned GHL card:',
+        { quoteId: body.quoteId, opportunityId: opportunity.id, error: updateErr.message },
+      );
     }
 
-    return NextResponse.json({ opportunityId: opportunity.id, created });
+    return NextResponse.json({ opportunityId: opportunity.id, created, linked: !updateErr });
   } catch (err) {
     console.error('[api/integrations/highlevel/attach] failed:', err);
     if (err instanceof HighLevelError) {

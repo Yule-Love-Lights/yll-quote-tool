@@ -12,6 +12,9 @@ export const runtime = 'nodejs';
 export async function GET(_req: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const { path } = await params;
   const objectPath = (path ?? []).join('/');
+  // Audit fix (g28): resolvePublicUrl now validates objectPath against the
+  // `{uuid}.{ext}` upload-key shape and returns null for anything else
+  // (path traversal, arbitrary keys) → 404 here.
   const url = resolvePublicUrl(objectPath);
   if (!url) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });

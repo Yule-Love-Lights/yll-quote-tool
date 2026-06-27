@@ -29,9 +29,16 @@ export type CrmContact = {
   opportunityId?: string;
   pipelineId?: string;
   pipelineStageId?: string;
-  // Raw source record for debugging — trimmed before returning to the browser
-  // in production (see search API route).
-  raw?: unknown;
+};
+
+// Server-only variant that additionally carries the raw source record for
+// debugging. Audit fix: `raw` was previously on the public CrmContact and
+// always populated, relying on each API route to strip it before responding —
+// a latent leak if any future client-facing caller forwarded the object.
+// Making redaction the DEFAULT (raw lives only here, exposed behind an explicit
+// opt-in) removes that footgun. Keep CrmContactInternal off the wire.
+export type CrmContactInternal = CrmContact & {
+  raw: unknown;             // full HighLevel record — never return to the browser
 };
 
 // ─── HighLevel API shapes (subset) ────────────────────────────────────────

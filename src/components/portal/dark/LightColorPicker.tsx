@@ -101,7 +101,8 @@ export function LightColorPicker() {
             type="button"
             onClick={toggleDaylight}
             aria-pressed={showDaylight}
-            className="inline-flex items-center gap-1.5 py-2 mb-3 text-[13px] md:text-[14px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm"
+            // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
+            className="inline-flex items-center gap-1.5 min-h-[44px] py-2 mb-3 text-[13px] md:text-[14px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm"
           >
             <Sun className="w-4 h-4" aria-hidden />
             {showDaylight ? 'See the lights' : 'See it in daylight'}
@@ -111,7 +112,7 @@ export function LightColorPicker() {
           role="radiogroup"
           aria-label="Choose your light color"
           aria-disabled={locked || undefined}
-          className={`flex flex-wrap gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
+          className={`flex flex-wrap gap-2.5 md:gap-3 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
         >
           {COLOR_SCHEMES.map((s) => {
             const active = colorSchemeId === s.id;
@@ -122,7 +123,8 @@ export function LightColorPicker() {
                 role="radio"
                 aria-checked={active}
                 onClick={() => setColorScheme(s.id)}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
+                // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
+                className={`inline-flex items-center gap-1.5 rounded-full border min-h-[44px] px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
                   active
                     ? 'border-[#E8B862] bg-[#E8B862]/15 text-[#F4ECD8]'
                     : 'border-[#3C4F43] text-[#A89F87] hover:border-[#E8B862]/60 hover:text-[#F4ECD8]'
@@ -143,7 +145,8 @@ export function LightColorPicker() {
             role="radio"
             aria-checked={customActive}
             onClick={() => setColorScheme(CUSTOM_SCHEME_ID)}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
+            // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
+            className={`inline-flex items-center gap-1.5 rounded-full border min-h-[44px] px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
               customActive
                 ? 'border-[#E8B862] bg-[#E8B862]/15 text-[#F4ECD8]'
                 : 'border-[#3C4F43] text-[#A89F87] hover:border-[#E8B862]/60 hover:text-[#F4ECD8]'

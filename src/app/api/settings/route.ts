@@ -4,7 +4,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { getAppSettings, putAppSettings } from '@/lib/appSettings';
+import {
+  getAppSettings,
+  putAppSettings,
+  normalizeColors,
+  sanitizeRender,
+  isPlainObject,
+} from '@/lib/appSettings';
 
 export const runtime = 'nodejs';
 
@@ -38,9 +44,22 @@ export async function PUT(req: NextRequest) {
   if (colors === undefined && defaults === undefined && render === undefined) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
+  // Audit fix (#85): validate every provided key at the boundary and 400 on bad
+  // input. putAppSettings silently skips a key that fails normalization and still
+  // returns 200, so a malformed payload would look saved while keeping old values.
+  if (colors !== undefined && normalizeColors(colors) === null) {
+    return NextResponse.json(
+      { error: 'colors must be a non-empty array of {id,label,hex,glow} with #rrggbb hex' },
+      { status: 400 },
+    );
+  }
+  if (defaults !== undefined && !isPlainObject(defaults)) {
+    return NextResponse.json({ error: 'defaults must be an object' }, { status: 400 });
+  }
+  if (render !== undefined && Object.keys(sanitizeRender(render)).length === 0) {
+    return NextResponse.json({ error: 'no recognized render fields' }, { status: 400 });
+  }
   try {
-    // putAppSettings validates each key (normalizeColors / sanitizeRender) and
-    // skips anything malformed, so we pass the raw values through.
     const settings = await putAppSettings({
       colors: colors as never,
       defaults: defaults as never,

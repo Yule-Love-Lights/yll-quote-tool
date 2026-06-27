@@ -20,6 +20,13 @@ export type Yardstick = {
   y: number;
   width: number;
   height: number;
+  // Which drawn axis the operator's `realFeet` refers to. ADDITIVE + OPTIONAL:
+  // existing/design-tool data without this field is treated as "width" so the
+  // scale stays byte-identical for every yardstick drawn before this field
+  // existed (and for the common horizontal door/garage reference). Set to
+  // "height" when the reference is vertical (a downspout, column, or a
+  // garage-door HEIGHT) so px/ft is measured along the side the feet describe.
+  axis?: "width" | "height";
 };
 
 export type BulbType = 'c9' | 'mini' | 'permanent' | 'bistro';

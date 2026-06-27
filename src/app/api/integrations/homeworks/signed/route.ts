@@ -44,6 +44,7 @@ import {
   HighLevelError,
 } from '@/lib/integrations/highlevel';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { safeEqual } from '@/lib/security';
 
 export const runtime = 'nodejs';
 
@@ -83,7 +84,8 @@ export async function POST(req: NextRequest) {
     );
   }
   const provided = req.headers.get('x-homeworks-secret');
-  if (!provided || provided !== expected) {
+  // Audit fix: constant-time compare to avoid leaking the secret via timing.
+  if (!safeEqual(provided ?? undefined, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -148,16 +150,39 @@ export async function POST(req: NextRequest) {
   }
 
   // DB stamp first, before HL — same pattern as /send and /approve.
+  //
+  // Audit fix (TOCTOU): the SELECT short-circuit above is only a fast path.
+  // ATOMIC CLAIM — the update is conditional on `homeworks_signed_at IS NULL`,
+  // so when Zapier fires concurrent retries (it retries, limit is 60/min) two
+  // requests can both pass the read-side null-check; exactly ONE flips the row
+  // here and proceeds to the HL stage move — the others update 0 rows and
+  // short-circuit, so updateOpportunityStage fires at most once.
   const updatePayload: Record<string, string> = { homeworks_signed_at: signedAt };
   if (homeworksContractId) updatePayload.homeworks_contract_id = homeworksContractId;
 
-  const { error: stampErr } = await sb.from('quotes').update(updatePayload).eq('id', body.quoteId);
+  const { data: claimed, error: stampErr } = await sb
+    .from('quotes')
+    .update(updatePayload)
+    .eq('id', body.quoteId)
+    .is('homeworks_signed_at', null)
+    .select('id');
   if (stampErr) {
     console.error('[api/integrations/homeworks/signed] stamp failed:', stampErr);
     return NextResponse.json(
       { error: `Failed to mark quote signed: ${stampErr.message}` },
       { status: 500 },
     );
+  }
+
+  // Lost the race to a concurrent retry — it already stamped and (will) fire
+  // the HL stage move. Acknowledge as already-signed without double-firing.
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      signedAt,
+      stageUpdated: false,
+      alreadySigned: true,
+    });
   }
 
   // HL stage move — Make Quote / Bid Sent / Interested → ⏰Approved.

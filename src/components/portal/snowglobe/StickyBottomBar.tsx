@@ -147,7 +147,15 @@ export function StickyBottomBar({
         router.push(`/portal/${quoteId}/approved`);
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Something went wrong — please try again.');
+      // Audit fix (g10): never surface the raw server/network error to the
+      // customer — it leaks internals like "Supabase service role not configured",
+      // Postgres messages, or "Failed to fetch". Log for debugging, show fixed
+      // friendly copy that helps them recover (retry or text us).
+      console.error('approve failed', err);
+      const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+      setErrorMsg(
+        `We couldn't record your approval just now — please try again, or text us at ${phone}.`,
+      );
       setSubmitting(false);
     }
   };
@@ -269,7 +277,9 @@ export function StickyBottomBar({
               aria-hidden
               className="inline-block w-3.5 h-3.5 rounded-full border-2 border-[#F4ECD8]/30 border-t-[#F4ECD8] animate-spin"
             />
-            Opening
+            {/* Audit fix (g10): "Opening" misrepresented a network-bound DB+notify
+                request that can fail; "Approving…" reflects what's happening. */}
+            Approving…
           </>
         ) : (
           <>

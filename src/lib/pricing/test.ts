@@ -1,5 +1,11 @@
 // Run: npx tsx src/lib/pricing/test.ts
-import { calculateQuote, QuoteInputs, QuoteResult } from './pricingEngine';
+import { calculateQuote, QuoteInputs, QuoteResult, BUSINESS_RULES } from './pricingEngine';
+
+// Audit fix (#77): label/expected values were drifting against the live engine.
+// Derive the tax label from BUSINESS_RULES.taxRate (now 0.0875, was 8.625%) and
+// drop the "minimum applies" annotations — the engine no longer auto-applies the
+// $1,000 minimum (it's a portal-side gate; result.minimumApplied is always false).
+const TAX_PCT = (BUSINESS_RULES.taxRate * 100).toFixed(3);
 
 function printQuote(label: string, result: QuoteResult) {
   console.log(`\n${'─'.repeat(52)}`);
@@ -12,13 +18,11 @@ function printQuote(label: string, result: QuoteResult) {
   console.log(`  Subtotal                              $${result.subtotalBeforeDiscount.toLocaleString()}`);
   if (result.discountAmount > 0)
     console.log(`  Discount                             -$${result.discountAmount.toLocaleString()}`);
-  if (result.minimumApplied)
-    console.log(`  * Minimum quote applied ($1,000)`);
   if (result.rushFeeAmount > 0)
     console.log(`  Rush fee                              $${result.rushFeeAmount.toLocaleString()}`);
   if (result.takedownAmount > 0)
     console.log(`  Premium takedown                      $${result.takedownAmount.toLocaleString()}`);
-  console.log(`  Tax (8.625% on $${result.taxableAmount.toLocaleString()})`.padEnd(42) + ` $${result.taxAmount.toFixed(2)}`);
+  console.log(`  Tax (${TAX_PCT}% on $${result.taxableAmount.toLocaleString()})`.padEnd(42) + ` $${result.taxAmount.toFixed(2)}`);
   console.log(`  TOTAL                                 $${result.total.toFixed(2)}`);
   console.log(`  Deposit due now (50%)                 $${result.depositAmount.toFixed(2)}`);
   console.log(`  Balance at install                    $${result.balanceDue.toFixed(2)}`);
@@ -33,8 +37,8 @@ const job1: QuoteInputs = {
   miniLightItems: [], spritzers: [], wreaths: [], garland: [],
   takedown: 'included', rushFee: false,
 };
-// Expected: 120 × $8 = $960 → minimum $1,000
-printQuote('Job 1: Santas gutterline / easy / 120ft (minimum applies)', calculateQuote(job1));
+// Expected: 120 × $8 = $960 (engine no longer auto-applies the $1,000 minimum)
+printQuote('Job 1: Santas gutterline / easy / 120ft', calculateQuote(job1));
 
 // ─── Test 2: Gingerbread ridgeline only, medium ───────────────────────────────
 const job2: QuoteInputs = {
@@ -60,8 +64,8 @@ const job3: QuoteInputs = {
 };
 // Expected: 150 × $12 = $1,800 → 10% off = -$180 → $1,620
 // + rush $150 + premium takedown $150 = taxable $1,920
-// Tax: $1,920 × 0.08625 = $165.60
-// Total: $2,085.60 | Deposit: $1,042.80 | Balance: $1,042.80
+// Tax: $1,920 × 0.0875 = $168.00
+// Total: $2,088.00 | Deposit: $1,044.00 | Balance: $1,044.00
 printQuote('Job 3: Winter Wonderland / hard / 150ft + rush + premium takedown + 10% off', calculateQuote(job3));
 
 // ─── Test 4: Mini lights only — trees + bushes, no roofline ─────────────────
@@ -80,8 +84,8 @@ const job4: QuoteInputs = {
   spritzers: [], wreaths: [], garland: [],
   takedown: 'included', rushFee: false,
 };
-// Expected: $180 + $135 + $70 + $70 + $70 = $525 → minimum $1,000
-printQuote('Job 4: Trees + bushes only (minimum applies)', calculateQuote(job4));
+// Expected: $180 + $135 + $70 + $70 + $70 = $525
+printQuote('Job 4: Trees + bushes only', calculateQuote(job4));
 
 // ─── Test 5: Santas + gingerbread together (independent footage) ──────────────
 const job5: QuoteInputs = {
@@ -115,8 +119,8 @@ const job6: QuoteInputs = {
   wreaths: [], garland: [],
   takedown: 'included', rushFee: false,
 };
-// Expected: $85 + $285 + $210 = $580 → minimum $1,000
-printQuote('Job 6: Spritzers only (minimum applies)', calculateQuote(job6));
+// Expected: $85 + $285 + $210 = $580
+printQuote('Job 6: Spritzers only', calculateQuote(job6));
 
 // ─── Test 7: Santas + mini lights + spritzers ─────────────────────────────────
 const job7: QuoteInputs = {
@@ -166,8 +170,8 @@ const job9: QuoteInputs = {
   ],
   takedown: 'included', rushFee: false,
 };
-// Expected: $585 + $250 = $835 → minimum $1,000
-printQuote('Job 9: Garland only (minimum applies)', calculateQuote(job9));
+// Expected: $585 + $250 = $835
+printQuote('Job 9: Garland only', calculateQuote(job9));
 
 // ─── Test 10: Full kitchen-sink — all three roofline types ───────────────────
 const job10: QuoteInputs = {

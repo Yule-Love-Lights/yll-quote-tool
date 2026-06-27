@@ -163,3 +163,62 @@ describe('attachSceneLinks — carries recommended (#12)', () => {
     expect(stakeOut[0].recommended).toBe(true);
   });
 });
+
+// AUDIT FIX (#33) — count-mismatch guard. If the design is edited after the last
+// Calculate, the frozen per-category line-item count can diverge from the live
+// projection count. The positional zip would otherwise mis-link; the guard skips
+// per-unit linking for any category whose counts don't match (rows stay priced +
+// visible), without affecting roofline (linked by surface tag) or other categories.
+describe('attachSceneLinks — count-mismatch guard (#33)', () => {
+  it('skips per-unit linking when a frozen 3-item category meets a live 2-item projection', () => {
+    // Scene was edited down to 2 bushes after a 3-bush quote was frozen.
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b1', 'bush', { stringCount: 1 }), strand('b2', 'bush', { stringCount: 1 })] as SceneItem[],
+    };
+    const lineItems: PortalLineItem[] = [li('bush-1', 'bush'), li('bush-2', 'bush'), li('bush-3', 'bush')];
+    const out = attachSceneLinks(lineItems, scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    // None mis-linked — all three stay unlinked rather than zipping b1/b2 onto the wrong rows.
+    expect(byId['bush-1']).toBeUndefined();
+    expect(byId['bush-2']).toBeUndefined();
+    expect(byId['bush-3']).toBeUndefined();
+  });
+
+  it('never carries recommended across a count mismatch', () => {
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b1', 'bush', { stringCount: 1, recommended: true })] as SceneItem[],
+    };
+    // Frozen 2 bush rows vs live 1 projected bush → mismatch → no recommended leak.
+    const out = attachSceneLinks([li('bush-1', 'bush'), li('bush-2', 'bush')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l]));
+    expect(byId['bush-1'].recommended).toBeUndefined();
+    expect(byId['bush-1'].sceneItemIds).toBeUndefined();
+  });
+
+  it('only the mismatched category is skipped — matched categories still link', () => {
+    // bush mismatches (2 frozen vs 1 live), wreath matches (1 frozen vs 1 live).
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b1', 'bush', { stringCount: 1 }), wreath('wr1')] as SceneItem[],
+    };
+    const out = attachSceneLinks([li('bush-1', 'bush'), li('bush-2', 'bush'), li('wreath-1', 'wreath')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    expect(byId['bush-1']).toBeUndefined();
+    expect(byId['bush-2']).toBeUndefined();
+    expect(byId['wreath-1']).toEqual(['wr1']); // unaffected category still links
+  });
+
+  it('roofline links by surface tag even when a per-unit category mismatches', () => {
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('rs1', 'santas-roofline'), strand('b1', 'bush', { stringCount: 1 })] as SceneItem[],
+    };
+    // bush mismatch (2 frozen vs 1 live) must not affect roofline-by-surface.
+    const out = attachSceneLinks([li('roofline-santas', 'roofline'), li('bush-1', 'bush'), li('bush-2', 'bush')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    expect(byId['roofline-santas']).toEqual(['rs1']);
+    expect(byId['bush-1']).toBeUndefined();
+  });
+});

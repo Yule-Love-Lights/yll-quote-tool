@@ -106,6 +106,40 @@ export default async function PortalPage({
   const { quoteId } = await params;
   const quote = await resolveQuote(quoteId);
   const team = resolveTeam();
+
+  // Audit fix (empty-quote-portal-guard): a quote row with no line items
+  // (old/partially-saved rows the adapter tolerates → lineItems: []) would
+  // otherwise render packages with nothing to select and a permanently-disabled
+  // Approve nudging "Select at least one item to continue" — a customer-facing
+  // dead-end. Guard at the page level: show a branded "being finalized" state
+  // with the team phone instead of the un-actionable approve UI.
+  if (quote.lineItems.length === 0) {
+    return (
+      <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
+        <QuoteViewTracker quoteId={quoteId} />
+        <h1 className="text-2xl font-semibold sm:text-3xl">
+          Your quote is being finalized
+        </h1>
+        <p className="mt-4 max-w-md text-base text-slate-300">
+          {quote.customer.firstName
+            ? `Thanks, ${quote.customer.firstName} — `
+            : 'Thanks — '}
+          we&apos;re putting the finishing touches on your design and we&apos;ll
+          be in touch shortly.
+        </p>
+        <p className="mt-6 text-sm text-slate-400">
+          Have a question in the meantime? Call us at{' '}
+          <a
+            href={`tel:${team.phone.replace(/[^\d+]/g, '')}`}
+            className="font-medium text-amber-300 underline-offset-2 hover:underline"
+          >
+            {team.phone}
+          </a>
+          .
+        </p>
+      </main>
+    );
+  }
   // #22 — live Google reviews (rating + featured 5-star testimonials). Null when
   // GOOGLE_PLACE_ID isn't set, the Places API call fails, or Google returns no
   // usable reviews → the section keeps its mock block below.

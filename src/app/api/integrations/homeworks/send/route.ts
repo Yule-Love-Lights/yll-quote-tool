@@ -24,6 +24,7 @@ import {
 } from '@/lib/integrations/homeworks';
 import type { HomeworksPayload } from '@/lib/integrations/types';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { safeEqual } from '@/lib/security';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -80,7 +81,8 @@ export async function POST(req: NextRequest) {
     );
   }
   const provided = req.headers.get('x-admin-secret');
-  if (!provided || provided !== expected) {
+  // Audit fix: constant-time compare to avoid leaking the secret via timing.
+  if (!safeEqual(provided ?? undefined, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

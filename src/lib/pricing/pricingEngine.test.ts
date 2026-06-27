@@ -502,3 +502,63 @@ describe('calculateQuote — early-install promo (#40)', () => {
     expect(r.subtotalAfterDiscount).toBe(960); // 1200 − 120 − 120
   });
 });
+
+// Audit 2026-06: a quote total must never be negative, NaN, or Infinity, no
+// matter what the inputs are. Discounts are clamped so the item subtotal can't
+// go below 0, and every footage/quantity is coerced to a finite, non-negative
+// number before it is multiplied by a rate (mirrors the existing bow/custom
+// guards). These guard against a malformed scene projection or an over-large
+// staff discount silently producing a broken quote.
+describe('calculateQuote — money-integrity guards', () => {
+  it('never produces a negative total/deposit when a flat discount exceeds the subtotal', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      discount: { type: 'flat', amount: 5000 },        // absurd over-discount
+    }));
+    expect(r.subtotalAfterDiscount).toBe(0);           // floored, not -4000
+    expect(r.taxableAmount).toBe(0);
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBe(0);
+    expect(r.balanceDue).toBe(0);
+  });
+
+  it('never goes negative when a percentage discount exceeds 100%', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      discount: { type: 'percentage', amount: 2 },     // 200%
+    }));
+    expect(r.subtotalAfterDiscount).toBe(0);
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBeGreaterThanOrEqual(0);
+  });
+
+  it('still bills fees when an over-large discount zeroes the item subtotal', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      discount: { type: 'flat', amount: 5000 },
+      takedown: 'premium',                             // +150, still billable
+    }));
+    expect(r.subtotalAfterDiscount).toBe(0);
+    expect(r.takedownAmount).toBe(150);
+    expect(r.taxableAmount).toBe(150);
+    expect(r.total).toBeGreaterThan(0);
+  });
+
+  it('coerces a non-finite mini-light stringCount to $0 (finite total, no NaN)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      miniLightItems: [{ type: 'tree', wrapStyle: 'trunk', stringCount: NaN }],
+    }));
+    expect(Number.isFinite(r.total)).toBe(true);
+    expect(r.total).toBe(1087.5); // 1000 roofline + $0 mini, +8.75% tax
+  });
+
+  it('coerces Infinity/negative footage and quantity to 0 (finite, non-negative total)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: Infinity, santasDifficulty: 'medium',
+      spritzers: [{ size: '16', quantity: -3 }],
+    }));
+    expect(Number.isFinite(r.total)).toBe(true);
+    expect(r.total).toBe(0);
+  });
+});

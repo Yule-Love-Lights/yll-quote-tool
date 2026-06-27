@@ -1,6 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { deleteDesign, deleteDesignsForQuote } from './designs';
 
 export type QuoteListItem = {
   id: string;
@@ -42,6 +43,13 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
 export async function deleteQuote(id: string): Promise<void> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) throw new Error('Supabase not configured');
+  // Audit fix (customer-photo-retention-deletion): erase the linked design +
+  // its private bucket images FIRST, before the quote row. The designs FK is
+  // `on delete set null`, so deleting only the quote would orphan the design row
+  // and leave the customer's house photo + satellite image in storage forever.
+  // Best-effort: a design-cleanup failure is logged inside deleteDesignsForQuote
+  // and must not block the quote delete the operator asked for.
+  await deleteDesignsForQuote(id);
   const { error } = await sb.from('quotes').delete().eq('id', id);
   if (error) throw new Error(`deleteQuote: ${error.message}`);
 }
@@ -49,6 +57,16 @@ export async function deleteQuote(id: string): Promise<void> {
 export async function deleteAllQuotes(): Promise<number> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) throw new Error('Supabase not configured');
+  // Audit fix (customer-photo-retention-deletion): erase EVERY design + its
+  // private bucket images before bulk-deleting the quotes, so a "delete all"
+  // doesn't leave a bucket full of orphaned customer photos. We delete designs
+  // linked to a quote (quote_id not null); unlinked, never-Calculated designs
+  // are intentionally left (they belong to no quote and aren't dropped by a
+  // quote wipe — out of scope for this fix, see decisionsForReviewer).
+  const { data: linked } = await sb.from('designs').select('id').not('quote_id', 'is', null);
+  for (const row of (linked ?? []) as Array<{ id: string }>) {
+    await deleteDesign(row.id as string);
+  }
   // Supabase requires a filter on bulk deletes — use an always-true UUID
   // comparison. Returns count of deleted rows.
   const { error, count } = await sb

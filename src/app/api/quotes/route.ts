@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, isSupabaseConfigured } from '@/lib/supabase';
 import { deleteAllQuotes, listQuotes } from '@/lib/quotes';
+import { safeEqual } from '@/lib/security';
 
 export const runtime = 'nodejs';
 
@@ -8,19 +9,33 @@ export const runtime = 'nodejs';
 // by /admin/quotes to clean up fake/test entries during development. Delete
 // operations require the shared ADMIN_SECRET header (x-admin-secret).
 
+// Audit fix (g29-route): the bulk wipe deletes ALL customer PII in a single
+// call behind nothing but the static admin secret. Require an explicit
+// confirmation header in addition to the secret so a leaked/forged secret
+// (or a stray CSRF-style request) can't one-shot the whole table. The caller
+// must echo this exact phrase.
+const DELETE_ALL_CONFIRM = 'DELETE ALL QUOTES';
+
 function checkAdminSecret(req: NextRequest): NextResponse | null {
   const expected = process.env.ADMIN_SECRET;
   if (!expected) {
     return NextResponse.json({ error: 'ADMIN_SECRET not configured on server' }, { status: 503 });
   }
   const provided = req.headers.get('x-admin-secret');
-  if (!provided || provided !== expected) {
+  // Audit fix: constant-time compare to avoid leaking the secret via timing.
+  if (!safeEqual(provided ?? undefined, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   return null;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Listing every quote exposes customer PII (names, addresses, totals). It was
+  // unauthenticated even though the only caller (/admin/quotes) already sends
+  // x-admin-secret — so requiring it here closes the hole without breaking the
+  // UI. Audit 2026-06 (security — unauthenticated PII listing).
+  const authFail = checkAdminSecret(req);
+  if (authFail) return authFail;
   if (!isSupabaseConfigured()) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
@@ -38,6 +53,14 @@ export async function DELETE(req: NextRequest) {
   }
   const authFail = checkAdminSecret(req);
   if (authFail) return authFail;
+  // Audit fix (g29-route): second factor for the full-PII wipe — the caller
+  // must explicitly confirm intent, not just present the admin secret.
+  if (req.headers.get('x-confirm-delete-all') !== DELETE_ALL_CONFIRM) {
+    return NextResponse.json(
+      { error: `Bulk delete requires confirmation: send header x-confirm-delete-all: ${DELETE_ALL_CONFIRM}` },
+      { status: 428 }, // Precondition Required
+    );
+  }
   try {
     const count = await deleteAllQuotes();
     return NextResponse.json({ deleted: count });

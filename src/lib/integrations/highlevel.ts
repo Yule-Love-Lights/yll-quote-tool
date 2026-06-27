@@ -12,7 +12,7 @@
 // API base: https://services.leadconnectorhq.com
 // Version header: Version: 2021-07-28  (required — the gateway 400s without it)
 
-import type { CrmContact, HighLevelContact, HighLevelOpportunity } from './types';
+import type { CrmContact, CrmContactInternal, HighLevelContact, HighLevelOpportunity } from './types';
 
 const API_BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION_HEADER = '2021-07-28';
@@ -82,7 +82,7 @@ export async function searchContacts(query: string, limit = 20): Promise<CrmCont
     limit: String(Math.min(Math.max(limit, 1), 100)),
   });
   const json = await ghlFetch<{ contacts?: HighLevelContact[] }>(`/contacts/?${params}`);
-  return (json.contacts ?? []).map(toCrmContact);
+  return (json.contacts ?? []).map(c => toCrmContact(c));
 }
 
 // ─── Contact fetch ────────────────────────────────────────────────────────
@@ -118,11 +118,13 @@ export async function findOpportunityForContact(
   );
   const list = json.opportunities ?? [];
   if (list.length === 0) return null;
-  // Prefer open opportunities over won/lost/abandoned. If multiple open
-  // cards exist (rare), the first is fine — GHL returns them in createdAt
+  // Only reuse an OPEN card. Audit fix: previously fell back to list[0] when no
+  // open card existed, which resurrected a won/lost/abandoned card for a brand-new
+  // quote. Returning null instead lets the caller create a fresh card. If multiple
+  // open cards exist (rare), the first is fine — GHL returns them in createdAt
   // desc order which matches "most recent activity" semantics.
   const open = list.find(o => o.status === 'open');
-  return open ?? list[0];
+  return open ?? null;
 }
 
 // ─── Opportunity create ───────────────────────────────────────────────────
@@ -302,10 +304,18 @@ export async function sendEmail(input: {
 
 // ─── Mapper: HighLevel → CrmContact ───────────────────────────────────────
 // Centralized so a schema drift on GHL's side only breaks here, not in
-// every consumer. Also where we strip the raw field before it escapes
-// to the browser (API routes set raw=undefined before returning).
-function toCrmContact(hl: HighLevelContact): CrmContact {
-  return {
+// every consumer. Audit fix: redaction is now the DEFAULT — the public
+// CrmContact carries no raw source record, so it's safe to forward to the
+// browser without a manual strip. The raw HighLevel record is only attached
+// when a server-only caller explicitly opts in via { includeRaw: true },
+// yielding the off-the-wire CrmContactInternal type.
+function toCrmContact(hl: HighLevelContact): CrmContact;
+function toCrmContact(hl: HighLevelContact, opts: { includeRaw: true }): CrmContactInternal;
+function toCrmContact(
+  hl: HighLevelContact,
+  opts?: { includeRaw?: boolean },
+): CrmContact | CrmContactInternal {
+  const base: CrmContact = {
     id: hl.id,
     source: 'highlevel',
     firstName: hl.firstName,
@@ -319,6 +329,6 @@ function toCrmContact(hl: HighLevelContact): CrmContact {
     city: hl.city,
     state: hl.state,
     postalCode: hl.postalCode,
-    raw: hl,
   };
+  return opts?.includeRaw ? { ...base, raw: hl } : base;
 }
