@@ -215,14 +215,14 @@ describe('garland sections from scale (#8 Stage C / C4)', () => {
 });
 
 describe('seeded stringCount ceiling (audit finding #84)', () => {
-  it('clamps a runaway AI stringCount to REASONABLE_MAX_STRINGS (20)', () => {
+  it('clamps a runaway AI stringCount to REASONABLE_MAX_STRINGS (50)', () => {
     const seed: AnalysisSeed = {
       detections: {
         miniLights: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 1000, box: [0.1, 0.6, 0.2, 0.2] }],
       },
     };
     const area = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isMiniArea) as MiniAreaItem;
-    expect(area.stringCount).toBe(20);
+    expect(area.stringCount).toBe(50);
   });
 
   it('passes a normal stringCount through unchanged', () => {

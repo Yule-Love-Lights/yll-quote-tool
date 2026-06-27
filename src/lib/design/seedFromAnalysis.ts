@@ -85,10 +85,14 @@ const YARDSTICK_REAL_FEET = 5;
 const MIN_PPF = 2;
 const MAX_PPF = 500;
 // Audit fix (finding #84): an upper ceiling for a seeded mini stringCount.
-// stringCount drives price, so a hallucinated detection (e.g. stringCount:1000)
-// would seed a runaway billed quantity. Clamp (don't reject) — staff can still
-// override upward via the QuoteBuilder stringCount input for a genuine big wrap.
-const REASONABLE_MAX_STRINGS = 20;
+// stringCount drives price, so a hallucinated AI detection (e.g.
+// stringCount:1000) would seed a runaway billed quantity. This guard lives ONLY
+// on the AI-seed path — the shared projectScene projection must NOT cap, or it
+// would wrongly truncate a legitimate large MANUAL quote. The ceiling is
+// deliberately generous: it only trips on an obviously-hallucinated count, well
+// above any plausible real wrap. Clamp (don't reject) — staff can still override
+// upward via the QuoteBuilder stringCount input for a genuine big wrap.
+const REASONABLE_MAX_STRINGS = 50;
 
 // Visual defaults for seeded items (staff restyle freely — visuals never
 // drive price). Mirrors the editor's creation defaults where one exists.
