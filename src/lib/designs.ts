@@ -273,6 +273,92 @@ export async function linkDesignToQuote(id: string, quoteId: string): Promise<bo
   return true;
 }
 
+// Clone the design linked to `sourceQuoteId` into a fresh, INDEPENDENT design
+// linked to `newQuoteId` (ledger #83 Phase 5 "rebook last season"). Copies the
+// scene jsonb + the satellite measurement context, and server-side-copies the
+// base photo + satellite image to the new design's `{newId}/` storage prefix so
+// the clone owns its OWN bucket objects (sharing paths would let deleting one
+// quote erase the other's photos via deleteDesign). Returns the new design id,
+// or null when the source has no design / Supabase isn't configured. Storage
+// copy is best-effort: a failed copy leaves the artifact NULL (staff re-pull the
+// photo) rather than dangerously sharing the source path.
+export async function cloneDesignToNewQuote(
+  sourceQuoteId: string,
+  newQuoteId: string,
+): Promise<{ id: string } | null> {
+  const sb = getSb();
+  if (!sb) return null;
+
+  const { data: srcData, error: selErr } = await sb
+    .from('designs')
+    .select('*')
+    .eq('quote_id', sourceQuoteId)
+    .maybeSingle();
+  if (selErr) {
+    console.error('cloneDesignToNewQuote (source) error:', selErr);
+    return null;
+  }
+  if (!srcData) return null; // nothing to clone — the source quote had no design
+  const src = srcData as DesignRow;
+
+  const { data: created, error: insErr } = await sb
+    .from('designs')
+    .insert({ quote_id: newQuoteId, scene: src.scene ?? newDesignScene() })
+    .select('id')
+    .single();
+  if (insErr || !created) {
+    console.error('cloneDesignToNewQuote (insert) error:', insErr);
+    return null;
+  }
+  const newId = created.id as string;
+
+  // Server-side copy every object under the source prefix to the new prefix.
+  let photoPath: string | null = null;
+  let satellitePath: string | null = null;
+  try {
+    const { data: objects, error: listErr } = await sb.storage.from(BUCKET).list(src.id);
+    if (listErr) {
+      console.error('cloneDesignToNewQuote (list) error:', listErr);
+    } else {
+      for (const o of objects ?? []) {
+        const from = `${src.id}/${o.name}`;
+        const to = `${newId}/${o.name}`;
+        const { error: cpErr } = await sb.storage.from(BUCKET).copy(from, to);
+        if (cpErr) {
+          console.error('cloneDesignToNewQuote (copy) error:', cpErr);
+          continue;
+        }
+        if (o.name.startsWith('photo.')) photoPath = to;
+        if (o.name.startsWith('satellite.')) satellitePath = to;
+      }
+    }
+  } catch (err) {
+    console.error('cloneDesignToNewQuote (storage) threw:', err);
+  }
+
+  // Point the new row at the COPIED artifacts (null when a copy failed — never
+  // the source path) + carry the jsonb measurement context (satellite lines +
+  // analysis are in-row, always safe to copy).
+  const { error: updErr } = await sb
+    .from('designs')
+    .update({
+      photo_path: photoPath,
+      photo_w: photoPath ? src.photo_w : null,
+      photo_h: photoPath ? src.photo_h : null,
+      satellite_path: satellitePath,
+      satellite_w: satellitePath ? src.satellite_w ?? null : null,
+      satellite_h: satellitePath ? src.satellite_h ?? null : null,
+      satellite_feet_per_pixel: satellitePath ? src.satellite_feet_per_pixel ?? null : null,
+      satellite_lines: src.satellite_lines ?? null,
+      seed_analysis: src.seed_analysis ?? null,
+    })
+    .eq('id', newId);
+  if (updErr) {
+    console.error('cloneDesignToNewQuote (row update) error:', updErr);
+  }
+  return { id: newId };
+}
+
 // Normalize an image buffer to a storage-safe type. Supabase + the analyzer
 // only deal in jpeg/png/webp; anything else (gif, heic, bmp, …) is transcoded
 // to JPEG so the stored bytes, the file extension, and the media-type we later

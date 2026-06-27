@@ -1,0 +1,173 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// cloneDesignToNewQuote (designs.ts) — the Phase 5 rebook clone primitive. Mocks
+// Supabase (designs table + storage) and sharp (unused here but imported by the
+// module). Asserts: scene + measurement context copy, base photo + satellite are
+// server-side-copied to the NEW prefix, and a failed copy leaves the path NULL
+// (never shares the source path).
+
+vi.mock('sharp', () => ({ default: vi.fn() }));
+
+const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
+vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
+
+import { cloneDesignToNewQuote } from './designs';
+
+type Row = Record<string, unknown>;
+
+function makeFake(opts: {
+  source?: Row | null;
+  objects?: Array<{ name: string }>;
+  copyFailFor?: (from: string) => boolean;
+  listError?: { message: string } | null;
+}) {
+  const designs: Row[] = opts.source ? [{ ...opts.source }] : [];
+  const copies: Array<[string, string]> = [];
+  let counter = 0;
+
+  function from() {
+    const state = {
+      op: null as null | 'select' | 'insert' | 'update',
+      insertRow: null as Row | null,
+      updateRow: null as Row | null,
+      filters: [] as Array<(r: Row) => boolean>,
+    };
+    const match = () => designs.filter((r) => state.filters.every((f) => f(r)));
+    const doInsert = () => {
+      const row = { id: `design-${++counter}`, ...state.insertRow };
+      designs.push(row);
+      return row;
+    };
+    const builder = {
+      select() {
+        if (state.op === null) state.op = 'select';
+        return builder;
+      },
+      insert(row: Row) {
+        state.op = 'insert';
+        state.insertRow = row;
+        return builder;
+      },
+      update(row: Row) {
+        state.op = 'update';
+        state.updateRow = row;
+        return builder;
+      },
+      eq(col: string, val: unknown) {
+        state.filters.push((r) => r[col] === val);
+        return builder;
+      },
+      async maybeSingle() {
+        if (state.op === 'insert') return { data: doInsert(), error: null };
+        return { data: match()[0] ?? null, error: null };
+      },
+      async single() {
+        if (state.op === 'insert') return { data: doInsert(), error: null };
+        const out = match();
+        return { data: out[0] ?? null, error: out[0] ? null : { message: 'no rows' } };
+      },
+      then(resolve: (v: unknown) => void) {
+        if (state.op === 'insert') return resolve({ data: doInsert(), error: null });
+        if (state.op === 'update') {
+          for (const r of match()) Object.assign(r, state.updateRow);
+          return resolve({ data: null, error: null });
+        }
+        return resolve({ data: match(), error: null });
+      },
+    };
+    return builder;
+  }
+
+  const storage = {
+    from() {
+      return {
+        async list() {
+          return { data: opts.objects ?? [], error: opts.listError ?? null };
+        },
+        async copy(fromPath: string, toPath: string) {
+          if (opts.copyFailFor?.(fromPath)) return { data: null, error: { message: 'copy failed' } };
+          copies.push([fromPath, toPath]);
+          return { data: { path: toPath }, error: null };
+        },
+      };
+    },
+  };
+
+  return { client: { from, storage }, designs, copies };
+}
+
+beforeEach(() => {
+  sbRef.current = null;
+});
+
+const SOURCE = {
+  id: 'src-design',
+  quote_id: 'src-quote',
+  photo_path: 'src-design/photo.jpg',
+  photo_w: 800,
+  photo_h: 600,
+  scene: { yardsticks: [], items: [{ id: 'x' }], brightness: 20 },
+  satellite_path: 'src-design/satellite.png',
+  satellite_w: 400,
+  satellite_h: 400,
+  satellite_feet_per_pixel: 0.5,
+  satellite_lines: { santas: [{ points: [[0, 0]], label: 'a' }] },
+  seed_analysis: { foo: 'bar' },
+};
+
+describe('cloneDesignToNewQuote', () => {
+  it('clones scene + measurement context and copies photo + satellite to the new prefix', async () => {
+    const fake = makeFake({
+      source: SOURCE,
+      objects: [{ name: 'photo.jpg' }, { name: 'satellite.png' }],
+    });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    expect(res?.id).toBeTruthy();
+    const newId = res!.id;
+
+    // A new design row, linked to the new quote, with the copied scene.
+    const clone = fake.designs.find((d) => d.id === newId)!;
+    expect(clone.quote_id).toBe('new-quote');
+    expect(clone.scene).toEqual(SOURCE.scene);
+
+    // Storage objects copied src prefix → new prefix.
+    expect(fake.copies).toEqual([
+      ['src-design/photo.jpg', `${newId}/photo.jpg`],
+      ['src-design/satellite.png', `${newId}/satellite.png`],
+    ]);
+
+    // Row points at the COPIED artifacts + carries the in-row jsonb context.
+    expect(clone.photo_path).toBe(`${newId}/photo.jpg`);
+    expect(clone.photo_w).toBe(800);
+    expect(clone.satellite_path).toBe(`${newId}/satellite.png`);
+    expect(clone.satellite_feet_per_pixel).toBe(0.5);
+    expect(clone.satellite_lines).toEqual(SOURCE.satellite_lines);
+    expect(clone.seed_analysis).toEqual(SOURCE.seed_analysis);
+  });
+
+  it('returns null when the source quote has no design', async () => {
+    const fake = makeFake({ source: null });
+    sbRef.current = fake.client;
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    expect(res).toBeNull();
+    expect(fake.designs).toHaveLength(0);
+  });
+
+  it('leaves photo_path NULL when its copy fails (never shares the source path)', async () => {
+    const fake = makeFake({
+      source: SOURCE,
+      objects: [{ name: 'photo.jpg' }, { name: 'satellite.png' }],
+      copyFailFor: (from) => from.endsWith('photo.jpg'),
+    });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+    expect(clone.photo_path).toBeNull();
+    expect(clone.photo_w).toBeNull();
+    // Satellite still copied fine.
+    expect(clone.satellite_path).toBe(`${res!.id}/satellite.png`);
+  });
+});

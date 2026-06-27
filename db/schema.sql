@@ -125,6 +125,52 @@ create index if not exists invoices_created_at_idx on invoices (created_at desc)
 create index if not exists invoices_status_idx on invoices (status);
 
 -- ─────────────────────────────────────────────────────────────
+-- Customer + Property identity (ledger #83, Phase 5). Stable customer object
+-- (today loose-matched per-quote by HL contact→email→phone→name) with
+-- one-or-more properties; quotes reference both. Powers "rebook last season".
+-- Canonical fresh-install mirror of migrations/2026-06-27-customers-properties.sql
+-- (the authoritative migration — also adds indexes + updated_at triggers + the
+-- quotes.customer_id/property_id columns). Populated in code
+-- (src/lib/customers.ts backfillCustomersFromQuotes), not by SQL.
+-- ⚠️ Fresh-DB bootstrap only; the .sql migration is what is applied to
+-- provisioned DBs. match_key is the computed dedup key (unique).
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists customers (
+  id            uuid primary key default gen_random_uuid(),
+  match_key     text unique,         -- hl:<id> | email:<lower> | phone:<digits> | name:<lower>
+  hl_contact_id text,
+  name          text,
+  email         text,
+  phone         text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create table if not exists properties (
+  id           uuid primary key default gen_random_uuid(),
+  customer_id  uuid not null references customers(id) on delete cascade,
+  address      text,
+  address_key  text not null,        -- normalized address; unique within a customer
+  lat          double precision,
+  lng          double precision,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  unique (customer_id, address_key)
+);
+
+alter table quotes add column if not exists customer_id uuid references customers(id) on delete set null;
+alter table quotes add column if not exists property_id uuid references properties(id) on delete set null;
+
+alter table customers disable row level security;
+alter table properties disable row level security;
+
+create index if not exists customers_hl_contact_id_idx on customers (hl_contact_id) where hl_contact_id is not null;
+create index if not exists customers_email_idx on customers (email) where email is not null;
+create index if not exists properties_customer_id_idx on properties (customer_id);
+create index if not exists quotes_customer_id_idx on quotes (customer_id) where customer_id is not null;
+
+-- ─────────────────────────────────────────────────────────────
 -- Photo corrections — user-edited measurements feed back as
 -- few-shot examples to improve future Claude Vision analyses.
 -- ─────────────────────────────────────────────────────────────
