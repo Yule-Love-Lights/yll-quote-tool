@@ -59,7 +59,13 @@ export function renderYardstick(ys: Yardstick, indexLabel: string, isSelected: b
 
 export function pxPerFoot(ys: Yardstick | null): number {
   if (!ys || ys.realFeet === 0) return 50; // fallback
-  return ys.width / ys.realFeet;
+  // Audit fix (#107): the yardstick is a resizable rectangle baked from the
+  // Transformer drag, so a vertical reference (downspout, column, garage-door
+  // height) lives in `height`, not `width`. Use the longer axis so a tall
+  // calibration isn't read as width << real length (which inflated every
+  // derived measurement). No-op for the common wide/horizontal box.
+  const px = Math.max(ys.width, ys.height);
+  return px / ys.realFeet;
 }
 
 export function yardstickLabel(index: number): string {

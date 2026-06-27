@@ -3625,17 +3625,17 @@ export async function renderEditor(
         </div>
       </section>
       <section>
-        <h3>Real-world width <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
+        <h3>Real-world length <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
         <input type="number" id="ys-feet" min="0.5" step="0.5" value="${ys.realFeet}" />
         <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">
-          Drag a real-world feature on the photo (door, window, garage) and enter its true width here.
+          Drag along any straight real-world feature (door width, downspout height, garage-door height) and enter its true length here.
         </div>
       </section>
       <section>
         <h3>Scale</h3>
         <div style="font-family:monospace;font-size:13px">
           <strong>${ppf.toFixed(1)} px/ft</strong>
-          <span style="color:var(--text-dim)"> · ${Math.round(ys.width)}×${Math.round(ys.height)} px</span>
+          <span style="color:var(--text-dim)"> · ${Math.round(Math.max(ys.width, ys.height))} px</span>
         </div>
       </section>
       <section>
