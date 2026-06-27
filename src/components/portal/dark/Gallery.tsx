@@ -138,7 +138,11 @@ export function Gallery({ items }: GalleryProps) {
 
           <div className="relative w-full max-w-5xl aspect-[4/3]">
             <Image
-              src={items[openIdx].src.replace('w=1000', 'w=1600')}
+              // Audit fix (#59): pass src directly — the old
+              // .replace('w=1000','w=1600') was a no-op for any non-Unsplash
+              // URL, blowing up the thumbnail. fill + sizes='100vw' lets
+              // next/image pick the right resolution from the full-res source.
+              src={items[openIdx].src}
               alt={items[openIdx].alt}
               fill
               sizes="100vw"
