@@ -371,7 +371,9 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
     );
     expect(charges.rush).toEqual({ amount: BUSINESS_RULES.rushFeeAmount, defaultOn: true });
     expect(charges.takedown).toEqual({ amount: BUSINESS_RULES.premiumTakedownFee, defaultOn: true });
-    expect(charges.taxRate).toBeCloseTo(0.08625, 5);
+    // Audit fix (g18): taxRate is the canonical rate, not back-derived from
+    // the rounded taxAmount / exact taxableAmount ratio.
+    expect(charges.taxRate).toBe(BUSINESS_RULES.taxRate);
   });
 
   it('defaults the toggles OFF when staff omits the fees (amounts still present to toggle on)', () => {
@@ -391,6 +393,19 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
   it('falls back to the business tax rate when the quote had no taxable amount', () => {
     const charges = chargesFromResult(resultWith({ taxableAmount: 0, taxAmount: 0 }));
     expect(charges.taxRate).toBe(BUSINESS_RULES.taxRate);
+  });
+
+  // Audit fix (g18): on a near-zero taxable base the rounded taxAmount used to
+  // back-derive an inflated rate (e.g. 0.01 / 0.10 = 0.10 ≠ 0.0875) that then
+  // got applied to every package/selection total. The canonical rate is used
+  // directly now, so a tiny taxable base no longer drifts the rate.
+  it('uses the canonical rate (no drift) on a near-zero taxable base', () => {
+    const charges = chargesFromResult(resultWith({ taxableAmount: 0.1, taxAmount: 0.01 }));
+    expect(charges.taxRate).toBe(BUSINESS_RULES.taxRate);
+
+    // ...and that exact rate is what package/selection totals are priced with.
+    const priced = priceSelection(1000, effectiveCharges(charges, false, false));
+    expect(priced.tax).toBe(Math.round(1000 * BUSINESS_RULES.taxRate * 100) / 100);
   });
 });
 
