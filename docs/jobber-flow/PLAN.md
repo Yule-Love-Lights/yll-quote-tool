@@ -1,6 +1,6 @@
 # Jobber-flow Implementation Plan
 
-> **For agentic workers:** This is a **phased blueprint** for a multi-subsystem epic (ledger #82). It is gated on **#81 (auth perimeter)** and needs **Jason coordination** (most of it is his area + the SHARED data layer). When a phase is greenlit to build, generate that phase's **granular task-by-task TDD plan** with superpowers:writing-plans (one plan per phase → `docs/jobber-flow/plans/<phase>.md`), then execute with superpowers:subagent-driven-development. Don't build ahead of #81.
+> **For agentic workers:** This is a **phased blueprint** for a multi-subsystem epic (ledger #83). It is gated on **#81 (auth perimeter)** and needs **Jason coordination** (most of it is his area + the SHARED data layer). When a phase is greenlit to build, generate that phase's **granular task-by-task TDD plan** with superpowers:writing-plans (one plan per phase → `docs/jobber-flow/plans/<phase>.md`), then execute with superpowers:subagent-driven-development. Don't build ahead of #81.
 
 **Goal:** Make the YLL quote tool mimic Jobber's Quote → Job → Invoice pipeline (with statuses, e-sign, auto-created jobs/invoices, and a Valor-collected 50% balance) so YLL can retire Jobber for operations.
 
@@ -23,7 +23,7 @@
 > **Resolves SPEC §9 open item — recommendation: dedicated `jobs` and `invoices` tables** (not fields-on-`quotes`). Cleaner status independence, a clean From-Quote FK, and room for the job/invoice lifecycle without overloading the quote row.
 
 - **`quotes`** (existing) gains: `status` (text, see enum below), `decline_reason` (text null), `quote_number` (int, unique seq); signature stored inside `approval_snapshot` jsonb (`{name, kind:'typed'|'drawn', value, signed_at, ip}`). Amendment trail in `approval_snapshot.amendments[]`.
-- **`jobs`** (new): `id` uuid pk, `quote_id` fk, `customer_id` fk, `property_id` fk, `job_number` int unique seq, `type` (`one_off`|`permanent`), `status` (see enum), `line_items` jsonb (snapshot at creation), `install_date` date null (synced from home.works later), `completed_at` timestamptz null, `created_at`.
+- **`jobs`** (new): `id` uuid pk, `quote_id` fk, `customer_id` fk, `property_id` fk, `job_number` int unique seq, `type` (`one_off`|`permanent`), `status` (see enum), `line_items` jsonb (snapshot at creation), `install_date` date null (synced from home.works later), `completed_at` timestamptz null, `created_at`. **🔗 SHARED with the Inventory epic #82** — that epic adds operational Stages-Kanban fields to the SAME `jobs` table (both auto-create the row on the deposit-paid #38 webhook). Build ONE `jobs` object, coordinated with Jason.
 - **`invoices`** (new): `id` uuid pk, `job_id` fk, `quote_id` fk, `customer_id` fk, `invoice_number` int unique seq, `subtotal`/`discount`/`tax`/`total` numeric, `deposit_applied` numeric, `balance` numeric, `status` (see enum), `tax_overridden` bool default false, `valor_balance_txn_id`/`valor_receipt_url` text null, `created_at`, `paid_at` null.
 - **`customers`** + **`properties`** (new, P5): stable identity (today loose-matched by HL contact→email→phone→name). `customers(id, hl_contact_id, name, email, phone, created_at)`; `properties(id, customer_id, address, lat, lng, created_at)`. Quotes/jobs/invoices reference both.
 - **Sequential display numbers:** Postgres sequences seeded at the chosen start (recommend 1000) — `quote_number_seq`, `job_number_seq`, `invoice_number_seq`. Allocated on row insert. **UUID stays the pk + portal token** (display numbers never appear in a URL — see SPEC §4.6).
@@ -67,7 +67,7 @@
 ## Phase 2 — Jobs (auto-created) + the Workflow board
 
 **Objective:** Auto-create a Job when a quote is booked; show the Quotes·Jobs·Invoices Workflow board on the dashboard.
-**Depends on:** P1. **Blocked-by-decision:** SPEC §2 "where Jobs live" TBD — this plan assumes **Jobs are created in our tool** (recommended); confirm before building. Scheduling is out (home.works, #83) — the Job carries an `install_date` to be synced later.
+**Depends on:** P1. **🔗 Shared job entity:** the `jobs` object is SHARED with the Inventory epic #82 — both auto-create a job on the **deposit-paid (#38) webhook** (Jason confirmed Job ID ≠ Quote ID). Build ONE `jobs` table: inventory adds operational/Stages-Kanban fields, this adds billing statuses + the invoice link. **Coordinate with Jason before creating it.** **Blocked-by-decision:** SPEC §2 "where Jobs live" TBD — this plan assumes **Jobs are created in our tool** (recommended); confirm before building. Scheduling is out (home.works, #84) — the Job carries an `install_date` to be synced later.
 
 **Data model:** migration creates `jobs` (+ `job_number_seq`).
 
@@ -76,7 +76,7 @@
 2. Valor webhook — on the existing deposit-paid/booked claim, also `createJobFromQuote` (idempotent — guard on existing job for the quote, mirroring the atomic deposit claim). **Tests:** extend `valor/webhook/route.test.ts` — booking creates exactly one job; replay creates none.
 3. `src/app/api/jobs/route.ts` (list, admin-auth) + admin jobs list/detail pages with status + From-Quote link.
 4. `src/components/dashboard/WorkflowBoard.tsx` (Naldo's area) — three columns (Quotes·Jobs·Invoices) with per-status counts from `src/lib/dashboard/*` aggregations; matches the approved mockup. Decide placement: replace vs sit beside the existing worklist (SPEC §9).
-5. Job "to_schedule" placeholder note ("Scheduling handled in home.works" — #83).
+5. Job "to_schedule" placeholder note ("Scheduling handled in home.works" — #84).
 
 **Done when:** booking a quote auto-creates one linked Job; the board renders live counts; gates green.
 
@@ -124,18 +124,18 @@
 **Done when:** customers have stable identity + properties; "rebook last season" produces a correct fresh quote; gates green.
 
 ## Deferred (separate ledger tasks — not in this plan)
-- **#83** home.works ↔ tool scheduling connection (the install-date/dispatch sync; resolves the "where Jobs/Invoices live" boundary).
-- **#84** Permanent/Glow365 recurring billing.
-- **#85** QuickBooks accounting sync.
-- **#86** PDF quote/invoice/receipt docs · on-my-way/install-complete texts. (Review requests already via HighLevel.)
+- **#84** home.works ↔ tool scheduling connection (the install-date/dispatch sync; resolves the "where Jobs/Invoices live" boundary).
+- **#85** Permanent/Glow365 recurring billing.
+- **#86** QuickBooks accounting sync.
+- **#87** PDF quote/invoice/receipt docs · on-my-way/install-complete texts. (Review requests already via HighLevel.)
 - Out: full Visits/crew/route/job-costing, in-tool refunds, tips, ACH, capacity limits, inventory, assessments.
 
 ---
 
 ## Self-review (against the spec)
-- **Spec coverage:** statuses/decline/changes/e-sign (P1) ✓ · auto-Job (P2) ✓ · auto-Invoice + Valor balance auto-charge→link (P3) ✓ · amend-order (P4) ✓ · Customer/Property + rebook (P5) ✓ · display IDs (data model + P1) ✓ · tax 8.75% + manual override (P3) ✓ · Cancelled + manual refunds (P3) ✓ · Workflow board (P2) ✓ · #81 prerequisite (P0) ✓ · deferred items (#83–#86) ✓.
+- **Spec coverage:** statuses/decline/changes/e-sign (P1) ✓ · auto-Job (P2) ✓ · auto-Invoice + Valor balance auto-charge→link (P3) ✓ · amend-order (P4) ✓ · Customer/Property + rebook (P5) ✓ · display IDs (data model + P1) ✓ · tax 8.75% + manual override (P3) ✓ · Cancelled + manual refunds (P3) ✓ · Workflow board (P2) ✓ · #81 prerequisite (P0) ✓ · deferred items (#84–#87) ✓.
 - **Sequencing:** P1→P2→P3 close the deposit-to-paid gap (most Jobber-parity, least risk); P4/P5 are higher-value adds touching the approval model + identity.
-- **Open TBDs to resolve before the relevant phase:** where Jobs/Invoices are created (P2, vs home.works/#83); workflow-board placement (P2); amend re-notify/re-sign (P4); display-ID seed (recommend 1000).
+- **Open TBDs to resolve before the relevant phase:** where Jobs/Invoices are created (P2, vs home.works/#84); workflow-board placement (P2); amend re-notify/re-sign (P4); display-ID seed (recommend 1000).
 
 ## Next step when a phase is greenlit
 Generate the phase's granular TDD plan with superpowers:writing-plans (→ `docs/jobber-flow/plans/phase-N.md`), then execute with superpowers:subagent-driven-development. Do not start before #81 (P0) and a Jason coordination check.
