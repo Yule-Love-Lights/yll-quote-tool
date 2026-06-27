@@ -80,9 +80,15 @@ export async function POST(req: NextRequest) {
       Math.pow(2, SAT_ZOOM);
     satelliteFeetPerPixel = metersPerPixel * 3.28084;
   } catch (err) {
+    // Audit fix (#100): log the upstream detail server-side only. Returning
+    // raw err.message to the client could leak Google internals (e.g.
+    // OVER_QUERY_LIMIT / REQUEST_DENIED with key context), so respond with a
+    // generic message instead.
     console.error('analyze-address imagery fetch failed:', err);
-    const message = err instanceof Error ? err.message : 'Failed to fetch imagery for this address';
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json(
+      { error: 'Failed to fetch imagery for this address' },
+      { status: 502 },
+    );
   }
 
   // ── 2. Analyze with Claude (#8 few-shot) — FAIL-SAFE ──────────────────────
