@@ -82,8 +82,10 @@ export function projectMaterials(scene: Scene, bindings: Bindings): MaterialLine
       const tier: Tier = item.tier ?? DEFAULT_WREATH_TIER;
       const sl = sizeLabel(size);
       push(item.id, 'wreath', wreathBaseKey(size), 1, `${sl} wreath`);
+      // A bow ships with EVERY wreath (Naldo) — both tiers. Only the decoration
+      // fee (ornaments/ribbon labor) gates on Decorated.
+      push(item.id, 'wreath-bow', wreathBowKey(size), 1, `${sl} wreath bow`);
       if (tier === 'fullDecor') {
-        push(item.id, 'wreath-bow', wreathBowKey(size), 1, `${sl} wreath bow`);
         push(item.id, 'wreath-fee', wreathFeeKey(size), 1, `${sl} wreath decoration`);
       }
       continue;

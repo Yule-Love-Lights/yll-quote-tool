@@ -43,14 +43,16 @@ describe('projectMaterials — wreaths', () => {
       { sku: '1102', qty: 1, category: 'wreath-fee', conceptKey: 'wreath-fee:36noble', label: '36" Noble wreath decoration', sceneItemId: 'w1' },
     ]);
   });
-  it('non-decorated wreath → base only', () => {
+  it('non-decorated wreath → base + bow (a bow ships with every wreath), no fee', () => {
     const lines = projectMaterials(scene([W('w1', '36noble', 'bow')]), B);
-    expect(lines.map((l) => l.category)).toEqual(['wreath']);
+    expect(lines.map((l) => l.category)).toEqual(['wreath', 'wreath-bow']);
   });
-  it('unset size/tier default to 36noble/bow (base only); unbound size → sku null', () => {
+  it('unset size/tier default to 36noble/bow; both unbound → sku null', () => {
     const lines = projectMaterials(scene([W('w1')]), {});
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ category: 'wreath', conceptKey: 'wreath:36noble', sku: null });
+    expect(lines.map((l) => [l.category, l.sku])).toEqual([
+      ['wreath', null],
+      ['wreath-bow', null],
+    ]);
   });
 });
 
