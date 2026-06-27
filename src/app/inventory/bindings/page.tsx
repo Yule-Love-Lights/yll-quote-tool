@@ -17,10 +17,11 @@ import type { CatalogItem } from '@/lib/inventory/catalog';
 import type { Bindings, ClipRules, InventoryBindings } from '@/lib/inventory/bindings';
 import {
   bulbC9Rows, BISTRO_KEY, MINI_CATEGORY, miniKey,
-  CLIP_FEATURES, DEFAULT_CLIP_SKUS,
-  wreathBaseRows, wreathBowRows, wreathFeeRows, wreathFeeKey, DEFAULT_WREATH_FEE_SKUS,
-  garlandBaseRows, GARLAND_BOW_KEY, GARLAND_FEE_KEY, DEFAULT_GARLAND_FEE_SKU,
+  CLIP_FEATURES,
+  wreathBaseRows, wreathBowRows, wreathFeeRows,
+  garlandBaseRows, GARLAND_BOW_KEY, GARLAND_FEE_KEY,
   SPRITZER_SIZES, spritzerColorRows, spritzerPoleKey,
+  buildSeedBindings, buildSeedClipRules,
 } from '@/lib/inventory/concepts';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
@@ -47,12 +48,11 @@ export default function BindingsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    // Pre-fill seeds (operator reviews + Saves): clip SKUs + decoration-fee SKUs.
-    const seededBindings: Bindings = {};
-    for (const [size, sku] of Object.entries(DEFAULT_WREATH_FEE_SKUS)) seededBindings[wreathFeeKey(size)] = sku;
-    seededBindings[GARLAND_FEE_KEY] = DEFAULT_GARLAND_FEE_SKU;
-    const seededClips: ClipRules = {};
-    for (const [f, sku] of Object.entries(DEFAULT_CLIP_SKUS)) seededClips[f] = { sku };
+    // Pre-fill seeds (operator reviews + Saves): wreath/garland base + bow + fee,
+    // standard mini strands, the spritzer colors we carry, and clip SKUs. See
+    // concepts.ts buildSeed*. Saved bindings win; seeds fill the gaps.
+    const seededBindings = buildSeedBindings();
+    const seededClips = buildSeedClipRules();
 
     void (async () => {
       let savedB: Bindings = {};

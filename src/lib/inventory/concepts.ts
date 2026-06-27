@@ -88,3 +88,56 @@ export const spritzerPoleKey = (size: string) => `spritzer-pole:${size}`;
 export function spritzerColorRows(size: string): ConceptRow[] {
   return DEFAULT_COLORS.map((c) => ({ key: spritzerKey(c.id, size), label: c.label }));
 }
+
+// ── autofill defaults (Naldo) ────────────────────────────────────────────────
+// Seeded into the editable state when nothing is saved yet; the operator reviews
+// and Saves. All Warm-White Noble greenery (the "-30" finish — the one present at
+// every size), Red-w/-Gold-Trim bows per the bow chart, the standard 5mm mini
+// strands, and the solid spritzer colors that exist in the catalog.
+export const DEFAULT_WREATH_SKUS: Record<string, string> = {
+  '24noble': '50024-30', '30noble': '50030-30', '36noble': '50036-30',
+  '48noble': '50048-30', '60noble': '50060-30', '72noble': '50072-30',
+};
+// Bow chart: 24→12″, 36→18″, 48→24″, 60→30″, 72→36″. 30″ is absent from the chart → left blank.
+export const DEFAULT_WREATH_BOW_SKUS: Record<string, string> = {
+  '24noble': '30812', '36noble': '30818', '48noble': '30824', '60noble': '30830', '72noble': '30836',
+};
+export const DEFAULT_GARLAND_SKUS: Record<string, string> = { '4.5ft': '50045-30', '9ft': '50099-30' };
+export const DEFAULT_GARLAND_BOW_SKU = '30812'; // 12" Red/Gold bow
+// Standard 5mm "50L 6"" strand per color (keyed by the catalog color string).
+export const DEFAULT_MINI_SKUS: Record<string, string> = {
+  'Warm White': '40056', 'Pure White': '40156', 'Cool White': '40956', 'Blue': '40556',
+  'Green': '40456', 'Red': '40356', 'Orange': '40656', 'Yellow': '40856',
+  'Pink': '43116', 'Purple': '40756', 'Teal': '43126', 'Multi': '40256',
+};
+// Spritzer SKU per "<paletteId>:<size>" — only the solid colors that exist.
+export const DEFAULT_SPRITZER_SKUS: Record<string, string> = {
+  'warm-white:16': '61001', 'warm-white:24': '61002', 'warm-white:32': '61003',
+  'cool-white:16': '61101', 'cool-white:24': '61102', 'cool-white:32': '61103',
+  'red:16': '61301', 'red:24': '61302',
+  'green:16': '61401', 'green:24': '61402',
+  'blue:16': '61501', 'blue:24': '61502',
+  'pink:16': '61111', 'pink:24': '61112',
+};
+
+// Build the full seeded binding map (all string values). The page merges saved
+// bindings over this (saved wins; seeds fill the gaps).
+export function buildSeedBindings(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [s, sku] of Object.entries(DEFAULT_WREATH_SKUS)) out[wreathBaseKey(s)] = sku;
+  for (const [s, sku] of Object.entries(DEFAULT_WREATH_BOW_SKUS)) out[wreathBowKey(s)] = sku;
+  for (const [s, sku] of Object.entries(DEFAULT_WREATH_FEE_SKUS)) out[wreathFeeKey(s)] = sku;
+  for (const [l, sku] of Object.entries(DEFAULT_GARLAND_SKUS)) out[garlandBaseKey(l)] = sku;
+  out[GARLAND_BOW_KEY] = DEFAULT_GARLAND_BOW_SKU;
+  out[GARLAND_FEE_KEY] = DEFAULT_GARLAND_FEE_SKU;
+  for (const [color, sku] of Object.entries(DEFAULT_MINI_SKUS)) out[miniKey(color)] = sku;
+  for (const [k, sku] of Object.entries(DEFAULT_SPRITZER_SKUS)) out[`spritzer:${k}`] = sku;
+  return out;
+}
+
+// Build the seeded clip-rule map (feature → { sku }). Saved rules win.
+export function buildSeedClipRules(): Record<string, { sku: string }> {
+  const out: Record<string, { sku: string }> = {};
+  for (const [f, sku] of Object.entries(DEFAULT_CLIP_SKUS)) out[f] = { sku };
+  return out;
+}
