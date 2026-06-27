@@ -1,6 +1,6 @@
 ---
 name: project-inventory-system
-description: "Inventory system epic (#82) — full vision capture: warehouse on-hand stock, design→materials list projection, the YLL clip-rules engine, the job pipeline (Kanban), ordering, and the WhatsApp bot. Living planning doc. BLOCKED on Naldo's input before decomposing into sub-tasks."
+description: "Inventory system epic (#82) — vision + the YLL clip-rules engine, design→materials projection, on-hand stock, job Kanban, ordering. UNBLOCKED 2026-06-27 (Naldo answered §10); decomposed; Slice 1a (catalog) + 1b-i (bindings) SHIPPED to prod. Decision-locked design: docs/superpowers/specs/2026-06-27-inventory-82-design.md."
 metadata:
   node_type: memory
   type: project
@@ -8,9 +8,13 @@ metadata:
 
 # Inventory System — planning & vision (#82)
 
-> **STATUS: 🟡 PLANNING (captured Jason, S14 / 2026-06-26).** Vision dumped by Jason — a detailed `.md` + 2 Excalidraw wireframes (Inventory-On-Hand table + the Stages Kanban) + a GoHighLevel pipeline screenshot for reference. **Not building yet.** This doc is the single source of truth for the epic; the ledger row (#82) points here. **BLOCKED on Naldo's input** (see §10 *Open questions for Naldo*) before we split it into the smaller dependency-ordered sub-tasks. **Living doc — evolves as decisions land.**
+> **STATUS: 🟢 UNBLOCKED + BUILDING (2026-06-27).** Captured by Jason (S14); **Naldo answered all 6 §10 questions** → finalized clip rules + stock model → decomposed → building. The **decision-locked, code-grounded design now lives in `docs/superpowers/specs/2026-06-27-inventory-82-design.md`** (read that for the specifics + the file-anchored integration map); this doc remains the vision/history. The ledger row (#82) tracks status.
 >
-> **Plan of record (Jason S14):** capture everything here now + push to master so **Naldo can pull it and answer the open questions on his end**. Once Naldo answers, we (a) finalize the clip rules + stock model, then (b) decompose #82 into sub-tasks (phases below) and start building.
+> **✅ §10 ANSWERED (2026-06-27):** clip-rules table locked to real Thunder SKUs (gutter→Flex `14147` · peak+side→Shingle Tab `14145` · ridge→Ridge/Peak Clip `14159` · pathway/stake→Ground Stake `14343` · flat→Parapet `14144`+Shingle Tab; spritzers = own category, NEVER a clip; no windows/C7); stock fields = SKU·name·category·color·size·wholesale·needs-adapter·bag-CT·case-CT·reorder·storage·locked; consume-only + manual salvage; decrement-on-prep; AI auto-detect + staff verify; single supplier (Thunder; Amazon misc later).
+>
+> **✅ SHIPPED to prod:** **Slice 1a** — catalog (`inventory_catalog` table + Thunder CSV parser + data layer + `GET/POST /api/inventory/catalog`); **831 SKUs imported** (PR #174). **Slice 1b-i** — bindings/clipRules data layer + `/api/inventory/bindings` (PR #177). **⏭️ NEXT:** 1b-ii binding-editor UI (searchable type-ahead) + 1b-iii category-hide/sold-out-lock UI (searchable+paginated), under **/inventory** → Slice 2 (per-run roof-feature attr + **design-tool relay** + materials projection + clip engine) → Slice 3 (jobs entity **shared with jobber-flow #83** + Kanban + PDF). Plans: `docs/superpowers/plans/2026-06-27-inventory-82-slice1a-catalog.md` + `…-slice1b-bindings.md`.
+>
+> **Original plan of record (Jason S14, now satisfied):** capture the vision + open questions here → Naldo answers → finalize + decompose + build. Done.
 >
 > **Terminology (Jason prefers plain English — use these):** "materials list" = the per-job parts list (industry term: *BOM / bill of materials*). "first version / Phase 1" = the smallest useful shippable slice (*MVP*). "stock item" = one distinct trackable inventory item-variant (*SKU*).
 
