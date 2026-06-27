@@ -61,4 +61,49 @@ describe('parseThunderCsv', () => {
     expect(parseThunderCsv('')).toEqual([]);
     expect(parseThunderCsv('SKU,Wholesale\n')).toEqual([]);
   });
+
+  it('normalizes an xx color to null', () => {
+    const csv = [
+      'SKU,Wholesale,Retail,ProductName,Category,Wattage,Voltage,Color,Size,Adapter,Bag CT,Case CT',
+      '99999, $ 1.00 , $ 2.00 ,Generic Hardware,Hardware,xx,xx,xx,xx,xx,100,1000',
+    ].join('\n');
+    const item = parseThunderCsv(csv)[0];
+    expect(item.color).toBeNull();
+    expect(item.size).toBeNull();
+  });
+
+  it('falls back to Uncategorized when category is empty', () => {
+    const csv = [
+      'SKU,Wholesale,Retail,ProductName,Category,Wattage,Voltage,Color,Size,Adapter,Bag CT,Case CT',
+      '99998, $ 1.00 , $ 2.00 ,No Category Item,,xx,xx,White,xx,xx,100,1000',
+    ].join('\n');
+    expect(parseThunderCsv(csv)[0].category).toBe('Uncategorized');
+  });
+
+  it('skips a whitespace-only SKU row', () => {
+    const csv = [
+      'SKU,Wholesale,Retail,ProductName,Category,Wattage,Voltage,Color,Size,Adapter,Bag CT,Case CT',
+      '   , $ 1.00 , $ 2.00 ,Ghost Row,Bulb,xx,xx,White,xx,xx,100,1000',
+    ].join('\n');
+    expect(parseThunderCsv(csv)).toEqual([]);
+  });
+
+  it('keeps a comma inside a quoted product name', () => {
+    const csv = [
+      'SKU,Wholesale,Retail,ProductName,Category,Wattage,Voltage,Color,Size,Adapter,Bag CT,Case CT',
+      '99997, $ 1.00 , $ 2.00 ,"C9 Bulb, Red and Green",Bulb,xx,xx,Multi,xx,xx,100,1000',
+    ].join('\n');
+    expect(parseThunderCsv(csv)[0].name).toBe('C9 Bulb, Red and Green');
+  });
+
+  it('reads needs_adapter strictly: trims "Yes " true, "Yes - E17" false', () => {
+    const csv = [
+      'SKU,Wholesale,Retail,ProductName,Category,Wattage,Voltage,Color,Size,Adapter,Bag CT,Case CT',
+      '99996, $ 1.00 , $ 2.00 ,Trimmed Yes,RGB,xx,xx,Rgb,E17,Yes ,25,500',
+      '99995, $ 1.00 , $ 2.00 ,Suffixed Yes,RGB,xx,xx,Rgb,E17,Yes - E17,25,500',
+    ].join('\n');
+    const items = parseThunderCsv(csv);
+    expect(items.find((i) => i.sku === '99996')!.needs_adapter).toBe(true);
+    expect(items.find((i) => i.sku === '99995')!.needs_adapter).toBe(false);
+  });
 });

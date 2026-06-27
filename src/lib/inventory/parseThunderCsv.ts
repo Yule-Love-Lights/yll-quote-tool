@@ -46,6 +46,12 @@ function text(v: string | undefined): string | null {
   return t.length ? t : null;
 }
 
+// Thunder writes "xx" as a not-applicable marker in any text column → treat as null.
+function field(v: string | undefined): string | null {
+  const t = text(v);
+  return t && t.toLowerCase() === 'xx' ? null : t;
+}
+
 function money(v: string | undefined): number | null {
   const n = parseFloat((v ?? '').replace(/[^0-9.]/g, ''));
   return Number.isFinite(n) ? n : null;
@@ -59,6 +65,8 @@ function int(v: string | undefined): number | null {
 }
 
 export function parseThunderCsv(csv: string): ParsedCatalogItem[] {
+  // Split on CRLF or LF (Excel exports use CRLF). Row 0 (header) is always
+  // skipped below, which also absorbs a possible leading UTF-8 BOM on cell 0.
   const lines = csv.split(/\r?\n/);
   const out: ParsedCatalogItem[] = [];
   // Start at 1 to skip the header row.
@@ -70,13 +78,12 @@ export function parseThunderCsv(csv: string): ParsedCatalogItem[] {
     if (!sku) continue; // section-divider + note rows carry no SKU
     const name = (f[3] ?? '').trim();
     if (!name) continue; // skip malformed rows defensively
-    const sizeRaw = (f[8] ?? '').trim();
     out.push({
       sku,
       name,
       category: (f[4] ?? '').trim() || 'Uncategorized',
-      color: text(f[7]),
-      size: sizeRaw.toLowerCase() === 'xx' ? null : text(sizeRaw),
+      color: field(f[7]),
+      size: field(f[8]),
       wholesale_cost: money(f[1]),
       needs_adapter: /^yes$/i.test((f[9] ?? '').trim()),
       bag_ct: int(f[10]),
