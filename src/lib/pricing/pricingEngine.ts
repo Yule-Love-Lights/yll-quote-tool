@@ -247,8 +247,16 @@ export interface QuoteResult {
 // Wonderland (C9 custom runs) is independent and can accompany either.
 // ─────────────────────────────────────────────────────────
 
+// Defensive: a footage or quantity must be a finite, positive number before it
+// is multiplied by a rate. Anything else (NaN/Infinity/negative — e.g. from a
+// malformed scene projection) contributes 0 so a quote is never NaN, Infinity,
+// or negative. Mirrors the bow/custom-item guards below.
+function units(n: number): number {
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function rooflineCost(footage: number, difficulty: RooflineDifficulty): number {
-  return Math.round(footage * BUSINESS_RULES.rooflineRates[difficulty]);
+  return Math.round(units(footage) * BUSINESS_RULES.rooflineRates[difficulty]);
 }
 
 // Both mutually-exclusive roofline options, priced from the captured footage.
@@ -339,7 +347,7 @@ function rooflineLineItem(
 // Winter Wonderland (C9 custom runs) — INDEPENDENT of the Santa's/Gingerbread
 // choice; left exactly as it was. Part of the "rest of the quote."
 function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
-  if (inputs.winterWonderlandFootage <= 0) return [];
+  if (!(inputs.winterWonderlandFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
       label: `Winter Wonderland – ${inputs.winterWonderlandFootage}ft (${inputs.winterWonderlandDifficulty})`,
@@ -353,12 +361,12 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
 // Part of the "rest of the quote." The label must NOT contain Wonderland/
 // Roofline/Gingerbread/Ridge or the portal lineItemKind parser mis-classifies it.
 function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
-  if (inputs.stakeLightingFootage <= 0) return [];
+  if (!(inputs.stakeLightingFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
       label: `Stake Lighting – ${inputs.stakeLightingFootage}ft (${inputs.stakeLightingDifficulty})`,
       amount: Math.round(
-        inputs.stakeLightingFootage * BUSINESS_RULES.stakeLightingRates[inputs.stakeLightingDifficulty],
+        units(inputs.stakeLightingFootage) * BUSINESS_RULES.stakeLightingRates[inputs.stakeLightingDifficulty],
       ),
     },
   ];
@@ -382,15 +390,16 @@ const NO_WRAP_STYLE_TYPES: ReadonlySet<MiniLightItem['type']> = new Set(['column
 
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
   return inputs.miniLightItems.map(item => {
-    const strings = item.stringCount === 1 ? '1 string' : `${item.stringCount} strings`;
+    const count = units(item.stringCount);
+    const strings = count === 1 ? '1 string' : `${count} strings`;
     if (NO_WRAP_STYLE_TYPES.has(item.type)) {
       return {
         label: `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${strings}`,
-        amount: item.stringCount * BUSINESS_RULES.miniLightRates.canopy,
+        amount: count * BUSINESS_RULES.miniLightRates.canopy,
       };
     }
     const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
-    const amount = item.stringCount * rate;
+    const amount = count * rate;
     const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
     return { label, amount };
   });
@@ -402,11 +411,12 @@ function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
 
 function calculateSpritzers(inputs: QuoteInputs): LineItem[] {
   return inputs.spritzers.map(item => {
+    const qty = units(item.quantity);
     const rate = BUSINESS_RULES.spritzerRates[item.size];
-    const amount = item.quantity * rate;
-    const label = item.quantity === 1
+    const amount = qty * rate;
+    const label = qty === 1
       ? `${item.size}" Spritzer`
-      : `${item.size}" Spritzers × ${item.quantity}`;
+      : `${item.size}" Spritzers × ${qty}`;
     return { label, amount };
   });
 }
@@ -431,10 +441,11 @@ const TIER_LABELS: Record<DecorTier, string> = {
 
 function calculateWreaths(inputs: QuoteInputs): LineItem[] {
   return inputs.wreaths.map(item => {
+    const qty = units(item.quantity);
     const price = BUSINESS_RULES.wreathPrices[item.size][item.tier];
-    const amount = price * item.quantity;
+    const amount = price * qty;
     const base = `${WREATH_SIZE_LABELS[item.size]} Wreath – ${TIER_LABELS[item.tier]}`;
-    const label = item.quantity === 1 ? base : `${base} × ${item.quantity}`;
+    const label = qty === 1 ? base : `${base} × ${qty}`;
     return { label, amount };
   });
 }
@@ -449,10 +460,11 @@ const GARLAND_TYPE_LABELS: Record<GarlandType, string> = {
 
 function calculateGarland(inputs: QuoteInputs): LineItem[] {
   return inputs.garland.map(item => {
+    const qty = units(item.quantity);
     const price = BUSINESS_RULES.garlandPrices[item.type][item.length][item.tier];
-    const amount = price * item.quantity;
+    const amount = price * qty;
     const base = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland – ${TIER_LABELS[item.tier]}`;
-    const label = item.quantity === 1 ? base : `${base} × ${item.quantity}`;
+    const label = qty === 1 ? base : `${base} × ${qty}`;
     return { label, amount };
   });
 }
@@ -576,7 +588,10 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
   // preserve the home.works payload contract (downstream still reads the flag).
   const minimumApplied = false;
-  const subtotalAfterDiscount = postDiscount - earlyInstallDiscountAmount;
+  // Clamp at 0: an over-large manual discount and/or early-install promo must
+  // never drive the item subtotal — and therefore the total/deposit — negative.
+  // Valid quotes are unaffected (postDiscount − earlyInstall is already >= 0).
+  const subtotalAfterDiscount = Math.max(0, postDiscount - earlyInstallDiscountAmount);
 
   // Early-install and the rush-install fee are mutually exclusive (#40): an
   // early-install quote never also charges rush.
