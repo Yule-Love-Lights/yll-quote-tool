@@ -8,11 +8,14 @@ create table if not exists quotes (
   inputs jsonb not null,
   result jsonb not null,
   total numeric(10, 2) not null,
-  -- Audit fix (g29-route): actor attribution. Nullable for now — populated
-  -- once the operator-identity model (#155) lands; the data layer
-  -- (src/lib/quotes.ts saveQuote/updateQuote) writes the acting operator here.
-  -- Free-text so it can hold an operator id/email without a hard FK dependency
-  -- on whatever shape #155 settles on.
+  -- Audit fix (g29-route): actor attribution, RESERVED for the operator-auth
+  -- work (ledger #81). ⚠️ NOT written by any code yet — the data layer
+  -- (src/lib/quotes.ts saveQuote/updateQuote) does NOT set it, and there is NO
+  -- standalone migrations/*.sql applying it to already-provisioned DBs, so PROD
+  -- does NOT have this column. Do NOT INSERT/UPDATE created_by until #81 ships
+  -- BOTH the writing code AND a migrations/2026-xx-quotes-add-created-by.sql
+  -- together — writing it before the migration would 500 every saveQuote /
+  -- updateQuote on prod. Free-text so it can hold an operator id/email later.
   created_by text
 );
 
