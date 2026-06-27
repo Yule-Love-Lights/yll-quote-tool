@@ -405,6 +405,70 @@ export async function downloadDesignImageBase64(
   }
 }
 
+// ─── Retention / erasure (audit fix: customer-photo-retention-deletion) ─────
+// Before this, there was NO storage-cleanup path: deleting a quote left the
+// design row (quote_id reset to NULL by the FK's `on delete set null`) and its
+// base house photo + satellite image in the private `designs` bucket forever —
+// indefinite PII retention. deleteDesign() removes BOTH the row and every
+// object under the design's `{id}/` storage prefix (photo.<ext>, satellite.<ext>,
+// any future per-design artifacts). Training-example capture already snapshots
+// design images INTO the example row (see downloadDesignImageBase64), so erasing
+// a design's bucket objects does not destroy captured training data.
+
+// Hard-delete a single design: remove all bucket objects under `{id}/`, then the
+// row. Returns false if Supabase isn't configured. Storage removal is best-effort
+// (logged, non-fatal) so a transient storage error never blocks the row delete —
+// but the row delete itself surfaces via the boolean.
+export async function deleteDesign(id: string): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+
+  // List then remove everything under the design's storage prefix. Listing
+  // (rather than hard-coding photo.*/satellite.*) cleans up regardless of which
+  // extension was stored and survives future artifact types.
+  try {
+    const { data: objects, error: listErr } = await sb.storage.from(BUCKET).list(id);
+    if (listErr) {
+      console.error('deleteDesign: storage list failed:', listErr);
+    } else if (objects && objects.length) {
+      const paths = objects.map((o) => `${id}/${o.name}`);
+      const { error: rmErr } = await sb.storage.from(BUCKET).remove(paths);
+      if (rmErr) console.error('deleteDesign: storage remove failed:', rmErr);
+    }
+  } catch (err) {
+    // Non-fatal: still delete the row so the PII-bearing record is gone even if
+    // the bucket op throws. Orphaned objects can be swept later.
+    console.error('deleteDesign: storage cleanup threw:', err);
+  }
+
+  const { error } = await sb.from('designs').delete().eq('id', id);
+  if (error) {
+    console.error('Supabase deleteDesign error:', error);
+    return false;
+  }
+  return true;
+}
+
+// Erase every design linked to a given quote (the cascade deleteQuote needs so a
+// quote delete no longer orphans the design + its private images). At most one
+// design is linked per quote today (partial unique index), but this handles N
+// defensively. Returns the count of designs deleted.
+export async function deleteDesignsForQuote(quoteId: string): Promise<number> {
+  const sb = getSb();
+  if (!sb) return 0;
+  const { data, error } = await sb.from('designs').select('id').eq('quote_id', quoteId);
+  if (error) {
+    console.error('Supabase deleteDesignsForQuote (lookup) error:', error);
+    return 0;
+  }
+  const ids = (data ?? []).map((r) => r.id as string);
+  let deleted = 0;
+  for (const id of ids) {
+    if (await deleteDesign(id)) deleted++;
+  }
+  return deleted;
+}
+
 // Decode a base64 image, store it in the private bucket, measure it with sharp,
 // and record the path + dimensions on the row. Returns the stored metadata.
 export async function uploadDesignPhoto(
