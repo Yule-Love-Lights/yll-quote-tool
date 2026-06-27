@@ -71,6 +71,10 @@ export function InteractiveHero({
   } = useSelection();
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
+  // A broken hero image (e.g. an expired signed URL) must never show the
+  // browser's broken-image icon. When the daytime <img> or the static
+  // next/image errors, fall back to a neutral night-sky poster instead.
+  const [photoFailed, setPhotoFailed] = useState(false);
   const prevId = useRef<PackageId>(packageId);
 
   // Fire a bloom-flash any time the active package changes
@@ -118,7 +122,7 @@ export function InteractiveHero({
       >
       {/* Photo layer — the live design when one is linked, else the static render */}
       {design ? (
-        showDaylight && design.photoUrl ? (
+        showDaylight && design.photoUrl && !photoFailed ? (
           // Before: the plain daytime photo (the design's base image).
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -126,6 +130,18 @@ export function InteractiveHero({
             alt={`${alt} — before installation, daytime`}
             className="portal-snow-stage-photo absolute inset-0 w-full h-full object-cover"
             data-ready={ready ? 'true' : 'false'}
+            onError={() => setPhotoFailed(true)}
+          />
+        ) : showDaylight && design.photoUrl && photoFailed ? (
+          // The daytime photo URL broke (e.g. expired signed URL): a neutral
+          // night-sky poster instead of the browser's broken-image icon.
+          <div
+            aria-hidden
+            className="portal-snow-stage-photo absolute inset-0 w-full h-full"
+            style={{
+              background:
+                'radial-gradient(ellipse 90% 70% at 50% 30%, rgba(255,183,68,0.06), transparent 60%), #060B0F',
+            }}
           />
         ) : (
           // After: the live, lit design rendered on the photo.
@@ -141,6 +157,18 @@ export function InteractiveHero({
             className="portal-snow-stage-photo absolute inset-0"
           />
         )
+      ) : photoFailed ? (
+        // The static render URL broke: a neutral night-sky poster instead of
+        // the browser's broken-image icon.
+        <div
+          aria-hidden
+          className="portal-snow-stage-photo"
+          data-level={packageId}
+          style={{
+            background:
+              'radial-gradient(ellipse 90% 70% at 50% 30%, rgba(255,183,68,0.06), transparent 60%), #060B0F',
+          }}
+        />
       ) : (
         <Image
           src={afterUrl}
@@ -152,6 +180,7 @@ export function InteractiveHero({
           className="portal-snow-stage-photo"
           data-level={packageId}
           data-ready={ready ? 'true' : 'false'}
+          onError={() => setPhotoFailed(true)}
           style={
             dBrightness !== undefined
               ? ({ ['--brightness' as string]: dBrightness.toString() } as React.CSSProperties)

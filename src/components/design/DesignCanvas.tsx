@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Scene, BulbColor } from '@/lib/design/sceneTypes';
 import type { ReadOnlyDesignController } from './editor-core/render-readonly';
 import { setPalette } from './editor-core/colors';
@@ -34,6 +34,13 @@ type Props = {
 export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride, palette, renderSettings }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ReadOnlyDesignController | null>(null);
+  // Loading/error state drives the sibling overlay (skeleton while the Konva
+  // import + render are in flight; a static-photo fallback if they reject —
+  // e.g. an expired signed URL). Never set synchronously in the effect body
+  // (that triggers cascading renders); only after an await inside the async
+  // flow below, so the reset on remount happens off the render path too.
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   // Mount/teardown the Konva stage — only when the scene or photo changes.
   // hiddenIds is intentionally NOT a mount dependency: a toggle updates the
@@ -46,25 +53,37 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
     void (async () => {
       const host = hostRef.current;
       if (!host) return;
-      const { renderReadOnlyDesign } = await import('./editor-core/render-readonly');
-      if (cancelled) return;
-      // Apply global app settings (#32) before rendering so the portal matches
-      // what staff configured (palette + spritzer density, etc.).
-      if (palette && palette.length > 0) setPalette(palette);
-      if (renderSettings) setRenderSettings(renderSettings);
-      const ctrl = await renderReadOnlyDesign(host, {
-        scene,
-        photoUrl,
-        photoW,
-        photoH,
-        hiddenIds: hiddenIds ?? null,
-        colorOverride: colorOverride ?? null,
-      });
-      if (cancelled) {
-        ctrl.destroy();
-        return;
+      try {
+        const { renderReadOnlyDesign } = await import('./editor-core/render-readonly');
+        if (cancelled) return;
+        // Reset to the loading state AFTER the first await (not synchronously in
+        // the effect body) so a scene/photo change shows the skeleton again
+        // without a synchronous setState-in-effect.
+        setReady(false);
+        setFailed(false);
+        // Apply global app settings (#32) before rendering so the portal matches
+        // what staff configured (palette + spritzer density, etc.).
+        if (palette && palette.length > 0) setPalette(palette);
+        if (renderSettings) setRenderSettings(renderSettings);
+        const ctrl = await renderReadOnlyDesign(host, {
+          scene,
+          photoUrl,
+          photoW,
+          photoH,
+          hiddenIds: hiddenIds ?? null,
+          colorOverride: colorOverride ?? null,
+        });
+        if (cancelled) {
+          ctrl.destroy();
+          return;
+        }
+        ctrlRef.current = ctrl;
+        setReady(true);
+      } catch {
+        // Dynamic import or render rejected (e.g. an expired signed photo URL).
+        // Surface the static-photo fallback instead of a permanent blank.
+        if (!cancelled) setFailed(true);
       }
-      ctrlRef.current = ctrl;
     })();
 
     return () => {
@@ -87,5 +106,34 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
     ctrlRef.current?.setColorOverride(colorOverride ?? null);
   }, [colorOverride]);
 
-  return <div ref={hostRef} className={className} />;
+  // Relatively-positioned WRAPPER carries the layout className. Inside it, the
+  // Konva host is its OWN element with NO React children (Konva clears it via
+  // innerHTML; React must not own anything inside it — React 19 DOM-ownership).
+  // The skeleton/fallback is a SIBLING overlay, never a child of the host.
+  return (
+    <div className={className} style={{ position: 'relative' }}>
+      <div ref={hostRef} style={{ position: 'absolute', inset: 0 }} />
+      {(!ready || failed) && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            inset: 0,
+            // A dim poster: the static photo when we have one (so the fallback
+            // shows the home, not a void), under a faint scrim. While loading
+            // it sits beneath the Konva render; once ready it's hidden.
+            backgroundColor: '#0b1117',
+            backgroundImage: photoUrl ? `url("${photoUrl}")` : undefined,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            // Skeleton dims the poster; the failed fallback shows it near-clear
+            // (the static photo IS the graceful degradation, no broken canvas).
+            opacity: failed ? 1 : photoUrl ? 0.55 : 1,
+            transition: 'opacity 300ms ease',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+    </div>
+  );
 }
