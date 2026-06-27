@@ -16,12 +16,33 @@ create table if not exists quotes (
   -- BOTH the writing code AND a migrations/2026-xx-quotes-add-created-by.sql
   -- together — writing it before the migration would 500 every saveQuote /
   -- updateQuote on prod. Free-text so it can hold an operator id/email later.
-  created_by text
+  created_by text,
+
+  -- ── Jobber-flow status spine (ledger #83 Phase 1) ──────────────────────────
+  -- Explicit lifecycle status + portal decline reason + sequential display
+  -- number (Quote #). Applied to live/provisioned DBs by
+  -- migrations/2026-06-27-quote-status.sql (which also creates quote_number_seq
+  -- + the allocate_display_number RPC + backfills status). This block mirrors
+  -- those columns for a fresh-DB bootstrap. status is free text (canonical set
+  -- enforced in code: src/lib/quoteStatus.ts).
+  status text,
+  decline_reason text,
+  quote_number int
 );
 
 -- Backfill for existing installs (pre-dates the audit column).
 alter table quotes
   add column if not exists created_by text;
+
+-- Jobber-flow status spine backfill (ledger #83 Phase 1) — see
+-- migrations/2026-06-27-quote-status.sql for the authoritative migration
+-- (sequence + RPC + status backfill from timestamps).
+alter table quotes
+  add column if not exists status text;
+alter table quotes
+  add column if not exists decline_reason text;
+alter table quotes
+  add column if not exists quote_number int;
 
 alter table quotes disable row level security;
 

@@ -2,6 +2,8 @@ import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import { deleteDesign, deleteDesignsForQuote } from './designs';
+import { allocateNumber } from './displayId';
+import type { QuoteStatus } from './quoteStatus';
 
 export type QuoteListItem = {
   id: string;
@@ -15,11 +17,20 @@ export type QuoteListItem = {
   // and to short-circuit the "Send to customer" button when already sent.
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  // Valor deposit-paid timestamp — set = "Booked" (the #38 deposit flow). Read
+  // by deriveStatus() so the admin list shows the Booked badge.
+  deposit_paid_at: string | null;
   // View receipt (#68): when the customer opened their portal link. Admin shows
   // a "Viewed" badge (with the count + last-open time on hover).
   viewed_at: string | null;
   last_viewed_at: string | null;
   view_count: number | null;
+  // Explicit lifecycle status (ledger #83 Phase 1). NULL on legacy / pre-migration
+  // rows — surfaces fall back to deriveStatus(row) from the timestamps above. The
+  // decline reason + sequential display number land alongside it.
+  status: QuoteStatus | null;
+  decline_reason: string | null;
+  quote_number: number | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -29,7 +40,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, viewed_at, last_viewed_at, view_count',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -102,6 +113,19 @@ export async function saveQuote(
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
+  // Sequential display number (ledger #83, SPEC §4.6) — allocated once, on first
+  // save. Best-effort: a failed allocation (RPC/sequence missing, e.g. before the
+  // 2026-06-27-quote-status migration applies) must NOT block the save — the
+  // column is nullable and the truncated-UUID display (#77) still works. Omitting
+  // the key entirely on failure also keeps this insert working against a DB that
+  // pre-dates the migration.
+  let quoteNumber: number | null = null;
+  try {
+    quoteNumber = await allocateNumber('quote_number_seq');
+  } catch (err) {
+    console.warn('saveQuote: quote_number allocation skipped:', err);
+  }
+
   const { data, error } = await supabase
     .from('quotes')
     .insert({
@@ -113,6 +137,11 @@ export async function saveQuote(
       inputs,
       result,
       total: result.total,
+      // A freshly-saved quote is a draft until staff send it (ledger #83). The
+      // forward lifecycle is then re-derivable from the timestamps, but stamping
+      // it here makes the explicit-status read path correct from row one.
+      status: 'draft' satisfies QuoteStatus,
+      ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
     .single();
@@ -182,6 +211,11 @@ export type QuoteRaw = {
   result: QuoteResult | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  // Explicit lifecycle status + display number (ledger #83 Phase 1). NULL on
+  // legacy / pre-migration rows.
+  status: QuoteStatus | null;
+  decline_reason: string | null;
+  quote_number: number | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -191,7 +225,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at',
+      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, status, decline_reason, quote_number',
     )
     .eq('id', id)
     .maybeSingle();
