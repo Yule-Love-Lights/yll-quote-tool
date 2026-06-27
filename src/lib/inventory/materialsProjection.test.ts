@@ -15,6 +15,12 @@ const SP = (id: string, quoteSize?: string, colorPattern?: string[]): SceneItem 
   ({ kind: 'spritzer', id, quoteSize, colorPattern, included: true }) as unknown as SceneItem;
 const MINI = (id: string, surface?: string, stringCount?: number, colorPattern?: string[], groupId?: string): SceneItem =>
   ({ kind: 'strand', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
+const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[]): SceneItem =>
+  ({ kind: 'miniArea', id, surface, stringCount, colorPattern, included: true }) as unknown as SceneItem;
+const GROUP = (id: string, surface: string, stringCount: number): SceneItem =>
+  ({ kind: 'miniGroup', id, surface, stringCount, memberIds: [], included: true }) as unknown as SceneItem;
+const ROOF = (id: string, surface?: string): SceneItem =>
+  ({ kind: 'strand', id, surface, included: true }) as unknown as SceneItem;
 
 const B: Bindings = {
   'wreath:36noble': 'W36',
@@ -74,6 +80,18 @@ describe('projectMaterials — garland / spritzer / mini', () => {
     const lines = projectMaterials(scene([MINI('m1', 'bush', 1, ['cool-white'])]), B);
     expect(lines[0].conceptKey).toBe('mini:Pure White');
   });
+  it('mini-area projects like a strand', () => {
+    const lines = projectMaterials(scene([AREA('a1', 'bush', 2, ['warm-white'])]), B);
+    expect(lines).toEqual([
+      { sku: 'MINIWW', qty: 2, category: 'mini', conceptKey: 'mini:Warm White', label: 'Warm White mini (bush) × 2', sceneItemId: 'a1' },
+    ]);
+  });
+  it('mini-group has no colorPattern → defaults to the warm-white key', () => {
+    const lines = projectMaterials(scene([GROUP('g1', 'railing', 4)]), B);
+    expect(lines).toEqual([
+      { sku: 'MINIWW', qty: 4, category: 'mini', conceptKey: 'mini:Warm White', label: 'Warm White mini (railing) × 4', sceneItemId: 'g1' },
+    ]);
+  });
 });
 
 describe('projectMaterials — skips', () => {
@@ -81,6 +99,9 @@ describe('projectMaterials — skips', () => {
     const excluded = { ...(W('w1', '36noble', 'bow') as object), included: false } as unknown as SceneItem;
     const grouped = MINI('m1', 'tree', 2, ['warm-white'], 'grp1');
     expect(projectMaterials(scene([excluded, grouped]), B)).toEqual([]);
+  });
+  it('does not project roofline / unmapped strands (the 2a/2b seam)', () => {
+    expect(projectMaterials(scene([ROOF('r1', 'santas-roofline'), ROOF('r2')]), B)).toEqual([]);
   });
 });
 
