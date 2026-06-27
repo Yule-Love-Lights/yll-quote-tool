@@ -134,6 +134,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  // GHL stage-sync result of the last send: a non-null message means the quote
+  // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
+  // send route reports ghlSynced:false + stageError, and persists ghl_sync_error
+  // for the ?retryGhl reconcile bucket). Surfaced so the operator knows + can
+  // retry, instead of the old falsely-confident "stage moved to Bid Sent".
+  const [ghlSyncWarning, setGhlSyncWarning] = useState<string | null>(null);
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
@@ -980,6 +986,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     if (!savedQuoteId) return;
     setSendStatus('sending');
     setSendError(null);
+    setGhlSyncWarning(null);
     setCopiedUrl(false);
 
     const url = portalUrlFor(savedQuoteId);
@@ -998,6 +1005,14 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Send failed (${res.status})`);
       setSendStatus('sent');
+      // The quote is sent locally regardless; surface a non-blocking warning if
+      // the HighLevel "Bid Sent" stage move didn't go through, so the operator
+      // doesn't wrongly believe the CRM card advanced.
+      setGhlSyncWarning(
+        data.ghlSynced === false
+          ? (data.stageError ?? 'The HighLevel card may not have advanced to Bid Sent.')
+          : null,
+      );
       // Auto-capture (#8 Stage A): sending = staff vouching the design is
       // right, so the staff-final state becomes a training example (replaces
       // this quote's previous auto snapshot on a re-send). Best-effort.
@@ -1005,6 +1020,29 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Send failed');
+    }
+  };
+
+  // Re-run ONLY the HighLevel stage-sync for a quote that was sent locally but
+  // whose pipeline card never advanced (?retryGhl). Does not re-stamp sent or
+  // re-message the customer (the route guards that). Best-effort.
+  const handleRetryGhlSync = async () => {
+    if (!savedQuoteId) return;
+    setSendStatus('sending');
+    try {
+      const res = await fetch(`/api/quotes/${savedQuoteId}/send?retryGhl=1`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Retry failed (${res.status})`);
+      setSendStatus('sent');
+      setGhlSyncWarning(
+        data.ghlSynced === false
+          ? (data.stageError ?? 'The HighLevel card still has not advanced — check the integration.')
+          : null,
+      );
+    } catch (err) {
+      // It was already sent; only the sync retry failed.
+      setSendStatus('sent');
+      setGhlSyncWarning(err instanceof Error ? err.message : 'CRM sync retry failed.');
     }
   };
 
@@ -2527,7 +2565,8 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
-                  : sendStatus === 'sent' ? '✓ Sent — stage moved to Bid Sent'
+                  : sendStatus === 'sent'
+                    ? (ghlSyncWarning ? '✓ Sent (CRM sync pending)' : '✓ Sent — stage moved to Bid Sent')
                   : '📨 Send Quote to Customer'}
               </button>
             </div>
@@ -2536,6 +2575,24 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               <p className="mt-3 text-sm text-red-600">
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
               </p>
+            )}
+
+            {/* Sent locally, but the HighLevel "Bid Sent" stage move failed —
+                surface it (don't claim the card advanced) + offer a retry. */}
+            {sendStatus === 'sent' && ghlSyncWarning && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>
+                  Sent to the customer — but the HighLevel card didn&apos;t advance to
+                  &ldquo;Bid Sent&rdquo;. {ghlSyncWarning}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRetryGhlSync}
+                  className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                >
+                  Retry CRM sync
+                </button>
+              </div>
             )}
 
             {/* ── Training capture (#8 Stage A) ── */}
