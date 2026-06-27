@@ -1,0 +1,75 @@
+'use client';
+
+// PROPOSAL — operator login page (see docs/audit/AUTH-PROPOSAL.md). Minimal
+// staff password gate: posts to /api/login, which sets the session cookie the
+// middleware checks. Redirects back to the page the operator was trying to reach.
+
+import { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+function LoginForm() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const from = params.get('from') || '/';
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? 'Login failed');
+      }
+      router.replace(from.startsWith('/') ? from : '/');
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="flex w-full max-w-sm flex-col gap-4">
+      <label htmlFor="password" className="text-sm font-medium text-[#C9D3CB]">
+        Operator password
+      </label>
+      <input
+        id="password"
+        type="password"
+        autoComplete="current-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        className="min-h-[48px] rounded-lg border border-white/15 bg-white/5 px-4 text-base text-white outline-none focus:border-[#E8B862]"
+        required
+      />
+      {error && <p className="text-sm text-[#E5736F]">{error}</p>}
+      <button
+        type="submit"
+        disabled={busy}
+        className="inline-flex min-h-[48px] items-center justify-center rounded-full bg-[#E8B862] px-6 text-base font-semibold text-[#0B140F] disabled:opacity-60"
+      >
+        {busy ? 'Signing in…' : 'Sign in'}
+      </button>
+    </form>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <main className="flex min-h-[100svh] flex-col items-center justify-center gap-8 bg-[#0B140F] px-6 py-16 text-center">
+      <h1 className="text-2xl font-semibold text-[#F4EFE6]">Yule Love Lights — Operator</h1>
+      <Suspense fallback={null}>
+        <LoginForm />
+      </Suspense>
+    </main>
+  );
+}
