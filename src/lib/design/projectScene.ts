@@ -90,13 +90,20 @@ function asMiniSurface(s: unknown): MiniSurface | null {
   return s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' ? s : null;
 }
 
+// Audit fix (finding #84): clamp a persisted stringCount to a sane ceiling, so
+// an out-of-range value stored in a scene (e.g. a pre-fix AI-seeded item) is
+// also caught here, not just at seed time. Mirrors REASONABLE_MAX_STRINGS in
+// seedFromAnalysis.ts. Clamp (don't reject) — staff override upward in the
+// QuoteBuilder stringCount input for a genuine large wrap.
+const REASONABLE_MAX_STRINGS = 20;
+
 // One priced mini unit, shared across all three authoring paths (strand wrap,
 // area fill, grouped railing) so they price identically (#27 A2).
 function miniInput(type: MiniSurface, billing: MiniBilling): MiniLightItem {
   return {
     type,
     wrapStyle: billing.wrapStyle ?? 'canopy',
-    stringCount: Math.max(1, Math.round(billing.stringCount ?? 1)),
+    stringCount: Math.min(Math.max(1, Math.round(billing.stringCount ?? 1)), REASONABLE_MAX_STRINGS),
   };
 }
 
