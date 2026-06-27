@@ -103,6 +103,12 @@ export type DesignWithPhoto = {
 const BUCKET = 'designs';
 const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
 
+// Cap the decoded image size before sharp() touches it (audit fix, finding #22).
+// Without this an oversized/compression-bomb base64 body would be decoded into an
+// unbounded Buffer and handed to sharp(), exhausting memory/CPU. Mirrors the 10MB
+// MAX_BYTES enforced by /api/uploads.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
+
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 export function isValidDesignId(id: unknown): id is string {
   return typeof id === 'string' && UUID_RE.test(id);
@@ -321,6 +327,8 @@ export async function uploadDesignSatellite(
   const comma = base64.indexOf(',');
   const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
   const rawBuf = Buffer.from(raw, 'base64');
+  // Audit fix (#22): bound the decoded size before sharp() runs.
+  if (rawBuf.length > MAX_IMAGE_BYTES) throw new Error('Image too large (max 10MB)');
   const { buf, contentType: storedType, ext } = await normalizeImage(rawBuf, contentType);
 
   const meta = await sharp(buf).metadata();
@@ -411,6 +419,8 @@ export async function uploadDesignPhoto(
   const comma = base64.indexOf(',');
   const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
   const rawBuf = Buffer.from(raw, 'base64');
+  // Audit fix (#22): bound the decoded size before sharp() runs.
+  if (rawBuf.length > MAX_IMAGE_BYTES) throw new Error('Image too large (max 10MB)');
   const { buf, contentType: storedType, ext } = await normalizeImage(rawBuf, contentType);
 
   const meta = await sharp(buf).metadata();
