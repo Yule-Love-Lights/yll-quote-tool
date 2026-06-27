@@ -12,6 +12,7 @@ function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
     created_at: '2026-06-01T12:00:00Z',
     quote_sent_at: null,
     customer_approved_at: null,
+    deposit_paid_at: null,
     homeworks_sent_at: null,
     homeworks_signed_at: null,
     highlevel_contact_id: null,

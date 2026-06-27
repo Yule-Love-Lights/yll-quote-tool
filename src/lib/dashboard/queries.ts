@@ -16,7 +16,7 @@ export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuot
     .from('quotes')
     .select(
       'id, customer_name, customer_email, customer_phone, total, ' +
-        'created_at, quote_sent_at, customer_approved_at, ' +
+        'created_at, quote_sent_at, customer_approved_at, deposit_paid_at, ' +
         'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
         'service_type',
     )
