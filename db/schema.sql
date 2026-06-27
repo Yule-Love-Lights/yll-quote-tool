@@ -7,8 +7,18 @@ create table if not exists quotes (
   customer_email text,
   inputs jsonb not null,
   result jsonb not null,
-  total numeric(10, 2) not null
+  total numeric(10, 2) not null,
+  -- Audit fix (g29-route): actor attribution. Nullable for now — populated
+  -- once the operator-identity model (#155) lands; the data layer
+  -- (src/lib/quotes.ts saveQuote/updateQuote) writes the acting operator here.
+  -- Free-text so it can hold an operator id/email without a hard FK dependency
+  -- on whatever shape #155 settles on.
+  created_by text
 );
+
+-- Backfill for existing installs (pre-dates the audit column).
+alter table quotes
+  add column if not exists created_by text;
 
 alter table quotes disable row level security;
 
