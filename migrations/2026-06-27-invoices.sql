@@ -50,8 +50,13 @@ CREATE TABLE IF NOT EXISTS public.invoices (
 
   -- The job this invoice bills for (one invoice per job — auto-created at
   -- installed/complete). From-Quote link kept too for direct reference.
-  job_id          uuid REFERENCES public.jobs(id),
-  quote_id        uuid REFERENCES public.quotes(id),
+  -- ON DELETE CASCADE on both: deleting the parent job OR quote tears down the
+  -- invoice. Without it, deleteQuote / the operator "delete all" bulk-wipe
+  -- (src/lib/quotes.ts) would FK-violation-FAIL once a quote has been invoiced.
+  -- (These are test/operator hard-deletes; a "block deleting an invoiced quote"
+  -- guard could layer on later — the bug fixed here is that the delete THROWS.)
+  job_id          uuid REFERENCES public.jobs(id) ON DELETE CASCADE,
+  quote_id        uuid REFERENCES public.quotes(id) ON DELETE CASCADE,
 
   -- Stable customer identity (#83 Phase 5). Carried from the job at creation.
   customer_id     uuid,

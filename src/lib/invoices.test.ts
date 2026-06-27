@@ -235,6 +235,52 @@ describe('createInvoiceFromJob', () => {
     expect(inv!.deposit_applied).toBe(2446.88); // result.depositAmount
   });
 
+  it('recovers the existing invoice on a 23505 unique-violation race', async () => {
+    // Race: the idempotency guard sees no invoice, the insert loses to the
+    // winner's partial-unique-index on job_id, and the creator converges on the
+    // winner instead of returning null.
+    const winner = { id: 'inv-win', job_id: 'j1', status: 'draft' };
+    let invRead = 0;
+    let table = '';
+    let mode: 'read' | 'insert' = 'read';
+    const b: Record<string, unknown> = {};
+    Object.assign(b, {
+      from: (t: string) => {
+        table = t;
+        mode = 'read';
+        return b;
+      },
+      select: () => b,
+      insert: () => {
+        mode = 'insert';
+        return b;
+      },
+      eq: () => b,
+      async maybeSingle() {
+        if (table === 'invoices') {
+          invRead += 1;
+          return { data: invRead === 1 ? null : winner, error: null }; // null first (guard), winner on recovery
+        }
+        if (table === 'jobs') return { data: { id: 'j1', quote_id: 'q1', customer_id: null }, error: null };
+        if (table === 'quotes')
+          return { data: { id: 'q1', result: { total: 100 }, deposit_amount_usd: 0, deposit_paid_at: null }, error: null };
+        return { data: null, error: null };
+      },
+      async single() {
+        return mode === 'insert'
+          ? { data: null, error: { code: '23505', message: 'duplicate key' } }
+          : { data: null, error: null };
+      },
+      async rpc() {
+        return { data: 1000, error: null };
+      },
+    });
+    sbRef.current = b;
+
+    const inv = await createInvoiceFromJob('j1');
+    expect(inv).toMatchObject({ id: 'inv-win' });
+  });
+
   it('returns null when the job has no quote', async () => {
     const fake = makeFakeSupabase({ jobs: [{ id: 'j1', quote_id: null, customer_id: null }] });
     sbRef.current = fake.client;

@@ -99,8 +99,8 @@ create index if not exists jobs_status_idx on jobs (status);
 create table if not exists invoices (
   id              uuid primary key default gen_random_uuid(),
   invoice_number  int unique,                          -- Invoice # display, from invoice_number_seq
-  job_id          uuid references jobs(id),            -- one invoice per job (auto-created at install-complete)
-  quote_id        uuid references quotes(id),          -- From-Quote link
+  job_id          uuid references jobs(id) on delete cascade,   -- one invoice per job; cascade so quote/job delete doesn't FK-fail
+  quote_id        uuid references quotes(id) on delete cascade, -- From-Quote link
   customer_id     uuid,                                -- #83 Phase 5 identity (carried from the job)
   subtotal        numeric(10, 2) not null default 0,
   discount        numeric(10, 2) not null default 0,

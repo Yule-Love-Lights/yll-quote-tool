@@ -224,6 +224,14 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
     return null;
   }
 
+  // INTENTIONAL: price off the LIVE quote.result, not the job's booking-time
+  // line_items snapshot. The invoice is created at install-complete — AFTER any
+  // Phase 4 amend — so the live result carries the FINAL agreed total (amend
+  // writes the new total back to quote.result). The job.line_items snapshot is a
+  // booking-time fulfillment reference, NOT the invoice's pricing source; using
+  // it would ignore amendments and bill the pre-amend total. (Pre-existing
+  // caveat: updateQuote can re-price a booked quote with no booked-state guard —
+  // that guard belongs with the amend route in Jason's quote area, #81.)
   const result = quote.result ?? { total: 0 };
   // The deposit ACTUALLY applied: the durable charged amount when the deposit was
   // confirmed paid; the computed 50% only as a legacy fallback; 0 if never paid.
@@ -263,6 +271,13 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
     .single();
 
   if (error) {
+    // Lost a concurrent insert race (the partial unique index on job_id fired)?
+    // Converge on the winner's invoice instead of a spurious null, so the
+    // creator is self-sufficiently idempotent.
+    if ((error as { code?: string }).code === '23505') {
+      const winner = await getInvoiceByJob(jobId);
+      if (winner) return winner;
+    }
     console.error('createInvoiceFromJob: insert error:', error);
     return null;
   }
