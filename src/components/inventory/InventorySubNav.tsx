@@ -7,6 +7,7 @@ import Link from 'next/link';
 const ITEMS = [
   { label: 'Stock', href: '/inventory', key: 'stock' as const },
   { label: 'Bindings', href: '/inventory/bindings', key: 'bindings' as const },
+  { label: 'Overrides', href: '/inventory/overrides', key: 'overrides' as const },
 ];
 
 export type InventoryTab = 'stock' | 'bindings' | 'overrides';
