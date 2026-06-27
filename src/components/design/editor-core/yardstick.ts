@@ -1,6 +1,11 @@
 import Konva from "konva";
 import type { Yardstick } from "@/lib/design/sceneTypes";
 
+// Pure scale math lives in `yardstick-scale.ts` (Konva-free, so it's
+// unit-testable without the optional `canvas` dep). Re-exported here so the
+// many existing `from "./yardstick"` import sites keep working unchanged.
+export { yardstickMeasuredPx, pxPerFoot, yardstickLabel } from "./yardstick-scale";
+
 export function renderYardstick(ys: Yardstick, indexLabel: string, isSelected: boolean): Konva.Group {
   const group = new Konva.Group({
     x: ys.x,
@@ -55,13 +60,4 @@ export function renderYardstick(ys: Yardstick, indexLabel: string, isSelected: b
   group.add(rect);
   group.add(label);
   return group;
-}
-
-export function pxPerFoot(ys: Yardstick | null): number {
-  if (!ys || ys.realFeet === 0) return 50; // fallback
-  return ys.width / ys.realFeet;
-}
-
-export function yardstickLabel(index: number): string {
-  return `Yardstick ${index + 1}`;
 }

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -15,6 +15,17 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Yule Love Lights",
   description: "Operator console for Yule Love Lights — quoting, customer portal, and dashboard.",
+};
+
+// viewportFit: 'cover' is what makes the iOS safe-area-inset env() vars resolve
+// to non-zero on notch / home-indicator devices. Without it the customer
+// portal's sticky Approve pill (and any safe-area padding) sat flush against
+// the home indicator. Audit 2026-06 (mobile — no viewport meta / safe area).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0B140F",
 };
 
 export default function RootLayout({

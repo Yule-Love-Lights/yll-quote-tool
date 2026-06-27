@@ -8,8 +8,34 @@ import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
 
+// Audit fix (quote-route-validation): strict canonical UUID match. The old
+// loose /^[0-9a-f-]{36}$/i accepted 36 dashes or 36 hex chars, mis-routing
+// save-vs-update. Anchor to the real 8-4-4-4-12 shape so only a genuine quote
+// id triggers an in-place update.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Audit fix (quote-route-validation): cap per-unit input arrays so a
+// multi-megabyte junk array can't be cast to QuoteInputs + persisted as jsonb
+// or fed to calculateQuote. 500 is far above any real quote.
+const MAX_ARRAY_LEN = 500;
+
+// Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
+// arrays, mirroring the pricingEngine types. A malformed element is a clean 400
+// instead of an opaque downstream 500.
+const VALID_MINILIGHT_TYPES = new Set(['tree', 'bush', 'column', 'railing']);
+const VALID_MINILIGHT_WRAP_STYLES = new Set(['canopy', 'trunk']);
+const VALID_SPRITZER_SIZES = new Set(['16', '24', '32']);
+const VALID_WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '60noble', '72noble']);
+const VALID_GARLAND_LENGTHS = new Set(['4.5ft', '9ft']);
+const VALID_GARLAND_TYPES = new Set(['noble']);
+const VALID_DECOR_TIERS = new Set(['bow', 'fullDecor']);
+
 function isNonNegNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
 }
 
 export async function POST(req: NextRequest) {
@@ -73,6 +99,48 @@ export async function POST(req: NextRequest) {
   if (q.bows !== undefined && !Array.isArray(q.bows)) {
     return NextResponse.json({ error: 'bows must be an array if provided' }, { status: 400 });
   }
+
+  // Audit fix (quote-route-validation): bound every input array so a giant
+  // junk payload can't be persisted as jsonb / fed to the pricing engine.
+  const arrayFields = ['miniLightItems', 'spritzers', 'wreaths', 'garland', 'customLineItems', 'bows'] as const;
+  for (const f of arrayFields) {
+    const arr = q[f];
+    if (Array.isArray(arr) && arr.length > MAX_ARRAY_LEN) {
+      return NextResponse.json({ error: `${f} exceeds the ${MAX_ARRAY_LEN}-item limit` }, { status: 400 });
+    }
+  }
+
+  // Audit fix (quote-route-validation): validate the shape of each element in
+  // the typed per-unit arrays so a malformed element is a clean 400 instead of
+  // an opaque 500 from calculateQuote. (customLineItems/bows are left to the
+  // pricingEngine, which already filters them.)
+  for (const item of q.miniLightItems as unknown[]) {
+    if (!isObj(item) || !VALID_MINILIGHT_TYPES.has(item.type as string) ||
+        !VALID_MINILIGHT_WRAP_STYLES.has(item.wrapStyle as string) ||
+        !isNonNegNumber(item.stringCount)) {
+      return NextResponse.json({ error: 'Invalid miniLightItems element' }, { status: 400 });
+    }
+  }
+  for (const item of q.spritzers as unknown[]) {
+    if (!isObj(item) || !VALID_SPRITZER_SIZES.has(item.size as string) ||
+        !isNonNegNumber(item.quantity)) {
+      return NextResponse.json({ error: 'Invalid spritzers element' }, { status: 400 });
+    }
+  }
+  for (const item of q.wreaths as unknown[]) {
+    if (!isObj(item) || !VALID_WREATH_SIZES.has(item.size as string) ||
+        !VALID_DECOR_TIERS.has(item.tier as string) || !isNonNegNumber(item.quantity)) {
+      return NextResponse.json({ error: 'Invalid wreaths element' }, { status: 400 });
+    }
+  }
+  for (const item of q.garland as unknown[]) {
+    if (!isObj(item) || !VALID_GARLAND_LENGTHS.has(item.length as string) ||
+        !VALID_GARLAND_TYPES.has(item.type as string) ||
+        !VALID_DECOR_TIERS.has(item.tier as string) || !isNonNegNumber(item.quantity)) {
+      return NextResponse.json({ error: 'Invalid garland element' }, { status: 400 });
+    }
+  }
+
   if (!VALID_TAKEDOWNS.includes(q.takedown as string)) {
     return NextResponse.json({ error: 'Invalid takedown value' }, { status: 400 });
   }
@@ -98,7 +166,7 @@ export async function POST(req: NextRequest) {
     // A valid quoteId means re-price that existing quote in place (the
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
     // row; otherwise save a fresh quote.
-    const isUpdate = typeof quoteId === 'string' && /^[0-9a-f-]{36}$/i.test(quoteId);
+    const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
     // On update, only touch the customer columns when the request actually
     // carried a customer object — omitting it must not reset the stored
     // name/address to the Anonymous sentinels.

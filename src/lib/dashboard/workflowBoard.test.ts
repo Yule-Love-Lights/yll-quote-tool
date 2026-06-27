@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveQuoteStage, computeWorkflowBoard } from './workflowBoard';
+import { computeWorkflowBoard } from './workflowBoard';
 import type { DashboardQuote } from './types';
 
 function mkQuote(overrides: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -12,6 +12,7 @@ function mkQuote(overrides: Partial<DashboardQuote> = {}): DashboardQuote {
     created_at: '2026-06-01T00:00:00Z',
     quote_sent_at: null,
     customer_approved_at: null,
+    deposit_paid_at: null,
     homeworks_sent_at: null,
     homeworks_signed_at: null,
     highlevel_contact_id: null,
@@ -20,30 +21,8 @@ function mkQuote(overrides: Partial<DashboardQuote> = {}): DashboardQuote {
   };
 }
 
-describe('deriveQuoteStage', () => {
-  it('is draft when never sent or approved', () => {
-    expect(deriveQuoteStage(mkQuote())).toBe('draft');
-  });
-
-  it('is awaiting_response when sent but not approved', () => {
-    expect(deriveQuoteStage(mkQuote({ quote_sent_at: '2026-06-02T00:00:00Z' }))).toBe('awaiting_response');
-  });
-
-  it('is approved when approved, even if also sent', () => {
-    expect(
-      deriveQuoteStage(
-        mkQuote({ quote_sent_at: '2026-06-02T00:00:00Z', customer_approved_at: '2026-06-03T00:00:00Z' }),
-      ),
-    ).toBe('approved');
-  });
-
-  it('is approved when approved without a send timestamp (offline close)', () => {
-    expect(deriveQuoteStage(mkQuote({ customer_approved_at: '2026-06-03T00:00:00Z' }))).toBe('approved');
-  });
-});
-
 describe('computeWorkflowBoard', () => {
-  it('buckets quotes by stage with counts and summed totals', () => {
+  it('buckets quotes by derived status with counts and summed totals', () => {
     const board = computeWorkflowBoard([
       mkQuote({ id: 'a', total: 1000 }),
       mkQuote({ id: 'b', total: 2000 }),
@@ -54,10 +33,18 @@ describe('computeWorkflowBoard', () => {
         quote_sent_at: '2026-06-02T00:00:00Z',
         customer_approved_at: '2026-06-03T00:00:00Z',
       }),
+      mkQuote({
+        id: 'e',
+        total: 4000,
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z',
+        deposit_paid_at: '2026-06-04T00:00:00Z',
+      }),
     ]);
     expect(board.quotes.draft).toEqual({ count: 2, totalUsd: 3000 });
     expect(board.quotes.awaitingResponse).toEqual({ count: 1, totalUsd: 1500 });
     expect(board.quotes.approved).toEqual({ count: 1, totalUsd: 3000 });
+    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000 });
   });
 
   it('treats a null total as 0 in the sum', () => {
@@ -70,5 +57,6 @@ describe('computeWorkflowBoard', () => {
     expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0 });
     expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0 });
     expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
   });
 });

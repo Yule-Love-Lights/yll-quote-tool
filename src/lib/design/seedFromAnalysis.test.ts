@@ -214,6 +214,73 @@ describe('garland sections from scale (#8 Stage C / C4)', () => {
   });
 });
 
+describe('seeded stringCount ceiling (audit finding #84)', () => {
+  it('clamps a runaway AI stringCount to REASONABLE_MAX_STRINGS (50)', () => {
+    const seed: AnalysisSeed = {
+      detections: {
+        miniLights: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 1000, box: [0.1, 0.6, 0.2, 0.2] }],
+      },
+    };
+    const area = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isMiniArea) as MiniAreaItem;
+    expect(area.stringCount).toBe(50);
+  });
+
+  it('passes a normal stringCount through unchanged', () => {
+    const seed: AnalysisSeed = {
+      detections: {
+        miniLights: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 4, box: [0.1, 0.6, 0.2, 0.2] }],
+      },
+    };
+    const area = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isMiniArea) as MiniAreaItem;
+    expect(area.stringCount).toBe(4);
+  });
+});
+
+describe('garland run length uses the longer axis (audit finding #72)', () => {
+  // santas line 0.1→0.9 on W=1000 = 800px; AI says 40ft → 20 px/ft.
+  const base = { lines: { santas: [[[0.1, 0.4], [0.9, 0.4]]] as [number, number][][] }, calibration: { santasFootage: 40 } };
+
+  it('a TALL garland box seeds sections from its height (longer axis)', () => {
+    // box height 0.4×500 = 200px ÷ 20px/ft = 10ft; ceil(10/9) = 2.
+    // box width 0.04×1000 = 40px ÷ 20 = 2ft → only 1 if width were used.
+    const seed: AnalysisSeed = { ...base, detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.5, 0.3, 0.04, 0.4] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    expect(g.quoteSections).toBe(2);
+    // and the seed segment is drawn vertically (along the longer axis)
+    const cx = 0.52 * 1000; // x 0.5 + half of 0.04 width
+    expect(g.points).toEqual([cx, 150, cx, 350]); // y 0.3..0.7 × 500
+  });
+
+  it('a WIDE garland box is unchanged (width is the longer axis)', () => {
+    const seed: AnalysisSeed = { ...base, detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] } };
+    const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
+    // 400px ÷ 20px/ft = 20ft; ceil(20/9) = 3 (same as the width-only result)
+    expect(g.quoteSections).toBe(3);
+    expect(g.points).toEqual([200, 262.5, 600, 262.5]);
+  });
+});
+
+describe('winterWonderland calibration (audit finding #46)', () => {
+  it('derives a valid ppf from a WW-only roofline', () => {
+    // WW line 0→0.5 on W=1000 = 500px; AI says 25ft → 20 px/ft → 5ft yardstick = 100px.
+    const seed: AnalysisSeed = {
+      lines: { winterWonderland: [[[0, 0.2], [0.5, 0.2]]] },
+      calibration: { winterWonderlandFootage: 25 },
+    };
+    const out = seedSceneFromAnalysis(emptyScene(), seed, W, H);
+    expect(out.yardsticks[0]?.width).toBe(100);
+  });
+
+  it('sanitizeAnalysisSeed keeps a valid winterWonderlandFootage, drops a bad one', () => {
+    expect(
+      sanitizeAnalysisSeed({ calibration: { winterWonderlandFootage: 30 } }).calibration,
+    ).toEqual({ winterWonderlandFootage: 30 });
+    expect(
+      sanitizeAnalysisSeed({ calibration: { winterWonderlandFootage: -5 } }).calibration,
+    ).toBeUndefined();
+  });
+});
+
 describe('seedSceneFromAnalysis — preserves scene brightness (#67 auto-dim)', () => {
   // New designs are created pre-dimmed (designs.ts DEFAULT_DESIGN_BRIGHTNESS).
   // The analyzed path must carry that brightness through every spread so the

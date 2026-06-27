@@ -44,15 +44,14 @@ import type {
 const SANTAS_ID = 'roofline-santas';
 const GINGERBREAD_ID = 'roofline-gingerbread';
 
-function effectiveTaxRate(result: QuoteResult): number {
-  // Prefer the actual ratio from this specific quote (handles future cases
-  // where tax exemption or local rate adjustments land per-quote). Fall
-  // back to the canonical business-rules rate when the original taxable
-  // amount was zero or missing (older rows pre-dating the field would
-  // NaN the division otherwise).
-  const taxable = typeof result.taxableAmount === 'number' ? result.taxableAmount : 0;
-  const tax = typeof result.taxAmount === 'number' ? result.taxAmount : 0;
-  if (taxable > 0) return tax / taxable;
+function effectiveTaxRate(_result: QuoteResult): number {
+  // Audit fix (g18): return the canonical rate directly instead of
+  // back-deriving it as taxAmount / taxableAmount. The engine rounds
+  // taxAmount to cents while taxableAmount is exact, so for a tiny taxable
+  // base the recovered rate drifts from BUSINESS_RULES.taxRate and that drift
+  // gets re-applied to every package/selection total (landing a cent off).
+  // No per-quote tax rate exists today; if one ever lands (exemptions/local
+  // rates) persist it explicitly on QuoteResult and read it here.
   return BUSINESS_RULES.taxRate;
 }
 

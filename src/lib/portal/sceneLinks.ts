@@ -16,9 +16,14 @@
 //     scene into the inputs at Calculate), so we zip them per category.
 //
 // Robustness: if the scene was edited after the quote was last calculated, the
-// zip can fall short — extra line items simply get no `sceneItemIds` (not
-// hideable, still priced) and extra scene items stay always-visible. Re-Calculate
-// re-syncs. This mirrors the contract's "co-derived, born consistent" stance.
+// per-category counts of frozen line items vs the live projection can diverge.
+// Because the per-unit zip pairs purely by order, a divergence would silently
+// mis-link (wrong drawn item hidden/highlighted, `recommended` on the wrong
+// line). So per category we link ONLY when the counts match exactly; on any
+// mismatch we skip linking that whole category (rows stay priced + visible, just
+// not hideable until re-Calculate re-syncs). Roofline is linked by surface tag,
+// not by order, so it is never affected (see audit fix #33 below). This mirrors
+// the contract's "co-derived, born consistent" stance.
 
 import type { Scene, Surface } from '@/lib/design/sceneTypes';
 import { isStrand } from '@/lib/design/sceneTypes';
@@ -75,6 +80,31 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   };
   const cursor: Record<ProjectedCategory, number> = { mini: 0, spritzer: 0, wreath: 0, garland: 0, bow: 0 };
 
+  // AUDIT FIX (#33) — count-mismatch guard against editing the design after the
+  // last Calculate. The per-unit zip below pairs each frozen (saved-at-Calculate)
+  // line item to a live projected scene item purely by per-category order. If
+  // staff delete/reorder/toggle scene items after Calculate, the positional zip
+  // silently mis-links — hiding/highlighting the wrong drawn item and carrying
+  // the projected `recommended` flag onto the wrong line. We can't tell which
+  // pairing is right without persisted stable ids (a data-contract change), so
+  // the safe interim guard is: per category, if the frozen line-item count !==
+  // the live projection count, skip per-unit linking for that category entirely
+  // (the rows stay priced + visible, just not hideable until re-Calculate). This
+  // never mis-links and never carries `recommended` across a count mismatch.
+  // Roofline (linked by surface tag, not by order) is unaffected.
+  const frozenCountForCat: Record<ProjectedCategory, number> = { mini: 0, spritzer: 0, wreath: 0, garland: 0, bow: 0 };
+  for (const li of lineItems) {
+    const cat = KIND_TO_CATEGORY[li.kind];
+    if (cat) frozenCountForCat[cat]++;
+  }
+  const catLinkable: Record<ProjectedCategory, boolean> = {
+    mini: frozenCountForCat.mini === queue.mini.length,
+    spritzer: frozenCountForCat.spritzer === queue.spritzer.length,
+    wreath: frozenCountForCat.wreath === queue.wreath.length,
+    garland: frozenCountForCat.garland === queue.garland.length,
+    bow: frozenCountForCat.bow === queue.bow.length,
+  };
+
   return lineItems.map((li) => {
     // Roofline tiers (synthesized by the adapter with stable ids). Roofline
     // keeps its OWN recommend mechanism (PortalRoofline) — never the per-item
@@ -94,7 +124,7 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
         : { ...li, sceneItemIds: stakeIds };
 
     const cat = KIND_TO_CATEGORY[li.kind];
-    if (cat) {
+    if (cat && catLinkable[cat]) {
       const entry = queue[cat][cursor[cat]++];
       if (entry) {
         // Carry `recommended` from the projected scene item. Custom rows (no

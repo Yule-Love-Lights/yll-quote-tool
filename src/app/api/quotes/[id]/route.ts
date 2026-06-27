@@ -13,6 +13,7 @@ import {
   isValidQuoteId,
   PortalConfigError,
 } from '@/lib/portal/loader';
+import { safeEqual } from '@/lib/security';
 
 export const runtime = 'nodejs';
 
@@ -22,7 +23,8 @@ function checkAdminSecret(req: NextRequest): NextResponse | null {
     return NextResponse.json({ error: 'ADMIN_SECRET not configured on server' }, { status: 503 });
   }
   const provided = req.headers.get('x-admin-secret');
-  if (!provided || provided !== expected) {
+  // Audit fix: constant-time compare to avoid leaking the secret via timing.
+  if (!safeEqual(provided ?? undefined, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   return null;
