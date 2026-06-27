@@ -1,4 +1,5 @@
 import { OperatorShell } from '@/components/OperatorShell';
+import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 
 export const metadata = { title: 'Inventory — Yule Love Lights' };
 
@@ -10,6 +11,7 @@ export default function InventoryPage() {
   return (
     <OperatorShell active="inventory">
       <div className="max-w-3xl mx-auto w-full">
+        <InventorySubNav active="stock" />
         <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
           Inventory
         </p>
