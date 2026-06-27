@@ -17,6 +17,8 @@ export type DashboardQuote = {
   created_at: string;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  /** Valor deposit-paid timestamp — set = "booked" (the #38 deposit flow). */
+  deposit_paid_at: string | null;
   homeworks_sent_at: string | null;
   homeworks_signed_at: string | null;
   highlevel_contact_id: string | null;
