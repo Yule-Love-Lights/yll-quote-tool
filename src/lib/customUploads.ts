@@ -10,12 +10,15 @@ import type { CustomUpload } from './design/sceneTypes';
 const BUCKET = 'custom-uploads';
 
 // Allowed image types → file extension (mirrors the editor's file-input accept).
+// Audit fix (g28): `image/svg+xml` removed — SVGs land unmodified in the PUBLIC
+// bucket and an SVG can carry inline <script>, a stored-XSS vector if ever
+// opened top-level. Raster formats only. (Existing placed SVGs still resolve
+// via /photos; this only blocks NEW svg uploads.)
 const EXT_BY_TYPE: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/gif': 'gif',
-  'image/svg+xml': 'svg',
 };
 
 export function isAllowedImageType(contentType: string): boolean {
@@ -111,9 +114,21 @@ export async function deleteCustomUpload(id: string): Promise<void> {
   if (delErr) throw new Error(`delete failed: ${delErr.message}`);
 }
 
+// Audit fix (g28): custom-upload object paths are always minted as `{uuid}.{ext}`
+// (see createCustomUpload). Validate against exactly that shape before resolving
+// so the public /photos route can't be coaxed into building a Supabase URL for an
+// arbitrary / path-traversal object path. Returns true only for a well-formed key.
+const UPLOAD_PATH_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif|svg)$/;
+
+export function isValidUploadPath(path: string | null | undefined): boolean {
+  return typeof path === 'string' && UPLOAD_PATH_RE.test(path);
+}
+
 // Resolve an object path to its public URL (used by the /photos route so the
-// editor + portal `imagePath` convention resolves). Returns null if unset.
+// editor + portal `imagePath` convention resolves). Returns null if unset or if
+// the path isn't a well-formed `{uuid}.{ext}` upload key (audit fix g28).
 export function resolvePublicUrl(path: string | null | undefined): string | null {
-  if (!path) return null;
-  return publicUrl(path);
+  if (!isValidUploadPath(path)) return null;
+  return publicUrl(path!);
 }
