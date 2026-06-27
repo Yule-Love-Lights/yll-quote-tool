@@ -6,7 +6,7 @@
 // (sku + name) with warnings when the bound SKU is locked (sold-out) or no longer
 // in the catalog. Click the chip to re-pick; the × clears the binding.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CatalogItem } from '@/lib/inventory/catalog';
 import { searchCatalog } from '@/lib/inventory/skuSearch';
 
@@ -25,11 +25,16 @@ export function SkuPicker({
 }) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
+  const [highlight, setHighlight] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
 
-  const byId = useMemo(() => new Map(catalog.map((c) => [c.sku, c])), [catalog]);
-  const selected = value ? byId.get(value) : undefined;
+  // Only the selected chip needs a lookup — one find, not an 831-entry Map per picker.
+  const selected = useMemo(
+    () => (value ? catalog.find((c) => c.sku === value) : undefined),
+    [catalog, value],
+  );
   const results = useMemo(
     () => (editing ? searchCatalog(catalog, query, 50) : []),
     [editing, query, catalog],
@@ -39,6 +44,12 @@ export function SkuPicker({
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // Enter edit mode and reset the highlight to the top of the list.
+  const beginEditing = () => {
+    setHighlight(0);
+    setEditing(true);
+  };
 
   // Close the dropdown on an outside click.
   useEffect(() => {
@@ -59,6 +70,24 @@ export function SkuPicker({
     setEditing(false);
   };
 
+  // Keyboard: ↑/↓ move the highlight, Enter picks it, Esc closes.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, results.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const item = results[highlight];
+      if (item) pick(item.sku);
+    } else if (e.key === 'Escape') {
+      setEditing(false);
+      setQuery('');
+    }
+  };
+
   const showChip = value && !editing;
 
   return (
@@ -67,7 +96,7 @@ export function SkuPicker({
         <div className="w-full flex items-center gap-2 border border-gray-300 rounded px-2 py-1 text-sm bg-white">
           <button
             type="button"
-            onClick={() => setEditing(true)}
+            onClick={beginEditing}
             className="flex-1 flex items-center gap-2 min-w-0 text-left hover:opacity-80"
             aria-label={ariaLabel ? `${ariaLabel}: ${value} — change` : 'Change SKU'}
           >
@@ -94,9 +123,15 @@ export function SkuPicker({
         <input
           ref={inputRef}
           type="text"
+          role="combobox"
+          aria-expanded={editing}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={editing && results[highlight] ? `${listId}-${highlight}` : undefined}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setEditing(true)}
+          onChange={(e) => { setQuery(e.target.value); setHighlight(0); }}
+          onFocus={beginEditing}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           aria-label={ariaLabel ?? 'SKU picker'}
           className="w-full border border-gray-300 rounded px-2 py-1 text-sm bg-white"
@@ -104,17 +139,24 @@ export function SkuPicker({
       )}
 
       {editing && (
-        <ul className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded border border-gray-200 bg-white shadow-lg text-sm">
+        <ul
+          id={listId}
+          role="listbox"
+          className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded border border-gray-200 bg-white shadow-lg text-sm"
+        >
           {results.length === 0 ? (
             <li className="px-2 py-2 text-gray-400">No matches</li>
           ) : (
-            results.map((item) => (
-              <li key={item.sku}>
+            results.map((item, i) => (
+              <li key={item.sku} role="option" id={`${listId}-${i}`} aria-selected={i === highlight}>
                 <button
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setHighlight(i)}
                   onClick={() => pick(item.sku)}
-                  className="w-full text-left px-2 py-1.5 hover:bg-green-50 flex items-center gap-2"
+                  className={`w-full text-left px-2 py-1.5 flex items-center gap-2 ${
+                    i === highlight ? 'bg-green-100' : 'hover:bg-green-50'
+                  }`}
                 >
                   <span className="font-mono text-xs text-gray-500 shrink-0">{item.sku}</span>
                   <span className="flex-1 truncate text-gray-800">{item.name}</span>

@@ -102,7 +102,7 @@ export default function BindingsPage() {
     setClipRules((cr) => {
       const cur = { ...(cr[feature] ?? {}) };
       const num = Number(raw);
-      if (raw.trim() !== '' && Number.isFinite(num)) cur.perFt = num;
+      if (raw.trim() !== '' && Number.isFinite(num) && num >= 0) cur.perFt = num;
       else delete cur.perFt;
       const n = { ...cr };
       if (Object.keys(cur).length) n[feature] = cur;
