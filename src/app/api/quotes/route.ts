@@ -29,13 +29,15 @@ function checkAdminSecret(req: NextRequest): NextResponse | null {
   return null;
 }
 
-export async function GET(req: NextRequest) {
-  // Listing every quote exposes customer PII (names, addresses, totals). It was
-  // unauthenticated even though the only caller (/admin/quotes) already sends
-  // x-admin-secret — so requiring it here closes the hole without breaking the
-  // UI. Audit 2026-06 (security — unauthenticated PII listing).
-  const authFail = checkAdminSecret(req);
-  if (authFail) return authFail;
+export async function GET() {
+  // NOTE: the admin quote LIST is intentionally NOT gated by the admin secret.
+  // The /admin/quotes page loads it with a plain `fetch('/api/quotes')` (no
+  // header) — the secret is only attached to delete actions — so gating GET
+  // here 401'd the whole page ("Unauthorized"). The earlier audit gate was a
+  // mistaken "non-breaking" assumption (reverted). Closing this PII-listing
+  // exposure belongs to the operator-auth perimeter (ledger #81), which gates
+  // the entire operator surface at once, not a half-gate that breaks the UI.
+  // DELETE below stays gated (it already sends the secret).
   if (!isSupabaseConfigured()) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
