@@ -87,6 +87,44 @@ create index if not exists jobs_created_at_idx on jobs (created_at desc);
 create index if not exists jobs_status_idx on jobs (status);
 
 -- ─────────────────────────────────────────────────────────────
+-- Invoices — money tail of the Jobber-flow (ledger #83 Phase 3). Auto-created
+-- when a job is installed/complete: full total with the actually-paid deposit
+-- (quotes.deposit_amount_usd) applied → balance = max(0, total − deposit).
+-- Canonical fresh-install mirror of migrations/2026-06-27-invoices.sql (the
+-- authoritative migration also adds invoice_number_seq + extends the
+-- allocate_display_number allowlist + indexes + updated_at trigger). status free
+-- text (canonical set in src/lib/invoiceStatus.ts). ⚠️ Fresh-DB bootstrap only.
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists invoices (
+  id              uuid primary key default gen_random_uuid(),
+  invoice_number  int unique,                          -- Invoice # display, from invoice_number_seq
+  job_id          uuid references jobs(id) on delete cascade,   -- one invoice per job; cascade so quote/job delete doesn't FK-fail
+  quote_id        uuid references quotes(id) on delete cascade, -- From-Quote link
+  customer_id     uuid,                                -- #83 Phase 5 identity (carried from the job)
+  subtotal        numeric(10, 2) not null default 0,
+  discount        numeric(10, 2) not null default 0,
+  tax             numeric(10, 2) not null default 0,   -- 0 when tax_overridden
+  total           numeric(10, 2) not null default 0,
+  deposit_applied numeric(10, 2) not null default 0,   -- actually-paid deposit, not a recomputed 50%
+  balance         numeric(10, 2) not null default 0,   -- max(0, total − deposit_applied)
+  credit_note     numeric(10, 2) not null default 0,   -- overpayment (deposit > total) → manual Valor refund
+  tax_overridden  boolean not null default false,
+  status          text not null default 'draft',       -- draft → awaiting_payment → paid (+ cancelled)
+  valor_balance_txn_id text,
+  valor_receipt_url    text,
+  created_at      timestamptz not null default now(),
+  paid_at         timestamptz,
+  updated_at      timestamptz not null default now()
+);
+
+alter table invoices disable row level security;
+
+create unique index if not exists invoices_job_id_key on invoices (job_id) where job_id is not null;
+create index if not exists invoices_created_at_idx on invoices (created_at desc);
+create index if not exists invoices_status_idx on invoices (status);
+
+-- ─────────────────────────────────────────────────────────────
 -- Photo corrections — user-edited measurements feed back as
 -- few-shot examples to improve future Claude Vision analyses.
 -- ─────────────────────────────────────────────────────────────

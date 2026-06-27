@@ -15,8 +15,10 @@ import { getSupabaseServiceClient } from './supabase';
 // The sequences this allocator knows about. Locked to the named sequences the
 // migrations create so a typo can't ask the RPC for an arbitrary relation.
 // quote_number_seq → 2026-06-27-quote-status.sql (#83 P1);
-// job_number_seq   → 2026-06-27-jobs.sql (#83 P2). invoice_number_seq lands P3.
-export type DisplaySequence = 'quote_number_seq' | 'job_number_seq';
+// job_number_seq   → 2026-06-27-jobs.sql (#83 P2);
+// invoice_number_seq → 2026-06-27-invoices.sql (#83 P3).
+// Keep this in sync with the allocate_display_number allowlist in those migrations.
+export type DisplaySequence = 'quote_number_seq' | 'job_number_seq' | 'invoice_number_seq';
 
 /**
  * Allocate the next value from a Postgres sequence. Monotonic + gap-tolerant
