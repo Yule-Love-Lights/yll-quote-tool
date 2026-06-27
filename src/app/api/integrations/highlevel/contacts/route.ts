@@ -41,9 +41,9 @@ export async function GET(req: NextRequest) {
 
   try {
     const contacts = await searchContacts(query, limit);
-    // Strip raw before responding — see module header note.
-    const sanitized = contacts.map(c => ({ ...c, raw: undefined }));
-    return NextResponse.json({ contacts: sanitized });
+    // Audit fix: redaction is now the default — searchContacts returns the
+    // public CrmContact shape (no raw source record), so no manual strip needed.
+    return NextResponse.json({ contacts });
   } catch (err) {
     console.error('[api/integrations/highlevel/contacts] search failed:', err);
     if (err instanceof HighLevelError) {
