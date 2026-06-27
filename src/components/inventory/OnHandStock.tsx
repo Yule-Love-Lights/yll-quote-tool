@@ -11,11 +11,10 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import { SkuPicker } from '@/components/inventory/SkuPicker';
 import type { CatalogItem } from '@/lib/inventory/catalog';
-import type { OnHandRow } from '@/lib/inventory/onHand';
+import { toQty, type OnHandRow } from '@/lib/inventory/onHand';
 
 const effCat = (i: CatalogItem) => i.yll_category ?? i.category;
 const isLow = (r: OnHandRow) => r.reorder_point > 0 && r.on_hand_qty <= r.reorder_point;
-const clampInt = (v: string) => Math.max(0, Math.floor(Number(v) || 0));
 
 export function OnHandStock() {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -62,24 +61,22 @@ export function OnHandStock() {
   const byId = useMemo(() => new Map(catalog.map((c) => [c.sku, c])), [catalog]);
   const stockedSkus = useMemo(() => new Set(rows.map((r) => r.sku)), [rows]);
 
-  // PUT one or more fields; the optimistic local update is already applied. Reload on error.
-  const persist = useCallback(
-    async (sku: string, patch: Partial<OnHandRow>) => {
-      try {
-        const res = await fetch('/api/inventory/on-hand', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sku, ...patch }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        flash('Saved.');
-      } catch {
-        flash('Save failed — reloading.');
-        await load();
-      }
-    },
-    [load],
-  );
+  // PUT one or more fields; the optimistic local update is already applied.
+  const persist = useCallback(async (sku: string, patch: Partial<OnHandRow>) => {
+    try {
+      const res = await fetch('/api/inventory/on-hand', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sku, ...patch }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      flash('Saved.');
+    } catch {
+      // Leave the typed value in place — reloading the whole list would wipe
+      // edits in flight on other rows. The operator sees the failure and re-saves.
+      flash('Save failed — retry.');
+    }
+  }, []);
 
   const addItem = useCallback(
     async (sku: string) => {
@@ -99,7 +96,7 @@ export function OnHandStock() {
 
   const remove = useCallback(
     async (sku: string) => {
-      const prev = rows;
+      const prevRow = rows.find((r) => r.sku === sku);
       setRows((rs) => rs.filter((r) => r.sku !== sku));
       try {
         const res = await fetch('/api/inventory/on-hand', {
@@ -110,7 +107,8 @@ export function OnHandStock() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         flash('Removed.');
       } catch {
-        setRows(prev);
+        // Restore only this row, so a concurrent edit to another row isn't clobbered.
+        if (prevRow) setRows((rs) => [...rs, prevRow]);
         flash('Remove failed.');
       }
     },
@@ -208,14 +206,14 @@ export function OnHandStock() {
                     <input
                       type="number" min={0} aria-label={`${r.sku} on hand`}
                       value={r.on_hand_qty}
-                      onChange={(e) => editLocal(r.sku, { on_hand_qty: clampInt(e.target.value) })}
+                      onChange={(e) => editLocal(r.sku, { on_hand_qty: toQty(e.target.value) })}
                       onBlur={() => persist(r.sku, { on_hand_qty: r.on_hand_qty })}
                       className="w-20 border border-gray-300 rounded px-1.5 py-1 text-sm text-center shrink-0"
                     />
                     <input
                       type="number" min={0} aria-label={`${r.sku} reorder point`}
                       value={r.reorder_point}
-                      onChange={(e) => editLocal(r.sku, { reorder_point: clampInt(e.target.value) })}
+                      onChange={(e) => editLocal(r.sku, { reorder_point: toQty(e.target.value) })}
                       onBlur={() => persist(r.sku, { reorder_point: r.reorder_point })}
                       className="w-20 border border-gray-300 rounded px-1.5 py-1 text-sm text-center shrink-0"
                     />

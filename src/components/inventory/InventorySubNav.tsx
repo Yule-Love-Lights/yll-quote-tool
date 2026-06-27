@@ -2,8 +2,8 @@
 import Link from 'next/link';
 
 // Sub-navigation for the Inventory area (#82). Mirrors SettingsSubNav. "Stock" is
-// the existing /inventory stub (on-hand, later slice); "Bindings" + "Overrides"
-// are the Slice 1b config screens. The Overrides item is added in 1b-iii.
+// the /inventory on-hand stock table (Slice 1c); "Bindings" + "Overrides" are the
+// Slice 1b config screens.
 const ITEMS = [
   { label: 'Stock', href: '/inventory', key: 'stock' as const },
   { label: 'Bindings', href: '/inventory/bindings', key: 'bindings' as const },
