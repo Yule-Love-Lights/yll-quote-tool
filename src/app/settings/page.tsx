@@ -29,6 +29,9 @@ const TABS: { id: string; label: string }[] = [
   { id: 'palette', label: 'Palette' },
   ...DEFAULTS_TABS.map((t) => ({ id: t.id, label: t.label })),
   { id: 'rendering', label: 'Rendering' },
+  // Tucked-away dev/testing tools for the quotes table (moved off the main
+  // /admin/quotes view so the destructive "delete all" isn't in plain sight).
+  { id: 'quotes', label: 'Quotes' },
 ];
 
 export default function SettingsPage() {
@@ -130,6 +133,8 @@ export default function SettingsPage() {
         <PaletteTab colors={colors} setColors={setColors} onSave={() => save({ colors })} />
       ) : tab === 'rendering' ? (
         <RenderingTab render={render} setRender={setRender} onSave={() => save({ render })} />
+      ) : tab === 'quotes' ? (
+        <QuotesTab />
       ) : (
         <>
           <DefaultsTabPanel
@@ -320,6 +325,100 @@ function RenderingTab({
         >
           Save rendering
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Quotes tab ──────────────────────────────────────────────────────────────
+// Dev/testing tools for the saved-quotes table. The destructive "delete all"
+// lived on the main /admin/quotes page; moved here so it isn't in plain sight.
+// Requires the admin secret + the second-factor confirm header (audit g29).
+function QuotesTab() {
+  const [count, setCount] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/quotes');
+        const data = await res.json();
+        // setState only after the await (deferred) so it isn't a synchronous
+        // set-state-in-effect.
+        if (!cancelled && res.ok) setCount((data.items ?? []).length);
+      } catch {
+        /* leave count null on failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const deleteAll = async () => {
+    if (!count) return;
+    if (
+      !confirm(
+        `Delete ALL ${count} quote${count === 1 ? '' : 's'}? This permanently wipes every saved quote and cannot be undone.`,
+      )
+    )
+      return;
+    const secret =
+      window.sessionStorage.getItem('yll:adminSecret') || window.prompt('Admin secret required:');
+    if (!secret) return;
+    window.sessionStorage.setItem('yll:adminSecret', secret);
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch('/api/quotes', {
+        method: 'DELETE',
+        headers: { 'x-admin-secret': secret, 'x-confirm-delete-all': 'DELETE ALL QUOTES' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) window.sessionStorage.removeItem('yll:adminSecret');
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      const n = data.deleted ?? count;
+      setMsg(`Deleted ${n} quote${n === 1 ? '' : 's'}.`);
+      setCount(0);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-gray-900">Quotes</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Developer / testing tools for the saved-quotes table. Hidden from the main Quotes view.
+        </p>
+      </div>
+      <div className="rounded-lg border border-red-200 bg-red-50/40 p-4">
+        <h3 className="text-sm font-semibold text-red-800">Danger zone — delete all quotes</h3>
+        <p className="text-sm text-gray-600 mt-1">
+          Permanently removes <strong>every</strong> saved quote
+          {count != null ? ` (${count} right now)` : ''}. Used to clear test rows while iterating.
+          This cannot be undone.
+        </p>
+        <button
+          type="button"
+          disabled={busy || !count}
+          onClick={deleteAll}
+          className="mt-3 bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 font-medium text-sm px-4 py-2 rounded-md"
+        >
+          {busy
+            ? 'Deleting…'
+            : count
+              ? `Delete all ${count} quote${count === 1 ? '' : 's'}`
+              : 'No quotes to delete'}
+        </button>
+        {msg && <p className="mt-2 text-sm text-gray-700">{msg}</p>}
       </div>
     </div>
   );
