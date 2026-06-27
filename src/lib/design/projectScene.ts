@@ -58,12 +58,15 @@ const DEFAULT_GARLAND_TIER = 'fullDecor' as const; // no bow, with decor
 // `recommended` (#12) rides along from the source scene item so the portal can
 // pre-select + label staff-advised items. Optional/additive — undefined unless
 // staff flagged the scene item.
+// `needsReview` (audit fix, Finding #38): true when a billed spec field was
+// undefined and the projection fell back to a DEFAULT_* value, so the UI can
+// surface a "defaulted — confirm size/tier" cue. Optional/additive.
 export type ProjectedLineItem =
-  | { id: string; category: 'mini'; sceneItemIds: string[]; input: MiniLightItem; recommended?: boolean }
-  | { id: string; category: 'spritzer'; sceneItemIds: string[]; input: Spritzer; recommended?: boolean }
-  | { id: string; category: 'wreath'; sceneItemIds: string[]; input: Wreath; recommended?: boolean }
-  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland; recommended?: boolean }
-  | { id: string; category: 'bow'; sceneItemIds: string[]; input: BowLineInput; recommended?: boolean };
+  | { id: string; category: 'mini'; sceneItemIds: string[]; input: MiniLightItem; recommended?: boolean; needsReview?: boolean }
+  | { id: string; category: 'spritzer'; sceneItemIds: string[]; input: Spritzer; recommended?: boolean; needsReview?: boolean }
+  | { id: string; category: 'wreath'; sceneItemIds: string[]; input: Wreath; recommended?: boolean; needsReview?: boolean }
+  | { id: string; category: 'garland'; sceneItemIds: string[]; input: PriceGarland; recommended?: boolean; needsReview?: boolean }
+  | { id: string; category: 'bow'; sceneItemIds: string[]; input: BowLineInput; recommended?: boolean; needsReview?: boolean };
 
 export type Projection = {
   // Ready to drop into QuoteInputs. The builder adds roofline footage, takedown,
@@ -77,6 +80,11 @@ export type Projection = {
   // order), so the Nth entry of a category here lines up with the Nth engine
   // line item for that category.
   items: ProjectedLineItem[];
+  // Audit fix (Finding #103): true when the scene contains ANY item that maps to
+  // a per-unit category REGARDLESS of its `included` flag. Distinguishes a true
+  // legacy/roofline-only design (false → manual fallback) from an all-excluded
+  // design (true, but items empty → REPLACE with empties, dropping stale arrays).
+  hasProjectableItems: boolean;
 };
 
 function isIncluded(item: { included?: boolean }): boolean {
@@ -88,6 +96,21 @@ function isIncluded(item: { included?: boolean }): boolean {
 type MiniSurface = 'bush' | 'tree' | 'column' | 'railing';
 function asMiniSurface(s: unknown): MiniSurface | null {
   return s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' ? s : null;
+}
+
+// Audit fix (Finding #103): does this scene item map to a per-unit category,
+// IGNORING its `included` flag? Mirrors the per-category branches in projectScene
+// but without the include/exclude gate, so an all-excluded design still registers
+// as "has projectable items" (and thus replaces rather than falls back).
+function isProjectableItem(item: Scene['items'][number]): boolean {
+  if (isStrand(item)) return !item.groupId && asMiniSurface(item.surface) !== null;
+  if (isMiniArea(item)) return asMiniSurface(item.surface) !== null;
+  if (isMiniGroup(item)) return asMiniSurface(item.surface) !== null;
+  if (isSpritzer(item)) return true;
+  if (isWreath(item)) return true;
+  if (isGarland(item)) return true;
+  if (isBow(item)) return true;
+  return false;
 }
 
 // One priced mini unit, shared across all three authoring paths (strand wrap,
@@ -142,17 +165,23 @@ export function projectScene(scene: Scene): Projection {
     }
 
     if (isSpritzer(item)) {
+      // Audit fix (Finding #38): flag a defaulted billed size so the UI can cue
+      // staff that no size was set (priced at DEFAULT_SPRITZER_SIZE).
+      const needsReview = item.quoteSize === undefined;
       items.push({
         id: `spritzer-${item.id}`,
         category: 'spritzer',
         sceneItemIds: [item.id],
         input: { size: item.quoteSize ?? DEFAULT_SPRITZER_SIZE, quantity: 1 },
         recommended: item.recommended,
+        needsReview,
       });
       continue;
     }
 
     if (isWreath(item)) {
+      // Audit fix (Finding #38): flag when size OR tier defaulted.
+      const needsReview = item.quoteSize === undefined || item.tier === undefined;
       items.push({
         id: `wreath-${item.id}`,
         category: 'wreath',
@@ -163,12 +192,15 @@ export function projectScene(scene: Scene): Projection {
           quantity: 1,
         },
         recommended: item.recommended,
+        needsReview,
       });
       continue;
     }
 
     if (isGarland(item)) {
       const sections = Math.max(1, Math.round(item.quoteSections ?? 1));
+      // Audit fix (Finding #38): flag when length OR tier defaulted.
+      const needsReview = item.quoteLength === undefined || item.tier === undefined;
       items.push({
         id: `garland-${item.id}`,
         category: 'garland',
@@ -180,6 +212,7 @@ export function projectScene(scene: Scene): Projection {
           quantity: sections,
         },
         recommended: item.recommended,
+        needsReview,
       });
       continue;
     }
@@ -202,6 +235,9 @@ export function projectScene(scene: Scene): Projection {
     garland: items.filter((i) => i.category === 'garland').map((i) => i.input as PriceGarland),
     bows: items.filter((i) => i.category === 'bow').map((i) => i.input as BowLineInput),
     items,
+    // Audit fix (Finding #103): scan ALL items (not just included ones) so an
+    // all-excluded design is still recognized as design-driven.
+    hasProjectableItems: sceneItems.some(isProjectableItem),
   };
 }
 
@@ -219,7 +255,12 @@ export function projectScene(scene: Scene): Projection {
 // staff start tagging items (once the editor's binding UI lands).
 export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): QuoteInputs {
   const p = projectScene(scene);
-  if (p.items.length === 0) return inputs;
+  // Audit fix (Finding #103): only fall back to the request's manual per-unit
+  // arrays for a TRUE legacy/roofline-only design (no projectable items at all).
+  // A design where staff excluded EVERY per-unit item has hasProjectableItems
+  // true but items empty — it must fall through and REPLACE the arrays with
+  // empties, so the excluded items aren't silently resurrected from stale input.
+  if (p.items.length === 0 && !p.hasProjectableItems) return inputs;
   return {
     ...inputs,
     miniLightItems: p.miniLightItems,

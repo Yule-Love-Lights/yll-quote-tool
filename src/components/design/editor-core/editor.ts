@@ -2622,6 +2622,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-wreath-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((w) => w.quoteSize === undefined || w.tier === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed size/tier set — will default to 36" Noble Non-decorated.</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
@@ -2828,6 +2831,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-garland-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((g) => g.quoteLength === undefined || g.tier === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed length/tier set — will default to 9 ft Decorated.</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
@@ -2976,6 +2982,9 @@ export async function renderEditor(
           <input type="checkbox" id="sel-spritzer-included" ${sInc.length === 1 && sInc[0] === false ? "" : "checked"} />
           <span>Included in quote</span>
         </label>
+        ${sel.some((s) => s.quoteSize === undefined)
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--warn,#c9831f)">⚠ No billed size set — will default to 24".</div>`
+          : ""}
       </section>`;
       })() : ""}
       <section style="display:flex;gap:6px">
