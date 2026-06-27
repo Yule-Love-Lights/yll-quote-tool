@@ -419,6 +419,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .update({
       customer_approved_at: approvedAt,
       approval_snapshot: snapshot,
+      // Advance the explicit lifecycle status alongside the timestamp (ledger
+      // #83). The deposit webhook flips it to 'booked' on payment; until then an
+      // approved-not-yet-paid quote reads 'approved'.
+      status: 'approved',
     })
     .eq('id', id)
     .is('customer_approved_at', null)
