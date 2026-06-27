@@ -8,7 +8,23 @@
 
 **Tech Stack:** Next.js App Router (`'use client'` pages + `runtime='nodejs'` routes), Supabase service client, TypeScript, Vitest, Tailwind. No new deps.
 
-**Concept vocabulary (locked, from spec §4/§6 + `sceneTypes.ts` + `colors.ts`):**
+**⚠️ REV 2 (Naldo review, commit `092d785`):** the binding vocabulary below + the Task 1/4 code were REWORKED after Naldo's feedback. The CURRENT vocabulary is the table just below and `src/lib/inventory/concepts.ts` (the committed truth); the original Task 1 (`concepts.ts`) + Task 4 (`bindings/page.tsx`) code blocks further down are kept for history but are SUPERSEDED. Also added: the 9 Decoration-Fee items (1101–1109) to the catalog. Spec §5.2 updated to match.
+
+**Concept vocabulary (REV 2 — current):**
+
+| Group | Key format | Value | Rows |
+|---|---|---|---|
+| C9 bulbs | `bulb:<paletteId>:c9` | SKU string | 12 colors |
+| Bistro | `bulb:warm-white:bistro` | SKU string | 1 (warm white only) |
+| Mini lights | `mini:<catalogColor>` | SKU string | derived from catalog (~30 colors) |
+| Clip rules | (clipRules) `<feature>` → `{sku, perFt}` | SKU + clips/ft | 7 features (SKUs pre-filled) |
+| Wreath base / bow / fee | `wreath:<size>` · `wreath-bow:<size>` · `wreath-fee:<size>` | SKU string | 6 each (fee pre-filled 1101…) |
+| Garland base / bow / fee | `garland:<length>` · `garland-bow` · `garland-fee` | SKU string | 2 + 1 + 1 (fee pre-filled 1106) |
+| Spritzer / pole | `spritzer:<paletteId>:<size>` · `spritzer-pole:<size>` | SKU string | 12×3 + 3 |
+
+*Permanent bulbs removed → ledger #88. Mini wraps removed (wraps use the Mini Lights bindings).*
+
+**Concept vocabulary (REV 1 — original, superseded):**
 
 | Group | Key format | Value | Rows |
 |---|---|---|---|
