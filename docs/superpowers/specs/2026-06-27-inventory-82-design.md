@@ -74,13 +74,14 @@ Columns mirror the CSV: `sku` (PK), `name`, `category` (**YLL-editable** — see
 **Categories are YLL's logical grouping, not Thunder's raw column.** Thunder lumps unrelated items together — e.g. the spritzer **Stake Metal** sits under "Hardware" with the roofline clips. On import we seed from Thunder's category, but `category` is **editable**, so YLL groups items its own way: **clips/roofline** in one category, **spritzers + their Stake Metal** in their own category (§4), greenery, bulbs, wire, etc. This grouping drives the **show/hide toggles** (Q6.3) and keeps the clip engine pointed only at true roofline-clip SKUs.
 
 ### 5.2 Bindings (`app_settings` JSON keys, **not** a table — config, low-cardinality)
-- Key **`bindings`** maps each billed design-concept enum member → a catalog SKU. **Key off the palette ID, never the label** (the `cool-white`=label "Pure White" / `cool-white-faceted`=label "Cool White" trap). Shape:
-  - `bulbColor`: `{ "<paletteId>:<bulbType>": sku }` — e.g. `"warm-white:c9" → "20009-SPK"`. `black` (off bulb) → the unlit socket SKU.
-  - `wreath`: `{ "<QuoteWreathSize>:<Tier>": sku }`
-  - `garland`: `{ "<QuoteGarlandLength>:<Tier>": sku }`
-  - `spritzer`: `{ "<QuoteSpritzerSize>": { spritzerSku, stakeMetalSku } }` (bundle)
-  - `tree/mini`: `{ "<surface>:<wrapStyle>": stringSku }`
-- Key **`clipRules`** holds the roof-feature → clip-SKU map + clip-spacing constants.
+- Key **`bindings`** maps each billed design-concept → a catalog SKU (flat string values; no bundles). **Key off the palette ID, never the label** (the `cool-white`=label "Pure White" / `cool-white-faceted`=label "Cool White" trap). **Vocabulary REVISED in Slice 1b-ii per Naldo** (see `src/lib/inventory/concepts.ts` — the single source of truth):
+  - bulbs: `bulb:<paletteId>:c9` (C9, every palette color) + `bulb:warm-white:bistro` (Bistro = warm white only). **Mini + Permanent dropped from bulbs** — mini lights have their own section; permanent lighting is a future feature (ledger #88).
+  - mini lights: `mini:<catalogColor>` — rows are **derived from the live catalog's distinct Mini-Lights colors** (~30, far more than the 12 palette; Warm White alone has 15 SKU variants), not the palette. Slice 2 maps a design palette color → the matching catalog color.
+  - wreaths (per size 24/30/36/48/60/72 Noble): `wreath:<size>` (base) + `wreath-bow:<size>` (decorated only; bow size per Naldo's bow chart — 24→12″, 30→pick, 36→18″, 48→24″, 60→30″, 72→36″) + `wreath-fee:<size>` (decoration fee, decorated only — catalog items **1101/1108/1102/1103/1104/1105**, pre-filled).
+  - garland: `garland:<length>` (base, 4.5ft/9ft) + `garland-bow` (12″ bow) + `garland-fee` (item **1106**, pre-filled).
+  - spritzers: `spritzer:<paletteId>:<size>` (color × size 16/24/32) + `spritzer-pole:<size>` (pole, same across colors). Replaces the old size→bundle shape.
+- Key **`clipRules`** holds the roof-feature → `{ sku, perFt }` map. **Pre-filled** in the UI with the known clip SKUs (gutter→14147, peak/side→14145, ridge→14159, pathway→14343, flat→14144; metal = staff flag); operator reviews + Saves.
+- **Catalog addition (1b-ii):** the 9 YLL Decoration-Fee items (1101–1109, category "Decoration Fee") were imported — they aren't Thunder SKUs but are now bindable.
 - A validator (alongside `src/lib/appSettings.ts:14-24`) checks each bound SKU exists in `inventory_catalog`.
 
 ### 5.3 On-Hand (`inventory_on_hand` table)
