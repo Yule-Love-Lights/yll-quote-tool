@@ -42,10 +42,17 @@ function StageCard({
   );
 }
 
-/** The Jobber-style pipeline board (ledger #83). Phase-1 slice: the Quotes
- *  stage is live from real data; Jobs + Invoices arrive in #83 Phase 2/3. */
+/** The Jobber-style pipeline board (ledger #83). Quotes + Jobs stages are live
+ *  from real data; Invoices arrives in #83 Phase 3. */
 export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   const q = board.quotes;
+  const j = board.jobs;
+  // "Active" = jobs still in flight (everything before done/cancelled). The
+  // headline count + its value, mirroring the Quotes column's "booked" headline.
+  const activeJobsCount =
+    j.to_schedule.count + j.scheduled.count + j.installed.count + j.requires_invoicing.count;
+  const activeJobsUsd =
+    j.to_schedule.totalUsd + j.scheduled.totalUsd + j.installed.totalUsd + j.requires_invoicing.totalUsd;
   return (
     <section aria-label="Workflow pipeline" className="mb-8">
       <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--op-text)' }}>
@@ -68,8 +75,21 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
         </StageCard>
 
         <StageCard title="Jobs" accent="#639922">
-          <div className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
-            Coming in Phase 2 — a job is auto-created when a deposit is paid. Scheduling runs in home.works.
+          <div className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+            {activeJobsCount}{' '}
+            <span className="text-xs font-normal" style={{ color: 'var(--op-text-dim)' }}>
+              active{activeJobsUsd > 0 ? ` · ${fmtMoney(activeJobsUsd)}` : ''}
+            </span>
+          </div>
+          <div className="mt-3 pt-2 border-t" style={{ borderColor: 'var(--op-border)' }}>
+            <StatusLine label="To schedule" count={j.to_schedule.count} totalUsd={j.to_schedule.totalUsd} />
+            <StatusLine label="Scheduled" count={j.scheduled.count} totalUsd={j.scheduled.totalUsd} />
+            <StatusLine label="Installed" count={j.installed.count} totalUsd={j.installed.totalUsd} />
+            <StatusLine label="Requires invoicing" count={j.requires_invoicing.count} totalUsd={j.requires_invoicing.totalUsd} />
+            <StatusLine label="Done" count={j.done.count} totalUsd={j.done.totalUsd} />
+          </div>
+          <div className="mt-2 text-xs" style={{ color: 'var(--op-text-dim)' }}>
+            Auto-created when a deposit is paid. Scheduling runs in home.works.
           </div>
         </StageCard>
 
