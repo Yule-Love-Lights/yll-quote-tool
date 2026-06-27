@@ -68,7 +68,10 @@ export type AnalysisSeed = {
   detections?: AnalysisDetections;
   // The AI's roofline footage estimates — paired with the drawn lines they
   // yield pixels-per-foot, which seeds the SCALE yardstick (below).
-  calibration?: { santasFootage?: number; gingerbreadFootage?: number };
+  // winterWonderlandFootage (audit fix, finding #46): WW C9 runs are a
+  // first-class roofline family elsewhere (quote/route.ts, QuoteBuilder C9), so
+  // a WW-only roofline can now calibrate scale too.
+  calibration?: { santasFootage?: number; gingerbreadFootage?: number; winterWonderlandFootage?: number };
 };
 
 const SEED_PREFIX = 'seed-';
@@ -81,6 +84,15 @@ const YARDSTICK_REAL_FEET = 5;
 // calibration inputs are garbage (degenerate line, absurd footage).
 const MIN_PPF = 2;
 const MAX_PPF = 500;
+// Audit fix (finding #84): an upper ceiling for a seeded mini stringCount.
+// stringCount drives price, so a hallucinated AI detection (e.g.
+// stringCount:1000) would seed a runaway billed quantity. This guard lives ONLY
+// on the AI-seed path — the shared projectScene projection must NOT cap, or it
+// would wrongly truncate a legitimate large MANUAL quote. The ceiling is
+// deliberately generous: it only trips on an obviously-hallucinated count, well
+// above any plausible real wrap. Clamp (don't reject) — staff can still override
+// upward via the QuoteBuilder stringCount input for a genuine big wrap.
+const REASONABLE_MAX_STRINGS = 50;
 
 // Visual defaults for seeded items (staff restyle freely — visuals never
 // drive price). Mirrors the editor's creation defaults where one exists.
@@ -129,6 +141,10 @@ export function sanitizeAnalysisSeed(input: unknown): AnalysisSeed {
     }
     if (typeof c.gingerbreadFootage === 'number' && Number.isFinite(c.gingerbreadFootage) && c.gingerbreadFootage > 0) {
       calibration.gingerbreadFootage = c.gingerbreadFootage;
+    }
+    // Audit fix (finding #46): mirror the santas/gingerbread guard for WW.
+    if (typeof c.winterWonderlandFootage === 'number' && Number.isFinite(c.winterWonderlandFootage) && c.winterWonderlandFootage > 0) {
+      calibration.winterWonderlandFootage = c.winterWonderlandFootage;
     }
     if (Object.keys(calibration).length) out.calibration = calibration;
   }
@@ -230,6 +246,8 @@ export function derivePxPerFoot(seed: AnalysisSeed, w: number, h: number): numbe
   const candidates: [RooflineSeedLines['santas'], number | undefined][] = [
     [seed.lines?.santas, cal.santasFootage],
     [seed.lines?.gingerbread, cal.gingerbreadFootage],
+    // Audit fix (finding #46): a WW-only roofline can now calibrate scale.
+    [seed.lines?.winterWonderland, cal.winterWonderlandFootage],
   ];
   for (const [polys, feet] of candidates) {
     if (!polys?.length || typeof feet !== 'number' || !Number.isFinite(feet) || feet <= 0) continue;
@@ -259,7 +277,8 @@ function detectionItems(d: AnalysisDetections, w: number, h: number, ppf: number
 
   (d.miniLights ?? []).forEach((m, i) => {
     const r = pxBox(m.box, w, h);
-    const stringCount = Math.max(1, Math.round(m.stringCount));
+    // Audit fix (finding #84): clamp the seeded string count to a sane ceiling.
+    const stringCount = Math.min(Math.max(1, Math.round(m.stringCount)), REASONABLE_MAX_STRINGS);
     if (m.type === 'column') {
       // Columns stay strand-based (contract A2): a vertical line through the box.
       const cx = r.x + r.width / 2;
@@ -334,22 +353,33 @@ function detectionItems(d: AnalysisDetections, w: number, h: number, ppf: number
 
   (d.garland ?? []).forEach((gd, i) => {
     const r = pxBox(gd.box, w, h);
-    const cy = r.y + r.height / 2;
     // Billed section count from the run's real-world length when a scale is
-    // available (#8 Stage C / C4): runFeet = box width px ÷ pixels-per-foot
+    // available (#8 Stage C / C4): runFeet = run px ÷ pixels-per-foot
     // (derived from the AI's roofline, same scale that sizes the yardstick),
     // then sections = ceil(runFeet / section length) — the documented garland
     // convention ("piece count = ceil(widthFt / 9)", see photoAnalysis). With
     // no scale (no roofline calibration on this quote) fall back to ONE section;
     // staff set the count. Under-billing beats silently over-billing.
+    // Audit fix (finding #72): use the LONGER axis of the box, not width only —
+    // a diagonal/near-vertical run (porch post, doorway arch, gable rake) has a
+    // box width far smaller than the true run length, which undercounts sections.
     const sectionFeet = gd.length === '4.5ft' ? 4.5 : 9;
+    const runPx = Math.max(r.width, r.height);
     const quoteSections =
-      ppf && ppf > 0 ? Math.max(1, Math.ceil(r.width / ppf / sectionFeet)) : 1;
+      ppf && ppf > 0 ? Math.max(1, Math.ceil(runPx / ppf / sectionFeet)) : 1;
+    // Draw the seed segment along the longer axis so the visual matches the run
+    // we billed (horizontal for a wide box, vertical for a tall one).
+    const vertical = r.height > r.width;
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    const points: [number, number, number, number] = vertical
+      ? [cx, r.y, cx, r.y + r.height]
+      : [r.x, cy, r.x + r.width, cy];
     const garland: SceneGarlandItem = {
       id: `${SEED_PREFIX}garland-${i + 1}`,
       yardstickId: null,
       kind: 'garland',
-      points: [r.x, cy, r.x + r.width, cy],
+      points,
       drawingStyle: 'strand',
       withLights: true,
       quoteLength: gd.length,
