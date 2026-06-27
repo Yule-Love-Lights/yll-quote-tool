@@ -1,110 +1,90 @@
 // src/lib/inventory/concepts.ts
 // The design-concept VOCABULARY the binding editor (#82 Slice 1b-ii) renders and
 // the materials engine (Slice 2) will read. Pure data + key builders — no React,
-// no Supabase. Each "concept" is one billable design attribute that maps to a
-// real Thunder SKU (or a small bundle of SKUs). The binding map (app_settings
-// `bindings`) is keyed by these strings; keeping the builders here the single
-// source of truth means the UI and the engine never disagree on key format.
+// no Supabase. Each concept maps to a real Thunder/YLL SKU.
+//
+// Mini-light rows are the exception: they're derived from the LIVE catalog at
+// render time (the catalog carries far more mini colors than the 12-color design
+// palette), so this module only provides the key builder + category name for them.
 
 import type {
-  BulbType,
-  Tier,
-  WrapStyle,
   QuoteWreathSize,
   QuoteGarlandLength,
   QuoteSpritzerSize,
 } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
 
-export type ConceptRow = { key: string; label: string };
-export type BundleField = { id: string; label: string };
-export type ConceptBundleRow = { key: string; label: string; fields: BundleField[] };
+export type ConceptRow = { key: string; label: string; hint?: string };
 
-// ── bulb colors: paletteId × bulbType → one SKU ──────────────────────────────
-export const BULB_TYPES: { id: BulbType; label: string }[] = [
-  { id: 'c9', label: 'C9' },
-  { id: 'mini', label: 'Mini' },
-  { id: 'permanent', label: 'Permanent' },
-  { id: 'bistro', label: 'Bistro' },
-];
-export const bulbKey = (paletteId: string, bulbType: BulbType) => `bulb:${paletteId}:${bulbType}`;
-// Returns one group per bulb type so the UI can render a labelled section each.
-export function bulbGroups(): { type: { id: BulbType; label: string }; rows: ConceptRow[] }[] {
-  return BULB_TYPES.map((type) => ({
-    type,
-    rows: DEFAULT_COLORS.map((c) => ({ key: bulbKey(c.id, type.id), label: c.label })),
-  }));
-}
-export const bulbRows = (): ConceptRow[] => bulbGroups().flatMap((g) => g.rows);
-
-// ── tiers (shared by wreath + garland) ───────────────────────────────────────
-export const TIERS: { id: Tier; label: string }[] = [
-  { id: 'bow', label: 'Non-decorated' },
-  { id: 'fullDecor', label: 'Decorated' },
-];
-
-// ── wreaths: size × tier → one SKU ───────────────────────────────────────────
-export const WREATH_SIZES: QuoteWreathSize[] = [
-  '24noble', '30noble', '36noble', '48noble', '60noble', '72noble',
-];
-export const wreathKey = (size: QuoteWreathSize, tier: Tier) => `wreath:${size}:${tier}`;
-const sizeLabel = (s: string) => s.replace('noble', '″ Noble');
-export function wreathRows(): ConceptRow[] {
-  return WREATH_SIZES.flatMap((size) =>
-    TIERS.map((t) => ({ key: wreathKey(size, t.id), label: `${sizeLabel(size)} — ${t.label}` })),
-  );
+// ── bulb colors: C9 (every palette color) + Bistro (warm white only) ─────────
+// Mini + Permanent removed: mini lights have their own section; permanent lighting
+// is a future feature (see the ledger #82 follow-up).
+export const bulbC9Key = (paletteId: string) => `bulb:${paletteId}:c9`;
+export const BISTRO_KEY = 'bulb:warm-white:bistro';
+export function bulbC9Rows(): ConceptRow[] {
+  return DEFAULT_COLORS.map((c) => ({ key: bulbC9Key(c.id), label: c.label }));
 }
 
-// ── garland: length × tier → one SKU ─────────────────────────────────────────
-export const GARLAND_LENGTHS: QuoteGarlandLength[] = ['4.5ft', '9ft'];
-export const garlandKey = (length: QuoteGarlandLength, tier: Tier) => `garland:${length}:${tier}`;
-export function garlandRows(): ConceptRow[] {
-  return GARLAND_LENGTHS.flatMap((len) =>
-    TIERS.map((t) => ({ key: garlandKey(len, t.id), label: `${len} section — ${t.label}` })),
-  );
-}
+// ── mini lights: keyed by catalog color; rows derived from the catalog ───────
+export const MINI_CATEGORY = 'Mini Lights';
+export const miniKey = (color: string) => `mini:${color.trim()}`;
 
-// ── spritzer: size → { spritzerSku, stakeMetalSku } bundle ───────────────────
-export const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
-export const spritzerKey = (size: QuoteSpritzerSize) => `spritzer:${size}`;
-export const SPRITZER_BUNDLE_FIELDS: BundleField[] = [
-  { id: 'spritzerSku', label: 'Spritzer' },
-  { id: 'stakeMetalSku', label: 'Stake (metal pole)' },
-];
-export function spritzerRows(): ConceptBundleRow[] {
-  return SPRITZER_SIZES.map((size) => ({
-    key: spritzerKey(size),
-    label: `${size}″ spritzer`,
-    fields: SPRITZER_BUNDLE_FIELDS,
-  }));
-}
-
-// ── mini surfaces: surface × wrapStyle → one SKU ─────────────────────────────
-export const MINI_SURFACES: { id: string; label: string }[] = [
-  { id: 'tree', label: 'Tree' },
-  { id: 'bush', label: 'Bush' },
-  { id: 'column', label: 'Column' },
-  { id: 'railing', label: 'Railing' },
-];
-export const WRAP_STYLES: { id: WrapStyle; label: string }[] = [
-  { id: 'canopy', label: 'Canopy' },
-  { id: 'trunk', label: 'Trunk' },
-];
-export const miniKey = (surface: string, wrap: WrapStyle) => `mini:${surface}:${wrap}`;
-export function miniRows(): ConceptRow[] {
-  return MINI_SURFACES.flatMap((s) =>
-    WRAP_STYLES.map((w) => ({ key: miniKey(s.id, w.id), label: `${s.label} — ${w.label}` })),
-  );
-}
-
-// ── clip rules: roof feature → { sku, perFt } (app_settings `clipRules`) ─────
-// Hints encode the spec §4 terminology traps so staff bind the right SKU.
+// ── clips: roof feature → { sku, perFt }. Pre-filled with the known SKUs. ────
 export const CLIP_FEATURES: { id: string; label: string; hint: string }[] = [
-  { id: 'gutter', label: 'Gutterline', hint: 'C9 Flex Clip — Naldo’s "tuff clip" (14147 W / 14347 B). NOT the "C9 Tuff Tab" 14148.' },
+  { id: 'gutter', label: 'Gutterline', hint: 'C9 Flex Clip — your "tuff clip" (14147 W / 14347 B). NOT the "C9 Tuff Tab" 14148.' },
   { id: 'peak', label: 'Peak (front gable, no gutter)', hint: 'Shingle Tab (14145 W / 14345 B).' },
   { id: 'side', label: 'Side (shingles)', hint: 'Shingle Tab (14145 / 14345).' },
   { id: 'ridge', label: 'Ridge (horizontal apex)', hint: 'C9 Peak / Ridge Clip (14159 W / 14859 Brown).' },
-  { id: 'pathway', label: 'Pathway / stake-lighting', hint: 'Pathway Ground Stake (14343 B / 14443 Grn). NOT the spritzer’s Stake Metal.' },
-  { id: 'flat', label: 'Flat / commercial', hint: 'Parapet Clip + Shingle Tab (both).' },
+  { id: 'pathway', label: 'Pathway / stake-lighting', hint: 'Pathway Ground Stake (14343 B / 14443 Grn).' },
+  { id: 'flat', label: 'Flat / commercial', hint: 'Parapet Clip (14144) + Shingle Tab — both. Bind parapet here; the shingle-tab pairing is a Slice-2 detail.' },
   { id: 'metal', label: 'Metal roof', hint: 'Magnetic socket wire — no clip; flag for staff review.' },
 ];
+// Seeded into clipRules when nothing is saved yet (operator reviews + Saves).
+export const DEFAULT_CLIP_SKUS: Record<string, string> = {
+  gutter: '14147', peak: '14145', side: '14145', ridge: '14159', pathway: '14343', flat: '14144',
+};
+
+// ── wreaths: base + bow + decoration fee, all per size ───────────────────────
+export const WREATH_SIZES: QuoteWreathSize[] = [
+  '24noble', '30noble', '36noble', '48noble', '60noble', '72noble',
+];
+const wreathSizeLabel = (s: string) => s.replace('noble', '" Noble');
+export const wreathBaseKey = (size: string) => `wreath:${size}`;
+export const wreathBowKey = (size: string) => `wreath-bow:${size}`;
+export const wreathFeeKey = (size: string) => `wreath-fee:${size}`;
+// Bow size per wreath (Naldo's bow chart). 30" is absent from the chart → operator picks.
+const WREATH_BOW_HINT: Record<string, string> = {
+  '24noble': '12" bow', '30noble': 'chart skips 30" — pick', '36noble': '18" bow',
+  '48noble': '24" bow', '60noble': '30" bow', '72noble': '36" bow',
+};
+// Decoration-fee SKU per wreath size (catalog items 1101–1105 / 1108). Pre-filled.
+export const DEFAULT_WREATH_FEE_SKUS: Record<string, string> = {
+  '24noble': '1101', '30noble': '1108', '36noble': '1102', '48noble': '1103', '60noble': '1104', '72noble': '1105',
+};
+export function wreathBaseRows(): ConceptRow[] {
+  return WREATH_SIZES.map((s) => ({ key: wreathBaseKey(s), label: wreathSizeLabel(s) }));
+}
+export function wreathBowRows(): ConceptRow[] {
+  return WREATH_SIZES.map((s) => ({ key: wreathBowKey(s), label: wreathSizeLabel(s), hint: WREATH_BOW_HINT[s] }));
+}
+export function wreathFeeRows(): ConceptRow[] {
+  return WREATH_SIZES.map((s) => ({ key: wreathFeeKey(s), label: wreathSizeLabel(s) }));
+}
+
+// ── garland: base (per length) + one bow + one decoration fee ────────────────
+export const GARLAND_LENGTHS: QuoteGarlandLength[] = ['4.5ft', '9ft'];
+export const garlandBaseKey = (length: string) => `garland:${length}`;
+export const GARLAND_BOW_KEY = 'garland-bow';
+export const GARLAND_FEE_KEY = 'garland-fee';
+export const DEFAULT_GARLAND_FEE_SKU = '1106'; // Garland Decoration Fee
+export function garlandBaseRows(): ConceptRow[] {
+  return GARLAND_LENGTHS.map((l) => ({ key: garlandBaseKey(l), label: `${l} section` }));
+}
+
+// ── spritzers: palette color × size → SKU, + one pole per size ───────────────
+export const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
+export const spritzerKey = (paletteId: string, size: string) => `spritzer:${paletteId}:${size}`;
+export const spritzerPoleKey = (size: string) => `spritzer-pole:${size}`;
+export function spritzerColorRows(size: string): ConceptRow[] {
+  return DEFAULT_COLORS.map((c) => ({ key: spritzerKey(c.id, size), label: c.label }));
+}
