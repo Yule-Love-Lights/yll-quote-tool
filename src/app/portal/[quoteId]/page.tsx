@@ -278,26 +278,6 @@ export default async function PortalPage({
         {/* 12. Disclaimer */}
         <Disclaimer />
 
-        {/* Audit fix (no-wrong-house-path): the hero photo/design is AI-seeded,
-            so if the AI grabbed the wrong house or mis-scaled, the customer's
-            only choices were Approve or leave. Give an escape hatch — a "this
-            isn't my home / something looks off" affordance that reaches the team.
-            Minimal in-page version: a tel: link to the team (no new route/file).
-            A richer flow (staff notification via GHL + a recorded review/sign-off
-            state) is a net-new UX/workflow decision left for design — see PR. */}
-        <div className="border-t border-white/10 bg-slate-950 px-6 py-8 text-center text-sm text-slate-400">
-          <p>
-            Something look off, or this isn&apos;t your home?{' '}
-            <a
-              href={`tel:${team.phone.replace(/[^\d+]/g, '')}`}
-              className="font-medium text-amber-300 underline-offset-2 hover:underline"
-            >
-              Call {team.leaderName} at {team.phone}
-            </a>{' '}
-            and we&apos;ll make it right.
-          </p>
-        </div>
-
         {/* Sticky floating pill bar — real approve flow, always last in tree */}
         <StickyBottomBar
           quoteId={quoteId}
