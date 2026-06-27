@@ -122,7 +122,13 @@ export default function QuotesAdminPage() {
     if (!ok) return;
     setBusy('ALL');
     try {
-      const res = await adminFetch('/api/quotes', { method: 'DELETE' });
+      // Bulk wipe requires a second-factor confirmation header in addition to
+      // the admin secret (audit fix g29-route). Must match DELETE_ALL_CONFIRM
+      // in src/app/api/quotes/route.ts.
+      const res = await adminFetch('/api/quotes', {
+        method: 'DELETE',
+        headers: { 'x-confirm-delete-all': 'DELETE ALL QUOTES' },
+      });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Bulk delete failed');
       await refresh();
     } catch (err) {

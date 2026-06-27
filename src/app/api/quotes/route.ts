@@ -9,6 +9,13 @@ export const runtime = 'nodejs';
 // by /admin/quotes to clean up fake/test entries during development. Delete
 // operations require the shared ADMIN_SECRET header (x-admin-secret).
 
+// Audit fix (g29-route): the bulk wipe deletes ALL customer PII in a single
+// call behind nothing but the static admin secret. Require an explicit
+// confirmation header in addition to the secret so a leaked/forged secret
+// (or a stray CSRF-style request) can't one-shot the whole table. The caller
+// must echo this exact phrase.
+const DELETE_ALL_CONFIRM = 'DELETE ALL QUOTES';
+
 function checkAdminSecret(req: NextRequest): NextResponse | null {
   const expected = process.env.ADMIN_SECRET;
   if (!expected) {
@@ -46,6 +53,14 @@ export async function DELETE(req: NextRequest) {
   }
   const authFail = checkAdminSecret(req);
   if (authFail) return authFail;
+  // Audit fix (g29-route): second factor for the full-PII wipe — the caller
+  // must explicitly confirm intent, not just present the admin secret.
+  if (req.headers.get('x-confirm-delete-all') !== DELETE_ALL_CONFIRM) {
+    return NextResponse.json(
+      { error: `Bulk delete requires confirmation: send header x-confirm-delete-all: ${DELETE_ALL_CONFIRM}` },
+      { status: 428 }, // Precondition Required
+    );
+  }
   try {
     const count = await deleteAllQuotes();
     return NextResponse.json({ deleted: count });
