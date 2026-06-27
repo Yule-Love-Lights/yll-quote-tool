@@ -1,8 +1,8 @@
-// Workflow board — the Jobber-style pipeline view (ledger #83, Phase 2).
-// The QUOTES stage buckets by the canonical quote status (src/lib/quoteStatus.ts)
-// derived from the existing lifecycle timestamps. The JOBS stage (Phase 2)
+// Workflow board — the Jobber-style pipeline view (ledger #83).
+// The QUOTES column buckets by the canonical quote status (src/lib/quoteStatus.ts)
+// derived from the existing lifecycle timestamps. The JOBS column (Phase 2)
 // buckets the `jobs` table by billing status (src/lib/jobStatus.ts). The
-// Invoices stage lands in #83 Phase 3.
+// Invoices column lands in #83 Phase 3 (placeholder in the UI for now).
 
 import type { DashboardQuote } from './types';
 import { deriveStatus } from '@/lib/quoteStatus';
@@ -18,9 +18,17 @@ export type WorkflowJob = {
 };
 
 export type WorkflowBoard = {
+  /**
+   * The QUOTES column, bucketed by the four lifecycle states a dashboard quote
+   * row can actually reach. `deriveStatus` can name nine statuses, but the
+   * dashboard query only selects the lifecycle timestamps (not `viewed_at` /
+   * the persisted `status`), so a row here resolves to exactly one of:
+   * draft → sent → approved → booked. We bucket to those four rather than
+   * inventing always-zero rows for the unreachable states.
+   */
   quotes: {
     draft: StageBucket;
-    awaitingResponse: StageBucket;
+    awaitingResponse: StageBucket; // status 'sent' — sent, awaiting the customer
     approved: StageBucket;
     booked: StageBucket;
   };
