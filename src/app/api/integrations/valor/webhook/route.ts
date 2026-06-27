@@ -232,6 +232,9 @@ export async function POST(req: NextRequest) {
     .from('quotes')
     .update({
       deposit_paid_at: paidAt,
+      // Explicit lifecycle status (ledger #83): deposit paid = booked. This
+      // webhook is the source of truth for "booked", so it sets the status too.
+      status: 'booked',
       valor_txn_id: event.txnId,
       valor_vault_token: event.vaultToken,
       valor_approval_code: event.approvalCode,

@@ -149,7 +149,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isGhlRetry) {
     const { error: stampErr } = await sb
       .from('quotes')
-      .update({ quote_sent_at: sentAt })
+      // Advance the explicit lifecycle status alongside the timestamp (ledger
+      // #83). quote_sent_at stays the idempotency key; status mirrors it so the
+      // explicit-status read path agrees with deriveStatus().
+      .update({ quote_sent_at: sentAt, status: 'sent' })
       .eq('id', id);
     if (stampErr) {
       console.error('[api/quotes/:id/send] stamp failed:', stampErr);
