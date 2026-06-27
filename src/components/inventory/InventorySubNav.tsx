@@ -3,14 +3,15 @@ import Link from 'next/link';
 
 // Sub-navigation for the Inventory area (#82). Mirrors SettingsSubNav. "Stock" is
 // the /inventory on-hand stock table (Slice 1c); "Bindings" + "Overrides" are the
-// Slice 1b config screens.
+// Slice 1b config screens; "Materials" is the design→materials view (Slice 2d).
 const ITEMS = [
   { label: 'Stock', href: '/inventory', key: 'stock' as const },
   { label: 'Bindings', href: '/inventory/bindings', key: 'bindings' as const },
   { label: 'Overrides', href: '/inventory/overrides', key: 'overrides' as const },
+  { label: 'Materials', href: '/inventory/materials', key: 'materials' as const },
 ];
 
-export type InventoryTab = 'stock' | 'bindings' | 'overrides';
+export type InventoryTab = 'stock' | 'bindings' | 'overrides' | 'materials';
 
 export function InventorySubNav({ active }: { active: InventoryTab }) {
   return (

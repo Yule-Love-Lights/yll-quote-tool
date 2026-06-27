@@ -1,8 +1,40 @@
 // src/lib/inventory/materialsProjection.test.ts
 import { describe, it, expect } from 'vitest';
-import { projectMaterials, aggregateMaterials } from './materialsProjection';
+import { projectMaterials, aggregateMaterials, buildMaterialsView } from './materialsProjection';
+import type { MaterialLine } from './materialsProjection';
 import type { Scene, SceneItem } from '@/lib/design/sceneTypes';
 import type { Bindings } from './bindings';
+
+const line = (over: Partial<MaterialLine>): MaterialLine =>
+  ({ sku: 'X', qty: 1, category: 'wreath', conceptKey: 'k', label: 'L', sceneItemId: 's', ...over });
+
+describe('buildMaterialsView', () => {
+  it('joins names + on-hand; short when stocked below need; null when not stocked; uncatalogued name', () => {
+    const lines = [
+      line({ sku: 'A', qty: 2, conceptKey: 'a', label: 'Item A' }),
+      line({ sku: 'B', qty: 2, conceptKey: 'b', label: 'Item B' }),
+      line({ sku: 'C', qty: 1, conceptKey: 'c', label: 'Item C' }),
+    ];
+    const names: Record<string, string> = { A: 'Alpha', B: 'Bravo' }; // C uncatalogued
+    const stock: Record<string, number> = { A: 0, B: 5 }; // C not stocked
+    const v = buildMaterialsView(lines, (s) => names[s], (s) => (s in stock ? stock[s] : null));
+    expect(v.materials).toEqual([
+      { sku: 'A', name: 'Alpha', qty: 2, onHand: 0, short: true }, // stocked 0 < 2 → short (NOT "not tracked")
+      { sku: 'B', name: 'Bravo', qty: 2, onHand: 5, short: false }, // in stock
+      { sku: 'C', name: '(not in catalog)', qty: 1, onHand: null, short: false }, // not stocked
+    ]);
+    expect(v.totalLines).toBe(3);
+  });
+  it('groups + sums unbound (null-sku) lines by conceptKey', () => {
+    const lines = [
+      line({ sku: null, qty: 2, conceptKey: 'spritzer-pole:16', label: '16" spritzer pole' }),
+      line({ sku: null, qty: 3, conceptKey: 'spritzer-pole:16', label: '16" spritzer pole' }),
+      line({ sku: 'A', qty: 1, conceptKey: 'a', label: 'A' }),
+    ];
+    const v = buildMaterialsView(lines, () => 'n', () => null);
+    expect(v.unbound).toEqual([{ conceptKey: 'spritzer-pole:16', label: '16" spritzer pole', qty: 5 }]);
+  });
+});
 
 const scene = (items: SceneItem[]): Scene => ({ yardsticks: [], items });
 
