@@ -135,6 +135,22 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
     .maybeSingle<{ id: string }>();
   if (design) designId = design.id;
 
+  // Stable customer + property identity (#83 Phase 5) the quote has been linked
+  // to, if any. A SEPARATE best-effort lookup (NOT folded into the load-bearing
+  // quote read above) so a DB that pre-dates Phase 5's columns nulls the linkage
+  // rather than failing job creation — same pattern as the design_id lookup.
+  let customerId: string | null = null;
+  let propertyId: string | null = null;
+  const { data: ids } = await db
+    .from('quotes')
+    .select('customer_id, property_id')
+    .eq('id', quoteId)
+    .maybeSingle<{ customer_id: string | null; property_id: string | null }>();
+  if (ids) {
+    customerId = ids.customer_id ?? null;
+    propertyId = ids.property_id ?? null;
+  }
+
   // Job type from the quote's service line. Holiday/event = one-off; permanent
   // (Glow365) carries the recurring type now (recurring billing is deferred).
   const type: JobRow['type'] = quote.service_type === 'permanent' ? 'permanent' : 'one_off';
@@ -155,6 +171,8 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
     .insert({
       quote_id: quote.id,
       design_id: designId,
+      customer_id: customerId,
+      property_id: propertyId,
       type,
       status: 'to_schedule' satisfies JobStatus,
       // fulfillment_stage intentionally omitted (NULL) — owned by #82.
@@ -165,6 +183,14 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
     .single();
 
   if (error) {
+    // Lost a concurrent insert race (the partial unique index on quote_id
+    // fired)? Converge on the winner's row instead of a spurious null, so the
+    // creator is self-sufficiently idempotent. (The webhook's atomic deposit
+    // claim makes this unreachable today, but it no longer leans solely on it.)
+    if ((error as { code?: string }).code === '23505') {
+      const winner = await getJobByQuote(quoteId);
+      if (winner) return winner;
+    }
     console.error('createJobFromQuote: insert error:', error);
     return null;
   }

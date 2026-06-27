@@ -54,7 +54,13 @@ CREATE TABLE IF NOT EXISTS public.jobs (
   -- From-Quote link: which quote this job was created from. The job snapshots
   -- the quote's line items at creation (later quote edits don't propagate;
   -- amendments are explicit — #83 Phase 4).
-  quote_id      uuid REFERENCES public.quotes(id),
+  -- ON DELETE CASCADE: deleting a quote tears down its job (and its invoice via
+  -- the invoices→jobs cascade). Without it, deleteQuote / the operator "delete
+  -- all" bulk-wipe (src/lib/quotes.ts) would FK-violation-FAIL on any booked
+  -- quote — matching the existing "deleting a quote removes its artifacts (the
+  -- design)" intent. (A "block deleting a booked quote" guard could layer on top
+  -- later; the bug fixed here is that the delete THROWS, not that it's allowed.)
+  quote_id      uuid REFERENCES public.quotes(id) ON DELETE CASCADE,
 
   -- The live editable design (#27) this job draws materials from (#82: design_id
   -- → scene → materials projection). Nullable — set from the quote's design at

@@ -134,6 +134,70 @@ describe('createJobFromQuote', () => {
     expect(inserts.jobs[0]).toMatchObject({ type: 'permanent', design_id: null });
   });
 
+  it('carries the quote customer_id/property_id onto the job (Phase 5 linkage)', async () => {
+    const { client, inserts } = makeSb({
+      jobs: { read: null },
+      quotes: { read: { ...QUOTE, customer_id: 'cust-9', property_id: 'prop-3' } },
+      designs: { read: null },
+    });
+    sbRef.current = client;
+
+    await createJobFromQuote('quote-1');
+    expect(inserts.jobs[0]).toMatchObject({ customer_id: 'cust-9', property_id: 'prop-3' });
+  });
+
+  it('leaves customer linkage null when the quote is not yet linked', async () => {
+    const { client, inserts } = makeSb({
+      jobs: { read: null },
+      quotes: { read: QUOTE }, // no customer_id/property_id on the quote
+      designs: { read: null },
+    });
+    sbRef.current = client;
+
+    await createJobFromQuote('quote-1');
+    expect(inserts.jobs[0]).toMatchObject({ customer_id: null, property_id: null });
+  });
+
+  it('recovers the existing job when a concurrent insert hits the unique index (23505)', async () => {
+    // Race: the idempotency guard sees no job, the insert loses to the winner's
+    // partial-unique-index, and the creator converges on the winner instead of
+    // returning a spurious null.
+    const winner = { id: 'job-win', quote_id: 'quote-1', status: 'to_schedule' };
+    let jobsRead = 0;
+    let table = '';
+    let mode: 'read' | 'insert' = 'read';
+    const builder: Record<string, unknown> = {};
+    Object.assign(builder, {
+      from: (t: string) => {
+        table = t;
+        mode = 'read';
+        return builder;
+      },
+      select: () => builder,
+      insert: () => {
+        mode = 'insert';
+        return builder;
+      },
+      eq: () => builder,
+      maybeSingle: async () => {
+        if (table === 'jobs') {
+          jobsRead += 1;
+          return { data: jobsRead === 1 ? null : winner, error: null }; // null first (guard), winner on recovery
+        }
+        if (table === 'quotes') return { data: QUOTE, error: null };
+        return { data: null, error: null };
+      },
+      single: async () =>
+        mode === 'insert'
+          ? { data: null, error: { code: '23505', message: 'duplicate key' } }
+          : { data: null, error: null },
+    });
+    sbRef.current = builder;
+
+    const job = await createJobFromQuote('quote-1');
+    expect(job).toMatchObject({ id: 'job-win' });
+  });
+
   it('returns null when the quote does not exist', async () => {
     const { client, inserts } = makeSb({
       jobs: { read: null },

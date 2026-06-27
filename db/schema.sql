@@ -66,7 +66,7 @@ create index if not exists quotes_created_at_idx on quotes (created_at desc);
 create table if not exists jobs (
   id            uuid primary key default gen_random_uuid(),
   job_number    int unique,                          -- Job # display (≠ Quote ID), from job_number_seq
-  quote_id      uuid references quotes(id),          -- From-Quote link (snapshot at creation)
+  quote_id      uuid references quotes(id) on delete cascade, -- From-Quote link; cascade so deleteQuote/"delete all" doesn't FK-fail
   design_id     uuid,                                -- #82: design → materials projection
   customer_id   uuid,                                -- #83 Phase 5 (customers table) — nullable now
   property_id   uuid,                                -- #83 Phase 5 (properties table) — nullable now
