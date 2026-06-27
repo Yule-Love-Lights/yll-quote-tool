@@ -60,14 +60,18 @@ Each design run gets tagged with a physical **roof feature**; the engine maps fe
 | **Flat / commercial** | Parapet Clip **+** Shingle Tab (both) | `14144`/`14744` + `14145` | 100 / 500 | — |
 | **Metal** | Magnetic socket wire (no clip — **flag for staff review**) | — | — | metal roof surface |
 
-**Terminology trap (the binding protects against this):** the catalog has a *separate* product literally named **"C9 Tuff Tab" (`14148`)** that is **NOT** what Naldo means by "tuff clip" — Naldo's "tuff clip" = the **Flex Clip (`14147`)**. Same trap on bulbs: bind warm-white → `20009-SPK`, ignore the HBL/MIN/"DO NOT SELL" variants. **Spritzers** are excluded from the clip engine — they bundle their own Stake Metal (`14344`/`14355`/`14366`) as part of the spritzer's materials.
+**Terminology trap (the binding protects against this):** the catalog has a *separate* product literally named **"C9 Tuff Tab" (`14148`)** that is **NOT** what Naldo means by "tuff clip" — Naldo's "tuff clip" = the **Flex Clip (`14147`)**. Same trap on bulbs: bind warm-white → `20009-SPK`, ignore the HBL/MIN/"DO NOT SELL" variants.
+
+**Spritzers are their OWN category — never a clip, never on a roofline.** A spritzer is a ground- or tree-mounted item. Its **Stake Metal (`14344`/`14355`/`14366`)** is the *pole the spritzer mounts on* and belongs to the **spritzer** category, **not** the clip/roofline system. The clip engine never touches spritzers. Do **not** confuse the spritzer's Stake Metal with the **Pathway Ground Stake (`14343`)** — that one is the ground attachment for pathway / stake-*lighting* light runs (a clip-system item; a different SKU and purpose). *(Note: Thunder's CSV files the spritzer Stake Metal under "Hardware" alongside clips — YLL re-categorizes it to Spritzer; see §5.1.)*
 
 **Clip count** = run footage ÷ clip spacing. The spacing constants (clips per ft, per feature) are **config** Naldo sets in the clip-rules settings (`app_settings` key `clipRules`), not hardcoded.
 
 ## 5. Stock model — schemas
 
 ### 5.1 Catalog (`inventory_catalog` table) — full Thunder import
-Columns mirror the CSV: `sku` (PK), `name`, `category` (bulb | clip/hardware | wire | stake | spritzer | greenery[wreath/garland] | tree-string | …), `color` (nullable; store the palette-id-compatible value where applicable), `size`, `wholesale_cost`, `needs_adapter` (bool), `bag_ct`, `case_ct`, `locked` (bool — Q6.3 sold-out flag), `created_at`/`updated_at`. Raw vendor catalog, imported from CSV, rarely hand-edited. Retail/wattage/voltage kept on import for free.
+Columns mirror the CSV: `sku` (PK), `name`, `category` (**YLL-editable** — see below), `color` (nullable; store the palette-id-compatible value where applicable), `size`, `wholesale_cost`, `needs_adapter` (bool), `bag_ct`, `case_ct`, `locked` (bool — Q6.3 sold-out flag), `created_at`/`updated_at`. Raw vendor catalog, imported from CSV, rarely hand-edited. Retail/wattage/voltage kept on import for free.
+
+**Categories are YLL's logical grouping, not Thunder's raw column.** Thunder lumps unrelated items together — e.g. the spritzer **Stake Metal** sits under "Hardware" with the roofline clips. On import we seed from Thunder's category, but `category` is **editable**, so YLL groups items its own way: **clips/roofline** in one category, **spritzers + their Stake Metal** in their own category (§4), greenery, bulbs, wire, etc. This grouping drives the **show/hide toggles** (Q6.3) and keeps the clip engine pointed only at true roofline-clip SKUs.
 
 ### 5.2 Bindings (`app_settings` JSON keys, **not** a table — config, low-cardinality)
 - Key **`bindings`** maps each billed design-concept enum member → a catalog SKU. **Key off the palette ID, never the label** (the `cool-white`=label "Pure White" / `cool-white-faceted`=label "Cool White" trap). Shape:
