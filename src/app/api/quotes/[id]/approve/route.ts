@@ -123,7 +123,61 @@ type ApproveBody = {
   customPattern?: unknown; // #49 — build-your-own pattern (sanitized server-side)
   installTiming?: 'none' | 'september' | 'october';
   installDiscountUsd?: number;
+  // #83 Slice B — optional e-signature captured at approval. Backward-compatible:
+  // older portal clients omit it and the snapshot records signature: null.
+  signature?: unknown;
 };
+
+// #83 Slice B — the e-signature record frozen into approval_snapshot.signature.
+// kind 'typed' = the customer typed their name; 'drawn' = a canvas data-URL.
+// signed_at + ip are server-stamped (never client-trusted). null when no
+// signature was provided.
+type SignatureSnapshot = {
+  name: string;
+  kind: 'typed' | 'drawn';
+  value: string;
+  signed_at: string; // ISO timestamp (server)
+  ip: string | null; // from x-forwarded-for / x-real-ip, best-effort
+};
+
+const SIGNATURE_NAME_MAX = 200;
+// A drawn signature is a base64 PNG/JPEG data-URL; a typed one is just the name.
+// Cap the value so a giant canvas export can't bloat the row (a normal small
+// signature canvas PNG is well under this).
+const SIGNATURE_VALUE_MAX = 200_000;
+
+/**
+ * Parse + validate the optional signature from the request body.
+ * Returns:
+ *   - { ok: true, signature: null }            when none was provided (back-compat)
+ *   - { ok: true, signature: SignatureSnapshot } when a valid one was provided
+ *   - { ok: false }                            when one was provided but malformed
+ * server-stamps signed_at + ip (caller passes the request ip).
+ */
+function parseSignature(
+  raw: unknown,
+  ip: string | null,
+): { ok: true; signature: SignatureSnapshot | null } | { ok: false } {
+  if (raw == null) return { ok: true, signature: null };
+  if (typeof raw !== 'object') return { ok: false };
+  const s = raw as Record<string, unknown>;
+  const name = typeof s.name === 'string' ? s.name.trim() : '';
+  const kind = s.kind;
+  const value = typeof s.value === 'string' ? s.value.trim() : '';
+  if (!name || name.length > SIGNATURE_NAME_MAX) return { ok: false };
+  if (kind !== 'typed' && kind !== 'drawn') return { ok: false };
+  if (!value || value.length > SIGNATURE_VALUE_MAX) return { ok: false };
+  return {
+    ok: true,
+    signature: { name, kind, value, signed_at: new Date().toISOString(), ip },
+  };
+}
+
+function clientIp(req: NextRequest): string | null {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0]!.trim() || null;
+  return req.headers.get('x-real-ip')?.trim() || null;
+}
 
 // The snapshot shape — stored in the approval_snapshot jsonb column.
 // Kept self-describing so when we read it later we know what it contains
@@ -163,6 +217,10 @@ type ApprovalSnapshot = {
   // Full pricing result as it existed at approval time. If an admin
   // later edits the quote, this snapshot remembers the original.
   pricing: QuoteResult | null;
+  // #83 Slice B — the e-signature the customer gave at approval (typed or drawn).
+  // null when none was captured (older clients / not provided). The signature
+  // attests to this exact frozen snapshot.
+  signature: SignatureSnapshot | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -237,6 +295,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     typeof body.installDiscountUsd === 'number' && body.installDiscountUsd >= 0
       ? body.installDiscountUsd
       : 0;
+
+  // #83 Slice B — optional e-signature. Validated up front so a malformed one
+  // fails fast (400) before any DB work. Absent ⇒ signature stays null
+  // (backward-compatible with older portal clients).
+  const sigParse = parseSignature(body.signature, clientIp(req));
+  if (!sigParse.ok) {
+    return NextResponse.json(
+      { error: 'Invalid signature', code: 'bad-signature' },
+      { status: 400 },
+    );
+  }
+  const signature = sigParse.signature;
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
@@ -406,6 +476,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       email: quote.customer_email,
     },
     pricing: quote.result,
+    signature,
   };
 
   // Audit fix (g1-route, #43): GUARDED conditional update closes the read-then-
@@ -419,6 +490,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .update({
       customer_approved_at: approvedAt,
       approval_snapshot: snapshot,
+      // Advance the explicit lifecycle status alongside the timestamp (ledger
+      // #83). The deposit webhook flips it to 'booked' on payment; until then an
+      // approved-not-yet-paid quote reads 'approved'.
+      status: 'approved',
     })
     .eq('id', id)
     .is('customer_approved_at', null)

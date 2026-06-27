@@ -125,6 +125,78 @@ export function internalApprovalEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── Decline / Request-changes staff notifications (#83 Phase 1, Slice B) ────
+// Fired (best-effort) from the portal decline / request-changes routes so staff
+// see the customer's answer in their inbox. Internal-only — the customer gets a
+// friendly on-screen confirmation, not an email.
+
+export function internalDeclineEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `🚫 Quote declined: ${who}`;
+}
+
+export function internalDeclineEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  reason: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong> declined their quote.</p>`,
+    `<p><strong>Reason given:</strong></p>`,
+    `<blockquote style="margin:6px 0;padding:8px 12px;border-left:3px solid #C8313D;background:#faf3f3;">${escapeHtml(
+      input.reason,
+    )}</blockquote>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.portalUrl}">Customer portal →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
+export function internalChangesRequestedEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `✏️ Changes requested: ${who}`;
+}
+
+export function internalChangesRequestedEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  note: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong> asked for changes to their quote.</p>`,
+    `<p><strong>Action:</strong> edit the quote to address their note, then re-send it.</p>`,
+    `<p><strong>What they asked for:</strong></p>`,
+    `<blockquote style="margin:6px 0;padding:8px 12px;border-left:3px solid #FFB744;background:#fdf8ee;">${escapeHtml(
+      input.note,
+    )}</blockquote>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool to edit →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
+
 // ─── View receipt (#68) ─────────────────────────────────────────────────────
 // Sent to the internal GHL contact each time the customer opens their portal
 // link, so staff know the quote is being looked at (a warm-lead signal to

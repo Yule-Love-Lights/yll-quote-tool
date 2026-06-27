@@ -1,83 +1,240 @@
-import type { WorkflowBoard as WorkflowBoardData } from '@/lib/dashboard/workflowBoard';
+import Link from 'next/link';
+import type { WorkflowBoard as WorkflowBoardData, StageBucket } from '@/lib/dashboard/workflowBoard';
 
 function fmtMoney(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 }
 
-function StatusLine({ label, count, totalUsd }: { label: string; count: number; totalUsd: number }) {
-  return (
-    <div className="flex items-center justify-between py-1 text-sm">
-      <span style={{ color: 'var(--op-text-dim)' }}>{label}</span>
-      <span className="tabular-nums" style={{ color: 'var(--op-text)' }}>
-        {count}
-        {totalUsd > 0 ? ` · ${fmtMoney(totalUsd)}` : ''}
+/** A status sub-row: a colored dot, its label, then count · value. Rendered as a
+ *  link when `href` is given (the Quotes rows deep-link to the admin list). */
+type StatusRow = { key: string; label: string; dot: string; bucket: StageBucket; href?: string };
+
+function StatusRowItem({ row }: { row: StatusRow }) {
+  const { label, dot, bucket, href } = row;
+  const inner = (
+    <>
+      <span className="flex items-center gap-2 min-w-0">
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 rounded-full shrink-0"
+          style={{ background: dot }}
+        />
+        <span className="truncate" style={{ color: 'var(--op-text-2)' }}>
+          {label}
+        </span>
       </span>
-    </div>
+      <span className="tabular-nums shrink-0 pl-2" style={{ color: 'var(--op-text)' }}>
+        <span className="font-medium">{bucket.count}</span>
+        {bucket.totalUsd > 0 && (
+          <span style={{ color: 'var(--op-text-dim)' }}>{` · ${fmtMoney(bucket.totalUsd)}`}</span>
+        )}
+      </span>
+    </>
+  );
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className="flex items-center justify-between gap-2 rounded-md -mx-2 px-2 py-1.5 text-base transition-colors hover:bg-[var(--op-bg-hover)]"
+      >
+        {inner}
+      </Link>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between gap-2 px-0 py-1.5 text-base">{inner}</div>
   );
 }
 
-function StageCard({
+function StageColumn({
   title,
   accent,
-  children,
+  headline,
+  rows,
+  emptyLabel,
+  isEmpty,
+  footnote,
+  ariaLabel,
 }: {
   title: string;
   accent: string;
-  children: React.ReactNode;
+  headline: { count: number; valueUsd: number; suffix: string };
+  rows: StatusRow[];
+  emptyLabel: string;
+  isEmpty: boolean;
+  footnote?: string;
+  ariaLabel: string;
 }) {
   return (
-    <div
-      className="rounded-lg border p-4"
+    <section
+      aria-label={ariaLabel}
+      className="flex flex-col rounded-xl border shadow-sm"
       style={{
         background: 'var(--op-bg-raised)',
         borderColor: 'var(--op-border)',
         borderTop: `3px solid ${accent}`,
       }}
     >
-      <div className="text-sm font-semibold mb-2" style={{ color: 'var(--op-text)' }}>
-        {title}
+      <header className="px-4 pt-4 pb-3">
+        <h3
+          className="text-xs font-semibold uppercase tracking-wide"
+          style={{ color: 'var(--op-text-dim)' }}
+        >
+          {title}
+        </h3>
+        <div className="mt-1 flex items-baseline gap-2">
+          <span
+            className="text-3xl font-semibold tabular-nums leading-none"
+            style={{ color: 'var(--op-text)' }}
+          >
+            {headline.count}
+          </span>
+          <span className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
+            {headline.suffix}
+            {headline.valueUsd > 0 ? ` · ${fmtMoney(headline.valueUsd)}` : ''}
+          </span>
+        </div>
+      </header>
+      <div className="px-4 pb-4 border-t pt-2" style={{ borderColor: 'var(--op-border)' }}>
+        {isEmpty ? (
+          <p className="py-2 text-base" style={{ color: 'var(--op-text-dim)' }}>
+            {emptyLabel}
+          </p>
+        ) : (
+          <div className="flex flex-col">
+            {rows.map((row) => (
+              <StatusRowItem key={row.key} row={row} />
+            ))}
+          </div>
+        )}
+        {footnote && (
+          <p className="mt-3 text-xs leading-relaxed" style={{ color: 'var(--op-text-dim)' }}>
+            {footnote}
+          </p>
+        )}
       </div>
-      {children}
-    </div>
+    </section>
   );
 }
 
-/** The Jobber-style pipeline board (ledger #83). Phase-1 slice: the Quotes
- *  stage is live from real data; Jobs + Invoices arrive in #83 Phase 2/3. */
+// Canonical-ish status dot colors. Quotes mirror the lifecycle intent (gold
+// draft → blue sent → green approved → evergreen booked); Jobs use a sensible
+// billing progression. Pulled from the operator/brand palette in globals.css.
+const QUOTE_DOTS = {
+  draft: 'var(--brand-gold)',
+  sent: '#378ADD',
+  approved: '#639922',
+  booked: 'var(--brand-evergreen)',
+} as const;
+
+const JOB_DOTS = {
+  to_schedule: 'var(--brand-gold)',
+  scheduled: '#378ADD',
+  installed: '#639922',
+  requires_invoicing: '#D4537E',
+  done: 'var(--brand-evergreen)',
+  cancelled: 'var(--op-text-dim)',
+} as const;
+
+const QUOTES_HREF = '/admin/quotes';
+
+/** The Jobber-style pipeline board (ledger #83): Quotes · Jobs · Invoices.
+ *  Quotes + Jobs are live from real data; Invoices is a labeled placeholder
+ *  until #83 Phase 3 wires the balance-collection flow. */
 export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   const q = board.quotes;
+  const j = board.jobs;
+
+  // Quotes headline = booked (the deals that converted), mirroring the KPI strip.
+  const quoteRows: StatusRow[] = [
+    { key: 'draft', label: 'Draft', dot: QUOTE_DOTS.draft, bucket: q.draft, href: QUOTES_HREF },
+    { key: 'sent', label: 'Awaiting response', dot: QUOTE_DOTS.sent, bucket: q.awaitingResponse, href: QUOTES_HREF },
+    { key: 'approved', label: 'Approved · awaiting deposit', dot: QUOTE_DOTS.approved, bucket: q.approved, href: QUOTES_HREF },
+    { key: 'booked', label: 'Booked · deposit paid', dot: QUOTE_DOTS.booked, bucket: q.booked, href: QUOTES_HREF },
+  ];
+  const quotesTotal = q.draft.count + q.awaitingResponse.count + q.approved.count + q.booked.count;
+
+  // "Active" jobs = everything still in flight (before done / cancelled).
+  const activeJobsCount =
+    j.to_schedule.count + j.scheduled.count + j.installed.count + j.requires_invoicing.count;
+  const activeJobsUsd =
+    j.to_schedule.totalUsd + j.scheduled.totalUsd + j.installed.totalUsd + j.requires_invoicing.totalUsd;
+  const jobRows: StatusRow[] = [
+    { key: 'to_schedule', label: 'To schedule', dot: JOB_DOTS.to_schedule, bucket: j.to_schedule },
+    { key: 'scheduled', label: 'Scheduled', dot: JOB_DOTS.scheduled, bucket: j.scheduled },
+    { key: 'installed', label: 'Installed', dot: JOB_DOTS.installed, bucket: j.installed },
+    { key: 'requires_invoicing', label: 'Requires invoicing', dot: JOB_DOTS.requires_invoicing, bucket: j.requires_invoicing },
+    { key: 'done', label: 'Done', dot: JOB_DOTS.done, bucket: j.done },
+    { key: 'cancelled', label: 'Cancelled', dot: JOB_DOTS.cancelled, bucket: j.cancelled },
+  ];
+  const jobsTotal = jobRows.reduce((sum, r) => sum + r.bucket.count, 0);
+
   return (
     <section aria-label="Workflow pipeline" className="mb-8">
-      <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--op-text)' }}>
-        Workflow
-      </h2>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <StageCard title="Quotes" accent="#D4537E">
-          <div className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
-            {q.booked.count}{' '}
-            <span className="text-xs font-normal" style={{ color: 'var(--op-text-dim)' }}>
-              booked · {fmtMoney(q.booked.totalUsd)}
-            </span>
-          </div>
-          <div className="mt-3 pt-2 border-t" style={{ borderColor: 'var(--op-border)' }}>
-            <StatusLine label="Draft" count={q.draft.count} totalUsd={q.draft.totalUsd} />
-            <StatusLine label="Awaiting response" count={q.awaitingResponse.count} totalUsd={q.awaitingResponse.totalUsd} />
-            <StatusLine label="Approved · awaiting deposit" count={q.approved.count} totalUsd={q.approved.totalUsd} />
-            <StatusLine label="Booked · deposit paid" count={q.booked.count} totalUsd={q.booked.totalUsd} />
-          </div>
-        </StageCard>
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <h2 className="text-lg font-semibold" style={{ color: 'var(--op-text)' }}>
+          Workflow
+        </h2>
+        <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+          Quotes → Jobs → Invoices
+        </span>
+      </div>
 
-        <StageCard title="Jobs" accent="#639922">
-          <div className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
-            Coming in Phase 2 — a job is auto-created when a deposit is paid. Scheduling runs in home.works.
-          </div>
-        </StageCard>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+        <StageColumn
+          ariaLabel="Quotes pipeline"
+          title="Quotes"
+          accent="#D4537E"
+          headline={{ count: q.booked.count, valueUsd: q.booked.totalUsd, suffix: 'booked' }}
+          rows={quoteRows}
+          isEmpty={quotesTotal === 0}
+          emptyLabel="No quotes yet."
+        />
 
-        <StageCard title="Invoices" accent="#378ADD">
-          <div className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
-            Coming in Phase 3 — the 50% balance is collected via Valor after install.
+        <StageColumn
+          ariaLabel="Jobs pipeline"
+          title="Jobs"
+          accent="#639922"
+          headline={{ count: activeJobsCount, valueUsd: activeJobsUsd, suffix: 'active' }}
+          rows={jobRows}
+          isEmpty={jobsTotal === 0}
+          emptyLabel="No jobs yet — a job is created when a deposit is paid."
+          footnote="Auto-created when a deposit is paid. Scheduling runs in home.works."
+        />
+
+        {/* Invoices — Phase 3 placeholder. Visibly disabled so the pipeline reads
+            end-to-end without implying data that doesn't exist yet. */}
+        <section
+          aria-label="Invoices pipeline (coming soon)"
+          className="flex flex-col rounded-xl border border-dashed"
+          style={{ background: 'transparent', borderColor: 'var(--op-border-mid)' }}
+        >
+          <header className="px-4 pt-4 pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3
+                className="text-xs font-semibold uppercase tracking-wide"
+                style={{ color: 'var(--op-text-dim)' }}
+              >
+                Invoices
+              </h3>
+              <span
+                className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
+                style={{ background: 'var(--op-bg-hover)', color: 'var(--op-text-dim)' }}
+              >
+                Coming soon
+              </span>
+            </div>
+            <div className="mt-1 text-3xl font-semibold leading-none" style={{ color: 'var(--op-border-mid)' }}>
+              —
+            </div>
+          </header>
+          <div className="px-4 pb-4 border-t pt-3" style={{ borderColor: 'var(--op-border)' }}>
+            <p className="text-base" style={{ color: 'var(--op-text-dim)' }}>
+              Lands in Phase 3 — the 50% balance is collected via Valor after install.
+            </p>
           </div>
-        </StageCard>
+        </section>
       </div>
     </section>
   );

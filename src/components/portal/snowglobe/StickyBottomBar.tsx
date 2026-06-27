@@ -11,6 +11,8 @@ import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DepositCheckout } from './DepositCheckout';
+import { SignaturePad, type CapturedSignature } from './SignaturePad';
+import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
 
 export type StickyBottomBarProps = {
   quoteId: string;
@@ -57,6 +59,12 @@ export function StickyBottomBar({
   // prop), Approve opens the embedded deposit checkout instead of routing to the
   // booked page. Off by default (the code ships dark; flipped on after testing).
   const [showCheckout, setShowCheckout] = useState(false);
+  // #83 Slice B — the "Confirm & sign" step shown before the approve POST, and
+  // the captured signature it collects (typed name baseline / drawn canvas).
+  const [showSign, setShowSign] = useState(false);
+  const [signature, setSignature] = useState<CapturedSignature | null>(null);
+  // #83 Slice B — the Decline / Request-changes modal (null = none open).
+  const [responseIntent, setResponseIntent] = useState<ResponseIntent | null>(null);
   const router = useRouter();
 
   // Fire a one-shot "interested" signal when the customer DELIBERATELY engages
@@ -100,7 +108,7 @@ export function StickyBottomBar({
   // flips it to booked + fires the receipt). With the flag OFF, fall back to
   // today's behavior: navigate to the celebration page (the approve route having
   // texted/emailed the customer about collecting the deposit).
-  const onApprove = async () => {
+  const onApprove = async (sig: CapturedSignature) => {
     if (submitting || !meetsMinimum) return;
     setSubmitting(true);
     setErrorMsg(null);
@@ -120,12 +128,15 @@ export function StickyBottomBar({
           customPattern,
           installTiming,
           installDiscountUsd: breakdown.discount,
+          // #83 Slice B — the e-signature captured in the "Confirm & sign" step.
+          signature: { name: sig.name, kind: sig.kind, value: sig.value },
         }),
       });
       // 409 = already approved. With checkout ON, open the deposit checkout
       // anyway (/pay routes onward if the deposit is already paid); with it OFF,
       // route straight to the celebration page (today's behavior).
       if (res.status === 409) {
+        setShowSign(false);
         if (checkoutEnabled) {
           setShowCheckout(true);
           setSubmitting(false);
@@ -138,8 +149,9 @@ export function StickyBottomBar({
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(body.error ?? `Request failed: ${res.status}`);
       }
-      // Approval recorded. ON → open the embedded 50% deposit checkout; OFF →
-      // celebration page (the pre-Valor placeholder flow).
+      // Approval recorded. Close the sign step, then ON → open the embedded 50%
+      // deposit checkout; OFF → celebration page (the pre-Valor placeholder flow).
+      setShowSign(false);
       if (checkoutEnabled) {
         setShowCheckout(true);
         setSubmitting(false);
@@ -225,6 +237,34 @@ export function StickyBottomBar({
       {showCheckout && (
         <DepositCheckout quoteId={quoteId} onClose={() => setShowCheckout(false)} />
       )}
+      {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
+          runs the existing approve POST with it. The signature is required
+          (typed name baseline; drawn canvas optional). */}
+      {showSign && (
+        <SignModal
+          submitting={submitting}
+          errorMsg={errorMsg}
+          signature={signature}
+          onSignatureChange={setSignature}
+          onCancel={() => {
+            setShowSign(false);
+            setErrorMsg(null);
+          }}
+          onConfirm={() => {
+            if (signature) onApprove(signature);
+          }}
+          total={currentTotal}
+          deposit={currentDeposit}
+        />
+      )}
+      {/* #83 Slice B — Decline / Request-changes modals. */}
+      {responseIntent && (
+        <QuoteResponseModal
+          quoteId={quoteId}
+          intent={responseIntent}
+          onClose={() => setResponseIntent(null)}
+        />
+      )}
       <div
         className="portal-snow-sticky"
         role="region"
@@ -256,40 +296,136 @@ export function StickyBottomBar({
         </span>
       </div>
 
-      {/* Wrapper carries the interest listeners so they fire even when the
-          button is disabled (under the $1,000 minimum). */}
-      <span
-        className="inline-flex"
-        onMouseEnter={startHoverIntent}
-        onMouseLeave={cancelHoverIntent}
-        onFocus={flagInterest}
-      >
-      <button
-        type="button"
-        onClick={onApprove}
-        disabled={submitting || !meetsMinimum}
-        aria-label="Approve quote"
-        className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {submitting ? (
-          <>
-            <span
-              aria-hidden
-              className="inline-block w-3.5 h-3.5 rounded-full border-2 border-[#F4ECD8]/30 border-t-[#F4ECD8] animate-spin"
-            />
-            {/* Audit fix (g10): "Opening" misrepresented a network-bound DB+notify
-                request that can fail; "Approving…" reflects what's happening. */}
-            Approving…
-          </>
-        ) : (
-          <>
+      {/* Actions: secondary Decline / Request-changes + the primary Approve.
+          The wrapper carries the interest listeners so they fire even when the
+          Approve button is disabled (under the $1,000 minimum). */}
+      <div className="flex items-center gap-2">
+        {/* #83 Slice B — secondary customer responses. Compact, lower-emphasis
+            than Approve; always available pre-approval. */}
+        <button
+          type="button"
+          onClick={() => setResponseIntent('request-changes')}
+          aria-label="Request changes to this quote"
+          className="hidden sm:inline-flex items-center justify-center min-h-[44px] px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744]"
+        >
+          Request changes
+        </button>
+        <button
+          type="button"
+          onClick={() => setResponseIntent('decline')}
+          aria-label="Decline this quote"
+          className="inline-flex items-center justify-center min-h-[44px] px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744]"
+        >
+          Decline
+        </button>
+        <span
+          className="inline-flex"
+          onMouseEnter={startHoverIntent}
+          onMouseLeave={cancelHoverIntent}
+          onFocus={flagInterest}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setErrorMsg(null);
+              setShowSign(true);
+            }}
+            disabled={submitting || !meetsMinimum}
+            aria-label="Approve quote"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             Approve
             <ArrowRight className="w-4 h-4" aria-hidden />
-          </>
-        )}
-      </button>
-      </span>
+          </button>
+        </span>
+      </div>
       </div>
     </>
+  );
+}
+
+// #83 Slice B — the "Confirm & sign" modal. A thin dark-theme shell around the
+// SignaturePad. Approve is gated on a captured signature (typed name baseline,
+// drawn canvas optional). Errors from the approve POST surface here so the
+// customer can retry without losing what they signed.
+function SignModal({
+  submitting,
+  errorMsg,
+  signature,
+  onSignatureChange,
+  onCancel,
+  onConfirm,
+  total,
+  deposit,
+}: {
+  submitting: boolean;
+  errorMsg: string | null;
+  signature: CapturedSignature | null;
+  onSignatureChange: (sig: CapturedSignature | null) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  total: number;
+  deposit: number;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirm and sign"
+    >
+      <div className="w-full max-w-md rounded-2xl bg-[#0D1519] border border-[#FFB744]/30 shadow-2xl p-6 text-[#F4ECD8] max-h-[90vh] overflow-y-auto">
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="font-display text-[20px] font-bold">Approve &amp; sign</h2>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Cancel"
+            className="text-[#A89F87] hover:text-[#F4ECD8] text-[13px] underline cursor-pointer min-h-[44px] inline-flex items-center"
+          >
+            Cancel
+          </button>
+        </div>
+        <p className="text-[13px] text-[#A89F87]">
+          You&apos;re approving <span className="text-[#F4ECD8] font-semibold">{formatUsd(total)}</span>{' '}
+          (incl. tax) with a{' '}
+          <span className="text-[#FFD07A] font-semibold">{formatUsd(deposit)}</span> deposit. Sign
+          below to confirm.
+        </p>
+
+        <SignaturePad onChange={onSignatureChange} />
+
+        {errorMsg && (
+          <p
+            role="alert"
+            className="mt-3 text-[13px] text-[#F4ECD8] bg-[#7A1C24] border border-[#C8313D]/50 rounded-md px-3 py-2"
+          >
+            {errorMsg}
+          </p>
+        )}
+
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={submitting || !signature}
+          className="mt-4 w-full inline-flex items-center justify-center gap-1.5 min-h-[44px] px-5 py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[14px] cursor-pointer hover:bg-[#D8434F] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {submitting ? (
+            <>
+              <span
+                aria-hidden
+                className="inline-block w-3.5 h-3.5 rounded-full border-2 border-[#F4ECD8]/30 border-t-[#F4ECD8] animate-spin"
+              />
+              Approving…
+            </>
+          ) : (
+            <>
+              Confirm approval
+              <ArrowRight className="w-4 h-4" aria-hidden />
+            </>
+          )}
+        </button>
+      </div>
+    </div>
   );
 }

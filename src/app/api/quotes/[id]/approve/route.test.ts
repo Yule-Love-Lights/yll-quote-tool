@@ -220,6 +220,78 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
   });
 });
 
+describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', () => {
+  it('captures a typed signature into the snapshot', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' } }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      signature: { name: string; kind: string; value: string; signed_at: string; ip: string | null } | null;
+    };
+    expect(snap.signature).toBeTruthy();
+    expect(snap.signature!.name).toBe('Jordan Smith');
+    expect(snap.signature!.kind).toBe('typed');
+    expect(snap.signature!.value).toBe('Jordan Smith');
+    expect(typeof snap.signature!.signed_at).toBe('string');
+    // ip is captured from the request header (null when absent, as in this mock)
+    expect('ip' in snap.signature!).toBe(true);
+  });
+
+  it('captures a drawn signature (data-URL value)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const res = await POST(
+      makeReq({ ...validBody, signature: { name: 'Jordan Smith', kind: 'drawn', value: dataUrl } }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as { signature: { kind: string; value: string } | null };
+    expect(snap.signature!.kind).toBe('drawn');
+    expect(snap.signature!.value).toBe(dataUrl);
+  });
+
+  it('is backward-compatible — no signature field ⇒ signature: null, still 200', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as { signature: unknown };
+    expect(snap.signature).toBeNull();
+  });
+
+  it('rejects a malformed signature (missing name) → 400', async () => {
+    const { client } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, signature: { kind: 'typed', value: 'x' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('bad-signature');
+  });
+
+  it('rejects a signature with an unknown kind → 400', async () => {
+    const { client } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, signature: { name: 'J', kind: 'wet-ink', value: 'x' } }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /api/quotes/[id]/approve — TOCTOU + notify marker', () => {
   it('returns 409 and skips messaging when the guarded update wins no rows (race lost)', async () => {
     hl.configured.value = true;

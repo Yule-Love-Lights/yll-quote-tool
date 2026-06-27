@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -23,27 +24,53 @@ function clearAdminSecret() {
   if (typeof window !== 'undefined') window.sessionStorage.removeItem('yll:adminSecret');
 }
 
-// Audit fix (Finding #40): the lifecycle status of a row, derived from its
-// timestamp flags. Mirrors the badge logic in the table below so the filter
-// and the badge agree. NOTE: this is a presentation-only label local to the
-// admin list — the canonical quote-status model lives on the dashboard (#83);
-// a never-sent row is shown as "Draft" here so un-sent work is legible at a
-// glance, but no status semantics are persisted from this file.
-type LifecycleStatus = 'Draft' | 'Sent' | 'Viewed' | 'Approved';
-
-function deriveStatus(q: QuoteListItem): LifecycleStatus {
-  if (q.customer_approved_at) return 'Approved';
-  if (q.viewed_at) return 'Viewed';
-  if (q.quote_sent_at) return 'Sent';
-  return 'Draft';
+// The lifecycle status of a row. Now sourced from the canonical model
+// (src/lib/quoteStatus.ts, ledger #83): deriveStatus prefers the persisted
+// `status` column for states timestamps can't express (declined /
+// changes_requested / cancelled / lost) and otherwise computes the latest state
+// from the lifecycle timestamps — so the same row reads identically here, on the
+// dashboard Workflow board, and in the data layer. Supersedes the old local
+// Draft/Sent/Viewed/Approved derivation (audit Finding #40).
+function rowStatus(q: QuoteListItem): QuoteStatus {
+  return deriveStatus(q);
 }
 
-const STATUS_STYLES: Record<LifecycleStatus, string> = {
-  Approved: 'bg-green-100 text-green-700',
-  Viewed: 'bg-purple-100 text-purple-700',
-  Sent: 'bg-blue-100 text-blue-700',
-  Draft: 'bg-amber-100 text-amber-700',
+// Display label + badge style per canonical status. Title-cased for the UI.
+const STATUS_LABELS: Record<QuoteStatus, string> = {
+  draft: 'Draft',
+  sent: 'Sent',
+  viewed: 'Viewed',
+  approved: 'Approved',
+  booked: 'Booked',
+  changes_requested: 'Changes',
+  declined: 'Declined',
+  cancelled: 'Cancelled',
+  lost: 'Lost',
 };
+
+const STATUS_STYLES: Record<QuoteStatus, string> = {
+  booked: 'bg-emerald-100 text-emerald-700',
+  approved: 'bg-green-100 text-green-700',
+  viewed: 'bg-purple-100 text-purple-700',
+  sent: 'bg-blue-100 text-blue-700',
+  draft: 'bg-amber-100 text-amber-700',
+  changes_requested: 'bg-orange-100 text-orange-700',
+  declined: 'bg-red-100 text-red-700',
+  cancelled: 'bg-gray-200 text-gray-600',
+  lost: 'bg-gray-200 text-gray-600',
+};
+
+// The statuses offered as filter chips. Ordered along the lifecycle; the two
+// portal branch states (Changes/Declined) sit at the end.
+const FILTER_STATUSES: QuoteStatus[] = [
+  'draft',
+  'sent',
+  'viewed',
+  'approved',
+  'booked',
+  'changes_requested',
+  'declined',
+];
 
 export default function QuotesAdminPage() {
   const [items, setItems] = useState<QuoteListItem[]>([]);
@@ -52,7 +79,7 @@ export default function QuotesAdminPage() {
   const [busy, setBusy] = useState<string | null>(null);
   // Audit fix (Finding #40): client-side status filter + text search over the
   // already-loaded list so "what is still un-sent" is answerable at a glance.
-  const [statusFilter, setStatusFilter] = useState<'All' | LifecycleStatus>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | QuoteStatus>('All');
   const [search, setSearch] = useState('');
 
   const refresh = async () => {
@@ -149,7 +176,7 @@ export default function QuotesAdminPage() {
   // Search matches name / address / phone / email / quote-id prefix.
   const term = search.trim().toLowerCase();
   const visible = items.filter(q => {
-    if (statusFilter !== 'All' && deriveStatus(q) !== statusFilter) return false;
+    if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
     if (!term) return true;
     return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
       .some(v => v != null && v.toLowerCase().includes(term));
@@ -193,8 +220,8 @@ export default function QuotesAdminPage() {
             (Draft) quotes are legible at a glance. */}
         {!loading && items.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="flex gap-1">
-              {(['All', 'Draft', 'Sent', 'Viewed', 'Approved'] as const).map(s => (
+            <div className="flex flex-wrap gap-1">
+              {(['All', ...FILTER_STATUSES] as const).map(s => (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
@@ -204,7 +231,7 @@ export default function QuotesAdminPage() {
                       : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                   }`}
                 >
-                  {s}
+                  {s === 'All' ? 'All' : STATUS_LABELS[s]}
                 </button>
               ))}
             </div>
@@ -247,25 +274,35 @@ export default function QuotesAdminPage() {
               </thead>
               <tbody>
                 {visible.map(q => {
-                  // Lifecycle badge (highest state wins). "Viewed" (#68) sits
-                  // between Sent and Approved — a sent quote the customer has
-                  // opened. Its tooltip shows the open count + last-open time.
-                  // Audit fix (Finding #40): never-sent rows now render a
-                  // "Draft" badge instead of no badge, via deriveStatus().
-                  const label = deriveStatus(q);
-                  const status = { label, className: STATUS_STYLES[label] };
+                  // Lifecycle badge from the canonical status model (#83):
+                  // persisted `status` for the branch states (Declined/Changes),
+                  // else the latest timestamp-derived state (Booked > Approved >
+                  // Viewed > Sent > Draft). "Viewed" (#68) tooltip shows the open
+                  // count + last-open time; "Declined" shows the customer reason.
+                  const code = rowStatus(q);
+                  const status = { code, label: STATUS_LABELS[code], className: STATUS_STYLES[code] };
                   const viewedTitle = q.viewed_at
                     ? `Opened ${q.view_count ?? 1}×${q.last_viewed_at ? ` — last ${fmtDate(q.last_viewed_at)}` : ''}`
                     : undefined;
+                  const badgeTitle =
+                    status.code === 'viewed'
+                      ? viewedTitle
+                      : status.code === 'declined' && q.decline_reason
+                        ? `Declined: ${q.decline_reason}`
+                        : undefined;
                   return (
                     <tr key={q.id} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(q.created_at)}</td>
-                      <td className="px-3 py-2 text-xs font-mono text-gray-500 whitespace-nowrap" title={`Quote ID: ${q.id}`}>{q.id.slice(0, 8)}</td>
+                      {/* Sequential display number (#83, SPEC §4.6) when allocated;
+                          falls back to the truncated UUID (#77) on legacy rows. */}
+                      <td className="px-3 py-2 text-xs font-mono text-gray-500 whitespace-nowrap" title={`Quote ID: ${q.id}`}>
+                        {q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}
+                      </td>
                       <td className="px-3 py-2 text-gray-700">
                         <div className="flex items-center gap-2">
                           <span>{q.customer_name ?? '—'}</span>
                           <span
-                            title={status.label === 'Viewed' ? viewedTitle : undefined}
+                            title={badgeTitle}
                             className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}
                           >
                             {status.label}
