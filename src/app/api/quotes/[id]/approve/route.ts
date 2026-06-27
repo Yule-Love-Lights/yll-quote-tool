@@ -61,9 +61,25 @@ import {
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
-import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+// Audit fix (g1-route): server-side recompute of the approved selection mirrors
+// exactly what the portal's SelectionContext displays, so we never freeze a
+// client-tampered total/deposit/discount into the authoritative snapshot.
+import { buildPortalLineItems } from '@/lib/portal/adapter';
+import {
+  chargesFromResult,
+  effectiveCharges,
+  priceSelection,
+  installDiscountRate,
+  minimumOrderSubtotal,
+  orderMinimumStatus,
+} from '@/lib/portal/derivePackages';
 
 export const runtime = 'nodejs';
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -83,8 +99,16 @@ type QuoteRow = {
   customer_email: string | null;
   total: number | null;
   result: QuoteResult | null;
+  // The saved pricing inputs (jsonb) — needed for the server recompute: the
+  // per-item `recommended` flag (custom rows), the staff manual discount, and
+  // the waive-minimum override all live here (audit fix g1-route).
+  inputs: QuoteInputs | null;
   highlevel_contact_id: string | null;
   customer_approved_at: string | null;
+  // #93 — whether staff sent the quote before this approval. Recorded as a
+  // snapshot flag so a deliberate in-person close is distinguishable from a
+  // stray pre-send approval on a leaked link (audit fix g1-route).
+  quote_sent_at: string | null;
 };
 
 type ApproveBody = {
@@ -121,6 +145,15 @@ type ApprovalSnapshot = {
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
+  // Audit fix (g1-route): set when the server could NOT recompute the selection
+  // (quote.result was null) and fell back to the client-supplied figures. The
+  // figures above are then NOT server-verified — staff/dashboard should treat
+  // them with caution. False/absent on a normal recomputed approval.
+  serverRecomputed: boolean;
+  // #93 — true when the customer approved a quote staff had not yet "sent".
+  // NOT a block (the dashboard supports a deliberate offline/in-person close);
+  // a marker so staff can distinguish that from a stray pre-send approval.
+  approvedWhileUnsent: boolean;
   customer: {
     fullName: string | null;
     address: string | null;
@@ -209,7 +242,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, highlevel_contact_id, customer_approved_at',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, quote_sent_at',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -235,6 +268,99 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
+  // #39/#63/#74/#79) ────────────────────────────────────────────────────────
+  // The client POSTs currentTotal/currentDeposit/installDiscountUsd/selectedItem-
+  // Ids, but those are customer-controllable and this snapshot is the
+  // authoritative record (echoed back to the customer AND the staff "go collect
+  // the deposit" email). So we recompute the figures server-side, mirroring the
+  // portal's SelectionContext exactly: rebuild the line items from quote.result,
+  // intersect the selection against the REAL ids, derive the discount, and price
+  // via the same priceSelection() the portal renders. The client numbers are
+  // only used as a sanity check (warn on divergence) and as a fallback when the
+  // quote has no pricing result.
+  //
+  // #15 — the $1,000 order-minimum is enforced here too, against the server
+  // subtotal (it was previously client-only / bypassable via a direct POST).
+  let serverRecomputed = false;
+  let snapshotSelectedItemIds = selectedItemIds;
+  let snapshotTotalUsd = currentTotal;
+  let snapshotDepositUsd = currentDeposit;
+  let snapshotInstallDiscountUsd = installDiscountUsd;
+
+  if (quote.result) {
+    const { lineItems } = buildPortalLineItems(quote.result, quote.inputs);
+    const realIds = new Set(lineItems.map((li) => li.id));
+    // Drop any unknown / tampered ids the client sent (#13/#31).
+    const validIds = selectedItemIds.filter((sid) => realIds.has(sid));
+    const selectedSet = new Set(validIds);
+    const serverSubtotal = lineItems.reduce(
+      (sum, li) => (selectedSet.has(li.id) ? sum + li.price : sum),
+      0,
+    );
+
+    // Discount: one per quote — a staff manual discount (#40) OR the customer's
+    // early-install pick — same precedence the portal uses (manual wins, picker
+    // hidden). installDiscountUsd is derived from the server subtotal, never the
+    // client value.
+    const d = quote.inputs?.discount;
+    const hasManual = !!d && d.amount > 0;
+    const discountRate = hasManual
+      ? d!.type === 'percentage'
+        ? d!.amount
+        : 0
+      : installDiscountRate(installTiming);
+    const discountFlat = hasManual && d!.type === 'flat' ? d!.amount : 0;
+    snapshotInstallDiscountUsd =
+      installTiming === 'none' ? 0 : round2(serverSubtotal * installDiscountRate(installTiming));
+
+    const config = chargesFromResult(quote.result);
+    const breakdown = priceSelection(
+      serverSubtotal,
+      effectiveCharges(config, rushSelected, takedownSelected, discountRate, discountFlat),
+    );
+
+    // #15 — order-minimum gate. The minimum auto-waives for a quote whose items
+    // total under $1,000, and staff can waive it per-quote (inputs.waiveMinimum).
+    // We measure the same pre-tax basis (subtotal + fees) the portal gates on.
+    // NEEDS FEEDBACK: this hard-blocks a below-minimum approval server-side; if a
+    // legitimate below-minimum close exists, staff should set inputs.waiveMinimum.
+    const minimum = quote.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(lineItems);
+    const { meetsMinimum } = orderMinimumStatus(breakdown, minimum);
+    if (!meetsMinimum) {
+      return NextResponse.json(
+        { error: 'Selection is below the order minimum', code: 'below-minimum' },
+        { status: 400 },
+      );
+    }
+
+    // Reject a junk / empty selection that prices to nothing.
+    if (breakdown.total <= 0 || breakdown.deposit <= 0) {
+      return NextResponse.json(
+        { error: 'Selection has no priceable items', code: 'empty-selection' },
+        { status: 400 },
+      );
+    }
+
+    // Warn (don't fail) when the client total disagrees by more than a cent —
+    // surfaces a portal⇄server pricing drift without blocking a real customer.
+    if (Math.abs(breakdown.total - currentTotal) > 0.01) {
+      console.warn(
+        '[api/quotes/:id/approve] client/server total mismatch:',
+        id,
+        'client=',
+        currentTotal,
+        'server=',
+        breakdown.total,
+      );
+    }
+
+    serverRecomputed = true;
+    snapshotSelectedItemIds = validIds;
+    snapshotTotalUsd = breakdown.total;
+    snapshotDepositUsd = breakdown.deposit;
+  }
+
   // Freeze the approval snapshot FIRST, before any messaging. This preserves
   // the customer's consent even if the notifications below fail — we never
   // want to lose the fact that they approved.
@@ -245,16 +371,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     customerSelection: {
       packageId,
       activeName,
-      selectedItemIds,
-      currentTotalUsd: currentTotal,
-      currentDepositUsd: currentDeposit,
+      // All four figures below are the server-recomputed values when
+      // quote.result existed (serverRecomputed === true); otherwise they fall
+      // back to the validated client values (serverRecomputed === false).
+      selectedItemIds: snapshotSelectedItemIds,
+      currentTotalUsd: snapshotTotalUsd,
+      currentDepositUsd: snapshotDepositUsd,
       rushSelected,
       takedownSelected,
       colorSchemeId,
       customPattern,
       installTiming,
-      installDiscountUsd,
+      installDiscountUsd: snapshotInstallDiscountUsd,
     },
+    serverRecomputed,
+    approvedWhileUnsent: !quote.quote_sent_at,
     customer: {
       fullName: quote.customer_name,
       address: quote.customer_address,
@@ -264,19 +395,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     pricing: quote.result,
   };
 
-  const { error: snapshotErr } = await sb
+  // Audit fix (g1-route, #43): GUARDED conditional update closes the read-then-
+  // write TOCTOU. The early SELECT above is a fast-path 409; this `.is(...,null)`
+  // makes the write itself the race winner — two concurrent POSTs that both
+  // passed the SELECT can't both land here, because only the first matches the
+  // `customer_approved_at IS NULL` predicate. `.select('id')` returns the
+  // affected rows so we can tell whether WE won.
+  const { data: updatedRows, error: snapshotErr } = await sb
     .from('quotes')
     .update({
       customer_approved_at: approvedAt,
       approval_snapshot: snapshot,
     })
-    .eq('id', id);
+    .eq('id', id)
+    .is('customer_approved_at', null)
+    .select('id');
 
   if (snapshotErr) {
     console.error('[api/quotes/:id/approve] snapshot save failed:', snapshotErr);
     return NextResponse.json(
       { error: `Failed to record approval: ${snapshotErr.message}` },
       { status: 500 },
+    );
+  }
+
+  // No rows updated → another concurrent caller won the approval race. Return
+  // 409 and SKIP all messaging so the notifications fire at most once.
+  if (!updatedRows || updatedRows.length === 0) {
+    return NextResponse.json(
+      { error: 'Quote already approved', code: 'already-approved' },
+      { status: 409 },
     );
   }
 
@@ -295,8 +443,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
     const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
     const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
-    const depositUsd = quote.result?.depositAmount ?? currentDeposit;
-    const totalUsd = quote.result?.total ?? quote.total ?? currentTotal;
+    // Audit fix (g1-route): use the SAME recomputed figures we froze into the
+    // snapshot, not quote.result's whole-quote total/deposit. The snapshot is
+    // the per-SELECTION price the customer approved; the internal "go collect
+    // the deposit" email must quote that same number, not a divergent one.
+    const depositUsd = snapshotDepositUsd;
+    const totalUsd = snapshotTotalUsd;
 
     // 1. Customer — confirm approval + that we'll reach out for the deposit.
     //    SMS needs the contact to have a phone (real customers do); a 422 there
@@ -365,6 +517,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         console.warn('[api/quotes/:id/approve] internal email failed:', hlErrorMessage(err));
         messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
       }
+    }
+  }
+
+  // Audit fix (g1-route, #18/#83): durable staff signal when the approval was
+  // recorded but the internal "go collect the deposit" email never went out —
+  // GHL unconfigured, HIGHLEVEL_INTERNAL_CONTACT_ID unset, or a thrown send. The
+  // ok:true response goes to the customer's browser, not staff, so without this
+  // marker an orphaned approval (deposit owed, nobody told) is invisible. A
+  // future dashboard queue surfaces these rows (separate Naldo task). The marker
+  // write is itself best-effort — its failure only logs, never undoes anything.
+  // Skipped cleanly when the embedded checkout is on (no internal email is sent
+  // on approve then; the payment webhook is the staff signal instead).
+  const notifyOk = isValorCheckoutEnabled() || internalEmailSent;
+  if (!notifyOk) {
+    const { error: markErr } = await sb
+      .from('quotes')
+      .update({
+        approval_notify_failed_at: new Date().toISOString(),
+        approval_notify_error: messageError ?? 'internal notification not sent',
+      })
+      .eq('id', id);
+    if (markErr) {
+      console.warn('[api/quotes/:id/approve] notify-marker write failed:', markErr.message);
     }
   }
 
