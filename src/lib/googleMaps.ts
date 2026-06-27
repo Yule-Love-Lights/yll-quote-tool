@@ -11,6 +11,34 @@ function getKey(): string {
   return key;
 }
 
+// Default ceiling for an outbound Google call. Google usually answers in well
+// under 2s; this just stops a hung connection from stalling a whole request
+// (the analyze-address flow chains geocode + street view + satellite, so one
+// hang would otherwise freeze the operator's quote build).
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+// fetch() with a hard timeout via AbortController. On timeout it throws a clear
+// error that does NOT include the URL's query string (which carries the API
+// key) — so the key never lands in logs. Exported for testing.
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${url.split('?')[0]}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type GeocodeResult = {
   lat: number;
   lng: number;
@@ -20,7 +48,7 @@ export type GeocodeResult = {
 export async function geocodeAddress(address: string): Promise<GeocodeResult> {
   const key = getKey();
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${key}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`Geocode failed: ${res.status}`);
   const data = await res.json();
   if (data.status !== 'OK' || !data.results?.[0]) {
@@ -59,7 +87,7 @@ export async function fetchStreetView(
   const headingParam = opts?.heading != null ? `&heading=${opts.heading}` : '';
   const pitchParam = opts?.pitch != null ? `&pitch=${opts.pitch}` : '';
   const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}&location=${lat},${lng}&fov=${fov}${headingParam}${pitchParam}&source=outdoor&key=${key}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`Street View fetch failed: ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   // Google returns JPEG for streetview
@@ -71,7 +99,7 @@ export async function fetchStreetView(
 export async function hasStreetView(lat: number, lng: number): Promise<boolean> {
   const key = getKey();
   const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&source=outdoor&key=${key}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) return false;
   const data = await res.json();
   return data.status === 'OK';
@@ -84,7 +112,7 @@ export async function fetchSatellite(lat: number, lng: number, opts?: { size?: s
   const size = opts?.size ?? '640x640';
   const zoom = opts?.zoom ?? 20;
   const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${zoom}&size=${size}&maptype=satellite&key=${key}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`Satellite fetch failed: ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   return { base64: buf.toString('base64'), mediaType: 'image/png' };

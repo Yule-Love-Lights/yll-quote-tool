@@ -20,7 +20,13 @@ function checkAdminSecret(req: NextRequest): NextResponse | null {
   return null;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Listing every quote exposes customer PII (names, addresses, totals). It was
+  // unauthenticated even though the only caller (/admin/quotes) already sends
+  // x-admin-secret — so requiring it here closes the hole without breaking the
+  // UI. Audit 2026-06 (security — unauthenticated PII listing).
+  const authFail = checkAdminSecret(req);
+  if (authFail) return authFail;
   if (!isSupabaseConfigured()) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
