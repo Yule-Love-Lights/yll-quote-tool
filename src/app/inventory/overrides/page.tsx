@@ -86,7 +86,7 @@ export default function OverridesPage() {
   // ── per-item lock (instant PATCH) ──
   const patchItem = useCallback(
     async (sku: string, patch: { locked?: boolean; yll_category?: string | null }) => {
-      const prev = catalog;
+      const prevItem = catalog.find((c) => c.sku === sku);
       setCatalog((cs) => cs.map((c) => (c.sku === sku ? { ...c, ...patch } : c)));
       try {
         const res = await fetch('/api/inventory/catalog', {
@@ -95,9 +95,12 @@ export default function OverridesPage() {
           body: JSON.stringify({ sku, ...patch }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // No reconcile: the PATCH returns no row and the optimistic value equals
+        // what we sent, so local state is already authoritative.
         flash('Saved.');
       } catch {
-        setCatalog(prev); // revert
+        // Revert only THIS row (by sku) so a concurrent save to another row isn't clobbered.
+        if (prevItem) setCatalog((cs) => cs.map((c) => (c.sku === sku ? prevItem : c)));
         flash('Save failed.');
       }
     },
@@ -176,7 +179,7 @@ function CategoriesTab({
                 checked={visible}
                 onChange={(e) => onToggle(cat, e.target.checked)}
                 className="w-4 h-4"
-                aria-label={`${cat} visible`}
+                aria-label={`Toggle ${cat} visibility`}
               />
             </span>
           </label>

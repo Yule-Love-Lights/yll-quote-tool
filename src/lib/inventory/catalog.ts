@@ -92,8 +92,10 @@ export function normalizeHiddenCategories(v: unknown): string[] {
   return [...seen];
 }
 
+// NOTE: stores EFFECTIVE category names (yll_category ?? category). The Slice 2
+// materials engine must compute the same effective category to honor hides.
 export async function getHiddenCategories(): Promise<string[]> {
-  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  const sb = getSupabaseServiceClient(); // service-only config read, like getInventoryBindings
   if (!sb) return [];
   const { data, error } = await sb
     .from('app_settings')
