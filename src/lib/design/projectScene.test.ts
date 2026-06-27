@@ -329,6 +329,66 @@ describe('applyProjectionToInputs — design overrides per-unit, else falls back
     const inputs = baseInputs();
     expect(applyProjectionToInputs(inputs, scene([]))).toBe(inputs);
   });
+
+  // Audit fix (Finding #103): an all-excluded design must DROP the stale manual
+  // per-unit arrays, not silently resurrect the very items staff toggled off.
+  it('replaces per-unit arrays with empties when EVERY per-unit item is excluded', () => {
+    const s = scene([
+      wreath({ included: false }),
+      strand({ surface: 'bush', included: false }),
+    ]);
+    const inputs = baseInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }],
+      wreaths: [{ size: '48noble', tier: 'bow', quantity: 1 }],
+    });
+    const out = applyProjectionToInputs(inputs, s);
+    expect(out).not.toBe(inputs); // replaced, not passed through
+    expect(out.miniLightItems).toEqual([]);
+    expect(out.wreaths).toEqual([]);
+    expect(out.spritzers).toEqual([]);
+    expect(out.garland).toEqual([]);
+  });
+});
+
+describe('projectScene — hasProjectableItems (Finding #103)', () => {
+  it('is true when a per-unit item exists even if excluded', () => {
+    expect(projectScene(scene([wreath({ included: false })])).hasProjectableItems).toBe(true);
+  });
+  it('is false for a roofline-only scene', () => {
+    expect(projectScene(scene([strand({ surface: 'santas-roofline' })])).hasProjectableItems).toBe(false);
+  });
+  it('is false for an empty scene', () => {
+    expect(projectScene(scene([])).hasProjectableItems).toBe(false);
+  });
+});
+
+describe('projectScene — needsReview cue for defaulted bindings (Finding #38)', () => {
+  it('flags a wreath with undefined quoteSize as needsReview at the default tier', () => {
+    const p = projectScene(scene([wreath({ id: 'w', tier: 'bow' })])); // quoteSize undefined
+    const w = p.items.find((i) => i.id === 'wreath-w');
+    expect(w?.needsReview).toBe(true);
+    expect(p.wreaths).toEqual([{ size: '36noble', tier: 'bow', quantity: 1 }]);
+  });
+  it('a fully-bound wreath has needsReview false', () => {
+    const p = projectScene(scene([wreath({ id: 'w', quoteSize: '24noble', tier: 'fullDecor' })]));
+    expect(p.items.find((i) => i.id === 'wreath-w')?.needsReview).toBe(false);
+  });
+  it('flags a spritzer with undefined quoteSize', () => {
+    const p = projectScene(scene([spritzer({ id: 's' })]));
+    expect(p.items.find((i) => i.id === 'spritzer-s')?.needsReview).toBe(true);
+  });
+  it('a bound spritzer has needsReview false', () => {
+    const p = projectScene(scene([spritzer({ id: 's', quoteSize: '24' })]));
+    expect(p.items.find((i) => i.id === 'spritzer-s')?.needsReview).toBe(false);
+  });
+  it('flags a garland with undefined quoteLength/tier', () => {
+    const p = projectScene(scene([garland({ id: 'g' })]));
+    expect(p.items.find((i) => i.id === 'garland-g')?.needsReview).toBe(true);
+  });
+  it('a fully-bound garland has needsReview false', () => {
+    const p = projectScene(scene([garland({ id: 'g', quoteLength: '9ft', tier: 'fullDecor' })]));
+    expect(p.items.find((i) => i.id === 'garland-g')?.needsReview).toBe(false);
+  });
 });
 
 describe('projectScene — A2 mini-light areas + grouped railings', () => {
