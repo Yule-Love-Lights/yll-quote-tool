@@ -1,0 +1,260 @@
+// Amend a booked order — the PURE re-price-with-deposit + amendment-trail core
+// (ledger #83 Phase 4, the "delicate" phase). SPEC §4.4 / PLAN Phase 4.
+//
+// What this module IS: pure functions that, given a booked order's current
+// figures (previous total / deposit already paid / previous balance) and a NEW
+// total, compute the new balance, the amendment-trail entry to append to
+// `approval_snapshot.amendments[]`, the re-consent predicate, and the resulting
+// quote status. No IO, no Supabase, no Valor, no HighLevel — every input is a
+// plain object so the math is trivially testable and reusable from the future
+// amend route.
+//
+// What this module is NOT (deliberately deferred — see the TODO at the bottom):
+// it does NOT re-open the order, write the trail, charge/refund a card, move a
+// GHL stage, or touch the approve route / portal lock / Valor webhook. Amending
+// re-opens a BOOKED order, which rewrites the "freeze snapshot / read-only after
+// approval" assumption the revenue-critical booking path relies on (approve
+// route 409, portal lock). That integration + the operator/customer amend
+// SURFACE move money, so they land behind the #81 auth perimeter, NOT here.
+//
+// Reuse, don't reinvent: the new total is produced by the SAME pricing the
+// portal + approve route use (`priceSelection` from derivePackages, ultimately
+// `pricingEngine`). `repriceAmend()` is a thin convenience wrapper for callers
+// that have a fresh subtotal + charges; callers that already hold a priced
+// SelectionPrice just pass its `.total` straight into `computeAmendment`.
+
+import type { QuoteStatus } from './quoteStatus';
+import { priceSelection } from './portal/derivePackages';
+import type { SelectionCharges, SelectionPrice } from '@/components/portal/types';
+
+// Round to cents — money never carries float dust into the trail or the balance.
+// EPSILON-nudged + finite-guarded, matching src/lib/invoices.ts round2 so the two
+// money modules of this feature round a balance identically (a half-cent boundary
+// can't diverge between an amend and the invoice it feeds). computeAmendment also
+// hard-validates finiteness upstream, so the guard is belt-and-suspenders.
+function round2(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+// Sub-cent deltas are treated as no change: float arithmetic on re-priced
+// selections can leave a fraction-of-a-cent difference that is NOT a real price
+// change and must not trigger re-consent or a balance move.
+const ONE_CENT = 0.005;
+
+/**
+ * A single line-item change in an amendment, for the human-readable trail. The
+ * pure core records these verbatim (it does not derive them — the caller diffs
+ * the old vs new selection and supplies the list). Optional: a price-only
+ * amendment (e.g. a discount) may carry an empty list.
+ */
+export type AmendmentLineItemChange = {
+  id: string;
+  label: string;
+  change: 'added' | 'removed' | 'changed';
+  // The line-item price (dollars) for context in the trail. Optional because a
+  // 'changed' entry may instead carry from/to below.
+  price?: number;
+  priceFrom?: number;
+  priceTo?: number;
+};
+
+/**
+ * One entry appended to `approval_snapshot.amendments[]`. The ORIGINAL signed
+ * snapshot is never overwritten — the signature attests to the original
+ * agreement; this is the versioned trail of what changed after (SPEC §4.4). A
+ * plain serializable object (safe to JSON-store as jsonb).
+ */
+export type AmendmentTrailEntry = {
+  amended_at: string; // ISO 8601
+  by: string; // operator identity (e.g. 'staff:naldo') — supplied by the caller
+  reason: string; // why the order was amended
+  previous_total: number;
+  new_total: number;
+  previous_balance: number;
+  new_balance: number;
+  // The deposit already paid — IMMUTABLE input, echoed unchanged. Recorded so the
+  // trail is self-describing (you can re-derive new_balance from it).
+  deposit_applied: number;
+  // new_total − previous_total. Positive = customer owes more, negative = less.
+  delta: number;
+  line_item_changes: AmendmentLineItemChange[];
+  // Set ONLY when the deposit already exceeds the new total (price dropped below
+  // what was paid). The customer is owed `credit_note` dollars; refunds are
+  // MANUAL in Valor (no refund integration — SPEC §2 cancellations decision).
+  // Absent on a normal amendment.
+  credit_note?: number;
+  overpayment?: boolean;
+};
+
+export type ComputeAmendmentInput = {
+  // The order's CURRENT figures (before this amendment). On a second amendment,
+  // these are the prior amendment's new_total / deposit_applied / new_balance.
+  previousTotal: number;
+  depositPaid: number; // immutable — never re-charged, never mutated
+  previousBalance: number;
+  // The re-priced NEW total (tax-inclusive), from priceSelection / pricingEngine.
+  newTotal: number;
+  by: string;
+  reason: string;
+  lineItemChanges?: AmendmentLineItemChange[];
+  // Override the clock (tests). Defaults to now.
+  now?: () => Date;
+};
+
+/**
+ * Compute the amendment-trail entry for re-pricing a booked order with the
+ * deposit already applied. PURE — no IO.
+ *
+ *   new_balance = max(0, new_total − deposit_paid)
+ *
+ * Money-safety guards:
+ *  - new total must be a finite, non-negative number (NaN / Infinity / negative
+ *    are programmer/route-validation errors and throw — the future route
+ *    validates the body first; this is the last-line guard).
+ *  - deposit paid must be a finite, non-negative number.
+ *  - the new balance is CLAMPED at ≥ 0: if the deposit ≥ the new total, the
+ *    balance is 0 and a `credit_note` (the overpayment) is surfaced for a MANUAL
+ *    Valor refund (no refund integration — SPEC §2).
+ *  - the deposit is IMMUTABLE: it is echoed unchanged into the trail; only the
+ *    balance moves. The deposit is never re-charged.
+ *  - all money is rounded to cents.
+ */
+export function computeAmendment(input: ComputeAmendmentInput): AmendmentTrailEntry {
+  const { previousTotal, depositPaid, previousBalance, newTotal, by, reason } = input;
+
+  if (!Number.isFinite(newTotal)) {
+    throw new Error(`computeAmendment: new total must be a finite number (got ${newTotal})`);
+  }
+  if (newTotal < 0) {
+    throw new Error(`computeAmendment: new total cannot be negative (got ${newTotal})`);
+  }
+  if (!Number.isFinite(depositPaid) || depositPaid < 0) {
+    throw new Error(
+      `computeAmendment: deposit paid must be a finite, non-negative number (got ${depositPaid})`,
+    );
+  }
+  // Guard the prior figures too: a NaN previous total would silently poison the
+  // delta (and `requiresReconsent` would then read a real change as cosmetic — a
+  // quiet money-safety hole). These come from the persisted order, so a bad value
+  // is a data/programmer error, not a user one.
+  if (!Number.isFinite(previousTotal) || previousTotal < 0) {
+    throw new Error(
+      `computeAmendment: previous total must be a finite, non-negative number (got ${previousTotal})`,
+    );
+  }
+  if (!Number.isFinite(previousBalance)) {
+    throw new Error(
+      `computeAmendment: previous balance must be a finite number (got ${previousBalance})`,
+    );
+  }
+
+  const prevTotal = round2(previousTotal);
+  const deposit = round2(depositPaid);
+  const newTotalR = round2(newTotal);
+  const delta = round2(newTotalR - prevTotal);
+
+  // Balance = new total − deposit already paid, clamped at ≥ 0.
+  const rawBalance = round2(newTotalR - deposit);
+  const newBalance = Math.max(0, rawBalance);
+
+  const entry: AmendmentTrailEntry = {
+    amended_at: (input.now ? input.now() : new Date()).toISOString(),
+    by,
+    reason,
+    previous_total: prevTotal,
+    new_total: newTotalR,
+    previous_balance: round2(previousBalance),
+    new_balance: newBalance,
+    deposit_applied: deposit,
+    delta,
+    line_item_changes: input.lineItemChanges ?? [],
+  };
+
+  // Overpayment: the deposit already exceeds the new total. Surface the credit
+  // for a manual Valor refund (consistent with the cancellation decision —
+  // refunds stay manual, no integration to build).
+  if (rawBalance < 0) {
+    entry.credit_note = round2(-rawBalance);
+    entry.overpayment = true;
+  }
+
+  return entry;
+}
+
+/**
+ * Thin convenience wrapper for callers that have a fresh subtotal + charges
+ * rather than an already-priced total: re-price via the SAME priceSelection the
+ * portal + approve route use, then compute the amendment. Reuses the pricing
+ * math (no reinvention). Returns both the full new price breakdown and the trail
+ * entry, so the caller can persist the new total/deposit alongside the trail.
+ */
+export function repriceAmend(args: {
+  newSubtotal: number;
+  charges: SelectionCharges;
+  previousTotal: number;
+  depositPaid: number;
+  previousBalance: number;
+  by: string;
+  reason: string;
+  lineItemChanges?: AmendmentLineItemChange[];
+  now?: () => Date;
+}): { price: SelectionPrice; amendment: AmendmentTrailEntry } {
+  const price = priceSelection(args.newSubtotal, args.charges);
+  const amendment = computeAmendment({
+    previousTotal: args.previousTotal,
+    depositPaid: args.depositPaid,
+    previousBalance: args.previousBalance,
+    newTotal: price.total,
+    by: args.by,
+    reason: args.reason,
+    lineItemChanges: args.lineItemChanges,
+    now: args.now,
+  });
+  return { price, amendment };
+}
+
+/**
+ * Re-consent DEFAULT (SPEC §9 is UNDECIDED — Naldo must confirm). An amendment
+ * that CHANGES the total requires the customer to re-approve the new total
+ * (re-sign) before any balance change is charged; a zero-delta (cosmetic)
+ * amendment does not. Encoded here as a pure predicate. Sub-cent deltas count as
+ * zero (float dust on a re-priced selection is not a real price change).
+ */
+export function requiresReconsent(amendment: AmendmentTrailEntry): boolean {
+  return Math.abs(amendment.delta) >= ONE_CENT;
+}
+
+/**
+ * The QuoteStatus an amendment resolves to. A total-changing amendment moves the
+ * order into the re-consent status (it awaits the customer re-approving the new
+ * total); a zero-delta amendment leaves the current status untouched.
+ *
+ * REUSES the existing `changes_requested` status rather than adding an `amending`
+ * state — `changes_requested` already means "back in staff/customer hands, not a
+ * settled booking", and reusing it avoids editing the shared quoteStatus.ts
+ * table the whole #83 stack depends on. (Flagged decision: if the operator UX
+ * later needs to distinguish "customer-requested change" from "staff-amended,
+ * awaiting re-sign", a dedicated `amending` status would be added to
+ * quoteStatus.ts THEN — not here.)
+ */
+export const AMEND_RECONSENT_STATUS: QuoteStatus = 'changes_requested';
+
+export function amendedQuoteStatus(
+  amendment: AmendmentTrailEntry,
+  currentStatus: QuoteStatus,
+): QuoteStatus {
+  return requiresReconsent(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
+}
+
+// TODO #83 Phase 4 + #81: amend route + UI (wires this lib). The operator
+// "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and its UI are
+// NEW money-moving operator surfaces — they re-open a BOOKED order, append the
+// trail entry from computeAmendment() to approval_snapshot.amendments[] (WITHOUT
+// overwriting the original signed snapshot), update the linked invoice balance,
+// and — per the re-consent default above — re-notify / re-collect the customer's
+// re-approval on a total change before charging the new balance. That route must
+// also REJECT amendments on a non-booked order (only a booked order has a paid
+// deposit to apply). All of it sits behind the #81 auth perimeter. Deferred
+// until #81 lands; do NOT wire this into approve/route.ts, the portal, or the
+// Valor webhook before then.
