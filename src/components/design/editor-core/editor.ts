@@ -1300,10 +1300,31 @@ export async function renderEditor(
   // --- Save (debounced) ---
   let saveTimer: number | null = null;
   let pendingSave = false;
+  let retryTimer: number | null = null;
   const savingEl = root.querySelector("#saving") as HTMLElement;
   async function doSave() {
+    // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
+    // non-2xx. Previously pendingSave was cleared BEFORE the await and there was
+    // no try/catch, so a failed save dropped the billable edit while the pill
+    // still read "Saved". Keep pendingSave true until the write actually lands;
+    // on failure surface an honest state + schedule a backoff retry (the PUT
+    // writes the whole scene, so a later retry self-heals).
+    try {
+      await api.updateDesign(design.id, { scene, name: design.name });
+    } catch {
+      if (destroyed) return;
+      pendingSave = true; // edit not persisted — keep it queued
+      savingEl.textContent = "Save failed — retry";
+      if (!retryTimer) {
+        retryTimer = window.setTimeout(() => { retryTimer = null; void doSave(); }, 4000);
+      }
+      return;
+    }
+    // Don't touch the (possibly detached) DOM if we were torn down mid-flight.
+    if (destroyed) { pendingSave = false; return; }
     pendingSave = false;
-    await api.updateDesign(design.id, { scene, name: design.name });
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    clearUnsavedBanner(); // a successful write clears any stale "unsaved" marker
     savingEl.textContent = "Saved";
     window.setTimeout(() => {
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
@@ -1319,6 +1340,24 @@ export async function renderEditor(
   async function flushSave() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (pendingSave) await doSave();
+  }
+  // AUDIT FIX (editor-autosave-honest-failure): non-blocking banner shown when a
+  // prior teardown flush may have failed to persist (marker set in destroy()).
+  // Cleared on the next successful doSave().
+  function clearUnsavedBanner() {
+    try { localStorage.removeItem("editorUnsavedDesign"); } catch { /* storage unavailable */ }
+    root.querySelector("#unsaved-banner")?.remove();
+  }
+  function showUnsavedBannerIfNeeded() {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem("editorUnsavedDesign"); } catch { /* storage unavailable */ }
+    if (stored !== design.id) return;
+    if (root.querySelector("#unsaved-banner")) return;
+    const banner = document.createElement("div");
+    banner.id = "unsaved-banner";
+    banner.className = "unsaved-banner";
+    banner.textContent = "Some earlier edits may not have saved. Make any change to re-save.";
+    root.querySelector(".editor")?.prepend(banner);
   }
 
   // --- Sidebar ---
@@ -4766,7 +4805,15 @@ export async function renderEditor(
     window.removeEventListener("mouseup", onWindowMouseUpPan);
     ro.disconnect();
     window.removeEventListener("resize", refit);
-    void flushSave(); // flush a pending save before teardown instead of dropping it
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // AUDIT FIX (editor-autosave-honest-failure): destroy() runs on
+    // hashchange/unmount (NOT beforeunload), so the flush can still complete
+    // async — but if it rejects we must not drop it silently with an unhandled
+    // rejection. Persist a marker so the next mount of this design warns the
+    // user; the next successful save clears it.
+    flushSave().catch(() => {
+      try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+    });
     if (redrawHandle) { cancelAnimationFrame(redrawHandle); redrawHandle = 0; }
     try { stage.destroy(); } catch { /* already gone */ }
   }
@@ -4885,6 +4932,9 @@ export async function renderEditor(
     await loadPhoto(design.photoUrl, design.photoW, design.photoH);
   }
   redrawScene();
+  // AUDIT FIX (editor-autosave-honest-failure): warn if a prior teardown flush
+  // for THIS design may not have persisted (marker set in destroy()).
+  showUnsavedBannerIfNeeded();
 
   const handle = destroy as EditorHandle;
   handle.flushSave = flushSave;
