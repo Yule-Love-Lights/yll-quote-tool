@@ -13,13 +13,8 @@
       }
     },
     "wordpress": {
-      "command": "npx",
-      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
-      "env": {
-        "WP_API_URL": "${WP_API_URL}",
-        "WP_API_USERNAME": "${WP_API_USERNAME}",
-        "WP_API_PASSWORD": "${WP_API_PASSWORD}"
-      }
+      "type": "http",
+      "url": "https://public-api.wordpress.com/wpcom/v2/mcp/v1"
     }
   }
 }
