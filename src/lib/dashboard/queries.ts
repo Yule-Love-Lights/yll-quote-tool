@@ -3,30 +3,64 @@ import type { DashboardQuote } from './types';
 import type { ViewEventRow } from './activity';
 
 /**
- * Fetch quotes for the dashboard: id, customer info, total, and the full
- * lifecycle timestamp chain. Service client preferred (same pattern as
- * `listQuotes` in `lib/quotes.ts`) so admin-side reads never trip RLS.
+ * Discriminated result for the dashboard quotes read. AUDIT FIX
+ * (dashboard-insights-error-visibility): the old API swallowed query failures
+ * into `[]`, so Insights/KPI math computed over an empty list and rendered
+ * "—"/$0/0% with no way to tell "no data" from "the query broke". Callers that
+ * care about correctness (Insights) should use `listQuotesForDashboardResult`
+ * and surface `ok:false` as an error banner instead of zeros.
+ *
+ * `capped` (on the ok path) is true when the read returned exactly `limit`
+ * rows — i.e. lifetime aggregates may be based on only the newest `limit`
+ * quotes, so the UI should show a "based on newest N quotes" caveat.
+ */
+export type DashboardQuotesResult =
+  | { ok: true; rows: DashboardQuote[]; capped: boolean; limit: number }
+  | { ok: false; error: string };
+
+const DASHBOARD_QUOTES_SELECT =
+  'id, customer_name, customer_email, customer_phone, total, ' +
+  'created_at, quote_sent_at, customer_approved_at, deposit_paid_at, ' +
+  'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
+  'service_type';
+
+/**
+ * Fetch quotes for the dashboard, returning a discriminated result so callers
+ * can distinguish a genuine empty table from a failed query. Service client
+ * preferred (same pattern as `listQuotes` in `lib/quotes.ts`) so admin-side
+ * reads never trip RLS.
  *
  * Server-only. Do NOT call from a client component.
  */
-export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuote[]> {
+export async function listQuotesForDashboardResult(limit = 500): Promise<DashboardQuotesResult> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
-  if (!sb) return [];
+  if (!sb) return { ok: false, error: 'Supabase is not configured.' };
   const { data, error } = await sb
     .from('quotes')
-    .select(
-      'id, customer_name, customer_email, customer_phone, total, ' +
-        'created_at, quote_sent_at, customer_approved_at, deposit_paid_at, ' +
-        'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
-        'service_type',
-    )
+    .select(DASHBOARD_QUOTES_SELECT)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
     console.error('listQuotesForDashboard error:', error);
-    return [];
+    return { ok: false, error: error.message };
   }
-  return (data ?? []) as unknown as DashboardQuote[];
+  const rows = (data ?? []) as unknown as DashboardQuote[];
+  // capped = hit the row cap, so lifetime aggregates are over only the newest
+  // `limit` quotes. Interim caveat until aggregates are computed server-side.
+  return { ok: true, rows, capped: rows.length === limit, limit };
+}
+
+/**
+ * Backward-compatible accessor: returns just the rows ([] on failure or when
+ * Supabase isn't configured). Kept for callers that don't surface errors
+ * (customers list/detail). New error-sensitive callers should prefer
+ * `listQuotesForDashboardResult`.
+ *
+ * Server-only. Do NOT call from a client component.
+ */
+export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuote[]> {
+  const result = await listQuotesForDashboardResult(limit);
+  return result.ok ? result.rows : [];
 }
 
 /**
