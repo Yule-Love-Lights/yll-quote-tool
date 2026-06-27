@@ -16,6 +16,7 @@ metadata:
 - Deployed on **Vercel** (`yll-quote-tool`, Production tracks `master` → quote.yulelovelights.com), but not yet shown to customers. **Prod is LIVE + current as of S9** — it had silently been frozen at an Apr 23 build for ~7 weeks (Vercel Git was connected to the wrong repo); reconnected to `Yule-Love-Lights/yll-quote-tool` + env vars synced S9. See [[deploy-vercel]] (incl. the "if prod looks stale" playbook).
 - Runs locally on **Next 16.2.6** (Turbopack), connected to the **real Supabase** (~55 real/test quotes). `.env.local` is filled on Jason's machine (values: see `project_secrets_access.md`).
 - Gates all green: `npx tsc --noEmit`, `npm run lint`, `npm test` (Vitest).
+- **#83 Jobber-flow engine BUILT (Naldo S8, 2026-06-27):** all 5 phases' data-layer cores PR'd + adversarially reviewed + fixed (open stack #185–#194; P5's migration applied to prod). Merge + every money/operator surface gated on **#81 (auth)**. See the ledger #83 row + the S8 session-log entry + `docs/jobber-flow/REVIEW-2026-06-27.md`.
 
 ## Scope / out of scope (now)
 - **IN:** QA-driven bug fixes + feature work on the quote builder, pricing engine, and customer portal (the punch-list below).
