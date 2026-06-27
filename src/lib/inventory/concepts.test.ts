@@ -6,6 +6,7 @@ import {
   spritzerKey, spritzerPoleKey,
   bulbC9Rows, wreathBaseRows, wreathBowRows, wreathFeeRows, garlandBaseRows, spritzerColorRows,
   CLIP_FEATURES, DEFAULT_CLIP_SKUS, DEFAULT_WREATH_FEE_SKUS, DEFAULT_GARLAND_FEE_SKU,
+  buildSeedBindings, buildSeedClipRules,
 } from './concepts';
 
 describe('concept key builders', () => {
@@ -44,5 +45,24 @@ describe('concept row generators', () => {
     expect(DEFAULT_WREATH_FEE_SKUS['24noble']).toBe('1101');
     expect(DEFAULT_WREATH_FEE_SKUS['30noble']).toBe('1108');
     expect(DEFAULT_GARLAND_FEE_SKU).toBe('1106');
+  });
+});
+
+describe('autofill seeds', () => {
+  it('buildSeedBindings covers wreath/garland/mini/spritzer + fees', () => {
+    const s = buildSeedBindings();
+    expect(s['wreath:24noble']).toBe('50024-30');
+    expect(s['wreath-bow:24noble']).toBe('30812'); // 12" Red/Gold bow
+    expect(s['wreath-bow:30noble']).toBeUndefined(); // chart skips 30"
+    expect(s['wreath-fee:24noble']).toBe('1101');
+    expect(s['garland:4.5ft']).toBe('50045-30');
+    expect(s['garland-bow']).toBe('30812');
+    expect(s['garland-fee']).toBe('1106');
+    expect(s['mini:Warm White']).toBe('40056');
+    expect(s['spritzer:warm-white:16']).toBe('61001');
+    expect(s['spritzer:cool-white:32']).toBe('61103');
+  });
+  it('buildSeedClipRules pre-fills the clip features', () => {
+    expect(buildSeedClipRules().gutter).toEqual({ sku: '14147' });
   });
 });
