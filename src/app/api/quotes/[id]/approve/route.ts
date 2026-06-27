@@ -289,7 +289,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let snapshotInstallDiscountUsd = installDiscountUsd;
 
   if (quote.result) {
-    const { lineItems } = buildPortalLineItems(quote.result, quote.inputs);
+    const { lineItems, roofline } = buildPortalLineItems(quote.result, quote.inputs);
     const realIds = new Set(lineItems.map((li) => li.id));
     // Drop any unknown / tampered ids the client sent (#13/#31).
     const validIds = selectedItemIds.filter((sid) => realIds.has(sid));
@@ -323,9 +323,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // #15 — order-minimum gate. The minimum auto-waives for a quote whose items
     // total under $1,000, and staff can waive it per-quote (inputs.waiveMinimum).
     // We measure the same pre-tax basis (subtotal + fees) the portal gates on.
-    // NEEDS FEEDBACK: this hard-blocks a below-minimum approval server-side; if a
-    // legitimate below-minimum close exists, staff should set inputs.waiveMinimum.
-    const minimum = quote.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(lineItems);
+    //
+    // Audit fix (g1-route): the THRESHOLD must be derived from the SAME line-item
+    // set the portal uses (adapter.ts ~319). The portal sums `tierLineItems` —
+    // the full list with the NON-recommended roofline option dropped — so a quote
+    // offering both Santa's + Gingerbread isn't double-counted into clearing a
+    // minimum the customer can only pick one roofline toward. Summing the full
+    // `lineItems` here (both rooflines) could push a quote's total >= $1,000 and
+    // make the server REJECT an approval the portal would have auto-waived and
+    // ALLOWED — server stricter than portal, exactly the disagreement to avoid.
+    // Mirror the portal's filter so the gates can never diverge.
+    const tierLineItems = roofline
+      ? lineItems.filter(
+          (li) => !(roofline.itemIds.includes(li.id) && li.id !== roofline.recommendedItemId),
+        )
+      : lineItems;
+    const minimum = quote.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems);
     const { meetsMinimum } = orderMinimumStatus(breakdown, minimum);
     if (!meetsMinimum) {
       return NextResponse.json(
