@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { listCatalog, upsertCatalogItems } from '@/lib/inventory/catalog';
+import { listCatalog, upsertCatalogItems, updateCatalogItem } from '@/lib/inventory/catalog';
 import { parseThunderCsv } from '@/lib/inventory/parseThunderCsv';
 
 export const runtime = 'nodejs';
@@ -42,5 +42,40 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error('[api/inventory/catalog] POST failed:', err);
     return NextResponse.json({ error: 'Failed to import catalog' }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const { sku, locked, yll_category } = (body ?? {}) as Record<string, unknown>;
+  if (typeof sku !== 'string' || !sku.trim()) {
+    return NextResponse.json({ error: 'Body must include a `sku` string' }, { status: 400 });
+  }
+  if (locked !== undefined && typeof locked !== 'boolean') {
+    return NextResponse.json({ error: '`locked` must be a boolean' }, { status: 400 });
+  }
+  if (yll_category !== undefined && yll_category !== null && typeof yll_category !== 'string') {
+    return NextResponse.json({ error: '`yll_category` must be a string or null' }, { status: 400 });
+  }
+  if (locked === undefined && yll_category === undefined) {
+    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  }
+  try {
+    await updateCatalogItem(sku.trim(), {
+      locked: locked as boolean | undefined,
+      yll_category: yll_category as string | null | undefined,
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('[api/inventory/catalog] PATCH failed:', err);
+    return NextResponse.json({ error: 'Failed to update catalog item' }, { status: 500 });
   }
 }
