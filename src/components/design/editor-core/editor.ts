@@ -3614,6 +3614,10 @@ export async function renderEditor(
     const idx = scene.yardsticks.findIndex((y) => y.id === ys.id);
     const label = yardstickLabel(idx);
     const ppf = pxPerFoot(ys);
+    const axis = ys.axis === "height" ? "height" : "width";
+    const measuredPx = axis === "height" ? ys.height : ys.width;
+    const otherAxis = axis === "height" ? "width" : "height";
+    const otherPx = otherAxis === "height" ? ys.height : ys.width;
     const stranded = allStrands().filter((s) => (yardstickForStrand(s)?.id ?? null) === ys.id);
     const otherYardsticks = scene.yardsticks.filter((y) => y.id !== ys.id);
 
@@ -3625,10 +3629,17 @@ export async function renderEditor(
         </div>
       </section>
       <section>
-        <h3>Real-world width <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
+        <h3>Real-world length <span style="float:right;color:var(--text);font-weight:400">${ys.realFeet} ft</span></h3>
         <input type="number" id="ys-feet" min="0.5" step="0.5" value="${ys.realFeet}" />
         <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">
-          Drag a real-world feature on the photo (door, window, garage) and enter its true width here.
+          Drag a real-world feature on the photo (door width, garage height, downspout) and enter its true length here.
+        </div>
+      </section>
+      <section>
+        <h3>Measured along <span style="float:right;color:var(--text);font-weight:400">${axis} · ${Math.round(measuredPx)} px</span></h3>
+        <button id="ys-flip-axis" style="width:100%">Use ${otherAxis} instead (${Math.round(otherPx)} px)</button>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">
+          The ${ys.realFeet} ft is mapped to the box's <strong>${axis}</strong>. If you measured the other side, flip this so the scale is right.
         </div>
       </section>
       <section>
@@ -3663,6 +3674,20 @@ export async function renderEditor(
     feetInput.addEventListener("change", () => {
       commit();
       renderSidebar(); // update the panel header/labels
+    });
+
+    sb.querySelector("#ys-flip-axis")!.addEventListener("click", () => {
+      // Swap which drawn side `realFeet` measures. Rescales everything tied to
+      // this yardstick (strands/garlands read px/ft through pxPerFoot).
+      scene = {
+        ...scene,
+        yardsticks: scene.yardsticks.map((y) =>
+          y.id === ys.id ? { ...y, axis: otherAxis } : y,
+        ),
+      };
+      commit();
+      requestCanvasRedraw();
+      renderSidebar();
     });
 
     sb.querySelector("#ys-delete")!.addEventListener("click", () => {
@@ -3807,7 +3832,7 @@ export async function renderEditor(
       alert("Upload a photo first.");
       return;
     }
-    const ftStr = prompt("How many real-world feet wide is the rectangle you're about to draw? (e.g. a door = 3, a garage door = 16)");
+    const ftStr = prompt("How many real-world feet is the LONGER side of the rectangle you're about to draw? Drag it ALONG the feature you're measuring — wide for a door/garage width, tall for a downspout or garage-door height. (e.g. a door width = 3, a garage-door height = 7)");
     if (!ftStr) return;
     const ft = Number(ftStr);
     if (!ft || ft <= 0) return;
@@ -4611,6 +4636,12 @@ export async function renderEditor(
             y: Math.min(p.y, ysDragStart.y),
             width: w,
             height: h,
+            // Measure along the LONGER drawn side — the operator drags the box
+            // ALONG the feature they're measuring, so the long axis is the one
+            // `realFeet` describes. Operator can flip this in the sidebar if the
+            // reference was the shorter side (e.g. a wide-but-short box whose
+            // entered width is the short side). Ties default to width.
+            axis: h > w ? "height" : "width",
           };
           scene = { ...scene, yardsticks: [...scene.yardsticks, ys] };
           activeYardstickId = ys.id;
