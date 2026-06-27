@@ -20,7 +20,7 @@ import {
 } from './trainingExamples';
 import { getTrainingFewShot, type StoredTrainingHouse } from './training';
 import { getReferenceAssetsForAnalysis, type StoredReferenceAsset } from './referenceAssets';
-import { embedImage } from './embeddings';
+import { embedImage, isEmbeddingConfigured } from './embeddings';
 import { type FewShotExample } from './photoAnalysis';
 
 // The one tunable knob: how many house examples to feed per analyze call.
@@ -85,7 +85,11 @@ export type AssembledFewShot = {
   // #8 Stage C (C2): corpus-wide systematic-bias calibration for the system
   // prompt, or null when the corpus is too small to claim a tendency.
   biasNote: string | null;
-  breakdown: { design: number; training: number; references: number; ranking: 'similarity' | 'recency' };
+  // `degraded` = similarity was EXPECTED (Voyage configured + a query image
+  // present) but we still fell back to recency (embed returned null or no
+  // similar rows projected) — i.e. a likely Voyage outage, NOT the legitimate
+  // small-library/unconfigured case. Non-blocking signal for the UI.
+  breakdown: { design: number; training: number; references: number; ranking: 'similarity' | 'recency'; degraded: boolean };
 };
 
 // Fetch + rank + cap the few-shot for an analyze call. `queryImage` is the
@@ -131,6 +135,16 @@ export async function assembleFewShot(
   const examples = selectFewShot({ design, training }, FEW_SHOT_LIMIT);
   const ranking: 'similarity' | 'recency' = usedSimilarity ? 'similarity' : 'recency';
 
+  // Audit fix (Finding #57): the recency fallback is silent — indistinguishable
+  // from the legitimate unconfigured/small-library case. If a query image was
+  // given AND Voyage IS configured yet we still fell back, similarity was
+  // expected (likely a Voyage outage or all-non-projectable rows). Surface it
+  // so estimate quality doesn't quietly degrade. Fallback still succeeds.
+  const degraded = !!queryImage && isEmbeddingConfigured() && !usedSimilarity;
+  if (degraded) {
+    console.warn('[assembleFewShot] similarity expected but fell back to recency — embed returned null or no rows projected');
+  }
+
   return {
     examples,
     references,
@@ -141,6 +155,7 @@ export async function assembleFewShot(
       training: training.length,
       references: references.length,
       ranking,
+      degraded,
     },
   };
 }

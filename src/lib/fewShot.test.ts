@@ -1,6 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { selectFewShot, FEW_SHOT_LIMIT } from './fewShot';
 import type { FewShotExample } from './photoAnalysis';
+
+// --- Mocks for assembleFewShot's dependencies (audit Finding #57) ---------
+// Keep every collaborator inert so we can isolate the embed → similarity →
+// recency-fallback decision and the degraded signal it should now emit.
+vi.mock('./embeddings', () => ({
+  embedImage: vi.fn(),
+  isEmbeddingConfigured: vi.fn(),
+}));
+vi.mock('./trainingExamples', () => ({
+  exampleToFewShot: vi.fn(() => null),
+  getRecentTrainingExamples: vi.fn(async () => []),
+  getSimilarTrainingExamples: vi.fn(async () => []),
+  getCorpusBiasNote: vi.fn(async () => null),
+}));
+vi.mock('./training', () => ({ getTrainingFewShot: vi.fn(async () => []) }));
+vi.mock('./referenceAssets', () => ({ getReferenceAssetsForAnalysis: vi.fn(async () => []) }));
 
 // Minimal example tagged by santasFootage so we can track selection + order.
 function ex(source: FewShotExample['source'], id: number): FewShotExample {
@@ -63,5 +79,59 @@ describe('selectFewShot', () => {
 
   it('empty sources → []', () => {
     expect(selectFewShot({ design: [], training: [] }, 8)).toEqual([]);
+  });
+});
+
+// Audit Finding #57: the similarity→recency fallback must no longer be silent
+// when similarity was EXPECTED (Voyage configured + a query image present).
+describe('assembleFewShot — degraded similarity signal', () => {
+  const queryImage = { base64: 'abc', mediaType: 'image/jpeg' };
+  let assembleFewShot: typeof import('./fewShot').assembleFewShot;
+  let embedImage: ReturnType<typeof vi.fn>;
+  let isEmbeddingConfigured: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const fewShot = await import('./fewShot');
+    assembleFewShot = fewShot.assembleFewShot;
+    const embeddings = await import('./embeddings');
+    embedImage = embeddings.embedImage as ReturnType<typeof vi.fn>;
+    isEmbeddingConfigured = embeddings.isEmbeddingConfigured as ReturnType<typeof vi.fn>;
+  });
+
+  it('warns + flags degraded when configured + query image but embed returns null', async () => {
+    isEmbeddingConfigured.mockReturnValue(true);
+    embedImage.mockResolvedValue(null); // Voyage outage / non-2xx / malformed
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await assembleFewShot(undefined, queryImage);
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(out.breakdown.degraded).toBe(true);
+    expect(out.ranking).toBe('recency');
+    warn.mockRestore();
+  });
+
+  it('no warn / not degraded when no query image (legitimate recency)', async () => {
+    isEmbeddingConfigured.mockReturnValue(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await assembleFewShot(undefined, undefined);
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(out.breakdown.degraded).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('no warn / not degraded when Voyage unconfigured (legitimate recency)', async () => {
+    isEmbeddingConfigured.mockReturnValue(false);
+    embedImage.mockResolvedValue(null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await assembleFewShot(undefined, queryImage);
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(out.breakdown.degraded).toBe(false);
+    warn.mockRestore();
   });
 });
