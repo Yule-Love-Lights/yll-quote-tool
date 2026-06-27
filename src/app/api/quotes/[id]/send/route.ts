@@ -3,10 +3,14 @@
 // hands the portal URL off to the customer (copied to clipboard, emailed,
 // texted, whatever — the button doesn't care how the URL is delivered).
 //
-// POST /api/quotes/[id]/send
+// POST /api/quotes/[id]/send[?retryGhl]
 // Body: {}  — no payload needed; the quote id is in the URL.
+// ?retryGhl re-runs ONLY the GHL stage-sync for an already-sent quote whose
+//   pipeline card never advanced (ghl_stage_synced_at IS NULL) — no re-stamp,
+//   no re-message (audit fix: send-route-ghl-sync-state).
 // Response:
-//   { ok: true, sentAt: ISO, stageUpdated: boolean, alreadySent?: boolean }
+//   { ok: true, sentAt: ISO, stageUpdated: boolean, ghlSynced: boolean,
+//     ghlRetry: boolean, alreadySent?: boolean }
 //   { error: string, code?: string }
 //
 // What happens:
@@ -73,6 +77,10 @@ type QuoteRow = {
   total: number | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  // Audit fix (send-route-ghl-sync-state): the GHL stage-sync outcome is
+  // tracked separately from quote_sent_at so a quote whose pipeline card
+  // never advanced is discoverable + retryable.
+  ghl_stage_synced_at: string | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -91,10 +99,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
   }
 
+  // Audit fix (send-route-ghl-sync-state): ?retryGhl re-runs ONLY the GHL
+  // stage-sync block for a quote that was already sent locally but whose
+  // pipeline card never advanced (ghl_stage_synced_at IS NULL). This decouples
+  // the local-send idempotency key (quote_sent_at) from the GHL-stage key so a
+  // failed card move can be reconciled without re-stamping/re-messaging.
+  const retryGhl = req.nextUrl.searchParams.get('retryGhl') != null;
+
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at, ghl_stage_synced_at')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -109,7 +124,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // We don't re-ping HighLevel if the admin double-clicks, because the
   // stage may already have advanced past "Bid Sent" (customer could have
   // approved in between) and we don't want to yank it back.
-  if (quote.quote_sent_at) {
+  //
+  // Audit fix (send-route-ghl-sync-state): the one EXCEPTION is an explicit
+  // ?retryGhl reconcile for a quote that was sent locally but whose pipeline
+  // card never synced (ghl_stage_synced_at IS NULL). In that case we fall
+  // through to re-run ONLY the GHL stage block — we do NOT re-stamp
+  // quote_sent_at and we SKIP the customer SMS/email (already delivered on the
+  // original send) so a retry can't double-message the customer.
+  const isGhlRetry = !!quote.quote_sent_at && retryGhl && quote.ghl_stage_synced_at == null;
+  if (quote.quote_sent_at && !isGhlRetry) {
     return NextResponse.json({
       ok: true,
       sentAt: quote.quote_sent_at,
@@ -118,20 +141,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
   }
 
-  const sentAt = new Date().toISOString();
+  // On a GHL-only retry the quote keeps its original sent timestamp.
+  const sentAt = quote.quote_sent_at ?? new Date().toISOString();
 
-  // Stamp the DB FIRST, before the HL call, so we don't double-fire the
-  // stage move on retries. Same pattern as /approve.
-  const { error: stampErr } = await sb
-    .from('quotes')
-    .update({ quote_sent_at: sentAt })
-    .eq('id', id);
-  if (stampErr) {
-    console.error('[api/quotes/:id/send] stamp failed:', stampErr);
-    return NextResponse.json(
-      { error: `Failed to mark quote sent: ${stampErr.message}` },
-      { status: 500 },
-    );
+  // Stamp the DB FIRST (fresh send only), before the HL call, so we don't
+  // double-fire the stage move on retries. Same pattern as /approve.
+  if (!isGhlRetry) {
+    const { error: stampErr } = await sb
+      .from('quotes')
+      .update({ quote_sent_at: sentAt })
+      .eq('id', id);
+    if (stampErr) {
+      console.error('[api/quotes/:id/send] stamp failed:', stampErr);
+      return NextResponse.json(
+        { error: `Failed to mark quote sent: ${stampErr.message}` },
+        { status: 500 },
+      );
+    }
   }
 
   // HighLevel (#37): move the customer's opportunity to "📨Bid Sent" — creating
@@ -212,13 +238,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
+  // Audit fix (send-route-ghl-sync-state, finding #32): persist the stage-sync
+  // OUTCOME durably so a card that never advanced is discoverable + retryable,
+  // instead of leaving the only trace in a console line. On success clear the
+  // error and stamp ghl_stage_synced_at; on failure record the reason and leave
+  // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
+  // itself best-effort — its failure only logs, never undoes the send.
+  {
+    const syncPayload = stageUpdated
+      ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
+      : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
+    const { error: syncErr } = await sb.from('quotes').update(syncPayload).eq('id', id);
+    if (syncErr) {
+      console.warn('[api/quotes/:id/send] failed to persist GHL sync state:', syncErr.message);
+    }
+  }
+
   // Deliver the portal link to the customer via GHL — SMS + Email — so it lands
   // in the Conversations tab (#37). Non-fatal: a messaging failure doesn't undo
   // the send; the operator can still hand off the link manually.
+  // Audit fix (send-route-ghl-sync-state): SKIP messaging on a GHL-only retry —
+  // the customer was already messaged on the original send; a reconcile must
+  // not re-text/re-email them.
   let smsSent = false;
   let emailSent = false;
   let messageError: string | undefined;
-  if (isHighLevelConfigured() && quote.highlevel_contact_id) {
+  if (!isGhlRetry && isHighLevelConfigured() && quote.highlevel_contact_id) {
     const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
     const portalUrl = `${baseUrl}/portal/${id}`;
@@ -256,6 +301,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     opportunityCreated,
     opportunityId,
     stageError,
+    // Audit fix (send-route-ghl-sync-state): ghlRetry flags a reconcile run so
+    // the operator UI can distinguish it from a fresh send; ghlSynced lets the
+    // UI surface the durable sync state (and offer a retry when false).
+    ghlRetry: isGhlRetry,
+    ghlSynced: stageUpdated,
     smsSent,
     emailSent,
     messageError,
