@@ -29,16 +29,91 @@ export async function listCatalog(): Promise<CatalogItem[]> {
   return (data ?? []) as CatalogItem[];
 }
 
-// Upsert ONLY vendor-sourced columns (the ParsedCatalogItem shape). yll_category
-// and locked are intentionally absent from the payload, so a yearly re-import
-// re-seeds prices/names without clobbering operator regrouping or sold-out flags.
+// Pure: the EXACT column set an import upsert writes. yll_category + locked are
+// deliberately excluded so a yearly re-import re-seeds prices/names without
+// clobbering operator regrouping or sold-out flags. Pinned by catalog.test.ts.
+export function toCatalogUpsertRow(item: ParsedCatalogItem): ParsedCatalogItem {
+  return {
+    sku: item.sku,
+    name: item.name,
+    category: item.category,
+    color: item.color,
+    size: item.size,
+    wholesale_cost: item.wholesale_cost,
+    needs_adapter: item.needs_adapter,
+    bag_ct: item.bag_ct,
+    case_ct: item.case_ct,
+  };
+}
+
+// Upsert ONLY vendor-sourced columns (see toCatalogUpsertRow).
 export async function upsertCatalogItems(items: ParsedCatalogItem[]): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) throw new Error('Supabase service role not configured');
   if (items.length === 0) return 0;
+  const rows = items.map(toCatalogUpsertRow);
   const { error, count } = await sb
     .from('inventory_catalog')
-    .upsert(items, { onConflict: 'sku', count: 'exact' });
+    .upsert(rows, { onConflict: 'sku', count: 'exact' });
   if (error) throw new Error(`upsertCatalogItems: ${error.message}`);
-  return count ?? items.length;
+  return count ?? rows.length;
+}
+
+// ── operator overrides (1b-iii) ──────────────────────────────────────────────
+
+// Update one catalog row's operator-owned fields (sold-out lock + regroup).
+export async function updateCatalogItem(
+  sku: string,
+  patch: { locked?: boolean; yll_category?: string | null },
+): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) throw new Error('Supabase service role not configured');
+  const update: Record<string, unknown> = {};
+  if (typeof patch.locked === 'boolean') update.locked = patch.locked;
+  // yll_category: a string regroups; null clears back to the vendor category.
+  if (patch.yll_category !== undefined) {
+    update.yll_category =
+      typeof patch.yll_category === 'string' && patch.yll_category.trim()
+        ? patch.yll_category.trim()
+        : null;
+  }
+  if (Object.keys(update).length === 0) return;
+  const { error } = await sb.from('inventory_catalog').update(update).eq('sku', sku);
+  if (error) throw new Error(`updateCatalogItem: ${error.message}`);
+}
+
+// Category show/hide list (Q6.3) — an app_settings key, parallel to bindings.
+export function normalizeHiddenCategories(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set<string>();
+  for (const x of v) {
+    if (typeof x === 'string' && x.trim()) seen.add(x.trim());
+  }
+  return [...seen];
+}
+
+export async function getHiddenCategories(): Promise<string[]> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return [];
+  const { data, error } = await sb
+    .from('app_settings')
+    .select('value')
+    .eq('key', 'hiddenCategories')
+    .maybeSingle();
+  if (error) {
+    console.error('getHiddenCategories error:', error);
+    return [];
+  }
+  return normalizeHiddenCategories(data?.value);
+}
+
+export async function setHiddenCategories(cats: string[]): Promise<string[]> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) throw new Error('Supabase service role not configured');
+  const value = normalizeHiddenCategories(cats);
+  const { error } = await sb
+    .from('app_settings')
+    .upsert({ key: 'hiddenCategories', value }, { onConflict: 'key' });
+  if (error) throw new Error(`setHiddenCategories: ${error.message}`);
+  return value;
 }
