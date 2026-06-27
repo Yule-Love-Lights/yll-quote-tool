@@ -1,6 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from '@/lib/supabase';
 import type { DashboardQuote } from './types';
 import type { ViewEventRow } from './activity';
+import type { WorkflowJob } from './workflowBoard';
 
 /**
  * Discriminated result for the dashboard quotes read. AUDIT FIX
@@ -73,6 +74,34 @@ export async function listQuotesForDashboard(limit = 500): Promise<DashboardQuot
 // only the OLDEST views — the feed still shows the most recent ones. 1000 opens
 // for one customer is well beyond any realistic case; if it's ever hit we log it.
 const VIEW_EVENTS_LIMIT = 1000;
+
+/**
+ * Jobs for the Workflow board's Jobs column (ledger #83 Phase 2). Read-only,
+ * server-side aggregation source — just `status` + `line_items` (the board
+ * sums line-item amounts for the column total). BEST-EFFORT: returns [] on any
+ * error — including the `jobs` table not existing yet — so the dashboard still
+ * renders (Jobs column shows zeros) before the 2026-06-27-jobs.sql migration is
+ * applied. Mirrors getViewEventsForQuotes. Server-only.
+ */
+export async function listJobsForWorkflowBoard(limit = 1000): Promise<WorkflowJob[]> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return [];
+  try {
+    const { data, error } = await sb
+      .from('jobs')
+      .select('status, line_items')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.warn('listJobsForWorkflowBoard (table not migrated yet?):', error.message);
+      return [];
+    }
+    return (data ?? []) as unknown as WorkflowJob[];
+  } catch (err) {
+    console.warn('listJobsForWorkflowBoard failed:', err);
+    return [];
+  }
+}
 
 export async function getViewEventsForQuotes(quoteIds: string[]): Promise<ViewEventRow[]> {
   if (quoteIds.length === 0) return [];

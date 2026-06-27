@@ -49,6 +49,44 @@ alter table quotes disable row level security;
 create index if not exists quotes_created_at_idx on quotes (created_at desc);
 
 -- ─────────────────────────────────────────────────────────────
+-- SHARED jobs table — #83 billing fields + #82 fulfillment_stage.
+-- Canonical fresh-install mirror of migrations/2026-06-27-jobs.sql (the
+-- authoritative migration: creates job_number_seq, extends the
+-- allocate_display_number RPC, indexes + updated_at trigger). ONE jobs table
+-- for BOTH epics — the deposit-paid Valor webhook is the SINGLE creator
+-- (src/lib/jobs.ts createJobFromQuote, idempotent on quote_id); #82 EXTENDS the
+-- same row (fulfillment_stage / design_id → materials), never inserts a second.
+-- See docs/jobber-flow/SPEC.md §3,§5 (#83) + the inventory-82 design §47,§119-123
+-- (#82). status free text (canonical set in src/lib/jobs.ts).
+-- ⚠️ This block is for fresh-DB bootstrap only; the .sql migration is what is
+-- applied to provisioned DBs. ⚠️ Inventory (#82 Slice 3) also touches this block
+-- — keep it isolated so a merge doesn't tangle the two epics' edits.
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists jobs (
+  id            uuid primary key default gen_random_uuid(),
+  job_number    int unique,                          -- Job # display (≠ Quote ID), from job_number_seq
+  quote_id      uuid references quotes(id) on delete cascade, -- From-Quote link; cascade so deleteQuote/"delete all" doesn't FK-fail
+  design_id     uuid,                                -- #82: design → materials projection
+  customer_id   uuid,                                -- #83 Phase 5 (customers table) — nullable now
+  property_id   uuid,                                -- #83 Phase 5 (properties table) — nullable now
+  type          text not null default 'one_off',     -- one_off | permanent (from quote service_type)
+  status        text not null default 'to_schedule', -- #83 BILLING: to_schedule→scheduled→installed→requires_invoicing→done (+cancelled)
+  fulfillment_stage text,                            -- ⚠️ #82 owns this — materials Kanban axis; #83 leaves NULL
+  line_items    jsonb,                               -- snapshot of the quote's priced line items
+  install_date  date,                                -- synced from home.works later (#84)
+  completed_at  timestamptz,                         -- install-complete (#83 invoice trigger, Phase 3)
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+alter table jobs disable row level security;
+
+create unique index if not exists jobs_quote_id_key on jobs (quote_id) where quote_id is not null;
+create index if not exists jobs_created_at_idx on jobs (created_at desc);
+create index if not exists jobs_status_idx on jobs (status);
+
+-- ─────────────────────────────────────────────────────────────
 -- Photo corrections — user-edited measurements feed back as
 -- few-shot examples to improve future Claude Vision analyses.
 -- ─────────────────────────────────────────────────────────────

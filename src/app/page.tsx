@@ -1,4 +1,4 @@
-import { listQuotesForDashboard } from '@/lib/dashboard/queries';
+import { listQuotesForDashboard, listJobsForWorkflowBoard } from '@/lib/dashboard/queries';
 import { computeKpis } from '@/lib/dashboard/metrics';
 import { computeWorklist } from '@/lib/dashboard/worklist';
 import { computeWorkflowBoard } from '@/lib/dashboard/workflowBoard';
@@ -18,11 +18,14 @@ import { ServiceSections } from '@/components/dashboard/ServiceSections';
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const quotes = await listQuotesForDashboard(500);
+  const [quotes, jobs] = await Promise.all([
+    listQuotesForDashboard(500),
+    listJobsForWorkflowBoard(),
+  ]);
   const now = new Date();
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
-  const workflowBoard = computeWorkflowBoard(quotes);
+  const workflowBoard = computeWorkflowBoard(quotes, jobs);
   const holiday = computeHolidayBreakdown(quotes);
   const permanent = computePermanentSummary(quotes);
   const event = computeEventSummary(quotes);

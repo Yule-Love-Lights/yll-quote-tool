@@ -14,7 +14,7 @@ import { createHmac } from 'crypto';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl } = vi.hoisted(() => ({
+const { sbRef, hl, createJobFromQuote } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     sendSms: vi.fn(async () => ({})),
@@ -22,11 +22,19 @@ const { sbRef, hl } = vi.hoisted(() => ({
     updateOpportunityStage: vi.fn(async () => ({})),
     configured: { value: true },
   },
+  // The job auto-create (#83 Phase 2). Mocked so the webhook test asserts the
+  // wiring (called once on booking, never on replay) without touching the
+  // jobs table. Its OWN idempotency is covered in src/lib/jobs.test.ts.
+  createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+vi.mock('@/lib/jobs', () => ({
+  createJobFromQuote,
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -152,6 +160,22 @@ describe('Valor webhook — happy path', () => {
     expect(hl.updateOpportunityStage).toHaveBeenCalledWith('opp-1', 'stage-approved');
     expect(hl.sendSms).toHaveBeenCalledTimes(1);
     expect(hl.sendEmail).toHaveBeenCalledTimes(2); // customer receipt + internal alert
+
+    // #83 Phase 2: booking auto-creates exactly one Job from the quote.
+    expect(createJobFromQuote).toHaveBeenCalledTimes(1);
+    expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
+  });
+
+  it('still books even if the job auto-create throws (best-effort)', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    createJobFromQuote.mockRejectedValueOnce(new Error('jobs table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true); // payment recorded despite the job failure
   });
 
   it('verifies a signature built with the Stripe-style `${ts}.${body}` fallback base', async () => {
@@ -203,6 +227,8 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(hl.sendEmail).not.toHaveBeenCalled();
+    // Lost the race → the winning request creates the job; this replay must not.
+    expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 
   it('short-circuits when the quote is already marked paid', async () => {
@@ -214,6 +240,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
 
     expect(json.alreadyPaid).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
   });
 });
 

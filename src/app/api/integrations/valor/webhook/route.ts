@@ -49,6 +49,7 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
+import { createJobFromQuote } from '@/lib/jobs';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -257,6 +258,18 @@ export async function POST(req: NextRequest) {
   // (will) fire the side effects. Acknowledge without double-firing.
   if (!claimed || claimed.length === 0) {
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
+  }
+
+  // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────
+  // Deposit paid = booked = a Job exists. We won the atomic claim, so this is
+  // the single booking event; createJobFromQuote is itself idempotent (no-op if
+  // a job already exists for the quote — the SHARED-table guard shared with #82).
+  // BEST-EFFORT: a failure here must NOT break the webhook or the booking — the
+  // payment is already recorded. A missing job can be reconciled later.
+  try {
+    await createJobFromQuote(quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] job auto-create failed:', err);
   }
 
   // ── Best-effort side effects (payment is already recorded) ────────────────
