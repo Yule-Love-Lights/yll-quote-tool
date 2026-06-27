@@ -115,6 +115,75 @@ function extractJson(text: string): unknown {
   throw new Error(`Claude returned unbalanced JSON: ${s.slice(0, 200)}`);
 }
 
+// --- Audit fix (g14-photoanalysis): robustness tidies on the raw analyzer JSON ---
+// Claude returns free-form JSON; the cast to PhotoAnalysisResult does no runtime
+// validation, so a stray string footage or off-enum difficulty would flow into
+// the form. Coerce the FORM-FACING scalars to safe shapes. (Lines/boxes are
+// normalized separately below.)
+const DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
+type Difficulty = (typeof DIFFICULTIES)[number];
+
+export function coerceDifficulty(v: unknown): Difficulty {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return (DIFFICULTIES as readonly string[]).includes(s) ? (s as Difficulty) : 'medium';
+}
+
+// Coerce a footage value (Claude sometimes returns "40ft" or "40"). Number()
+// handles numeric strings; anything non-finite or negative falls back to 0.
+export function coerceFootage(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+// Pick the coordinate scale (0-1 vs 0-1000) by MAJORITY, not the global max, so
+// a single hallucinated out-of-range point can't collapse every real coord to a
+// near-zero sliver. We take the median of all coords: if the typical coord is
+// >1.5 the model is on the 0-1000 scale. Returns 1 or 1/1000.
+function pickScale(coords: number[]): number {
+  const finite = coords.filter(c => Number.isFinite(c));
+  if (finite.length === 0) return 1;
+  const sorted = [...finite].sort((a, b) => a - b);
+  const median = sorted[Math.floor((sorted.length - 1) / 2)];
+  return median > 1.5 ? 1 / 1000 : 1;
+}
+
+// Normalize polyline coords — Claude sometimes returns the 0-1000 scale. Decide
+// the scale by MAJORITY (median, see pickScale) so one out-of-range outlier
+// can't collapse every real line. After rescaling, DROP any individual point
+// still outside [0,1] (a true hallucination) rather than letting it skew the
+// drawing; lines left with <2 points are dropped entirely.
+export function normalizeLines(lines: LineSegment[] | undefined): LineSegment[] {
+  if (!Array.isArray(lines)) return [];
+  const allPoints = lines.flatMap(l => l.points ?? []);
+  if (allPoints.length === 0) return [];
+  const scale = pickScale(allPoints.flat());
+  return lines
+    .map(l => ({
+      label: l.label,
+      points: (l.points ?? [])
+        .map(([x, y]) => [x * scale, y * scale] as [number, number])
+        .filter(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1),
+    }))
+    .filter(l => l.points.length >= 2);
+}
+
+// Same majority-scale logic for detection bounding boxes. A box whose origin
+// still lands outside [0,1] after rescaling is a hallucination — drop it.
+export function normalizeBoxArray<T extends { box: [number, number, number, number] }>(
+  dets: T[] | undefined,
+): T[] {
+  if (!Array.isArray(dets)) return [];
+  const allCoords = dets.flatMap(d => d.box ?? []);
+  if (allCoords.length === 0) return [];
+  const scale = pickScale(allCoords);
+  return dets
+    .map(d => ({
+      ...d,
+      box: (d.box ?? [0, 0, 0, 0]).map(v => v * scale) as [number, number, number, number],
+    }))
+    .filter(d => d.box[0] >= 0 && d.box[0] <= 1 && d.box[1] >= 0 && d.box[1] <= 1);
+}
+
 const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
 
 PACKAGES — there are TWO mutually-exclusive roofline options. Every roof-edge run you trace goes into EXACTLY ONE of them, decided by which way its roof plane faces:
@@ -520,8 +589,11 @@ export async function analyzePhoto(
           : ''
       }`
     : '';
-  const styleNote = houseStyleHint
-    ? `\n\nHouse style hint from user: ${houseStyleHint}. Prior training examples shown are selected to match this style where possible.`
+  // Audit fix: cap the user-supplied hint before interpolating it into the
+  // system prompt (untrusted free text — don't let it balloon the prompt).
+  const safeStyleHint = houseStyleHint?.slice(0, 200);
+  const styleNote = safeStyleHint
+    ? `\n\nHouse style hint from user: ${safeStyleHint}. Prior training examples shown are selected to match this style where possible.`
     : '';
   // #8 Stage C (C3): satellite orientation self-check. Flipping the red (front)
   // and blue (ridge+sides) buckets on the top-down image is the single most
@@ -576,40 +648,20 @@ export async function analyzePhoto(
   const raw = textBlock.text.trim();
   const parsed = extractJson(raw) as PhotoAnalysisResult;
 
-  // Normalize coordinates — Claude sometimes returns 0-1000 scale. Detect and rescale.
-  const normalizeLines = (lines: LineSegment[] | undefined): LineSegment[] => {
-    if (!Array.isArray(lines)) return [];
-    const allPoints = lines.flatMap(l => l.points ?? []);
-    if (allPoints.length === 0) return [];
-    const maxCoord = Math.max(...allPoints.flat());
-    const scale = maxCoord > 1.5 ? 1 / 1000 : 1;
-    return lines.map(l => ({
-      label: l.label,
-      points: (l.points ?? []).map(([x, y]) => [x * scale, y * scale] as [number, number]),
-    }));
-  };
-
-  const normalizeBoxArray = <T extends { box: [number, number, number, number] }>(dets: T[] | undefined): T[] => {
-    if (!Array.isArray(dets)) return [];
-    const allCoords = dets.flatMap(d => d.box ?? []);
-    if (allCoords.length === 0) return [];
-    const maxCoord = Math.max(...allCoords);
-    const scale = maxCoord > 1.5 ? 1 / 1000 : 1;
-    return dets.map(d => ({
-      ...d,
-      box: (d.box ?? [0, 0, 0, 0]).map(v => v * scale) as [number, number, number, number],
-    }));
-  };
-
   return {
     ...parsed,
+    // Audit fix: coerce form-facing scalars (raw JSON is cast, never validated).
+    santasFootage: coerceFootage(parsed.santasFootage),
+    santasDifficulty: coerceDifficulty(parsed.santasDifficulty),
+    gingerbreadFootage: coerceFootage(parsed.gingerbreadFootage),
+    gingerbreadDifficulty: coerceDifficulty(parsed.gingerbreadDifficulty),
     santasLines: normalizeLines(parsed.santasLines),
     gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
     satelliteSantasLines: normalizeLines(parsed.satelliteSantasLines),
     satelliteGingerbreadLines: normalizeLines(parsed.satelliteGingerbreadLines),
-    satelliteSantasFootage: parsed.satelliteSantasFootage ?? 0,
-    satelliteGingerbreadFootage: parsed.satelliteGingerbreadFootage ?? 0,
-    preferredSource: parsed.preferredSource ?? 'street',
+    satelliteSantasFootage: coerceFootage(parsed.satelliteSantasFootage),
+    satelliteGingerbreadFootage: coerceFootage(parsed.satelliteGingerbreadFootage),
+    preferredSource: parsed.preferredSource === 'satellite' ? 'satellite' : 'street',
     miniLightDetections: normalizeBoxArray(parsed.miniLightDetections),
     wreathDetections: normalizeBoxArray(parsed.wreathDetections),
     spritzerDetections: normalizeBoxArray(parsed.spritzerDetections),
