@@ -1,4 +1,4 @@
-import { listQuotesForDashboard } from '@/lib/dashboard/queries';
+import { listQuotesForDashboardResult } from '@/lib/dashboard/queries';
 import { monthlyRevenue, revenueByService, computeInsightStats } from '@/lib/dashboard/insights';
 import { OperatorShell } from '@/components/OperatorShell';
 import { KpiCard } from '@/components/dashboard/KpiCard';
@@ -20,7 +20,38 @@ function days(n: number | null): string {
 }
 
 export default async function InsightsPage() {
-  const quotes = await listQuotesForDashboard(500);
+  const result = await listQuotesForDashboardResult(500);
+
+  // AUDIT FIX (dashboard-insights-error-visibility): when the quotes read
+  // fails, surface a visible banner instead of silently computing every metric
+  // over an empty list (which would render "—"/$0/0% as if it were real data).
+  if (!result.ok) {
+    return (
+      <OperatorShell active="insights">
+        <div className="max-w-6xl mx-auto w-full">
+          <header className="mb-6">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
+              Insights
+            </p>
+            <h1 className="text-3xl font-semibold" style={{ color: 'var(--op-text)' }}>Insights</h1>
+          </header>
+          <div
+            role="alert"
+            className="rounded-lg border p-4 text-sm"
+            style={{ borderColor: 'var(--op-danger, #b91c1c)', color: 'var(--op-danger, #b91c1c)', background: 'var(--op-danger-bg, rgba(185,28,28,0.08))' }}
+          >
+            <p className="font-semibold">Couldn&apos;t load insights.</p>
+            <p className="mt-1" style={{ color: 'var(--op-text-dim)' }}>
+              The quotes query failed, so no metrics are shown (rather than misleading zeros). Try refreshing; if it persists, check the database connection.
+            </p>
+            <p className="mt-2 font-mono text-xs" style={{ color: 'var(--op-text-dim)' }}>{result.error}</p>
+          </div>
+        </div>
+      </OperatorShell>
+    );
+  }
+
+  const quotes = result.rows;
   const now = new Date();
   const months = monthlyRevenue(quotes, now, 12);
   const byService = revenueByService(quotes);
