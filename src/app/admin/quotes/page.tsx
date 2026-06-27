@@ -142,28 +142,6 @@ export default function QuotesAdminPage() {
     }
   };
 
-  const removeAll = async () => {
-    if (items.length === 0) return;
-    const ok = confirm(`Delete ALL ${items.length} quote${items.length === 1 ? '' : 's'}? This cannot be undone.`);
-    if (!ok) return;
-    setBusy('ALL');
-    try {
-      // Bulk wipe requires a second-factor confirmation header in addition to
-      // the admin secret (audit fix g29-route). Must match DELETE_ALL_CONFIRM
-      // in src/app/api/quotes/route.ts.
-      const res = await adminFetch('/api/quotes', {
-        method: 'DELETE',
-        headers: { 'x-confirm-delete-all': 'DELETE ALL QUOTES' },
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Bulk delete failed');
-      await refresh();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Bulk delete failed');
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const fmtDate = (iso: string) => new Date(iso).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
   const fmtMoney = (n: number | null) => (n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
@@ -194,15 +172,6 @@ export default function QuotesAdminPage() {
             <Link href="/" className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md">
               ← Home
             </Link>
-            {items.length > 0 && (
-              <button
-                disabled={busy !== null}
-                onClick={removeAll}
-                className="bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 font-medium text-sm px-4 py-2 rounded-md"
-              >
-                Delete all ({items.length})
-              </button>
-            )}
           </div>
         </div>
 
@@ -323,7 +292,7 @@ export default function QuotesAdminPage() {
                           Portal ↗
                         </Link>
                         <button
-                          disabled={busy === q.id || busy === 'ALL' || !!q.customer_approved_at}
+                          disabled={busy === q.id || !!q.customer_approved_at}
                           onClick={() => sendToCustomer(q.id)}
                           title={
                             q.customer_approved_at
@@ -337,7 +306,7 @@ export default function QuotesAdminPage() {
                           {q.quote_sent_at ? 'Resend' : 'Send'}
                         </button>
                         <button
-                          disabled={busy === q.id || busy === 'ALL'}
+                          disabled={busy === q.id}
                           onClick={() => remove(q.id)}
                           className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded"
                         >
