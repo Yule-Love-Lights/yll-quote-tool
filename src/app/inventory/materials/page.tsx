@@ -106,7 +106,10 @@ export default function MaterialsPage() {
                   >
                     <span className="block truncate text-gray-800">{q.customer_name || 'Anonymous'}</span>
                     <span className="block text-[11px] text-gray-400">
-                      {q.total != null ? `$${q.total}` : '—'} · {q.created_at?.slice(0, 10)}
+                      {q.total != null
+                        ? `$${q.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : '—'}{' '}
+                      · {q.created_at?.slice(0, 10)}
                     </span>
                   </button>
                 ))

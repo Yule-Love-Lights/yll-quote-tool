@@ -9,7 +9,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { getInventoryBindings } from '@/lib/inventory/bindings';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { listOnHand } from '@/lib/inventory/onHand';
-import { projectMaterials, aggregateMaterials } from '@/lib/inventory/materialsProjection';
+import { projectMaterials, buildMaterialsView } from '@/lib/inventory/materialsProjection';
 import type { Scene } from '@/lib/design/sceneTypes';
 
 export const runtime = 'nodejs';
@@ -38,34 +38,17 @@ export async function GET(req: NextRequest) {
 
     const { bindings } = await getInventoryBindings();
     const lines = projectMaterials(scene, bindings);
-    const aggregated = aggregateMaterials(lines);
 
     const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
     const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
     const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
 
-    const materials = aggregated.map((a) => {
-      const oh = onHandOf.has(a.sku) ? (onHandOf.get(a.sku) as number) : null;
-      return {
-        sku: a.sku,
-        name: nameOf.get(a.sku) ?? '(not in catalog)',
-        qty: a.qty,
-        onHand: oh,
-        short: oh !== null && oh < a.qty,
-      };
-    });
-
-    // Unbound concepts: group the null-sku lines by conceptKey (summed qty).
-    const unboundMap = new Map<string, { conceptKey: string; label: string; qty: number }>();
-    for (const l of lines) {
-      if (l.sku) continue;
-      const cur = unboundMap.get(l.conceptKey);
-      if (cur) cur.qty += l.qty;
-      else unboundMap.set(l.conceptKey, { conceptKey: l.conceptKey, label: l.label, qty: l.qty });
-    }
-    const unbound = [...unboundMap.values()].sort((a, b) => a.label.localeCompare(b.label));
-
-    return NextResponse.json({ hasDesign: !!design, materials, unbound, totalLines: lines.length });
+    const view = buildMaterialsView(
+      lines,
+      (sku) => nameOf.get(sku),
+      (sku) => (onHandOf.has(sku) ? (onHandOf.get(sku) as number) : null),
+    );
+    return NextResponse.json({ hasDesign: !!design, ...view });
   } catch (err) {
     console.error('[api/inventory/materials] GET failed:', err);
     return NextResponse.json({ error: 'Failed to project materials' }, { status: 500 });

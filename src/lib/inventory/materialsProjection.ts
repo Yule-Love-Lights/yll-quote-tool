@@ -151,3 +151,39 @@ export function aggregateMaterials(lines: MaterialLine[]): { sku: string; qty: n
     .map(([sku, qty]) => ({ sku, qty }))
     .sort((a, b) => a.sku.localeCompare(b.sku));
 }
+
+// ── view assembly (#82 Slice 2d) ─────────────────────────────────────────────
+// Join the projected lines with catalog names + on-hand stock into the display
+// shape the materials view + the Slice-3 job pull list consume. Pure: the caller
+// supplies the lookups (nameOf, onHandOf — onHandOf returns null when a SKU isn't
+// stocked, NOT 0). `short` only when stocked AND below the needed quantity.
+export type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
+export type UnboundConcept = { conceptKey: string; label: string; qty: number };
+export type MaterialsView = { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
+
+export function buildMaterialsView(
+  lines: MaterialLine[],
+  nameOf: (sku: string) => string | undefined,
+  onHandOf: (sku: string) => number | null,
+): MaterialsView {
+  const materials: MaterialRow[] = aggregateMaterials(lines).map((a) => {
+    const onHand = onHandOf(a.sku);
+    return {
+      sku: a.sku,
+      name: nameOf(a.sku) ?? '(not in catalog)',
+      qty: a.qty,
+      onHand,
+      short: onHand !== null && onHand < a.qty,
+    };
+  });
+  // Unbound concepts: group the null-sku lines by conceptKey (summed qty).
+  const unboundMap = new Map<string, UnboundConcept>();
+  for (const l of lines) {
+    if (l.sku) continue;
+    const cur = unboundMap.get(l.conceptKey);
+    if (cur) cur.qty += l.qty;
+    else unboundMap.set(l.conceptKey, { conceptKey: l.conceptKey, label: l.label, qty: l.qty });
+  }
+  const unbound = [...unboundMap.values()].sort((a, b) => a.label.localeCompare(b.label));
+  return { materials, unbound, totalLines: lines.length };
+}
