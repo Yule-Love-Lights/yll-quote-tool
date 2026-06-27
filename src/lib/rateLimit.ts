@@ -15,6 +15,15 @@ type Entry = { timestamps: number[] };
 // bucket → (ip → timestamps)
 const buckets: Map<string, Map<string, Entry>> = new Map();
 
+/**
+ * Test-only: number of per-IP keys currently retained in a bucket. Used to
+ * assert the audit-#19 eviction keeps the Map bounded to active IPs. Returns 0
+ * for an unknown bucket. Not part of the runtime rate-limiting API.
+ */
+export function __bucketSize(bucket: string): number {
+  return buckets.get(bucket)?.size ?? 0;
+}
+
 function getIp(req: NextRequest): string {
   // Vercel forwards the real client IP in x-forwarded-for (first value).
   const xff = req.headers.get('x-forwarded-for');
@@ -45,9 +54,17 @@ export function checkRateLimit(req: NextRequest, opts: RateLimitOpts): RateLimit
     buckets.set(opts.bucket, bucket);
   }
 
+  // Audit fix (#19): evict per-IP keys whose timestamps have all aged out, so
+  // the Map stays bounded to currently-active IPs. Without this, every IP that
+  // ever made a request leaves a permanent entry (an attacker rotating keys
+  // grows the Map unboundedly within a warm lambda). Pure hardening — no
+  // behavior change for real, in-window traffic.
+  for (const [bucketIp, bucketEntry] of bucket) {
+    bucketEntry.timestamps = bucketEntry.timestamps.filter(t => t > cutoff);
+    if (bucketEntry.timestamps.length === 0) bucket.delete(bucketIp);
+  }
+
   const entry = bucket.get(ip) ?? { timestamps: [] };
-  // Drop timestamps outside the window
-  entry.timestamps = entry.timestamps.filter(t => t > cutoff);
 
   if (entry.timestamps.length >= opts.limit) {
     bucket.set(ip, entry);
