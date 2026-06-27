@@ -552,11 +552,18 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   let discountAmount = 0;
   if (inputs.discount) {
     discountAmount = inputs.discount.type === 'percentage'
-      ? Math.round(subtotalBeforeDiscount * inputs.discount.amount)
-      : inputs.discount.amount;
+      // Audit fix (#91): clamp the percentage into [0,1] so an out-of-range
+      // rate can't produce a negative or over-100% discount.
+      ? Math.round(subtotalBeforeDiscount * Math.min(1, Math.max(0, inputs.discount.amount)))
+      // Audit fix (#91): clamp a flat discount to the subtotal so it can't
+      // exceed what's being discounted (clean reporting; floor below covers tax/total).
+      : Math.max(0, Math.min(inputs.discount.amount, subtotalBeforeDiscount));
   }
 
-  const postDiscount = subtotalBeforeDiscount - discountAmount;
+  // Audit fix (#91): floor the post-discount subtotal at 0 so a flat discount
+  // larger than the subtotal can't drive subtotal/tax/total/deposit negative.
+  // Does NOT floor at the $1,000 minimum — sub-$1,000 subtotals stay as priced.
+  const postDiscount = Math.max(0, subtotalBeforeDiscount - discountAmount);
 
   // Early-install promo (#40): Sep 15% / Oct 10% off the ITEM SUBTOTAL, mirroring
   // the portal's priceSelection (off the subtotal, before fees + tax). Absent or

@@ -334,6 +334,21 @@ describe('calculateQuote — discounts', () => {
     expect(r.minimumApplied).toBe(false);
     expect(r.subtotalAfterDiscount).toBe(800); // real value, not floored to 1000
   });
+
+  // Audit fix (#91): a flat discount larger than the subtotal must not drive
+  // subtotal/tax/total/deposit negative — floored at 0, not below.
+  it('floors at 0 when a flat discount exceeds the subtotal', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 110, santasDifficulty: 'medium', // 1100
+      discount: { type: 'flat', amount: 5000 },       // way over subtotal
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(1100);
+    expect(r.discountAmount).toBe(1100); // clamped to the subtotal for clean reporting
+    expect(r.subtotalAfterDiscount).toBe(0);
+    expect(r.total).toBeGreaterThanOrEqual(0);
+    expect(r.depositAmount).toBeGreaterThanOrEqual(0);
+    expect(r.balanceDue).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('calculateQuote — custom / manual line items (#27 escape hatch)', () => {
