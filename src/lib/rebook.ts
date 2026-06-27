@@ -31,8 +31,10 @@ export type RebookSource = {
 // priced inputs/result/service_type + the customer/property link, and carries
 // NOTHING from the lifecycle (no quote_sent_at / customer_approved_at /
 // deposit_paid_at, no approval_snapshot), so the clone lands as a fresh draft.
-// The new id + created_at come from the DB defaults. service_type is only set
-// when present so the clone can't reset the column to NULL.
+// status is set explicitly to 'draft' to match saveQuote's invariant (a persisted
+// status, not a NULL that relies on the deriveStatus fallback) now that the
+// status spine has merged. The new id + created_at come from the DB defaults.
+// service_type is only set when present so the clone can't reset the column to NULL.
 export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
   return {
     customer_name: src.customer_name ?? 'Anonymous',
@@ -40,6 +42,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     customer_phone: src.customer_phone ?? null,
     customer_email: src.customer_email ?? null,
     highlevel_contact_id: src.highlevel_contact_id ?? null,
+    status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
     inputs: src.inputs,
     result: src.result,

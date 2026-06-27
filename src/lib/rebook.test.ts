@@ -130,6 +130,7 @@ describe('buildRebookInsert', () => {
       customer_name: 'Jane',
       customer_email: 'jane@x.com',
       highlevel_contact_id: 'hl1',
+      status: 'draft', // explicit, matching saveQuote's invariant
       service_type: 'permanent',
       inputs: { a: 1 },
       total: 4200,
