@@ -32,6 +32,12 @@ import type { RenderSettings } from '@/components/design/editor-core/renderSetti
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
+// Audit fix (g11): last-resort hero image when even the design/static render
+// URLs are unreachable (expired signed URL / deleted object), so the first
+// screen never shows the browser's broken-image glyph. Reuses an existing
+// public asset rather than introducing a new one.
+const FALLBACK_HERO = '/yule-site-logo-2.png';
+
 export type InteractiveHeroProps = {
   firstName: string;
   afterUrl: string;
@@ -71,6 +77,13 @@ export function InteractiveHero({
   } = useSelection();
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
+  // Audit fix (g11): when the static hero render URL fails to load (expired
+  // signed URL / deleted object), swap to a bundled fallback so the first
+  // screen never shows the browser's broken-image glyph.
+  const [heroSrc, setHeroSrc] = useState(afterUrl);
+  useEffect(() => {
+    setHeroSrc(afterUrl);
+  }, [afterUrl]);
   const prevId = useRef<PackageId>(packageId);
 
   // Fire a bloom-flash any time the active package changes
@@ -126,6 +139,13 @@ export function InteractiveHero({
             alt={`${alt} — before installation, daytime`}
             className="portal-snow-stage-photo absolute inset-0 w-full h-full object-cover"
             data-ready={ready ? 'true' : 'false'}
+            // Audit fix (g11): on a dead photo URL fall back to the static
+            // render, then a bundled asset, so no broken-image glyph shows.
+            onError={(e) => {
+              const img = e.currentTarget;
+              if (img.src.endsWith(FALLBACK_HERO)) return;
+              img.src = img.src.includes(afterUrl) || !afterUrl ? FALLBACK_HERO : afterUrl;
+            }}
           />
         ) : (
           // After: the live, lit design rendered on the photo.
@@ -143,7 +163,7 @@ export function InteractiveHero({
         )
       ) : (
         <Image
-          src={afterUrl}
+          src={heroSrc}
           alt={alt}
           fill
           priority
@@ -152,6 +172,10 @@ export function InteractiveHero({
           className="portal-snow-stage-photo"
           data-level={packageId}
           data-ready={ready ? 'true' : 'false'}
+          // Audit fix (g11): swap to a bundled fallback if the render URL is dead.
+          onError={() => {
+            if (heroSrc !== FALLBACK_HERO) setHeroSrc(FALLBACK_HERO);
+          }}
           style={
             dBrightness !== undefined
               ? ({ ['--brightness' as string]: dBrightness.toString() } as React.CSSProperties)

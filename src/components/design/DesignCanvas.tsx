@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Scene, BulbColor } from '@/lib/design/sceneTypes';
 import type { ReadOnlyDesignController } from './editor-core/render-readonly';
 import { setPalette } from './editor-core/colors';
@@ -34,6 +34,13 @@ type Props = {
 export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride, palette, renderSettings }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ReadOnlyDesignController | null>(null);
+  // Audit fix (g11): track render lifecycle so the hero is never blank or
+  // permanently empty. `ready` flips true once the Konva stage resolves (until
+  // then a dimmed poster of the base photo shows instead of a blank div);
+  // `failed` flips true if the dynamic import / render rejects (e.g. an expired
+  // signed photo URL), falling back to the static photo so it never stays empty.
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   // Mount/teardown the Konva stage — only when the scene or photo changes.
   // hiddenIds is intentionally NOT a mount dependency: a toggle updates the
@@ -42,29 +49,40 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   // (re)mount (scene/photo change re-renders with the latest hiddenIds first).
   useEffect(() => {
     let cancelled = false;
+    // Reset lifecycle for this (re)mount (scene/photo change).
+    setReady(false);
+    setFailed(false);
 
     void (async () => {
       const host = hostRef.current;
       if (!host) return;
-      const { renderReadOnlyDesign } = await import('./editor-core/render-readonly');
-      if (cancelled) return;
-      // Apply global app settings (#32) before rendering so the portal matches
-      // what staff configured (palette + spritzer density, etc.).
-      if (palette && palette.length > 0) setPalette(palette);
-      if (renderSettings) setRenderSettings(renderSettings);
-      const ctrl = await renderReadOnlyDesign(host, {
-        scene,
-        photoUrl,
-        photoW,
-        photoH,
-        hiddenIds: hiddenIds ?? null,
-        colorOverride: colorOverride ?? null,
-      });
-      if (cancelled) {
-        ctrl.destroy();
-        return;
+      // Audit fix (g11): wrap the import + render so a failure (e.g. an expired
+      // signed photo URL or a Konva load error) falls back to the static photo
+      // instead of leaving the hero permanently empty.
+      try {
+        const { renderReadOnlyDesign } = await import('./editor-core/render-readonly');
+        if (cancelled) return;
+        // Apply global app settings (#32) before rendering so the portal matches
+        // what staff configured (palette + spritzer density, etc.).
+        if (palette && palette.length > 0) setPalette(palette);
+        if (renderSettings) setRenderSettings(renderSettings);
+        const ctrl = await renderReadOnlyDesign(host, {
+          scene,
+          photoUrl,
+          photoW,
+          photoH,
+          hiddenIds: hiddenIds ?? null,
+          colorOverride: colorOverride ?? null,
+        });
+        if (cancelled) {
+          ctrl.destroy();
+          return;
+        }
+        ctrlRef.current = ctrl;
+        setReady(true);
+      } catch {
+        if (!cancelled) setFailed(true);
       }
-      ctrlRef.current = ctrl;
     })();
 
     return () => {
@@ -87,5 +105,33 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
     ctrlRef.current?.setColorOverride(colorOverride ?? null);
   }, [colorOverride]);
 
-  return <div ref={hostRef} className={className} />;
+  // Audit fix (g11): never render a bare empty div.
+  //  - Until the Konva stage resolves, show a dimmed/blurred poster of the base
+  //    photo as a skeleton so the hero isn't blank on slow networks.
+  //  - If the live render failed, fall back to the static photo so the hero is
+  //    never permanently empty.
+  return (
+    <div ref={hostRef} className={className} style={{ position: 'relative' }}>
+      {failed && photoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={photoUrl}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      ) : (
+        !ready &&
+        photoUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={photoUrl}
+            alt=""
+            aria-hidden
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: 'blur(8px) brightness(0.6)', transform: 'scale(1.05)' }}
+          />
+        )
+      )}
+    </div>
+  );
 }
