@@ -22,6 +22,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
   '/api/integrations/whatsapp/webhook', // Meta WhatsApp Cloud API webhook (HMAC-verified in the route, #82 Phase 3)
+  '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded in the route, #82)
 ]);
 
 /**

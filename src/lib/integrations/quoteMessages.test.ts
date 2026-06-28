@@ -9,6 +9,8 @@ import {
   orderEmailHtml,
   supplierOrderEmailSubject,
   supplierOrderEmailHtml,
+  lowStockEmailSubject,
+  lowStockEmailHtml,
 } from './quoteMessages';
 
 describe('supplier purchase order email (#82 Phase 3)', () => {
@@ -64,6 +66,23 @@ describe('inventory order email (#82 Slice 3)', () => {
   it('handles an empty materials list', () => {
     const html = orderEmailHtml({ jobNumber: 1, customerName: null, address: null, installDate: null, materials: [], unbound: [] });
     expect(html).toContain('No bound materials projected');
+  });
+});
+
+describe('low-stock alert email (#82)', () => {
+  it('subject counts items (singular/plural)', () => {
+    expect(lowStockEmailSubject(1)).toContain('1 item ');
+    expect(lowStockEmailSubject(3)).toContain('3 items');
+  });
+  it('renders the rows (on-hand + reorder) and escapes names', () => {
+    const html = lowStockEmailHtml([
+      { sku: '14147', name: 'C9 Flex Clip', onHand: 5, reorderPoint: 100 },
+      { sku: '50036-30', name: 'Noble <Wreath>', onHand: 0, reorderPoint: 6 },
+    ]);
+    expect(html).toContain('14147');
+    expect(html).toContain('C9 Flex Clip');
+    expect(html).toContain('Reorder at');
+    expect(html).toContain('Noble &lt;Wreath&gt;'); // escaped
   });
 });
 
