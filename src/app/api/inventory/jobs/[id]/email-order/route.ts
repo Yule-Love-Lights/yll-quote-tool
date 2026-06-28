@@ -1,0 +1,50 @@
+// src/app/api/inventory/jobs/[id]/email-order/route.ts
+// POST → email a job's materials order to the internal staff/purchasing contact
+// (HIGHLEVEL_INTERNAL_CONTACT_ID, the same inbox used for the #38 deposit alerts).
+// Staff act on it / forward to the supplier. Reuses the Slice 2a/2d projection
+// via getJobWorkOrder. Service-role + HighLevel required.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { getJobWorkOrder } from '@/lib/inventory/jobs';
+import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
+import { orderEmailSubject, orderEmailHtml } from '@/lib/integrations/quoteMessages';
+
+export const runtime = 'nodejs';
+
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  if (!isHighLevelConfigured() || !internalContactId) {
+    return NextResponse.json(
+      { error: 'Order email not configured — needs HighLevel + HIGHLEVEL_INTERNAL_CONTACT_ID' },
+      { status: 503 },
+    );
+  }
+
+  const { id } = await params;
+  const wo = await getJobWorkOrder(id);
+  if (!wo) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+
+  try {
+    await sendEmail({
+      contactId: internalContactId,
+      subject: orderEmailSubject(wo.job.jobNumber, wo.job.customerName),
+      html: orderEmailHtml({
+        jobNumber: wo.job.jobNumber,
+        customerName: wo.job.customerName,
+        address: wo.job.customerAddress,
+        installDate: wo.job.installDate,
+        materials: wo.materials.materials,
+        unbound: wo.materials.unbound.map((u) => ({ label: u.label, qty: u.qty })),
+      }),
+      emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('[api/inventory/jobs/email-order] failed:', err);
+    return NextResponse.json({ error: 'Failed to send order email' }, { status: 502 });
+  }
+}

@@ -145,6 +145,30 @@ describe('seedRooflineStrands', () => {
     const twice = seedRooflineStrands(once, LINES, W, H);
     expect(twice.items).toEqual(once.items);
   });
+
+  it('applies AI-detected roof features (index-aligned) and defaults stake → pathway (#82 2c)', () => {
+    const out = seedRooflineStrands(
+      emptyScene(),
+      {
+        santas: [[[0, 0.5], [1, 0.5]]],
+        gingerbread: [[[0.1, 0.2], [0.9, 0.2]], [[0, 0.4], [0.1, 0.45]]],
+        stakeLighting: [[[0.2, 0.9], [0.8, 0.9]]],
+        features: { santas: ['gutter'], gingerbread: ['ridge', 'side'] },
+      },
+      W,
+      H,
+    );
+    const byId = (id: string) => out.items.filter(isStrand).find((s) => s.id === id)!;
+    expect(byId('seed-santas-1').roofFeature).toBe('gutter');
+    expect(byId('seed-gingerbread-1').roofFeature).toBe('ridge');
+    expect(byId('seed-gingerbread-2').roofFeature).toBe('side');
+    expect(byId('seed-stake-1').roofFeature).toBe('pathway'); // default, no AI feature needed
+  });
+
+  it('leaves roofFeature unset when no feature is provided (staff sets it)', () => {
+    const out = seedRooflineStrands(emptyScene(), { santas: [[[0, 0.5], [1, 0.5]]] }, W, H);
+    expect(out.items.filter(isStrand)[0].roofFeature).toBeUndefined();
+  });
 });
 
 describe('sanitizeSeedLines', () => {
@@ -175,5 +199,27 @@ describe('sanitizeSeedLines', () => {
     expect(sanitizeSeedLines(null)).toEqual({});
     expect(sanitizeSeedLines('hi')).toEqual({});
     expect(seedLinesHaveContent(sanitizeSeedLines(null))).toBe(false);
+  });
+
+  it('parses index-aligned features and keeps alignment when a polyline is dropped (#82 2c)', () => {
+    const out = sanitizeSeedLines({
+      santas: [
+        [[0, 0.5], [1, 0.5]],   // valid → 'gutter'
+        [[0.1, 0.1]],           // single point → dropped (with its feature)
+        [[0.2, 0.3], [0.4, 0.5]], // valid → 'peak'
+      ],
+      features: { santas: ['gutter', 'metal', 'peak'] },
+    });
+    expect(out.santas).toHaveLength(2);
+    expect(out.features?.santas).toEqual(['gutter', 'peak']); // 'metal' dropped with poly[1]
+  });
+
+  it('drops unknown feature values and omits an all-null features array', () => {
+    const out = sanitizeSeedLines({
+      santas: [[[0, 0.5], [1, 0.5]]],
+      features: { santas: ['bogus'] },
+    });
+    expect(out.santas).toHaveLength(1);
+    expect(out.features).toBeUndefined();
   });
 });

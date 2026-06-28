@@ -1,8 +1,8 @@
 // src/app/api/inventory/materials/route.ts
 // Materials list for a quote's design (#82 Slice 2d). Projects the design's
-// per-unit materials (Slice 2a) and joins catalog names + on-hand stock. Service-
-// role only — mirrors the other /api/inventory routes. Per-unit only for now;
-// roofline bulbs/wire/clips are Slice 2b.
+// per-unit materials (Slice 2a) + roofline C9 bulbs/clips (Slice 2b) and joins
+// catalog names + on-hand stock. Service-role only — mirrors the other
+// /api/inventory routes. (Socket wire is a deferred follow-up — no binding yet.)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
@@ -36,8 +36,8 @@ export async function GET(req: NextRequest) {
       .maybeSingle();
     const scene = (design?.scene ?? { yardsticks: [], items: [] }) as Scene;
 
-    const { bindings } = await getInventoryBindings();
-    const lines = projectMaterials(scene, bindings);
+    const { bindings, clipRules } = await getInventoryBindings();
+    const lines = projectMaterials(scene, bindings, clipRules);
 
     const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
     const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));

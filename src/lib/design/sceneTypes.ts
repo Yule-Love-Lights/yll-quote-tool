@@ -53,6 +53,13 @@ export type Surface =
   | 'tree'
   | 'column'
   | 'railing'; // grouped mini-light wraps (A2). Tags today; needs a price-book rate (v0.5) to bill.
+// Physical roof feature for a c9 roofline run — drives clip-SKU selection in the
+// inventory materials engine (#82 Slice 2b). NET-NEW + optional, so the core
+// geometry stays byte-identical and data without it is simply "unset". Distinct
+// from `surface` (a BILLING category): this is the PHYSICAL attachment surface.
+// 'metal' = magnetic socket wire, no clip (flagged for staff). RELAY: mirror to
+// the standalone design tool's scene types (byte-identical, like 'stake-lighting').
+export type RoofFeature = 'gutter' | 'peak' | 'side' | 'ridge' | 'pathway' | 'flat' | 'metal';
 export type Tier = 'bow' | 'fullDecor'; // wreath + garland price tier — bow = Non-Decorated, fullDecor = Decorated (#17; 'labor' retired)
 export type WrapStyle = 'canopy' | 'trunk'; // mini-light wrap style
 
@@ -104,6 +111,10 @@ export type StrandItem = ItemBase & MiniBilling & {
   // groupId: this strand belongs to a MiniGroupItem (a railing) → priced via the
   // group + skipped in the per-strand projection (no double-count).
   groupId?: string;
+  // Physical roof feature for clip selection in the inventory materials engine
+  // (#82 Slice 2b). Optional; null/absent = unset. Set by staff (+ AI auto-detect
+  // in 2c) on c9 roofline runs only. RELAY: shared with the standalone design tool.
+  roofFeature?: RoofFeature | null;
 };
 
 export type WreathItem = ItemBase & {
