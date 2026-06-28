@@ -11,7 +11,7 @@ import type { JobStatus } from '../jobStatus';
 import type { Scene } from '@/lib/design/sceneTypes';
 import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
-import { listOnHand } from './onHand';
+import { listOnHand, upsertOnHand } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialsView } from './materialsProjection';
 import {
   fulfillmentStageOf,
@@ -119,6 +119,7 @@ export type WorkOrderJob = {
   installDate: string | null;
   customerName: string | null;
   customerAddress: string | null;
+  stockDecrementedAt: string | null; // #82 Phase 2 — set once prep deducts stock
 };
 export type WorkOrder = { job: WorkOrderJob; materials: MaterialsView };
 
@@ -127,6 +128,10 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   if (!db) return null;
   const job = await getJob(id);
   if (!job) return null;
+
+  // The #82 stock-prep flag lives outside the billing JobRow — read it directly.
+  const { data: sd } = await db.from('jobs').select('stock_decremented_at').eq('id', id).maybeSingle();
+  const stockDecrementedAt = (sd as { stock_decremented_at: string | null } | null)?.stock_decremented_at ?? null;
 
   // Materials from the job's linked design (by quote_id), mirroring the 2d view.
   let scene: Scene = { yardsticks: [], items: [] };
@@ -167,7 +172,74 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
       installDate: job.install_date,
       customerName,
       customerAddress,
+      stockDecrementedAt,
     },
     materials,
   };
+}
+
+// ── Phase 2: stock loop (decrement on prep) ──────────────────────────────────
+
+export type StockDeduction = { sku: string; before: number; deducted: number; after: number };
+
+// Pure: given the job's aggregated materials (with their current on-hand), what
+// comes off stock when prepped. Only TRACKED skus (onHand !== null) with a real
+// need are deducted; on-hand floors at 0 (never negative).
+export function computeStockDeductions(
+  materials: { sku: string; qty: number; onHand: number | null }[],
+): StockDeduction[] {
+  const out: StockDeduction[] = [];
+  for (const m of materials) {
+    if (m.onHand === null || m.qty <= 0) continue;
+    const after = Math.max(0, m.onHand - m.qty);
+    if (after !== m.onHand) out.push({ sku: m.sku, before: m.onHand, deducted: m.onHand - after, after });
+  }
+  return out;
+}
+
+export type PrepareResult =
+  | { ok: true; alreadyDone: true }
+  | { ok: true; alreadyDone: false; deductions: StockDeduction[] };
+
+/**
+ * Mark a job prepped and decrement its on-hand stock — idempotent (Naldo Q4:
+ * stock decremented only at prep, once). Atomically CLAIMS the job by stamping
+ * stock_decremented_at WHERE it's still NULL (so a double-click / retry can't
+ * double-deduct), then advances it to Ready For Install and deducts each tracked
+ * SKU's on-hand by the projected need. Returns alreadyDone when the job was
+ * already prepped; null if Supabase isn't configured or the job is missing.
+ */
+export async function prepareJobMaterials(id: string): Promise<PrepareResult | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+
+  // Atomic claim — only the caller that flips NULL → now() proceeds to deduct.
+  const { data: claimed } = await db
+    .from('jobs')
+    .update({ stock_decremented_at: new Date().toISOString(), fulfillment_stage: 'ready_for_install' })
+    .eq('id', id)
+    .is('stock_decremented_at', null)
+    .select('id')
+    .maybeSingle();
+
+  if (!claimed) {
+    // Lost the claim (already prepped) or no such job. Distinguish for the caller.
+    const job = await getJob(id);
+    if (!job) return null;
+    return { ok: true, alreadyDone: true };
+  }
+
+  // Won the claim → deduct on-hand for the job's tracked materials.
+  const wo = await getJobWorkOrder(id);
+  const deductions = wo ? computeStockDeductions(wo.materials.materials) : [];
+  for (const d of deductions) {
+    try {
+      await upsertOnHand({ sku: d.sku, on_hand_qty: d.after });
+    } catch (err) {
+      // A single failed write shouldn't unwind the claim; staff can reconcile
+      // that SKU manually on the Stock tab. Log for visibility.
+      console.error(`prepareJobMaterials: on-hand write failed for ${d.sku}:`, err);
+    }
+  }
+  return { ok: true, alreadyDone: false, deductions };
 }

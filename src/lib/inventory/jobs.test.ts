@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isActiveFulfillment, groupByStage, type FulfillmentCard } from './jobs';
+import { isActiveFulfillment, groupByStage, computeStockDeductions, type FulfillmentCard } from './jobs';
 
 const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   id: 'j1',
@@ -42,5 +42,22 @@ describe('groupByStage', () => {
     expect(g.to_be_ordered.map((c) => c.id)).toEqual(['a', 'c']);
     expect(g.awaiting_pickup).toEqual([]);
     expect(g.ready_for_install.map((c) => c.id)).toEqual(['b']);
+  });
+});
+
+describe('computeStockDeductions (#82 Phase 2)', () => {
+  it('deducts tracked SKUs, floors at 0, skips untracked + zero-need', () => {
+    expect(
+      computeStockDeductions([
+        { sku: 'A', qty: 3, onHand: 10 }, // → 7
+        { sku: 'B', qty: 8, onHand: 5 }, // → floors at 0 (deducted 5, not 8)
+        { sku: 'C', qty: 2, onHand: null }, // untracked → skip
+        { sku: 'D', qty: 0, onHand: 4 }, // zero need → skip
+        { sku: 'E', qty: 4, onHand: 0 }, // nothing on hand → no change → skip
+      ]),
+    ).toEqual([
+      { sku: 'A', before: 10, deducted: 3, after: 7 },
+      { sku: 'B', before: 5, deducted: 5, after: 0 },
+    ]);
   });
 });

@@ -19,7 +19,7 @@ import type { FulfillmentCard } from '@/lib/inventory/jobs';
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
 type WorkOrder = {
-  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null };
+  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null; stockDecrementedAt: string | null };
   materials: { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
 };
 
@@ -174,20 +174,36 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
     }
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/inventory/jobs/${id}`);
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
-        const body = (await res.json()) as WorkOrder;
-        if (!cancelled) setData(body);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load work order');
-      }
-    })();
-    return () => { cancelled = true; };
+  const [prepareStatus, setPrepareStatus] = useState<'idle' | 'preparing' | 'error'>('idle');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/inventory/jobs/${id}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      setData((await res.json()) as WorkOrder);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load work order');
+    }
   }, [id]);
+
+  useEffect(() => {
+    // Defer out of the synchronous effect body (react-hooks/set-state-in-effect).
+    queueMicrotask(() => void load());
+  }, [load]);
+
+  const prepare = async () => {
+    if (!window.confirm("Deduct this job's materials from on-hand stock and mark it prepped?")) return;
+    setPrepareStatus('preparing');
+    try {
+      const res = await fetch(`/api/inventory/jobs/${id}/prepare`, { method: 'POST' });
+      if (!res.ok) throw new Error('prepare failed');
+      setPrepareStatus('idle');
+      await load(); // refresh on-hand + the prepped flag
+    } catch {
+      setPrepareStatus('error');
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4" onClick={onClose}>
@@ -235,6 +251,26 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
                 )}
               </div>
 
+              <div className="mb-3">
+                {data.job.stockDecrementedAt ? (
+                  <span className="text-sm font-medium" style={{ color: '#1f7a4d' }}>✓ Stock deducted — job prepped</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={prepare}
+                    disabled={prepareStatus === 'preparing'}
+                    className="rounded-md px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
+                    style={{ background: '#1f7a4d' }}
+                  >
+                    {prepareStatus === 'preparing'
+                      ? 'Deducting…'
+                      : prepareStatus === 'error'
+                        ? 'Prep failed — retry'
+                        : 'Mark prepared — deduct stock'}
+                  </button>
+                )}
+              </div>
+
               <h3 className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--op-text-dim)' }}>Materials</h3>
               {data.materials.materials.length === 0 ? (
                 <p className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
@@ -257,7 +293,11 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
                         <td className="py-1.5" style={{ color: 'var(--op-text)' }}>{m.name}</td>
                         <td className="py-1.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{m.qty}</td>
                         <td className="py-1.5 text-right tabular-nums" style={{ color: m.short ? '#b45309' : 'var(--op-text-dim)' }}>
-                          {m.onHand === null ? 'not tracked' : m.short ? `${m.onHand} — short` : m.onHand}
+                          {m.onHand === null
+                            ? 'not tracked'
+                            : m.short
+                              ? `${m.onHand} — order ${m.qty - m.onHand} more`
+                              : m.onHand}
                         </td>
                       </tr>
                     ))}
