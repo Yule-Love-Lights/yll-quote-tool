@@ -4,7 +4,9 @@
 // not-yet-prepped jobs, subtract on-hand, and the positive shortfall is what to
 // order from the supplier. No arbitrary reorder target, no LLM — the design→SKU
 // projection is the intelligence. The actual SEND is human-gated (staff click) —
-// auto-placing real supplier orders unattended is intentionally NOT done here.
+// The manual send is human-gated (staff click). An OPTIONAL unattended cron
+// auto-send exists too (off by default behind PO_AUTO_SEND_ENABLED), with a
+// signature dedup so it never re-sends an unchanged order.
 
 import { getSupabaseServiceClient } from '../supabase';
 import type { Scene } from '@/lib/design/sceneTypes';
@@ -13,6 +15,8 @@ import { listCatalog } from './catalog';
 import { listOnHand } from './onHand';
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { isActiveFulfillment } from './jobs';
+import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
+import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 
 export type POInput = { sku: string; needed: number; onHand: number };
 export type POLine = { sku: string; needed: number; onHand: number; order: number };
@@ -80,4 +84,59 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
     lines: po.map((l) => ({ ...l, name: nameBySku.get(l.sku) ?? '(not in catalog)' })),
     jobCount: active.length,
   };
+}
+
+// ── Email the PO to the supplier (shared by the manual route + the cron) ─────
+export type SendResult = { ok: true } | { ok: false; status: number; error: string };
+
+export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date: string): Promise<SendResult> {
+  const contactId = process.env.THUNDER_ORDER_CONTACT_ID;
+  if (!isHighLevelConfigured() || !contactId) {
+    return { ok: false, status: 503, error: 'Supplier order email not configured — needs HighLevel + THUNDER_ORDER_CONTACT_ID' };
+  }
+  try {
+    await sendEmail({
+      contactId,
+      subject: supplierOrderEmailSubject(po.jobCount, date),
+      html: supplierOrderEmailHtml({
+        lines: po.lines.map((l) => ({ sku: l.sku, name: l.name, order: l.order })),
+        jobCount: po.jobCount,
+        date,
+      }),
+      emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+    });
+    return { ok: true };
+  } catch (err) {
+    console.error('emailSupplierPurchaseOrder failed:', err);
+    return { ok: false, status: 502, error: 'Failed to send the order email' };
+  }
+}
+
+// ── Unattended auto-send dedup (#82 optional) ────────────────────────────────
+// A stable signature of the order so the weekly cron never re-emails an UNCHANGED
+// PO. Stored in app_settings; reset to '' once the shortfall clears so a
+// re-appearing shortfall sends again.
+export function purchaseOrderSignature(lines: { sku: string; order: number }[]): string {
+  return lines
+    .map((l) => `${l.sku}:${l.order}`)
+    .sort()
+    .join('|');
+}
+
+const AUTO_SEND_KEY = 'po_auto_send_last';
+
+export async function getLastAutoSentSignature(): Promise<string | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const { data } = await db.from('app_settings').select('value').eq('key', AUTO_SEND_KEY).maybeSingle();
+  const sig = (data as { value?: { signature?: unknown } } | null)?.value?.signature;
+  return typeof sig === 'string' ? sig : null;
+}
+
+export async function recordAutoSentSignature(signature: string): Promise<void> {
+  const db = getSupabaseServiceClient();
+  if (!db) return;
+  await db
+    .from('app_settings')
+    .upsert({ key: AUTO_SEND_KEY, value: { signature, sentAt: new Date().toISOString() } }, { onConflict: 'key' });
 }

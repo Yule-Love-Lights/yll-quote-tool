@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { computePurchaseOrder } from './purchaseOrder';
+import { computePurchaseOrder, purchaseOrderSignature } from './purchaseOrder';
+
+describe('purchaseOrderSignature (auto-send dedup)', () => {
+  it('is stable regardless of line order', () => {
+    const a = purchaseOrderSignature([{ sku: 'B', order: 7 }, { sku: 'A', order: 3 }]);
+    const b = purchaseOrderSignature([{ sku: 'A', order: 3 }, { sku: 'B', order: 7 }]);
+    expect(a).toBe(b);
+  });
+  it('changes when a quantity changes', () => {
+    expect(purchaseOrderSignature([{ sku: 'A', order: 3 }])).not.toBe(
+      purchaseOrderSignature([{ sku: 'A', order: 4 }]),
+    );
+  });
+  it('empty order → empty signature', () => {
+    expect(purchaseOrderSignature([])).toBe('');
+  });
+});
 
 describe('computePurchaseOrder (#82 Phase 3 auto-ordering)', () => {
   it('orders the shortfall, drops covered SKUs, sorts by SKU', () => {
