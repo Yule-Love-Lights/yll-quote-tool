@@ -30,6 +30,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/integrations/valor/webhook',
       '/api/integrations/homeworks/signed',
       '/api/integrations/whatsapp/webhook', // Twilio webhook (signature-verified in the route, #82)
+      '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified, #82)
       '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82)
       '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82)
     ]) {

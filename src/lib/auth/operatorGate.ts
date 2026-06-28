@@ -31,6 +31,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/integrations/valor/webhook', // Valor deposit webhook (HMAC-verified in the route)
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/integrations/whatsapp/webhook', // Twilio WhatsApp webhook (signature-verified in the route, #82)
+  '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified in the route, #82 alt channel)
   '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
   '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82 low-stock alarm)
 ]);
