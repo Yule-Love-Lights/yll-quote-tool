@@ -19,15 +19,65 @@ export type ConceptRow = { key: string; label: string; hint?: string };
 // ── bulb colors: C9 (every palette color) + Bistro (warm white only) ─────────
 // Mini + Permanent removed: mini lights have their own section; permanent lighting
 // is a future feature (see the ledger #82 follow-up).
+//
+// Physical-product palette = the design palette minus Black. There is no black
+// bulb or spritzer product (#82, Naldo), so Black isn't offered as something to
+// bind. It stays in DEFAULT_COLORS (the shared editor-core palette uses it for
+// unlit/off strands) — we just filter it out of the orderable product rows.
+export const PRODUCT_COLORS = DEFAULT_COLORS.filter((c) => c.id !== 'black');
 export const bulbC9Key = (paletteId: string) => `bulb:${paletteId}:c9`;
 export const BISTRO_KEY = 'bulb:warm-white:bistro';
 export function bulbC9Rows(): ConceptRow[] {
-  return DEFAULT_COLORS.map((c) => ({ key: bulbC9Key(c.id), label: c.label }));
+  return PRODUCT_COLORS.map((c) => ({ key: bulbC9Key(c.id), label: c.label }));
 }
 
-// ── mini lights: keyed by catalog color; rows derived from the catalog ───────
+// ── mini lights: the exact strands YLL carries (#82, Naldo) ──────────────────
+// A curated list (NOT the messy catalog `color` strings), shown by friendly
+// name. The 11 whose name matches a design-palette color (Warm White … Teal)
+// keep a `mini:<label>` key, so a design placing that solid mini still
+// auto-orders it via materialsProjection (which reads mini:colorLabel(paletteId)).
+// The rest — Multi + the specialty / two-color strands — are stocked and
+// pre-seeded for binding/manual ordering, but the design can't place them yet,
+// so they don't auto-project. SKU↔name from Naldo's supplier list.
 export const MINI_CATEGORY = 'Mini Lights';
 export const miniKey = (color: string) => `mini:${color.trim()}`;
+
+export type MiniLight = { sku: string; name: string };
+export const MINI_LIGHTS: MiniLight[] = [
+  // Solid colors that match the design palette → auto-project from a design.
+  { sku: '40056', name: 'Warm White' },
+  { sku: '40156', name: 'Pure White' },
+  { sku: '40956', name: 'Cool White' },
+  { sku: '40356', name: 'Red' },
+  { sku: '40456', name: 'Green' },
+  { sku: '40556', name: 'Blue' },
+  { sku: '40656', name: 'Orange' },
+  { sku: '40856', name: 'Yellow' },
+  { sku: '43116', name: 'Pink' },
+  { sku: '40756', name: 'Purple' },
+  { sku: '43126', name: 'Teal' },
+  // Multi + specialty / two-color strands → stocked, manual ordering.
+  { sku: '40256', name: 'Multi' },
+  { sku: '43136', name: 'Candy Cane' },
+  { sku: '43036', name: 'Old Fashioned Candy Cane' },
+  { sku: '43156', name: 'Frozen' },
+  { sku: '43346', name: 'Grinch' },
+  { sku: '43756', name: 'Goblin' },
+  { sku: '43356', name: 'Patriot' },
+  { sku: '43456', name: 'Wintergreen' },
+  { sku: '43556', name: 'Ocean' },
+  { sku: '43226', name: 'Rockefeller Multi' },
+  { sku: '43096', name: 'Champagne' },
+  { sku: '43416', name: 'Green / Pure White' },
+  { sku: '43476', name: 'Green / Purple' },
+  { sku: '43656', name: 'Orange / Purple' },
+  { sku: '43436', name: 'Red / Green' },
+  { sku: '43166', name: 'Pure White (Brown Wire)' },
+  { sku: '43006', name: 'Warm White (Twinkle Wire)' },
+];
+export function miniRows(): ConceptRow[] {
+  return MINI_LIGHTS.map((m) => ({ key: miniKey(m.name), label: m.name }));
+}
 
 // ── clips: roof feature → { sku, perFt }. Pre-filled with the known SKUs. ────
 export const CLIP_FEATURES: { id: string; label: string; hint: string }[] = [
@@ -37,7 +87,9 @@ export const CLIP_FEATURES: { id: string; label: string; hint: string }[] = [
   { id: 'ridge', label: 'Ridge (horizontal apex)', hint: 'C9 Peak / Ridge Clip (14159 W / 14859 Brown).' },
   { id: 'pathway', label: 'Pathway / stake-lighting', hint: 'Pathway Ground Stake (14343 B / 14443 Grn).' },
   { id: 'flat', label: 'Flat / commercial', hint: 'Parapet Clip (14144) + Shingle Tab — both. Bind parapet here; the shingle-tab pairing is a Slice-2 detail.' },
-  { id: 'metal', label: 'Metal roof', hint: 'Magnetic socket wire — no clip; flag for staff review.' },
+  // NOTE: metal roofs take MAGNETIC SOCKET WIRE (bound in the "Socket wire"
+  // section above), NOT a clip — projectClips('metal') returns null. So there's
+  // deliberately no "Metal roof" clip row; it would just duplicate magnetic wire.
 ];
 // Seeded into clipRules when nothing is saved yet (operator reviews + Saves).
 export const DEFAULT_CLIP_SKUS: Record<string, string> = {
@@ -90,12 +142,60 @@ export function garlandBaseRows(): ConceptRow[] {
   return GARLAND_LENGTHS.map((l) => ({ key: garlandBaseKey(l), label: `${l} section` }));
 }
 
-// ── spritzers: palette color × size → SKU, + one pole per size ───────────────
+// ── spritzers: the exact spritzers YLL carries (#82, Naldo) ──────────────────
+// Curated by SKU + friendly color name + size (NOT the messy catalog `color`).
+// Like minis: the solids whose color is a design-palette color keep a
+// projection-resolvable spritzer:<paletteId>:<size> key (so a design placing
+// that solid spritzer still auto-orders it); the specialty / multi-color combos
+// are keyed by SKU (spritzer:<sku>) — stocked + pre-seeded for binding/manual
+// ordering, but the design can't place them. One pole per size, shared across
+// colors. No black (no black spritzer product). SKU↔color↔size from Naldo's list.
 export const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
 export const spritzerKey = (paletteId: string, size: string) => `spritzer:${paletteId}:${size}`;
 export const spritzerPoleKey = (size: string) => `spritzer-pole:${size}`;
-export function spritzerColorRows(size: string): ConceptRow[] {
-  return DEFAULT_COLORS.map((c) => ({ key: spritzerKey(c.id, size), label: c.label }));
+
+export type Spritzer = { sku: string; name: string; size: QuoteSpritzerSize; paletteId?: string };
+export const SPRITZERS: Spritzer[] = [
+  // Solids that match the design palette → auto-project from a design.
+  { sku: '61001', name: 'Warm White', size: '16', paletteId: 'warm-white' },
+  { sku: '61002', name: 'Warm White', size: '24', paletteId: 'warm-white' },
+  { sku: '61003', name: 'Warm White', size: '32', paletteId: 'warm-white' },
+  { sku: '61101', name: 'Pure White', size: '16', paletteId: 'cool-white' },
+  { sku: '61102', name: 'Pure White', size: '24', paletteId: 'cool-white' },
+  { sku: '61103', name: 'Pure White', size: '32', paletteId: 'cool-white' },
+  { sku: '61301', name: 'Red', size: '16', paletteId: 'red' },
+  { sku: '61302', name: 'Red', size: '24', paletteId: 'red' },
+  { sku: '61401', name: 'Green', size: '16', paletteId: 'green' },
+  { sku: '61402', name: 'Green', size: '24', paletteId: 'green' },
+  { sku: '61501', name: 'Blue', size: '16', paletteId: 'blue' },
+  { sku: '61502', name: 'Blue', size: '24', paletteId: 'blue' },
+  { sku: '61111', name: 'Pink', size: '16', paletteId: 'pink' },
+  { sku: '61112', name: 'Pink', size: '24', paletteId: 'pink' },
+  // Specialty / multi-color combos → stocked, manual ordering (sku-keyed).
+  { sku: '61011', name: 'Warm White / Pure White', size: '16' },
+  { sku: '61012', name: 'Warm White / Pure White', size: '24' },
+  { sku: '61031', name: 'Warm White / Red', size: '16' },
+  { sku: '61032', name: 'Warm White / Red', size: '24' },
+  { sku: '61131', name: 'Red / Pure White', size: '16' },
+  { sku: '61132', name: 'Red / Pure White', size: '24' },
+  { sku: '61151', name: 'Pure White & Blue', size: '16' },
+  { sku: '61152', name: 'Pure White & Blue', size: '24' },
+  { sku: '61201', name: 'Multi', size: '16' },
+  { sku: '61202', name: 'Multi', size: '24' },
+  { sku: '61312', name: 'Red / Pink', size: '24' },
+  { sku: '61341', name: 'Red / Green', size: '16' },
+  { sku: '61342', name: 'Red / Green', size: '24' },
+  { sku: '61351', name: 'Red / Pure White / Blue', size: '16' },
+  { sku: '61352', name: 'Red / Pure White / Blue', size: '24' },
+  { sku: '61671', name: 'Orange / Purple', size: '16' },
+  { sku: '61672', name: 'Orange / Purple', size: '24' },
+];
+// Binding key: solids use the projection-matching key; specialty are sku-keyed.
+function spritzerEntryKey(s: Spritzer): string {
+  return s.paletteId ? spritzerKey(s.paletteId, s.size) : `spritzer:${s.sku}`;
+}
+export function spritzerRows(size: string): ConceptRow[] {
+  return SPRITZERS.filter((s) => s.size === size).map((s) => ({ key: spritzerEntryKey(s), label: s.name }));
 }
 
 // ── autofill defaults (Naldo) ────────────────────────────────────────────────
@@ -113,21 +213,8 @@ export const DEFAULT_WREATH_BOW_SKUS: Record<string, string> = {
 };
 export const DEFAULT_GARLAND_SKUS: Record<string, string> = { '4.5ft': '50045-30', '9ft': '50099-30' };
 export const DEFAULT_GARLAND_BOW_SKU = '30812'; // 12" Red/Gold bow
-// Standard 5mm "50L 6"" strand per color (keyed by the catalog color string).
-export const DEFAULT_MINI_SKUS: Record<string, string> = {
-  'Warm White': '40056', 'Pure White': '40156', 'Cool White': '40956', 'Blue': '40556',
-  'Green': '40456', 'Red': '40356', 'Orange': '40656', 'Yellow': '40856',
-  'Pink': '43116', 'Purple': '40756', 'Teal': '43126', 'Multi': '40256',
-};
-// Spritzer SKU per "<paletteId>:<size>" — only the solid colors that exist.
-export const DEFAULT_SPRITZER_SKUS: Record<string, string> = {
-  'warm-white:16': '61001', 'warm-white:24': '61002', 'warm-white:32': '61003',
-  'cool-white:16': '61101', 'cool-white:24': '61102', 'cool-white:32': '61103',
-  'red:16': '61301', 'red:24': '61302',
-  'green:16': '61401', 'green:24': '61402',
-  'blue:16': '61501', 'blue:24': '61502',
-  'pink:16': '61111', 'pink:24': '61112',
-};
+// Mini strands + spritzers are seeded from their curated lists (MINI_LIGHTS /
+// SPRITZERS above) — each keyed for binding, pre-filled with its known SKU.
 
 // Build the full seeded binding map (all string values). The page merges saved
 // bindings over this (saved wins; seeds fill the gaps).
@@ -139,8 +226,8 @@ export function buildSeedBindings(): Record<string, string> {
   for (const [l, sku] of Object.entries(DEFAULT_GARLAND_SKUS)) out[garlandBaseKey(l)] = sku;
   out[GARLAND_BOW_KEY] = DEFAULT_GARLAND_BOW_SKU;
   out[GARLAND_FEE_KEY] = DEFAULT_GARLAND_FEE_SKU;
-  for (const [color, sku] of Object.entries(DEFAULT_MINI_SKUS)) out[miniKey(color)] = sku;
-  for (const [k, sku] of Object.entries(DEFAULT_SPRITZER_SKUS)) out[`spritzer:${k}`] = sku;
+  for (const m of MINI_LIGHTS) out[miniKey(m.name)] = m.sku;
+  for (const s of SPRITZERS) out[spritzerEntryKey(s)] = s.sku;
   return out;
 }
 
