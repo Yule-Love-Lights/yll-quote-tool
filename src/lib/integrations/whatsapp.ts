@@ -1,14 +1,17 @@
 // src/lib/integrations/whatsapp.ts
-// Inventory WhatsApp bot — Meta WhatsApp Cloud API client + command dispatcher
-// (#82 Phase 3). DORMANT by default: nothing runs unless WHATSAPP_BOT_ENABLED=
-// 'true' AND the config env vars are set. Staff text the business number to move
-// job cards + update stock; the webhook (src/app/api/integrations/whatsapp/
-// webhook/route.ts) verifies Meta's signature, checks the sender allowlist, then
-// runs the parsed command here.
+// Inventory WhatsApp bot — Twilio WhatsApp API client + command dispatcher
+// (#82 Phase 3, Naldo uses Twilio). DORMANT by default: nothing runs unless
+// WHATSAPP_BOT_ENABLED='true' AND the Twilio config env vars are set. Staff text
+// the Twilio WhatsApp number; the webhook (src/app/api/integrations/whatsapp/
+// webhook/route.ts) verifies Twilio's signature, checks the sender allowlist,
+// then runs the parsed command here.
 //
-// Env (see docs/superpowers/specs/2026-06-28-inventory-82-phase3-whatsapp.md):
-//   WHATSAPP_BOT_ENABLED, WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET,
-//   WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ALLOWED_NUMBERS
+// Env:
+//   WHATSAPP_BOT_ENABLED     'true' to activate (master flag)
+//   TWILIO_ACCOUNT_SID       AC...
+//   TWILIO_AUTH_TOKEN        signs every webhook + Basic-auths the send API
+//   TWILIO_WHATSAPP_FROM     sender number, format whatsapp:+15555551234
+//   WHATSAPP_ALLOWED_NUMBERS comma-separated E.164 staff numbers (e.g. +16315170186)
 
 import crypto from 'node:crypto';
 import { safeEqual } from '@/lib/security';
@@ -21,7 +24,7 @@ import { listOnHand, upsertOnHand, toQty } from '@/lib/inventory/onHand';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { parseWhatsAppCommand, WHATSAPP_HELP, type WhatsAppCommand } from './whatsappCommands';
 
-const GRAPH_API = 'https://graph.facebook.com/v21.0';
+const TWILIO_API = 'https://api.twilio.com/2010-04-01';
 const MAX_LIST = 30; // cap rows in a reply so a message never balloons
 
 export function isWhatsAppBotEnabled(): boolean {
@@ -29,13 +32,10 @@ export function isWhatsAppBotEnabled(): boolean {
 }
 export function isWhatsAppConfigured(): boolean {
   return !!(
-    process.env.WHATSAPP_APP_SECRET &&
-    process.env.WHATSAPP_ACCESS_TOKEN &&
-    process.env.WHATSAPP_PHONE_NUMBER_ID
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    process.env.TWILIO_WHATSAPP_FROM
   );
-}
-export function whatsAppVerifyToken(): string | undefined {
-  return process.env.WHATSAPP_VERIFY_TOKEN;
 }
 
 /** Only known staff numbers may command the bot. Fails closed (empty ⇒ none). */
@@ -45,38 +45,51 @@ export function isAllowedSender(from: string | undefined): boolean {
     .map((s) => s.replace(/\D/g, ''))
     .filter(Boolean);
   if (!allow.length) return false;
+  // Twilio sends From as "whatsapp:+15555551234" — strip the prefix and any non-digits.
   const norm = (from ?? '').replace(/\D/g, '');
   return !!norm && allow.includes(norm);
 }
 
-/** Verify Meta's X-Hub-Signature-256 (HMAC-SHA256 of the RAW body w/ the app secret). */
-export function verifyMetaSignature(
-  rawBody: string,
+/**
+ * Verify Twilio's X-Twilio-Signature header.
+ * Twilio's scheme (v1):
+ *   data   = full request URL + (for each POST param, sorted by key: key + value, concatenated)
+ *   sig    = base64(HMAC-SHA1(authToken, data))
+ *   header = X-Twilio-Signature
+ * See https://www.twilio.com/docs/usage/webhooks/webhooks-security.
+ */
+export function verifyTwilioSignature(
+  url: string,
+  params: Record<string, string>,
   signatureHeader: string | null | undefined,
-  appSecret: string | undefined,
+  authToken: string | undefined,
 ): boolean {
-  if (!appSecret || !signatureHeader) return false;
-  const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex');
+  if (!authToken || !signatureHeader) return false;
+  const sortedKeys = Object.keys(params).sort();
+  const data = url + sortedKeys.map((k) => k + params[k]).join('');
+  const expected = crypto.createHmac('sha1', authToken).update(data, 'utf8').digest('base64');
   return safeEqual(signatureHeader, expected);
 }
 
-/** Send a plain-text WhatsApp message via the Cloud API. Throws on failure. */
+/** Send a plain-text WhatsApp message via Twilio's Messages API. Throws on failure. */
 export async function sendWhatsAppText(to: string, body: string): Promise<void> {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  if (!token || !phoneId) throw new Error('WhatsApp not configured');
-  const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_WHATSAPP_FROM;
+  if (!sid || !token || !from) throw new Error('Twilio WhatsApp not configured');
+  // Recipient must carry the whatsapp: prefix; Twilio inbound webhooks always use it.
+  const toAddr = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+  const form = new URLSearchParams({ From: from, To: toAddr, Body: body.slice(0, 1500) });
+  const res = await fetch(`${TWILIO_API}/Accounts/${encodeURIComponent(sid)}/Messages.json`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: body.slice(0, 4000) },
-    }),
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: form.toString(),
   });
   if (!res.ok) {
-    throw new Error(`WhatsApp send failed: ${res.status} ${await res.text().catch(() => '')}`);
+    throw new Error(`Twilio send failed: ${res.status} ${await res.text().catch(() => '')}`);
   }
 }
 

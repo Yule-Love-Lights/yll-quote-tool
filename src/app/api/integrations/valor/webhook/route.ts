@@ -50,6 +50,7 @@ import {
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
 import { createJobFromQuote } from '@/lib/jobs';
+import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -270,6 +271,21 @@ export async function POST(req: NextRequest) {
     await createJobFromQuote(quote.id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] job auto-create failed:', err);
+  }
+
+  // #82 Phase 3 — event-driven auto-PO. Naldo's rule: the scheduled cron sends
+  // every 3 days; this also fires whenever a deposit-paid event leaves us with
+  // ≥5 active jobs queued for materials ("more than 4 installs"). Honors all the
+  // same gates as the cron (PO_AUTO_SEND_ENABLED + supplier config + dedup).
+  // Fully best-effort — the booking is already recorded and a PO send failure
+  // must not block the webhook response.
+  try {
+    const r = await triggerAutoPOIfBusy({ minJobCount: 5 });
+    if (r.ok && r.fired) {
+      console.info(`[api/integrations/valor/webhook] auto-PO fired (${r.items} SKUs across ${r.jobCount} jobs)`);
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] auto-PO trigger failed:', err);
   }
 
   // ── Best-effort side effects (payment is already recorded) ────────────────
