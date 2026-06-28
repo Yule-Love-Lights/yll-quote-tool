@@ -115,7 +115,8 @@ export function isValidDesignId(id: unknown): id is string {
 }
 
 function getSb() {
-  // Service-role only — the bucket is private and the table has RLS disabled.
+  // Service-role only — the bucket is private and the service role bypasses RLS
+  // (enabled on designs with no policies, #90).
   return getSupabaseServiceClient();
 }
 
@@ -149,6 +150,8 @@ export async function createDesign(opts: {
   seedLines?: RooflineSeedLines | null;
   /** Full bridge auto-design payload (#35 Phase 2): roofline lines + per-unit detections. */
   seedAnalysis?: AnalysisSeed | null;
+  /** Actor audit trail (#90): the operator's Supabase user id, or null. */
+  createdBy?: string | null;
 }): Promise<{ id: string } | null> {
   const sb = getSb();
   if (!sb) return null;
@@ -158,6 +161,7 @@ export async function createDesign(opts: {
     .insert({
       quote_id: opts.quoteId ?? null,
       scene: newDesignScene(),
+      created_by: opts.createdBy ?? null,
     })
     .select('id')
     .single();

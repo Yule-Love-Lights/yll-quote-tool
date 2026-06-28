@@ -15,7 +15,7 @@ import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createDesign, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
 import { sanitizeSeedLines } from '@/lib/design/seedRoofline';
 import { sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -44,6 +44,10 @@ export async function POST(req: NextRequest) {
   const photoBase64 = typeof body.photoBase64 === 'string' ? body.photoBase64 : null;
   const photoMediaType = typeof body.photoMediaType === 'string' ? body.photoMediaType : null;
 
+  // Actor audit trail (#90): stamp the creating operator (null while the auth
+  // gate is dormant / no session).
+  const operator = await getOperator();
+
   try {
     const created = await createDesign({
       quoteId: (quoteId as string | undefined) ?? null,
@@ -53,6 +57,7 @@ export async function POST(req: NextRequest) {
       // Full bridge auto-design payload (#35 Phase 2): roofline lines +
       // per-unit detections — the design opens already designed.
       seedAnalysis: sanitizeAnalysisSeed(body.seedAnalysis),
+      createdBy: operator?.id ?? null,
     });
     if (!created) {
       return NextResponse.json({ error: 'Failed to create design' }, { status: 500 });
