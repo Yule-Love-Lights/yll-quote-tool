@@ -16,11 +16,13 @@
 // points are photo-pixels. The design's base photo IS the analyzed street
 // photo, so the conversion is exact: x×photoW, y×photoH.
 
-import type { Scene, SceneItem, StrandItem, Surface } from './sceneTypes';
+import type { Scene, SceneItem, StrandItem, Surface, RoofFeature } from './sceneTypes';
 import { isStrand } from './sceneTypes';
 
 export type NormalizedPoint = [number, number];
 export type NormalizedPolyline = NormalizedPoint[];
+
+export type RooflineSurfaceKey = 'santas' | 'gingerbread' | 'winterWonderland' | 'stakeLighting';
 
 // One optional polyline set per roofline surface. Keys mirror the builder's
 // three measurement line colors (red / blue / C9 custom runs).
@@ -29,6 +31,11 @@ export type RooflineSeedLines = {
   gingerbread?: NormalizedPolyline[];
   winterWonderland?: NormalizedPolyline[];
   stakeLighting?: NormalizedPolyline[];
+  // #82 2c: AI-detected physical roof feature per polyline, index-aligned with the
+  // arrays above (santas[i] ↔ features.santas[i]). Additive + optional: absent ⇒
+  // no auto-feature (staff set it via the editor dropdown). sanitizeSeedLines keeps
+  // the alignment when it drops a malformed polyline.
+  features?: Partial<Record<RooflineSurfaceKey, (RoofFeature | null)[]>>;
 };
 
 const ROOFLINE_SURFACES: ReadonlySet<string> = new Set([
@@ -42,6 +49,15 @@ const ROOFLINE_SURFACES: ReadonlySet<string> = new Set([
 // look exactly like hand-drawn ones and stay fully editable.
 const C9_SPACING_IN = 12;
 const C9_COLOR_PATTERN = ['warm-white'];
+
+// Valid physical roof features (the full RoofFeature union). The AI emits the
+// residential subset; stake runs default to 'pathway'.
+const ROOF_FEATURES: ReadonlySet<string> = new Set([
+  'gutter', 'peak', 'side', 'ridge', 'pathway', 'flat', 'metal',
+]);
+function asRoofFeature(v: unknown): RoofFeature | null {
+  return typeof v === 'string' && ROOF_FEATURES.has(v) ? (v as RoofFeature) : null;
+}
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
@@ -64,13 +80,27 @@ export function sanitizeSeedLines(input: unknown): RooflineSeedLines {
   const out: RooflineSeedLines = {};
   if (!input || typeof input !== 'object') return out;
   const o = input as Record<string, unknown>;
+  const rawFeatures =
+    o.features && typeof o.features === 'object' ? (o.features as Record<string, unknown>) : {};
   for (const key of ['santas', 'gingerbread', 'winterWonderland', 'stakeLighting'] as const) {
     const raw = o[key];
     if (!Array.isArray(raw)) continue;
-    const polys = raw
-      .map((poly) => (Array.isArray(poly) ? poly.filter(isPoint) : []))
-      .filter((poly) => poly.length >= 2);
-    if (polys.length) out[key] = polys as NormalizedPolyline[];
+    // #82 2c: features are index-aligned with the raw polyline array; zip + filter
+    // TOGETHER so dropping a malformed polyline never drifts the feature index.
+    const rf = Array.isArray(rawFeatures[key]) ? (rawFeatures[key] as unknown[]) : [];
+    const polys: NormalizedPolyline[] = [];
+    const feats: (RoofFeature | null)[] = [];
+    raw.forEach((poly, i) => {
+      const clean = Array.isArray(poly) ? poly.filter(isPoint) : [];
+      if (clean.length >= 2) {
+        polys.push(clean as NormalizedPolyline);
+        feats.push(asRoofFeature(rf[i]));
+      }
+    });
+    if (polys.length) {
+      out[key] = polys;
+      if (feats.some((f) => f !== null)) (out.features ??= {})[key] = feats;
+    }
   }
   return out;
 }
@@ -90,22 +120,31 @@ function strandsFor(
   idPrefix: string,
   photoW: number,
   photoH: number,
+  features?: (RoofFeature | null)[],
+  defaultFeature: RoofFeature | null = null,
 ): StrandItem[] {
   if (!polys) return [];
+  // Pair each polyline with its index-aligned feature BEFORE filtering, so a
+  // dropped short polyline never misaligns the features (#82 2c).
   return polys
-    .filter((poly) => poly.length >= 2)
-    .map((poly, i) => ({
-      id: `seed-${idPrefix}-${i + 1}`,
-      yardstickId: null,
-      kind: 'strand' as const,
-      bulbType: 'c9' as const,
-      spacingIn: C9_SPACING_IN,
-      drawingStyle: 'strand' as const,
-      colorPattern: [...C9_COLOR_PATTERN],
-      points: poly.flatMap(([x, y]) => [clamp01(x) * photoW, clamp01(y) * photoH]),
-      surface,
-      included: true,
-    }));
+    .map((poly, i) => ({ poly, feature: features?.[i] ?? defaultFeature }))
+    .filter(({ poly }) => poly.length >= 2)
+    .map(({ poly, feature }, i) => {
+      const strand: StrandItem = {
+        id: `seed-${idPrefix}-${i + 1}`,
+        yardstickId: null,
+        kind: 'strand',
+        bulbType: 'c9',
+        spacingIn: C9_SPACING_IN,
+        drawingStyle: 'strand',
+        colorPattern: [...C9_COLOR_PATTERN],
+        points: poly.flatMap(([x, y]) => [clamp01(x) * photoW, clamp01(y) * photoH]),
+        surface,
+        included: true,
+      };
+      if (feature) strand.roofFeature = feature; // omit when unset — staff sets it
+      return strand;
+    });
 }
 
 // Pure: returns a new Scene with the roofline-tagged strands replaced by
@@ -127,11 +166,13 @@ export function seedRooflineStrands(
     (i) => !(isStrand(i) && i.surface && ROOFLINE_SURFACES.has(i.surface)),
   );
 
+  const f = lines.features ?? {};
   const seeded: StrandItem[] = [
-    ...strandsFor(lines.santas, 'santas-roofline', 'santas', photoW, photoH),
-    ...strandsFor(lines.gingerbread, 'gingerbread', 'gingerbread', photoW, photoH),
-    ...strandsFor(lines.winterWonderland, 'winter-wonderland', 'ww', photoW, photoH),
-    ...strandsFor(lines.stakeLighting, 'stake-lighting', 'stake', photoW, photoH),
+    ...strandsFor(lines.santas, 'santas-roofline', 'santas', photoW, photoH, f.santas),
+    ...strandsFor(lines.gingerbread, 'gingerbread', 'gingerbread', photoW, photoH, f.gingerbread),
+    ...strandsFor(lines.winterWonderland, 'winter-wonderland', 'ww', photoW, photoH, f.winterWonderland),
+    // Stake-lighting runs physically use pathway ground stakes → default 'pathway'.
+    ...strandsFor(lines.stakeLighting, 'stake-lighting', 'stake', photoW, photoH, f.stakeLighting, 'pathway'),
   ];
 
   return { ...scene, items: [...kept, ...seeded] };

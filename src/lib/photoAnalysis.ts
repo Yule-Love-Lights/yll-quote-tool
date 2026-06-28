@@ -7,9 +7,16 @@ import type { StoredReferenceAsset } from './referenceAssets';
 export const ANALYZER_UNAVAILABLE_MESSAGE =
   "The auto-design analyzer is temporarily unavailable, so the design wasn't auto-generated. Your photos are loaded — design the house manually and Calculate, or click Analyze again in a few minutes to retry the auto-design.";
 
+// Physical roof feature the AI can classify per roofline segment (#82 Slice 2c).
+// Drives the inventory clip-SKU selection (separate from the red/blue Santa's/
+// Gingerbread billing split). The residential subset visible in a photo —
+// 'pathway' (ground stake) + 'flat' (commercial parapet) are set elsewhere.
+export type RoofFeatureClass = 'gutter' | 'peak' | 'side' | 'ridge' | 'metal';
+
 export type LineSegment = {
   points: [number, number][]; // normalized 0-1 coords: [[x1,y1], [x2,y2], ...]
   label: string;               // e.g. "front gutter ~40ft"
+  feature?: RoofFeatureClass;  // physical clip feature (#82 2c); omitted when unsure
 };
 
 export type MiniLightDetection = {
@@ -135,6 +142,14 @@ export function coerceFootage(v: unknown): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
+// Coerce the AI's per-line roof-feature (#82 2c) — keep a known value, else
+// undefined (omit) so a hallucinated/off-enum feature never reaches the scene.
+const ROOF_FEATURE_CLASSES = ['gutter', 'peak', 'side', 'ridge', 'metal'] as const;
+export function coerceRoofFeature(v: unknown): RoofFeatureClass | undefined {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return (ROOF_FEATURE_CLASSES as readonly string[]).includes(s) ? (s as RoofFeatureClass) : undefined;
+}
+
 // Pick the coordinate scale (0-1 vs 0-1000) by MAJORITY, not the global max, so
 // a single hallucinated out-of-range point can't collapse every real coord to a
 // near-zero sliver. We take the median of all coords: if the typical coord is
@@ -160,6 +175,7 @@ export function normalizeLines(lines: LineSegment[] | undefined): LineSegment[] 
   return lines
     .map(l => ({
       label: l.label,
+      feature: coerceRoofFeature(l.feature), // #82 2c — carry the AI's classification
       points: (l.points ?? [])
         .map(([x, y]) => [x * scale, y * scale] as [number, number])
         .filter(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1),
@@ -304,7 +320,13 @@ santasFootage = the FRONT edge only (roughly the width of the house front facing
 LINE MARKUP — CRITICAL:
 You must also identify the specific lines you measured, as polylines in NORMALIZED IMAGE COORDINATES (0.0 to 1.0). Origin (0,0) is top-left of the image, (1,1) is bottom-right. Each polyline is an array of [x, y] points that trace along the edge of the roof. Use as many points as needed to follow the curve/angles (straight run = 2 points, L-shape = 3, dormer cut-ups = more).
 
-For each line segment include a short label like "front gutter ~40ft" or "main ridge ~30ft".
+For each line segment include a short label like "front gutter ~40ft" or "main ridge ~30ft", AND a "feature" classifying the PHYSICAL roof surface the run sits on. This is SEPARATE from the red/blue Santa's/Gingerbread split — it decides which install CLIP we use, not which package:
+- "gutter" — a gutter / eave drip edge (the bottom edge of a roof plane, front OR side). This is the COMMON case for most eave runs.
+- "peak" — a FRONT gable face/rake with NO gutter (lights clip to the shingle/fascia of the triangular gable, not a gutter).
+- "ridge" — the horizontal apex line at the very top of a pitched roof.
+- "side" — a side-elevation eave/gutter run (a plane that faces left/right).
+- "metal" — the run sits on a METAL roof (we use magnetic wire, no clip — flags it for staff).
+Pick the single best feature per segment: most front gutterlines are "gutter", the apex is "ridge", side eaves are "side". If you genuinely can't tell, OMIT "feature" (staff will set it).
 
 SATELLITE MEASUREMENT:
 When a satellite image is supplied, also produce polylines in the SATELLITE image's coordinate space — but measure ONLY THE FRONT SECTION of the roof (the part facing the road), NOT the whole perimeter of the house. For ~90% of homes we light only the front of the roof; the back / backyard side stays dark. (The rare customer who wants the whole roof or the backyard side is handled MANUALLY, not by you — so never trace toward the backyard.)
@@ -341,21 +363,21 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
   "santasFootage": number,
   "santasDifficulty": "easy" | "medium" | "hard",
   "santasLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "front gutter ~40ft" }
+    { "points": [[x1,y1], [x2,y2], ...], "label": "front gutter ~40ft", "feature": "gutter" }
   ],
   "gingerbreadFootage": number,
   "gingerbreadDifficulty": "easy" | "medium" | "hard",
   "gingerbreadLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft" },
-    { "points": [[x1,y1], [x2,y2], ...], "label": "right side gutter ~25ft" }
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" },
+    { "points": [[x1,y1], [x2,y2], ...], "label": "right side gutter ~25ft", "feature": "side" }
   ],
   "satelliteSantasLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "front edge ~55ft" }
+    { "points": [[x1,y1], [x2,y2], ...], "label": "front edge ~55ft", "feature": "gutter" }
   ],
   "satelliteSantasFootage": number,
   "satelliteGingerbreadLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "left + right front-section sides ~45ft" },
-    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft" }
+    { "points": [[x1,y1], [x2,y2], ...], "label": "left + right front-section sides ~45ft", "feature": "side" },
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" }
   ],
   "satelliteGingerbreadFootage": number,
   "preferredSource": "street" | "satellite",
