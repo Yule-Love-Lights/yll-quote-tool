@@ -15,10 +15,13 @@ import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createDesign, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
 import { sanitizeSeedLines } from '@/lib/design/seedRoofline';
 import { sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' },

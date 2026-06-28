@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { saveTrainingHouse, listTrainingHouses, TrainingHousePayload } from '@/lib/training';
 import { isSupabaseConfigured } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function GET() {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
       { error: 'Training data requires Supabase — set SUPABASE_URL and SUPABASE_ANON_KEY' },
@@ -17,6 +20,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
       { error: 'Training data requires Supabase — set SUPABASE_URL and SUPABASE_ANON_KEY' },

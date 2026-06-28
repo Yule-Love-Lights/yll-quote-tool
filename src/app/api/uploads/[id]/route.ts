@@ -7,10 +7,13 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { deleteCustomUpload } from '@/lib/customUploads';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }

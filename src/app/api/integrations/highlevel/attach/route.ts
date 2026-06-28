@@ -30,12 +30,15 @@ import {
   HighLevelError,
 } from '@/lib/integrations/highlevel';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isHighLevelConfigured()) {
     return NextResponse.json(
       { error: 'HighLevel not configured', code: 'highlevel-missing' },

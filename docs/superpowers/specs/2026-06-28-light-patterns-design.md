@@ -1,4 +1,4 @@
-# Official light PATTERNS — customer-selectable, inventory-aware (#90)
+# Official light PATTERNS — customer-selectable, inventory-aware (#92)
 
 **Status:** SPEC / design locked — ready for Jason to plan + build. **Owner: Jason** (touches portal + design + the #82 inventory projection; coordinate the inventory bits with Naldo).
 **Date:** 2026-06-28 (Naldo directed; brainstormed with Claude). **Pricing/area:** no pricing-engine change.

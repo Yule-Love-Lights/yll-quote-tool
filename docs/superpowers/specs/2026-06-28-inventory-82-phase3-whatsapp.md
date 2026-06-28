@@ -66,3 +66,44 @@ Built and merged: human-gated supplier PO email (#211, `/inventory/orders` → S
 unattended cron + event-driven trigger (#213, #218 — every 3 days OR when ≥5 active jobs queued for
 materials, both dedup'd). Activated by setting `PO_AUTO_SEND_ENABLED=true` + `THUNDER_ORDER_CONTACT_ID`
 in Vercel. See `.env.local.example` for the env shape.
+
+## Telegram bot (alt channel for group chat — recommended)
+
+> **Why Telegram alongside WhatsApp:** WhatsApp Business numbers (sandbox OR production) **cannot
+> participate in group chats** — Meta platform limit. Telegram has native group-bot support, so this
+> is the channel staff use when they want everyone in the group to see commands + replies. Same
+> command set; the parser is shared. Built in #220 (this PR).
+
+### Code map (alt to the WhatsApp/Twilio paths)
+- `src/lib/integrations/telegram.ts` — Bot API client: `verifyTelegramSecret`, `isAllowedChat`,
+  `sendTelegramMessage`, `cleanTelegramCommand` (strips `/` + `@bot` so the shared parser sees plain text).
+- `src/app/api/integrations/telegram/webhook/route.ts` — POST handler. Same dispatcher as Twilio:
+  `handleWhatsAppText(command)` (legacy name, provider-agnostic).
+- Allowlisted public path in `operatorGate.ts`.
+
+### Go-live (Telegram + BotFather)
+1. **In Telegram**, message **@BotFather**:
+   - `/newbot` → give a display name (e.g. "YLL Inventory") + a username ending in `bot` (e.g. `yll_inventory_bot`).
+   - Copy the **Bot Token** Telegram gives you (looks like `1234567890:ABCdef-...`).
+   - `/setprivacy` → pick your bot → **Disable** (so the bot sees ALL group messages, not just @-mentions). Commands without `@bot` then work in the group.
+2. **Add the bot to your staff group chat.** In the group → Members → Add → search the bot's username → Add. The bot can now read + send in the group.
+3. **Find the group's chat ID.** Easiest: temporarily set the env vars without `TELEGRAM_ALLOWED_CHATS`, redeploy, send any message to the group, then check Vercel logs for the inbound POST — `chat.id` is there. Group IDs are large negative numbers (e.g. `-1001234567890`). Or use curl: `curl 'https://api.telegram.org/bot<TOKEN>/getUpdates'`.
+4. **Set 4 env vars in Vercel** (Project → Settings → Environment Variables):
+   - `TELEGRAM_BOT_TOKEN` = the token from BotFather
+   - `TELEGRAM_WEBHOOK_SECRET` = `openssl rand -hex 16` (random; Telegram echoes it on every inbound)
+   - `TELEGRAM_ALLOWED_CHATS` = the group chat ID (and any 1:1 user IDs you want)
+   - `TELEGRAM_BOT_ENABLED` = `true`
+5. **Register the webhook with Telegram** (one curl, swap the `<TOKEN>` + `<SECRET>`):
+   ```
+   curl -X POST 'https://api.telegram.org/bot<TOKEN>/setWebhook' \
+     -H 'Content-Type: application/json' \
+     -d '{"url":"https://quote.yulelovelights.com/api/integrations/telegram/webhook","secret_token":"<SECRET>"}'
+   ```
+   Expected response: `{"ok":true,"result":true,"description":"Webhook was set"}`.
+6. **Redeploy** (Vercel does this automatically when an env var is set + you click Redeploy on the toast).
+7. **Test in the group:** text `help` → bot should reply with the command list. Try `jobs`, `low`.
+
+### Why Telegram + not Slack/Discord
+- Slack/Discord are equally capable but require accounts + invites for everyone.
+- Telegram: free, instant signup, no business verification, fast bot dev, popular for AI tools.
+- Bots in groups work natively, including reading + replying with full message context.

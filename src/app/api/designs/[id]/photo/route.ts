@@ -8,10 +8,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { uploadDesignPhoto, signDesignPhoto, isValidDesignId } from '@/lib/designs';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' },

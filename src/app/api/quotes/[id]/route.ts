@@ -3,7 +3,7 @@
 //   GET    /api/quotes/[id]   — public, returns PortalQuote shape for the
 //                                customer portal. UUID is the capability
 //                                token (same model as /approve and /send).
-//   DELETE /api/quotes/[id]   — admin-only, requires x-admin-secret.
+//   DELETE /api/quotes/[id]   — operator-only (session perimeter, ledger #81).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -13,22 +13,9 @@ import {
   isValidQuoteId,
   PortalConfigError,
 } from '@/lib/portal/loader';
-import { safeEqual } from '@/lib/security';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
-
-function checkAdminSecret(req: NextRequest): NextResponse | null {
-  const expected = process.env.ADMIN_SECRET;
-  if (!expected) {
-    return NextResponse.json({ error: 'ADMIN_SECRET not configured on server' }, { status: 503 });
-  }
-  const provided = req.headers.get('x-admin-secret');
-  // Audit fix: constant-time compare to avoid leaking the secret via timing.
-  if (!safeEqual(provided ?? undefined, expected)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  return null;
-}
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -52,14 +39,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' },
       { status: 503 },
     );
   }
-  const authFail = checkAdminSecret(req);
-  if (authFail) return authFail;
   const { id } = await params;
   try {
     await deleteQuote(id);

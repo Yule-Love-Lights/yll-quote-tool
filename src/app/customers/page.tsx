@@ -4,6 +4,8 @@ import { aggregateCustomers } from '@/lib/dashboard/customers';
 import type { CustomerSummary } from '@/lib/dashboard/types';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
+import { getOperator } from '@/lib/auth/supabaseServer';
+import { redirect } from 'next/navigation';
 
 // Always render fresh — reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
@@ -46,6 +48,12 @@ function CustomerRow({ c }: { c: CustomerSummary }) {
 }
 
 export default async function CustomersPage() {
+  // Defense in depth behind the middleware perimeter — re-check at render so the
+  // customer-PII list never serves anonymously even if the perimeter is bypassed.
+  // Dormant until the auth gate is live (Slice 4).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/customers');
+  }
   const quotes = await listQuotesForDashboard(500);
   const customers = aggregateCustomers(quotes);
 

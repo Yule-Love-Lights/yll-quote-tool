@@ -1,8 +1,9 @@
 'use client';
 
-// PROPOSAL — operator login page (see docs/audit/AUTH-PROPOSAL.md). Minimal
-// staff password gate: posts to /api/login, which sets the session cookie the
-// middleware checks. Redirects back to the page the operator was trying to reach.
+// Operator login page (ledger #81, Option B — Supabase Auth). Per-user email +
+// password: posts to /api/login, which signs in against Supabase and sets the
+// SSR session cookies the middleware validates. Redirects back to the page the
+// operator was trying to reach.
 
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -11,6 +12,7 @@ function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const from = params.get('from') || '/';
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,7 +25,7 @@ function LoginForm() {
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -38,9 +40,21 @@ function LoginForm() {
   };
 
   return (
-    <form onSubmit={onSubmit} className="flex w-full max-w-sm flex-col gap-4">
+    <form onSubmit={onSubmit} className="flex w-full max-w-sm flex-col gap-4 text-left">
+      <label htmlFor="email" className="text-sm font-medium text-[#C9D3CB]">
+        Email
+      </label>
+      <input
+        id="email"
+        type="email"
+        autoComplete="username"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        className="min-h-[48px] rounded-lg border border-white/15 bg-white/5 px-4 text-base text-white outline-none focus:border-[#E8B862]"
+        required
+      />
       <label htmlFor="password" className="text-sm font-medium text-[#C9D3CB]">
-        Operator password
+        Password
       </label>
       <input
         id="password"
