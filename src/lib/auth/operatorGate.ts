@@ -20,6 +20,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/login',
   '/api/integrations/valor/webhook', // Valor deposit webhook (HMAC-verified in the route)
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
+  '/api/integrations/whatsapp/webhook', // Meta WhatsApp Cloud API webhook (HMAC-verified in the route, #82 Phase 3)
 ]);
 
 /**
