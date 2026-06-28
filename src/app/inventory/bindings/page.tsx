@@ -16,11 +16,11 @@ import { SkuPicker } from '@/components/inventory/SkuPicker';
 import type { CatalogItem } from '@/lib/inventory/catalog';
 import type { Bindings, ClipRules, InventoryBindings } from '@/lib/inventory/bindings';
 import {
-  bulbC9Rows, BISTRO_KEY, MINI_CATEGORY, miniKey,
+  bulbC9Rows, BISTRO_KEY, MINI_CATEGORY, miniRows,
   CLIP_FEATURES,
   wreathBaseRows, wreathBowRows, wreathFeeRows,
   garlandBaseRows, GARLAND_BOW_KEY, GARLAND_FEE_KEY,
-  SPRITZER_SIZES, spritzerColorRows, spritzerPoleKey,
+  SPRITZER_SIZES, spritzerRows, spritzerPoleKey,
   WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
   buildSeedBindings, buildSeedClipRules,
 } from '@/lib/inventory/concepts';
@@ -101,19 +101,6 @@ export default function BindingsPage() {
     const s = byCat.get(cat);
     return s && s.length ? s : catalog;
   };
-
-  // Mini lights: one row per distinct catalog color, picker scoped to that color.
-  const miniByColor = useMemo(() => {
-    const m = new Map<string, CatalogItem[]>();
-    for (const it of catalog) {
-      if (effCat(it) !== MINI_CATEGORY) continue;
-      const color = (it.color ?? '').trim() || '(no color)';
-      const arr = m.get(color);
-      if (arr) arr.push(it);
-      else m.set(color, [it]);
-    }
-    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [catalog]);
 
   // ── mutators (empty value ⇒ delete the key, matching normalizeBindings) ──
   const setBinding = (key: string, sku: string) =>
@@ -236,18 +223,13 @@ export default function BindingsPage() {
             {tab === 'mini' && (
               <section>
                 <p className="text-xs text-gray-400 mb-3">
-                  Every mini-light color in the catalog ({miniByColor.length}). Pick the standard SKU per
-                  color — some colors (e.g. Warm White) have several variants.
+                  The mini-light strands we carry ({miniRows().length}). SKUs are pre-filled — review and Save.
                 </p>
-                {miniByColor.length === 0 ? (
-                  <p className="text-sm text-gray-400 py-6">No mini lights in the catalog.</p>
-                ) : (
-                  miniByColor.map(([color, items]) => (
-                    <Row key={color} label={color} hint={items.length > 1 ? `${items.length} variants` : undefined}>
-                      {pick(miniKey(color), items, `${color} mini-light SKU`)}
-                    </Row>
-                  ))
-                )}
+                {miniRows().map((row) => (
+                  <Row key={row.key} label={row.label}>
+                    {pick(row.key, scoped(MINI_CATEGORY), `${row.label} mini-light SKU`)}
+                  </Row>
+                ))}
               </section>
             )}
 
@@ -339,17 +321,20 @@ export default function BindingsPage() {
             {tab === 'spritzers' && (
               <>
                 <p className="text-xs text-gray-400 mb-3">
-                  Bind each color you stock per size; the pole is the same across colors. Leave colors you
-                  don&apos;t carry empty (32&quot; is white/warm white only).
+                  The spritzers we carry, by size. SKUs are pre-filled — review and Save. The pole is the
+                  same across colors of a size.
                 </p>
                 {SPRITZER_SIZES.map((size) => (
                   <section key={size} className="mb-6">
                     <h2 className="text-sm font-semibold text-gray-800 mb-1">{size}&quot; spritzers</h2>
-                    {spritzerColorRows(size).map((row) => (
+                    {spritzerRows(size).map((row) => (
                       <Row key={row.key} label={row.label}>{pick(row.key, scoped('Spritzer/Sparklers'), `${size}" ${row.label} spritzer SKU`)}</Row>
                     ))}
+                    {/* The pole is a metal stake — a HARDWARE SKU (e.g. 14344/14355/14366
+                        "Stake Metal"), NOT a Spritzer/Sparklers item — so scope the picker to
+                        Hardware (same as the clip rows), else the stakes never appear. */}
                     <Row label="Pole (metal stake)" hint="same pole for every color this size">
-                      {pick(spritzerPoleKey(size), scoped('Spritzer/Sparklers'), `${size}" spritzer pole SKU`)}
+                      {pick(spritzerPoleKey(size), scoped('Hardware'), `${size}" spritzer pole SKU`)}
                     </Row>
                   </section>
                 ))}
