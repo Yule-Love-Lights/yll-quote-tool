@@ -161,6 +161,18 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
 function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
   const [data, setData] = useState<WorkOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [emailStatus, setEmailStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
+  const emailOrder = async () => {
+    setEmailStatus('sending');
+    try {
+      const res = await fetch(`/api/inventory/jobs/${id}/email-order`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'failed');
+      setEmailStatus('sent');
+    } catch {
+      setEmailStatus('error');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +215,21 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
                 <a href={`/inventory/jobs/${data.job.id}/print`} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
                   Print / Save PDF ↗
                 </a>
+                <button
+                  type="button"
+                  onClick={emailOrder}
+                  disabled={emailStatus === 'sending'}
+                  className="font-medium hover:underline disabled:opacity-60"
+                  style={{ color: emailStatus === 'error' ? '#b91c1c' : 'var(--op-primary)' }}
+                >
+                  {emailStatus === 'sending'
+                    ? 'Sending…'
+                    : emailStatus === 'sent'
+                      ? 'Order emailed ✓'
+                      : emailStatus === 'error'
+                        ? 'Email failed — retry'
+                        : 'Email order ✉'}
+                </button>
                 {data.job.quoteId && (
                   <a href={`/quote/${data.job.quoteId}`} className="hover:underline" style={{ color: 'var(--op-primary)' }}>Open design / quote →</a>
                 )}

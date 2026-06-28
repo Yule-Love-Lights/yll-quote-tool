@@ -5,7 +5,43 @@ import {
   approvalEmailHtml,
   internalApprovalEmailSubject,
   internalApprovalEmailHtml,
+  orderEmailSubject,
+  orderEmailHtml,
 } from './quoteMessages';
+
+describe('inventory order email (#82 Slice 3)', () => {
+  it('subject names the job number + customer, strips newlines', () => {
+    expect(orderEmailSubject(1042, 'Jane Doe')).toBe('📦 Materials order — Job #1042 (Jane Doe)');
+    expect(orderEmailSubject(null, null)).toBe('📦 Materials order — Job #—');
+    expect(orderEmailSubject(7, 'Bad\nName')).toBe('📦 Materials order — Job #7 (Bad Name)');
+  });
+
+  it('renders the materials rows, flags short stock, and escapes names', () => {
+    const html = orderEmailHtml({
+      jobNumber: 1042,
+      customerName: 'A & B <Co>',
+      address: '1 Main St',
+      installDate: 'Dec 1, 2026',
+      materials: [
+        { sku: '14147', name: 'C9 Flex Clip', qty: 40, onHand: 10, short: true },
+        { sku: '50036-30', name: '36" Noble', qty: 1, onHand: 5, short: false },
+      ],
+      unbound: [{ label: 'Warm White C9 bulb × 30', qty: 30 }],
+    });
+    expect(html).toContain('Job #1042');
+    expect(html).toContain('14147');
+    expect(html).toContain('C9 Flex Clip');
+    expect(html).toContain('SHORT'); // short stock flagged
+    expect(html).toContain('A &amp; B &lt;Co&gt;'); // escaped
+    expect(html).toContain('Unbound');
+    expect(html).toContain('Warm White C9 bulb × 30');
+  });
+
+  it('handles an empty materials list', () => {
+    const html = orderEmailHtml({ jobNumber: 1, customerName: null, address: null, installDate: null, materials: [], unbound: [] });
+    expect(html).toContain('No bound materials projected');
+  });
+});
 
 describe('approval notifications (pre-Valor deposit flow)', () => {
   describe('approvalSmsBody', () => {
