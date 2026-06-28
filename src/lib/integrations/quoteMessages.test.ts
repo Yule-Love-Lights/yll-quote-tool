@@ -7,7 +7,31 @@ import {
   internalApprovalEmailHtml,
   orderEmailSubject,
   orderEmailHtml,
+  supplierOrderEmailSubject,
+  supplierOrderEmailHtml,
 } from './quoteMessages';
+
+describe('supplier purchase order email (#82 Phase 3)', () => {
+  it('subject names the job count', () => {
+    expect(supplierOrderEmailSubject(3, 'Jun 28, 2026')).toContain('3 jobs');
+    expect(supplierOrderEmailSubject(1, 'Jun 28, 2026')).toContain('1 job,');
+  });
+  it('renders order rows (qty) and escapes names', () => {
+    const html = supplierOrderEmailHtml({
+      jobCount: 2,
+      date: 'Jun 28, 2026',
+      lines: [
+        { sku: '14147', name: 'C9 Flex Clip', order: 300 },
+        { sku: '50036-30', name: 'Noble <Wreath>', order: 4 },
+      ],
+    });
+    expect(html).toContain('2 booked jobs');
+    expect(html).toContain('14147');
+    expect(html).toContain('C9 Flex Clip');
+    expect(html).toContain('300');
+    expect(html).toContain('Noble &lt;Wreath&gt;'); // <> escaped
+  });
+});
 
 describe('inventory order email (#82 Slice 3)', () => {
   it('subject names the job number + customer, strips newlines', () => {

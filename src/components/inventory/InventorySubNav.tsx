@@ -7,12 +7,13 @@ import Link from 'next/link';
 const ITEMS = [
   { label: 'Stock', href: '/inventory', key: 'stock' as const },
   { label: 'Jobs', href: '/inventory/jobs', key: 'jobs' as const },
+  { label: 'Orders', href: '/inventory/orders', key: 'orders' as const },
   { label: 'Bindings', href: '/inventory/bindings', key: 'bindings' as const },
   { label: 'Overrides', href: '/inventory/overrides', key: 'overrides' as const },
   { label: 'Materials', href: '/inventory/materials', key: 'materials' as const },
 ];
 
-export type InventoryTab = 'stock' | 'jobs' | 'bindings' | 'overrides' | 'materials';
+export type InventoryTab = 'stock' | 'jobs' | 'orders' | 'bindings' | 'overrides' | 'materials';
 
 export function InventorySubNav({ active }: { active: InventoryTab }) {
   return (

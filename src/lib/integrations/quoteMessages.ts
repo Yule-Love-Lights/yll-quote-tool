@@ -301,6 +301,31 @@ export function orderEmailHtml(input: {
   return out.join('\n');
 }
 
+// ─── Supplier purchase order (#82 Phase 3 auto-ordering) ─────────────────────
+// Emailed to the supplier (Thunder) — the aggregated shortfall across booked
+// jobs. Staff review + send (human-gated). Plain order sheet: SKU · item · qty.
+
+export type SupplierOrderLine = { sku: string; name: string; order: number };
+
+export function supplierOrderEmailSubject(jobCount: number, date: string): string {
+  return `Yule Love Lights — purchase order (${jobCount} job${jobCount === 1 ? '' : 's'}, ${date})`;
+}
+
+export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobCount: number; date: string }): string {
+  const td = (s: string, extra = '') => `<td style="padding:4px 12px 4px 0;${extra}">${s}</td>`;
+  const rows = input.lines
+    .map((l) => `<tr>${td(escapeHtml(l.sku), 'font-family:monospace;font-size:12px;')}${td(escapeHtml(l.name))}${td(String(l.order), 'text-align:right;font-weight:bold;')}</tr>`)
+    .join('\n');
+  return [
+    `<p>Hi — please prepare the following order for Yule Love Lights (covers ${input.jobCount} booked job${input.jobCount === 1 ? '' : 's'}, generated ${escapeHtml(input.date)}):</p>`,
+    `<table style="border-collapse:collapse;font-size:13px;">`,
+    `<tr style="text-align:left;border-bottom:1px solid #999;"><th style="padding:4px 12px 4px 0;">SKU</th><th style="padding:4px 12px 4px 0;">Item</th><th style="padding:4px 12px 4px 0;text-align:right;">Qty</th></tr>`,
+    rows,
+    `</table>`,
+    `<p>Thank you!<br>Yule Love Lights</p>`,
+  ].join('\n');
+}
+
 // ─── Deposit-paid receipt + alert (#38 ValorPay) ────────────────────────────
 // Fired from the Valor payment webhook once a deposit is confirmed (NOT on the
 // Approve click). The customer gets a receipt; staff get a "deposit received"
