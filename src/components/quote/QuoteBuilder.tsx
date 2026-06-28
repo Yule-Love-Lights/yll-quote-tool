@@ -48,7 +48,10 @@ const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
 // A measurement polyline on the satellite image (normalized 0–1 coords).
-type LineSegment = { points: [number, number][]; label: string };
+// #82 2c: `feature` is the AI's per-segment physical roof feature (mirrors
+// photoAnalysis RoofFeatureClass), carried into the seed so roofline strands
+// get a roofFeature for the inventory clip engine.
+type LineSegment = { points: [number, number][]; label: string; feature?: 'gutter' | 'peak' | 'side' | 'ridge' | 'metal' };
 
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
@@ -748,6 +751,12 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         gingerbread: (r.gingerbreadLines ?? []).map((l) => l.points),
         winterWonderland: [],
         stakeLighting: [],
+        // #82 2c: carry the AI's per-segment roof-feature, index-aligned with the
+        // line arrays above → seeded strands get a roofFeature (staff verify/correct).
+        features: {
+          santas: (r.santasLines ?? []).map((l) => l.feature ?? null),
+          gingerbread: (r.gingerbreadLines ?? []).map((l) => l.feature ?? null),
+        },
       },
       detections: {
         miniLights: (r.miniLightDetections ?? []).map((d) => ({
