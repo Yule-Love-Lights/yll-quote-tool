@@ -7,6 +7,10 @@
     {
       "path": "/api/inventory/purchase-order/auto-send",
       "schedule": "0 13 */3 * *"
+    },
+    {
+      "path": "/api/maintenance/retention",
+      "schedule": "0 4 * * 1"
     }
   ]
 }

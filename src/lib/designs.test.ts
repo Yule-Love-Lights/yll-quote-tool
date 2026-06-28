@@ -37,6 +37,7 @@ import {
   deleteDesign,
   deleteDesignsForQuote,
   createDesign,
+  purgeAbandonedDesigns,
 } from './designs';
 
 // ─── design upload size cap (audit #22) ─────────────────────────────────────
@@ -84,6 +85,7 @@ function makeSb(opts: {
     listedPrefixes: [] as string[],
     removedPaths: [] as string[][],
     deletedIds: [] as string[],
+    selectFilters: [] as Array<{ op: string; col: string; val: unknown }>,
   };
 
   const storage = {
@@ -114,6 +116,14 @@ function makeSb(opts: {
       },
       eq: (col: string, val: string) => {
         if (mode === 'delete') (b as { _deleteId?: string })._deleteId = val;
+        return b;
+      },
+      is: (col: string, val: unknown) => {
+        calls.selectFilters.push({ op: 'is', col, val });
+        return b;
+      },
+      lt: (col: string, val: unknown) => {
+        calls.selectFilters.push({ op: 'lt', col, val });
         return b;
       },
       then: (resolve: (v: unknown) => void) => {
@@ -263,5 +273,45 @@ describe('createDesign created_by (#90)', () => {
     await createDesign({});
 
     expect(sb.inserts[0]).toMatchObject({ created_by: null });
+  });
+});
+
+// ─── purgeAbandonedDesigns retention sweep (#90) ─────────────────────────────
+
+describe('purgeAbandonedDesigns (#90 retention)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('purges unlinked designs older than the window (row + storage) and returns the count', async () => {
+    const id2 = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const { client, calls } = makeSb({
+      designRows: [{ id: ID }, { id: id2 }],
+      objects: [{ name: 'photo.jpg' }],
+    });
+    sbRef.current = client;
+
+    const res = await purgeAbandonedDesigns(90);
+
+    expect(res).toEqual({ scanned: 2, purged: 2 });
+    expect(calls.deletedIds.sort()).toEqual([ID, id2].sort());
+    // Only UNLINKED (quote_id IS NULL) + STALE (updated_at < cutoff) designs.
+    expect(calls.selectFilters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ op: 'is', col: 'quote_id', val: null }),
+        expect.objectContaining({ op: 'lt', col: 'updated_at' }),
+      ]),
+    );
+  });
+
+  it('returns zero when nothing is abandoned', async () => {
+    const { client } = makeSb({ designRows: [] });
+    sbRef.current = client;
+    expect(await purgeAbandonedDesigns(90)).toEqual({ scanned: 0, purged: 0 });
+  });
+
+  it('returns zero when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await purgeAbandonedDesigns(90)).toEqual({ scanned: 0, purged: 0 });
   });
 });

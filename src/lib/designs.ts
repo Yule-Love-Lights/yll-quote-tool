@@ -559,6 +559,39 @@ export async function deleteDesignsForQuote(quoteId: string): Promise<number> {
   return deleted;
 }
 
+// PII-retention sweep (ledger #90): hard-delete ABANDONED designs — rows never
+// linked to a quote (quote_id IS NULL) and untouched for `retentionDays` — plus
+// their private bucket images (house + satellite photos). These are builder
+// experiments (a Street View / satellite photo was pulled but no quote was ever
+// saved); left alone they accumulate geolocated customer-home imagery forever.
+// LINKED designs are out of scope (they're cleaned with their quote via
+// deleteDesignsForQuote); training data is intentionally exempt. Meant to run
+// from the CRON_SECRET-guarded retention cron. Returns counts for the cron log.
+export async function purgeAbandonedDesigns(
+  retentionDays = 90,
+): Promise<{ scanned: number; purged: number }> {
+  const sb = getSb();
+  if (!sb) return { scanned: 0, purged: 0 };
+
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await sb
+    .from('designs')
+    .select('id')
+    .is('quote_id', null)
+    .lt('updated_at', cutoff);
+  if (error) {
+    console.error('purgeAbandonedDesigns (lookup) error:', error);
+    return { scanned: 0, purged: 0 };
+  }
+
+  const ids = (data ?? []).map((r) => r.id as string);
+  let purged = 0;
+  for (const id of ids) {
+    if (await deleteDesign(id)) purged++;
+  }
+  return { scanned: ids.length, purged };
+}
+
 // Decode a base64 image, store it in the private bucket, measure it with sharp,
 // and record the path + dimensions on the row. Returns the stored metadata.
 export async function uploadDesignPhoto(
