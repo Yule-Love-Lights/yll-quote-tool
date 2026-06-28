@@ -330,3 +330,33 @@ export function internalPaidEmailHtml(input: {
       : `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');
 }
+
+// ─── Low-stock alert (#82 stock loop) ────────────────────────────────────────
+// A daily digest emailed to staff/purchasing when SKUs hit their reorder point.
+
+export type LowStockEmailRow = { sku: string; name: string; onHand: number; reorderPoint: number };
+
+export function lowStockEmailSubject(count: number): string {
+  return `⚠️ Low stock — ${count} item${count === 1 ? '' : 's'} at/below reorder point`;
+}
+
+export function lowStockEmailHtml(rows: LowStockEmailRow[]): string {
+  const td = (s: string, extra = '') => `<td style="padding:4px 12px 4px 0;${extra}">${s}</td>`;
+  const body = rows
+    .map(
+      (r) =>
+        `<tr>${td(escapeHtml(r.sku), 'font-family:monospace;font-size:12px;')}${td(escapeHtml(r.name))}${td(
+          String(r.onHand),
+          'text-align:right;color:#b45309;font-weight:bold;',
+        )}${td(String(r.reorderPoint), 'text-align:right;color:#666;')}</tr>`,
+    )
+    .join('\n');
+  return [
+    `<p>${rows.length} item${rows.length === 1 ? ' is' : 's are'} at or below the reorder point — time to restock:</p>`,
+    `<table style="border-collapse:collapse;font-size:13px;">`,
+    `<tr style="text-align:left;border-bottom:1px solid #999;"><th style="padding:4px 12px 4px 0;">SKU</th><th style="padding:4px 12px 4px 0;">Item</th><th style="padding:4px 12px 4px 0;text-align:right;">On hand</th><th style="padding:4px 12px 4px 0;text-align:right;">Reorder at</th></tr>`,
+    body,
+    `</table>`,
+    `<p style="color:#666;font-size:12px;">Generate a purchase order in the tool: /inventory/orders</p>`,
+  ].join('\n');
+}

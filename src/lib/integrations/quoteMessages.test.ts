@@ -5,7 +5,26 @@ import {
   approvalEmailHtml,
   internalApprovalEmailSubject,
   internalApprovalEmailHtml,
+  lowStockEmailSubject,
+  lowStockEmailHtml,
 } from './quoteMessages';
+
+describe('low-stock alert email (#82)', () => {
+  it('subject counts items (singular/plural)', () => {
+    expect(lowStockEmailSubject(1)).toContain('1 item ');
+    expect(lowStockEmailSubject(3)).toContain('3 items');
+  });
+  it('renders the rows (on-hand + reorder) and escapes names', () => {
+    const html = lowStockEmailHtml([
+      { sku: '14147', name: 'C9 Flex Clip', onHand: 5, reorderPoint: 100 },
+      { sku: '50036-30', name: 'Noble <Wreath>', onHand: 0, reorderPoint: 6 },
+    ]);
+    expect(html).toContain('14147');
+    expect(html).toContain('C9 Flex Clip');
+    expect(html).toContain('Reorder at');
+    expect(html).toContain('Noble &lt;Wreath&gt;'); // escaped
+  });
+});
 
 describe('approval notifications (pre-Valor deposit flow)', () => {
   describe('approvalSmsBody', () => {
