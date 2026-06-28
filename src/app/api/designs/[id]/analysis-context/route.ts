@@ -22,12 +22,15 @@ import {
   uploadDesignSatellite,
   isValidDesignId,
 } from '@/lib/designs';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 const MAX_IMAGE_BASE64_CHARS = 14 * 1024 * 1024; // ~10MB binary, base64-inflated
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' },

@@ -1,43 +1,43 @@
-// PROPOSAL — operator-surface auth gate. See docs/audit/AUTH-PROPOSAL.md.
+// Operator-surface auth perimeter (ledger #81, Option B — Supabase Auth).
 //
 // Default-deny: every request is operator-only unless isPublicPath() allows it
 // (the customer portal, customer-triggered quote APIs, public webhooks, image
-// assets, and the login surface). The real allow/deny logic lives in
-// src/lib/auth/operatorGate.ts (pure + unit-tested); this file just wires it to
-// the request and chooses the rejection (401 for APIs, redirect to /login for
-// pages). It accepts the existing x-admin-secret header too, so the current
-// /admin/quotes calls keep working unchanged.
+// assets, and the login surface). When enabled, access requires a valid
+// per-user Supabase session (validated via getUser()); the old shared
+// ADMIN_SECRET is gone. The allow/deny boundary lives in
+// src/lib/auth/operatorGate.ts (pure + unit-tested); this file wires it to the
+// request and chooses the rejection (401 for APIs, redirect to /login for pages).
 //
-// ⚠️ DO NOT ENABLE WITHOUT: (1) choosing the auth mechanism (this interim
-// version uses the existing ADMIN_SECRET as a shared password — see the
-// proposal), and (2) a runtime pass confirming no customer route is gated.
+// ⚠️ Ships DORMANT (AUTH_GATE_ENABLED!=='true' → no-op) so it's safe to merge +
+// review without changing behavior. Go-live = seed the first admin, log in to
+// verify, then flip AUTH_GATE_ENABLED=true in Vercel (zero-lockout — see #81).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isPublicPath, hasValidOperatorAuth, OPERATOR_COOKIE } from '@/lib/auth/operatorGate';
+import { isPublicPath } from '@/lib/auth/operatorGate';
+import { createMiddlewareSupabase } from '@/lib/auth/supabaseServer';
 
-export function middleware(req: NextRequest) {
-  // DORMANT BY DEFAULT. The gate only activates when AUTH_GATE_ENABLED=true, so
-  // this file is safe to merge and review without changing behavior — flip the
-  // env var only after the runtime verification in AUTH-PROPOSAL.md passes.
+export async function middleware(req: NextRequest) {
+  // DORMANT BY DEFAULT.
   if (process.env.AUTH_GATE_ENABLED !== 'true') return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-
   if (isPublicPath(pathname)) return NextResponse.next();
 
-  const authorized = hasValidOperatorAuth(
-    {
-      cookie: req.cookies.get(OPERATOR_COOKIE)?.value,
-      header: req.headers.get('x-admin-secret'),
-    },
-    process.env.ADMIN_SECRET,
-  );
-  if (authorized) return NextResponse.next();
+  // Authenticated operator? getUser() re-validates the JWT server-side (not the
+  // unverified getSession). `res` carries any rotated session cookies, so we
+  // return it on the authenticated path.
+  const { supabase, res } = createMiddlewareSupabase(req);
+  if (supabase) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) return res;
+  }
 
+  // Unauthenticated (or Supabase unconfigured → fail closed).
   if (pathname.startsWith('/api/')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-
   const url = req.nextUrl.clone();
   url.pathname = '/login';
   url.searchParams.set('from', pathname);

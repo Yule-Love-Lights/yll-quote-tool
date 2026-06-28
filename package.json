@@ -8,10 +8,12 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed-admin": "tsx scripts/seed-admin.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
+    "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.104.0",
     "konva": "^9.3.18",
     "lucide-react": "^1.9.0",
