@@ -330,8 +330,11 @@ export default function BindingsPage() {
                     {spritzerRows(size).map((row) => (
                       <Row key={row.key} label={row.label}>{pick(row.key, scoped('Spritzer/Sparklers'), `${size}" ${row.label} spritzer SKU`)}</Row>
                     ))}
+                    {/* The pole is a metal stake — a HARDWARE SKU (e.g. 14344/14355/14366
+                        "Stake Metal"), NOT a Spritzer/Sparklers item — so scope the picker to
+                        Hardware (same as the clip rows), else the stakes never appear. */}
                     <Row label="Pole (metal stake)" hint="same pole for every color this size">
-                      {pick(spritzerPoleKey(size), scoped('Spritzer/Sparklers'), `${size}" spritzer pole SKU`)}
+                      {pick(spritzerPoleKey(size), scoped('Hardware'), `${size}" spritzer pole SKU`)}
                     </Row>
                   </section>
                 ))}
