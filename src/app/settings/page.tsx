@@ -365,20 +365,21 @@ function QuotesTab() {
       )
     )
       return;
-    const secret =
-      window.sessionStorage.getItem('yll:adminSecret') || window.prompt('Admin secret required:');
-    if (!secret) return;
-    window.sessionStorage.setItem('yll:adminSecret', secret);
     setBusy(true);
     setMsg(null);
     try {
+      // The operator session cookie rides automatically — no client-held secret.
+      // The wipe still requires the explicit confirmation header (defense in depth).
       const res = await fetch('/api/quotes', {
         method: 'DELETE',
-        headers: { 'x-admin-secret': secret, 'x-confirm-delete-all': 'DELETE ALL QUOTES' },
+        headers: { 'x-confirm-delete-all': 'DELETE ALL QUOTES' },
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (res.status === 401) window.sessionStorage.removeItem('yll:adminSecret');
+        if (res.status === 401) {
+          window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+          return;
+        }
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       const n = data.deleted ?? count;

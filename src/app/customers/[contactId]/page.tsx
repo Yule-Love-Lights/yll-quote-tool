@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
 import { statusOf } from '@/lib/dashboard/customers';
@@ -42,6 +43,12 @@ export default async function CustomerDetailPage({
 }: {
   params: Promise<{ contactId: string }>;
 }) {
+  // Defense in depth behind the middleware perimeter — re-check at render so this
+  // customer-PII surface never serves anonymously even if the perimeter is
+  // bypassed. Dormant until the auth gate is live (Slice 4).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/customers');
+  }
   const { contactId } = await params;
   if (!contactId || contactId.length > 200) notFound();
 

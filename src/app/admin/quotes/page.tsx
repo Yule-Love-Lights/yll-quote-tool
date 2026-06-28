@@ -10,20 +10,6 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 // all. Used to clean up fake/test customer rows while we iterate on the
 // quote form.
 
-function getAdminSecret(): string | null {
-  if (typeof window === 'undefined') return null;
-  const cached = window.sessionStorage.getItem('yll:adminSecret');
-  if (cached) return cached;
-  const entered = window.prompt('Admin secret required for delete:');
-  if (!entered) return null;
-  window.sessionStorage.setItem('yll:adminSecret', entered);
-  return entered;
-}
-
-function clearAdminSecret() {
-  if (typeof window !== 'undefined') window.sessionStorage.removeItem('yll:adminSecret');
-}
-
 // The lifecycle status of a row. Now sourced from the canonical model
 // (src/lib/quoteStatus.ts, ledger #83): deriveStatus prefers the persisted
 // `status` column for states timestamps can't express (declined /
@@ -104,14 +90,14 @@ export default function QuotesAdminPage() {
     queueMicrotask(refresh);
   }, []);
 
+  // The operator session (httpOnly cookie set at /login) rides every same-origin
+  // request automatically — no client-held secret, no prompt. A 401 means the
+  // session lapsed (only possible once the auth gate is live); bounce to /login.
   const adminFetch = async (url: string, init: RequestInit): Promise<Response> => {
-    const secret = getAdminSecret();
-    if (!secret) throw new Error('Admin secret required');
-    const res = await fetch(url, {
-      ...init,
-      headers: { ...(init.headers ?? {}), 'x-admin-secret': secret },
-    });
-    if (res.status === 401) clearAdminSecret();
+    const res = await fetch(url, init);
+    if (res.status === 401) {
+      window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+    }
     return res;
   };
 

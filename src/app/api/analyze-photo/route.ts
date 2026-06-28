@@ -3,6 +3,7 @@ import { analyzePhoto, ANALYZER_UNAVAILABLE_MESSAGE } from '@/lib/photoAnalysis'
 import { isClaudeConfigured } from '@/lib/claude';
 import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -10,6 +11,8 @@ export const maxDuration = 60;
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   // Each call hits Anthropic vision — cap at 20/min/IP as a budget guardrail.
   const blocked = rateLimitResponse(req, { bucket: 'analyze-photo', limit: 20, windowMs: 60_000 });
   if (blocked) return blocked;

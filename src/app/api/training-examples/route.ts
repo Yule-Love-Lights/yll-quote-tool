@@ -14,6 +14,7 @@ import {
   listTrainingExamples,
   type TrainingExampleSource,
 } from '@/lib/trainingExamples';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +29,8 @@ function notConfigured() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) return notConfigured();
 
   let body: Record<string, unknown>;
@@ -60,6 +63,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) return notConfigured();
   const items = await listTrainingExamples();
   return NextResponse.json({ items });

@@ -10,8 +10,8 @@
 //   2. Direct MP4 — paste a public https:// URL (Supabase Storage, R2, etc.)
 //      plus an optional poster image URL. Use when YouTube isn't an option.
 //
-// We reuse the same `x-admin-secret` session-storage pattern as the parent
-// quotes admin page so the admin doesn't have to re-auth per action.
+// Saves ride the operator session cookie (set at /login) — no per-action secret
+// prompt; a 401 means the session lapsed and bounces the operator to /login.
 
 import { useCallback, useEffect, useMemo, useState, use } from 'react';
 import Link from 'next/link';
@@ -26,20 +26,6 @@ type VideoDTO = {
   title: string | null;
   durationSec: number | null;
 };
-
-function getAdminSecret(): string | null {
-  if (typeof window === 'undefined') return null;
-  const cached = window.sessionStorage.getItem('yll:adminSecret');
-  if (cached) return cached;
-  const entered = window.prompt('Admin secret required:');
-  if (!entered) return null;
-  window.sessionStorage.setItem('yll:adminSecret', entered);
-  return entered;
-}
-
-function clearAdminSecret() {
-  if (typeof window !== 'undefined') window.sessionStorage.removeItem('yll:adminSecret');
-}
 
 // Client-side YouTube ID extraction — purely for preview. The server
 // re-validates on save, so a bad paste here just shows a broken preview,
@@ -122,18 +108,17 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
 
   const ytPoster = previewYtId ? `https://i.ytimg.com/vi/${previewYtId}/hqdefault.jpg` : null;
 
+  // The operator session cookie (set at /login) rides every same-origin request
+  // automatically — no client-held secret, no prompt. A 401 means the session
+  // lapsed (only possible once the auth gate is live); bounce to /login.
   const adminFetch = async (url: string, init: RequestInit): Promise<Response> => {
-    const secret = getAdminSecret();
-    if (!secret) throw new Error('Admin secret required');
     const res = await fetch(url, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
-        'x-admin-secret': secret,
-      },
+      headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
     });
-    if (res.status === 401) clearAdminSecret();
+    if (res.status === 401) {
+      window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+    }
     return res;
   };
 

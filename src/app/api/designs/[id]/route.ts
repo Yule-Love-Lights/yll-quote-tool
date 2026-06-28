@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 import {
   getDesignWithPhoto,
   updateDesignScene,
@@ -51,6 +52,8 @@ function isSatelliteLinesShape(v: unknown): v is DesignSatelliteLines {
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) return notConfigured();
   const { id } = await params;
   if (!isValidDesignId(id)) {
@@ -68,6 +71,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) return notConfigured();
   const { id } = await params;
   if (!isValidDesignId(id)) {

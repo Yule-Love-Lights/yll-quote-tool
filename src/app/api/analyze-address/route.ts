@@ -3,6 +3,7 @@ import { analyzePhoto, ANALYZER_UNAVAILABLE_MESSAGE } from '@/lib/photoAnalysis'
 import { isClaudeConfigured } from '@/lib/claude';
 import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 import {
   isGoogleMapsConfigured,
   geocodeAddress,
@@ -15,6 +16,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   // Each call hits Anthropic + 2 Google Maps APIs — cap at 20/min/IP to
   // protect budget if someone scripts it. Normal interactive use is 1/min.
   const blocked = rateLimitResponse(req, { bucket: 'analyze-address', limit: 20, windowMs: 60_000 });

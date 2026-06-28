@@ -15,10 +15,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { searchContacts, isHighLevelConfigured, HighLevelError } from '@/lib/integrations/highlevel';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isHighLevelConfigured()) {
     return NextResponse.json(
       { error: 'HighLevel not configured. Set HIGHLEVEL_API_KEY and HIGHLEVEL_LOCATION_ID in .env.local' },
