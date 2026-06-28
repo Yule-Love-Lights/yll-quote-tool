@@ -1,4 +1,19 @@
-# Operator-surface authentication — proposal (closes the 2 CRITICALs)
+# Operator-surface authentication (ledger #81 — closes the 2 CRITICALs)
+
+**Status: DECISION MADE — building Option B (Supabase Auth). Ships in slices, all DORMANT behind `AUTH_GATE_ENABLED` until go-live. (Naldo S9, 2026-06-27.)**
+
+## Decision: Option B — Supabase Auth (per-user accounts)
+Real per-user identity (admin/operator), NOT the shared `ADMIN_SECRET`. Role in `app_metadata.role` (set only via the service-role admin API → no self-elevation). Admin-set passwords in-UI (no SMTP/email reset). No schema migration (users live in `auth.users`).
+
+## Build slices (first three ship dormant — safe to merge + review)
+- **Slice 1 — perimeter + login ✅ (this PR).** `src/lib/auth/supabaseServer.ts` (`@supabase/ssr` middleware + route clients, `getOperator()`, pure `roleOf`); `middleware.ts` now validates a Supabase session (`getUser()`) instead of the shared secret, reusing the `isPublicPath` allowlist; `/api/login` signs in against Supabase + sets the SSR cookies; `/api/auth/logout`; the `/login` page takes email + password. Tests: `roleOf` (no self-elevation) + `getOperator` fail-closed.
+- **Slice 2 — migrate routes + pages** off `ADMIN_SECRET`/sessionStorage to session-based `getOperator()` (the mutation endpoints + drop the client secret).
+- **Slice 3 — account management:** admin-only `/settings/accounts` CRUD + `/api/admin/users*` (server-side admin re-verify; last-admin + self-delete guards) + `scripts/seed-admin.ts`.
+- **Slice 4 — go-live:** Supabase config (Email provider on, public sign-ups off) → seed first admin → log in to verify → flip `AUTH_GATE_ENABLED=true` in Vercel (zero-lockout).
+
+---
+
+_Original Option-A proposal below (the interim shared-secret bridge — superseded by the Option-B decision above; kept for the rationale + the allowlist)._
 
 **Status: PROPOSAL / DRAFT — needs a decision + a runtime verification pass before it is enabled. Do not merge as-is.**
 
