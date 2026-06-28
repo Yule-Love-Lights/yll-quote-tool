@@ -5,9 +5,12 @@
 // mini-light wraps. A parallel of src/lib/design/projectScene.ts (which turns the
 // same items into PRICING inputs), but reading the bindings instead.
 //
-// Roofline materials (bulbs / wire / clips) are Slice 2b — they're footage-driven
-// and clips need the NET-NEW roof-feature tag (a shared scene/editor-core change).
-// Standalone bows have no binding concept yet → not projected here.
+// Roofline materials (Slice 2b): c9 roofline runs now project C9 bulbs (by color)
+// + clips (by the run's roofFeature, via clipRules). Footage is derived from the
+// scene GEOMETRY (run length ÷ the yardstick's px/ft) — the only source available
+// in the materials-view context (the quote's billed footage is a separate concern,
+// flagged in the design spec §10). Socket WIRE has no binding concept yet →
+// deferred (a fast follow-up). Standalone bows have no binding concept → not here.
 //
 // Reuses the binding key-builders from concepts.ts so the projector and the
 // binding editor can never disagree on key format. No Supabase / React — callers
@@ -15,6 +18,7 @@
 
 import type {
   Scene,
+  StrandItem,
   Tier,
   QuoteWreathSize,
   QuoteGarlandLength,
@@ -22,18 +26,22 @@ import type {
 } from '@/lib/design/sceneTypes';
 import { isWreath, isGarland, isSpritzer, isStrand, isMiniArea, isMiniGroup } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
-import type { Bindings } from './bindings';
+import { pxPerFoot } from '@/components/design/editor-core/yardstick-scale';
+import type { Bindings, ClipRules } from './bindings';
 import {
   wreathBaseKey, wreathBowKey, wreathFeeKey,
   garlandBaseKey, GARLAND_BOW_KEY, GARLAND_FEE_KEY,
   spritzerKey, spritzerPoleKey, miniKey,
+  bulbC9Key, clipKey, CLIP_FEATURES,
 } from './concepts';
+import { projectClips } from './clipRules';
 
 export type MaterialCategory =
   | 'wreath' | 'wreath-bow' | 'wreath-fee'
   | 'garland' | 'garland-bow' | 'garland-fee'
   | 'spritzer' | 'spritzer-pole'
-  | 'mini';
+  | 'mini'
+  | 'bulb' | 'clip';
 
 export type MaterialLine = {
   sku: string | null; // null = the concept has no SKU bound yet
@@ -64,7 +72,32 @@ const asMiniSurface = (s: unknown): MiniSurface | null =>
   s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' ? s : null;
 const intAtLeast1 = (n: unknown) => Math.max(1, Math.round(typeof n === 'number' && Number.isFinite(n) ? n : 1));
 
-export function projectMaterials(scene: Scene, bindings: Bindings): MaterialLine[] {
+// ── roofline (Slice 2b) helpers ──────────────────────────────────────────────
+const ROOFLINE_SURFACES = new Set(['santas-roofline', 'gingerbread', 'winter-wonderland', 'stake-lighting']);
+const CLIP_FEATURE_LABEL = new Map(CLIP_FEATURES.map((f) => [f.id, f.label]));
+
+// Polyline length in photo pixels (mirrors editor-core strandLengthPx; kept inline
+// so this stays a pure lib with no Konva import).
+function polylineLengthPx(points: number[] | undefined): number {
+  if (!Array.isArray(points)) return 0;
+  let total = 0;
+  for (let i = 0; i < points.length - 2; i += 2) {
+    total += Math.hypot(points[i + 2] - points[i], points[i + 3] - points[i + 1]);
+  }
+  return total;
+}
+
+// Run length in FEET from the scene geometry: pixel length ÷ the run's yardstick
+// px/ft (pxPerFoot falls back to 50 when the run references no yardstick).
+function strandFeet(strand: StrandItem, scene: Scene): number {
+  const lengthPx = polylineLengthPx(strand.points);
+  if (!(lengthPx > 0)) return 0;
+  const ys = (scene.yardsticks ?? []).find((y) => y.id === strand.yardstickId) ?? null;
+  const ppf = pxPerFoot(ys);
+  return ppf > 0 ? lengthPx / ppf : 0;
+}
+
+export function projectMaterials(scene: Scene, bindings: Bindings, clipRules: ClipRules = {}): MaterialLine[] {
   const out: MaterialLine[] = [];
   const items = Array.isArray(scene?.items) ? scene.items : [];
   const b = bindings ?? {};
@@ -108,6 +141,42 @@ export function projectMaterials(scene: Scene, bindings: Bindings): MaterialLine
       const paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
       push(item.id, 'spritzer', spritzerKey(paletteId, size), 1, `${size}" ${colorLabel(paletteId)} spritzer`);
       push(item.id, 'spritzer-pole', spritzerPoleKey(size), 1, `${size}" spritzer pole`);
+      continue;
+    }
+
+    // Roofline run (Slice 2b): a c9 strand on a roofline surface → C9 bulbs (by
+    // color) + clips (by physical roofFeature). Footage from the scene geometry.
+    if (isStrand(item) && item.bulbType === 'c9' && ROOFLINE_SURFACES.has(item.surface ?? '')) {
+      const feet = strandFeet(item, scene);
+      if (feet > 0) {
+        const pattern = item.colorPattern?.length ? item.colorPattern : [DEFAULT_PALETTE];
+        const spacing = item.spacingIn && item.spacingIn > 0 ? item.spacingIn : 12;
+        const bulbCount = Math.round((feet * 12) / spacing);
+        if (bulbCount > 0) {
+          // Split the run's bulbs across its distinct pattern colors (a single-color
+          // roofline is the common case → one line).
+          const counts = new Map<string, number>();
+          for (const c of pattern) counts.set(c, (counts.get(c) ?? 0) + 1);
+          for (const [paletteId, occ] of counts) {
+            const qty = Math.round((bulbCount * occ) / pattern.length);
+            push(item.id, 'bulb', bulbC9Key(paletteId), qty, `${colorLabel(paletteId)} C9 bulb × ${qty}`);
+          }
+        }
+        // Clips come from the clip-rules config (NOT the bindings map), keyed by the
+        // physical feature; metal/unset → no clip line.
+        const clip = projectClips(item.roofFeature, feet, clipRules);
+        if (clip) {
+          const feat = item.roofFeature as string;
+          out.push({
+            sku: clip.sku,
+            qty: clip.qty,
+            category: 'clip',
+            conceptKey: clipKey(feat),
+            label: `${CLIP_FEATURE_LABEL.get(feat) ?? feat} clip × ${clip.qty}`,
+            sceneItemId: item.id,
+          });
+        }
+      }
       continue;
     }
 

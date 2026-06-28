@@ -43,6 +43,9 @@ export const CLIP_FEATURES: { id: string; label: string; hint: string }[] = [
 export const DEFAULT_CLIP_SKUS: Record<string, string> = {
   gutter: '14147', peak: '14145', side: '14145', ridge: '14159', pathway: '14343', flat: '14144',
 };
+// Concept key for a projected clip line (Slice 2b materials engine) — grouped by
+// roof feature so unbound features surface in the materials view's unbound list.
+export const clipKey = (feature: string) => `clip:${feature}`;
 
 // ── wreaths: base + bow + decoration fee, all per size ───────────────────────
 export const WREATH_SIZES: QuoteWreathSize[] = [

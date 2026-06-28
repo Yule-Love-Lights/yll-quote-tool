@@ -134,8 +134,81 @@ describe('projectMaterials — skips', () => {
     const grouped = MINI('m1', 'tree', 2, ['warm-white'], 'grp1');
     expect(projectMaterials(scene([excluded, grouped]), B)).toEqual([]);
   });
-  it('does not project roofline / unmapped strands (the 2a/2b seam)', () => {
+  it('skips roofline strands with no bulbType or geometry, and unmapped strands', () => {
+    // r1: santas-roofline but no bulbType/points → not a complete c9 run.
+    // r2: no surface at all → unmapped.
     expect(projectMaterials(scene([ROOF('r1', 'santas-roofline'), ROOF('r2')]), B)).toEqual([]);
+  });
+});
+
+describe('projectMaterials — roofline c9 (Slice 2b)', () => {
+  // A 50px-wide yardstick @ 5 ft → 10 px/ft.
+  const ys = { id: 'ys1', realFeet: 5, x: 0, y: 0, width: 50, height: 10 };
+  const sc = (items: SceneItem[]): Scene => ({ yardsticks: [ys], items } as unknown as Scene);
+  const CR = { gutter: { sku: '14147' }, ridge: { sku: '14159', perFt: 1.5 } };
+  // A c9 roofline run: a 100px polyline @ 10px/ft = 10 ft.
+  const C9 = (over: Record<string, unknown>): SceneItem =>
+    ({
+      kind: 'strand', id: 'r1', bulbType: 'c9', surface: 'santas-roofline', spacingIn: 12,
+      colorPattern: ['warm-white'], points: [0, 0, 100, 0], yardstickId: 'ys1', included: true,
+      ...over,
+    }) as unknown as SceneItem;
+
+  it('gutter run → C9 bulbs (by color) + gutter clips, feet from geometry', () => {
+    const lines = projectMaterials(sc([C9({ roofFeature: 'gutter' })]), { 'bulb:warm-white:c9': 'C9WW' }, CR);
+    expect(lines).toEqual([
+      { sku: 'C9WW', qty: 10, category: 'bulb', conceptKey: 'bulb:warm-white:c9', label: 'Warm White C9 bulb × 10', sceneItemId: 'r1' },
+      { sku: '14147', qty: 10, category: 'clip', conceptKey: 'clip:gutter', label: 'Gutterline clip × 10', sceneItemId: 'r1' },
+    ]);
+  });
+
+  it('ridge perFt override rounds clips up (10ft × 1.5)', () => {
+    const clip = projectMaterials(sc([C9({ roofFeature: 'ridge' })]), {}, CR).find((l) => l.category === 'clip')!;
+    expect(clip).toMatchObject({ sku: '14159', qty: 15, conceptKey: 'clip:ridge' });
+  });
+
+  it('metal feature → bulbs but NO clip', () => {
+    expect(projectMaterials(sc([C9({ roofFeature: 'metal' })]), {}, CR).map((l) => l.category)).toEqual(['bulb']);
+  });
+
+  it('no roofFeature → bulbs only (a clip needs the feature)', () => {
+    expect(projectMaterials(sc([C9({})]), {}, CR).map((l) => l.category)).toEqual(['bulb']);
+  });
+
+  it('unbound bulb color + unbound clip feature → lines with null sku', () => {
+    const lines = projectMaterials(sc([C9({ roofFeature: 'peak' })]), {}, {});
+    expect(lines).toEqual([
+      { sku: null, qty: 10, category: 'bulb', conceptKey: 'bulb:warm-white:c9', label: 'Warm White C9 bulb × 10', sceneItemId: 'r1' },
+      { sku: null, qty: 10, category: 'clip', conceptKey: 'clip:peak', label: 'Peak (front gable, no gutter) clip × 10', sceneItemId: 'r1' },
+    ]);
+  });
+
+  it('multi-color pattern splits bulbs across colors', () => {
+    const bulbs = projectMaterials(
+      sc([C9({ colorPattern: ['red', 'green'], roofFeature: 'gutter' })]),
+      { 'bulb:red:c9': 'R', 'bulb:green:c9': 'G' },
+      CR,
+    ).filter((l) => l.category === 'bulb');
+    expect(bulbs.map((l) => [l.sku, l.qty])).toEqual([['R', 5], ['G', 5]]); // 10 bulbs / 2 colors
+  });
+
+  it('bulb spacing drives the count (6" spacing → double)', () => {
+    const bulb = projectMaterials(sc([C9({ spacingIn: 6, roofFeature: 'gutter' })]), { 'bulb:warm-white:c9': 'C9WW' }, CR)
+      .find((l) => l.category === 'bulb')!;
+    expect(bulb.qty).toBe(20); // 10ft × 12/6
+  });
+
+  it('excluded roofline run is skipped', () => {
+    expect(projectMaterials(sc([C9({ roofFeature: 'gutter', included: false })]), {}, CR)).toEqual([]);
+  });
+
+  it('stake-lighting surface is treated as roofline (pathway clips)', () => {
+    const lines = projectMaterials(
+      sc([C9({ surface: 'stake-lighting', roofFeature: 'pathway' })]),
+      { 'bulb:warm-white:c9': 'C9WW' },
+      { pathway: { sku: '14343' } },
+    );
+    expect(lines.find((l) => l.category === 'clip')).toMatchObject({ sku: '14343', conceptKey: 'clip:pathway' });
   });
 });
 
