@@ -19,7 +19,7 @@ import type { FulfillmentCard } from '@/lib/inventory/jobs';
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
 type WorkOrder = {
-  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null };
+  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null };
   materials: { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
 };
 
@@ -193,8 +193,16 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
             <p className="text-sm" style={{ color: 'var(--op-text-dim)' }}>Loading work order…</p>
           ) : (
             <>
-              <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1 text-sm" style={{ color: 'var(--op-text-2)' }}>
+              {(data.job.customerName || data.job.customerAddress) && (
+                <div className="mb-1 text-sm" style={{ color: 'var(--op-text)' }}>
+                  {data.job.customerName}{data.job.customerAddress ? ` · ${data.job.customerAddress}` : ''}
+                </div>
+              )}
+              <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm" style={{ color: 'var(--op-text-2)' }}>
                 <span>Stage: <strong style={{ color: 'var(--op-text)' }}>{FULFILLMENT_STAGE_LABELS[data.job.stage]}</strong></span>
+                <a href={`/inventory/jobs/${data.job.id}/print`} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
+                  Print / Save PDF ↗
+                </a>
                 {data.job.quoteId && (
                   <a href={`/quote/${data.job.quoteId}`} className="hover:underline" style={{ color: 'var(--op-primary)' }}>Open design / quote →</a>
                 )}

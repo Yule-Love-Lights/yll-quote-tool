@@ -6,8 +6,13 @@
 // job. See the unified migration 2026-06-27-jobs.sql + design spec §8 (Slice 3).
 
 import { getSupabaseServiceClient } from '../supabase';
-import { listJobs, type JobRow } from '../jobs';
+import { listJobs, getJob, type JobRow } from '../jobs';
 import type { JobStatus } from '../jobStatus';
+import type { Scene } from '@/lib/design/sceneTypes';
+import { getInventoryBindings } from './bindings';
+import { listCatalog } from './catalog';
+import { listOnHand } from './onHand';
+import { projectMaterials, buildMaterialsView, type MaterialsView } from './materialsProjection';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -98,4 +103,71 @@ export async function setJobFulfillmentStage(id: string, stage: FulfillmentStage
     return false;
   }
   return true;
+}
+
+// The staff work order for one job: its summary + the projected materials list
+// (the design → SKUs via Slice 2a/2d, joined to on-hand). Shared by the job
+// detail API and the printable work-order page. Returns null when the job is
+// missing or Supabase isn't configured.
+export type WorkOrderJob = {
+  id: string;
+  jobNumber: number | null;
+  quoteId: string | null;
+  designId: string | null;
+  stage: FulfillmentStage;
+  status: JobStatus;
+  installDate: string | null;
+  customerName: string | null;
+  customerAddress: string | null;
+};
+export type WorkOrder = { job: WorkOrderJob; materials: MaterialsView };
+
+export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const job = await getJob(id);
+  if (!job) return null;
+
+  // Materials from the job's linked design (by quote_id), mirroring the 2d view.
+  let scene: Scene = { yardsticks: [], items: [] };
+  let customerName: string | null = null;
+  let customerAddress: string | null = null;
+  if (job.quote_id) {
+    const [{ data: design }, { data: quote }] = await Promise.all([
+      db.from('designs').select('scene').eq('quote_id', job.quote_id).maybeSingle(),
+      db.from('quotes').select('customer_name, customer_address').eq('id', job.quote_id).maybeSingle(),
+    ]);
+    if (design?.scene) scene = design.scene as Scene;
+    if (quote) {
+      const q = quote as { customer_name: string | null; customer_address: string | null };
+      customerName = q.customer_name ?? null;
+      customerAddress = q.customer_address ?? null;
+    }
+  }
+
+  const { bindings } = await getInventoryBindings();
+  const lines = projectMaterials(scene, bindings);
+  const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
+  const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
+  const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
+  const materials = buildMaterialsView(
+    lines,
+    (sku) => nameOf.get(sku),
+    (sku) => (onHandOf.has(sku) ? (onHandOf.get(sku) as number) : null),
+  );
+
+  return {
+    job: {
+      id: job.id,
+      jobNumber: job.job_number,
+      quoteId: job.quote_id,
+      designId: job.design_id,
+      stage: fulfillmentStageOf(job.fulfillment_stage),
+      status: job.status,
+      installDate: job.install_date,
+      customerName,
+      customerAddress,
+    },
+    materials,
+  };
 }
