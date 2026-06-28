@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
@@ -27,6 +29,13 @@ async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
 }
 
 export default async function InventoryOverviewPage() {
+  // Defense in depth behind the middleware perimeter — re-check at render so the
+  // operator data never serves anonymously even if the perimeter is bypassed.
+  // Dormant until the auth gate is live (matches the #81 operator-page pattern).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/inventory');
+  }
+
   const [cards, onHand, po, catalog] = await Promise.all([
     safe(listFulfillmentCards(), []),
     safe(listOnHand(), []),
