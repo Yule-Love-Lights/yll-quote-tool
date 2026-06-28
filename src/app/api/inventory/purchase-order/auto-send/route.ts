@@ -1,6 +1,9 @@
 // src/app/api/inventory/purchase-order/auto-send/route.ts
-// OPTIONAL unattended supplier ordering (#82 Phase 3). A weekly Vercel Cron
-// (vercel.json) emails the current PO to the supplier WITHOUT a human click.
+// OPTIONAL unattended supplier ordering (#82 Phase 3). A Vercel Cron
+// (vercel.json) fires every 3 days at 13:00 UTC and emails the current PO to the
+// supplier WITHOUT a human click. There's ALSO an event-driven sibling — see
+// triggerAutoPOIfBusy() called from the Valor deposit webhook (fires when a new
+// deposit pushes active job count ≥ 5, per Naldo's "more than 4 installs" rule).
 //
 // SAFEGUARDS (auto-placing real orders is hard to reverse):
 //   1. OFF by default — only runs when PO_AUTO_SEND_ENABLED='true'.
@@ -8,8 +11,8 @@
 //   3. DEDUP — never re-emails an UNCHANGED order (signature stored in app_settings);
 //      resets when the shortfall clears so a re-appearing shortfall sends again.
 // KNOWN LIMITATION: there's no "on-order/received" tracking, so if the shortfall
-// CHANGES before stock arrives it can re-order items already on order. Prefer a
-// weekly cadence + the human-gated /inventory/orders "Send" as the safer default.
+// CHANGES before stock arrives it can re-order items already on order. The dedup
+// + the human-gated /inventory/orders "Send" remain the safer fallbacks.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
