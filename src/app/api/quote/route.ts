@@ -4,6 +4,7 @@ import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -39,6 +40,8 @@ function isObj(v: unknown): v is Record<string, unknown> {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   let body: unknown;
   try {
     body = await req.json();

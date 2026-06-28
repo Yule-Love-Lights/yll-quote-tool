@@ -1,13 +1,15 @@
-// Tests for the admin bulk-delete guard on DELETE /api/quotes (audit fix
-// g29-route). The full-PII wipe must require BOTH the admin secret AND an
-// explicit confirmation header — the secret alone (leaked / forged / CSRF)
-// must not be enough to drop the whole table. Supabase + the data layer mocked.
+// Tests for the operator gate + bulk-delete guard on /api/quotes (ledger #81 +
+// audit fix g29-route). The PII list (GET) and the full-PII wipe (DELETE) are
+// operator-only; the wipe ALSO requires an explicit confirmation header — being
+// an authenticated operator alone must not one-shot the whole table. The auth
+// gate, Supabase, and the data layer are mocked.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
-const { deleteAllQuotes } = vi.hoisted(() => ({
+const { deleteAllQuotes, requireOperatorMock } = vi.hoisted(() => ({
   deleteAllQuotes: vi.fn(async () => 3),
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -20,10 +22,14 @@ vi.mock('@/lib/quotes', () => ({
   listQuotes: vi.fn(async () => []),
 }));
 
-import { DELETE } from './route';
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: requireOperatorMock,
+}));
 
-const SECRET = 'test-admin-secret';
+import { DELETE, GET } from './route';
+
 const CONFIRM = 'DELETE ALL QUOTES';
+const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
 function makeReq(headers: Record<string, string>): NextRequest {
   return {
@@ -33,37 +39,49 @@ function makeReq(headers: Record<string, string>): NextRequest {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  process.env.ADMIN_SECRET = SECRET;
+  requireOperatorMock.mockResolvedValue(null); // default: authorized (or dormant)
 });
 
-describe('DELETE /api/quotes — bulk wipe guard', () => {
-  it('401s without the admin secret (never touches the data layer)', async () => {
+describe('DELETE /api/quotes — operator gate + bulk-wipe confirmation', () => {
+  it('returns the gate response (401) when the operator gate denies — never touches the data layer', async () => {
+    requireOperatorMock.mockResolvedValueOnce(denied401());
     const res = await DELETE(makeReq({ 'x-confirm-delete-all': CONFIRM }));
     expect(res.status).toBe(401);
     expect(deleteAllQuotes).not.toHaveBeenCalled();
   });
 
-  it('428s when the secret is present but the confirmation header is missing', async () => {
-    const res = await DELETE(makeReq({ 'x-admin-secret': SECRET }));
+  it('428s when authorized but the confirmation header is missing', async () => {
+    const res = await DELETE(makeReq({}));
     expect(res.status).toBe(428);
     expect(deleteAllQuotes).not.toHaveBeenCalled();
   });
 
   it('428s when the confirmation header value is wrong', async () => {
-    const res = await DELETE(
-      makeReq({ 'x-admin-secret': SECRET, 'x-confirm-delete-all': 'yes' }),
-    );
+    const res = await DELETE(makeReq({ 'x-confirm-delete-all': 'yes' }));
     expect(res.status).toBe(428);
     expect(deleteAllQuotes).not.toHaveBeenCalled();
   });
 
-  it('deletes only with BOTH the secret and the exact confirmation phrase', async () => {
-    const res = await DELETE(
-      makeReq({ 'x-admin-secret': SECRET, 'x-confirm-delete-all': CONFIRM }),
-    );
+  it('deletes only when authorized AND the exact confirmation phrase is present', async () => {
+    const res = await DELETE(makeReq({ 'x-confirm-delete-all': CONFIRM }));
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.deleted).toBe(3);
     expect(deleteAllQuotes).toHaveBeenCalledOnce();
+  });
+});
+
+describe('GET /api/quotes — operator gate on the PII list', () => {
+  it('returns the gate response (401) when the operator gate denies', async () => {
+    requireOperatorMock.mockResolvedValueOnce(denied401());
+    const res = await GET();
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the list when authorized', async () => {
+    const res = await GET();
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.items).toEqual([]);
   });
 });

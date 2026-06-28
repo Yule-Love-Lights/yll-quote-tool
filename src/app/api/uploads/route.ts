@@ -6,12 +6,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { listCustomUploads, createCustomUpload, isAllowedImageType } from '@/lib/customUploads';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10MB, matches the photo/upload limits elsewhere
 
 export async function GET() {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
@@ -24,6 +27,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }

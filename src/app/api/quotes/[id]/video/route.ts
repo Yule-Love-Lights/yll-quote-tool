@@ -5,8 +5,9 @@
 // on the `quotes` table — see
 // migrations/2026-04-24-quotes-add-walkthrough-video.sql.
 //
-// Auth: admin-secret header, same pattern as DELETE /api/quotes/[id].
-// Rate limit: low — admin-only, one human, they don't spam save.
+// Auth: operator session (ledger #81). Every handler (GET/PUT/DELETE) is gated
+// via the dormancy-aware requireOperator(); DORMANT until AUTH_GATE_ENABLED=true.
+// Rate limit: low — operator-only, one human, they don't spam save.
 //
 // PUT /api/quotes/[id]/video
 //   body: { kind: 'youtube' | 'mp4', src: string, poster?, title?, durationSec? }
@@ -18,13 +19,13 @@
 //   Clears all five video_* columns. Returns: { ok: true }.
 //
 // GET /api/quotes/[id]/video
-//   Returns the current video or null. Used by the admin page to preload
-//   the form. No auth — these columns are safe to read (they'll be public
-//   on the portal anyway once the customer visits).
+//   Returns the current video or null. Used by the operator video-editor page to
+//   preload the form. Operator-gated like PUT/DELETE (the video columns surface
+//   on the portal via the quote loader, not this operator route).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { safeEqual } from '@/lib/security';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -57,22 +58,6 @@ function extractYouTubeId(input: string): string | null {
   return null;
 }
 
-function checkAdminSecret(req: NextRequest): NextResponse | null {
-  const expected = process.env.ADMIN_SECRET;
-  if (!expected) {
-    return NextResponse.json(
-      { error: 'ADMIN_SECRET not configured on server' },
-      { status: 503 },
-    );
-  }
-  const provided = req.headers.get('x-admin-secret');
-  // Audit fix: constant-time compare to avoid leaking the secret via timing.
-  if (!safeEqual(provided ?? undefined, expected)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  return null;
-}
-
 type VideoBody = {
   kind?: unknown;
   src?: unknown;
@@ -85,6 +70,8 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured' },
@@ -132,14 +119,14 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured' },
       { status: 503 },
     );
   }
-  const authFail = checkAdminSecret(req);
-  if (authFail) return authFail;
 
   const { id } = await params;
   if (!UUID_RE.test(id)) {
@@ -238,14 +225,14 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured' },
       { status: 503 },
     );
   }
-  const authFail = checkAdminSecret(req);
-  if (authFail) return authFail;
 
   const { id } = await params;
   if (!UUID_RE.test(id)) {

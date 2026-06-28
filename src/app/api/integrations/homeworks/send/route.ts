@@ -2,8 +2,7 @@
 // from the admin UI when the operator clicks "Send to home.works for
 // signature + payment."
 //
-// POST /api/integrations/homeworks/send
-// Headers:  x-admin-secret: <ADMIN_SECRET>
+// POST /api/integrations/homeworks/send  (operator-only — session perimeter, #81)
 // Body:
 //   { quoteId: string }   — UUID from our quotes table
 // Response:
@@ -24,7 +23,7 @@ import {
 } from '@/lib/integrations/homeworks';
 import type { HomeworksPayload } from '@/lib/integrations/types';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { safeEqual } from '@/lib/security';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -59,6 +58,12 @@ type ApprovalSnapshotPartial = {
 };
 
 export async function POST(req: NextRequest) {
+  // Operator-gate (ledger #81): auth FIRST — the session perimeter covers this
+  // route; this per-route guard is defense in depth, DORMANT until
+  // AUTH_GATE_ENABLED=true.
+  const denied = await requireOperator();
+  if (denied) return denied;
+
   if (!isHomeworksConfigured()) {
     return NextResponse.json(
       { error: 'home.works not configured. Set HOMEWORKS_ZAPIER_WEBHOOK_URL in .env.local' },
@@ -70,20 +75,6 @@ export async function POST(req: NextRequest) {
       { error: 'Supabase service role not configured' },
       { status: 503 },
     );
-  }
-
-  // Admin-gate: same shared secret as the render delete / approve endpoints.
-  const expected = process.env.ADMIN_SECRET;
-  if (!expected) {
-    return NextResponse.json(
-      { error: 'ADMIN_SECRET not configured on server' },
-      { status: 503 },
-    );
-  }
-  const provided = req.headers.get('x-admin-secret');
-  // Audit fix: constant-time compare to avoid leaking the secret via timing.
-  if (!safeEqual(provided ?? undefined, expected)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const rl = rateLimitResponse(req, { bucket: 'homeworks-send', limit: 10, windowMs: 60_000 });

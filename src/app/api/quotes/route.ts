@@ -1,43 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, isSupabaseConfigured } from '@/lib/supabase';
 import { deleteAllQuotes, listQuotes } from '@/lib/quotes';
-import { safeEqual } from '@/lib/security';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
-// Admin-only routes for listing + bulk-deleting persisted quote rows. Used
-// by /admin/quotes to clean up fake/test entries during development. Delete
-// operations require the shared ADMIN_SECRET header (x-admin-secret).
+// Operator-only routes for listing + bulk-deleting persisted quote rows. Used by
+// /admin/quotes to clean up fake/test entries during development. The operator
+// surface is gated by the session perimeter (ledger #81); these handlers also
+// call requireOperator() as defense in depth — DORMANT until AUTH_GATE_ENABLED
+// =true, so the same-origin /admin/quotes fetches keep working today and ride
+// the operator session cookie once the gate is live.
 
 // Audit fix (g29-route): the bulk wipe deletes ALL customer PII in a single
-// call behind nothing but the static admin secret. Require an explicit
-// confirmation header in addition to the secret so a leaked/forged secret
-// (or a stray CSRF-style request) can't one-shot the whole table. The caller
-// must echo this exact phrase.
+// call. Require an explicit confirmation header IN ADDITION to operator auth so
+// a stray/forged request can't one-shot the whole table. The caller must echo
+// this exact phrase.
 const DELETE_ALL_CONFIRM = 'DELETE ALL QUOTES';
 
-function checkAdminSecret(req: NextRequest): NextResponse | null {
-  const expected = process.env.ADMIN_SECRET;
-  if (!expected) {
-    return NextResponse.json({ error: 'ADMIN_SECRET not configured on server' }, { status: 503 });
-  }
-  const provided = req.headers.get('x-admin-secret');
-  // Audit fix: constant-time compare to avoid leaking the secret via timing.
-  if (!safeEqual(provided ?? undefined, expected)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  return null;
-}
-
 export async function GET() {
-  // NOTE: the admin quote LIST is intentionally NOT gated by the admin secret.
-  // The /admin/quotes page loads it with a plain `fetch('/api/quotes')` (no
-  // header) — the secret is only attached to delete actions — so gating GET
-  // here 401'd the whole page ("Unauthorized"). The earlier audit gate was a
-  // mistaken "non-breaking" assumption (reverted). Closing this PII-listing
-  // exposure belongs to the operator-auth perimeter (ledger #81), which gates
-  // the entire operator surface at once, not a half-gate that breaks the UI.
-  // DELETE below stays gated (it already sends the secret).
+  // Operator-only: this returns every customer's quote (PII). Gating it used to
+  // 401 the /admin/quotes page because the old static-secret half-gate broke the
+  // plain `fetch('/api/quotes')`; the dormancy-aware guard fixes that — it's a
+  // no-op until the gate is enabled, and a logged-in operator's session cookie
+  // rides the same-origin fetch automatically once it is.
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseConfigured()) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
@@ -45,18 +33,18 @@ export async function GET() {
   return NextResponse.json({ items });
 }
 
-// Bulk delete. Caller must pass x-admin-secret. Returns count deleted.
+// Bulk delete — operator-only PLUS an explicit confirmation header. Returns count.
 export async function DELETE(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured (set SUPABASE_SERVICE_ROLE_KEY)' },
       { status: 503 },
     );
   }
-  const authFail = checkAdminSecret(req);
-  if (authFail) return authFail;
-  // Audit fix (g29-route): second factor for the full-PII wipe — the caller
-  // must explicitly confirm intent, not just present the admin secret.
+  // Audit fix (g29-route): second factor for the full-PII wipe — the caller must
+  // explicitly confirm intent, not just be an authenticated operator.
   if (req.headers.get('x-confirm-delete-all') !== DELETE_ALL_CONFIRM) {
     return NextResponse.json(
       { error: `Bulk delete requires confirmation: send header x-confirm-delete-all: ${DELETE_ALL_CONFIRM}` },

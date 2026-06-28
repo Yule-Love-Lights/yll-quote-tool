@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchStreetView, isGoogleMapsConfigured } from '@/lib/googleMaps';
 import { rateLimitResponse } from '@/lib/rateLimit';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -9,6 +10,8 @@ export const maxDuration = 30;
 // around obstacles (trees, trucks, scaffolding) blocking the default view.
 // Does NOT re-run Claude analysis — cheap image-only fetch.
 export async function POST(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   // Cheap but still billable — 60/min/IP lets a user spin through angles.
   const blocked = rateLimitResponse(req, { bucket: 'streetview', limit: 60, windowMs: 60_000 });
   if (blocked) return blocked;
