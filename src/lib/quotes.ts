@@ -110,7 +110,9 @@ export async function saveQuote(
   result: QuoteResult,
   serviceType: ServiceType = DEFAULT_SERVICE_TYPE,
 ): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so the write bypasses RLS (enabled on quotes, #90); the
+  // anon fallback keeps dev (no service key) working.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   // Sequential display number (ledger #83, SPEC §4.6) — allocated once, on first
@@ -167,7 +169,8 @@ export async function updateQuote(
   // untouched (so a re-price that doesn't carry it can't reset the column).
   serviceType?: ServiceType,
 ): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so the write bypasses RLS (enabled on quotes, #90).
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   const { data, error } = await supabase

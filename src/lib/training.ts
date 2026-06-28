@@ -1,4 +1,4 @@
-import { getSupabaseClient } from './supabase';
+import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { GarlandDetection, LineSegment, MiniLightDetection, WreathDetection, SpritzerDetection } from './photoAnalysis';
 import type { Spritzer, Wreath, GarlandItem } from './pricing/pricingEngine';
 
@@ -92,7 +92,9 @@ export type TrainingListItem = Omit<StoredTrainingHouse, 'photos'> & {
 };
 
 export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on training_houses,
+  // #90 — the table holds address + house-photo PII); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   const { data, error } = await supabase
@@ -142,7 +144,9 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
 // Listing view — excludes full-size photos from payload (only first one as thumbnail).
 // Prevents transferring MB of base64 when the page just needs a preview grid.
 export async function listTrainingHouses(limit = 100): Promise<TrainingListItem[]> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on training_houses,
+  // #90 — the table holds address + house-photo PII); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('training_houses')
@@ -163,7 +167,9 @@ export async function listTrainingHouses(limit = 100): Promise<TrainingListItem[
 }
 
 export async function getTrainingHouse(id: string): Promise<StoredTrainingHouse | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on training_houses,
+  // #90 — the table holds address + house-photo PII); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
   const { data, error } = await supabase
     .from('training_houses')
@@ -184,7 +190,9 @@ export async function getTrainingFewShot(
   limit = 2,
   styleHint?: string,
 ): Promise<StoredTrainingHouse[]> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on training_houses,
+  // #90 — the table holds address + house-photo PII); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return [];
 
   // Two-step fetch: first pull a lightweight pool (id + house_style) so we
@@ -227,7 +235,9 @@ export async function getTrainingFewShot(
 }
 
 export async function deleteTrainingHouse(id: string): Promise<boolean> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on training_houses,
+  // #90 — the table holds address + house-photo PII); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return false;
   const { error } = await supabase.from('training_houses').delete().eq('id', id);
   if (error) {
