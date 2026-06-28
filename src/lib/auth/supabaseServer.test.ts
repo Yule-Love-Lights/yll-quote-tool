@@ -18,7 +18,7 @@ vi.mock('@supabase/ssr', () => ({
   }),
 }));
 
-import { roleOf, getOperator, requireOperator } from './supabaseServer';
+import { roleOf, getOperator, requireOperator, requireAdmin } from './supabaseServer';
 
 beforeEach(() => {
   userRef.current = null;
@@ -122,5 +122,36 @@ describe('requireOperator', () => {
     process.env.AUTH_GATE_ENABLED = 'true';
     userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
     expect(await requireOperator()).toBeNull();
+  });
+});
+
+// ─── requireAdmin — STRICT admin gate (never dormancy-bypassed) ──────────────
+// Account-management routes always require a real admin session: there is no
+// dormant use case, and allowing anonymous user CRUD would be a hole. So unlike
+// requireOperator, requireAdmin does NOT consult AUTH_GATE_ENABLED.
+describe('requireAdmin', () => {
+  it('401s when there is no operator session', async () => {
+    userRef.current = null;
+    const r = await requireAdmin();
+    expect('response' in r ? r.response.status : null).toBe(401);
+  });
+
+  it('403s when the operator is authenticated but not an admin', async () => {
+    userRef.current = { id: 'u2', email: 'o@x.com', app_metadata: { role: 'operator' } };
+    const r = await requireAdmin();
+    expect('response' in r ? r.response.status : null).toBe(403);
+  });
+
+  it('returns the operator when an admin is authenticated', async () => {
+    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
+    const r = await requireAdmin();
+    expect('operator' in r ? r.operator : null).toEqual({ id: 'u1', email: 'a@x.com', role: 'admin' });
+  });
+
+  it('still requires an admin while the gate is dormant (no AUTH_GATE_ENABLED bypass)', async () => {
+    delete process.env.AUTH_GATE_ENABLED;
+    userRef.current = null;
+    const r = await requireAdmin();
+    expect('response' in r ? r.response.status : null).toBe(401);
   });
 });

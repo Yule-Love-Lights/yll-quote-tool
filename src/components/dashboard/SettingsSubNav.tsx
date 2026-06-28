@@ -7,9 +7,15 @@ const ITEMS = [
   { label: 'Training', href: '/training', key: 'training' as const },
   // Placeholder for now — the customer-portal config tab (stub page).
   { label: 'Customer Portal', href: '/settings/customer-portal', key: 'customer-portal' as const },
+  // Operator accounts (admin-only; the page itself gates on the admin role).
+  { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },
 ];
 
-export function SettingsSubNav({ active }: { active: 'settings' | 'training' | 'customer-portal' }) {
+export function SettingsSubNav({
+  active,
+}: {
+  active: 'settings' | 'training' | 'customer-portal' | 'accounts';
+}) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>
       {ITEMS.map(item => {

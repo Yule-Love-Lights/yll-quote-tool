@@ -122,3 +122,23 @@ export async function requireOperator(): Promise<NextResponse | null> {
   if (!operator) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   return null;
 }
+
+/**
+ * STRICT admin gate for account-management routes. UNLIKE requireOperator, this
+ * is NEVER dormancy-bypassed: account CRUD has no dormant use case and must fail
+ * closed (an anonymous create-user would be a hole), and these routes are new so
+ * there is no existing behavior to preserve. Returns the authenticated admin, or
+ * a NextResponse (401 unauthenticated / 403 non-admin) to return directly:
+ *
+ *   const auth = await requireAdmin();
+ *   if ('response' in auth) return auth.response;
+ *   const caller = auth.operator;
+ */
+export async function requireAdmin(): Promise<{ operator: Operator } | { response: NextResponse }> {
+  const operator = await getOperator();
+  if (!operator) return { response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
+  if (operator.role !== 'admin') {
+    return { response: NextResponse.json({ error: 'Admin access required' }, { status: 403 }) };
+  }
+  return { operator };
+}
