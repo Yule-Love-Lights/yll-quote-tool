@@ -9,6 +9,7 @@ import {
   putAppSettings,
   normalizeColors,
   sanitizeRender,
+  sanitizePortal,
   isPlainObject,
 } from '@/lib/appSettings';
 
@@ -40,8 +41,8 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render } = body as Record<string, unknown>;
-  if (colors === undefined && defaults === undefined && render === undefined) {
+  const { colors, defaults, render, portal } = body as Record<string, unknown>;
+  if (colors === undefined && defaults === undefined && render === undefined && portal === undefined) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
   // Audit fix (#85): validate every provided key at the boundary and 400 on bad
@@ -59,11 +60,15 @@ export async function PUT(req: NextRequest) {
   if (render !== undefined && Object.keys(sanitizeRender(render)).length === 0) {
     return NextResponse.json({ error: 'no recognized render fields' }, { status: 400 });
   }
+  if (portal !== undefined && Object.keys(sanitizePortal(portal)).length === 0) {
+    return NextResponse.json({ error: 'no recognized portal fields' }, { status: 400 });
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
       defaults: defaults as never,
       render: render as never,
+      portal: portal as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

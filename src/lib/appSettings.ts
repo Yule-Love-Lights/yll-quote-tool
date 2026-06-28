@@ -11,16 +11,31 @@ import {
   type RenderSettings,
 } from '@/components/design/editor-core/renderSettings';
 
+// Customer-facing portal settings (Settings → Customer Portal).
+export type PortalSettings = {
+  // Hide the September/October early-install discounts on the customer portal.
+  // Turn on once the early-install season has passed (Sep/Oct/Nov) so customers
+  // no longer see — or get — those discounts. Applies to all not-yet-approved
+  // quotes; approved quotes keep the price they agreed to.
+  hideEarlyInstallDiscounts: boolean;
+};
+
 export type AppSettings = {
   colors: BulbColor[];
   defaults: ToolDefaults;
   render: RenderSettings;
+  portal: PortalSettings;
+};
+
+export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
+  hideEarlyInstallDiscounts: false,
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   colors: DEFAULT_COLORS,
   defaults: {},
   render: DEFAULT_RENDER_SETTINGS,
+  portal: DEFAULT_PORTAL_SETTINGS,
 };
 
 // ── Validators (also used by the API route on write) ────────────────────────
@@ -75,6 +90,18 @@ export function sanitizeRender(v: unknown): Partial<RenderSettings> {
   return out;
 }
 
+// Sanitize the customer-portal settings to the known boolean fields. Unknown/
+// invalid fields are dropped; the caller merges over defaults.
+export function sanitizePortal(v: unknown): Partial<PortalSettings> {
+  if (!v || typeof v !== 'object') return {};
+  const p = v as Record<string, unknown>;
+  const out: Partial<PortalSettings> = {};
+  if (typeof p.hideEarlyInstallDiscounts === 'boolean') {
+    out.hideEarlyInstallDiscounts = p.hideEarlyInstallDiscounts;
+  }
+  return out;
+}
+
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -105,6 +132,7 @@ export async function getAppSettings(): Promise<AppSettings> {
     colors: withMissingBuiltins(normalizeColors(map.get('colors')) ?? DEFAULT_COLORS),
     defaults: isPlainObject(map.get('defaults')) ? (map.get('defaults') as ToolDefaults) : {},
     render: { ...DEFAULT_RENDER_SETTINGS, ...sanitizeRender(map.get('render')) },
+    portal: { ...DEFAULT_PORTAL_SETTINGS, ...sanitizePortal(map.get('portal')) },
   };
 }
 
@@ -113,6 +141,7 @@ export async function putAppSettings(patch: {
   colors?: BulbColor[];
   defaults?: ToolDefaults;
   render?: Partial<RenderSettings>;
+  portal?: Partial<PortalSettings>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -129,6 +158,11 @@ export async function putAppSettings(patch: {
     // Merge over current stored render so a partial write keeps other fields.
     const cur = (await getAppSettings()).render;
     rows.push({ key: 'render', value: { ...cur, ...sanitizeRender(patch.render) } });
+  }
+  if (patch.portal !== undefined) {
+    // Merge over current stored portal so a partial write keeps other fields.
+    const cur = (await getAppSettings()).portal;
+    rows.push({ key: 'portal', value: { ...cur, ...sanitizePortal(patch.portal) } });
   }
 
   if (rows.length > 0) {

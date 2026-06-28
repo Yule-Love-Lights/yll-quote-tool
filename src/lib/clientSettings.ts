@@ -15,6 +15,10 @@ const FALLBACK: AppSettings = {
   colors: DEFAULT_COLORS,
   defaults: {},
   render: DEFAULT_RENDER_SETTINGS,
+  // Inlined (this client file must not import appSettings' server runtime). The
+  // portal setting is read server-side on the portal page, not from this cache,
+  // so the fallback value is type-satisfaction only.
+  portal: { hideEarlyInstallDiscounts: false },
 };
 
 let cache: Promise<AppSettings> | null = null;

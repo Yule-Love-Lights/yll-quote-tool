@@ -189,6 +189,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
     octoberDiscountRate,
     hasManualDiscount,
     manualDiscount,
+    earlyInstallHidden,
     locked,
   } = useSelection();
 
@@ -337,8 +338,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
         {/* Early-install discount (#40) — Sep/Oct roof-light install for a
          * percentage off the order. Mutually exclusive with each other and with
          * rush install. HIDDEN when a staff manual discount is set (one discount
-         * per quote — the "Your discount" banner below shows that instead). */}
-        {!hasManualDiscount && (
+         * per quote — the "Your discount" banner below shows that instead), OR
+         * when the global "hide early-install discounts" setting is on (the
+         * season has passed — Settings → Customer Portal). */}
+        {!hasManualDiscount && !earlyInstallHidden && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save

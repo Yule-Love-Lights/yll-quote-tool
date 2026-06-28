@@ -71,6 +71,10 @@ type SelectionContextValue = {
   septemberDiscountRate: number;
   /** October early-install discount rate (e.g. 0.10) for the toggle label */
   octoberDiscountRate: number;
+  /** true when the global "hide early-install discounts" setting is on AND the
+   *  quote isn't approved — the Sep/Oct section is hidden + no early-install
+   *  discount applies (approved quotes keep their agreed price). */
+  earlyInstallHidden: boolean;
   /** Staff "Apply discount" (#40): when set, the early-install picker is hidden
    *  and this fixed %/flat discount applies instead. null when none. */
   manualDiscount: { rate: number; flat: number } | null;
@@ -172,6 +176,10 @@ export type SelectionProviderProps = {
   // Staff-set early-install promo (#40): the customer's timing starts here so the
   // Sep/Oct discount shows pre-applied (they can still change it). Default 'none'.
   initialInstallTiming?: InstallTiming;
+  // Global Settings → Customer Portal "hide early-install discounts". When on
+  // (and the quote isn't approved), the Sep/Oct picker is hidden + the discount
+  // is forced off.
+  earlyInstallDiscountsHidden?: boolean;
   children: React.ReactNode;
 };
 
@@ -186,6 +194,7 @@ export function SelectionProvider({
   locked = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
+  earlyInstallDiscountsHidden = false,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -227,10 +236,16 @@ export function SelectionProvider({
   // only the staff default + these toggles control them.
   const [rushSelected, setRushSelected] = useState<boolean>(charges.rush.defaultOn);
   const [takedownSelected, setTakedownSelected] = useState<boolean>(charges.takedown.defaultOn);
+  // Global "hide early-install discounts" (Settings → Customer Portal). Only
+  // affects a NOT-yet-approved quote — an approved quote keeps the price it
+  // agreed to. When on, the Sep/Oct picker is hidden + the discount is forced off.
+  const earlyInstallHidden = earlyInstallDiscountsHidden && !locked;
   // Early-install timing discount (#40). Mutually exclusive with the rush
   // add-on: selecting a Sep/Oct discount clears rush, and turning rush on
-  // clears the discount. Always starts at 'none' (standard install, no discount).
-  const [installTiming, setInstallTiming] = useState<InstallTiming>(initialInstallTiming);
+  // clears the discount. Forced to 'none' when early-install is hidden.
+  const [installTiming, setInstallTiming] = useState<InstallTiming>(
+    earlyInstallHidden ? 'none' : initialInstallTiming,
+  );
   const toggleRush = useCallback(() => {
     // Turning rush ON clears any early-install discount (mutually exclusive #40).
     if (!rushSelected) setInstallTiming('none');
@@ -405,9 +420,10 @@ export function SelectionProvider({
     toggleRush: locked ? noop : toggleRush,
     toggleTakedown: locked ? noop : toggleTakedown,
     installTiming,
-    toggleInstallTiming: locked ? noop : toggleInstallTiming,
+    toggleInstallTiming: locked || earlyInstallHidden ? noop : toggleInstallTiming,
     septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
     octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
+    earlyInstallHidden,
     manualDiscount,
     hasManualDiscount,
     activeName,
