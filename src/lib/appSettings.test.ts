@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isBulbColor, normalizeColors, sanitizeRender } from './appSettings';
+import { isBulbColor, normalizeColors, sanitizeRender, sanitizePortal } from './appSettings';
 
 const red = { id: 'red', label: 'Red', hex: '#ff0000', glow: '#ff8888' };
 
@@ -47,5 +47,23 @@ describe('sanitizeRender', () => {
     expect(sanitizeRender({ other: 5 })).toEqual({});
     expect(sanitizeRender(null)).toEqual({});
     expect(sanitizeRender('x')).toEqual({});
+  });
+});
+
+describe('sanitizePortal', () => {
+  it('keeps the hide-early-install boolean (either value)', () => {
+    expect(sanitizePortal({ hideEarlyInstallDiscounts: true })).toEqual({
+      hideEarlyInstallDiscounts: true,
+    });
+    expect(sanitizePortal({ hideEarlyInstallDiscounts: false })).toEqual({
+      hideEarlyInstallDiscounts: false,
+    });
+  });
+  it('drops non-boolean / unknown / non-object', () => {
+    expect(sanitizePortal({ hideEarlyInstallDiscounts: 'yes' })).toEqual({});
+    expect(sanitizePortal({ hideEarlyInstallDiscounts: 1 })).toEqual({});
+    expect(sanitizePortal({ other: true })).toEqual({});
+    expect(sanitizePortal(null)).toEqual({});
+    expect(sanitizePortal('x')).toEqual({});
   });
 });
