@@ -140,3 +140,40 @@ export async function recordAutoSentSignature(signature: string): Promise<void> 
     .from('app_settings')
     .upsert({ key: AUTO_SEND_KEY, value: { signature, sentAt: new Date().toISOString() } }, { onConflict: 'key' });
 }
+
+// ── Event-driven auto-PO trigger (Naldo rule: send when ≥N booked jobs) ──────
+// Called from the deposit-paid Valor webhook. The scheduled cron handles the
+// every-3-days send; this gives an extra send whenever the active-job count
+// reaches the busy threshold (default 5 = "more than 4 installs"). Honors the
+// same gates as the cron: PO_AUTO_SEND_ENABLED flag, supplier-contact config,
+// and the signature dedup so we never re-email an unchanged order.
+//
+// Best-effort — the caller (webhook) is expected to swallow exceptions; we
+// already log internally and return a structured result rather than throwing.
+
+export type AutoPOTriggerResult =
+  | { ok: true; fired: true; signature: string; jobCount: number; items: number }
+  | { ok: true; fired: false; reason: string }
+  | { ok: false; status: number; error: string };
+
+export async function triggerAutoPOIfBusy(opts: { minJobCount: number }): Promise<AutoPOTriggerResult> {
+  if (process.env.PO_AUTO_SEND_ENABLED !== 'true') {
+    return { ok: true, fired: false, reason: 'auto-send disabled' };
+  }
+  const po = await buildSupplierPurchaseOrder();
+  if (po.jobCount < opts.minJobCount) {
+    return { ok: true, fired: false, reason: `${po.jobCount} job(s) < threshold ${opts.minJobCount}` };
+  }
+  if (!po.lines.length) {
+    return { ok: true, fired: false, reason: 'nothing to order' };
+  }
+  const sig = purchaseOrderSignature(po.lines);
+  if (sig === (await getLastAutoSentSignature())) {
+    return { ok: true, fired: false, reason: 'unchanged since last send' };
+  }
+  const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const res = await emailSupplierPurchaseOrder(po, date);
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+  await recordAutoSentSignature(sig);
+  return { ok: true, fired: true, signature: sig, jobCount: po.jobCount, items: po.lines.length };
+}
