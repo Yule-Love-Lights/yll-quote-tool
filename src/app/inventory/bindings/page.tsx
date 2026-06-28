@@ -21,6 +21,7 @@ import {
   wreathBaseRows, wreathBowRows, wreathFeeRows,
   garlandBaseRows, GARLAND_BOW_KEY, GARLAND_FEE_KEY,
   SPRITZER_SIZES, spritzerColorRows, spritzerPoleKey,
+  WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
   buildSeedBindings, buildSeedClipRules,
 } from '@/lib/inventory/concepts';
 
@@ -256,6 +257,14 @@ export default function BindingsPage() {
                   Hard rules: no window lighting, no C7 clips. Spritzer stakes are NOT clips. SKUs are
                   pre-filled — adjust clips/ft and Save.
                 </p>
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-gray-800 mb-1">Socket wire</h2>
+                  <p className="text-[11px] text-gray-400 mb-1">
+                    Ordered per foot of roofline. Magnetic wire is used on metal roofs (which take no clips).
+                  </p>
+                  <Row label="C9 socket wire (standard)">{pick(WIRE_C9_KEY, scoped('Wire'), 'C9 socket wire SKU')}</Row>
+                  <Row label="Magnetic socket wire (metal roofs)">{pick(WIRE_MAGNETIC_KEY, scoped('Wire'), 'Magnetic socket wire SKU')}</Row>
+                </div>
                 {CLIP_FEATURES.map((f) => {
                   const rule = clipRules[f.id] ?? {};
                   const sku = typeof rule.sku === 'string' ? rule.sku : '';

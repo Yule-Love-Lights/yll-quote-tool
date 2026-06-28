@@ -47,6 +47,12 @@ export const DEFAULT_CLIP_SKUS: Record<string, string> = {
 // roof feature so unbound features surface in the materials view's unbound list.
 export const clipKey = (feature: string) => `clip:${feature}`;
 
+// ── socket wire: ordered per foot of roofline ────────────────────────────────
+// Standard C9 socket wire, plus magnetic socket wire for metal roofs (which take
+// no clips — see the §4 clip table). Not autofilled — operator binds the SKUs.
+export const WIRE_C9_KEY = 'wire:c9';
+export const WIRE_MAGNETIC_KEY = 'wire:magnetic';
+
 // ── wreaths: base + bow + decoration fee, all per size ───────────────────────
 export const WREATH_SIZES: QuoteWreathSize[] = [
   '24noble', '30noble', '36noble', '48noble', '60noble', '72noble',

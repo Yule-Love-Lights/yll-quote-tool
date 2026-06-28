@@ -5,12 +5,12 @@
 // mini-light wraps. A parallel of src/lib/design/projectScene.ts (which turns the
 // same items into PRICING inputs), but reading the bindings instead.
 //
-// Roofline materials (Slice 2b): c9 roofline runs now project C9 bulbs (by color)
-// + clips (by the run's roofFeature, via clipRules). Footage is derived from the
-// scene GEOMETRY (run length ÷ the yardstick's px/ft) — the only source available
-// in the materials-view context (the quote's billed footage is a separate concern,
-// flagged in the design spec §10). Socket WIRE has no binding concept yet →
-// deferred (a fast follow-up). Standalone bows have no binding concept → not here.
+// Roofline materials (Slice 2b): c9 roofline runs project C9 bulbs (by color) +
+// clips (by the run's roofFeature, via clipRules) + socket wire (standard, or
+// magnetic on metal roofs). Footage is derived from the scene GEOMETRY (run length
+// ÷ the yardstick's px/ft) — the only source available in the materials-view
+// context (the quote's billed footage is a separate concern, flagged in design
+// spec §10). Standalone bows have no binding concept yet → not projected here.
 //
 // Reuses the binding key-builders from concepts.ts so the projector and the
 // binding editor can never disagree on key format. No Supabase / React — callers
@@ -33,6 +33,7 @@ import {
   garlandBaseKey, GARLAND_BOW_KEY, GARLAND_FEE_KEY,
   spritzerKey, spritzerPoleKey, miniKey,
   bulbC9Key, clipKey, CLIP_FEATURES,
+  WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
 } from './concepts';
 import { projectClips } from './clipRules';
 
@@ -41,7 +42,7 @@ export type MaterialCategory =
   | 'garland' | 'garland-bow' | 'garland-fee'
   | 'spritzer' | 'spritzer-pole'
   | 'mini'
-  | 'bulb' | 'clip';
+  | 'bulb' | 'clip' | 'wire';
 
 export type MaterialLine = {
   sku: string | null; // null = the concept has no SKU bound yet
@@ -162,6 +163,17 @@ export function projectMaterials(scene: Scene, bindings: Bindings, clipRules: Cl
             push(item.id, 'bulb', bulbC9Key(paletteId), qty, `${colorLabel(paletteId)} C9 bulb × ${qty}`);
           }
         }
+        // Socket wire — one foot per roofline foot. Metal roofs take MAGNETIC wire
+        // (and no clips); everything else takes standard C9 socket wire.
+        const isMetal = item.roofFeature === 'metal';
+        const wireFt = Math.ceil(feet);
+        push(
+          item.id,
+          'wire',
+          isMetal ? WIRE_MAGNETIC_KEY : WIRE_C9_KEY,
+          wireFt,
+          `${isMetal ? 'Magnetic' : 'C9'} socket wire × ${wireFt} ft`,
+        );
         // Clips come from the clip-rules config (NOT the bindings map), keyed by the
         // physical feature; metal/unset → no clip line.
         const clip = projectClips(item.roofFeature, feet, clipRules);

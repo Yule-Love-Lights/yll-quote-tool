@@ -154,10 +154,11 @@ describe('projectMaterials — roofline c9 (Slice 2b)', () => {
       ...over,
     }) as unknown as SceneItem;
 
-  it('gutter run → C9 bulbs (by color) + gutter clips, feet from geometry', () => {
+  it('gutter run → C9 bulbs (by color) + socket wire + gutter clips, feet from geometry', () => {
     const lines = projectMaterials(sc([C9({ roofFeature: 'gutter' })]), { 'bulb:warm-white:c9': 'C9WW' }, CR);
     expect(lines).toEqual([
       { sku: 'C9WW', qty: 10, category: 'bulb', conceptKey: 'bulb:warm-white:c9', label: 'Warm White C9 bulb × 10', sceneItemId: 'r1' },
+      { sku: null, qty: 10, category: 'wire', conceptKey: 'wire:c9', label: 'C9 socket wire × 10 ft', sceneItemId: 'r1' },
       { sku: '14147', qty: 10, category: 'clip', conceptKey: 'clip:gutter', label: 'Gutterline clip × 10', sceneItemId: 'r1' },
     ]);
   });
@@ -167,18 +168,29 @@ describe('projectMaterials — roofline c9 (Slice 2b)', () => {
     expect(clip).toMatchObject({ sku: '14159', qty: 15, conceptKey: 'clip:ridge' });
   });
 
-  it('metal feature → bulbs but NO clip', () => {
-    expect(projectMaterials(sc([C9({ roofFeature: 'metal' })]), {}, CR).map((l) => l.category)).toEqual(['bulb']);
+  it('metal feature → bulbs + MAGNETIC wire, no clip', () => {
+    const lines = projectMaterials(sc([C9({ roofFeature: 'metal' })]), {}, CR);
+    expect(lines.map((l) => l.category)).toEqual(['bulb', 'wire']);
+    expect(lines.find((l) => l.category === 'wire')!.conceptKey).toBe('wire:magnetic');
   });
 
-  it('no roofFeature → bulbs only (a clip needs the feature)', () => {
-    expect(projectMaterials(sc([C9({})]), {}, CR).map((l) => l.category)).toEqual(['bulb']);
+  it('no roofFeature → bulbs + standard wire, no clip', () => {
+    const lines = projectMaterials(sc([C9({})]), {}, CR);
+    expect(lines.map((l) => l.category)).toEqual(['bulb', 'wire']);
+    expect(lines.find((l) => l.category === 'wire')!.conceptKey).toBe('wire:c9');
   });
 
-  it('unbound bulb color + unbound clip feature → lines with null sku', () => {
+  it('projects C9 socket wire at 1 ft per roofline foot', () => {
+    const wire = projectMaterials(sc([C9({ roofFeature: 'gutter' })]), { 'wire:c9': 'WIRE' }, CR)
+      .find((l) => l.category === 'wire')!;
+    expect(wire).toMatchObject({ sku: 'WIRE', qty: 10, conceptKey: 'wire:c9' });
+  });
+
+  it('unbound bulb color + clip feature + wire → lines with null sku', () => {
     const lines = projectMaterials(sc([C9({ roofFeature: 'peak' })]), {}, {});
     expect(lines).toEqual([
       { sku: null, qty: 10, category: 'bulb', conceptKey: 'bulb:warm-white:c9', label: 'Warm White C9 bulb × 10', sceneItemId: 'r1' },
+      { sku: null, qty: 10, category: 'wire', conceptKey: 'wire:c9', label: 'C9 socket wire × 10 ft', sceneItemId: 'r1' },
       { sku: null, qty: 10, category: 'clip', conceptKey: 'clip:peak', label: 'Peak (front gable, no gutter) clip × 10', sceneItemId: 'r1' },
     ]);
   });
