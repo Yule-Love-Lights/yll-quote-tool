@@ -1,11 +1,13 @@
 // src/components/inventory/InventorySubNav.tsx
 import Link from 'next/link';
 
-// Sub-navigation for the Inventory area (#82). Mirrors SettingsSubNav. "Stock" is
-// the /inventory on-hand stock table (Slice 1c); "Bindings" + "Overrides" are the
-// Slice 1b config screens; "Materials" is the design→materials view (Slice 2d).
+// Sub-navigation for the Inventory area (#82). Mirrors SettingsSubNav. "Overview"
+// is the at-a-glance landing (#91, /inventory); "Stock" is the on-hand table
+// (Slice 1c, now /inventory/stock); "Bindings" + "Overrides" are the Slice 1b
+// config screens; "Materials" is the design→materials view (Slice 2d).
 const ITEMS = [
-  { label: 'Stock', href: '/inventory', key: 'stock' as const },
+  { label: 'Overview', href: '/inventory', key: 'overview' as const },
+  { label: 'Stock', href: '/inventory/stock', key: 'stock' as const },
   { label: 'Jobs', href: '/inventory/jobs', key: 'jobs' as const },
   { label: 'Orders', href: '/inventory/orders', key: 'orders' as const },
   { label: 'Bindings', href: '/inventory/bindings', key: 'bindings' as const },
@@ -13,7 +15,7 @@ const ITEMS = [
   { label: 'Materials', href: '/inventory/materials', key: 'materials' as const },
 ];
 
-export type InventoryTab = 'stock' | 'jobs' | 'orders' | 'bindings' | 'overrides' | 'materials';
+export type InventoryTab = 'overview' | 'stock' | 'jobs' | 'orders' | 'bindings' | 'overrides' | 'materials';
 
 export function InventorySubNav({ active }: { active: InventoryTab }) {
   return (
