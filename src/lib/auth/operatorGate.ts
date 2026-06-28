@@ -20,6 +20,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/login',
   '/api/integrations/valor/webhook', // Valor deposit webhook (HMAC-verified in the route)
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
+  '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
 ]);
 
 /**
