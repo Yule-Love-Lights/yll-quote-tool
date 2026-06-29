@@ -1,7 +1,9 @@
 import { OperatorShell } from '@/components/OperatorShell';
-import { listDueFollowUps, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { listDueFollowUps, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { computeResponseMetrics } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
+import { ResponseStats } from '@/components/dashboard/inbox/ResponseStats';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
 // client list then revalidates every ~25s.
@@ -9,7 +11,11 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes] = await Promise.all([listOpenItems(), listDueFollowUps(now)]);
+  const [openRes, followRes, metricsRes] = await Promise.all([
+    listOpenItems(),
+    listDueFollowUps(now),
+    listItemsForMetrics(),
+  ]);
 
   return (
     <OperatorShell active="inbox">
@@ -39,6 +45,8 @@ export default async function InboxPage() {
             <span style={{ opacity: 0.7 }}>Details: {openRes.error}</span>
           </div>
         )}
+
+        {metricsRes.ok && <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} />}
       </div>
     </OperatorShell>
   );

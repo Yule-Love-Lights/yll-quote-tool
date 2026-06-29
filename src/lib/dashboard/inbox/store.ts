@@ -25,6 +25,7 @@ import { normalizeEmail, normalizePhone } from './normalize';
 import { appendIdentifiers, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
+import type { MetricItem } from './responseMetrics';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -556,4 +557,29 @@ export async function markFollowUpDone(id: string, operatorId: string): Promise<
   if (error) return { ok: false, error: error.message };
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', detail: { followUpId: id } });
   return { ok: true };
+}
+
+// ─── Response-time / SLA analytics ──────────────────────────────────────────
+
+export type MetricsResult = { ok: true; items: MetricItem[] } | { ok: false; error: string };
+
+/** Items in the trailing `sinceDays` window (by last_message_at) for analytics. */
+export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('status, last_message_at, handled_at, handled_by, source')
+    .gte('last_message_at', since)
+    .limit(2000);
+  if (error) return { ok: false, error: error.message };
+  const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((r): MetricItem => ({
+    status: r.status as string,
+    lastMessageAt: r.last_message_at ? new Date(r.last_message_at as string) : null,
+    handledAt: r.handled_at ? new Date(r.handled_at as string) : null,
+    handledBy: (r.handled_by as string | null) ?? null,
+    source: r.source as string,
+  }));
+  return { ok: true, items };
 }

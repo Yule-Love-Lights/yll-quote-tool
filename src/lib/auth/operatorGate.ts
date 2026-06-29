@@ -38,6 +38,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/ghl/webhook', // GHL "Customer Replied" webhook (shared-secret in the route, #58)
   '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58 escalation engine)
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
+  '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
 ]);
 
 /**
