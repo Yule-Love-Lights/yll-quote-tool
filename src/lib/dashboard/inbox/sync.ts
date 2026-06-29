@@ -4,8 +4,12 @@
 // the GHL webhook (the webhook is just a low-latency trigger for the reconcile).
 
 import { isHighLevelConfigured, searchConversations, sendEmail } from '@/lib/integrations/highlevel';
+import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
+import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import {
+  closeFollowUp,
+  ensureFollowUp,
   getSyncCursor,
   ingestTouch,
   listEscalatableItems,
@@ -65,6 +69,59 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('ghl', 'error', error);
     return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
+  }
+}
+
+export type QuoteReconcileSummary = {
+  ok: boolean;
+  scanned: number;
+  ingested: number;
+  skipped: number;
+  followUpsCreated: number;
+  followUpsClosed: number;
+  errors: number;
+  error?: string;
+};
+
+/**
+ * Fold Quote-Tool leads into the inbox from the SAME Supabase DB (no API, no
+ * trigger). A draft quote → an unresponded lead; a sent/approved quote auto-
+ * resolves; a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
+ * (closed on approval). Follow-ups anchor on the inbox item, so a quote sent
+ * without ever being seen as a draft (rare) gets no inbox follow-up — the home
+ * worklist's sent-no-reply remains the backstop for that edge.
+ */
+export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSummary> {
+  try {
+    const quotes = await listQuotesForDashboard(500);
+    let ingested = 0;
+    let skipped = 0;
+    let followUpsCreated = 0;
+    let followUpsClosed = 0;
+    let errors = 0;
+    for (const q of quotes) {
+      const res = await ingestTouch(normalizeQuoteTouch(q), now);
+      if (!res.ok) {
+        errors++;
+        continue;
+      }
+      if (res.skipped) skipped++;
+      else ingested++;
+      const decision = quoteFollowUpDecision(q);
+      if (res.itemId && decision.kind === 'create') {
+        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt });
+        followUpsCreated++;
+      } else if (res.itemId && decision.kind === 'close') {
+        await closeFollowUp(res.itemId, decision.reason);
+        followUpsClosed++;
+      }
+    }
+    await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
+    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsClosed, errors };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await recordSyncRun('quotetool', 'error', error);
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsClosed: 0, errors: 1, error };
   }
 }
 

@@ -36,6 +36,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ghl/webhook', // GHL webhook (shared-secret in the route, #58)
       '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -65,6 +66,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/inbox', // #58 operator-only open-items feed
       '/api/dashboard/handled', // #58 operator action
       '/api/dashboard/dismiss', // #58 operator action
+      '/api/dashboard/followup', // #58 operator action (mark follow-up done)
     ]) {
       expect(isPublicPath(p), p).toBe(false);
     }

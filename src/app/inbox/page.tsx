@@ -1,13 +1,15 @@
 import { OperatorShell } from '@/components/OperatorShell';
-import { listOpenItems } from '@/lib/dashboard/inbox/store';
+import { listDueFollowUps, listOpenItems } from '@/lib/dashboard/inbox/store';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
+import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
 // client list then revalidates every ~25s.
 export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
-  const res = await listOpenItems();
+  const now = new Date();
+  const [openRes, followRes] = await Promise.all([listOpenItems(), listDueFollowUps(now)]);
 
   return (
     <OperatorShell active="inbox">
@@ -22,8 +24,10 @@ export default async function InboxPage() {
           </p>
         </header>
 
-        {res.ok ? (
-          <InboxList initialItems={res.items} nowMs={new Date().getTime()} />
+        {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
+
+        {openRes.ok ? (
+          <InboxList initialItems={openRes.items} nowMs={now.getTime()} />
         ) : (
           <div
             className="rounded-md border p-4 text-sm"
@@ -32,7 +36,7 @@ export default async function InboxPage() {
             Inbox isn’t available yet — the dashboard tables haven’t been provisioned. Apply{' '}
             <code>migrations/2026-06-28-dashboard-tables.sql</code> and set the service-role key.
             <br />
-            <span style={{ opacity: 0.7 }}>Details: {res.error}</span>
+            <span style={{ opacity: 0.7 }}>Details: {openRes.error}</span>
           </div>
         )}
       </div>

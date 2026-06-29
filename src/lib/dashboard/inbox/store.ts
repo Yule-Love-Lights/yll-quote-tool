@@ -14,6 +14,7 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import type {
   ContactIdentity,
+  DueFollowUp,
   InboxSource,
   InboxStatus,
   NormalizedTouch,
@@ -23,6 +24,7 @@ import type {
 import { normalizeEmail, normalizePhone } from './normalize';
 import { appendIdentifiers, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
+import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -469,4 +471,85 @@ export async function setSyncCursor(source: string, cursor: Record<string, unkno
   const sb = getSupabaseServiceClient();
   if (!sb) return;
   await sb.from('sync_cursors').upsert({ source, cursor }, { onConflict: 'source' });
+}
+
+// ─── Follow-ups ─────────────────────────────────────────────────────────────
+
+/** Create a follow-up for an inbox item once (idempotent on inbox_item_id+reason). */
+export async function ensureFollowUp(input: {
+  inboxItemId: string;
+  contactId: string | null;
+  reason: string;
+  sentAt: Date;
+}): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  const { data } = await sb
+    .from('follow_ups')
+    .select('id')
+    .eq('inbox_item_id', input.inboxItemId)
+    .eq('reason', input.reason)
+    .limit(1);
+  if (data && data.length > 0) return; // already created (any status) — don't duplicate
+  const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt });
+  await sb.from('follow_ups').insert({
+    contact_id: fu.contactId,
+    inbox_item_id: fu.inboxItemId,
+    due_at: fu.dueAt.toISOString(),
+    reason: fu.reason,
+    status: fu.status,
+    assigned_to: fu.assignedTo,
+    created_by: fu.createdBy,
+  });
+}
+
+/** Mark a pending follow-up for an item done (e.g. the quote got approved). */
+export async function closeFollowUp(inboxItemId: string, reason: string): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  await sb
+    .from('follow_ups')
+    .update({ status: 'done' })
+    .eq('inbox_item_id', inboxItemId)
+    .eq('reason', reason)
+    .eq('status', 'pending');
+}
+
+export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
+
+/** Pending follow-ups due today or overdue (ET), for the top strip. */
+export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('follow_ups')
+    .select('id, reason, due_at, dashboard_contacts ( display_name )')
+    .eq('status', 'pending')
+    .order('due_at', { ascending: true })
+    .limit(100);
+  if (error) return { ok: false, error: error.message };
+  const items = ((data ?? []) as unknown as Record<string, unknown>[])
+    .filter((r) => {
+      const d = r.due_at as string | null;
+      return d ? isDueToday(new Date(d), now) : false;
+    })
+    .map((r): DueFollowUp => {
+      const c = (r.dashboard_contacts as Record<string, unknown> | null) ?? null;
+      return {
+        id: String(r.id),
+        reason: r.reason as string,
+        dueAt: r.due_at as string,
+        contactName: (c?.display_name as string | null) ?? null,
+      };
+    });
+  return { ok: true, items };
+}
+
+export async function markFollowUpDone(id: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', detail: { followUpId: id } });
+  return { ok: true };
 }

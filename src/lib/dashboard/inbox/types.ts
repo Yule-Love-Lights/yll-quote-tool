@@ -76,6 +76,14 @@ export type OpenInboxItem = {
   contact: { displayName: string | null; email: string | null; phone: string | null } | null;
 };
 
+/** A pending follow-up due today, shaped for the /inbox "due today" strip. */
+export type DueFollowUp = {
+  id: string;
+  reason: string;
+  dueAt: string;
+  contactName: string | null;
+};
+
 // ─── Follow-ups ─────────────────────────────────────────────────────────────
 /** A follow-up to insert (DB assigns id/created_at). */
 export type NewFollowUp = {
