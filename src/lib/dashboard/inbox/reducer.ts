@@ -9,7 +9,7 @@
 //   • escalation fires each level once (deduped via notified_levels).
 
 import type { EscalationLevel, InboxStatus, NormalizedTouch } from './types';
-import { escalationLevel, isAnsweredByDirection, newlyCrossedLevel } from './escalation';
+import { escalationLevel, isAnsweredByDirection } from './escalation';
 
 export type ExistingItemState = {
   status: InboxStatus;
@@ -18,12 +18,11 @@ export type ExistingItemState = {
 
 export type IngestDecision = {
   status: InboxStatus;
-  /** Time-based level NONE|AMBER|RED for this item right now. */
+  /** Time-based level NONE|AMBER|RED for display/sorting. Emailing + the
+   *  notified_levels dedupe are owned SOLELY by the escalate cron — ingest must
+   *  never advance notified_levels for a level it didn't email, or the cron would
+   *  skip that alert. */
   escalationLevel: EscalationLevel;
-  /** A level to email right now (newly crossed + not yet notified), else null. */
-  notifyLevel: number | null;
-  /** notified_levels to persist after this decision. */
-  notifiedLevels: number[];
   /** True when this touch auto-resolved an open item (outbound reply). */
   autoResolved: boolean;
   /** True when an inbound reopened a previously-handled item. */
@@ -39,41 +38,20 @@ export function decideInboxState(input: {
 
   // Dismissed is sticky — never resurrect spam.
   if (existing?.status === 'dismissed') {
-    return {
-      status: 'dismissed',
-      escalationLevel: 0,
-      notifyLevel: null,
-      notifiedLevels: existing.notifiedLevels,
-      autoResolved: false,
-      reopened: false,
-    };
+    return { status: 'dismissed', escalationLevel: 0, autoResolved: false, reopened: false };
   }
 
   // Outbound latest message → answered → auto-resolve.
   if (isAnsweredByDirection(touch.direction)) {
-    return {
-      status: 'handled',
-      escalationLevel: 0,
-      notifyLevel: null,
-      notifiedLevels: [],
-      autoResolved: existing?.status !== 'handled',
-      reopened: false,
-    };
+    return { status: 'handled', escalationLevel: 0, autoResolved: existing?.status !== 'handled', reopened: false };
   }
 
-  // Inbound + unanswered. Reopen a handled item (fresh escalation clock).
-  const reopened = existing?.status === 'handled';
-  const base = reopened ? [] : (existing?.notifiedLevels ?? []);
-  const level = escalationLevel(touch.lastMessageAt, now);
-  const notifyLevel = newlyCrossedLevel(touch.lastMessageAt, now, base);
-  const notifiedLevels = notifyLevel != null ? [...base, notifyLevel] : base;
-
+  // Inbound + unanswered. Reopen a handled item (the escalate cron resets the
+  // clock when notified_levels is cleared on reopen — see store.planIngest).
   return {
     status: 'unresponded',
-    escalationLevel: level,
-    notifyLevel,
-    notifiedLevels,
+    escalationLevel: escalationLevel(touch.lastMessageAt, now),
     autoResolved: false,
-    reopened,
+    reopened: existing?.status === 'handled',
   };
 }

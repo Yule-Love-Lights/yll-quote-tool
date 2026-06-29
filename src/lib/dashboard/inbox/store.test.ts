@@ -31,8 +31,7 @@ describe('planIngest — new conversation, no existing item', () => {
     expect(plan.item.status).toBe('unresponded');
     expect(plan.item.source).toBe('ghl');
     expect(plan.item.external_id).toBe('conv-1');
-    expect(plan.item.escalation_level).toBe(1);
-    expect(plan.notifyLevel).toBe(1);
+    expect(plan.item.escalation_level).toBe(1); // display level for sorting/colour
     expect(plan.item.last_message_at).toBe(T.toISOString()); // serialized ISO
   });
 
@@ -79,6 +78,5 @@ describe('planIngest — existing item keeps its contact link', () => {
     const plan = planIngest({ candidates: [], existing, touch: touch({ direction: 'outbound' }), now: at(6 * HOUR) });
     expect(plan.item.status).toBe('handled');
     expect(plan.autoResolved).toBe(true);
-    expect(plan.notifyLevel).toBeNull();
   });
 });

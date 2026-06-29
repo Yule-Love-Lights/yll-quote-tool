@@ -55,7 +55,6 @@ export type ItemRow = {
 export type IngestPlan = {
   contactOp: ContactOp;
   item: ItemRow;
-  notifyLevel: number | null;
   autoResolved: boolean;
   reopened: boolean;
   ambiguous: boolean;
@@ -99,6 +98,11 @@ export function planIngest(input: {
     }
   }
 
+  // notified_levels is owned by the escalate cron. Ingest only PRESERVES it
+  // (and resets it on reopen) — it must never advance a level, or the cron would
+  // skip that escalation email.
+  const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
+
   const item: ItemRow = {
     source: touch.source,
     external_id: touch.externalId,
@@ -110,14 +114,13 @@ export function planIngest(input: {
     subject: touch.subject ?? null,
     status: decision.status,
     escalation_level: decision.escalationLevel,
-    notified_levels: decision.notifiedLevels,
+    notified_levels: notifiedLevels,
     raw: touch.raw ?? null,
   };
 
   return {
     contactOp,
     item,
-    notifyLevel: decision.notifyLevel,
     autoResolved: decision.autoResolved,
     reopened: decision.reopened,
     ambiguous,
@@ -192,7 +195,7 @@ function contactInsertRow(identity: ContactIdentity) {
 }
 
 export type IngestOutcome =
-  | { ok: true; itemId: string; contactId: string | null; notifyLevel: number | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
+  | { ok: true; itemId: string; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
   | { ok: false; error: string };
 
 /**
@@ -268,7 +271,6 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     ok: true,
     itemId,
     contactId,
-    notifyLevel: plan.notifyLevel,
     autoResolved: plan.autoResolved,
     reopened: plan.reopened,
     ambiguous: plan.ambiguous,

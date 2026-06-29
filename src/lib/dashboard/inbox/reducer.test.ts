@@ -21,39 +21,18 @@ function touch(over: Partial<NormalizedTouch> = {}): NormalizedTouch {
 }
 
 describe('decideInboxState — new inbound touch', () => {
-  it('opens an unresponded item and escalates by age (amber after 1h)', () => {
+  it('opens an unresponded item with a display escalation level by age', () => {
     const d = decideInboxState({ existing: null, touch: touch(), now: at(2 * HOUR) });
     expect(d.status).toBe('unresponded');
-    expect(d.escalationLevel).toBe(1);
-    expect(d.notifyLevel).toBe(1);
-    expect(d.notifiedLevels).toEqual([1]);
+    expect(d.escalationLevel).toBe(1); // amber, for sorting/colour only
     expect(d.reopened).toBe(false);
     expect(d.autoResolved).toBe(false);
   });
 
-  it('opens an unresponded item with no escalation when fresh (<1h)', () => {
+  it('has no escalation level when fresh (<1h)', () => {
     const d = decideInboxState({ existing: null, touch: touch(), now: at(20 * 60_000) });
     expect(d.status).toBe('unresponded');
     expect(d.escalationLevel).toBe(0);
-    expect(d.notifyLevel).toBeNull();
-    expect(d.notifiedLevels).toEqual([]);
-  });
-});
-
-describe('decideInboxState — escalation dedupe via notified_levels', () => {
-  it('fires red once amber was already notified', () => {
-    const existing: ExistingItemState = { status: 'unresponded', notifiedLevels: [1] };
-    const d = decideInboxState({ existing, touch: touch(), now: at(5 * HOUR) });
-    expect(d.escalationLevel).toBe(2);
-    expect(d.notifyLevel).toBe(2);
-    expect(d.notifiedLevels).toEqual([1, 2]);
-  });
-
-  it('does not re-fire a level already notified', () => {
-    const existing: ExistingItemState = { status: 'unresponded', notifiedLevels: [1] };
-    const d = decideInboxState({ existing, touch: touch(), now: at(2 * HOUR) });
-    expect(d.notifyLevel).toBeNull();
-    expect(d.notifiedLevels).toEqual([1]);
   });
 });
 
@@ -64,8 +43,6 @@ describe('decideInboxState — outbound auto-resolve', () => {
     expect(d.status).toBe('handled');
     expect(d.autoResolved).toBe(true);
     expect(d.escalationLevel).toBe(0);
-    expect(d.notifyLevel).toBeNull();
-    expect(d.notifiedLevels).toEqual([]);
   });
 
   it('treats a we-initiated outbound (no existing) as already handled', () => {
@@ -76,13 +53,12 @@ describe('decideInboxState — outbound auto-resolve', () => {
 });
 
 describe('decideInboxState — reopen on new inbound', () => {
-  it('reopens a handled item and resets its escalation history', () => {
+  it('reopens a handled item (the store then resets its escalation clock)', () => {
     const existing: ExistingItemState = { status: 'handled', notifiedLevels: [1, 2] };
     const d = decideInboxState({ existing, touch: touch(), now: at(10 * 60_000) });
     expect(d.status).toBe('unresponded');
     expect(d.reopened).toBe(true);
     expect(d.escalationLevel).toBe(0);
-    expect(d.notifiedLevels).toEqual([]); // fresh clock
   });
 });
 
@@ -92,7 +68,6 @@ describe('decideInboxState — dismissed is sticky', () => {
     const d = decideInboxState({ existing, touch: touch(), now: at(8 * HOUR) });
     expect(d.status).toBe('dismissed');
     expect(d.escalationLevel).toBe(0);
-    expect(d.notifyLevel).toBeNull();
     expect(d.reopened).toBe(false);
     expect(d.autoResolved).toBe(false);
   });
