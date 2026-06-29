@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   const now = new Date();
 
   // 1. Stamp local first — instant + authoritative, even if GHL is down.
-  const local = await markItemHandledLocal(itemId, operator?.id ?? 'operator', now);
+  const local = await markItemHandledLocal(itemId, operator?.id ?? 'system', now);
   if (!local.ok) return NextResponse.json({ error: local.error }, { status: 409 });
 
   // 2. Best-effort source write-back. GHL: mark the conversation read.

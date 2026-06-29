@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   }
 
   const operator = await getOperator();
-  const res = await markFollowUpDone(id, operator?.id ?? 'operator');
+  const res = await markFollowUpDone(id, operator?.id ?? 'system');
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
   return NextResponse.json({ ok: true });
 }

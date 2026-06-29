@@ -116,7 +116,12 @@ create table if not exists public.follow_ups (
   created_by    uuid references auth.users(id) on delete set null,  -- NULL when system-created
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
-  constraint follow_ups_status_check check (status in ('pending','done','dismissed'))
+  constraint follow_ups_status_check check (status in ('pending','done','dismissed')),
+  -- One system follow-up per (item, reason): makes ensureFollowUp idempotent at the
+  -- DB layer (the app-side SELECT-then-INSERT is then just a fast-path, race-safe).
+  -- NULLs are distinct in Postgres, so manual follow-ups (null inbox_item_id) are
+  -- not constrained by this.
+  constraint follow_ups_item_reason_key unique (inbox_item_id, reason)
 );
 
 create index if not exists follow_ups_status_due_at_idx on public.follow_ups (status, due_at);

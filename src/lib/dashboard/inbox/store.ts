@@ -503,16 +503,20 @@ export async function ensureFollowUp(input: {
   });
 }
 
-/** Mark a pending follow-up for an item done (e.g. the quote got approved). */
-export async function closeFollowUp(inboxItemId: string, reason: string): Promise<void> {
+/** Mark a pending follow-up for an item done (e.g. the quote got approved).
+ *  Returns how many rows were closed (0 when there was none) so callers can keep
+ *  an accurate metric. */
+export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return;
-  await sb
+  if (!sb) return 0;
+  const { data } = await sb
     .from('follow_ups')
     .update({ status: 'done' })
     .eq('inbox_item_id', inboxItemId)
     .eq('reason', reason)
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    .select('id');
+  return data ? data.length : 0;
 }
 
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };

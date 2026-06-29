@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   }
 
   const operator = await getOperator();
-  const res = await dismissItem(itemId, operator?.id ?? 'operator', new Date());
+  const res = await dismissItem(itemId, operator?.id ?? 'system', new Date());
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
   return NextResponse.json({ ok: true });
 }

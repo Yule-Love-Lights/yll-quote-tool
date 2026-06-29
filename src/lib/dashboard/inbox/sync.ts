@@ -93,6 +93,11 @@ export type QuoteReconcileSummary = {
  */
 export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSummary> {
   try {
+    // Scan the newest 500 quotes by created_at. At this business's scale that
+    // covers all recent + active leads; older quotes are resolved (sent/approved →
+    // outbound → skipped no-ops). If the OPEN/recent set ever exceeds 500, switch
+    // to scanning UNRESOLVED quotes — a created_at cursor would miss state changes
+    // on older rows. `scanned` in the summary surfaces this bound (no silent cap).
     const quotes = await listQuotesForDashboard(500);
     let ingested = 0;
     let skipped = 0;
@@ -112,8 +117,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt });
         followUpsCreated++;
       } else if (res.itemId && decision.kind === 'close') {
-        await closeFollowUp(res.itemId, decision.reason);
-        followUpsClosed++;
+        if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
       }
     }
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
