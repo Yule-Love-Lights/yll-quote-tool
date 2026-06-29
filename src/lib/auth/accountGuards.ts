@@ -12,13 +12,23 @@ const fail = (error: string): Result => ({ ok: false, error });
 const ROLES: readonly OperatorRole[] = ['admin', 'operator'];
 
 /** Validate the fields for a newly-created operator account. */
-export function validateNewUser(input: { email: string; password: string; role: string }): Result {
+export function validateNewUser(input: {
+  email: string;
+  password: string;
+  role: string;
+  name: string;
+}): Result {
   const email = input.email.trim();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail('A valid email is required');
   if (typeof input.password !== 'string' || input.password.length < 8) {
     return fail('Password must be at least 8 characters');
   }
   if (!ROLES.includes(input.role as OperatorRole)) return fail("Role must be 'admin' or 'operator'");
+  // Name is REQUIRED on create (the whole point: attribution by person, not email).
+  // Legacy accounts are backfilled via PATCH, which doesn't go through this guard.
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name) return fail('A name is required');
+  if (name.length > 80) return fail('Name must be 80 characters or fewer');
   return OK;
 }
 

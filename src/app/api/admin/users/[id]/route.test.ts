@@ -15,6 +15,8 @@ const { requireAdmin, getUserById, deleteUser, updateUserById, listUsers } = vi.
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireAdmin,
   roleOf: (m: { role?: unknown } | null | undefined) => (m?.role === 'admin' ? 'admin' : 'operator'),
+  nameOf: (m: { name?: unknown } | null | undefined) =>
+    typeof m?.name === 'string' && m.name.trim() ? m.name.trim() : null,
 }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
@@ -83,6 +85,99 @@ describe('PATCH /api/admin/users/[id]', () => {
     const res = await PATCH(makeReq({ role: 'admin' }), params(OP2));
     expect(res.status).toBe(200);
     expect(updateUserById).toHaveBeenCalledWith(OP2, expect.objectContaining({ app_metadata: expect.objectContaining({ role: 'admin' }) }));
+  });
+});
+
+describe('PATCH name (#81 display names)', () => {
+  it('updates the name and PRESERVES the role (metadata merge, not clobber)', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator', name: 'Old Name' } } },
+      error: null,
+    });
+    updateUserById.mockResolvedValue({
+      data: { user: { id: OP2, email: 'o@x.com', app_metadata: { role: 'operator', name: 'New Name' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ name: 'New Name' }), params(OP2));
+    expect(res.status).toBe(200);
+    expect(updateUserById).toHaveBeenCalledWith(
+      OP2,
+      expect.objectContaining({ app_metadata: { role: 'operator', name: 'New Name' } }),
+    );
+  });
+
+  it('backfills a name onto a legacy account that never had one', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    updateUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator', name: 'Backfilled' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ name: 'Backfilled' }), params(OP2));
+    expect(res.status).toBe(200);
+    expect(updateUserById).toHaveBeenCalledWith(
+      OP2,
+      expect.objectContaining({ app_metadata: { role: 'operator', name: 'Backfilled' } }),
+    );
+  });
+
+  it('updates name AND role together, preserving both', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    updateUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'admin', name: 'Both' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ name: 'Both', role: 'admin' }), params(OP2));
+    expect(res.status).toBe(200);
+    expect(updateUserById).toHaveBeenCalledWith(
+      OP2,
+      expect.objectContaining({ app_metadata: { role: 'admin', name: 'Both' } }),
+    );
+  });
+
+  it('PRESERVES an existing name on a role-only PATCH (no clobber)', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator', name: 'Keep Me' } } },
+      error: null,
+    });
+    updateUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'admin', name: 'Keep Me' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ role: 'admin' }), params(OP2));
+    expect(res.status).toBe(200);
+    expect(updateUserById).toHaveBeenCalledWith(
+      OP2,
+      expect.objectContaining({ app_metadata: { role: 'admin', name: 'Keep Me' } }),
+    );
+  });
+
+  it('rejects a blank name (400) without calling updateUserById', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ name: '   ' }), params(OP2));
+    expect(res.status).toBe(400);
+    expect(updateUserById).not.toHaveBeenCalled();
+  });
+
+  it('treats a name-only body as a valid update (not "nothing to update")', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    updateUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator', name: 'Solo' } } },
+      error: null,
+    });
+    const res = await PATCH(makeReq({ name: 'Solo' }), params(OP2));
+    expect(res.status).toBe(200);
   });
 });
 

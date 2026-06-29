@@ -10,6 +10,21 @@ metadata:
 
 > Naldo's per-session log. **Append-only; newest entry on top.** This is the dashboard-area (#58) continuity thread — Jason's thread is `session_log.md`. Each dev edits ONLY their own log so the two machines never clobber each other (see the "Multi-dev collaboration" section in `AGENTS.md`). The shared `task_ledger.md` + `project_quote_tool.md` stay unified.
 
+### Naldo S13 — #93 Test Quote BUILT end-to-end + MERGED + LIVE (PR #234); migration applied to prod; Quotes promoted to its own Settings sub-category (2026-06-29)
+
+> An **ultracode** session: built the entire #93 Test Quote feature from the committed spec/plan, adversarially reviewed it, applied the migration to prod, and merged to master on Naldo's go.
+
+- **#93 Test Quote — SHIPPED (PR #234 → master `578304d`, LIVE).** A **"Make New Test Quote"** entry in Settings → `/quote/new?test=1` → an `is_test` quote that flows the WHOLE pipeline (send → portal approve → **"Simulate deposit paid"** → Job → fulfillment/inventory) **fully simulated**: no real GHL text/email, no real Valor charge. Built TDD across 6 phases off FRESH master.
+  - **Data:** one `is_test boolean NOT NULL DEFAULT false` column on `quotes` (migration `2026-06-28-quotes-add-is-test.sql`, **applied to prod** via the Chrome SQL editor — MCP is read-only; verified column+index, 14 rows false). Jobs/invoices **derive `is_test` via the quote link** (no column on them — Naldo's locked decision, zero drift). `saveQuote` threads it (immutable; `updateQuote` never touches it); new `deleteTestQuotes()`.
+  - **Isolation:** `listQuotesForDashboardResult` `.eq('is_test', false)` is the single chokepoint (all metrics/customers/worklist inherit it); `listJobsForWorkflowBoard` excludes test jobs; **`customers.ts` backfill excludes test** (the leak the recon caught — else test data orphans the persisted customers/properties tables). Admin list + jobs Kanban badge **TEST** (visible, not hidden).
+  - **Simulate flow:** send/approve suppress ALL GHL when `is_test` (still stamp `quote_sent_at` / write the approval snapshot); `/pay` refuses a test quote (400); NEW operator-gated `POST /simulate-deposit` mirrors the Valor webhook's atomic-claim → `createJobFromQuote` (refuses a non-test quote); the Valor webhook itself got a defensive `is_test` guard.
+  - **Inventory safety (the subtle part):** a test Job is visible in the Kanban but `prepareJobMaterials` **no-ops the real on-hand deduction** (still advances/marks prepped) and `buildSupplierPurchaseOrder` **excludes test jobs** (never hits the real supplier PO).
+  - **Cleanup:** `DELETE /api/quotes?scope=test` (distinct confirm phrase) + a **"Delete test data (N)"** button; FK CASCADE removes the derived job/invoice.
+- **Adversarial review (the ultracode payoff):** 6-dimension multi-agent review (29 agents, per-finding refute-or-confirm) → 4 confirmed: **1 fixed** (Valor webhook `is_test` guard), 3 accepted as parity with existing best-effort patterns (orphan-job, design-cleanup), 1 mitigated by the apply-migration-before-merge gate.
+- **Settings restructure (Naldo's request):** promoted **Quotes** out of the `/settings` tab-bar into its **own sub-category** at `/settings/quotes` — a peer of Training / Customer Portal / Accounts in `SettingsSubNav`. Extracted the tab body to `QuotesSettings`; the page carries the dormant `getOperator()` gate.
+- **Merge discipline:** master had advanced (Jason's #233 Telegram pings landed mid-session). Merged master in, **re-gated**, and verified the cross-cutting interaction — confirmed a test quote can't fire the new prep/PO-sent Telegram pings (the webhook `is_test` guard precedes the prep ping; the PO-sent ping runs on the already-test-excluded PO). Gave Jason the heads-up on the PR (shared data layer); Naldo directed the merge.
+- **Gates throughout:** tsc 0 · lint 0 errors · **vitest 949** (post-merge, +31 from #233). Verified live on the Vercel branch preview before merge.
+
 ### Naldo S12 — inventory binding cleanup + Overview tab SHIPPED to prod; patterns (#92) + Test Quote (#93) spec'd; reconciled against a fast-moving master (2026-06-28)
 
 > Long **ultracode** session. Shipped two inventory features to prod, spec'd two more for handoff, and reconciled against a master that jumped 10 commits mid-session (Jason's #81 auth + Telegram landed).

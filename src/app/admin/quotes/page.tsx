@@ -293,6 +293,17 @@ export default function QuotesAdminPage() {
                           >
                             {status.label}
                           </span>
+                          {/* Test Quote (ledger #93) — kept VISIBLE in the admin
+                              list (only the dashboard metrics exclude it), badged
+                              so it's never mistaken for real data. */}
+                          {q.is_test && (
+                            <span
+                              title="Simulated test quote — excluded from dashboard metrics"
+                              className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700"
+                            >
+                              Test
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{q.customer_address ?? '—'}</td>
