@@ -17,6 +17,7 @@ import type {
   InboxSource,
   InboxStatus,
   NormalizedTouch,
+  OpenInboxItem,
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
@@ -289,18 +290,6 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 }
 
 // ─── Reads for the UI / poll ────────────────────────────────────────────────
-
-export type OpenInboxItem = {
-  id: string;
-  source: InboxSource;
-  channel: string | null;
-  direction: string | null;
-  lastMessageAt: string | null;
-  preview: string | null;
-  subject: string | null;
-  escalationLevel: number;
-  contact: { displayName: string | null; email: string | null; phone: string | null } | null;
-};
 
 export type OpenItemsResult = { ok: true; items: OpenInboxItem[] } | { ok: false; error: string };
 

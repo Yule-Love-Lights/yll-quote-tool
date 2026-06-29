@@ -62,6 +62,20 @@ export type NormalizedTouch = {
   raw?: unknown;
 };
 
+/** A single open inbox item shaped for the /inbox UI (server-fetch → client prop).
+ *  Lives here (no server imports) so client components import it cleanly. */
+export type OpenInboxItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  direction: string | null;
+  lastMessageAt: string | null;
+  preview: string | null;
+  subject: string | null;
+  escalationLevel: number;
+  contact: { displayName: string | null; email: string | null; phone: string | null } | null;
+};
+
 // ─── Follow-ups ─────────────────────────────────────────────────────────────
 /** A follow-up to insert (DB assigns id/created_at). */
 export type NewFollowUp = {
