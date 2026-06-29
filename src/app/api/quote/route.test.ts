@@ -95,3 +95,34 @@ describe('POST /api/quote — validation hardening', () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('POST /api/quote — Test Quote flag (#93)', () => {
+  it('threads isTest=true into the NEW-save path (saveQuote 5th arg)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), isTest: true }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    // saveQuote(customer, inputs, result, serviceType, isTest)
+    expect((save.mock.calls[0] as unknown[])[4]).toBe(true);
+  });
+
+  it('defaults isTest=false when the flag is absent', async () => {
+    const res = await POST(makeReq({ inputs: validInputs() }));
+    expect(res.status).toBe(200);
+    expect((save.mock.calls[0] as unknown[])[4]).toBe(false);
+  });
+
+  it('does NOT pass is_test to the update branch (immutable on edit)', async () => {
+    // An edit (canonical UUID) with isTest:true must still not re-flag the row —
+    // updateQuote takes no is_test arg; the route only honors it on a fresh save.
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID, isTest: true }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s on a non-boolean isTest', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), isTest: 'yes' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+});

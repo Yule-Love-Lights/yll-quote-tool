@@ -224,6 +224,9 @@ export type PortalQuote = {
   // it live instead of the static render image. Undefined for quotes with no
   // design (they keep the current static-image behavior).
   design?: PortalDesign;
+  // Test Quote (ledger #93): true ⇒ the deposit button simulates payment
+  // (→ /simulate-deposit) instead of a real Valor charge. Default false.
+  isTest?: boolean;
 };
 
 export type PortalSelection = {

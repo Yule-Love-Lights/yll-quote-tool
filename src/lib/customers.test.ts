@@ -312,6 +312,27 @@ describe('backfillCustomersFromQuotes', () => {
     expect(second.scanned).toBe(0); // q1 now has customer_id → not re-scanned
     expect(fake.tables.customers).toHaveLength(1);
   });
+
+  it('EXCLUDES test quotes from promotion (ledger #93) — real + legacy NULL only', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        { id: 'real', created_at: '2025-01-01', customer_email: 'real@x.com', customer_address: '1 Real St', customer_id: null, is_test: false },
+        // Legacy row written before the is_test column existed (NULL/undefined) → real.
+        { id: 'legacy', created_at: '2025-02-01', customer_email: 'legacy@x.com', customer_address: '2 Legacy Rd', customer_id: null },
+        { id: 'test', created_at: '2025-03-01', customer_email: 'test@x.com', customer_address: '3 Test Ave', customer_id: null, is_test: true },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const summary = await backfillCustomersFromQuotes();
+    // The test quote is filtered out of the scan entirely.
+    expect(summary.scanned).toBe(2);
+    expect(summary.linked).toBe(2);
+    // It never gets linked and never creates a persisted customer (so "Delete
+    // test data" can't leave an orphaned customer/property behind).
+    expect(fake.tables.quotes.find((q) => q.id === 'test')!.customer_id ?? null).toBeNull();
+    expect(fake.tables.customers.map((c) => c.match_key)).not.toContain('email:test@x.com');
+  });
 });
 
 // ─── DB: reads ──────────────────────────────────────────────────────────────
