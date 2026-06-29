@@ -52,6 +52,9 @@ export async function getAccessToken(now: number = Date.now()): Promise<string> 
 }
 
 async function gmailGet<T>(path: string, accessToken: string): Promise<T> {
+  // ⚠️ The access token is in the Authorization header. Don't enable verbose HTTP
+  // request logging in prod without masking Authorization (it's a live credential,
+  // short-lived but still a leak).
   const res = await fetch(`${GMAIL_API}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
   });

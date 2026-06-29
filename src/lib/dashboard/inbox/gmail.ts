@@ -102,11 +102,16 @@ export function gmailMessageFromMe(m: RawGmailMessage, ourEmail: string): boolea
 
 export function mapGmailThread(raw: RawGmailThread, ourEmail: string): GmailThreadLite {
   const rawMessages = raw.messages ?? [];
-  const messages: GmailMessageLite[] = rawMessages.map((m) => ({
-    fromMe: gmailMessageFromMe(m, ourEmail),
-    at: new Date(Number(m.internalDate ?? 0)),
-    snippet: m.snippet,
-  }));
+  const messages: GmailMessageLite[] = rawMessages.map((m) => {
+    const ms = Number(m.internalDate ?? 0);
+    return {
+      fromMe: gmailMessageFromMe(m, ourEmail),
+      // Guard against a non-numeric internalDate: an Invalid Date would later
+      // throw at .toISOString() during the upsert.
+      at: new Date(Number.isFinite(ms) ? ms : 0),
+      snippet: m.snippet,
+    };
+  });
   const subject = rawMessages[0] ? getHeader(rawMessages[0], 'Subject') : undefined;
   // External party = the From of the latest inbound message on the thread.
   const latestInbound = [...rawMessages].reverse().find((m) => !gmailMessageFromMe(m, ourEmail));

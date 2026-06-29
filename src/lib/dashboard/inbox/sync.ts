@@ -166,6 +166,12 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
     for (const ref of threads) {
       try {
         const raw = await getThread(token, ref.id);
+        if (!raw.messages || raw.messages.length === 0) {
+          // Defensive: an empty thread would map to a no-identity, epoch-dated
+          // item (noise). Gmail shouldn't return these, but skip if it does.
+          skipped++;
+          continue;
+        }
         const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, ourEmail)), now);
         if (!res.ok) {
           errors++;
@@ -202,7 +208,7 @@ async function emailTeamSafe(subject: string, html: string): Promise<boolean> {
   try {
     return await emailTeam(subject, html);
   } catch (err) {
-    console.error('[inbox/escalate] team email failed:', err);
+    console.error('[inbox/escalate] team email failed:', err instanceof Error ? err.message : String(err));
     return false;
   }
 }

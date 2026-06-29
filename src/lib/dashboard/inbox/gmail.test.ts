@@ -124,4 +124,14 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
     };
     expect(normalizeGmailThread(mapGmailThread(raw, OUR)).direction).toBe('outbound');
   });
+
+  it('never produces an Invalid Date from a malformed internalDate (would crash .toISOString)', () => {
+    const raw: RawGmailThread = {
+      id: 'thr-bad',
+      messages: [gm({ internalDate: 'not-a-number', from: 'cust@example.com', snippet: 'hi' })],
+    };
+    const t = normalizeGmailThread(mapGmailThread(raw, OUR));
+    expect(Number.isNaN(t.lastMessageAt.getTime())).toBe(false);
+    expect(() => t.lastMessageAt.toISOString()).not.toThrow();
+  });
 });
