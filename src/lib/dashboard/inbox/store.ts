@@ -53,6 +53,10 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
+  /** When true, do nothing: an outbound touch with no existing item is us
+   *  cold-contacting — there's no unresponded lead to track (avoids noise). A
+   *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
+  skip: boolean;
   contactOp: ContactOp;
   item: ItemRow;
   autoResolved: boolean;
@@ -119,6 +123,7 @@ export function planIngest(input: {
   };
 
   return {
+    skip: !existing && touch.direction === 'outbound',
     contactOp,
     item,
     autoResolved: decision.autoResolved,
@@ -195,7 +200,7 @@ function contactInsertRow(identity: ContactIdentity) {
 }
 
 export type IngestOutcome =
-  | { ok: true; itemId: string; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
+  | { ok: true; skipped: boolean; itemId: string | null; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
   | { ok: false; error: string };
 
 /**
@@ -210,6 +215,11 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   const existing = await findExistingItem(touch.source, touch.externalId);
   const candidates = existing ? [] : await findCandidates(touch.identity);
   const plan = planIngest({ candidates, existing, touch, now });
+
+  // Outbound with no existing item → nothing to track. Do not write.
+  if (plan.skip) {
+    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
+  }
 
   // 1. Resolve the contact id.
   let contactId: string | null;
@@ -269,6 +279,7 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 
   return {
     ok: true,
+    skipped: false,
     itemId,
     contactId,
     autoResolved: plan.autoResolved,
@@ -433,7 +444,7 @@ export async function setEscalation(
   await sb.from('dashboard_activity').insert({ actor: 'system', action: 'escalated', inbox_item_id: itemId, detail: fields });
 }
 
-/** Heartbeat for the escalation watchdog (sync_cursors.escalate.last_run_at). */
+/** Heartbeat for the escalation watchdog (sync_cursors.<source>.last_run_at). */
 export async function recordSyncRun(source: string, status: 'ok' | 'error', error?: string): Promise<void> {
   const sb = getSupabaseServiceClient();
   if (!sb) return;
@@ -443,4 +454,24 @@ export async function recordSyncRun(source: string, status: 'ok' | 'error', erro
       { source, last_run_at: new Date().toISOString(), last_status: status, last_error: error ?? null },
       { onConflict: 'source' },
     );
+}
+
+export async function getSyncCursor(
+  source: string,
+): Promise<{ lastRunAt: string | null; cursor: Record<string, unknown> | null }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { lastRunAt: null, cursor: null };
+  const { data } = await sb.from('sync_cursors').select('last_run_at, cursor').eq('source', source).maybeSingle();
+  if (!data) return { lastRunAt: null, cursor: null };
+  const row = data as Record<string, unknown>;
+  return {
+    lastRunAt: (row.last_run_at as string | null) ?? null,
+    cursor: (row.cursor as Record<string, unknown> | null) ?? null,
+  };
+}
+
+export async function setSyncCursor(source: string, cursor: Record<string, unknown>): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  await sb.from('sync_cursors').upsert({ source, cursor }, { onConflict: 'source' });
 }

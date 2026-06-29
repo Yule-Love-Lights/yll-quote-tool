@@ -78,5 +78,17 @@ describe('planIngest — existing item keeps its contact link', () => {
     const plan = planIngest({ candidates: [], existing, touch: touch({ direction: 'outbound' }), now: at(6 * HOUR) });
     expect(plan.item.status).toBe('handled');
     expect(plan.autoResolved).toBe(true);
+    expect(plan.skip).toBe(false); // existing item → must persist the auto-resolve
+  });
+});
+
+describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
+  it('skips an outbound touch that has no existing item (we cold-contacted; nothing to track)', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch({ direction: 'outbound' }), now: at(HOUR) });
+    expect(plan.skip).toBe(true);
+  });
+  it('never skips an inbound touch', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
+    expect(plan.skip).toBe(false);
   });
 });
