@@ -14,7 +14,16 @@ import { createHmac } from 'crypto';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl, createJobFromQuote, notifyTelegram, getJobWorkOrder } = vi.hoisted(() => ({
+const {
+  sbRef,
+  hl,
+  createJobFromQuote,
+  getJobByQuote,
+  setJobStatus,
+  getInvoiceByJob,
+  notifyTelegram,
+  getJobWorkOrder,
+} = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     sendSms: vi.fn(async () => ({})),
@@ -22,6 +31,10 @@ const { sbRef, hl, createJobFromQuote, notifyTelegram, getJobWorkOrder } = vi.ho
     updateOpportunityStage: vi.fn(async () => ({})),
     configured: { value: true },
   },
+  // #83 balance pay-link branch helpers.
+  getJobByQuote: vi.fn(async (): Promise<unknown> => null),
+  setJobStatus: vi.fn(async (): Promise<unknown> => ({})),
+  getInvoiceByJob: vi.fn(async (): Promise<unknown> => null),
   // The job auto-create (#83 Phase 2). Mocked so the webhook test asserts the
   // wiring (called once on booking, never on replay) without touching the
   // jobs table. Its OWN idempotency is covered in src/lib/jobs.test.ts.
@@ -49,6 +62,12 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/lib/jobs', () => ({
   createJobFromQuote,
+  getJobByQuote,
+  setJobStatus,
+}));
+
+vi.mock('@/lib/invoices', () => ({
+  getInvoiceByJob,
 }));
 
 vi.mock('@/lib/integrations/telegramNotify', () => ({
@@ -89,8 +108,10 @@ function makeSb(quote: Quote, claimRows: Array<{ id: string }>) {
       return builder;
     },
     eq: () => builder,
+    neq: () => builder,
     is: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
+    maybeSingle: async () => ({ data: quote, error: null }),
     then: (resolve: (v: unknown) => void) => {
       const res = isUpdate ? { data: claimRows, error: null } : { data: quote, error: null };
       isUpdate = false;
@@ -340,5 +361,70 @@ describe('Valor webhook — rejects', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
+});
+
+describe('Valor webhook — balance pay-link (#83)', () => {
+  const BAL_ID = '8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60';
+  const BAL_PAYLOAD = { ...APPROVED_PAYLOAD, order_id: `bal_${BAL_ID}` };
+
+  it('marks the invoice paid + closes the job on an approved balance payment (NOT the deposit path)', async () => {
+    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, [{ id: 'inv-1' }]);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+    const res = await POST(signedReq(BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ balance: true, paid: true });
+    expect(updatePayloads[0]).toMatchObject({ status: 'paid', balance: 0 });
+    expect(setJobStatus).toHaveBeenCalledWith('job-1', 'done');
+    expect(createJobFromQuote).not.toHaveBeenCalled(); // never the booking path
+  });
+
+  it('does NOT settle on an underpayment (paid amount < balance)', async () => {
+    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, [{ id: 'inv-1' }]);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.underpaid).toBe(true);
+    expect(updatePayloads).toHaveLength(0); // never settled
+    expect(setJobStatus).not.toHaveBeenCalled();
+  });
+
+  it('ignores a balance webhook for a TEST quote (no real settle)', async () => {
+    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: true }, []);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+    const res = await POST(signedReq(BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ignored).toBe('test-quote');
+    expect(updatePayloads).toHaveLength(0);
+    expect(setJobStatus).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent — a replay on an already-paid invoice does not re-close the job', async () => {
+    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0 });
+
+    const res = await POST(signedReq(BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json.alreadyPaid).toBe(true);
+    expect(updatePayloads).toHaveLength(0);
+    expect(setJobStatus).not.toHaveBeenCalled();
   });
 });

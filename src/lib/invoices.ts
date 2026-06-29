@@ -165,6 +165,149 @@ export async function listInvoices(limit = 500): Promise<InvoiceRow[]> {
   return (data ?? []) as unknown as InvoiceRow[];
 }
 
+// A billing-board row for the operator /admin/invoices list, with the linked
+// quote's customer identity + is_test joined on. Test invoices stay VISIBLE here
+// (badged) — only dashboard metrics exclude test data (#93).
+export type InvoiceAdminCard = {
+  id: string;
+  invoiceNumber: number | null;
+  jobId: string | null;
+  quoteId: string | null;
+  customerName: string | null;
+  customerAddress: string | null;
+  isTest: boolean;
+  total: number;
+  depositApplied: number;
+  balance: number;
+  status: InvoiceStatus;
+  createdAt: string;
+  paidAt: string | null;
+};
+
+/**
+ * The invoices list for the operator billing view (/admin/invoices) — every
+ * invoice (newest first) with each linked quote's customer name/address + is_test
+ * joined. Returns [] when Supabase isn't configured.
+ */
+export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCard[]> {
+  const db = sb();
+  if (!db) return [];
+
+  const invoices = await listInvoices(limit);
+  if (!invoices.length) return [];
+
+  const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
+  const byQuote = new Map<
+    string,
+    { name: string | null; address: string | null; isTest: boolean }
+  >();
+  if (quoteIds.length) {
+    const { data } = await db
+      .from('quotes')
+      .select('id, customer_name, customer_address, is_test')
+      .in('id', quoteIds);
+    for (const q of (data ?? []) as {
+      id: string;
+      customer_name: string | null;
+      customer_address: string | null;
+      is_test: boolean | null;
+    }[]) {
+      byQuote.set(q.id, {
+        name: q.customer_name ?? null,
+        address: q.customer_address ?? null,
+        isTest: !!q.is_test,
+      });
+    }
+  }
+
+  return invoices.map((inv) => {
+    const c = inv.quote_id ? byQuote.get(inv.quote_id) : undefined;
+    return {
+      id: inv.id,
+      invoiceNumber: inv.invoice_number,
+      jobId: inv.job_id,
+      quoteId: inv.quote_id,
+      customerName: c?.name ?? null,
+      customerAddress: c?.address ?? null,
+      isTest: c?.isTest ?? false,
+      total: inv.total,
+      depositApplied: inv.deposit_applied,
+      balance: inv.balance,
+      status: inv.status,
+      createdAt: inv.created_at,
+      paidAt: inv.paid_at,
+    };
+  });
+}
+
+// The full billing detail for one invoice (/admin/invoices/[id]): the invoice, the
+// linked quote's customer identity + is_test, and the linked job's number/status.
+export type InvoiceDetail = {
+  invoice: InvoiceRow;
+  customerName: string | null;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  customerAddress: string | null;
+  isTest: boolean;
+  jobNumber: number | null;
+  jobStatus: string | null;
+};
+
+/**
+ * The billing detail for one invoice — the invoice + the linked quote's customer
+ * identity + is_test + the linked job's number/status. Returns null when Supabase
+ * isn't configured or the invoice is missing.
+ */
+export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null> {
+  const db = sb();
+  if (!db) return null;
+
+  const invoice = await getInvoice(id);
+  if (!invoice) return null;
+
+  let customerName: string | null = null;
+  let customerEmail: string | null = null;
+  let customerPhone: string | null = null;
+  let customerAddress: string | null = null;
+  let isTest = false;
+  if (invoice.quote_id) {
+    const { data } = await db
+      .from('quotes')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test')
+      .eq('id', invoice.quote_id)
+      .maybeSingle<{
+        customer_name: string | null;
+        customer_email: string | null;
+        customer_phone: string | null;
+        customer_address: string | null;
+        is_test: boolean | null;
+      }>();
+    if (data) {
+      customerName = data.customer_name ?? null;
+      customerEmail = data.customer_email ?? null;
+      customerPhone = data.customer_phone ?? null;
+      customerAddress = data.customer_address ?? null;
+      isTest = !!data.is_test;
+    }
+  }
+
+  let jobNumber: number | null = null;
+  let jobStatus: string | null = null;
+  if (invoice.job_id) {
+    const { data } = await db
+      .from('jobs')
+      .select('job_number, status')
+      .eq('id', invoice.job_id)
+      .maybeSingle<{ job_number: number | null; status: string | null }>();
+    if (data) {
+      jobNumber = data.job_number ?? null;
+      jobStatus = data.status ?? null;
+    }
+  }
+
+  return { invoice, customerName, customerEmail, customerPhone, customerAddress, isTest, jobNumber, jobStatus };
+}
+
 // The minimal shapes createInvoiceFromJob reads.
 type JobForInvoice = { id: string; quote_id: string | null; customer_id: string | null };
 type QuoteForInvoice = {
@@ -312,6 +455,85 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
     .single();
   if (error) {
     console.error('setInvoiceStatus error:', error);
+    return null;
+  }
+  return data as unknown as InvoiceRow;
+}
+
+/**
+ * Toggle the manual tax-override on an invoice (SPEC §4.3 — rare exemptions). When
+ * ON, the tax line is dropped from the total; OFF restores it. RE-PRICES from the
+ * source quote.result (not the invoice's possibly-already-zeroed stored values) so
+ * toggling back ON restores the original tax, then re-applies the actual paid
+ * deposit → balance. Also reconciles the invoice STATUS to the new balance (an
+ * exemption that clears the balance settles it paid; restoring tax reopens it),
+ * mirroring the amend re-sync. Returns null if Supabase isn't configured or the
+ * invoice is missing.
+ */
+export async function setInvoiceTaxOverride(
+  id: string,
+  overridden: boolean,
+): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+
+  const invoice = await getInvoice(id);
+  if (!invoice) return null;
+
+  // Re-price from the source quote.result (full, un-overridden breakdown). Fall
+  // back to the invoice's own stored figures if the quote/result is gone.
+  let pricing: InvoicePricingInput = {
+    subtotalBeforeDiscount: invoice.subtotal,
+    discountAmount: invoice.discount,
+    taxAmount: invoice.tax,
+    total: invoice.total,
+  };
+  if (invoice.quote_id) {
+    const { data: quote } = await db
+      .from('quotes')
+      .select('result')
+      .eq('id', invoice.quote_id)
+      .maybeSingle<{ result: InvoicePricingInput | null }>();
+    if (quote?.result) pricing = quote.result;
+  }
+
+  const totals = computeInvoiceTotals(pricing, invoice.deposit_applied, { taxOverridden: overridden });
+  const reconciledStatus: InvoiceStatus =
+    invoice.status === 'cancelled'
+      ? 'cancelled'
+      : totals.balance <= 0
+        ? 'paid'
+        : invoice.status === 'paid'
+          ? 'awaiting_payment'
+          : invoice.status;
+
+  const patch: Record<string, unknown> = {
+    subtotal: totals.subtotal,
+    discount: totals.discount,
+    tax: totals.tax,
+    total: totals.total,
+    deposit_applied: totals.deposit_applied,
+    balance: totals.balance,
+    credit_note: totals.credit_note,
+    tax_overridden: overridden,
+    status: reconciledStatus,
+  };
+  // Keep paid_at consistent with the status (review MEDIUM): stamp it when an
+  // exemption settles the invoice, clear it when restoring tax reopens a paid one.
+  if (reconciledStatus === 'paid' && invoice.status !== 'paid') {
+    patch.paid_at = new Date().toISOString();
+  } else if (reconciledStatus === 'awaiting_payment' && invoice.status === 'paid') {
+    patch.paid_at = null;
+  }
+
+  const { data, error } = await db
+    .from('invoices')
+    .update(patch)
+    .eq('id', id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error) {
+    console.error('setInvoiceTaxOverride error:', error);
     return null;
   }
   return data as unknown as InvoiceRow;

@@ -331,6 +331,36 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // Approve click). The customer gets a receipt; staff get a "deposit received"
 // alert with the txn details for reconciliation against the Valor portal.
 
+// ── Amendment notice (ledger #83 Phase 4) ───────────────────────────────────
+// Sent to the customer (staff-initiated, optional — the SPEC §4.4 re-consent
+// default) when a booked order is amended to a new total.
+export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
+
+export function amendmentSmsBody(firstName: string, newBalanceUsd: number, phone: string): string {
+  return `Hi ${firstName}! Your Yule Love Lights order was updated — your remaining balance is now ${usd(newBalanceUsd)}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+}
+
+export function amendmentEmailHtml(input: {
+  firstName: string;
+  newTotalUsd: number;
+  newBalanceUsd: number;
+  portalUrl: string;
+  phone: string;
+}): string {
+  const name = escapeHtml(input.firstName);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
+    `</table>`,
+    `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
+    `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
+    `<p>— Yule Love Lights</p>`,
+  ].join('');
+}
+
 export const RECEIPT_EMAIL_SUBJECT = 'Your deposit is confirmed — you’re booked! 🎄';
 
 // Customer SMS confirming the deposit posted. Whole-dollar amount; points them

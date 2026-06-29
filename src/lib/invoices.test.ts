@@ -14,7 +14,10 @@ import {
   computeInvoiceTotals,
   createInvoiceFromJob,
   getInvoiceByJob,
+  getInvoiceDetail,
+  listInvoicesForAdmin,
   setInvoiceStatus,
+  setInvoiceTaxOverride,
 } from './invoices';
 
 // ─── In-memory Supabase fake ────────────────────────────────────────────────
@@ -82,6 +85,10 @@ function makeFakeSupabase(initial: { jobs?: Row[]; quotes?: Row[]; invoices?: Ro
       },
       eq(col: string, val: unknown) {
         state.filters.push((r) => r[col] === val);
+        return builder;
+      },
+      in(col: string, vals: unknown[]) {
+        state.filters.push((r) => vals.includes(r[col]));
         return builder;
       },
       order(col: string, opts?: { ascending?: boolean }) {
@@ -303,7 +310,7 @@ describe('setInvoiceStatus', () => {
   it('throws on an illegal transition', async () => {
     const fake = makeFakeSupabase({ invoices: [{ id: 'i1', status: 'paid', paid_at: 'x' }] });
     sbRef.current = fake.client;
-    await expect(setInvoiceStatus('i1', 'awaiting_payment')).rejects.toThrow(/illegal transition/);
+    await expect(setInvoiceStatus('i1', 'draft')).rejects.toThrow(/illegal transition/);
   });
 });
 
@@ -313,5 +320,106 @@ describe('getInvoiceByJob', () => {
   it('returns null safely when Supabase is unconfigured', async () => {
     sbRef.current = null;
     expect(await getInvoiceByJob('j1')).toBeNull();
+  });
+});
+
+describe('listInvoicesForAdmin', () => {
+  it('joins customer + is_test from the linked quote (newest first)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', invoice_number: 1000, job_id: 'j1', quote_id: 'q1', total: 1000, deposit_applied: 500, balance: 500, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null },
+        { id: 'i2', invoice_number: 1001, job_id: 'j2', quote_id: 'q2', total: 2000, deposit_applied: 1000, balance: 0, credit_note: 0, status: 'paid', created_at: '2026-06-01', paid_at: '2026-06-03' },
+      ],
+      quotes: [
+        { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false },
+        { id: 'q2', customer_name: 'Test Bob', customer_address: '2 Oak', is_test: true },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const cards = await listInvoicesForAdmin();
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({ id: 'i1', customerName: 'Alice', isTest: false, balance: 500, status: 'draft' });
+    expect(cards[1]).toMatchObject({ id: 'i2', customerName: 'Test Bob', isTest: true, status: 'paid' });
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listInvoicesForAdmin()).toEqual([]);
+  });
+});
+
+describe('setInvoiceTaxOverride', () => {
+  const quote = {
+    id: 'q1',
+    result: { subtotalBeforeDiscount: 4500, discountAmount: 0, taxAmount: 393.75, total: 4893.75 },
+  };
+
+  it('drops the tax line + reprices the balance when overridden ON', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'draft', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    expect(inv!.tax).toBe(0);
+    expect(inv!.total).toBe(4500);
+    expect(inv!.balance).toBe(2053.12);
+    expect(inv!.tax_overridden).toBe(true);
+  });
+
+  it('restores tax from the source quote.result when toggled OFF', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 0, total: 4500, balance: 2053.12, credit_note: 0, status: 'draft', tax_overridden: true },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', false);
+    expect(inv!.tax).toBe(393.75);
+    expect(inv!.total).toBe(4893.75);
+    expect(inv!.balance).toBe(2446.87);
+    expect(inv!.tax_overridden).toBe(false);
+  });
+
+  it('returns null when the invoice is missing', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await setInvoiceTaxOverride('nope', true)).toBeNull();
+  });
+});
+
+describe('getInvoiceDetail', () => {
+  it('returns the invoice + joined customer + linked job number/status', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: 'j1', quote_id: 'q1', total: 1000, balance: 500, status: 'draft' }],
+      quotes: [{ id: 'q1', customer_name: 'Alice', customer_email: 'a@x.com', customer_phone: '555-0100', customer_address: '1 Main St', is_test: false }],
+      jobs: [{ id: 'j1', job_number: 1000, status: 'requires_invoicing' }],
+    });
+    sbRef.current = fake.client;
+
+    const d = await getInvoiceDetail('i1');
+    expect(d).toMatchObject({
+      invoice: { id: 'i1' },
+      customerName: 'Alice',
+      customerEmail: 'a@x.com',
+      isTest: false,
+      jobNumber: 1000,
+      jobStatus: 'requires_invoicing',
+    });
+  });
+
+  it('returns null when the invoice is missing', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await getInvoiceDetail('nope')).toBeNull();
+  });
+
+  it('returns null when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await getInvoiceDetail('i1')).toBeNull();
   });
 });
