@@ -28,6 +28,10 @@ export type StickyBottomBarProps = {
   /** #38 — the frozen deposit amount from the approval snapshot (what /pay will
    *  actually charge). Shown in the "complete your deposit" bar so it matches. */
   approvedDepositUsd?: number;
+  /** #93 — this is a TEST quote. The deposit step becomes "Simulate deposit
+   *  paid" (→ /simulate-deposit, no Valor) and the deposit flow is available
+   *  regardless of whether the real Valor checkout is enabled. */
+  isTest?: boolean;
 };
 
 export function StickyBottomBar({
@@ -36,6 +40,7 @@ export function StickyBottomBar({
   booked = false,
   checkoutEnabled = false,
   approvedDepositUsd,
+  isTest = false,
 }: StickyBottomBarProps) {
   const {
     activeName,
@@ -66,6 +71,11 @@ export function StickyBottomBar({
   // #83 Slice B — the Decline / Request-changes modal (null = none open).
   const [responseIntent, setResponseIntent] = useState<ResponseIntent | null>(null);
   const router = useRouter();
+
+  // #93 — a test quote ALWAYS uses the deposit-checkout flow (which posts to
+  // /simulate-deposit), even when the real Valor checkout is off. For a real
+  // quote this is exactly `checkoutEnabled`, so existing behavior is unchanged.
+  const depositFlow = checkoutEnabled || isTest;
 
   // Fire a one-shot "interested" signal when the customer DELIBERATELY engages
   // the Approve button — a sustained hover (desktop) or a focus/tap (mobile) —
@@ -137,7 +147,7 @@ export function StickyBottomBar({
       // route straight to the celebration page (today's behavior).
       if (res.status === 409) {
         setShowSign(false);
-        if (checkoutEnabled) {
+        if (depositFlow) {
           setShowCheckout(true);
           setSubmitting(false);
         } else {
@@ -149,10 +159,11 @@ export function StickyBottomBar({
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(body.error ?? `Request failed: ${res.status}`);
       }
-      // Approval recorded. Close the sign step, then ON → open the embedded 50%
-      // deposit checkout; OFF → celebration page (the pre-Valor placeholder flow).
+      // Approval recorded. Close the sign step, then deposit flow → open the
+      // embedded 50% deposit checkout (real Valor, or simulated for a test
+      // quote); otherwise → celebration page (the pre-Valor placeholder flow).
       setShowSign(false);
-      if (checkoutEnabled) {
+      if (depositFlow) {
         setShowCheckout(true);
         setSubmitting(false);
       } else {
@@ -175,12 +186,12 @@ export function StickyBottomBar({
   // #38 — approved but the deposit isn't paid yet (online checkout on). Show a
   // "complete your deposit" bar that re-opens the hosted checkout. The selection
   // is already frozen, so we go straight to the checkout (no re-approve).
-  const pendingPayment = approved && !booked && checkoutEnabled;
+  const pendingPayment = approved && !booked && depositFlow;
   if (pendingPayment) {
     return (
       <>
         {showCheckout && (
-          <DepositCheckout quoteId={quoteId} onClose={() => setShowCheckout(false)} />
+          <DepositCheckout quoteId={quoteId} isTest={isTest} onClose={() => setShowCheckout(false)} />
         )}
         <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
           <div className="flex items-baseline gap-2 min-w-0">
@@ -188,16 +199,16 @@ export function StickyBottomBar({
               {formatUsd(approvedDepositUsd ?? currentDeposit)}
             </span>
             <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
-              deposit due to lock in your install
+              {isTest ? 'simulated deposit to test the booking flow' : 'deposit due to lock in your install'}
             </span>
           </div>
           <button
             type="button"
             onClick={() => setShowCheckout(true)}
-            aria-label="Complete your deposit"
+            aria-label={isTest ? 'Simulate deposit paid' : 'Complete your deposit'}
             className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
           >
-            Complete deposit
+            {isTest ? 'Simulate deposit paid' : 'Complete deposit'}
             <ArrowRight className="w-4 h-4" aria-hidden />
           </button>
         </div>
@@ -216,7 +227,7 @@ export function StickyBottomBar({
             ✓ You&apos;re booked
           </span>
           <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
-            {checkoutEnabled ? 'your deposit is in' : "we'll be in touch about your deposit"}
+            {depositFlow ? 'your deposit is in' : "we'll be in touch about your deposit"}
           </span>
         </div>
         <button
@@ -235,7 +246,7 @@ export function StickyBottomBar({
   return (
     <>
       {showCheckout && (
-        <DepositCheckout quoteId={quoteId} onClose={() => setShowCheckout(false)} />
+        <DepositCheckout quoteId={quoteId} isTest={isTest} onClose={() => setShowCheckout(false)} />
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
           runs the existing approve POST with it. The signature is required

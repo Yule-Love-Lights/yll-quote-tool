@@ -6,14 +6,40 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Build a thenable query builder whose terminal `.limit()` resolves to the
 // given Supabase-shaped { data, error }. Mirrors the chain in queries.ts:
-// .from().select().order().limit()
+// .from().select().eq().order().limit(). `eq` is captured so tests can assert
+// the is_test isolation filter (ledger #93).
 function makeClient(resolved: { data: unknown; error: unknown }) {
+  const eq = vi.fn(() => builder);
   const builder = {
     select: vi.fn(() => builder),
+    eq,
     order: vi.fn(() => builder),
     limit: vi.fn(() => Promise.resolve(resolved)),
   };
-  return { from: vi.fn(() => builder) };
+  return { from: vi.fn(() => builder), eq };
+}
+
+// Two-table fake for listJobsForWorkflowBoard: jobs resolve at `.limit()`, the
+// quotes lookup resolves at `.in()`. Models the separate-query is_test derive.
+function makeBoardClient(jobs: unknown[], quotes: Array<{ id: string; is_test: boolean }>) {
+  return {
+    from(table: string) {
+      if (table === 'jobs') {
+        const b = {
+          select: () => b,
+          order: () => b,
+          limit: () => Promise.resolve({ data: jobs, error: null }),
+        };
+        return b;
+      }
+      const b = {
+        select: () => b,
+        in: (_col: string, ids: string[]) =>
+          Promise.resolve({ data: quotes.filter((q) => ids.includes(q.id)), error: null }),
+      };
+      return b;
+    },
+  };
 }
 
 let client: ReturnType<typeof makeClient> | null = null;
@@ -26,6 +52,7 @@ vi.mock('@/lib/supabase', () => ({
 import {
   listQuotesForDashboardResult,
   listQuotesForDashboard,
+  listJobsForWorkflowBoard,
 } from './queries';
 
 beforeEach(() => {
@@ -85,5 +112,31 @@ describe('listQuotesForDashboard (backward-compatible wrapper)', () => {
   it('returns the rows on success', async () => {
     client = makeClient({ data: [{ id: 'a' }], error: null });
     expect(await listQuotesForDashboard(500)).toHaveLength(1);
+  });
+});
+
+describe('Test Quote isolation (#93)', () => {
+  it('the dashboard chokepoint filters is_test = false', async () => {
+    client = makeClient({ data: [], error: null });
+    await listQuotesForDashboardResult(500);
+    // THE single exclusion point — every dashboard metric inherits it.
+    expect(client!.eq).toHaveBeenCalledWith('is_test', false);
+  });
+
+  it('listJobsForWorkflowBoard drops jobs whose quote is a test quote', async () => {
+    client = makeBoardClient(
+      [
+        { status: 'to_schedule', line_items: [], quote_id: 'real' },
+        { status: 'to_schedule', line_items: [], quote_id: 'test' },
+        { status: 'to_schedule', line_items: [], quote_id: null }, // kept (no quote)
+      ],
+      [
+        { id: 'real', is_test: false },
+        { id: 'test', is_test: true },
+      ],
+    ) as unknown as ReturnType<typeof makeClient>;
+    const jobs = await listJobsForWorkflowBoard();
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((j) => (j as { quote_id?: string }).quote_id)).not.toContain('test');
   });
 });

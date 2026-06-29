@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, isSupabaseConfigured } from '@/lib/supabase';
-import { deleteAllQuotes, listQuotes } from '@/lib/quotes';
+import { deleteAllQuotes, deleteTestQuotes, listQuotes } from '@/lib/quotes';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
@@ -17,6 +17,10 @@ export const runtime = 'nodejs';
 // a stray/forged request can't one-shot the whole table. The caller must echo
 // this exact phrase.
 const DELETE_ALL_CONFIRM = 'DELETE ALL QUOTES';
+// #93 — the scoped "Delete test data" wipe (only is_test quotes). A DISTINCT
+// confirmation phrase so a test-cleanup request can never be mistaken for the
+// full-table wipe, and vice versa.
+const DELETE_TEST_CONFIRM = 'DELETE TEST QUOTES';
 
 export async function GET() {
   // Operator-only: this returns every customer's quote (PII). Gating it used to
@@ -34,6 +38,9 @@ export async function GET() {
 }
 
 // Bulk delete — operator-only PLUS an explicit confirmation header. Returns count.
+// #93 — `?scope=test` deletes ONLY test quotes (the "Delete test data" button);
+// any other scope is the full-table wipe. Each scope has its own confirmation
+// phrase so they can't be confused.
 export async function DELETE(req: NextRequest) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -43,17 +50,20 @@ export async function DELETE(req: NextRequest) {
       { status: 503 },
     );
   }
-  // Audit fix (g29-route): second factor for the full-PII wipe — the caller must
+  const isTestScope = req.nextUrl.searchParams.get('scope') === 'test';
+  const confirmPhrase = isTestScope ? DELETE_TEST_CONFIRM : DELETE_ALL_CONFIRM;
+  // Audit fix (g29-route): second factor for the wipe — the caller must
   // explicitly confirm intent, not just be an authenticated operator.
-  if (req.headers.get('x-confirm-delete-all') !== DELETE_ALL_CONFIRM) {
+  if (req.headers.get('x-confirm-delete-all') !== confirmPhrase) {
+    const label = isTestScope ? 'Test-data delete' : 'Bulk delete';
     return NextResponse.json(
-      { error: `Bulk delete requires confirmation: send header x-confirm-delete-all: ${DELETE_ALL_CONFIRM}` },
+      { error: `${label} requires confirmation: send header x-confirm-delete-all: ${confirmPhrase}` },
       { status: 428 }, // Precondition Required
     );
   }
   try {
-    const count = await deleteAllQuotes();
-    return NextResponse.json({ deleted: count });
+    const count = isTestScope ? await deleteTestQuotes() : await deleteAllQuotes();
+    return NextResponse.json({ deleted: count, scope: isTestScope ? 'test' : 'all' });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Delete failed';
     return NextResponse.json({ error: msg }, { status: 500 });
