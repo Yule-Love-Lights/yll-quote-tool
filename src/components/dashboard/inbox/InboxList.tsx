@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
+import { claimState } from '@/lib/dashboard/inbox/assignment';
 
 const SOURCE_LABEL: Record<string, string> = {
   ghl: 'GHL',
@@ -21,9 +22,18 @@ function contactName(item: OpenInboxItem): string {
   return item.contact?.displayName || item.contact?.email || item.contact?.phone || 'Unknown contact';
 }
 
-export function InboxList({ initialItems, nowMs }: { initialItems: OpenInboxItem[]; nowMs: number }) {
+export function InboxList({
+  initialItems,
+  nowMs,
+  currentOperatorId = null,
+}: {
+  initialItems: OpenInboxItem[];
+  nowMs: number;
+  currentOperatorId?: string | null;
+}) {
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [claimBusy, setClaimBusy] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
   // from an interval callback, so render stays pure and "waiting Xm" stays live.
   const [now, setNow] = useState<number>(nowMs);
@@ -74,6 +84,31 @@ export function InboxList({ initialItems, nowMs }: { initialItems: OpenInboxItem
     }
   }, []);
 
+  const claim = useCallback(
+    async (contactId: string, action: 'claim' | 'release') => {
+      setClaimBusy(contactId);
+      // Optimistic: assignment is per-contact, so update every item for it.
+      setItems((prev) =>
+        prev.map((i) =>
+          i.contactId === contactId ? { ...i, assignedTo: action === 'claim' ? currentOperatorId : null } : i,
+        ),
+      );
+      try {
+        const res = await fetch('/api/dashboard/claim', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ contactId, action }),
+        });
+        if (!res.ok) await refresh(); // resync the true assignment if it was rejected
+      } catch {
+        await refresh();
+      } finally {
+        setClaimBusy(null);
+      }
+    },
+    [currentOperatorId, refresh],
+  );
+
   if (items.length === 0) {
     return (
       <p className="text-sm" style={{ color: 'var(--op-text-2)' }}>
@@ -89,6 +124,8 @@ export function InboxList({ initialItems, nowMs }: { initialItems: OpenInboxItem
         const waiting = item.lastMessageAt
           ? formatWaiting(now - new Date(item.lastMessageAt).getTime())
           : '';
+        const cs = claimState(item.assignedTo, currentOperatorId);
+        const cid = item.contactId;
         return (
           <li
             key={item.id}
@@ -123,6 +160,47 @@ export function InboxList({ initialItems, nowMs }: { initialItems: OpenInboxItem
                   {esc.label ? `${esc.label} · ` : ''}
                   {waiting ? `waiting ${waiting}` : ''}
                 </p>
+                {cid && (
+                  <p className="text-xs mt-1">
+                    {cs === 'mine' ? (
+                      <span style={{ color: 'var(--brand-evergreen-3)' }}>
+                        ✓ You’ve got this ·{' '}
+                        <button
+                          type="button"
+                          disabled={claimBusy === cid}
+                          onClick={() => claim(cid, 'release')}
+                          className="underline disabled:opacity-50"
+                          style={{ color: 'var(--op-text-2)' }}
+                        >
+                          release
+                        </button>
+                      </span>
+                    ) : cs === 'other' ? (
+                      <span style={{ color: 'var(--op-text-2)' }}>
+                        Claimed ·{' '}
+                        <button
+                          type="button"
+                          disabled={claimBusy === cid}
+                          onClick={() => claim(cid, 'claim')}
+                          className="underline disabled:opacity-50"
+                          style={{ color: 'var(--op-text-2)' }}
+                        >
+                          take over
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={claimBusy === cid}
+                        onClick={() => claim(cid, 'claim')}
+                        className="underline disabled:opacity-50"
+                        style={{ color: 'var(--brand-evergreen-3)' }}
+                      >
+                        Claim
+                      </button>
+                    )}
+                  </p>
+                )}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button

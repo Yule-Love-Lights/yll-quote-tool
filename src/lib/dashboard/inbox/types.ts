@@ -73,6 +73,10 @@ export type OpenInboxItem = {
   preview: string | null;
   subject: string | null;
   escalationLevel: number;
+  /** The linked contact id (for claim/assign actions); null on an unlinked item. */
+  contactId: string | null;
+  /** The contact's current assignee (auth.users id), or null when unclaimed. */
+  assignedTo: string | null;
   contact: { displayName: string | null; email: string | null; phone: string | null } | null;
 };
 

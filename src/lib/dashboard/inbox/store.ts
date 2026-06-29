@@ -311,8 +311,8 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const { data, error } = await sb
     .from('inbox_items')
     .select(
-      'id, source, channel, direction, last_message_at, preview, subject, escalation_level, ' +
-        'dashboard_contacts ( display_name, primary_email, primary_phone )',
+      'id, source, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, ' +
+        'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
     )
     .eq('status', 'unresponded')
     .order('last_message_at', { ascending: false })
@@ -329,6 +329,8 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       preview: (row.preview as string | null) ?? null,
       subject: (row.subject as string | null) ?? null,
       escalationLevel: (row.escalation_level as number | null) ?? 0,
+      contactId: (row.contact_id as string | null) ?? null,
+      assignedTo: (c?.assigned_to as string | null) ?? null,
       contact: c
         ? {
             displayName: (c.display_name as string | null) ?? null,
@@ -339,6 +341,27 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     };
   });
   return { ok: true, items };
+}
+
+// ─── Claim / assign (shared-queue "I've got this", Phase 1.5) ───────────────
+// Assignment lives on the contact (you own the customer, not one message).
+
+export async function claimContact(contactId: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { error } = await sb.from('dashboard_contacts').update({ assigned_to: operatorId }).eq('id', contactId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'assigned', contact_id: contactId, detail: { assignedTo: operatorId } });
+  return { ok: true };
+}
+
+export async function releaseContact(contactId: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { error } = await sb.from('dashboard_contacts').update({ assigned_to: null }).eq('id', contactId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'assigned', contact_id: contactId, detail: { released: true } });
+  return { ok: true };
 }
 
 // ─── Handled write-back support ─────────────────────────────────────────────
