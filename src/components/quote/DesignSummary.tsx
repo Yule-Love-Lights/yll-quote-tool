@@ -14,6 +14,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { projectScene } from '@/lib/design/projectScene';
 import { calculateQuote, type LineItem } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
+import { offeredFromLists, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable, type UnfulfillableItem } from '@/lib/inventory/detectUnfulfillable';
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -26,6 +28,7 @@ type Props = {
 
 export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
   const [lines, setLines] = useState<LineItem[] | null>(null);
+  const [unfulfillable, setUnfulfillable] = useState<UnfulfillableItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,10 +36,17 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/designs/${designId}`);
+      // Load the design + the offered-colors (from bindings) together; the latter
+      // drives the #92 "we can't supply this" flags.
+      const [res, offRes] = await Promise.all([
+        fetch(`/api/designs/${designId}`),
+        fetch('/api/inventory/offered-colors'),
+      ]);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Could not load the design');
       const scene: Scene = data?.design?.scene ?? { yardsticks: [], items: [] };
+      const offered: OfferedColorLists | null = offRes.ok ? await offRes.json().catch(() => null) : null;
+      setUnfulfillable(detectUnfulfillable(scene.items, offeredFromLists(offered)));
       const p = projectScene(scene);
       // Price ONLY the per-unit projection — zero roofline/fees — so the line
       // items here are exactly the design-driven part of the future quote.
@@ -89,6 +99,20 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
         </button>
       </div>
       {error && <p className="text-xs text-red-600">{error}</p>}
+      {unfulfillable.length > 0 && (
+        <div className="mb-2 rounded border border-red-300 bg-red-50 p-2">
+          <p className="text-[11px] font-semibold text-red-700 uppercase tracking-wide mb-1">
+            ⚠️ {unfulfillable.length} item{unfulfillable.length === 1 ? '' : 's'} we can&apos;t supply — fix before sending
+          </p>
+          <ul className="space-y-0.5">
+            {unfulfillable.map((u) => (
+              <li key={u.sceneItemId} className="text-xs text-red-700">
+                {u.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {lines && lines.length === 0 && !error && (
         <p className="text-xs text-gray-400">
           No billable items drawn yet — minis, spritzers, wreaths, garland, and bows you place on the

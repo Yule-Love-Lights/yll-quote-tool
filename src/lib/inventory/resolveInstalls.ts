@@ -54,6 +54,32 @@ export function offeredFromBindings(bindings: Bindings | null | undefined): Offe
   };
 }
 
+// The offered solids as plain arrays per type — the serializable shape a client
+// (the builder / "From your design") fetches, then rebuilds into OfferedColors via
+// offeredFromLists. Built server-side from the bindings.
+export type OfferedColorLists = { mini: string[]; spritzer: Partial<Record<QuoteSpritzerSize, string[]>> };
+
+const PALETTE_IDS = DEFAULT_COLORS.filter((c) => c.id !== 'black').map((c) => c.id);
+const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
+
+export function offeredColorLists(bindings: Bindings | null | undefined): OfferedColorLists {
+  const o = offeredFromBindings(bindings);
+  return {
+    mini: PALETTE_IDS.filter((id) => o.miniHas(id)),
+    spritzer: Object.fromEntries(SPRITZER_SIZES.map((s) => [s, PALETTE_IDS.filter((id) => o.spritzerHas(id, s))])),
+  };
+}
+
+// Rebuild OfferedColors predicates from the serialized lists (client-side).
+export function offeredFromLists(lists: OfferedColorLists | null | undefined): OfferedColors {
+  const mini = new Set(lists?.mini ?? []);
+  const spritzer = lists?.spritzer ?? {};
+  return {
+    miniHas: (id) => mini.has(id),
+    spritzerHas: (id, size) => (spritzer[size] ?? []).includes(id),
+  };
+}
+
 export type InstallDecision =
   // Order this strand SKU directly; render the pattern intermixed (colorIds).
   | { kind: 'strand'; sku: string; colorIds: string[]; patternId: string }

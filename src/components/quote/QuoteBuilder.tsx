@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type {
   QuoteResult,
   QuoteInputs,
@@ -30,6 +30,8 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
+import { offeredFromLists, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -196,6 +198,22 @@ export default function QuoteBuilder({
   // True while a per-item recommended write-back (scene PUT) is in flight, so
   // the checkboxes disable to prevent racing PUTs.
   const [recommendBusy, setRecommendBusy] = useState(false);
+  // #92 — offered solid colors per item type (from the bindings), fetched once.
+  // With the live design scene it flags items we can't supply → blocks Send.
+  const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const unfulfillable = useMemo(
+    () => detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)),
+    [breakdownScene, offeredColors],
+  );
+  const hasUnfulfillable = unfulfillable.length > 0;
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -2629,6 +2647,12 @@ export default function QuoteBuilder({
               </div>
             )}
 
+            {hasUnfulfillable && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                ⚠️ This design has {unfulfillable.length} item{unfulfillable.length === 1 ? '' : 's'} we can&apos;t supply — see the
+                red notes in &ldquo;From your design&rdquo; above. Recolor or remove {unfulfillable.length === 1 ? 'it' : 'them'} before sending.
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -2636,7 +2660,7 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending'}
+                disabled={sendStatus === 'sending' || hasUnfulfillable}
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
