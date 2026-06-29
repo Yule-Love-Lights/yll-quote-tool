@@ -1,193 +1,187 @@
-# Portal package tiers — coverage-based ladder redesign
+# Portal package tiers — coverage ladder redesign
 
-> Status: DRAFT for review (Naldo + Jason). 2026-06-29.
+> Status: DRAFT v2 for review (Naldo + Jason). 2026-06-29.
 > Area: `src/lib/portal/derivePackages.ts` (Jason's pricing/portal area). Pure functions, no DB/migration.
 
 ## Problem
 
-The portal auto-derives up to four tappable "packages" (Tier 1/2/3 + Custom) from a
+The portal auto-derives up to four tappable packages (Tier 1/2/3 + Custom) from a
 single quote's line items (`derivePackages.ts`). Today's rules make the tiers
 collapse together on common quotes:
 
-- **Tier 1 (Classic Glow)** = Santa's roofline + the cheapest items needed to clear
-  the $1,000 minimum. On a modest quote this grabs **every** item just to reach $1k.
-- **Tier 2 (Full Festive)** = Tier 1's *exact item set* with Santa's roofline swapped
-  for Gingerbread. So it differs from Tier 1 by **only the roofline price**.
-- **Tier 3 (The Full Yule)** = everything, on Gingerbread.
+- **Tier 1 (Classic Glow)** = entry roofline + the cheapest items needed to **cross**
+  the $1,000 minimum. The crossing item is *included*, so on a modest quote Tier 1
+  grabs an expensive item (e.g. the wreath) and ends up holding **almost everything**.
+- **Tier 2 (Full Festive)** = Tier 1's exact item set with the roofline swapped to
+  Gingerbread.
+- **Tier 3 (The Full Yule)** = everything on Gingerbread.
 
-Because Tier 1 already pulls in every item on a modest quote, **Tier 2 and Tier 3
-come out byte-identical** — the customer sees two cards with the same price and the
-same contents. There is a de-dupe guard for Tier 2-vs-Tier 1, but none for
-Tier 2-vs-Tier 3.
+Because Tier 1 already pulled in nearly every item, **Tier 2 and Tier 3 come out
+identical** — same price, same contents. (There's a de-dupe guard for Tier 2-vs-Tier 1,
+but none for Tier 2-vs-Tier 3.)
 
 ### Observed (real quote `c26cdb75…`)
 
-Items: Santa's roofline $320, Gingerbread $840, 3× bush $70, 1× bush $105,
-3× spritzer $95, 1× wreath $285 (no trees/garland/columns/railings).
+Items: Santa's roofline $320, Gingerbread $840, 4× bush ($70/$70/$70/$105 = $315),
+3× spritzer ($95 = $285), 1× wreath $285. Extras total $885.
 
 | Card | Price (tax-in) | Contents |
 |---|---|---|
-| Tier 1 — Classic Glow | $1,310.44 | Santa's + all extras |
+| Tier 1 — Classic Glow | $1,310.44 | Santa's + **all** extras (the wreath got pulled in to cross $1k) |
 | Tier 2 — Full Festive | **$1,875.94** | Gingerbread + all extras |
 | Tier 3 — The Full Yule | **$1,875.94** | Gingerbread + all extras — **identical to Tier 2** |
 
 ## Goal
 
-Make the tiers a genuine good/better/best **by coverage** — "how much of your home is
-lit" — that are always meaningfully different, and never show two duplicate cards.
-When a quote is genuinely too small to support three distinct levels, show fewer
-distinct cards (plus Custom) rather than padding a fake third tier.
+Make the tiers a genuine good/better/best by **coverage** ("how much of your home is
+lit") that are always meaningfully different, and never show two duplicate cards. The
+root fix: **Tier 1 should land near $1,000 with the cheaper items and hold the pricier
+items back**, so those pricier items can differentiate the higher tiers.
 
 ## Decisions (locked with Naldo)
 
-1. **Model:** good/better/best by **coverage**.
+1. **Model:** good/better/best by **coverage**, built **cheapest-first** (cheap items
+   fill the low tier; pricier items step up the ladder). No fixed "accent vs showpiece"
+   buckets — the price ordering does the work.
 2. **Roofline:** Santa's (front edge) anchors Tier 1; Gingerbread (front + ridge +
-   sides) anchors Tier 2 & Tier 3. The Tier 1 → Tier 2 step upgrades the roofline.
-3. **Accent split (Balanced — Naldo's default; freely adjustable):**
-   - **Accents** (enter at Tier 2): bush, spritzer, wreath, stake-lighting (pathway),
-     ridge.
-   - **Showpieces** (enter at Tier 3): tree, garland, column, railing, bow.
-4. **Small quotes:** showing **2 distinct cards + Custom** (instead of a forced thin
-   third) is acceptable.
+   sides) anchors Tiers 2 & 3. The Tier 1 → Tier 2 step upgrades the roofline.
+3. **Tier 1 target:** aim for ~$1,000 but **allow only a small overshoot** to include
+   the item that crosses the line. If the crossing item is big (e.g. the $285 wreath),
+   **hold it back** and let Tier 1 land a little under $1,000 — the customer adds an
+   item to approve (the existing gate already nudges "+$X to approve"). Overshoot cap is
+   a single tunable, default **15%** ($1,150).
+4. **Spacing:** when a quote is genuinely too small to support three distinct levels,
+   show **fewer distinct cards + Custom** rather than padding a fake third.
 
 ## Design
 
-### Element buckets (by line-item `kind`)
+All within `derivePackages.ts`. The non-roofline line items ("extras") are sorted
+**cheapest-first**; the tiers are three cumulative cutoffs along that list, each pinned
+to a price target.
+
+### Constants
 
 ```
-ROOFLINE   : roofline (Santa's id, Gingerbread id)
-ACCENTS    : bush, spritzer, wreath, stake-lighting, ridge
-SHOWPIECES : tree, garland, column, railing, bow
+MIN                 = BUSINESS_RULES.minimumQuoteAmount   // $1,000 (pre-tax)
+TIER1_OVERSHOOT_PCT = 0.15                                // Tier 1 may reach 1.15·MIN
 ```
 
-Unknown/other kinds default to **SHOWPIECE** (they appear only in the full tier, so a
-new element type never silently lands in the middle tier before it's classified).
-The exact kind→bucket map is a single named constant so Naldo can move items later
-without touching logic.
+### The three cutoffs
 
-### The cards
+- **Tier 1 — Classic Glow** = **Santa's roofline + cheapest extras toward ~$1,000.**
+  Walk the cheapest-first extras, adding while the running subtotal is below MIN. For
+  the item that would cross MIN, include it **only if** the result stays ≤ `MIN ×
+  (1 + TIER1_OVERSHOOT_PCT)`; otherwise stop. Big items are held back; Tier 1 lands at
+  or just over $1,000 (occasionally just under, when every remaining item is big).
+- **Tier 3 — The Full Yule** = **Gingerbread roofline + every extra** (the whole design).
+- **Tier 2 — Full Festive** = **Gingerbread roofline + cheapest extras up to the
+  midpoint** between Tier 1's extras-value and the full extras-value (same overshoot
+  grace). This guarantees a genuine middle: on a small quote it's Tier 1's items on the
+  upgraded roofline; on a big quote it adds a real middle chunk of extras.
 
-| Card | Contents | Story |
-|---|---|---|
-| **Tier 1 — Classic Glow** | Santa's roofline + cheapest **accents** needed to clear the $1,000 gate | The clean outline |
-| **Tier 2 — Full Festive** | Gingerbread roofline + **all accents** (no showpieces) | The fuller look |
-| **Tier 3 — The Full Yule** | Gingerbread + **everything** (accents + showpieces) | The whole design |
-| **Custom / Our Recommendation** | unchanged (staff-recommended set, or empty "Build Your Own") | Build your own |
-
-### The structural fix
-
-The defect is that today Tier 2 is "Tier 1 + roofline swap" and Tier 3 is
-"everything," so they converge. The new rule decouples them:
-
-- **Tier 2 = roofline + accents only** (explicitly **excludes** showpieces).
-- **Tier 3 = everything.**
-
-So **Tier 2 ≠ Tier 3 whenever the quote contains any showpiece.** When it doesn't,
-the spacing guarantee (below) drops the duplicate instead of showing it twice.
-
-### $1,000 gate handling (Tier 1 must be approvable)
-
-Tier 1 starts as Santa's roofline alone. If that's below the $1,000 minimum, top it up
-with the **cheapest accents first** until it clears the gate — accents only, so
-Tier 1 ⊆ Tier 2 (the coverage story stays nested). If even *all* accents can't reach
-$1,000, Tier 1 stays as-is (Santa's + all accents) and the existing approval gate
-shows the customer "add $X to approve"; the spacing guarantee will usually collapse
-it against Tier 2 anyway. Sub-$1,000 whole quotes keep the existing waiver (gate = 0).
+Then each tier is priced with `priceSelection` + the staff-default rush/takedown state
+(unchanged helpers), and **Custom (D)** is appended via `applyOurRecommendation`
+(unchanged).
 
 ### Spacing guarantee (no duplicate cards)
 
-After building the three raw tiers:
-
-1. **De-dupe by item set:** if two tiers resolve to the same set of line-item ids,
-   keep the *lower* one and drop the higher (e.g. no showpieces → Tier 3 == Tier 2 →
-   drop Tier 3). This is the core fix.
-2. **Optional near-dupe collapse (tunable, default off):** a single
-   `TIER_MIN_GAP_PCT` constant. When > 0, also drop a tier whose total is within that
-   percentage of the tier below it. Default `0` (exact-set de-dupe only) so behavior
-   is predictable; Naldo can raise it later if near-identical prices still feel weak.
-3. Always keep **Custom (D)**.
-
-The portal already numbers visible tiers by **position** ("Tier 1/2/3"), so dropping a
-card renumbers the rest automatically — no separate renumber step.
+After building, **de-dupe by item set**: if two tiers resolve to the same set of
+line-item ids, keep the lower-priced one and drop the other. So a quote with too little
+to differentiate three levels shows 2 distinct cards + Custom instead of a duplicate.
+The portal already numbers visible tiers by **position**, so dropping a card renumbers
+the rest automatically.
 
 ### What does NOT change
 
-- How selecting a package works downstream (`SelectionContext.selectPackage` still
-  replaces the selection with the card's `includedItemIds`; pricing still derives from
-  the selected items via `priceSelection`; the live design still hides deselected scene
-  items). Only **which items each card contains** changes.
-- The **Custom / "Our Recommendation"** card and `applyOurRecommendation` (#12) are
-  untouched.
-- Tier **names** stay Classic Glow / Full Festive / The Full Yule (renamable; they're
-  just labels).
-- Per-package totals are still priced with the staff-default rush/takedown state via
-  the existing `chargesFromResult` / `effectiveCharges` / `totalsFor` helpers.
+- How selecting a package works downstream (`SelectionContext.selectPackage` replaces
+  the selection with the card's `includedItemIds`; pricing derives from the selected
+  items via `priceSelection`; the live design hides deselected scene items). Only **which
+  items each card contains** changes.
+- The **Custom / "Our Recommendation"** card and `applyOurRecommendation` (#12).
+- Tier **names**/taglines (renamable labels).
+- The mutually-exclusive roofline group + the $1,000 approval gate.
 
 ## Worked example (the real quote above, after the change)
 
-No showpieces, so Tier 3 == Tier 2 and de-dupes away:
+Extras cheapest-first: $70, $70, $70, $95, $95, $95, $105, **$285 (wreath)**.
 
-| Card | Price | Contents |
-|---|---|---|
-| Tier 1 — Classic Glow | $1,310.44 | Santa's roofline + accents |
-| Tier 2 — Full Festive | $1,875.94 | Gingerbread roofline + accents |
-| Custom | You pick | — |
+- **Tier 1:** Santa's $320 + (70+70+70+95+95+95+105 = $600) = **$920**. Next is the
+  $285 wreath → $1,205, which exceeds $1,150 (1.15·$1k) → **held back**. Tier 1 = Santa's
+  + bushes + spritzers, **no wreath**.
+- **Tier 3:** Gingerbread $840 + all extras $885 = **$1,725**.
+- **Tier 2:** midpoint of Tier 1 extras ($600) and full extras ($885) = $742.5 →
+  Gingerbread $840 + cheapest extras to ~$742.5 = the same $600 (wreath excluded) =
+  **$1,440**.
 
-Two genuinely different cards instead of the duplicate $1,875.94 pair. A richer quote
-(with trees/garland/columns) keeps all three distinct.
+| Card | Pre-tax | With tax | Contents |
+|---|---|---|---|
+| **Tier 1 — Classic Glow** | $920 | ~$1,000.50 | Santa's + bushes + spritzers (no wreath) |
+| **Tier 2 — Full Festive** | $1,440 | ~$1,566.00 | Gingerbread + bushes + spritzers |
+| **Tier 3 — The Full Yule** | $1,725 | $1,875.94 | Gingerbread + everything (+ wreath) |
+
+Three genuinely different cards: **Tier 1 → Tier 2** = the roofline upgrade;
+**Tier 2 → Tier 3** = the wreath. No duplicates.
 
 ## Edge cases
 
-- **No distinct Gingerbread roofline** (legacy/single-roofline quotes): use the one
-  roofline for every tier; the roofline-upgrade step disappears but the
-  accents→showpieces coverage steps remain. De-dupe handles any collapse.
-- **Roofline only** (no accents/showpieces): all tiers equal → collapse to one card +
-  Custom.
-- **Only roofline + accents** (no showpieces): Tier 3 == Tier 2 → two cards + Custom
-  (the worked example).
-- **Sub-$1,000 whole quote:** gate already waives; tiers build and de-dupe normally.
+- **No distinct Gingerbread roofline** (legacy/single roofline): use the one roofline
+  for every tier; the roofline-upgrade step disappears but the cheapest-first item
+  steps remain. De-dupe handles any collapse.
+- **Roofline only** (no extras): all tiers equal → one card + Custom.
+- **Very small quote** (one cheap extra after the roofline): Tier 2/Tier 3 may equal
+  → de-dupe to 2 cards + Custom.
+- **Tier 1 lands under $1,000** (all remaining extras are big): allowed; the approval
+  gate shows the customer "+$X to approve."
+- **Sub-$1,000 whole quote:** the gate already waives; tiers build + de-dupe normally.
 
 ## Components / structure
 
-All within `derivePackages.ts`, kept as small pure functions:
+Small pure functions in `derivePackages.ts`:
 
-- `KIND_BUCKET: Record<PortalLineItemKind, 'accent' | 'showpiece'>` — the single
-  editable kind→bucket map (roofline handled separately via the existing stable ids).
-- `classifyItems(lineItems, rooflineIds)` → `{ accents: id[]; showpieces: id[] }`.
-- `buildCoverageTiers(lineItems, rooflineIds, threshold)` → the raw Tier 1/2/3 id sets
-  (replaces `buildEntryTier`'s "grab everything to $1k" role).
-- `dedupeTiers(tiers, minGapPct)` → distinct tiers in order.
+- `sortExtras(lineItems, rooflineIds)` → non-roofline items, cheapest-first.
+- `fillToTarget(roofId, sortedExtras, target, overshootCap)` → the id set for a tier
+  (roofline + cheapest extras up to `target`, with the single-item overshoot grace).
+  Tier 1 uses `target = MIN, overshootCap = MIN × 1.15`; Tier 2 uses `target = midpoint`.
+- `dedupeTiers(tiers)` → distinct tiers in order (drop equal item-sets).
 - `derivePackages(...)` — unchanged signature; rewired to the above, then appends
   Custom (D) as today.
+
+The old `buildEntryTier` (grab-cheapest-until-over-$1k, crossing item included) is
+replaced by `fillToTarget` with the overshoot cap.
 
 ## Testing (TDD)
 
 Pure functions → unit tests in `derivePackages.test.ts`:
 
-- A rich quote (roofline pair + accents + showpieces) → three distinct tiers with the
-  expected item sets and ascending totals.
-- The real-quote shape (no showpieces) → exactly two distinct tiers + Custom; assert
-  Tier 3 is dropped, not duplicated.
-- Roofline-only quote → one card + Custom.
-- No-distinct-Gingerbread (single roofline) → tiers still build and de-dupe.
-- Tier 1 top-up: a quote where Santa's < $1k → Tier 1 reaches the gate using accents
-  only and stays ⊆ Tier 2.
-- `KIND_BUCKET` mapping: each accent kind lands in Tier 2; each showpiece kind only in
-  Tier 3.
-- Totals: each tier's total equals `priceSelection` over its item set (parity with
-  the live `SelectionContext` total).
+- **The real-quote shape** (roofline pair + bushes/spritzers + one pricey wreath, no
+  showpieces) → three distinct tiers $920 / $1,440 / $1,725; assert the wreath is held
+  out of Tier 1 and Tier 2, present only in Tier 3.
+- **Big quote** (many extras incl. expensive ones) → three distinct, ascending tiers;
+  Tier 1 lands within [MIN, 1.15·MIN]; Tier 2 sits near the midpoint.
+- **Overshoot rule:** a quote whose crossing item is *small* → Tier 1 includes it (lands
+  just over MIN); a quote whose crossing item is *big* → Tier 1 stops under MIN.
+- **De-dupe:** a quote with too little to differentiate → exactly 2 distinct cards +
+  Custom; assert no duplicate.
+- **No distinct Gingerbread** (single roofline) → tiers still build + de-dupe.
+- **Totals parity:** each tier's total equals `priceSelection` over its item set (parity
+  with the live `SelectionContext` total).
 
 ## Scope & ownership
 
 - One file: `src/lib/portal/derivePackages.ts` (+ its test). **Jason's pricing/portal
   area** — his review before merge.
 - Pure functions; **no DB change, no migration, no API change.** Downstream selection
-  and pricing are untouched.
+  and pricing untouched.
+
+## Validation plan (before merge)
+
+Run the revised algorithm against a sample of **real quotes** (pulled from prod) and
+confirm: 3 distinct, ascending tiers on richer quotes; clean 2-card collapse on small
+ones; Tier 1 always lands in the intended ~$1,000 band; no duplicate cards anywhere.
+Tune `TIER1_OVERSHOOT_PCT` / the midpoint if the real distribution shows weak spacing.
 
 ## Open / tunable
 
-- `TIER_MIN_GAP_PCT` default (start at `0` = exact-set de-dupe; revisit if near-equal
-  prices still read as "the same").
-- The `KIND_BUCKET` split is Naldo's to tune (e.g. move wreath/garland between accents
-  and showpieces) without code changes.
+- `TIER1_OVERSHOOT_PCT` (default 15%).
+- Tier 2 target (midpoint by default; could shift toward Tier 3 for a "fuller middle").
 - Tier names / taglines (cosmetic).
