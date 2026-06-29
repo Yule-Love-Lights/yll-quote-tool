@@ -110,8 +110,15 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   // Konva host is its OWN element with NO React children (Konva clears it via
   // innerHTML; React must not own anything inside it — React 19 DOM-ownership).
   // The skeleton/fallback is a SIBLING overlay, never a child of the host.
+  //
+  // width/height:100% so the wrapper FILLS the box the caller sized. Callers
+  // position us with `absolute inset-0`, but our inline `position:relative` wins
+  // over that `absolute` → the `inset-0` turns inert. Without an explicit
+  // 100%/100% the wrapper then collapses to 0 height and Konva renders a 1px-tall
+  // canvas (the "Your home, lit up" reprise dark-box bug). The hero was spared
+  // only because its CSS class (.portal-snow-stage-photo) already sets height:100%.
   return (
-    <div className={className} style={{ position: 'relative' }}>
+    <div className={className} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={hostRef} style={{ position: 'absolute', inset: 0 }} />
       {(!ready || failed) && (
         <div
