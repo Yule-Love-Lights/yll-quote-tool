@@ -54,6 +54,73 @@ export function gmailNeedsReply(messages: GmailMessageLite[]): boolean {
   return !isAnsweredByOutbound({ lastInboundAt, lastOutboundAt });
 }
 
+// ─── Raw Gmail payload → GmailThreadLite (pure mapping) ─────────────────────
+// Minimal subset of the Gmail REST shapes the client returns. The mapper turns
+// them into the source-agnostic GmailThreadLite that normalizeGmailThread + the
+// reducer consume.
+
+export type GmailHeader = { name: string; value: string };
+export type RawGmailMessage = {
+  id: string;
+  labelIds?: string[];
+  internalDate?: string; // epoch ms as a string
+  snippet?: string;
+  payload?: { headers?: GmailHeader[] };
+};
+export type RawGmailThread = { id: string; messages?: RawGmailMessage[] };
+
+function getHeader(m: RawGmailMessage, name: string): string | undefined {
+  return m.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+}
+
+/** Extract + lowercase the address from a "Name <addr>" (or bare) From header. */
+export function parseEmailAddress(headerValue: string): string | null {
+  if (typeof headerValue !== 'string') return null;
+  const angle = headerValue.match(/<([^>]+)>/);
+  const candidate = (angle ? angle[1] : headerValue).trim().toLowerCase();
+  return candidate.includes('@') ? candidate : null;
+}
+
+function parseDisplayName(headerValue: string): string | null {
+  const m = headerValue.match(/^\s*"?([^"<]*?)"?\s*</);
+  const name = m ? m[1].trim() : '';
+  return name || null;
+}
+
+/**
+ * Did WE send this message? True for a SENT-labelled message OR one whose From is
+ * our own mailbox. The latter is what neutralizes the self-ingest loop: an
+ * escalation email delivered to sales@ has From: sales@, so it reads as "from us"
+ * → outbound → the reducer skips it (never a fake lead).
+ */
+export function gmailMessageFromMe(m: RawGmailMessage, ourEmail: string): boolean {
+  if (m.labelIds?.includes('SENT')) return true;
+  const from = getHeader(m, 'From');
+  const addr = from ? parseEmailAddress(from) : null;
+  return addr !== null && addr === ourEmail.trim().toLowerCase();
+}
+
+export function mapGmailThread(raw: RawGmailThread, ourEmail: string): GmailThreadLite {
+  const rawMessages = raw.messages ?? [];
+  const messages: GmailMessageLite[] = rawMessages.map((m) => ({
+    fromMe: gmailMessageFromMe(m, ourEmail),
+    at: new Date(Number(m.internalDate ?? 0)),
+    snippet: m.snippet,
+  }));
+  const subject = rawMessages[0] ? getHeader(rawMessages[0], 'Subject') : undefined;
+  // External party = the From of the latest inbound message on the thread.
+  const latestInbound = [...rawMessages].reverse().find((m) => !gmailMessageFromMe(m, ourEmail));
+  const fromHeader = latestInbound ? getHeader(latestInbound, 'From') : undefined;
+  return {
+    threadId: raw.id,
+    subject,
+    from: fromHeader
+      ? { email: parseEmailAddress(fromHeader) ?? undefined, name: parseDisplayName(fromHeader) ?? undefined }
+      : undefined,
+    messages,
+  };
+}
+
 export function normalizeGmailThread(thread: GmailThreadLite): NormalizedTouch {
   const { lastInboundAt, lastOutboundAt, latest } = partition(thread.messages);
   const answered = isAnsweredByOutbound({ lastInboundAt, lastOutboundAt });

@@ -4,8 +4,10 @@
 // the GHL webhook (the webhook is just a low-latency trigger for the reconcile).
 
 import { isHighLevelConfigured, searchConversations, sendEmail } from '@/lib/integrations/highlevel';
+import { getAccessToken, getThread, isGmailConfigured, listInboxThreads } from '@/lib/integrations/gmail';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
+import { mapGmailThread, normalizeGmailThread } from './gmail';
 import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import {
   closeFollowUp,
@@ -126,6 +128,63 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
     return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsClosed: 0, errors: 1, error };
+  }
+}
+
+export type GmailPollSummary = {
+  ok: boolean;
+  scanned: number;
+  ingested: number;
+  skipped: number;
+  autoResolved: number;
+  ambiguous: number;
+  errors: number;
+  error?: string;
+};
+
+/**
+ * Poll the Gmail inbox (sales@) and ingest each thread. Read-only. Needs-reply is
+ * the thread last-sender check (in normalizeGmailThread): a thread whose latest
+ * message is from us → outbound → the reducer skips/auto-resolves it. That also
+ * neutralizes the self-ingest loop — our own escalation emails (From: sales@) read
+ * as "from us". Full inbox scan each run (bounded); history.list incremental is a
+ * future optimization.
+ */
+export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}): Promise<GmailPollSummary> {
+  if (!isGmailConfigured()) {
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 0, error: 'Gmail not configured' };
+  }
+  const ourEmail = process.env.GMAIL_USER || 'me';
+  try {
+    const token = await getAccessToken();
+    const threads = await listInboxThreads(token, { maxResults: opts.maxResults ?? 25 });
+    let ingested = 0;
+    let skipped = 0;
+    let autoResolved = 0;
+    let ambiguous = 0;
+    let errors = 0;
+    for (const ref of threads) {
+      try {
+        const raw = await getThread(token, ref.id);
+        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, ourEmail)), now);
+        if (!res.ok) {
+          errors++;
+          continue;
+        }
+        if (res.skipped) skipped++;
+        else ingested++;
+        if (res.autoResolved) autoResolved++;
+        if (res.ambiguous) ambiguous++;
+      } catch {
+        errors++;
+      }
+    }
+    await recordSyncRun('gmail', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} thread error(s)` : undefined);
+    return { ok: true, scanned: threads.length, ingested, skipped, autoResolved, ambiguous, errors };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await recordSyncRun('gmail', 'error', error);
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
   }
 }
 

@@ -37,6 +37,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/ghl/webhook', // GHL webhook (shared-secret in the route, #58)
       '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
