@@ -74,6 +74,9 @@ export type QuoteRowForPortal = {
   // When the deposit webhook confirmed payment (#38). NULL = approved but not
   // yet paid. Optional for back-compat with older callers/tests.
   deposit_paid_at?: string | null;
+  // Test Quote (ledger #93): drives the portal's "Simulate deposit paid" path.
+  // Optional for back-compat with older callers/tests.
+  is_test?: boolean | null;
 };
 
 // Scarcity context comes from environment variables (per design B3).
@@ -381,5 +384,8 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       bookedThroughDate,
     },
     approval,
+    // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
+    // paid" (→ /simulate-deposit) when this is a test quote.
+    isTest: row.is_test ?? false,
   };
 }

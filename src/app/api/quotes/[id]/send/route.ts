@@ -82,6 +82,9 @@ type QuoteRow = {
   // tracked separately from quote_sent_at so a quote whose pipeline card
   // never advanced is discoverable + retryable.
   ghl_stage_synced_at: string | null;
+  // Test Quote (ledger #93): true ⇒ simulate the send (stamp quote_sent_at but
+  // never move a real GHL card or text/email the customer).
+  is_test: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -112,7 +115,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at, ghl_stage_synced_at')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at, ghl_stage_synced_at, is_test')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -182,7 +185,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const cardName = quote.customer_name?.trim() || 'Yule Love Lights quote';
   const monetaryValue = typeof quote.total === 'number' ? quote.total : undefined;
 
-  if (!isHighLevelConfigured()) {
+  if (quote.is_test) {
+    // Test Quote (#93): simulate the send — never move a real GHL pipeline card.
+    // stageUpdated stays false; the sync-outcome write below marks it "synced"
+    // so the quote doesn't show as stuck / retryable in the admin UI.
+    stageError = undefined;
+  } else if (!isHighLevelConfigured()) {
     stageError = 'HighLevel not configured';
   } else if (!stageSent || !pipelineId) {
     stageError = 'HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID not set';
@@ -251,7 +259,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
   // itself best-effort — its failure only logs, never undoes the send.
   {
-    const syncPayload = stageUpdated
+    // Test Quote (#93): mark the sync done (no real card moved, but the quote
+    // shouldn't look stuck). Otherwise the real success/failure outcome.
+    const syncPayload = quote.is_test || stageUpdated
       ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
       : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
     const { error: syncErr } = await sb.from('quotes').update(syncPayload).eq('id', id);
@@ -269,7 +279,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let smsSent = false;
   let emailSent = false;
   let messageError: string | undefined;
-  if (!isGhlRetry && isHighLevelConfigured() && quote.highlevel_contact_id) {
+  // Test Quote (#93): never text/email a real customer for a simulated send.
+  if (!isGhlRetry && !quote.is_test && isHighLevelConfigured() && quote.highlevel_contact_id) {
     const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
     const portalUrl = `${baseUrl}/portal/${id}`;

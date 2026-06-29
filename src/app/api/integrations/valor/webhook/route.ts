@@ -80,6 +80,10 @@ type QuoteRow = {
   approval_snapshot: {
     customerSelection?: { currentTotalUsd?: number; currentDepositUsd?: number };
   } | null;
+  // Test Quote (ledger #93): a test quote must NEVER fire a real side effect.
+  // In practice one can't reach here (a test quote has no valor_order_ref — /pay
+  // refuses it), but we guard defensively, symmetric with /pay + /simulate-deposit.
+  is_test: boolean;
 };
 
 // GET — a reachability/liveness check (some webhook verifiers probe with GET).
@@ -196,7 +200,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, deposit_paid_at, deposit_amount_usd, approval_snapshot',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, deposit_paid_at, deposit_amount_usd, approval_snapshot, is_test',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -208,6 +212,15 @@ export async function POST(req: NextRequest) {
       );
     }
     return NextResponse.json({ ok: true, ignored: 'no-matching-quote' });
+  }
+
+  // Test Quote (#93): a test quote must never trigger a real booking/charge/CRM
+  // side effect. It can't normally reach here (it has no valor_order_ref to match
+  // on — /pay refuses test quotes), but guard defensively and acknowledge so
+  // Valor stops retrying. Test quotes book via /simulate-deposit only.
+  if (quote.is_test) {
+    console.warn(`[api/integrations/valor/webhook] ignoring webhook for TEST quote ${quote.id}`);
+    return NextResponse.json({ ok: true, ignored: 'test-quote' });
   }
 
   // Idempotency — already recorded as paid. Don't re-fire side effects.

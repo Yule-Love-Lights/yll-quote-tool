@@ -324,4 +324,21 @@ describe('Valor webhook — rejects', () => {
     expect(updatePayloads).toHaveLength(0); // never stamped paid
     expect(hl.sendSms).not.toHaveBeenCalled();
   });
+
+  it('ignores a webhook for a TEST quote (#93) — no booking, no real side effects', async () => {
+    // A test quote can't normally reach here (it has no valor_order_ref), but the
+    // defensive guard must short-circuit before any charge/CRM/job side effect.
+    const { client, updatePayloads } = makeSb({ ...QUOTE, is_test: true }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ignored).toBe('test-quote');
+    expect(updatePayloads).toHaveLength(0); // never stamped paid
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
 });
