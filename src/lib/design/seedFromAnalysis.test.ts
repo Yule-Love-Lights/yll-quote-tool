@@ -4,6 +4,7 @@ import {
   sanitizeAnalysisSeed,
   analysisSeedHasContent,
   countSeededItems,
+  countSeededGarlandUnestimated,
   AnalysisSeed,
 } from './seedFromAnalysis';
 import type { Scene, StrandItem, MiniAreaItem, WreathItem, SpritzerItem, GarlandItem } from './sceneTypes';
@@ -211,6 +212,84 @@ describe('garland sections from scale (#8 Stage C / C4)', () => {
     const seed: AnalysisSeed = { detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] } };
     const g = seedSceneFromAnalysis(emptyScene(), seed, W, H).items.find(isGarland) as GarlandItem;
     expect(g.quoteSections).toBe(1);
+  });
+});
+
+// #90 garland under-bill fix: when the AI roofline didn't calibrate scale, fall
+// back to the STAFF yardstick (axis-aware) so a long run isn't silently billed
+// as 1 section. The silent 1-section default is preserved ONLY when no scale of
+// any kind exists (deliberate: under-bill beats over-bill); that case is surfaced
+// via countSeededGarlandUnestimated so staff can set the count.
+describe('garland sections from a staff yardstick when roofline calibration is absent (#90)', () => {
+  const garlandSeed: AnalysisSeed = {
+    detections: { garland: [{ length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] }] },
+  };
+
+  it('estimates sections from a (width-axis) staff yardstick — no roofline calibration', () => {
+    // yardstick 200px wide = 10ft → 20 px/ft. Garland box 0.4×1000 = 400px ÷ 20 = 20ft; ceil(20/9)=3.
+    const scene: Scene = {
+      yardsticks: [{ id: 'ys-door', realFeet: 10, x: 1, y: 2, width: 200, height: 80 }],
+      items: [],
+    };
+    const g = seedSceneFromAnalysis(scene, garlandSeed, W, H).items.find(isGarland) as GarlandItem;
+    expect(g.quoteSections).toBe(3); // NOT the silent 1
+  });
+
+  it('uses the HEIGHT axis of a vertical staff yardstick (axis-aware, not width)', () => {
+    // axis:'height' → measure 200px height = 10ft → 20 px/ft → 3 sections.
+    // A width-only formula would use width 80px → 8 px/ft → 400/8=50ft → 6 sections.
+    const scene: Scene = {
+      yardsticks: [{ id: 'ys-downspout', realFeet: 10, x: 1, y: 2, width: 80, height: 200, axis: 'height' }],
+      items: [],
+    };
+    const g = seedSceneFromAnalysis(scene, garlandSeed, W, H).items.find(isGarland) as GarlandItem;
+    expect(g.quoteSections).toBe(3);
+  });
+
+  it('still falls back to 1 when there is NO scale of any kind', () => {
+    const g = seedSceneFromAnalysis(emptyScene(), garlandSeed, W, H).items.find(isGarland) as GarlandItem;
+    expect(g.quoteSections).toBe(1);
+  });
+});
+
+describe('countSeededGarlandUnestimated (#90 garland warning)', () => {
+  const garlandSeed: AnalysisSeed = {
+    detections: {
+      garland: [
+        { length: '9ft', tier: 'bow', box: [0.2, 0.5, 0.4, 0.05] },
+        { length: '9ft', tier: 'bow', box: [0.6, 0.5, 0.3, 0.05] },
+      ],
+    },
+  };
+
+  it('counts garlands seeded with NO scale (no calibration, no yardstick)', () => {
+    const scene = seedSceneFromAnalysis(emptyScene(), garlandSeed, W, H);
+    expect(countSeededGarlandUnestimated(garlandSeed, scene, W, H)).toBe(2);
+  });
+
+  it('reports 0 when a staff yardstick provides scale', () => {
+    const withYs: Scene = {
+      yardsticks: [{ id: 'ys-door', realFeet: 10, x: 1, y: 2, width: 200, height: 80 }],
+      items: [],
+    };
+    const scene = seedSceneFromAnalysis(withYs, garlandSeed, W, H);
+    expect(countSeededGarlandUnestimated(garlandSeed, scene, W, H)).toBe(0);
+  });
+
+  it('reports 0 when the AI roofline calibrates the scale', () => {
+    const calSeed: AnalysisSeed = {
+      lines: { santas: [[[0.1, 0.4], [0.9, 0.4]]] },
+      calibration: { santasFootage: 40 },
+      detections: garlandSeed.detections,
+    };
+    const scene = seedSceneFromAnalysis(emptyScene(), calSeed, W, H);
+    expect(countSeededGarlandUnestimated(calSeed, scene, W, H)).toBe(0);
+  });
+
+  it('reports 0 when there are no garlands at all', () => {
+    const seed: AnalysisSeed = { detections: { spritzers: [{ size: '24', box: [0.7, 0.7, 0.1, 0.1] }] } };
+    const scene = seedSceneFromAnalysis(emptyScene(), seed, W, H);
+    expect(countSeededGarlandUnestimated(seed, scene, W, H)).toBe(0);
   });
 });
 
