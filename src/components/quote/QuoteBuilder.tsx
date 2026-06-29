@@ -150,6 +150,9 @@ export default function QuoteBuilder({
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
+  // from a send FAILURE so we never tell the operator to share the link manually.
+  const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
@@ -1044,6 +1047,7 @@ export default function QuoteBuilder({
     if (!savedQuoteId) return;
     setSendStatus('sending');
     setSendError(null);
+    setSendBlockedMsg(null);
     setGhlSyncWarning(null);
     setCopiedUrl(false);
 
@@ -1060,10 +1064,10 @@ export default function QuoteBuilder({
           const liveScene = ddata?.design?.scene ?? { yardsticks: [], items: [] };
           const bad = detectUnfulfillable(liveScene.items, offeredFromLists(offeredColors));
           if (bad.length > 0) {
-            setSendError(
-              `This design has ${bad.length} item${bad.length === 1 ? '' : 's'} we can't supply — recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see "From your design"), then Calculate again.`,
+            setSendBlockedMsg(
+              `Can’t send — ${bad.length} item${bad.length === 1 ? '' : 's'} we can’t supply. Recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see “From your design”), then Calculate again. Don’t share the link until it’s fixed.`,
             );
-            setSendStatus('error');
+            setSendStatus('idle');
             return;
           }
         }
@@ -2710,6 +2714,21 @@ export default function QuoteBuilder({
             {sendStatus === 'error' && (
               <p className="mt-3 text-sm text-red-600">
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
+              </p>
+            )}
+
+            {sendBlockedMsg && (
+              <p className="mt-3 text-sm text-red-600 font-medium">
+                {sendBlockedMsg}{' '}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline cursor-pointer hover:text-red-700"
+                >
+                  Jump to it
+                </button>
               </p>
             )}
 
