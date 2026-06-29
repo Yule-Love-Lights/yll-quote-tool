@@ -53,8 +53,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId, serviceType: rawServiceType } =
+  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest } =
     body as Record<string, unknown>;
+
+  // Test Quote (ledger #93): optional boolean. Only honored on a NEW save
+  // (saveQuote); the update branch never touches is_test (immutable). Anything
+  // other than an explicit `true` is treated as a normal (non-test) quote.
+  if (rawIsTest !== undefined && typeof rawIsTest !== 'boolean') {
+    return NextResponse.json({ error: 'isTest must be a boolean if provided' }, { status: 400 });
+  }
+  const isTest = rawIsTest === true;
 
   // service_type is optional in the request; when present it must be one of
   // the known values. Absent → default to holiday on a new save, leave
@@ -191,6 +199,7 @@ export async function POST(req: NextRequest) {
           quoteInputs,
           result,
           serviceType ?? DEFAULT_SERVICE_TYPE,
+          isTest,
           operator?.id ?? null,
         );
     return NextResponse.json({

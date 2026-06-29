@@ -259,6 +259,30 @@ export function derivePxPerFoot(seed: AnalysisSeed, w: number, h: number): numbe
   return null;
 }
 
+// Pixels-per-foot from the scene's FIRST yardstick — the one seeded items bind
+// to (yardstickId:null = "the first yardstick"). Axis-aware, mirroring
+// editor-core/yardstick-scale.ts: a "height"-axis yardstick (downspout, column,
+// garage-door height) measures its HEIGHT, everything else its width. Returns
+// null when there's no yardstick or the derived ppf is implausible (same bounds
+// as derivePxPerFoot), so a garland with no real scale stays at the deliberate
+// 1-section default rather than being mis-estimated.
+function firstYardstickPpf(scene: Scene): number | null {
+  const ys = Array.isArray(scene?.yardsticks) ? scene.yardsticks[0] : undefined;
+  if (!ys || !Number.isFinite(ys.realFeet) || ys.realFeet <= 0) return null;
+  const measured = ys.axis === 'height' ? ys.height : ys.width;
+  if (!Number.isFinite(measured) || measured <= 0) return null;
+  const ppf = measured / ys.realFeet;
+  return ppf >= MIN_PPF && ppf <= MAX_PPF ? ppf : null;
+}
+
+// The scale used to size garland runs (#90): the AI's roofline calibration when
+// present, else the staff (or leftover seed) yardstick. Null = no scale of any
+// kind → garland falls back to 1 section and is surfaced via
+// countSeededGarlandUnestimated so staff can set the count.
+function effectiveSeedPpf(seed: AnalysisSeed, scene: Scene, w: number, h: number): number | null {
+  return derivePxPerFoot(seed, w, h) ?? firstYardstickPpf(scene);
+}
+
 function pxBox(box: NormalizedBox, w: number, h: number) {
   const x0 = clamp01(box[0]);
   const y0 = clamp01(box[1]);
@@ -444,7 +468,12 @@ export function seedSceneFromAnalysis(
       if (!i.id.startsWith(SEED_PREFIX)) return true;
       return isStrand(i) && i.bulbType === 'c9';
     });
-    out = { ...out, items: [...kept, ...detectionItems(seed.detections!, photoW, photoH, ppf)] };
+    // #90: garland section count uses the roofline calibration when present, else
+    // the staff (or leftover seed) yardstick — so a long run with a drawn
+    // yardstick but no calibrated roofline isn't silently billed as 1 section.
+    // No scale of any kind → null → the deliberate 1-section default.
+    const garlandPpf = ppf ?? firstYardstickPpf(out);
+    out = { ...out, items: [...kept, ...detectionItems(seed.detections!, photoW, photoH, garlandPpf)] };
   }
 
   return out;
@@ -461,4 +490,21 @@ export function countSeededItems(scene: Scene): { roofline: number; perUnit: num
     else perUnit++;
   }
   return { roofline, perUnit };
+}
+
+// #90: how many AI-seeded garland runs got NO usable scale (no roofline
+// calibration AND no yardstick) and therefore fell back to the deliberate
+// 1-section default. Gated on the SAME effective ppf detectionItems used, so it
+// exactly matches what was seeded — when any scale exists every garland is
+// estimated (→ 0). The seed-analysis route + createDesign surface this so the
+// builder can warn "N garland runs need section counts before quoting."
+export function countSeededGarlandUnestimated(
+  seed: AnalysisSeed,
+  scene: Scene,
+  photoW: number,
+  photoH: number,
+): number {
+  if (effectiveSeedPpf(seed, scene, photoW, photoH) != null) return 0;
+  const items: SceneItem[] = Array.isArray(scene?.items) ? scene.items : [];
+  return items.filter((i) => i.id.startsWith(`${SEED_PREFIX}garland-`)).length;
 }

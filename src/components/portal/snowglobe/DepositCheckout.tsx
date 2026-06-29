@@ -12,15 +12,19 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { friendlyPortalError } from '../friendlyError';
 
 type Props = {
   quoteId: string;
   onClose: () => void;
+  /** #93 — a TEST quote. POST to /simulate-deposit (no Valor) and route straight
+   *  to the booked page instead of redirecting to a hosted payment page. */
+  isTest?: boolean;
 };
 
 type Phase = 'starting' | 'redirecting' | 'error' | 'unconfigured';
 
-export function DepositCheckout({ quoteId, onClose }: Props) {
+export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -34,7 +38,10 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
 
     (async () => {
       try {
-        const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/pay`, {
+        // #93 — a test quote books via the operator-gated simulate-deposit route
+        // (no Valor, no charge); a real quote starts the Valor hosted page.
+        const endpoint = isTest ? 'simulate-deposit' : 'pay';
+        const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
@@ -46,6 +53,16 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
         }
 
         const body = await res.json().catch(() => ({}));
+
+        // #93 — simulated deposit: no redirect, the route booked it server-side.
+        if (isTest) {
+          if (!res.ok) {
+            throw new Error(body.error || `Could not simulate the deposit (${res.status})`);
+          }
+          if (cancelled) return;
+          router.push(`/portal/${quoteId}/approved`);
+          return;
+        }
 
         if (res.status === 503 && body.code === 'valor-not-configured') {
           if (!cancelled) setPhase('unconfigured');
@@ -61,7 +78,11 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
         window.location.href = body.redirectUrl as string;
       } catch (err) {
         if (cancelled) return;
-        setErrorMsg(err instanceof Error ? err.message : 'Something went wrong starting payment.');
+        // Friendly-error convention (audit fix g10): never surface the raw
+        // server/network error (Valor/Postgres internals, "Failed to fetch") to
+        // the customer. Log it for debugging; show fixed, recoverable copy.
+        console.error('deposit checkout start failed', err);
+        setErrorMsg(friendlyPortalError('start checkout'));
         setPhase('error');
       }
     })();
@@ -69,7 +90,7 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [quoteId, router]);
+  }, [quoteId, router, isTest]);
 
   const retry = () => {
     startedRef.current = false;
@@ -87,7 +108,7 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
     >
       <div className="w-full max-w-md rounded-2xl bg-[#0D1519] border border-[#FFB744]/30 shadow-2xl p-6 text-[#F4ECD8]">
         <div className="flex items-baseline justify-between mb-4">
-          <h2 className="font-display text-[20px] font-bold">Pay your deposit</h2>
+          <h2 className="font-display text-[20px] font-bold">{isTest ? 'Simulate deposit' : 'Pay your deposit'}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -104,7 +125,9 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
               aria-hidden
               className="inline-block w-6 h-6 rounded-full border-2 border-[#F4ECD8]/25 border-t-[#FFD07A] animate-spin"
             />
-            <p className="mt-4 text-[14px] text-[#A89F87]">Taking you to our secure checkout…</p>
+            <p className="mt-4 text-[14px] text-[#A89F87]">
+              {isTest ? 'Recording your simulated deposit…' : 'Taking you to our secure checkout…'}
+            </p>
           </div>
         )}
 
@@ -143,8 +166,9 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
         )}
 
         <p className="mt-4 text-[11px] text-[#6E6553] text-center">
-          🔒 Secured by Valor PayTech. Your card details are entered on Valor’s secure page — they
-          never touch our servers.
+          {isTest
+            ? '🧪 Test mode — this records a simulated deposit. No card is charged.'
+            : '🔒 Secured by Valor PayTech. Your card details are entered on Valor’s secure page — they never touch our servers.'}
         </p>
       </div>
     </div>

@@ -13,6 +13,10 @@ import { listCatalog } from '@/lib/inventory/catalog';
 import { lowStockItems } from '@/lib/inventory/lowStock';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { lowStockEmailSubject, lowStockEmailHtml } from '@/lib/integrations/quoteMessages';
+import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
+import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { lowStockMessage } from '@/lib/integrations/telegramMessages';
+import { newlyLowSkus, getLastLowStockNotified, recordLowStockNotified } from '@/lib/inventory/lowStockNotify';
 
 export const runtime = 'nodejs';
 
@@ -28,12 +32,42 @@ export async function GET(req: NextRequest) {
   const low = lowStockItems(await listOnHand());
   if (!low.length) return NextResponse.json({ ok: true, lowCount: 0, emailed: false });
 
+  const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
+
+  // #82 follow-up — proactive Telegram ping for SKUs that NEWLY went low. Runs
+  // independently of the email below; gated on the bot being live so the dedup
+  // baseline isn't consumed while the bot is off (enabling it gives one catch-up
+  // ping of what's currently low, then steady-state new-only). Best-effort.
+  try {
+    if (isTelegramBotEnabled() && isTelegramConfigured()) {
+      const currentLow = low.map((l) => l.sku);
+      const newly = new Set(newlyLowSkus(currentLow, await getLastLowStockNotified()));
+      if (newly.size) {
+        await notifyTelegram(
+          lowStockMessage({
+            items: low
+              .filter((l) => newly.has(l.sku))
+              .map((l) => ({
+                name: nameBySku.get(l.sku) ?? '(not in catalog)',
+                sku: l.sku,
+                onHand: l.onHand,
+                reorderPoint: l.reorderPoint,
+              })),
+            baseUrl: appBaseUrl(),
+          }),
+        );
+      }
+      await recordLowStockNotified(currentLow);
+    }
+  } catch (err) {
+    console.error('[api/inventory/low-stock-alert] telegram ping failed:', err);
+  }
+
   const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
   if (!isHighLevelConfigured() || !internalContactId) {
     return NextResponse.json({ ok: true, lowCount: low.length, emailed: false, note: 'email not configured' });
   }
 
-  const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
   try {
     await sendEmail({
       contactId: internalContactId,

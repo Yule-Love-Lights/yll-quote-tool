@@ -129,10 +129,24 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
   const install = fmtDate(card.installDate);
   return (
     <div className="rounded-md border p-2.5 text-sm" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}>
-      <div className="flex items-center justify-between">
-        <button type="button" onClick={onOpen} className="font-semibold hover:underline" style={{ color: 'var(--op-primary)' }}>
-          Job #{card.jobNumber ?? '—'}
-        </button>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button type="button" onClick={onOpen} className="font-semibold hover:underline" style={{ color: 'var(--op-primary)' }}>
+            Job #{card.jobNumber ?? '—'}
+          </button>
+          {/* Test Quote (ledger #93) — VISIBLE on the Kanban, badged so a test
+              job is obvious. It moves through stages but never deducts real
+              on-hand or hits the supplier PO. */}
+          {card.isTest && (
+            <span
+              className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+              style={{ background: '#ede9fe', color: '#6d28d9' }}
+              title="Simulated test job — no real stock or supplier order"
+            >
+              Test
+            </span>
+          )}
+        </div>
         <span className="text-[11px]" style={{ color: 'var(--op-text-dim)' }}>{card.status === 'scheduled' ? 'Scheduled' : 'Awaiting schedule'}</span>
       </div>
       <div className="mt-0.5 truncate" style={{ color: 'var(--op-text)' }}>{card.customerName ?? 'Customer'}</div>

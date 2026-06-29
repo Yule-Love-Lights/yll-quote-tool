@@ -5,6 +5,7 @@ import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofl
 import {
   seedSceneFromAnalysis,
   analysisSeedHasContent,
+  countSeededGarlandUnestimated,
   type AnalysisSeed,
 } from './design/seedFromAnalysis';
 
@@ -152,7 +153,7 @@ export async function createDesign(opts: {
   seedAnalysis?: AnalysisSeed | null;
   /** Actor audit trail (#90): the operator's Supabase user id, or null. */
   createdBy?: string | null;
-}): Promise<{ id: string } | null> {
+}): Promise<{ id: string; garlandSectionsUnestimated: number } | null> {
   const sb = getSb();
   if (!sb) return null;
 
@@ -172,6 +173,7 @@ export async function createDesign(opts: {
   const id = data.id as string;
 
   // Seed the base photo if one was supplied with the create call.
+  let garlandSectionsUnestimated = 0;
   if (opts.photoBase64) {
     try {
       const photo = await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
@@ -187,6 +189,9 @@ export async function createDesign(opts: {
       if (seed && photo.width > 0 && photo.height > 0) {
         const scene = seedSceneFromAnalysis(newDesignScene(), seed, photo.width, photo.height);
         await updateDesignScene(id, scene);
+        // #90: surface garland runs seeded with no scale so the builder can warn
+        // staff to set their section counts (silent fallback to 1 = under-bill).
+        garlandSectionsUnestimated = countSeededGarlandUnestimated(seed, scene, photo.width, photo.height);
       }
     } catch (err) {
       // A failed photo/roofline seed isn't fatal — the design still exists and
@@ -194,7 +199,7 @@ export async function createDesign(opts: {
       console.error('createDesign: photo/roofline seed failed:', err);
     }
   }
-  return { id };
+  return { id, garlandSectionsUnestimated };
 }
 
 export async function getDesign(id: string): Promise<DesignRow | null> {

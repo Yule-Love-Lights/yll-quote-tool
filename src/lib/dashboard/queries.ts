@@ -39,6 +39,11 @@ export async function listQuotesForDashboardResult(limit = 500): Promise<Dashboa
   const { data, error } = await sb
     .from('quotes')
     .select(DASHBOARD_QUOTES_SELECT)
+    // Test Quote isolation (ledger #93): THE single chokepoint. Every dashboard
+    // surface — KPIs, customers list, worklist, workflow board, insights,
+    // serviceMetrics — composes from these rows, so excluding is_test here keeps
+    // simulated test data out of every metric in one place.
+    .eq('is_test', false)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
@@ -89,14 +94,28 @@ export async function listJobsForWorkflowBoard(limit = 1000): Promise<WorkflowJo
   try {
     const { data, error } = await sb
       .from('jobs')
-      .select('status, line_items')
+      .select('status, line_items, quote_id')
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error) {
       console.warn('listJobsForWorkflowBoard (table not migrated yet?):', error.message);
       return [];
     }
-    return (data ?? []) as unknown as WorkflowJob[];
+    const jobs = (data ?? []) as Array<WorkflowJob & { quote_id: string | null }>;
+    // Test Quote isolation (ledger #93): a test quote's job is a REAL jobs row,
+    // so it would inflate the board's Jobs column unless excluded. is_test lives
+    // only on the quote — derive it via the quote link (separate query + Set,
+    // the same pattern the inventory cards / supplier PO use). Jobs with no
+    // quote_id (shouldn't happen for the board) are kept.
+    const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
+    const testQuoteIds = new Set<string>();
+    if (quoteIds.length) {
+      const { data: qrows } = await sb.from('quotes').select('id, is_test').in('id', quoteIds);
+      for (const q of (qrows ?? []) as Array<{ id: string; is_test: boolean | null }>) {
+        if (q.is_test) testQuoteIds.add(q.id);
+      }
+    }
+    return jobs.filter((j) => !(j.quote_id && testQuoteIds.has(j.quote_id)));
   } catch (err) {
     console.warn('listJobsForWorkflowBoard failed:', err);
     return [];
