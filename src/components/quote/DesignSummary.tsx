@@ -87,7 +87,7 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
   const total = (lines ?? []).reduce((s, l) => s + l.amount, 0);
 
   return (
-    <div className="mt-3 border border-gray-200 rounded-md p-3 bg-gray-50">
+    <div id="from-your-design" className="mt-3 border border-gray-200 rounded-md p-3 bg-gray-50 scroll-mt-4">
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
           From your design{lines ? ` — ${lines.length} item${lines.length === 1 ? '' : 's'}` : ''}
@@ -105,7 +105,7 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
       {unfulfillable.length > 0 && (
         <div className="mb-2 rounded border border-red-300 bg-red-50 p-2">
           <p className="text-[11px] font-semibold text-red-700 uppercase tracking-wide mb-1">
-            ⚠️ {unfulfillable.length} item{unfulfillable.length === 1 ? '' : 's'} we can&apos;t supply — fix before sending
+            {`⚠️ ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — fix before sending`}
           </p>
           <ul className="space-y-0.5">
             {unfulfillable.map((u) => (

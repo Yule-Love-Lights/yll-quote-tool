@@ -2677,8 +2677,17 @@ export default function QuoteBuilder({
 
             {hasUnfulfillable && (
               <p className="mb-3 text-sm text-red-600 font-medium">
-                ⚠️ This design has {unfulfillable.length} item{unfulfillable.length === 1 ? '' : 's'} we can&apos;t supply — see the
-                red notes in &ldquo;From your design&rdquo; above. Recolor or remove {unfulfillable.length === 1 ? 'it' : 'them'} before sending.
+                {`⚠️ This design has ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — see the red notes in `}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline font-semibold hover:text-red-700 cursor-pointer"
+                >
+                  “From your design”
+                </button>
+                {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
               </p>
             )}
             <div className="flex items-center justify-between gap-3">
