@@ -168,6 +168,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [designId, setDesignId] = useState<string | null>(initialQuote?.designId ?? null);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
+  // #90: how many AI-seeded garland runs had no scale to estimate length (so they
+  // fall back to 1 section). Surfaced as a builder warning so staff set the count.
+  const [garlandUnestimated, setGarlandUnestimated] = useState(0);
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -258,7 +261,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ seed }),
       });
-      if (res.ok) setDesignEditorKey((k) => k + 1);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // #90: warn when garland runs were seeded with no scale (billed as 1
+        // section each) so staff set the real count before quoting.
+        setGarlandUnestimated(
+          typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+        );
+        setDesignEditorKey((k) => k + 1);
+      }
     } catch {
       // Non-fatal: the design still works, it just isn't pre-designed.
     }
@@ -300,6 +311,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           if (!stale) {
             pendingSeedRef.current = null;
             designPhotoRef.current = photoBase64;
+            // #90: warn if garland runs were seeded with no scale on create.
+            setGarlandUnestimated(
+              typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+            );
             if (pendingContextRef.current) {
               const ctx = pendingContextRef.current;
               pendingContextRef.current = null;
@@ -1650,6 +1665,13 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   </div>
                 )}
                 {designError && <p className="text-sm text-red-600 mb-2">{designError}</p>}
+                {garlandUnestimated > 0 && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ {garlandUnestimated} garland {garlandUnestimated === 1 ? 'run' : 'runs'} had no scale to
+                    estimate length — billed as 1 section{garlandUnestimated === 1 ? '' : ' each'} for now. Draw a
+                    yardstick or set the section count on the design before quoting.
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor

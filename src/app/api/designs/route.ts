@@ -58,7 +58,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create design' }, { status: 500 });
     }
     const design = await getDesignWithPhoto(created.id);
-    return NextResponse.json({ design });
+    // #90: garland runs seeded with no scale → the builder warns staff to set
+    // their section counts before quoting.
+    return NextResponse.json({ design, garlandSectionsUnestimated: created.garlandSectionsUnestimated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to create design';
     console.error('POST /api/designs error:', err);
