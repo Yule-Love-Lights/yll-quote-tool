@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { mergeContactsById } from '@/lib/dashboard/inbox/store';
+import { isUuid } from '@/lib/dashboard/inbox/validate';
 
 export const runtime = 'nodejs';
 
@@ -23,8 +24,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const { primaryId, secondaryId } = body as { primaryId?: unknown; secondaryId?: unknown };
-  if (typeof primaryId !== 'string' || !primaryId || typeof secondaryId !== 'string' || !secondaryId) {
-    return NextResponse.json({ error: 'primaryId and secondaryId required' }, { status: 400 });
+  if (!isUuid(primaryId) || !isUuid(secondaryId)) {
+    return NextResponse.json({ error: 'Valid primaryId and secondaryId (uuid) required' }, { status: 400 });
   }
 
   const operator = await getOperator();

@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { claimContact, releaseContact } from '@/lib/dashboard/inbox/store';
+import { isUuid } from '@/lib/dashboard/inbox/validate';
 
 export const runtime = 'nodejs';
 
@@ -24,8 +25,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const { contactId, action } = body as { contactId?: unknown; action?: unknown };
-  if (typeof contactId !== 'string' || !contactId) {
-    return NextResponse.json({ error: 'contactId required' }, { status: 400 });
+  if (!isUuid(contactId)) {
+    return NextResponse.json({ error: 'Valid contactId (uuid) required' }, { status: 400 });
   }
   if (action !== 'claim' && action !== 'release') {
     return NextResponse.json({ error: "action must be 'claim' or 'release'" }, { status: 400 });
