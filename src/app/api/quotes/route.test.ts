@@ -7,8 +7,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { deleteAllQuotes, requireOperatorMock } = vi.hoisted(() => ({
+const { deleteAllQuotes, deleteTestQuotes, requireOperatorMock } = vi.hoisted(() => ({
   deleteAllQuotes: vi.fn(async () => 3),
+  deleteTestQuotes: vi.fn(async () => 2),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
 }));
 
@@ -19,6 +20,7 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/lib/quotes', () => ({
   deleteAllQuotes,
+  deleteTestQuotes,
   listQuotes: vi.fn(async () => []),
 }));
 
@@ -29,11 +31,13 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
 import { DELETE, GET } from './route';
 
 const CONFIRM = 'DELETE ALL QUOTES';
+const TEST_CONFIRM = 'DELETE TEST QUOTES';
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-function makeReq(headers: Record<string, string>): NextRequest {
+function makeReq(headers: Record<string, string>, scope?: string): NextRequest {
   return {
     headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+    nextUrl: { searchParams: new URLSearchParams(scope ? { scope } : {}) },
   } as unknown as NextRequest;
 }
 
@@ -68,6 +72,31 @@ describe('DELETE /api/quotes — operator gate + bulk-wipe confirmation', () => 
     expect(res.status).toBe(200);
     expect(json.deleted).toBe(3);
     expect(deleteAllQuotes).toHaveBeenCalledOnce();
+  });
+});
+
+describe('DELETE /api/quotes?scope=test — scoped test-data wipe (#93)', () => {
+  it('deletes ONLY test quotes with the test confirmation phrase', async () => {
+    const res = await DELETE(makeReq({ 'x-confirm-delete-all': TEST_CONFIRM }, 'test'));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ deleted: 2, scope: 'test' });
+    expect(deleteTestQuotes).toHaveBeenCalledOnce();
+    expect(deleteAllQuotes).not.toHaveBeenCalled();
+  });
+
+  it('428s when the all-quotes phrase is used for the test scope (phrases are distinct)', async () => {
+    const res = await DELETE(makeReq({ 'x-confirm-delete-all': CONFIRM }, 'test'));
+    expect(res.status).toBe(428);
+    expect(deleteTestQuotes).not.toHaveBeenCalled();
+    expect(deleteAllQuotes).not.toHaveBeenCalled();
+  });
+
+  it('does NOT delete test quotes when the all-scope path is taken with the test phrase', async () => {
+    // The full wipe must require its OWN phrase — the test phrase can't trigger it.
+    const res = await DELETE(makeReq({ 'x-confirm-delete-all': TEST_CONFIRM }));
+    expect(res.status).toBe(428);
+    expect(deleteAllQuotes).not.toHaveBeenCalled();
   });
 });
 

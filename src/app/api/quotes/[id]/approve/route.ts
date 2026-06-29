@@ -109,6 +109,9 @@ type QuoteRow = {
   // snapshot flag so a deliberate in-person close is distinguishable from a
   // stray pre-send approval on a leaked link (audit fix g1-route).
   quote_sent_at: string | null;
+  // Test Quote (ledger #93, the same task): true ⇒ record the approval snapshot
+  // but suppress every customer/staff notification (simulated approval).
+  is_test: boolean;
 };
 
 type ApproveBody = {
@@ -312,7 +315,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, quote_sent_at',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, quote_sent_at, is_test',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -523,7 +526,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let internalEmailSent = false;
   let messageError: string | undefined;
 
-  if (isHighLevelConfigured()) {
+  // Test Quote (#93): suppress ALL real notifications (customer SMS/email AND
+  // the internal "go collect the deposit" staff email). The approval snapshot
+  // above is still written — that's the authoritative record the simulated
+  // portal flow needs; only the external messaging is skipped.
+  if (!quote.is_test && isHighLevelConfigured()) {
     const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
     const portalUrl = `${baseUrl}/portal/${id}`;
@@ -617,8 +624,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // write is itself best-effort — its failure only logs, never undoes anything.
   // Skipped cleanly when the embedded checkout is on (no internal email is sent
   // on approve then; the payment webhook is the staff signal instead).
+  // Test Quote (#93): a suppressed internal email is EXPECTED, not a failure —
+  // never write the orphaned-approval marker for a simulated approval.
   const notifyOk = isValorCheckoutEnabled() || internalEmailSent;
-  if (!notifyOk) {
+  if (!notifyOk && !quote.is_test) {
     const { error: markErr } = await sb
       .from('quotes')
       .update({

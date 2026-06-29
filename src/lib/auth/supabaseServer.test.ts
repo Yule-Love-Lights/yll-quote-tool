@@ -18,7 +18,7 @@ vi.mock('@supabase/ssr', () => ({
   }),
 }));
 
-import { roleOf, getOperator, requireOperator, requireAdmin } from './supabaseServer';
+import { roleOf, nameOf, getOperator, requireOperator, requireAdmin } from './supabaseServer';
 
 beforeEach(() => {
   userRef.current = null;
@@ -53,6 +53,28 @@ describe('roleOf', () => {
   });
 });
 
+// ─── nameOf — display name from app_metadata; null for legacy/forged ─────────
+describe('nameOf', () => {
+  it('returns the trimmed display name', () => {
+    expect(nameOf({ name: '  Naldo Vasquez  ' })).toBe('Naldo Vasquez');
+  });
+
+  it('returns null for absent/blank/forged names (legacy accounts)', () => {
+    for (const meta of [
+      {},
+      { name: '' },
+      { name: '   ' },
+      null,
+      undefined,
+      { name: { nested: 'x' } }, // can't spoof via an object
+      { name: 123 },
+      'Naldo', // app_metadata isn't a bare string
+    ]) {
+      expect(nameOf(meta)).toBeNull();
+    }
+  });
+});
+
 // ─── getOperator — session → operator, fail-closed ──────────────────────────
 describe('getOperator', () => {
   it('returns null when there is no authenticated user', async () => {
@@ -66,14 +88,14 @@ describe('getOperator', () => {
     expect(await getOperator()).toBeNull();
   });
 
-  it('maps an authenticated admin user', async () => {
-    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
-    expect(await getOperator()).toEqual({ id: 'u1', email: 'a@x.com', role: 'admin' });
+  it('maps an authenticated admin user (with name)', async () => {
+    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin', name: 'Ada Admin' } };
+    expect(await getOperator()).toEqual({ id: 'u1', email: 'a@x.com', role: 'admin', name: 'Ada Admin' });
   });
 
-  it('maps an authenticated non-admin user to operator', async () => {
+  it('maps a non-admin user to operator, name null when unset (legacy)', async () => {
     userRef.current = { id: 'u2', email: 'b@x.com', app_metadata: {} };
-    expect(await getOperator()).toEqual({ id: 'u2', email: 'b@x.com', role: 'operator' });
+    expect(await getOperator()).toEqual({ id: 'u2', email: 'b@x.com', role: 'operator', name: null });
   });
 
   it('fails closed when Supabase env is unconfigured', async () => {
@@ -143,9 +165,14 @@ describe('requireAdmin', () => {
   });
 
   it('returns the operator when an admin is authenticated', async () => {
-    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
+    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin', name: 'Ada Admin' } };
     const r = await requireAdmin();
-    expect('operator' in r ? r.operator : null).toEqual({ id: 'u1', email: 'a@x.com', role: 'admin' });
+    expect('operator' in r ? r.operator : null).toEqual({
+      id: 'u1',
+      email: 'a@x.com',
+      role: 'admin',
+      name: 'Ada Admin',
+    });
   });
 
   it('still requires an admin while the gate is dormant (no AUTH_GATE_ENABLED bypass)', async () => {

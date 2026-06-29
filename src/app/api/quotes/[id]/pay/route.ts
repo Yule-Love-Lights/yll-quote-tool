@@ -35,6 +35,8 @@ type QuoteRow = {
   deposit_paid_at: string | null;
   valor_order_ref: string | null;
   approval_snapshot: { customerSelection?: { currentDepositUsd?: number } } | null;
+  // Test Quote (ledger #93): a simulated quote must never reach real Valor.
+  is_test: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -63,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot',
+      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot, is_test',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -72,6 +74,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(
       { error: `Quote not found: ${fetchErr?.message ?? 'no row'}` },
       { status: 404 },
+    );
+  }
+
+  // Test Quote (#93): a simulated quote never touches real Valor — the portal
+  // renders "Simulate deposit paid" (→ /simulate-deposit) instead. Refuse here
+  // as defense in depth so a test quote can never mint a real hosted-page charge.
+  if (quote.is_test) {
+    return NextResponse.json(
+      { error: 'Test quote: use the simulate-deposit flow', code: 'test-quote' },
+      { status: 400 },
     );
   }
 

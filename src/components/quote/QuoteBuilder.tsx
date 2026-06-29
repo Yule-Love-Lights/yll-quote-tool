@@ -101,14 +101,27 @@ export type QuoteBuilderInitial = {
   designId: string | null;
   sentAt: string | null;
   approvedAt: string | null;
+  // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
+  // from the saved row, never re-read from the URL on edit (is_test is immutable).
+  isTest?: boolean;
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
 // The full quote builder, shared by /quote/new (blank) and /quote/[id] (edit —
 // hydrated from a saved quote, task #31).
 
-export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBuilderInitial }) {
+export default function QuoteBuilder({
+  initialQuote,
+  isTest: isTestProp,
+}: {
+  initialQuote?: QuoteBuilderInitial;
+  isTest?: boolean;
+}) {
   const editMode = initialQuote != null;
+  // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
+  // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
+  // banner and Calculate persists the quote as is_test=true (saveQuote).
+  const isTest = isTestProp ?? initialQuote?.isTest ?? false;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -1095,6 +1108,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           inputs,
           quoteId: existingQuoteId ?? undefined,
           designId: designId ?? undefined,
+          // Test Quote (#93): carried only into the first save (saveQuote);
+          // ignored on update, so is_test is set once and never flips.
+          isTest,
         }),
       });
       const data = await res.json();
@@ -1311,6 +1327,29 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     <OperatorShell active="new">
       <div className="max-w-3xl mx-auto">
 
+        {/* TEST MODE banner (#93) — persistent while building/driving a test
+            quote. Violet (not error-red / warning-amber) so it reads clearly as
+            a non-production state, never as something broken. */}
+        {isTest && (
+          <div
+            className="mb-6 rounded-lg border-2 border-dashed px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#7c3aed', backgroundColor: '#f5f3ff' }}
+            role="status"
+          >
+            <span className="text-lg leading-none" aria-hidden>🧪</span>
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide" style={{ color: '#6d28d9' }}>
+                Test Mode
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#5b21b6' }}>
+                Fully-simulated test quote. It flows the whole pipeline (send → approve → deposit → job → inventory)
+                but never sends a real text/email or charges a card, and is excluded from every dashboard metric.
+                Clean it up anytime with “Delete test data” in Settings.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
@@ -1318,6 +1357,11 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           </p>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900">{editMode ? 'Edit Quote' : 'New Quote'}</h1>
+            {isTest && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">
+                Test
+              </span>
+            )}
             {initialQuote?.approvedAt ? (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">
                 Approved

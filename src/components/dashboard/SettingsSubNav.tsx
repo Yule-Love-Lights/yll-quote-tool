@@ -9,12 +9,14 @@ const ITEMS = [
   { label: 'Customer Portal', href: '/settings/customer-portal', key: 'customer-portal' as const },
   // Operator accounts (admin-only; the page itself gates on the admin role).
   { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },
+  // Test-quote tools + saved-quotes dev actions (#93).
+  { label: 'Quotes', href: '/settings/quotes', key: 'quotes' as const },
 ];
 
 export function SettingsSubNav({
   active,
 }: {
-  active: 'settings' | 'training' | 'customer-portal' | 'accounts';
+  active: 'settings' | 'training' | 'customer-portal' | 'accounts' | 'quotes';
 }) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>
