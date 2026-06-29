@@ -159,7 +159,12 @@ async function findCandidates(identity: ContactIdentity): Promise<StoredContact[
   const emails = nonNull((identity.emails ?? []).map(normalizeEmail));
   const phones = nonNull((identity.phones ?? []).map(normalizePhone));
   const conds: string[] = [];
-  if (identity.ghlContactId) conds.push(`ghl_contact_id.eq.${identity.ghlContactId}`);
+  // ghl ids are alphanumeric; only interpolate one that matches a safe pattern so
+  // a crafted value can't inject PostgREST .or() syntax. emails are delimiter-free
+  // (normalizeEmail) and phones are +digits, so both are safe to interpolate.
+  if (identity.ghlContactId && /^[A-Za-z0-9_-]+$/.test(identity.ghlContactId)) {
+    conds.push(`ghl_contact_id.eq.${identity.ghlContactId}`);
+  }
   if (emails.length) conds.push(`emails.ov.{${emails.join(',')}}`);
   if (phones.length) conds.push(`phones.ov.{${phones.join(',')}}`);
   if (!conds.length) return [];
@@ -561,9 +566,14 @@ export async function markFollowUpDone(id: string, operatorId: string): Promise<
 
 // ─── Response-time / SLA analytics ──────────────────────────────────────────
 
-export type MetricsResult = { ok: true; items: MetricItem[] } | { ok: false; error: string };
+const METRICS_ROW_CAP = 2000;
+export type MetricsResult =
+  | { ok: true; items: MetricItem[]; truncated: boolean }
+  | { ok: false; error: string };
 
-/** Items in the trailing `sinceDays` window (by last_message_at) for analytics. */
+/** Items in the trailing `sinceDays` window (by last_message_at) for analytics.
+ *  `truncated` is true when the window hit the row cap, so the UI can say the
+ *  stats are based on a sample rather than silently under-reporting. */
 export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -572,7 +582,7 @@ export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult
     .from('inbox_items')
     .select('status, last_message_at, handled_at, handled_by, source')
     .gte('last_message_at', since)
-    .limit(2000);
+    .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((r): MetricItem => ({
     status: r.status as string,
@@ -581,5 +591,5 @@ export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,
   }));
-  return { ok: true, items };
+  return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
 }

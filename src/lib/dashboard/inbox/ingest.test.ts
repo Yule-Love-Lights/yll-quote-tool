@@ -55,6 +55,10 @@ describe('parseIngestPayload — generic ingest (Homeworks + future sources)', (
     expect(parseIngestPayload(rest).ok).toBe(false);
   });
 
+  it('rejects an invalid occurredAt (clean 400 rather than a later 500)', () => {
+    expect(parseIngestPayload({ ...valid, occurredAt: 'not-a-date' }).ok).toBe(false);
+  });
+
   it('rejects a payload with no usable contact identifier', () => {
     const r = parseIngestPayload({ externalId: 'x', occurredAt: '2026-06-28T14:00:00Z', contact: {} });
     expect(r.ok).toBe(false);

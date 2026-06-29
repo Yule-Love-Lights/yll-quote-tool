@@ -22,7 +22,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function ResponseStats({ metrics }: { metrics: ResponseMetrics }) {
+export function ResponseStats({ metrics, truncated = false }: { metrics: ResponseMetrics; truncated?: boolean }) {
   if (metrics.handled === 0 && metrics.open === 0) return null;
   return (
     <section
@@ -30,7 +30,7 @@ export function ResponseStats({ metrics }: { metrics: ResponseMetrics }) {
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
       <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--op-text)' }}>
-        Response stats — last 30 days
+        Response stats — last 30 days{truncated ? ' (most recent 2,000)' : ''}
       </h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <Stat label="Median reply" value={dur(metrics.medianResponseMs)} />

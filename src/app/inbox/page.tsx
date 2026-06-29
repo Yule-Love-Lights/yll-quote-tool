@@ -46,7 +46,9 @@ export default async function InboxPage() {
           </div>
         )}
 
-        {metricsRes.ok && <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} />}
+        {metricsRes.ok && (
+          <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} truncated={metricsRes.truncated} />
+        )}
       </div>
     </OperatorShell>
   );

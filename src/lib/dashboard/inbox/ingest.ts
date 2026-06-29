@@ -26,6 +26,12 @@ export function parseIngestPayload(body: unknown): IngestParseResult {
   if (typeof occurredAt !== 'string' && typeof occurredAt !== 'number') {
     return { ok: false, error: 'occurredAt (ISO string or epoch ms) is required' };
   }
+  const lastMessageAt = toDate(occurredAt);
+  if (Number.isNaN(lastMessageAt.getTime())) {
+    // Reject garbage here for a clean 400 — otherwise it would throw at
+    // .toISOString() during the upsert and surface as a 500.
+    return { ok: false, error: 'occurredAt is not a valid date/time' };
+  }
 
   let source: InboxSource = 'homeworks';
   if (b.source !== undefined) {
@@ -55,9 +61,9 @@ export function parseIngestPayload(body: unknown): IngestParseResult {
       sourceMessageId: null,
       direction,
       channel,
-      lastMessageAt: toDate(occurredAt),
-      preview: typeof b.preview === 'string' ? b.preview : null,
-      subject: typeof b.subject === 'string' ? b.subject : null,
+      lastMessageAt,
+      preview: typeof b.preview === 'string' ? b.preview.slice(0, 2000) : null,
+      subject: typeof b.subject === 'string' ? b.subject.slice(0, 500) : null,
       identity: {
         ghlContactId,
         emails: email ? [email] : [],

@@ -13,6 +13,11 @@ describe('normalizeEmail', () => {
     expect(normalizeEmail('not-an-email')).toBeNull();
     expect(normalizeEmail('a@b')).toBeNull(); // no TLD
   });
+  it('rejects PostgREST filter delimiters (injection guard for .or() array filters)', () => {
+    expect(normalizeEmail('a@b.co,m')).toBeNull(); // comma
+    expect(normalizeEmail('x@y.com,ghl_contact_id.neq.z')).toBeNull();
+    expect(normalizeEmail('a@b.c)om')).toBeNull(); // paren
+  });
   it('returns null for non-string input', () => {
     expect(normalizeEmail(null as unknown as string)).toBeNull();
     expect(normalizeEmail(undefined as unknown as string)).toBeNull();

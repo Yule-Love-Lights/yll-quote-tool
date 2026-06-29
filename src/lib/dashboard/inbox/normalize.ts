@@ -10,13 +10,15 @@
 
 const ET_TIME_ZONE = 'America/New_York';
 
-/** Lowercase + trim an email; null unless it's a plausible addr@domain.tld. */
+/** Lowercase + trim an email; null unless it's a plausible addr@domain.tld.
+ *  Excludes the PostgREST filter delimiters , ( ) { } as well as @/whitespace —
+ *  emails never legitimately contain those, and it keeps a normalized value safe
+ *  to interpolate into a `.or()` array filter (see identity lookups in store.ts). */
 export function normalizeEmail(raw: string): string | null {
   if (typeof raw !== 'string') return null;
   const v = raw.trim().toLowerCase();
   if (!v) return null;
-  // Minimal sanity check — a local part, an @, and a dotted domain.
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return null;
+  if (!/^[^\s@,(){}]+@[^\s@,(){}]+\.[^\s@,(){}]+$/.test(v)) return null;
   return v;
 }
 
