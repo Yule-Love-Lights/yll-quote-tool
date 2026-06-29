@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { friendlyPortalError } from '../friendlyError';
 
 type Props = {
   quoteId: string;
@@ -61,7 +62,11 @@ export function DepositCheckout({ quoteId, onClose }: Props) {
         window.location.href = body.redirectUrl as string;
       } catch (err) {
         if (cancelled) return;
-        setErrorMsg(err instanceof Error ? err.message : 'Something went wrong starting payment.');
+        // Friendly-error convention (audit fix g10): never surface the raw
+        // server/network error (Valor/Postgres internals, "Failed to fetch") to
+        // the customer. Log it for debugging; show fixed, recoverable copy.
+        console.error('deposit checkout start failed', err);
+        setErrorMsg(friendlyPortalError('start checkout'));
         setPhase('error');
       }
     })();
