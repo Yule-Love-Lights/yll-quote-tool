@@ -13,6 +13,10 @@ Adopt these four principles by default when writing, reviewing, or refactoring *
 3. **Surgical changes** — touch only what the request requires; match existing style; don't refactor or reformat unrelated code; flag unrelated dead code rather than deleting it; clean up only orphans your own change created.
 4. **Goal-driven execution** — turn tasks into verifiable success criteria (e.g. a failing test → make it pass) and loop until they're met; state a brief plan for multi-step work.
 
+**Verification before calling it "done" (scale it to the change).** After shipping a feature/fix: run the full gates (`tsc · lint · test`) green, then a self-review **sized to the risk**. Small change → a critical re-read of your own diff (watch for unreachable branches, a stale doc/route reference, a half-updated registry). **Customer-facing or risky** change → a full adversarial review (multi-agent), then disposition each finding. Don't fire a heavy review on a typo; don't ship a customer-facing change on a glance.
+
+**Confirm a feature variant's exact scope before editing.** Adding a variant (a light pattern, a mini-light / spritzer type, a surface) → pin down *which* bulb types / surfaces / cases it applies to first; don't apply it broadly across all types unless asked. This is principle #1 in our domain — the #92 light-patterns build went smoothly precisely because the scope (minis vs spritzers vs C9, whole-house vs per-item) was nailed before any code.
+
 **Pitfalls we've hit — don't repeat:**
 - **Branch BEFORE you edit.** Create your `jason/`/`naldo/` feature branch *first* — never start editing on `master`'s working tree (even uncommitted), then scramble to move the changes onto a branch later.
 - **Trace the full side-effect chain before presenting an approach** — especially for subtle gesture / shared-editor-core changes. (e.g. a `dragstart→stopDrag` plan had to be reversed mid-build once it was found to trigger `dragend→bake→mid-draw redraw`; verifying the whole chain first avoids approving-then-reversing.)
@@ -55,8 +59,12 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 - **Own-area PRs: no cross-review needed** — a PR touching only your own area doesn't need the *other* owner's review (your own dev's go to merge still applies, per above).
 - **SHARED-file PRs: the other owner reviews first** before merge.
 - **Always merge current, never stale.** Before merging ANY PR, `git fetch`. If `master` has advanced past the branch's base, bring the branch up to date with `master` (merge `master` in or rebase, resolve any conflicts) and **re-run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) on the updated branch** before merging. Never merge a branch whose green gates predate the current `master` — a clean text-merge can still be a logical regression when `master` changed underneath (e.g. a renamed export, a changed type, new business rules). This applies even to same-day branches, and strengthens the "merge `master` back in if a branch lives more than a day" guidance above into a hard pre-merge step. (Merging on GitHub combines the branch with origin's *current* `master` regardless of your local state, so this is about updating the **branch**, not just pulling local `master`.)
+- **If the Bash tool is unavailable** (e.g. a transient safety-classifier outage, as happened in S12) don't silently stall on a git/gate step — surface a **ready-to-paste manual git sequence** (or gate commands) for the dev to run in their own terminal, then continue from the verified result.
 
 ## Shared memory (docs/context ⇄ local)
+
+**Session numbering — one conversation = one session.** Never auto-increment or relabel the session number mid-conversation: an overnight pause + "good morning" resume does NOT advance it; only a *fresh conversation* does. Read the current number from the session logs at start and keep it fixed unless the dev explicitly says otherwise. (Hard-won — the premature "S13 CLOSE" mislabel in S12.)
+
 Each machine's local `~/.claude/.../memory` seeds from + syncs back to the repo's `docs/context/` (the canonical mirror). To stop the two machines clobbering each other:
 - **Session logs are per-dev** — Jason writes `session_log.md`, Naldo writes `session_log_naldo.md`. **Only ever edit your OWN log.** Read both at session start.
 - **`task_ledger.md` + `project_quote_tool.md` stay unified** (one source of truth). Before copying local → `docs/context`, **branch your sync off a fresh `git pull origin master`** so your PR is only your delta on top of the latest shared state — git auto-merges non-overlapping edits; you only hand-resolve a literal same-line clash.
