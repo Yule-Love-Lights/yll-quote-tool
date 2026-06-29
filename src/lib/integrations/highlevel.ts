@@ -366,6 +366,16 @@ export async function markConversationRead(
   );
 }
 
+// ⚠️ WRITE — add tags to a contact (Handled write-back: 'dashboard-handled' +
+// 'handled-by-<member>'). POST /contacts/{id}/tags { tags } merges (doesn't
+// replace) the contact's tags. Uses the default contacts Version header.
+export async function addContactTags(contactId: string, tags: string[]): Promise<{ tags?: string[] }> {
+  return ghlFetch<{ tags?: string[] }>(`/contacts/${encodeURIComponent(contactId)}/tags`, {
+    method: 'POST',
+    body: JSON.stringify({ tags }),
+  });
+}
+
 // ─── Mapper: HighLevel → CrmContact ───────────────────────────────────────
 // Centralized so a schema drift on GHL's side only breaks here, not in
 // every consumer. Audit fix: redaction is now the DEFAULT — the public

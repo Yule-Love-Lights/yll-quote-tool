@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { searchConversations, getConversationMessages, markConversationRead } from './highlevel';
+import { searchConversations, getConversationMessages, markConversationRead, addContactTags } from './highlevel';
 
 const realFetch = global.fetch;
 
@@ -70,6 +70,17 @@ describe('getConversationMessages', () => {
     stubFetch({ messages: {} });
     const res = await getConversationMessages('conv-1');
     expect(res.messages).toEqual([]);
+  });
+});
+
+describe('addContactTags — write path (handled-by / dashboard-handled tags)', () => {
+  it('POSTs the tags to the contact tags endpoint', async () => {
+    const fetchMock = stubFetch({ tags: ['dashboard-handled'] });
+    await addContactTags('contact-1', ['dashboard-handled', 'handled-by-naldo']);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.method).toBe('POST');
+    expect(url).toContain('/contacts/contact-1/tags');
+    expect(JSON.parse(init.body as string)).toEqual({ tags: ['dashboard-handled', 'handled-by-naldo'] });
   });
 });
 

@@ -8,7 +8,7 @@ import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { markItemHandledLocal, recordWriteback } from '@/lib/dashboard/inbox/store';
 import { isUuid } from '@/lib/dashboard/inbox/validate';
-import { markConversationRead } from '@/lib/integrations/highlevel';
+import { runHandledWriteback } from '@/lib/dashboard/inbox/sync';
 
 export const runtime = 'nodejs';
 
@@ -36,21 +36,12 @@ export async function POST(req: NextRequest) {
   const local = await markItemHandledLocal(itemId, operator?.id ?? 'system', now);
   if (!local.ok) return NextResponse.json({ error: local.error }, { status: 409 });
 
-  // 2. Best-effort source write-back. GHL: mark the conversation read.
-  //    NOTE: whether mark-read clears the conversation unread badge is UNVERIFIED
-  //    pending a human-watched live test — see the spike + memory. TODO(#58):
-  //    ensure/advance the opportunity + handled-by tag, and Gmail label write-back.
-  const t = local.target;
-  const sync: Record<string, unknown> = {};
-  if (t.source === 'ghl' && t.externalId && t.sourceMessageId) {
-    try {
-      await markConversationRead(t.externalId, t.sourceMessageId);
-      sync.ghlMarkRead = 'ok';
-    } catch (err) {
-      sync.ghlMarkRead = 'failed';
-      sync.ghlError = err instanceof Error ? err.message : String(err);
-    }
-  }
+  // 2. Best-effort source write-back: GHL mark-read + handled-by tag + ensure the
+  //    pipeline opportunity, and the Gmail YLL/Handled label. Each step is caught
+  //    independently and its outcome persisted. NOTE: whether GHL mark-read clears
+  //    the conversation unread badge is UNVERIFIED pending a human-watched live
+  //    test (see the spike + memory).
+  const sync = await runHandledWriteback(local.target, operator?.email ?? 'operator');
   await recordWriteback(itemId, sync);
 
   return NextResponse.json({ ok: true, sync });

@@ -89,3 +89,42 @@ export async function getThread(accessToken: string, threadId: string): Promise<
     accessToken,
   );
 }
+
+// ─── WRITE side (gmail.modify) — the Handled write-back ─────────────────────
+// Coded, but only invoked from the Handled route (never auto-run). The poll above
+// is strictly read; these mutate the mailbox.
+
+async function gmailPost<T>(path: string, accessToken: string, body: unknown): Promise<T> {
+  const res = await fetch(`${GMAIL_API}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Gmail POST ${path} → ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export type GmailLabel = { id: string; name: string };
+
+/** ⚠️ WRITE. Find the label by name, or create it; returns its id. */
+export async function getOrCreateLabel(accessToken: string, name: string): Promise<string> {
+  const user = encodeURIComponent(gmailUser());
+  const list = await gmailGet<{ labels?: GmailLabel[] }>(`/users/${user}/labels`, accessToken);
+  const found = list.labels?.find((l) => l.name === name);
+  if (found) return found.id;
+  const created = await gmailPost<GmailLabel>(`/users/${user}/labels`, accessToken, { name });
+  return created.id;
+}
+
+/** ⚠️ WRITE. Add/remove labels on a thread (Handled: + YLL/Handled, − UNREAD). */
+export async function modifyThread(
+  accessToken: string,
+  threadId: string,
+  body: { addLabelIds?: string[]; removeLabelIds?: string[] },
+): Promise<void> {
+  const user = encodeURIComponent(gmailUser());
+  await gmailPost<unknown>(`/users/${user}/threads/${encodeURIComponent(threadId)}/modify`, accessToken, body);
+}

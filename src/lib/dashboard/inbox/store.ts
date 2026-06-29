@@ -371,6 +371,7 @@ export type HandledTarget = {
   externalId: string;
   sourceMessageId: string | null;
   ghlContactId: string | null;
+  displayName: string | null;
 };
 export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string };
 
@@ -387,7 +388,7 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
     .update({ status: 'handled', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId)
     .neq('status', 'handled')
-    .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id )')
+    .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
   if (error) return { ok: false, error: error.message };
   if (!data) return { ok: false, error: 'Item not found or already handled' };
@@ -401,6 +402,7 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
       externalId: String(row.external_id),
       sourceMessageId: (row.source_message_id as string | null) ?? null,
       ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
+      displayName: (c?.display_name as string | null) ?? null,
     },
   };
 }

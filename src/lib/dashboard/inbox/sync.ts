@@ -3,8 +3,23 @@
 // runs only with the migration applied + creds set. Shared by the cron routes and
 // the GHL webhook (the webhook is just a low-latency trigger for the reconcile).
 
-import { isHighLevelConfigured, searchConversations, sendEmail } from '@/lib/integrations/highlevel';
-import { getAccessToken, getThread, isGmailConfigured, listInboxThreads } from '@/lib/integrations/gmail';
+import {
+  addContactTags,
+  findOrCreateOpportunityForContact,
+  isHighLevelConfigured,
+  markConversationRead,
+  searchConversations,
+  sendEmail,
+} from '@/lib/integrations/highlevel';
+import {
+  getAccessToken,
+  getOrCreateLabel,
+  getThread,
+  isGmailConfigured,
+  listInboxThreads,
+  modifyThread,
+} from '@/lib/integrations/gmail';
+import type { HandledTarget } from './store';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThread } from './gmail';
@@ -192,6 +207,76 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
     await recordSyncRun('gmail', 'error', error);
     return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
   }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Best-effort source write-back for a Handled item — runs AFTER the local stamp,
+ * so attribution never depends on it. Each channel step is caught independently;
+ * the per-step outcome goes into handled_channel_sync. ⚠️ These are live GHL/Gmail
+ * WRITES (mark-read / tag / opportunity / label) — only the Handled route invokes
+ * this; nothing runs them automatically.
+ *   • GHL: mark the conversation read; tag the contact (dashboard-handled +
+ *     handled-by-<operator>); ensure a pipeline opportunity (fixes "never logged").
+ *   • Gmail: add the YLL/Handled label + remove UNREAD.
+ */
+export async function runHandledWriteback(target: HandledTarget, operatorLabel: string): Promise<Record<string, unknown>> {
+  const sync: Record<string, unknown> = {};
+
+  if (target.source === 'ghl' && target.externalId && target.sourceMessageId) {
+    try {
+      await markConversationRead(target.externalId, target.sourceMessageId);
+      sync.ghlMarkRead = 'ok';
+    } catch (err) {
+      sync.ghlMarkRead = 'failed';
+      sync.ghlMarkReadError = errMsg(err);
+    }
+  }
+
+  if (target.ghlContactId && isHighLevelConfigured()) {
+    try {
+      const tag = `handled-by-${operatorLabel}`.toLowerCase().replace(/\s+/g, '-');
+      await addContactTags(target.ghlContactId, ['dashboard-handled', tag]);
+      sync.ghlTags = 'ok';
+    } catch (err) {
+      sync.ghlTags = 'failed';
+      sync.ghlTagsError = errMsg(err);
+    }
+
+    const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
+    const stageId = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+    if (pipelineId && stageId) {
+      try {
+        const { created } = await findOrCreateOpportunityForContact({
+          contactId: target.ghlContactId,
+          pipelineId,
+          fallbackStageId: stageId,
+          fallbackName: target.displayName ?? 'Inbox lead',
+        });
+        sync.ghlOpportunity = created ? 'created' : 'exists';
+      } catch (err) {
+        sync.ghlOpportunity = 'failed';
+        sync.ghlOpportunityError = errMsg(err);
+      }
+    }
+  }
+
+  if (target.source === 'gmail' && target.externalId && isGmailConfigured()) {
+    try {
+      const token = await getAccessToken();
+      const labelId = await getOrCreateLabel(token, 'YLL/Handled');
+      await modifyThread(token, target.externalId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+      sync.gmailLabel = 'ok';
+    } catch (err) {
+      sync.gmailLabel = 'failed';
+      sync.gmailLabelError = errMsg(err);
+    }
+  }
+
+  return sync;
 }
 
 async function emailTeam(subject: string, html: string): Promise<boolean> {
