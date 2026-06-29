@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import type { Scene, BulbColor } from '@/lib/design/sceneTypes';
 import type { ReadOnlyDesignController } from './editor-core/render-readonly';
 import { setPalette } from './editor-core/colors';
 import { setRenderSettings, type RenderSettings } from './editor-core/renderSettings';
+import { buildRenderColorMap, offeredFromLists, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 
 type Props = {
   scene: Scene;
@@ -41,6 +42,24 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   // flow below, so the reset on remount happens off the render path too.
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  // #92 — the offered solid colors per type (from bindings), fetched once.
+  const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
+      .catch((e) => { console.warn('[DesignCanvas] offered-colors fetch failed', e); });
+    return () => { alive = false; };
+  }, []);
+  // Resolve the customer's whole-house choice to PER-ITEM render colors — each light
+  // item shows exactly the strand/solid we'd install (#92). null = as-designed. We
+  // hold at as-designed until offered-colors load (offeredColors == null) so the
+  // render never flashes the wrong fallback color mid-fetch.
+  const colorMap = useMemo(
+    () => (offeredColors == null ? null : buildRenderColorMap(scene.items, colorOverride ?? null, offeredFromLists(offeredColors))),
+    [scene, colorOverride, offeredColors],
+  );
 
   // Mount/teardown the Konva stage — only when the scene or photo changes.
   // hiddenIds is intentionally NOT a mount dependency: a toggle updates the
@@ -71,7 +90,7 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
           photoW,
           photoH,
           hiddenIds: hiddenIds ?? null,
-          colorOverride: colorOverride ?? null,
+          colorOverride: colorMap,
         });
         if (cancelled) {
           ctrl.destroy();
@@ -91,7 +110,7 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
       ctrlRef.current?.destroy();
       ctrlRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- hiddenIds + colorOverride handled by the live effects below; remounting on them would reload the photo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hiddenIds + colorMap handled by the live effects below; remounting on them would reload the photo.
   }, [scene, photoUrl, photoW, photoH]);
 
   // Live toggle filter — re-render the draw layer only (no remount/flicker).
@@ -99,19 +118,26 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
     ctrlRef.current?.setHidden(hiddenIds ?? null);
   }, [hiddenIds]);
 
-  // Live color override (#10) — re-render the draw layer only (no remount). The
-  // override array ref is stable per scheme (from the COLOR_SCHEMES constant),
-  // so this only fires when the customer actually switches schemes.
+  // Live color override (#10/#92) — re-render the draw layer only (no remount).
+  // colorMap (memoized) changes only when the scheme, scene, or offered-colors
+  // change, so this fires when the customer actually switches schemes.
   useEffect(() => {
-    ctrlRef.current?.setColorOverride(colorOverride ?? null);
-  }, [colorOverride]);
+    ctrlRef.current?.setColorOverride(colorMap);
+  }, [colorMap]);
 
   // Relatively-positioned WRAPPER carries the layout className. Inside it, the
   // Konva host is its OWN element with NO React children (Konva clears it via
   // innerHTML; React must not own anything inside it — React 19 DOM-ownership).
   // The skeleton/fallback is a SIBLING overlay, never a child of the host.
+  //
+  // width/height:100% so the wrapper FILLS the box the caller sized. Callers
+  // position us with `absolute inset-0`, but our inline `position:relative` wins
+  // over that `absolute` → the `inset-0` turns inert. Without an explicit
+  // 100%/100% the wrapper then collapses to 0 height and Konva renders a 1px-tall
+  // canvas (the "Your home, lit up" reprise dark-box bug). The hero was spared
+  // only because its CSS class (.portal-snow-stage-photo) already sets height:100%.
   return (
-    <div className={className} style={{ position: 'relative' }}>
+    <div className={className} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={hostRef} style={{ position: 'absolute', inset: 0 }} />
       {(!ready || failed) && (
         <div

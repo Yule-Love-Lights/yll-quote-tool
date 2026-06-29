@@ -49,11 +49,20 @@ export function verifyTelegramSecret(
  * (and large-negative for supergroups). We accept either number or string
  * because Telegram sends numbers but env vars are strings.
  */
-export function isAllowedChat(chatId: number | string | null | undefined): boolean {
-  const allow = (process.env.TELEGRAM_ALLOWED_CHATS ?? '')
+/**
+ * Parse TELEGRAM_ALLOWED_CHATS into a trimmed, non-empty list of chat-id strings.
+ * One source of truth for both the inbound allowlist (isAllowedChat) and the
+ * outbound proactive-notify broadcast (telegramNotify, #82 follow-up).
+ */
+export function allowedChats(): string[] {
+  return (process.env.TELEGRAM_ALLOWED_CHATS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+export function isAllowedChat(chatId: number | string | null | undefined): boolean {
+  const allow = allowedChats();
   if (!allow.length) return false;
   const norm = String(chatId ?? '').trim();
   return !!norm && allow.includes(norm);

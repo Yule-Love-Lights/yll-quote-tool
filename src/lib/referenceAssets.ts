@@ -1,4 +1,4 @@
-import { getSupabaseClient } from './supabase';
+import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 
 export type ReferenceAssetType = 'spritzer' | 'wreath' | 'garland';
 
@@ -30,7 +30,9 @@ export type ReferenceListItem = Omit<StoredReferenceAsset, 'base64'> & {
 export async function saveReferenceAsset(
   payload: ReferenceAssetPayload,
 ): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on reference_assets,
+  // #90); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   const { data, error } = await supabase
@@ -55,7 +57,9 @@ export async function saveReferenceAsset(
 }
 
 export async function listReferenceAssets(): Promise<StoredReferenceAsset[]> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on reference_assets,
+  // #90); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('reference_assets')
@@ -70,7 +74,9 @@ export async function listReferenceAssets(): Promise<StoredReferenceAsset[]> {
 }
 
 export async function deleteReferenceAsset(id: string): Promise<boolean> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on reference_assets,
+  // #90); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return false;
   const { error } = await supabase.from('reference_assets').delete().eq('id', id);
   if (error) {
@@ -85,7 +91,9 @@ export async function deleteReferenceAsset(id: string): Promise<boolean> {
 export async function getReferenceAssetsForAnalysis(
   perType = 2,
 ): Promise<StoredReferenceAsset[]> {
-  const supabase = getSupabaseClient();
+  // Service client first so reads/writes bypass RLS (enabled on reference_assets,
+  // #90); anon fallback for dev.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('reference_assets')

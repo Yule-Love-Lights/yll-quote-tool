@@ -57,7 +57,7 @@ export const COLOR_SCHEMES: ColorScheme[] = [
   { id: 'champagne',   label: 'Champagne',   colorIds: ['warm-white', 'cool-white'] },
   { id: 'candy-cane',  label: 'Candy Cane',  colorIds: ['cool-white', 'red', 'red'] },
   { id: 'christmas',   label: 'Christmas',   colorIds: ['green', 'green', 'red', 'red'] },
-  { id: 'blue-white',  label: 'Blue & White', colorIds: ['blue', 'blue', 'cool-white', 'cool-white'] },
+  { id: 'blue-white',  label: 'Frozen',      colorIds: ['blue', 'blue', 'cool-white', 'cool-white'] }, // #92 — renamed from "Blue & White"; id kept so saved quotes don't break
 ];
 
 const SCHEME_MAP = new Map<string, ColorScheme>(COLOR_SCHEMES.map((s) => [s.id, s]));

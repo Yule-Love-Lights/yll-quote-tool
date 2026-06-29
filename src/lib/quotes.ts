@@ -31,16 +31,22 @@ export type QuoteListItem = {
   status: QuoteStatus | null;
   decline_reason: string | null;
   quote_number: number | null;
+  // Fully-simulated test data (ledger #93). Admin/jobs/inventory show a TEST
+  // badge; the dashboard + persisted customer list exclude these. Always a real
+  // boolean (DB column is NOT NULL DEFAULT false).
+  is_test: boolean;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
-  // Use service client so admin listings ignore RLS restrictions.
+  // Use service client so admin listings ignore RLS restrictions. NOTE: the
+  // admin list intentionally keeps test quotes VISIBLE (badged) — the is_test
+  // exclusion lives only in the dashboard chokepoint, not here.
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) return [];
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -88,6 +94,29 @@ export async function deleteAllQuotes(): Promise<number> {
   return count ?? 0;
 }
 
+// Delete every test quote (ledger #93 "Delete test data"). Mirrors deleteQuote's
+// per-quote design cleanup: erase each test quote's linked design + its private
+// bucket images FIRST (the designs FK is `on delete set null`, so deleting only
+// the quote would orphan the design row + leave the house photo in storage),
+// then bulk-delete the test rows. The FK CASCADE on jobs.quote_id /
+// invoices.quote_id removes each test quote's derived job + invoice
+// automatically. Real (is_test = false) data is never touched. Idempotent:
+// re-running with no test rows left deletes 0 and returns 0.
+export async function deleteTestQuotes(): Promise<number> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) throw new Error('Supabase not configured');
+  const { data: testRows } = await sb.from('quotes').select('id').eq('is_test', true);
+  for (const row of (testRows ?? []) as Array<{ id: string }>) {
+    await deleteDesignsForQuote(row.id as string);
+  }
+  const { error, count } = await sb
+    .from('quotes')
+    .delete({ count: 'exact' })
+    .eq('is_test', true);
+  if (error) throw new Error(`deleteTestQuotes: ${error.message}`);
+  return count ?? 0;
+}
+
 // Customer fields are all optional while we're in testing mode. Empty or
 // missing values are persisted as "Anonymous" / null so admins can still
 // sort/filter without blowing up on NOT NULL constraints.
@@ -109,8 +138,17 @@ export async function saveQuote(
   inputs: QuoteInputs,
   result: QuoteResult,
   serviceType: ServiceType = DEFAULT_SERVICE_TYPE,
+  // Test Quote (ledger #93): true ⇒ this row is fully-simulated test data. Set
+  // once here at insert; updateQuote never touches it (is_test is immutable, so
+  // the derived job/invoice can trust the quote link).
+  isTest = false,
+  // Actor audit trail (#90): the operator's Supabase user id, or null when the
+  // auth gate is dormant (no session). Stamped once, on create.
+  createdBy: string | null = null,
 ): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so the write bypasses RLS (enabled on quotes, #90); the
+  // anon fallback keeps dev (no service key) working.
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   // Sequential display number (ledger #83, SPEC §4.6) — allocated once, on first
@@ -141,6 +179,8 @@ export async function saveQuote(
       // forward lifecycle is then re-derivable from the timestamps, but stamping
       // it here makes the explicit-status read path correct from row one.
       status: 'draft' satisfies QuoteStatus,
+      is_test: isTest,
+      created_by: createdBy,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
@@ -167,7 +207,8 @@ export async function updateQuote(
   // untouched (so a re-price that doesn't carry it can't reset the column).
   serviceType?: ServiceType,
 ): Promise<{ id: string } | null> {
-  const supabase = getSupabaseClient();
+  // Service client first so the write bypasses RLS (enabled on quotes, #90).
+  const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
   const { data, error } = await supabase
@@ -216,6 +257,9 @@ export type QuoteRaw = {
   status: QuoteStatus | null;
   decline_reason: string | null;
   quote_number: number | null;
+  // Test Quote (ledger #93) — so editing a test quote keeps it in TEST MODE
+  // (derived from the saved row, never re-set from the URL on edit).
+  is_test: boolean;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -225,7 +269,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, status, decline_reason, quote_number',
+      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, status, decline_reason, quote_number, is_test',
     )
     .eq('id', id)
     .maybeSingle();

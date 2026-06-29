@@ -157,7 +157,11 @@ export default async function PortalPage({
   // approved-but-unpaid customer still owes the deposit and must be able to pay.
   // With checkout OFF (the placeholder flow), approval is the end state.
   const isPaid = !!quote.approval?.depositPaidAt;
-  const isBooked = checkoutEnabled ? isPaid : isApproved;
+  // #93 — a TEST quote uses the same "booked = deposit PAID" logic as checkout-on
+  // (the simulated deposit stamps deposit_paid_at), so an approved-not-yet-paid
+  // test quote still shows the "Simulate deposit paid" bar instead of jumping
+  // straight to booked. Real quotes are unchanged.
+  const isBooked = checkoutEnabled || quote.isTest ? isPaid : isApproved;
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   const appSettings = await getAppSettings();
@@ -286,6 +290,7 @@ export default async function PortalPage({
           booked={isBooked}
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
+          isTest={quote.isTest}
         />
       </SelectionProvider>
     </main>

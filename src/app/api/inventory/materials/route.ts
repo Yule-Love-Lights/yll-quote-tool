@@ -10,6 +10,7 @@ import { getInventoryBindings } from '@/lib/inventory/bindings';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { listOnHand } from '@/lib/inventory/onHand';
 import { projectMaterials, buildMaterialsView } from '@/lib/inventory/materialsProjection';
+import { colorChoiceFromSnapshot } from '@/lib/inventory/resolveInstalls';
 import type { Scene } from '@/lib/design/sceneTypes';
 
 export const runtime = 'nodejs';
@@ -28,16 +29,17 @@ export async function GET(req: NextRequest) {
   }
   try {
     // The design linked to this quote (at most one; direct query avoids the
-    // sharp-importing designs.ts and the photo signing we don't need here).
-    const { data: design } = await sb
-      .from('designs')
-      .select('scene')
-      .eq('quote_id', quoteId.trim())
-      .maybeSingle();
+    // sharp-importing designs.ts and the photo signing we don't need here) + the
+    // quote's approved color choice (#92). Pre-approval → no snapshot → as-designed.
+    const [{ data: design }, { data: quote }] = await Promise.all([
+      sb.from('designs').select('scene').eq('quote_id', quoteId.trim()).maybeSingle(),
+      sb.from('quotes').select('approval_snapshot').eq('id', quoteId.trim()).maybeSingle(),
+    ]);
     const scene = (design?.scene ?? { yardsticks: [], items: [] }) as Scene;
+    const colorChoice = colorChoiceFromSnapshot((quote as { approval_snapshot: unknown } | null)?.approval_snapshot ?? null);
 
     const { bindings, clipRules } = await getInventoryBindings();
-    const lines = projectMaterials(scene, bindings, clipRules);
+    const lines = projectMaterials(scene, bindings, clipRules, colorChoice);
 
     const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
     const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));

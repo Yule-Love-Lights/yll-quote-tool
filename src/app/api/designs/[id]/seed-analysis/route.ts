@@ -20,6 +20,7 @@ import {
   sanitizeAnalysisSeed,
   analysisSeedHasContent,
   countSeededItems,
+  countSeededGarlandUnestimated,
 } from '@/lib/design/seedFromAnalysis';
 
 export const runtime = 'nodejs';
@@ -68,5 +69,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!ok) {
     return NextResponse.json({ error: 'Failed to save the seeded scene' }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, seeded: countSeededItems(scene) });
+  return NextResponse.json({
+    ok: true,
+    seeded: countSeededItems(scene),
+    // #90: garland runs seeded with no scale → the builder warns staff to set
+    // their section counts before quoting (silent fallback to 1 = under-bill).
+    garlandSectionsUnestimated: countSeededGarlandUnestimated(seed, scene, row.photo_w, row.photo_h),
+  });
 }

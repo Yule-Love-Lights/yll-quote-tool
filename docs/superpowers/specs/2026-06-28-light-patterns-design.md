@@ -1,9 +1,56 @@
 # Official light PATTERNS — customer-selectable, inventory-aware (#92)
 
-**Status:** SPEC / design locked — ready for Jason to plan + build. **Owner: Jason** (touches portal + design + the #82 inventory projection; coordinate the inventory bits with Naldo).
-**Date:** 2026-06-28 (Naldo directed; brainstormed with Claude). **Pricing/area:** no pricing-engine change.
+**Status:** ✅ DESIGN APPROVED + REVISED (Jason, S15 · 2026-06-29) — BUILDING. The **Revised design** section directly below SUPERSEDES the original spec (kept beneath it for history) wherever they differ. **Owner: Jason** (coordinate the inventory-projection edits with Naldo).
+**Date:** 2026-06-28 (Naldo directed) → revised 2026-06-29 (Jason + Claude). **Pricing/area:** no pricing-engine change.
 
-## The idea (Naldo)
+---
+
+## ✅ Revised design (Jason S15, 2026-06-29) — what we're actually building
+
+The original spec added the 9 patterns as **portal swatches**. Jason's revision: **do NOT add swatches** (the picker already has enough buttons). Instead the patterns work **behind the scenes** — we match the colors the customer *ends up with* to our real strands, and we make both the **portal design** and the **staff materials order** reflect only **what we can actually supply**.
+
+### Trigger & matching
+- Look at the customer's **effective colors** — from **Build-your-own**, an existing **named swatch**, or **As-designed** (the operator's per-item colors) — and **match by color SET, order-ignored**, against the known pattern signatures. No new swatches.
+- **The one portal-swatch change:** rename **"Blue & White" → "Frozen"** (label only; keep the id `blue-white` so saved quotes don't break). That swatch maps to the Frozen strand.
+
+### The shared "install resolver" (one source of truth)
+A pure function decides, per mini/spritzer item, what gets installed. **Both the portal render AND the materials projection consume it**, so the picture and the order never disagree.
+
+| Effective colors for an item | Result (render + order) |
+|---|---|
+| Matches a known pattern, strand exists for this product (+ size, spritzers) | **The strand** — render intermixed, order the strand SKU × count |
+| Matches a pattern with **no strand for this product** (Ocean/Wintergreen/Grinch/Rockefeller/Goblin spritzers) | **Round-robin** the offered colors across the items, one solid each |
+| **No pattern match** (e.g. red+blue+pink) | **Round-robin** across items, one solid each |
+| A color **not offered** for this item type | Dropped from the round-robin; if **none** are offered → fall back to the item's **as-designed** color |
+
+- **"Offered colors" = the live inventory bindings.** Minis offer 11 palette colors; spritzers offer 6 (no orange/yellow/purple/teal; 32" only in warm/pure white). Read from `getInventoryBindings()` so it auto-updates if a color is bound later.
+- **Round-robin** = one solid color per item, cycling in scene order, **separately per product type**. (Ocean spritzers, teal not offered → cycle blue/pure-white: 1→blue; 2→blue,white; 3→blue,white,blue; …) Minis with the Ocean strand just order the strand × count.
+- **Whole-house pick** (Build-your-own / named) → round-robin spreads it across items. **As-designed** → each item keeps its own authored color (no shuffle).
+- **C9 roofline is untouched** — every color is an individually-placed C9 bulb, so it's always installable/intermixed. The render change is **minis & spritzers only**.
+
+### Portal render change (the screenshot fix)
+Today the render cycles every color through *each* item (one bush shows all colors mixed). Change it to **one solid color per item** (round-robin) for the **no-strand** case; **matched strands stay intermixed** (a Grinch strand really is red/green/white woven together); C9 roofline unchanged.
+
+### Fulfillability gate (operator side only)
+Staff don't know what's stocked, so we **catch un-fulfillable items before send** rather than constrain the editor palette (constraining the picker = an editor-core change + design-tool relay, and can't catch the pattern case — rejected).
+- Flag any item we **can't supply as drawn**: (a) a **color we don't offer** for that type (orange spritzer), or (b) a **single item drawn as a multi-color mix that isn't a stocked strand**. In practice this only trips on **minis & spritzers**.
+- Surface as **red text per item in "From your design"** + **a red line by the Send button** + **block Send** until fixed (mirrors the existing garland-warning / $1,000-gate patterns).
+- **Customer is never blocked** — on the portal we **silently filter** their pick to what we offer (falling back to the operator's as-designed color, which the gate guarantees is fulfillable). Only the operator is gated.
+
+### Slices (separate PRs, TDD, no migration, **no editor-core change → no relay**)
+1. **Foundations** (this PR): `inventory/patternSkus.ts` (13 pattern signatures + SKUs) + `inventory/resolveInstalls.ts` (the resolver + offered-from-bindings) + tests. Pure libs, staff-side.
+2. **Inventory projection** consumes the resolver (`materialsProjection.ts` + thread `colorSchemeId`/`customPattern` from the snapshot at the 3 call sites: `jobs.ts`, materials `route.ts`, `purchaseOrder.ts`).
+3. **Portal render** consumes the resolver (customer-facing → adversarial review + Jason's go) + the Blue&White→Frozen rename.
+4. **Fulfillability gate** (`detectUnfulfillable.ts` + red flags in `DesignSummary.tsx` + banner/Send-block in `QuoteBuilder.tsx`).
+
+Suggested order: 1 → 2 → 4 → 3 (customer-facing render last). Naldo gets a heads-up before Slice 2 (his inventory files).
+
+### The 13 pattern signatures (set → SKUs; all verified against `concepts.ts`)
+`multicolor`{red,green,blue,yellow,pink} 40256 / 61201·61202 · `champagne`{warm-white,cool-white} 43096 / 61011·61012 · `candy-cane`{cool-white,red} 43136 / 61131·61132 · `christmas`{green,red} 43436 / 61341·61342 · `blue-white`(Frozen){blue,cool-white} 43156 / 61151·61152 · `ocean`{teal,blue,cool-white} 43556 / — · `wintergreen`{blue,green,cool-white} 43456 / — · `patriot`{red,cool-white,blue} 43356 / 61351·61352 · `grinch`{red,green,cool-white} 43346 / — · `rockefeller`{red,blue,green,orange,yellow} 43226 / — · `old-fashioned-candy-cane`{warm-white,red} 43036 / 61031·61032 · `goblin`{purple,green} 43756 / — · `halloween`{purple,orange} 43656 / 61671·61672. (Spritzer strands are 16″/24″ only — never 32″.)
+
+---
+
+## The idea (Naldo) — ORIGINAL SPEC BELOW (historical; superseded above where they differ)
 We have two disconnected notions of "pattern":
 1. **Render side** — `src/lib/design/colorSchemes.ts` already has customer-facing schemes (Multicolor, Champagne, Candy Cane, Christmas, Blue & White) that are just **color-id sequences** the portal recolors the live design with. They have **zero inventory effect**.
 2. **Inventory side** — the supplier actually sells **pattern STRANDS** for mini lights & spritzers (Grinch, Ocean, Frozen, Wintergreen, Patriot, Rockefeller, Goblin, …), each a real SKU. These are the curated mini/spritzer names added in the #82 binding work (`MINI_LIGHTS` / `SPRITZERS` in `src/lib/inventory/concepts.ts`).

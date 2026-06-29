@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type {
   QuoteResult,
   QuoteInputs,
@@ -30,6 +30,8 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -101,14 +103,27 @@ export type QuoteBuilderInitial = {
   designId: string | null;
   sentAt: string | null;
   approvedAt: string | null;
+  // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
+  // from the saved row, never re-read from the URL on edit (is_test is immutable).
+  isTest?: boolean;
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
 // The full quote builder, shared by /quote/new (blank) and /quote/[id] (edit —
 // hydrated from a saved quote, task #31).
 
-export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBuilderInitial }) {
+export default function QuoteBuilder({
+  initialQuote,
+  isTest: isTestProp,
+}: {
+  initialQuote?: QuoteBuilderInitial;
+  isTest?: boolean;
+}) {
   const editMode = initialQuote != null;
+  // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
+  // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
+  // banner and Calculate persists the quote as is_test=true (saveQuote).
+  const isTest = isTestProp ?? initialQuote?.isTest ?? false;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -135,6 +150,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
+  // from a send FAILURE so we never tell the operator to share the link manually.
+  const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
@@ -168,6 +186,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [designId, setDesignId] = useState<string | null>(initialQuote?.designId ?? null);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
+  // #90: how many AI-seeded garland runs had no scale to estimate length (so they
+  // fall back to 1 section). Surfaced as a builder warning so staff set the count.
+  const [garlandUnestimated, setGarlandUnestimated] = useState(0);
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -180,6 +201,25 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   // True while a per-item recommended write-back (scene PUT) is in flight, so
   // the checkboxes disable to prevent racing PUTs.
   const [recommendBusy, setRecommendBusy] = useState(false);
+  // #92 — offered solid colors per item type (from the bindings), fetched once.
+  // With the live design scene it flags items we can't supply → blocks Send.
+  const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // Fail OPEN: only gate when the offered catalog is positively known. A null/empty/
+  // failed offered fetch (unconfigured bindings, cold start, network blip) must never
+  // falsely flag every item or block Send — it just means "can't verify yet".
+  const unfulfillable = useMemo(
+    () => (offeredIsKnown(offeredColors) ? detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)) : []),
+    [breakdownScene, offeredColors],
+  );
+  const hasUnfulfillable = unfulfillable.length > 0;
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -258,7 +298,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ seed }),
       });
-      if (res.ok) setDesignEditorKey((k) => k + 1);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // #90: warn when garland runs were seeded with no scale (billed as 1
+        // section each) so staff set the real count before quoting.
+        setGarlandUnestimated(
+          typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+        );
+        setDesignEditorKey((k) => k + 1);
+      }
     } catch {
       // Non-fatal: the design still works, it just isn't pre-designed.
     }
@@ -300,6 +348,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           if (!stale) {
             pendingSeedRef.current = null;
             designPhotoRef.current = photoBase64;
+            // #90: warn if garland runs were seeded with no scale on create.
+            setGarlandUnestimated(
+              typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+            );
             if (pendingContextRef.current) {
               const ctx = pendingContextRef.current;
               pendingContextRef.current = null;
@@ -995,8 +1047,34 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     if (!savedQuoteId) return;
     setSendStatus('sending');
     setSendError(null);
+    setSendBlockedMsg(null);
     setGhlSyncWarning(null);
     setCopiedUrl(false);
+
+    // #92 — re-check fulfillability against the FRESHEST design at Send time: the
+    // breakdown-driven gate can be stale if the operator edited the canvas after
+    // Calculate. Flush the editor's pending save, re-fetch the live scene, re-check.
+    // Fails open (offered unknown / fetch error → don't block on the re-check).
+    if (designId && offeredIsKnown(offeredColors)) {
+      try {
+        await editorFlushRef.current?.();
+        const dres = await fetch(`/api/designs/${designId}`);
+        const ddata = await dres.json();
+        if (dres.ok) {
+          const liveScene = ddata?.design?.scene ?? { yardsticks: [], items: [] };
+          const bad = detectUnfulfillable(liveScene.items, offeredFromLists(offeredColors));
+          if (bad.length > 0) {
+            setSendBlockedMsg(
+              `Can’t send — ${bad.length} item${bad.length === 1 ? '' : 's'} we can’t supply. Recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see “From your design”), then Calculate again. Don’t share the link until it’s fixed.`,
+            );
+            setSendStatus('idle');
+            return;
+          }
+        }
+      } catch {
+        // The re-check itself failed (flush/network) — don't block the send on it.
+      }
+    }
 
     const url = portalUrlFor(savedQuoteId);
     // Copy first so if the stage-move fails the operator still has the
@@ -1095,6 +1173,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           inputs,
           quoteId: existingQuoteId ?? undefined,
           designId: designId ?? undefined,
+          // Test Quote (#93): carried only into the first save (saveQuote);
+          // ignored on update, so is_test is set once and never flips.
+          isTest,
         }),
       });
       const data = await res.json();
@@ -1311,6 +1392,29 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     <OperatorShell active="new">
       <div className="max-w-3xl mx-auto">
 
+        {/* TEST MODE banner (#93) — persistent while building/driving a test
+            quote. Violet (not error-red / warning-amber) so it reads clearly as
+            a non-production state, never as something broken. */}
+        {isTest && (
+          <div
+            className="mb-6 rounded-lg border-2 border-dashed px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#7c3aed', backgroundColor: '#f5f3ff' }}
+            role="status"
+          >
+            <span className="text-lg leading-none" aria-hidden>🧪</span>
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide" style={{ color: '#6d28d9' }}>
+                Test Mode
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#5b21b6' }}>
+                Fully-simulated test quote. It flows the whole pipeline (send → approve → deposit → job → inventory)
+                but never sends a real text/email or charges a card, and is excluded from every dashboard metric.
+                Clean it up anytime with “Delete test data” in Settings.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
@@ -1318,6 +1422,11 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           </p>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900">{editMode ? 'Edit Quote' : 'New Quote'}</h1>
+            {isTest && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">
+                Test
+              </span>
+            )}
             {initialQuote?.approvedAt ? (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">
                 Approved
@@ -1650,6 +1759,13 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   </div>
                 )}
                 {designError && <p className="text-sm text-red-600 mb-2">{designError}</p>}
+                {garlandUnestimated > 0 && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ {garlandUnestimated} garland {garlandUnestimated === 1 ? 'run' : 'runs'} had no scale to
+                    estimate length — billed as 1 section{garlandUnestimated === 1 ? '' : ' each'} for now. Draw a
+                    yardstick or set the section count on the design before quoting.
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor
@@ -2563,6 +2679,21 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               </div>
             )}
 
+            {hasUnfulfillable && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                {`⚠️ This design has ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — see the red notes in `}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline font-semibold hover:text-red-700 cursor-pointer"
+                >
+                  “From your design”
+                </button>
+                {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -2570,7 +2701,7 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending'}
+                disabled={sendStatus === 'sending' || hasUnfulfillable}
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
@@ -2583,6 +2714,21 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
             {sendStatus === 'error' && (
               <p className="mt-3 text-sm text-red-600">
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
+              </p>
+            )}
+
+            {sendBlockedMsg && (
+              <p className="mt-3 text-sm text-red-600 font-medium">
+                {sendBlockedMsg}{' '}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline cursor-pointer hover:text-red-700"
+                >
+                  Jump to it
+                </button>
               </p>
             )}
 

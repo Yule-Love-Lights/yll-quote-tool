@@ -14,6 +14,8 @@ const { requireAdmin, createUser, listUsers } = vi.hoisted(() => ({
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireAdmin,
   roleOf: (m: { role?: unknown } | null | undefined) => (m?.role === 'admin' ? 'admin' : 'operator'),
+  nameOf: (m: { name?: unknown } | null | undefined) =>
+    typeof m?.name === 'string' && m.name.trim() ? m.name.trim() : null,
 }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({ auth: { admin: { createUser, listUsers } } }),
@@ -61,21 +63,46 @@ describe('POST /api/admin/users', () => {
     expect(createUser).not.toHaveBeenCalled();
   });
 
-  it('creates an account with email_confirm + role when admin and input valid', async () => {
+  it('creates an account with email_confirm + role + name when admin and input valid', async () => {
     createUser.mockResolvedValue({
-      data: { user: { id: 'u9', email: 'new@x.com', app_metadata: { role: 'operator' } } },
+      data: { user: { id: 'u9', email: 'new@x.com', app_metadata: { role: 'operator', name: 'New Operator' } } },
       error: null,
     });
-    const res = await POST(makeReq({ email: 'new@x.com', password: 'longenough', role: 'operator' }));
+    const res = await POST(
+      makeReq({ email: 'new@x.com', password: 'longenough', role: 'operator', name: 'New Operator' }),
+    );
     expect(res.status).toBe(201);
     expect(createUser).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'new@x.com', email_confirm: true, app_metadata: { role: 'operator' } }),
+      expect.objectContaining({
+        email: 'new@x.com',
+        email_confirm: true,
+        app_metadata: { role: 'operator', name: 'New Operator' },
+      }),
     );
+    const json = await res.json();
+    expect(json.user.name).toBe('New Operator');
   });
 
   it('rejects a short password without calling Supabase', async () => {
-    const res = await POST(makeReq({ email: 'new@x.com', password: 'short', role: 'operator' }));
+    const res = await POST(makeReq({ email: 'new@x.com', password: 'short', role: 'operator', name: 'New Operator' }));
     expect(res.status).toBe(400);
     expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing/blank name without calling Supabase', async () => {
+    const res = await POST(makeReq({ email: 'new@x.com', password: 'longenough', role: 'operator', name: '   ' }));
+    expect(res.status).toBe(400);
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('trims the name before storing it', async () => {
+    createUser.mockResolvedValue({
+      data: { user: { id: 'u9', email: 'new@x.com', app_metadata: { role: 'operator', name: 'Trimmed' } } },
+      error: null,
+    });
+    await POST(makeReq({ email: 'new@x.com', password: 'longenough', role: 'operator', name: '  Trimmed  ' }));
+    expect(createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ app_metadata: { role: 'operator', name: 'Trimmed' } }),
+    );
   });
 });

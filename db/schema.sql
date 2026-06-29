@@ -44,6 +44,12 @@ alter table quotes
 alter table quotes
   add column if not exists quote_number int;
 
+-- Test Quote flag (ledger #93) — see migrations/2026-06-28-quotes-add-is-test.sql.
+-- Fully-simulated test data; jobs/invoices derive is_test via the quote link.
+alter table quotes
+  add column if not exists is_test boolean not null default false;
+create index if not exists quotes_is_test_idx on quotes (is_test);
+
 alter table quotes disable row level security;
 
 create index if not exists quotes_created_at_idx on quotes (created_at desc);

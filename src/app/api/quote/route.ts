@@ -4,7 +4,7 @@ import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -53,8 +53,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId, serviceType: rawServiceType } =
+  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest } =
     body as Record<string, unknown>;
+
+  // Test Quote (ledger #93): optional boolean. Only honored on a NEW save
+  // (saveQuote); the update branch never touches is_test (immutable). Anything
+  // other than an explicit `true` is treated as a normal (non-test) quote.
+  if (rawIsTest !== undefined && typeof rawIsTest !== 'boolean') {
+    return NextResponse.json({ error: 'isTest must be a boolean if provided' }, { status: 400 });
+  }
+  const isTest = rawIsTest === true;
 
   // service_type is optional in the request; when present it must be one of
   // the known values. Absent → default to holiday on a new save, leave
@@ -170,6 +178,10 @@ export async function POST(req: NextRequest) {
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
     // row; otherwise save a fresh quote.
     const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
+    // Actor audit trail (#90): stamp the creating operator on a NEW quote only
+    // (created_by is create-attribution; a re-price must not rewrite it). null
+    // while the auth gate is dormant (no session).
+    const operator = await getOperator();
     // On update, only touch the customer columns when the request actually
     // carried a customer object — omitting it must not reset the stored
     // name/address to the Anonymous sentinels.
@@ -182,7 +194,14 @@ export async function POST(req: NextRequest) {
           // undefined → leave the stored service_type untouched on update.
           serviceType ?? undefined,
         )
-      : await saveQuote(safeCustomer, quoteInputs, result, serviceType ?? DEFAULT_SERVICE_TYPE);
+      : await saveQuote(
+          safeCustomer,
+          quoteInputs,
+          result,
+          serviceType ?? DEFAULT_SERVICE_TYPE,
+          isTest,
+          operator?.id ?? null,
+        );
     return NextResponse.json({
       customer: safeCustomer,
       result,

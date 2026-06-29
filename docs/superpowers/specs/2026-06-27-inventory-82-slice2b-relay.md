@@ -1,6 +1,6 @@
 # Inventory #82 — Slice 2b: design-tool RELAY handoff (roof-feature tag)
 
-> **Status: ⚠️ RELAY PENDING — for Jason (or whoever has the standalone design-tool repo).**
+> **Status: ✅ RELAY DONE (Jason S14, 2026-06-29) — mirrored into the standalone design tool at `6f9a775`** (pushed to their main; verified byte-identical on disk, tsc clean). See the `task_ledger.md` relay callout.
 > Slice 2b shipped on the quote-tool side in branch `naldo/inventory-2b-roof-feature`. The
 > design-tool repo (`C:\Users\Jason\Desktop\YuleLoveLights\Claude`) is **not present on Naldo's
 > machine**, so the byte-identical relay could not be done in that session (same situation as #63's

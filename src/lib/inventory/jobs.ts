@@ -13,6 +13,7 @@ import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
 import { listOnHand, upsertOnHand } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialsView } from './materialsProjection';
+import { colorChoiceFromSnapshot } from './resolveInstalls';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -41,6 +42,9 @@ export type FulfillmentCard = {
   customerAddress: string | null;
   itemCount: number;
   installDate: string | null;
+  // Test Quote (ledger #93): VISIBLE in the Kanban but badged TEST + inert on
+  // real stock (prepareJobMaterials no-ops the deduction). Derived via the quote.
+  isTest: boolean;
 };
 
 // Pure: bucket cards into the four columns (every column present, stable order).
@@ -52,7 +56,10 @@ export function groupByStage(cards: FulfillmentCard[]): Record<FulfillmentStage,
   return out;
 }
 
-function toCard(j: JobRow, cust?: { name: string | null; address: string | null }): FulfillmentCard {
+function toCard(
+  j: JobRow,
+  cust?: { name: string | null; address: string | null; isTest?: boolean },
+): FulfillmentCard {
   return {
     id: j.id,
     jobNumber: j.job_number,
@@ -64,6 +71,7 @@ function toCard(j: JobRow, cust?: { name: string | null; address: string | null 
     customerAddress: cust?.address ?? null,
     itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
     installDate: j.install_date,
+    isTest: cust?.isTest ?? false,
   };
 }
 
@@ -79,14 +87,23 @@ export async function listFulfillmentCards(): Promise<FulfillmentCard[]> {
   if (!jobs.length) return [];
 
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
-  const custById = new Map<string, { name: string | null; address: string | null }>();
+  const custById = new Map<string, { name: string | null; address: string | null; isTest: boolean }>();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address')
+      .select('id, customer_name, customer_address, is_test')
       .in('id', quoteIds);
-    for (const q of (data ?? []) as { id: string; customer_name: string | null; customer_address: string | null }[]) {
-      custById.set(q.id, { name: q.customer_name ?? null, address: q.customer_address ?? null });
+    for (const q of (data ?? []) as {
+      id: string;
+      customer_name: string | null;
+      customer_address: string | null;
+      is_test: boolean | null;
+    }[]) {
+      custById.set(q.id, {
+        name: q.customer_name ?? null,
+        address: q.customer_address ?? null,
+        isTest: !!q.is_test,
+      });
     }
   }
 
@@ -120,6 +137,9 @@ export type WorkOrderJob = {
   customerName: string | null;
   customerAddress: string | null;
   stockDecrementedAt: string | null; // #82 Phase 2 — set once prep deducts stock
+  // Test Quote (ledger #93): derived from the linked quote. Drives the TEST
+  // badge + makes prepareJobMaterials no-op the real on-hand deduction.
+  isTest: boolean;
 };
 export type WorkOrder = { job: WorkOrderJob; materials: MaterialsView };
 
@@ -137,21 +157,25 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   let scene: Scene = { yardsticks: [], items: [] };
   let customerName: string | null = null;
   let customerAddress: string | null = null;
+  let isTest = false;
+  let colorChoice: string[] | null = null; // #92 — the customer's approved color pick
   if (job.quote_id) {
     const [{ data: design }, { data: quote }] = await Promise.all([
       db.from('designs').select('scene').eq('quote_id', job.quote_id).maybeSingle(),
-      db.from('quotes').select('customer_name, customer_address').eq('id', job.quote_id).maybeSingle(),
+      db.from('quotes').select('customer_name, customer_address, is_test, approval_snapshot').eq('id', job.quote_id).maybeSingle(),
     ]);
     if (design?.scene) scene = design.scene as Scene;
     if (quote) {
-      const q = quote as { customer_name: string | null; customer_address: string | null };
+      const q = quote as { customer_name: string | null; customer_address: string | null; is_test: boolean | null; approval_snapshot: unknown };
       customerName = q.customer_name ?? null;
       customerAddress = q.customer_address ?? null;
+      isTest = !!q.is_test;
+      colorChoice = colorChoiceFromSnapshot(q.approval_snapshot);
     }
   }
 
   const { bindings } = await getInventoryBindings();
-  const lines = projectMaterials(scene, bindings);
+  const lines = projectMaterials(scene, bindings, {}, colorChoice);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
   const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
@@ -173,6 +197,7 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
       customerName,
       customerAddress,
       stockDecrementedAt,
+      isTest,
     },
     materials,
   };
@@ -230,8 +255,12 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   }
 
   // Won the claim → deduct on-hand for the job's tracked materials.
+  // Test Quote safety (ledger #93): a test job advances through prep + the Kanban
+  // exactly like a real one (the claim above already marked it prepped + advanced
+  // the stage), but it must NEVER touch real on-hand. Skip the deduction entirely
+  // — an empty result, so the UI shows "prepped" with no phantom stock change.
   const wo = await getJobWorkOrder(id);
-  const deductions = wo ? computeStockDeductions(wo.materials.materials) : [];
+  const deductions = wo && !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
   for (const d of deductions) {
     try {
       await upsertOnHand({ sku: d.sku, on_hand_qty: d.after });

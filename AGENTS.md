@@ -13,6 +13,13 @@ Adopt these four principles by default when writing, reviewing, or refactoring *
 3. **Surgical changes** — touch only what the request requires; match existing style; don't refactor or reformat unrelated code; flag unrelated dead code rather than deleting it; clean up only orphans your own change created.
 4. **Goal-driven execution** — turn tasks into verifiable success criteria (e.g. a failing test → make it pass) and loop until they're met; state a brief plan for multi-step work.
 
+**Pitfalls we've hit — don't repeat:**
+- **Branch BEFORE you edit.** Create your `jason/`/`naldo/` feature branch *first* — never start editing on `master`'s working tree (even uncommitted), then scramble to move the changes onto a branch later.
+- **Trace the full side-effect chain before presenting an approach** — especially for subtle gesture / shared-editor-core changes. (e.g. a `dragstart→stopDrag` plan had to be reversed mid-build once it was found to trigger `dragend→bake→mid-draw redraw`; verifying the whole chain first avoids approving-then-reversing.)
+- **After a `git checkout` / branch switch, `Read` a file before you `Edit` it** — the harness requires a fresh read post-switch; doing it proactively avoids failed-edit retries.
+- **Read the giant `task_ledger.md` surgically.** Its rows are enormous single lines — grab a narrow line-range or `grep -o` just the bit you need; don't pull whole sections into context (it's the biggest avoidable context drain in a long session).
+- **Don't open a separate PR for every tiny docs/ledger tweak.** Batch the bundle-able ones into one PR or fold them into your session-close sync; only land a docs change on its own when something downstream needs it first (e.g. a rule before the work it governs).
+
 # Codebase navigation — prefer the graphify graph for big-picture questions
 
 A `graphify-out/` knowledge graph of `src/` may exist locally. It's **gitignored — per-machine, never committed**, so a fresh clone / another machine won't have one until it's built: `/graphify src` (free for code, ~seconds). The optional post-commit auto-rebuild hook (`graphify hook install`, also per-machine) then keeps it fresh on every commit.
