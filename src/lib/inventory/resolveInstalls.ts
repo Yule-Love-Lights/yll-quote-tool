@@ -190,3 +190,36 @@ export function resolveInstalls(
 
   return result;
 }
+
+// #92 — the per-item RENDER colors for a whole-house override (consumed by the
+// portal renderer). Each colorable item → its strand's colors (intermixed) or its
+// single solid color; C9 roofline / other light strands get the full choice cycle
+// (multi-color is installable there). A mini-group's decision propagates to its
+// member strands (they render individually). null choice (as-designed) → null = no
+// override (render the authored colors). Mirrors resolveInstalls so the picture the
+// customer sees matches the strands staff order.
+export function buildRenderColorMap(
+  items: SceneItem[],
+  choice: string[] | null,
+  offered: OfferedColors,
+): Map<string, string[]> | null {
+  if (!choice || choice.length === 0) return null;
+  const list = items ?? [];
+  const installs = resolveInstalls(list, choice, offered);
+  // Propagate each mini-group's decision to its member strands.
+  const decisionById = new Map(installs);
+  for (const item of list) {
+    if (isMiniGroup(item)) {
+      const d = installs.get(item.id);
+      if (d) for (const mid of item.memberIds ?? []) decisionById.set(mid, d);
+    }
+  }
+  const map = new Map<string, string[]>();
+  for (const item of list) {
+    if (!(isStrand(item) || isSpritzer(item) || isMiniArea(item))) continue; // only light items recolor
+    const d = decisionById.get(item.id);
+    if (d) map.set(item.id, d.kind === 'strand' ? d.colorIds : [d.colorId]);
+    else map.set(item.id, choice); // roofline c9 / unclassified strand → full cycle
+  }
+  return map;
+}

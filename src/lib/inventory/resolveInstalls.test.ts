@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { SceneItem, QuoteSpritzerSize } from '@/lib/design/sceneTypes';
-import { resolveInstalls, offeredFromBindings, resolveColorChoice, type OfferedColors } from './resolveInstalls';
+import { resolveInstalls, offeredFromBindings, resolveColorChoice, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
 import { miniKey, spritzerKey } from './concepts';
 import { matchPattern } from './patternSkus';
+
+const roof = (id: string): SceneItem =>
+  ({ kind: 'strand', id, surface: 'santas-roofline', bulbType: 'c9', colorPattern: [], stringCount: 1, points: [0, 0, 1, 1], spacingIn: 12, drawingStyle: 'solid', yardstickId: null }) as unknown as SceneItem;
 
 // ── minimal scene-item factories (cast partials; the resolver only reads a few fields) ──
 const sp = (id: string, colors: string[], size: QuoteSpritzerSize = '24'): SceneItem =>
@@ -104,6 +107,32 @@ describe('resolveColorChoice (snapshot → effective colors)', () => {
     expect(resolveColorChoice('as-designed', [])).toBeNull();
     expect(resolveColorChoice(undefined, undefined)).toBeNull();
     expect(resolveColorChoice('not-a-real-scheme', [])).toBeNull();
+  });
+});
+
+describe('buildRenderColorMap (per-item render colors)', () => {
+  const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+
+  it('as-designed (null choice) → null (no override)', () => {
+    expect(buildRenderColorMap([mini('b1', [])], null, o)).toBeNull();
+  });
+
+  it('matched pattern: minis render the strand colors (intermixed); strand-less spritzers render one solid', () => {
+    const m = buildRenderColorMap([mini('b1', []), sp('s1', [])], ['red', 'green', 'cool-white'], o); // Grinch
+    expect(m?.get('b1')).toEqual(['red', 'green', 'cool-white']); // intermixed strand
+    expect(m?.get('s1')).toEqual(['red']); // no Grinch spritzer → one solid (round-robin start)
+  });
+
+  it('C9 roofline keeps the full choice cycle (multi-color is installable there)', () => {
+    const m = buildRenderColorMap([roof('r1')], ['red', 'green', 'cool-white'], o);
+    expect(m?.get('r1')).toEqual(['red', 'green', 'cool-white']);
+  });
+
+  it('no-match combo: each bush renders one solid, cycling', () => {
+    const m = buildRenderColorMap([mini('b1', []), mini('b2', []), mini('b3', [])], ['red', 'blue', 'pink'], o);
+    expect(m?.get('b1')).toEqual(['red']);
+    expect(m?.get('b2')).toEqual(['blue']);
+    expect(m?.get('b3')).toEqual(['pink']);
   });
 });
 
