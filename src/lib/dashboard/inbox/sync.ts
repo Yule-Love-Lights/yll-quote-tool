@@ -13,8 +13,9 @@ import {
   setEscalation,
   setSyncCursor,
 } from './store';
-import { isDueForEodDigest, newlyCrossedLevel } from './escalation';
+import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
 import { etDayKey } from './normalize';
+import { ESCALATION_LEVEL } from './types';
 import {
   type EscalationEmailItem,
   eodDigestHtml,
@@ -74,6 +75,18 @@ async function emailTeam(subject: string, html: string): Promise<boolean> {
   return true;
 }
 
+// Never let a send error abort the cron or be mistaken for success. Returns
+// false on an unconfigured transport OR a thrown send — the caller then leaves
+// notified_levels un-advanced so the alert retries next run (never lost).
+async function emailTeamSafe(subject: string, html: string): Promise<boolean> {
+  try {
+    return await emailTeam(subject, html);
+  } catch (err) {
+    console.error('[inbox/escalate] team email failed:', err);
+    return false;
+  }
+}
+
 export type EscalationSummary = {
   ok: boolean;
   amber: number;
@@ -81,6 +94,9 @@ export type EscalationSummary = {
   eod: number;
   eodSent: boolean;
   downtimeMin: number;
+  /** True when an escalation email failed to send. notified_levels is NOT
+   *  advanced for those items, so the next run retries — the alert is never lost. */
+  sendFailed: boolean;
   error?: string;
 };
 
@@ -88,8 +104,8 @@ export type EscalationSummary = {
  * Score every open item, email the team (whole-team + sales@ via the internal
  * contact) for each newly-crossed amber/red level exactly once, and send one
  * end-of-day digest per ET day. Independent of anyone being logged in — this is
- * the safety net. Includes a watchdog: if the cron had stopped, the next run
- * flags the downtime.
+ * the safety net. notified_levels advances ONLY for a level whose email actually
+ * sent. Includes a watchdog: if the cron had stopped, the next run flags it.
  */
 export async function runEscalation(now: Date): Promise<EscalationSummary> {
   const prev = await getSyncCursor('escalate');
@@ -98,13 +114,14 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
   const res = await listEscalatableItems();
   if (!res.ok) {
     await recordSyncRun('escalate', 'error', res.error);
-    return { ok: false, amber: 0, red: 0, eod: 0, eodSent: false, downtimeMin, error: res.error };
+    return { ok: false, amber: 0, red: 0, eod: 0, eodSent: false, downtimeMin, sendFailed: false, error: res.error };
   }
 
   const amber: EscalationEmailItem[] = [];
   const red: EscalationEmailItem[] = [];
   const eod: EscalationEmailItem[] = [];
-  const updates: Array<{ id: string; level: number; notifiedLevels: number[] }> = [];
+  type Plan = { id: string; current: number; crossed: number | null; prevNotified: number[]; prevLevel: number };
+  const plans: Plan[] = [];
 
   for (const it of res.items) {
     if (!it.lastMessageAt) continue;
@@ -115,32 +132,44 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
       waiting: formatWaiting(now.getTime() - last.getTime()),
     };
     const crossed = newlyCrossedLevel(last, now, it.notifiedLevels);
-    if (crossed != null) {
-      (crossed >= 2 ? red : amber).push(emailItem);
-      updates.push({ id: it.id, level: crossed, notifiedLevels: [...it.notifiedLevels, crossed] });
-    }
+    if (crossed != null) (crossed >= ESCALATION_LEVEL.RED ? red : amber).push(emailItem);
     if (isDueForEodDigest(last, now)) eod.push(emailItem);
+    plans.push({ id: it.id, current: escalationLevel(last, now), crossed, prevNotified: it.notifiedLevels, prevLevel: it.escalationLevel });
   }
 
-  if (red.length) await emailTeam(escalationEmailSubject({ level: 2, count: red.length }), escalationEmailHtml({ level: 2, items: red }));
-  if (amber.length) await emailTeam(escalationEmailSubject({ level: 1, count: amber.length }), escalationEmailHtml({ level: 1, items: amber }));
+  // Send first; advance notified_levels only for the levels whose email went out.
+  const redSent = red.length
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.RED, count: red.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.RED, items: red }))
+    : true;
+  const amberSent = amber.length
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.AMBER, count: amber.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.AMBER, items: amber }))
+    : true;
+  const sendFailed = (red.length > 0 && !redSent) || (amber.length > 0 && !amberSent);
 
-  // Record notified levels only after attempting the email (so a send failure
-  // re-attempts next run rather than silently marking it notified).
-  for (const u of updates) await setEscalation(u.id, { escalationLevel: u.level, notifiedLevels: u.notifiedLevels });
+  for (const p of plans) {
+    let notified = p.prevNotified;
+    if (p.crossed != null) {
+      const sent = p.crossed >= ESCALATION_LEVEL.RED ? redSent : amberSent;
+      if (sent) notified = [...p.prevNotified, p.crossed];
+    }
+    // Write only when the display level changed or a level was newly notified.
+    if (p.current !== p.prevLevel || notified.length !== p.prevNotified.length) {
+      await setEscalation(p.id, { escalationLevel: p.current, notifiedLevels: notified });
+    }
+  }
 
   // EOD digest — at most once per ET day (rolls into the next day until handled).
   const today = etDayKey(now);
   const alreadySentToday = (prev.cursor?.eodDigestDate as string | undefined) === today;
   let eodSent = false;
   if (eod.length && !alreadySentToday) {
-    eodSent = await emailTeam(eodDigestSubject(eod.length), eodDigestHtml(eod));
+    eodSent = await emailTeamSafe(eodDigestSubject(eod.length), eodDigestHtml(eod));
   }
 
   // Watchdog: the engine just resumed after a gap — flag it so a silent outage
   // gets noticed (a safety net needs a safety net).
   if (downtimeMin > 30) {
-    await emailTeam(
+    await emailTeamSafe(
       `⚠️ Inbox escalation engine resumed after a ${downtimeMin}m gap`,
       `<p>The escalation cron had not run for ${downtimeMin} minutes and just resumed. Check the Vercel cron schedule if this recurs.</p>`,
     );
@@ -149,6 +178,6 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
   await setSyncCursor('escalate', {
     eodDigestDate: eodSent ? today : ((prev.cursor?.eodDigestDate as string | null) ?? null),
   });
-  await recordSyncRun('escalate', 'ok');
-  return { ok: true, amber: amber.length, red: red.length, eod: eod.length, eodSent, downtimeMin };
+  await recordSyncRun('escalate', sendFailed ? 'error' : 'ok', sendFailed ? 'one or more escalation emails failed to send' : undefined);
+  return { ok: true, amber: amber.length, red: red.length, eod: eod.length, eodSent, downtimeMin, sendFailed };
 }

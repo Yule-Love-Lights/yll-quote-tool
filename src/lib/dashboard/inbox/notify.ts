@@ -25,12 +25,18 @@ export function escalationEmailSubject(opts: { level: number; count: number }): 
   return `${prefix}: ${count} customer message${plural(count)} still unanswered`;
 }
 
+function clip(s: string, n = 140): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
+}
+
 function itemList(items: EscalationEmailItem[]): string {
   const rows = items
     .map(
       (i) =>
         `<li style="margin:0 0 10px"><strong>${i.name}</strong> — waiting ${i.waiting}` +
-        (i.preview ? `<br><span style="color:#555">${i.preview}</span>` : '') +
+        // Clip the preview: enough context to triage, without putting a full
+        // customer message body into a team-wide email.
+        (i.preview ? `<br><span style="color:#555">${clip(i.preview)}</span>` : '') +
         `</li>`,
     )
     .join('');

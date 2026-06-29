@@ -228,7 +228,7 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     contactId = plan.contactOp.contactId;
   } else if (plan.contactOp.kind === 'update') {
     const m = plan.contactOp.merged;
-    await sb
+    const { error: updErr } = await sb
       .from('dashboard_contacts')
       .update({
         ghl_contact_id: m.ghlContactId,
@@ -239,6 +239,9 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
         primary_phone: m.phones[0] ?? null,
       })
       .eq('id', plan.contactOp.contactId);
+    // Check the error like the insert/item paths do — otherwise merged
+    // identifiers can be silently dropped while the item still links to the row.
+    if (updErr) return { ok: false, error: updErr.message };
     contactId = plan.contactOp.contactId;
   } else {
     const { data, error } = await sb
@@ -394,6 +397,8 @@ export type EscalatableItem = {
   id: string;
   lastMessageAt: string | null;
   notifiedLevels: number[];
+  /** Currently-stored display level — so the cron only writes when it changed. */
+  escalationLevel: number;
   contact: { displayName: string | null } | null;
   preview: string | null;
 };
@@ -404,7 +409,7 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('id, last_message_at, notified_levels, preview, dashboard_contacts ( display_name )')
+    .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
     .eq('status', 'unresponded');
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
@@ -413,6 +418,7 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
       id: String(row.id),
       lastMessageAt: (row.last_message_at as string | null) ?? null,
       notifiedLevels: (row.notified_levels as number[] | null) ?? [],
+      escalationLevel: (row.escalation_level as number | null) ?? 0,
       preview: (row.preview as string | null) ?? null,
       contact: c ? { displayName: (c.display_name as string | null) ?? null } : null,
     };
