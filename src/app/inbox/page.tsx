@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { listDueFollowUps, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
 import { computeResponseMetrics } from '@/lib/dashboard/inbox/responseMetrics';
@@ -28,6 +29,9 @@ export default async function InboxPage() {
             Every unanswered customer message across channels. Reply from your phone or GHL, then
             mark it Handled — or it auto-clears when you reply.
           </p>
+          <Link href="/inbox/duplicates" className="text-sm mt-2 inline-block" style={{ color: 'var(--brand-evergreen-3)' }}>
+            Manage duplicate contacts →
+          </Link>
         </header>
 
         {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}

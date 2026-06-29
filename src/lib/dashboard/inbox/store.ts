@@ -15,6 +15,7 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import type {
   ContactIdentity,
   DueFollowUp,
+  DuplicateContactView,
   InboxSource,
   InboxStatus,
   NormalizedTouch,
@@ -22,7 +23,7 @@ import type {
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
-import { appendIdentifiers, resolveIdentity } from './identity';
+import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem } from './responseMetrics';
@@ -592,4 +593,81 @@ export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult
     source: r.source as string,
   }));
   return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
+}
+
+// ─── Identity merge (Phase 1.5) ─────────────────────────────────────────────
+
+export type DuplicatesResult = { ok: true; pairs: DuplicateContactView[] } | { ok: false; error: string };
+
+/** Contact pairs that share an identifier — the ambiguous dupes to merge by hand. */
+export async function listContactDuplicates(): Promise<DuplicatesResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('dashboard_contacts')
+    .select('id, ghl_contact_id, emails, phones, display_name')
+    .limit(1000);
+  if (error) return { ok: false, error: error.message };
+  const contacts = ((data ?? []) as unknown as Record<string, unknown>[]).map(toStoredContact);
+  const pairs = findDuplicatePairs(contacts).map((p): DuplicateContactView => ({
+    on: p.on,
+    a: { id: p.a.id, name: p.a.displayName, email: p.a.emails[0] ?? null, phone: p.a.phones[0] ?? null },
+    b: { id: p.b.id, name: p.b.displayName, email: p.b.emails[0] ?? null, phone: p.b.phones[0] ?? null },
+  }));
+  return { ok: true, pairs };
+}
+
+/**
+ * Merge `secondaryId` into `primaryId`: union identifiers onto the primary,
+ * repoint its items + follow-ups, then delete the secondary. Order matters —
+ * repoint BEFORE delete (inbox_items.contact_id is ON DELETE CASCADE), and update
+ * the primary's ghl_contact_id AFTER deleting the secondary (the column is UNIQUE,
+ * so both rows can't hold it at once).
+ */
+export async function mergeContactsById(
+  primaryId: string,
+  secondaryId: string,
+  operatorId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  if (primaryId === secondaryId) return { ok: false, error: 'Cannot merge a contact into itself' };
+
+  const { data, error } = await sb
+    .from('dashboard_contacts')
+    .select('id, ghl_contact_id, emails, phones, display_name')
+    .in('id', [primaryId, secondaryId]);
+  if (error) return { ok: false, error: error.message };
+  const rows = ((data ?? []) as unknown as Record<string, unknown>[]).map(toStoredContact);
+  const primary = rows.find((r) => r.id === primaryId);
+  const secondary = rows.find((r) => r.id === secondaryId);
+  if (!primary || !secondary) return { ok: false, error: 'Both contacts must exist' };
+  const merged = mergeContacts(primary, secondary);
+
+  // 1. Repoint the secondary's items + follow-ups onto the primary (BEFORE delete).
+  await sb.from('inbox_items').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
+  await sb.from('follow_ups').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
+
+  // 2. Delete the secondary (frees its UNIQUE ghl_contact_id).
+  const { error: delErr } = await sb.from('dashboard_contacts').delete().eq('id', secondaryId);
+  if (delErr) return { ok: false, error: delErr.message };
+
+  // 3. Now safe to write the merged identifiers onto the primary.
+  const { error: upErr } = await sb
+    .from('dashboard_contacts')
+    .update({
+      ghl_contact_id: merged.ghlContactId,
+      emails: merged.emails,
+      phones: merged.phones,
+      display_name: merged.displayName,
+      primary_email: merged.emails[0] ?? null,
+      primary_phone: merged.phones[0] ?? null,
+    })
+    .eq('id', primaryId);
+  if (upErr) return { ok: false, error: upErr.message };
+
+  await sb
+    .from('dashboard_activity')
+    .insert({ actor: operatorId, action: 'merged', contact_id: primaryId, detail: { mergedFrom: secondaryId } });
+  return { ok: true };
 }

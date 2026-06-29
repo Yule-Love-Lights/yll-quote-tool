@@ -76,6 +76,13 @@ export type OpenInboxItem = {
   contact: { displayName: string | null; email: string | null; phone: string | null } | null;
 };
 
+/** A candidate duplicate contact pair, shaped for the merge UI. */
+export type DuplicateContactView = {
+  on: string; // 'ghl' | 'email' | 'phone'
+  a: { id: string; name: string | null; email: string | null; phone: string | null };
+  b: { id: string; name: string | null; email: string | null; phone: string | null };
+};
+
 /** A pending follow-up due today, shaped for the /inbox "due today" strip. */
 export type DueFollowUp = {
   id: string;

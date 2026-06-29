@@ -82,3 +82,37 @@ export function appendIdentifiers(contact: StoredContact, candidate: ContactIden
       contact.displayName ?? (candidate.displayName != null ? normalizeName(candidate.displayName) : null),
   };
 }
+
+/**
+ * Merge `secondary` into `primary` (manual de-dup of the ambiguous cases identity
+ * resolution refused to auto-merge). The primary's id + canonical ghl id/name win;
+ * identifiers are unioned. Pure — the store repoints rows + deletes the secondary.
+ */
+export function mergeContacts(primary: StoredContact, secondary: StoredContact): StoredContact {
+  return appendIdentifiers(primary, {
+    ghlContactId: secondary.ghlContactId,
+    emails: secondary.emails,
+    phones: secondary.phones,
+    displayName: secondary.displayName,
+  });
+}
+
+export type DuplicatePair = { a: StoredContact; b: StoredContact; on: MatchReason };
+
+/**
+ * Find contact pairs that share an identifier (the duplicates identity resolution
+ * flagged ambiguous rather than auto-merging). O(n²) — fine at this volume.
+ */
+export function findDuplicatePairs(contacts: StoredContact[]): DuplicatePair[] {
+  const pairs: DuplicatePair[] = [];
+  for (let i = 0; i < contacts.length; i++) {
+    for (let j = i + 1; j < contacts.length; j++) {
+      const a = contacts[i];
+      const b = contacts[j];
+      if (a.ghlContactId && a.ghlContactId === b.ghlContactId) pairs.push({ a, b, on: 'ghl' });
+      else if (a.emails.some((e) => b.emails.includes(e))) pairs.push({ a, b, on: 'email' });
+      else if (a.phones.some((p) => b.phones.includes(p))) pairs.push({ a, b, on: 'phone' });
+    }
+  }
+  return pairs;
+}

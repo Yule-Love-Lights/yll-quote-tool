@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveIdentity, appendIdentifiers } from './identity';
+import { resolveIdentity, appendIdentifiers, mergeContacts, findDuplicatePairs } from './identity';
 import type { StoredContact } from './types';
 
 function contact(over: Partial<StoredContact>): StoredContact {
@@ -94,5 +94,36 @@ describe('appendIdentifiers — append-on-match, deduped + normalized', () => {
     const out = appendIdentifiers(existing, { ghlContactId: 'ghl-new', displayName: 'New' });
     expect(out.ghlContactId).toBe('ghl-orig');
     expect(out.displayName).toBe('Orig');
+  });
+});
+
+describe('mergeContacts — combine two contacts, keeping the primary canonical', () => {
+  it('keeps primary id + unions identifiers from the secondary', () => {
+    const primary = contact({ id: 'A', emails: ['a@x.com'], phones: ['+16315551234'], displayName: 'Jane' });
+    const secondary = contact({ id: 'B', emails: ['b@x.com'], phones: ['+16319999999'], ghlContactId: 'ghl-7', displayName: 'Janie' });
+    const out = mergeContacts(primary, secondary);
+    expect(out.id).toBe('A'); // primary survives
+    expect([...out.emails].sort()).toEqual(['a@x.com', 'b@x.com']);
+    expect([...out.phones].sort()).toEqual(['+16315551234', '+16319999999']);
+    expect(out.ghlContactId).toBe('ghl-7'); // filled from secondary (primary had none)
+    expect(out.displayName).toBe('Jane'); // primary's name wins
+  });
+});
+
+describe('findDuplicatePairs — surface contacts that share an identifier', () => {
+  it('pairs two contacts that share an email', () => {
+    const pairs = findDuplicatePairs([
+      contact({ id: 'A', emails: ['dup@x.com'] }),
+      contact({ id: 'B', emails: ['dup@x.com'] }),
+      contact({ id: 'C', emails: ['other@x.com'] }),
+    ]);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].on).toBe('email');
+    expect([pairs[0].a.id, pairs[0].b.id].sort()).toEqual(['A', 'B']);
+  });
+
+  it('pairs on a shared phone too, and reports none when nothing overlaps', () => {
+    expect(findDuplicatePairs([contact({ id: 'A', phones: ['+16315551234'] }), contact({ id: 'B', phones: ['+16315551234'] })])).toHaveLength(1);
+    expect(findDuplicatePairs([contact({ id: 'A', emails: ['a@x.com'] }), contact({ id: 'B', emails: ['b@x.com'] })])).toHaveLength(0);
   });
 });
