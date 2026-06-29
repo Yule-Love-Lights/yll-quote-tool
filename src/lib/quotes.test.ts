@@ -1,17 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
 
-// Data-layer coverage for the Test Quote flag (ledger #93): saveQuote persists
-// is_test, and deleteTestQuotes removes ONLY test rows (cleaning each one's
-// linked design first, mirroring deleteQuote). Runs against a small in-memory
-// Supabase fake modeling the chains quotes.ts uses (insert/select/single +
-// delete{count}/eq + select/eq/bare-await). displayId + designs are mocked.
+// Two concerns covered here:
+//  1) #90 RLS hardening — saveQuote / updateQuote write through the RLS-bypassing
+//     SERVICE-ROLE client (preferring it over anon) so they keep working once RLS
+//     is enabled on the quotes table.
+//  2) #93 Test Quote — saveQuote persists is_test, and deleteTestQuotes removes
+//     ONLY test rows (cleaning each one's linked design first, mirroring deleteQuote).
+// Both run against small in-memory Supabase fakes; displayId + designs are mocked.
 
-const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
+const { serviceRef, anonRef } = vi.hoisted(() => ({
+  serviceRef: { current: null as unknown },
+  anonRef: { current: null as unknown },
+}));
 
 vi.mock('./supabase', () => ({
-  getSupabaseServiceClient: () => sbRef.current,
-  getSupabaseClient: () => sbRef.current,
+  getSupabaseServiceClient: () => serviceRef.current,
+  getSupabaseClient: () => anonRef.current,
 }));
 
 // allocateNumber hits an RPC; saveQuote treats any failure as "skip the number".
@@ -23,10 +28,31 @@ const { deleteDesign, deleteDesignsForQuote } = vi.hoisted(() => ({
 }));
 vi.mock('./designs', () => ({ deleteDesign, deleteDesignsForQuote }));
 
-import { saveQuote, deleteTestQuotes } from './quotes';
+import { saveQuote, updateQuote, deleteTestQuotes } from './quotes';
 
-// ─── In-memory Supabase fake ────────────────────────────────────────────────
+// ── Fake A (#90): records which CLIENT a write goes through (service vs anon),
+// so a test can assert the RLS-safe path. ───────────────────────────────────
+function makeFake() {
+  const fromCalls: string[] = [];
+  const builder: Record<string, unknown> = {};
+  const ret = () => builder;
+  for (const m of ['select', 'insert', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
+    builder[m] = ret;
+  }
+  builder.single = async () => ({ data: { id: 'new-id' }, error: null });
+  builder.maybeSingle = async () => ({ data: { id: 'new-id' }, error: null });
+  builder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+  const client = {
+    from: (t: string) => {
+      fromCalls.push(t);
+      return builder;
+    },
+    rpc: async () => ({ data: 1, error: null }),
+  };
+  return { client, fromCalls };
+}
 
+// ── Fake B (#93): in-memory tables, for is_test + scoped-delete assertions. ──
 type Row = Record<string, unknown>;
 
 function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
@@ -91,21 +117,74 @@ function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
   return { client: { from }, tables };
 }
 
+const INPUTS = {} as QuoteInputs;
+const RESULT = { total: 100 } as QuoteResult;
 const customer = { name: 'Jane', address: '1 A St' };
 const inputs = {} as unknown as QuoteInputs;
 const result = { total: 100 } as unknown as QuoteResult;
 
 beforeEach(() => {
-  sbRef.current = null;
+  serviceRef.current = null;
+  anonRef.current = null;
   vi.clearAllMocks();
 });
 
-// ─── saveQuote: is_test ─────────────────────────────────────────────────────
+// ── #90: RLS-safe client routing ────────────────────────────────────────────
+
+describe('saveQuote', () => {
+  it('writes through the service-role client when configured (RLS-safe)', async () => {
+    const service = makeFake();
+    const anon = makeFake();
+    serviceRef.current = service.client;
+    anonRef.current = anon.client;
+
+    const res = await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(res).toEqual({ id: 'new-id' });
+    expect(service.fromCalls).toContain('quotes');
+    expect(anon.fromCalls).not.toContain('quotes');
+  });
+
+  it('falls back to the anon client when no service client (dev)', async () => {
+    const anon = makeFake();
+    anonRef.current = anon.client;
+
+    const res = await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(res).toEqual({ id: 'new-id' });
+    expect(anon.fromCalls).toContain('quotes');
+  });
+
+  it('returns null when Supabase is unconfigured', async () => {
+    expect(await saveQuote({ name: 'Jane' }, INPUTS, RESULT)).toBeNull();
+  });
+});
+
+describe('updateQuote', () => {
+  it('writes through the service-role client when configured (RLS-safe)', async () => {
+    const service = makeFake();
+    const anon = makeFake();
+    serviceRef.current = service.client;
+    anonRef.current = anon.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT);
+
+    expect(res).toEqual({ id: 'new-id' });
+    expect(service.fromCalls).toContain('quotes');
+    expect(anon.fromCalls).not.toContain('quotes');
+  });
+
+  it('returns null when Supabase is unconfigured', async () => {
+    expect(await updateQuote('q1', INPUTS, RESULT)).toBeNull();
+  });
+});
+
+// ── #93: Test Quote flag + scoped cleanup ───────────────────────────────────
 
 describe('saveQuote — is_test (ledger #93)', () => {
   it('persists is_test=true when the test flag is passed', async () => {
     const fake = makeFakeSupabase();
-    sbRef.current = fake.client;
+    serviceRef.current = fake.client;
     const res = await saveQuote(customer, inputs, result, undefined, true);
     expect(res?.id).toBeTruthy();
     expect(fake.tables.quotes).toHaveLength(1);
@@ -114,13 +193,11 @@ describe('saveQuote — is_test (ledger #93)', () => {
 
   it('defaults is_test=false for a normal quote', async () => {
     const fake = makeFakeSupabase();
-    sbRef.current = fake.client;
+    serviceRef.current = fake.client;
     await saveQuote(customer, inputs, result);
     expect(fake.tables.quotes[0].is_test).toBe(false);
   });
 });
-
-// ─── deleteTestQuotes: scoped cleanup ───────────────────────────────────────
 
 describe('deleteTestQuotes — ledger #93 cleanup', () => {
   it('deletes ONLY test quotes, cleans each one design first, and returns the count', async () => {
@@ -131,7 +208,7 @@ describe('deleteTestQuotes — ledger #93 cleanup', () => {
         { id: 'test-2', is_test: true },
       ],
     });
-    sbRef.current = fake.client;
+    serviceRef.current = fake.client;
 
     const count = await deleteTestQuotes();
     expect(count).toBe(2);
@@ -145,7 +222,7 @@ describe('deleteTestQuotes — ledger #93 cleanup', () => {
 
   it('is idempotent — returns 0 and touches nothing when no test quotes exist', async () => {
     const fake = makeFakeSupabase({ quotes: [{ id: 'real-1', is_test: false }] });
-    sbRef.current = fake.client;
+    serviceRef.current = fake.client;
     expect(await deleteTestQuotes()).toBe(0);
     expect(deleteDesignsForQuote).not.toHaveBeenCalled();
     expect(fake.tables.quotes).toHaveLength(1);

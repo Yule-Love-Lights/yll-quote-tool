@@ -8,13 +8,19 @@
 -- fresh DB; the ADD COLUMN IF NOT EXISTS / DROP-then-CREATE statements patch
 -- an existing one).
 --
--- Tables:
---   1. quotes            — one per quote (RLS disabled; anon client)
+-- Tables (RLS ENABLED on all — #90 defense in depth; every path is service-role,
+-- which bypasses RLS, so there are no policies — anon/authenticated get nothing):
+--   1. quotes            — one per quote
 --   2. photo_corrections — REMOVED S13 (legacy corrections system retired; see the tombstone below)
---   3. training_houses   — confirmed real-install measurements (RLS disabled)
---   4. reference_assets  — product close-ups for Claude few-shot (RLS disabled)
---   5. designs           — one editable on-photo light design (RLS disabled)
---   6. training_examples — scene-based AI training snapshots (RLS disabled)
+--   3. training_houses   — confirmed real-install measurements
+--   4. reference_assets  — product close-ups for Claude few-shot
+--   5. designs           — one editable on-photo light design
+--   6. training_examples — scene-based AI training snapshots
+--
+-- NOTE: this file is STALE for the newer tables — app_settings, custom_uploads,
+-- inventory_catalog, inventory_on_hand, customers, properties, jobs, invoices are
+-- NOT defined here (see their dated migrations). The 2026-06-28-enable-rls-all-
+-- tables.sql migration enables RLS on those too.
 -- Storage:
 --   designs bucket (private; served via service-role signed URLs)
 --
@@ -91,7 +97,7 @@ alter table quotes add constraint quotes_service_type_check
 -- Backfill legacy NULLs to 'holiday' (idempotent).
 update quotes set service_type = 'holiday' where service_type is null;
 
-alter table quotes disable row level security;
+alter table quotes enable row level security;
 
 create index if not exists quotes_created_at_idx on quotes (created_at desc);
 create index if not exists quotes_highlevel_contact_id_idx
@@ -117,7 +123,7 @@ create table if not exists quote_view_events (
   viewed_at timestamptz not null default now(),
   kind text not null default 'viewed'
 );
-alter table quote_view_events disable row level security;
+alter table quote_view_events enable row level security;
 alter table quote_view_events
   add column if not exists kind text not null default 'viewed';
 alter table quote_view_events drop constraint if exists quote_view_events_kind_check;
@@ -165,7 +171,7 @@ alter table training_houses
   add column if not exists garland_detections jsonb,
   add column if not exists c9_lines jsonb;
 
-alter table training_houses disable row level security;
+alter table training_houses enable row level security;
 create index if not exists training_houses_created_at_idx on training_houses (created_at desc);
 create index if not exists training_houses_address_idx on training_houses (address);
 
@@ -173,8 +179,8 @@ create index if not exists training_houses_address_idx on training_houses (addre
 -- ---------------------------------------------------------------------
 -- 4. reference_assets
 --    Product close-ups (spritzer/wreath/garland) injected into Claude calls
---    as few-shot context. Reached via the anon client, so RLS is disabled to
---    match training_houses / training_examples. (See referenceAssets.ts.)
+--    as few-shot context. Reached via the service-role client; RLS enabled with
+--    no policies (#90). (See referenceAssets.ts.)
 -- ---------------------------------------------------------------------
 create table if not exists reference_assets (
   id uuid primary key default gen_random_uuid(),
@@ -190,7 +196,7 @@ create table if not exists reference_assets (
     check (asset_type in ('spritzer', 'wreath', 'garland'))
 );
 
-alter table reference_assets disable row level security;
+alter table reference_assets enable row level security;
 create index if not exists reference_assets_created_at_idx on reference_assets (created_at desc);
 create index if not exists reference_assets_asset_type_idx on reference_assets (asset_type);
 
@@ -203,8 +209,8 @@ create index if not exists reference_assets_asset_type_idx on reference_assets (
 --    can exist before a quote is saved (the builder creates it when the Street
 --    View photo is pulled) and even with no quote at all (future standalone
 --    use). The quote link is set when the operator clicks "Calculate Quote".
---    Reached via the service-role client (server routes), so RLS is disabled
---    to match quotes.
+--    Reached via the service-role client (server routes); RLS enabled with no
+--    policies (#90).
 -- ---------------------------------------------------------------------
 create table if not exists designs (
   id uuid primary key default gen_random_uuid(),
@@ -230,7 +236,7 @@ alter table designs
   add column if not exists satellite_feet_per_pixel numeric,
   add column if not exists satellite_lines jsonb;
 
-alter table designs disable row level security;
+alter table designs enable row level security;
 
 -- At most ONE design per quote (linked designs); unlimited UNLINKED designs
 -- (quote_id NULL — Postgres treats NULLs as distinct in the partial index).
@@ -294,7 +300,7 @@ alter table training_examples drop constraint if exists training_examples_source
 alter table training_examples add constraint training_examples_source_check
   check (source in ('auto-send', 'manual'));
 
-alter table training_examples disable row level security;
+alter table training_examples enable row level security;
 
 create index if not exists training_examples_created_at_idx
   on training_examples (created_at desc);
