@@ -73,7 +73,7 @@ export async function createRouteSupabase(): Promise<ReturnType<typeof createSer
 }
 
 export type OperatorRole = 'admin' | 'operator';
-export type Operator = { id: string; email: string | null; role: OperatorRole };
+export type Operator = { id: string; email: string | null; role: OperatorRole; name: string | null };
 
 /**
  * Derive the operator role from a user's app_metadata. PURE. Admin ONLY when the
@@ -85,6 +85,19 @@ export type Operator = { id: string; email: string | null; role: OperatorRole };
 export function roleOf(appMetadata: unknown): OperatorRole {
   const role = (appMetadata as { role?: unknown } | null | undefined)?.role;
   return role === 'admin' ? 'admin' : 'operator';
+}
+
+/**
+ * Derive the operator's display name from app_metadata. PURE. Returns the trimmed
+ * name, or null when absent/blank/forged (legacy accounts) — callers fall back to
+ * email. Stored in app_metadata (admin-only, like role) — NOT user_metadata — so
+ * an operator can't spoof "who did the work": the self-service /api/account/password
+ * route's auth.updateUser only writes user_metadata. NEVER move name to
+ * user_metadata or accept it in a self-service updateUser({data}) payload.
+ */
+export function nameOf(appMetadata: unknown): string | null {
+  const name = (appMetadata as { name?: unknown } | null | undefined)?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
 }
 
 /**
@@ -101,7 +114,12 @@ export async function getOperator(): Promise<Operator | null> {
     error,
   } = await supabase.auth.getUser();
   if (error || !user) return null;
-  return { id: user.id, email: user.email ?? null, role: roleOf(user.app_metadata) };
+  return {
+    id: user.id,
+    email: user.email ?? null,
+    role: roleOf(user.app_metadata),
+    name: nameOf(user.app_metadata),
+  };
 }
 
 /**
