@@ -49,13 +49,15 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
     fetch('/api/inventory/offered-colors')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
-      .catch(() => {});
+      .catch((e) => { console.warn('[DesignCanvas] offered-colors fetch failed', e); });
     return () => { alive = false; };
   }, []);
-  // Resolve the customer's whole-house choice to PER-ITEM render colors — each
-  // light item shows exactly the strand/solid we'd install (#92). null = as-designed.
+  // Resolve the customer's whole-house choice to PER-ITEM render colors — each light
+  // item shows exactly the strand/solid we'd install (#92). null = as-designed. We
+  // hold at as-designed until offered-colors load (offeredColors == null) so the
+  // render never flashes the wrong fallback color mid-fetch.
   const colorMap = useMemo(
-    () => buildRenderColorMap(scene.items, colorOverride ?? null, offeredFromLists(offeredColors)),
+    () => (offeredColors == null ? null : buildRenderColorMap(scene.items, colorOverride ?? null, offeredFromLists(offeredColors))),
     [scene, colorOverride, offeredColors],
   );
 

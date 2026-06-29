@@ -30,7 +30,7 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
-import { offeredFromLists, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
@@ -209,8 +209,11 @@ export default function QuoteBuilder({
       .catch(() => {});
     return () => { alive = false; };
   }, []);
+  // Fail OPEN: only gate when the offered catalog is positively known. A null/empty/
+  // failed offered fetch (unconfigured bindings, cold start, network blip) must never
+  // falsely flag every item or block Send — it just means "can't verify yet".
   const unfulfillable = useMemo(
-    () => detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)),
+    () => (offeredIsKnown(offeredColors) ? detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)) : []),
     [breakdownScene, offeredColors],
   );
   const hasUnfulfillable = unfulfillable.length > 0;
@@ -1043,6 +1046,31 @@ export default function QuoteBuilder({
     setSendError(null);
     setGhlSyncWarning(null);
     setCopiedUrl(false);
+
+    // #92 — re-check fulfillability against the FRESHEST design at Send time: the
+    // breakdown-driven gate can be stale if the operator edited the canvas after
+    // Calculate. Flush the editor's pending save, re-fetch the live scene, re-check.
+    // Fails open (offered unknown / fetch error → don't block on the re-check).
+    if (designId && offeredIsKnown(offeredColors)) {
+      try {
+        await editorFlushRef.current?.();
+        const dres = await fetch(`/api/designs/${designId}`);
+        const ddata = await dres.json();
+        if (dres.ok) {
+          const liveScene = ddata?.design?.scene ?? { yardsticks: [], items: [] };
+          const bad = detectUnfulfillable(liveScene.items, offeredFromLists(offeredColors));
+          if (bad.length > 0) {
+            setSendError(
+              `This design has ${bad.length} item${bad.length === 1 ? '' : 's'} we can't supply — recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see "From your design"), then Calculate again.`,
+            );
+            setSendStatus('error');
+            return;
+          }
+        }
+      } catch {
+        // The re-check itself failed (flush/network) — don't block the send on it.
+      }
+    }
 
     const url = portalUrlFor(savedQuoteId);
     // Copy first so if the stage-move fails the operator still has the

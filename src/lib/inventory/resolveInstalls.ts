@@ -80,6 +80,15 @@ export function offeredFromLists(lists: OfferedColorLists | null | undefined): O
   };
 }
 
+// Whether the offered-colors are positively KNOWN — loaded AND a real catalog, not
+// an unconfigured/empty/failed fetch. The fulfillability gate keys on this so a
+// missing/empty/errored offered set fails OPEN (never falsely blocks Send) instead
+// of flagging every item as "we can't supply it". A configured catalog always offers
+// the solid mini colors, so an empty mini list means "unknown", not "we stock none".
+export function offeredIsKnown(lists: OfferedColorLists | null | undefined): boolean {
+  return !!lists && Array.isArray(lists.mini) && lists.mini.length > 0;
+}
+
 export type InstallDecision =
   // Order this strand SKU directly; render the pattern intermixed (colorIds).
   | { kind: 'strand'; sku: string; colorIds: string[]; patternId: string }
@@ -175,7 +184,10 @@ export function resolveInstalls(
     // 2. Solid path — round-robin the OFFERED chosen colors across items of this type.
     const candidates = [...new Set(effective)].filter(has);
     if (candidates.length > 0) {
-      const idx = cursor[it.type]++;
+      // A whole-house override round-robins across items; as-designed (choice null)
+      // is deterministic per item — each keeps its first offered authored color
+      // (≈ the pre-#92 colorPattern[0]), so two identical items don't drift apart.
+      const idx = choice ? cursor[it.type]++ : 0;
       result.set(it.id, { kind: 'solid', colorId: candidates[idx % candidates.length] });
       continue;
     }

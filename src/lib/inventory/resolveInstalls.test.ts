@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SceneItem, QuoteSpritzerSize } from '@/lib/design/sceneTypes';
-import { resolveInstalls, offeredFromBindings, resolveColorChoice, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
+import { resolveInstalls, offeredFromBindings, offeredIsKnown, resolveColorChoice, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
 import { miniKey, spritzerKey } from './concepts';
 import { matchPattern } from './patternSkus';
 
@@ -88,6 +88,27 @@ describe('resolveInstalls — as-designed keeps each item its own color', () => 
     const got = resolveInstalls([mini('b1', ['red']), mini('b2', ['blue'])], null, o);
     expect(got.get('b1')).toEqual({ kind: 'solid', colorId: 'red' });
     expect(got.get('b2')).toEqual({ kind: 'solid', colorId: 'blue' });
+  });
+
+  it('deterministic: two identical multi-color as-designed items resolve to the SAME solid (no cursor drift)', () => {
+    const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+    // {red,blue} is not a known pattern → solid path; as-designed must not round-robin.
+    const got = resolveInstalls([mini('b1', ['red', 'blue']), mini('b2', ['red', 'blue'])], null, o);
+    expect(got.get('b1')).toEqual({ kind: 'solid', colorId: 'red' });
+    expect(got.get('b2')).toEqual({ kind: 'solid', colorId: 'red' }); // both first authored color, not red/blue
+  });
+});
+
+describe('offeredIsKnown (fail-open guard)', () => {
+  it('null / undefined → not known (gate fails open)', () => {
+    expect(offeredIsKnown(null)).toBe(false);
+    expect(offeredIsKnown(undefined)).toBe(false);
+  });
+  it('empty mini list (unconfigured bindings) → not known', () => {
+    expect(offeredIsKnown({ mini: [], spritzer: { '16': [], '24': [], '32': [] } })).toBe(false);
+  });
+  it('a real catalog (minis offered) → known', () => {
+    expect(offeredIsKnown({ mini: ['red', 'warm-white'], spritzer: { '24': ['red'] } })).toBe(true);
   });
 });
 

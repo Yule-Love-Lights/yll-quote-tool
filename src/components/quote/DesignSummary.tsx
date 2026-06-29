@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { projectScene } from '@/lib/design/projectScene';
 import { calculateQuote, type LineItem } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
-import { offeredFromLists, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable, type UnfulfillableItem } from '@/lib/inventory/detectUnfulfillable';
 
 const usd = (n: number) =>
@@ -36,17 +36,20 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
     setBusy(true);
     setError(null);
     try {
-      // Load the design + the offered-colors (from bindings) together; the latter
-      // drives the #92 "we can't supply this" flags.
-      const [res, offRes] = await Promise.all([
+      // Load the design + offered-colors in parallel, but isolate the offered fetch
+      // so an inventory hiccup can never break this panel (it resolves to null, not
+      // a rejection that fails the whole batch).
+      const [res, offRaw] = await Promise.all([
         fetch(`/api/designs/${designId}`),
-        fetch('/api/inventory/offered-colors'),
+        fetch('/api/inventory/offered-colors').then((r) => (r.ok ? r.json() : null)).catch(() => null),
       ]);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Could not load the design');
       const scene: Scene = data?.design?.scene ?? { yardsticks: [], items: [] };
-      const offered: OfferedColorLists | null = offRes.ok ? await offRes.json().catch(() => null) : null;
-      setUnfulfillable(detectUnfulfillable(scene.items, offeredFromLists(offered)));
+      // Fail OPEN: only flag when the offered catalog is positively known (a missing/
+      // empty/failed offered set must not paint every valid item red).
+      const offered = offRaw as OfferedColorLists | null;
+      setUnfulfillable(offeredIsKnown(offered) ? detectUnfulfillable(scene.items, offeredFromLists(offered)) : []);
       const p = projectScene(scene);
       // Price ONLY the per-unit projection — zero roofline/fees — so the line
       // items here are exactly the design-driven part of the future quote.
