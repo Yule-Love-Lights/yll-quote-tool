@@ -4,25 +4,12 @@
 // channel comes from lastMessageType (not the overloaded `type`), and calls carry
 // no body so their preview is synthesized.
 
+import type { HighLevelConversation } from '@/lib/integrations/types';
 import type { Channel, Direction, NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
 
-/** The subset of a GHL conversation (from /conversations/search) we read. */
-export type GhlConversation = {
-  id: string;
-  locationId?: string;
-  lastMessageDate: number | string;
-  lastMessageType?: string; // TYPE_SMS | TYPE_EMAIL | TYPE_CALL | TYPE_FACEBOOK | ...
-  lastMessageBody?: string;
-  lastMessageDirection?: string; // 'inbound' | 'outbound'
-  unreadCount?: number;
-  contactId?: string;
-  fullName?: string;
-  contactName?: string;
-  email?: string;
-  phone?: string;
-  type?: string; // contact channel class (e.g. TYPE_PHONE) — NOT the message channel
-};
+/** The raw GHL conversation shape this adapter consumes (from /conversations/search). */
+export type GhlConversation = HighLevelConversation;
 
 const CHANNEL_BY_TYPE: Record<string, Channel> = {
   TYPE_SMS: 'sms',
@@ -63,7 +50,7 @@ export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
     sourceMessageId: null, // search has no last-message id; the messages/webhook path sets it
     direction,
     channel,
-    lastMessageAt: toDate(c.lastMessageDate),
+    lastMessageAt: toDate(c.lastMessageDate ?? 0),
     preview: previewOf(c, channel, direction),
     subject: null,
     identity: {

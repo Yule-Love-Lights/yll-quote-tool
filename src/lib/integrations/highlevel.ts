@@ -12,7 +12,14 @@
 // API base: https://services.leadconnectorhq.com
 // Version header: Version: 2021-07-28  (required — the gateway 400s without it)
 
-import type { CrmContact, CrmContactInternal, HighLevelContact, HighLevelOpportunity } from './types';
+import type {
+  CrmContact,
+  CrmContactInternal,
+  HighLevelContact,
+  HighLevelConversation,
+  HighLevelMessage,
+  HighLevelOpportunity,
+} from './types';
 
 const API_BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION_HEADER = '2021-07-28';
@@ -298,6 +305,63 @@ export async function sendEmail(input: {
         ...(input.emailFrom ? { emailFrom: input.emailFrom } : {}),
       }),
     },
+    CONVERSATIONS_API_VERSION,
+  );
+}
+
+// ─── Conversations: READ (dashboard /inbox, #58) ───────────────────────────
+// The read side of the Conversations API, confirmed against the LIVE API by
+// scripts/spikes/ghl-conversations.ts. Uses CONVERSATIONS_API_VERSION. The
+// dashboard adapter (src/lib/dashboard/inbox/ghl.ts) maps these raw shapes into
+// the source-agnostic NormalizedTouch.
+
+// GET /conversations/search?locationId=...&limit=...
+// Returns the location's conversations (newest-activity first) + a total count
+// for paging. `unresponded` detection keys off lastMessageDirection / unreadCount.
+export async function searchConversations(
+  opts: { limit?: number } = {},
+): Promise<{ conversations: HighLevelConversation[]; total: number }> {
+  const { locationId } = requireConfig();
+  const params = new URLSearchParams({
+    locationId,
+    limit: String(Math.min(Math.max(opts.limit ?? 20, 1), 100)),
+  });
+  const json = await ghlFetch<{ conversations?: HighLevelConversation[]; total?: number }>(
+    `/conversations/search?${params}`,
+    {},
+    CONVERSATIONS_API_VERSION,
+  );
+  return { conversations: json.conversations ?? [], total: json.total ?? 0 };
+}
+
+// GET /conversations/{id}/messages
+// Spike finding: the array is DOUBLE-nested under `messages.messages` (not the
+// top-level `messages`). We unwrap it here so callers get a flat list.
+export async function getConversationMessages(
+  conversationId: string,
+): Promise<{ messages: HighLevelMessage[] }> {
+  const json = await ghlFetch<{ messages?: { messages?: HighLevelMessage[] } }>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {},
+    CONVERSATIONS_API_VERSION,
+  );
+  return { messages: json.messages?.messages ?? [] };
+}
+
+// ⚠️ WRITE — PUT /conversations/{id}/messages/{messageId}/status { status: 'read' }
+// Used by the Handled write-back to quiet GHL. OPEN QUESTION the spike could NOT
+// resolve without mutating GHL: whether marking the last *message* read clears
+// the *conversation* unreadCount badge (if not, the reconcile cron re-surfaces a
+// handled card). MUST be confirmed by a human-watched test on a throwaway
+// conversation before the reconciler is trusted to stay quiet. Do not call from
+// any automated path until then.
+export async function markConversationRead(
+  conversationId: string,
+  messageId: string,
+): Promise<SendMessageResult> {
+  return ghlFetch<SendMessageResult>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/status`,
+    { method: 'PUT', body: JSON.stringify({ status: 'read' }) },
     CONVERSATIONS_API_VERSION,
   );
 }
