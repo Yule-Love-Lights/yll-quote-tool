@@ -1,5 +1,5 @@
 // Per-account admin operations (ledger #81 Slice 3) — admin-only.
-//   PATCH  /api/admin/users/[id]  → { password?, role? }  reset password / change role.
+//   PATCH  /api/admin/users/[id]  → { password?, role?, name? }  reset pw / change role / set name.
 //   DELETE /api/admin/users/[id]  → remove the account.
 //
 // Guards (src/lib/auth/accountGuards.ts): an admin can't change their OWN role,
@@ -32,7 +32,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const { id } = await params;
   if (!UUID_RE.test(id)) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-  let body: { password?: unknown; role?: unknown };
+  let body: { password?: unknown; role?: unknown; name?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -40,15 +40,28 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   const newPassword = typeof body.password === 'string' ? body.password : undefined;
   const newRole = typeof body.role === 'string' ? body.role : undefined;
+  // A name key that's PRESENT (even blank) is an intent to set it → validate.
+  // Absent → newName undefined → name left untouched, so a password/role-only edit
+  // on a legacy (nameless) account still works. This is the backfill/rename path.
+  const newName = typeof body.name === 'string' ? body.name.trim() : undefined;
 
-  if (newPassword === undefined && newRole === undefined) {
-    return NextResponse.json({ error: 'Nothing to update — provide password and/or role' }, { status: 400 });
+  if (newPassword === undefined && newRole === undefined && newName === undefined) {
+    return NextResponse.json(
+      { error: 'Nothing to update — provide password, role, and/or name' },
+      { status: 400 },
+    );
   }
   if (newPassword !== undefined && newPassword.length < 8) {
     return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 });
   }
   if (newRole !== undefined && newRole !== 'admin' && newRole !== 'operator') {
     return NextResponse.json({ error: "Role must be 'admin' or 'operator'" }, { status: 400 });
+  }
+  if (typeof body.name === 'string') {
+    if (!newName) return NextResponse.json({ error: 'A name is required' }, { status: 400 });
+    if (newName.length > 80) {
+      return NextResponse.json({ error: 'Name must be 80 characters or fewer' }, { status: 400 });
+    }
   }
 
   try {
@@ -71,6 +84,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       });
       if (!g.ok) return NextResponse.json({ error: g.error }, { status: 400 });
       updates.app_metadata = { ...(target.user.app_metadata ?? {}), role: newRole };
+    }
+    // Name merge — AFTER the role merge so a combined name+role PATCH preserves
+    // both. Builds on updates.app_metadata when role also changed this call, else
+    // on the target's existing metadata (the legacy-backfill path).
+    if (newName !== undefined) {
+      updates.app_metadata = {
+        ...(updates.app_metadata ?? target.user.app_metadata ?? {}),
+        name: newName,
+      };
     }
 
     const { data: updated, error: updErr } = await sb.auth.admin.updateUserById(id, updates);

@@ -101,14 +101,27 @@ export type QuoteBuilderInitial = {
   designId: string | null;
   sentAt: string | null;
   approvedAt: string | null;
+  // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
+  // from the saved row, never re-read from the URL on edit (is_test is immutable).
+  isTest?: boolean;
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
 // The full quote builder, shared by /quote/new (blank) and /quote/[id] (edit —
 // hydrated from a saved quote, task #31).
 
-export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBuilderInitial }) {
+export default function QuoteBuilder({
+  initialQuote,
+  isTest: isTestProp,
+}: {
+  initialQuote?: QuoteBuilderInitial;
+  isTest?: boolean;
+}) {
   const editMode = initialQuote != null;
+  // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
+  // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
+  // banner and Calculate persists the quote as is_test=true (saveQuote).
+  const isTest = isTestProp ?? initialQuote?.isTest ?? false;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -168,6 +181,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
   const [designId, setDesignId] = useState<string | null>(initialQuote?.designId ?? null);
   const [designBusy, setDesignBusy] = useState(false);
   const [designError, setDesignError] = useState<string | null>(null);
+  // #90: how many AI-seeded garland runs had no scale to estimate length (so they
+  // fall back to 1 section). Surfaced as a builder warning so staff set the count.
+  const [garlandUnestimated, setGarlandUnestimated] = useState(0);
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -258,7 +274,15 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ seed }),
       });
-      if (res.ok) setDesignEditorKey((k) => k + 1);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // #90: warn when garland runs were seeded with no scale (billed as 1
+        // section each) so staff set the real count before quoting.
+        setGarlandUnestimated(
+          typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+        );
+        setDesignEditorKey((k) => k + 1);
+      }
     } catch {
       // Non-fatal: the design still works, it just isn't pre-designed.
     }
@@ -300,6 +324,10 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           if (!stale) {
             pendingSeedRef.current = null;
             designPhotoRef.current = photoBase64;
+            // #90: warn if garland runs were seeded with no scale on create.
+            setGarlandUnestimated(
+              typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
+            );
             if (pendingContextRef.current) {
               const ctx = pendingContextRef.current;
               pendingContextRef.current = null;
@@ -1095,6 +1123,9 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           inputs,
           quoteId: existingQuoteId ?? undefined,
           designId: designId ?? undefined,
+          // Test Quote (#93): carried only into the first save (saveQuote);
+          // ignored on update, so is_test is set once and never flips.
+          isTest,
         }),
       });
       const data = await res.json();
@@ -1311,6 +1342,29 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
     <OperatorShell active="new">
       <div className="max-w-3xl mx-auto">
 
+        {/* TEST MODE banner (#93) — persistent while building/driving a test
+            quote. Violet (not error-red / warning-amber) so it reads clearly as
+            a non-production state, never as something broken. */}
+        {isTest && (
+          <div
+            className="mb-6 rounded-lg border-2 border-dashed px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#7c3aed', backgroundColor: '#f5f3ff' }}
+            role="status"
+          >
+            <span className="text-lg leading-none" aria-hidden>🧪</span>
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide" style={{ color: '#6d28d9' }}>
+                Test Mode
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#5b21b6' }}>
+                Fully-simulated test quote. It flows the whole pipeline (send → approve → deposit → job → inventory)
+                but never sends a real text/email or charges a card, and is excluded from every dashboard metric.
+                Clean it up anytime with “Delete test data” in Settings.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
@@ -1318,6 +1372,11 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
           </p>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900">{editMode ? 'Edit Quote' : 'New Quote'}</h1>
+            {isTest && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">
+                Test
+              </span>
+            )}
             {initialQuote?.approvedAt ? (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">
                 Approved
@@ -1650,6 +1709,13 @@ export default function QuoteBuilder({ initialQuote }: { initialQuote?: QuoteBui
                   </div>
                 )}
                 {designError && <p className="text-sm text-red-600 mb-2">{designError}</p>}
+                {garlandUnestimated > 0 && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ {garlandUnestimated} garland {garlandUnestimated === 1 ? 'run' : 'runs'} had no scale to
+                    estimate length — billed as 1 section{garlandUnestimated === 1 ? '' : ' each'} for now. Draw a
+                    yardstick or set the section count on the design before quoting.
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor

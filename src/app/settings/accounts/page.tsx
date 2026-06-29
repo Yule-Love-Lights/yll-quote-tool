@@ -39,7 +39,7 @@ export default async function AccountsPage() {
 
         {operator ? (
           <div className="flex flex-col gap-8">
-            <ChangeMyPassword email={operator.email} />
+            <ChangeMyPassword name={operator.name} email={operator.email} />
             {isAdmin && (
               <section>
                 <h2 className="text-[15px] font-semibold text-gray-900 mb-3">Staff accounts</h2>

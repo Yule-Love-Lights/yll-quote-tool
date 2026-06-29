@@ -3,12 +3,13 @@
 // accounts UI needs, plus the pure countAdmins() that feeds the last-admin guard.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { roleOf, type OperatorRole } from './supabaseServer';
+import { roleOf, nameOf, type OperatorRole } from './supabaseServer';
 
 export type OperatorAccount = {
   id: string;
   email: string | null;
   role: OperatorRole;
+  name: string | null;
   createdAt: string | null;
   lastSignInAt: string | null;
 };
@@ -27,6 +28,7 @@ export function toOperatorAccount(u: RawUser): OperatorAccount {
     id: u.id,
     email: u.email ?? null,
     role: roleOf(u.app_metadata),
+    name: nameOf(u.app_metadata),
     createdAt: u.created_at ?? null,
     lastSignInAt: u.last_sign_in_at ?? null,
   };
@@ -38,9 +40,10 @@ export function countAdmins(accounts: OperatorAccount[]): number {
 }
 
 /**
- * List every operator account, sorted by email. Throws on a Supabase error.
- * Follows nextPage across ALL pages — countAdmins() (the last-admin guard's
- * input) must see every admin, not just the first page.
+ * List every operator account, sorted by display name (email fallback for
+ * legacy nameless accounts). Throws on a Supabase error. Follows nextPage across
+ * ALL pages — countAdmins() (the last-admin guard's input) must see every admin,
+ * not just the first page.
  */
 export async function listOperatorAccounts(sb: SupabaseClient): Promise<OperatorAccount[]> {
   const all: RawUser[] = [];
@@ -55,5 +58,7 @@ export async function listOperatorAccounts(sb: SupabaseClient): Promise<Operator
     if (!next) break;
     page = next;
   }
-  return all.map(toOperatorAccount).sort((a, b) => (a.email ?? '').localeCompare(b.email ?? ''));
+  return all
+    .map(toOperatorAccount)
+    .sort((a, b) => (a.name ?? a.email ?? '').localeCompare(b.name ?? b.email ?? ''));
 }

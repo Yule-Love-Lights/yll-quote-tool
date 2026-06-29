@@ -1,8 +1,8 @@
 /* scripts/seed-admin.ts — bootstrap the FIRST operator admin (ledger #81 Slice 3).
  *
  * Usage:
- *   npx tsx scripts/seed-admin.ts <email> <password>
- *   # or:  npm run seed-admin -- <email> <password>
+ *   npx tsx scripts/seed-admin.ts <email> <password> [name]
+ *   # or:  npm run seed-admin -- <email> <password> [name]
  *
  * Reads SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY from the environment, falling
  * back to .env.local. Creates a confirmed user with app_metadata.role='admin' —
@@ -40,8 +40,9 @@ function loadEnvLocal(): void {
 async function main(): Promise<void> {
   const email = (process.argv[2] ?? '').trim();
   const password = process.argv[3] ?? '';
+  const name = (process.argv[4] ?? '').trim();
   if (!email || !password) {
-    console.error('Usage: npx tsx scripts/seed-admin.ts <email> <password>');
+    console.error('Usage: npx tsx scripts/seed-admin.ts <email> <password> [name]');
     process.exit(1);
   }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -66,13 +67,15 @@ async function main(): Promise<void> {
     email,
     password,
     email_confirm: true,
-    app_metadata: { role: 'admin' },
+    // name (optional) rides app_metadata alongside role — admin-only, same as the
+    // operator-accounts UI sets it (#81 display names).
+    app_metadata: { role: 'admin', ...(name ? { name } : {}) },
   });
   if (error || !data.user) {
     console.error(`Failed to create admin: ${error?.message ?? 'unknown error'}`);
     process.exit(1);
   }
-  console.log(`Admin created: ${data.user.email} (${data.user.id})`);
+  console.log(`Admin created: ${name || data.user.email} (${data.user.id})`);
   console.log('Next: log in at /login, verify the flow, then set AUTH_GATE_ENABLED=true in Vercel.');
 }
 

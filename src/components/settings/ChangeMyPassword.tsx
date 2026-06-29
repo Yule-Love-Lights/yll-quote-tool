@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 
-export function ChangeMyPassword({ email }: { email: string | null }) {
+export function ChangeMyPassword({ name, email }: { name: string | null; email: string | null }) {
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -49,7 +49,9 @@ export function ChangeMyPassword({ email }: { email: string | null }) {
     >
       <div>
         <h2 className="text-[15px] font-semibold text-gray-900">Your password</h2>
-        {email && <p className="text-sm text-gray-500 mt-0.5">Signed in as {email}</p>}
+        {(name || email) && (
+          <p className="text-sm text-gray-500 mt-0.5">Signed in as {name ?? email}</p>
+        )}
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">

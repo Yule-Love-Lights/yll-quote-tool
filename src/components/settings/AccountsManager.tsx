@@ -12,6 +12,7 @@ type Account = {
   id: string;
   email: string | null;
   role: Role;
+  name: string | null;
   createdAt: string | null;
   lastSignInAt: string | null;
 };
@@ -31,6 +32,7 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('operator');
@@ -66,14 +68,15 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password, role }),
+        body: JSON.stringify({ name: name.trim(), email: email.trim(), password, role }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? 'Failed to add account');
+      setName('');
       setEmail('');
       setPassword('');
       setRole('operator');
-      setNotice(`Added ${data.user?.email ?? 'account'}.`);
+      setNotice(`Added ${data.user?.name ?? data.user?.email ?? 'account'}.`);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add account');
@@ -104,15 +107,31 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
     }
   };
 
+  // Display label for an account in prompts/notices — name first, email fallback.
+  const who = (u: Account) => u.name ?? u.email ?? 'this account';
+
   const resetPassword = (u: Account) => {
-    const pw = window.prompt(`New password for ${u.email}? (at least 8 characters)`);
+    const pw = window.prompt(`New password for ${who(u)}? (at least 8 characters)`);
     if (pw == null) return;
     if (pw.length < 8) {
       setError('Password must be at least 8 characters');
       return;
     }
     act(u.id, 'PATCH', { password: pw }).then((ok) => {
-      if (ok) setNotice(`Password reset for ${u.email}.`);
+      if (ok) setNotice(`Password reset for ${who(u)}.`);
+    });
+  };
+
+  // Set or backfill a display name (legacy accounts created before names existed).
+  const editName = (u: Account) => {
+    const next = window.prompt(`Display name for ${who(u)}?`, u.name ?? '');
+    if (next == null) return;
+    if (!next.trim()) {
+      setError('A name is required');
+      return;
+    }
+    act(u.id, 'PATCH', { name: next.trim() }).then((ok) => {
+      if (ok) setNotice(`Name updated for ${next.trim()}.`);
     });
   };
 
@@ -122,7 +141,7 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
   };
 
   const remove = (u: Account) => {
-    if (!window.confirm(`Remove ${u.email}? They will no longer be able to sign in.`)) return;
+    if (!window.confirm(`Remove ${who(u)}? They will no longer be able to sign in.`)) return;
     act(u.id, 'DELETE');
   };
 
@@ -135,6 +154,18 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
       >
         <h2 className="text-[15px] font-semibold text-gray-900">Add an operator</h2>
         <div className="grid gap-3 sm:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-600">Name</span>
+            <input
+              type="text"
+              required
+              maxLength={80}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              placeholder="Jane Smith"
+            />
+          </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium text-gray-600">Email</span>
             <input
@@ -192,6 +223,7 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-200">
+              <th className="px-4 py-2.5 font-medium">Name</th>
               <th className="px-4 py-2.5 font-medium">Email</th>
               <th className="px-4 py-2.5 font-medium">Role</th>
               <th className="px-4 py-2.5 font-medium">Last sign-in</th>
@@ -201,13 +233,13 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-gray-400">
+                <td colSpan={5} className="px-4 py-6 text-gray-400">
                   Loading…
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-gray-400">
+                <td colSpan={5} className="px-4 py-6 text-gray-400">
                   No accounts yet.
                 </td>
               </tr>
@@ -218,9 +250,10 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
                 return (
                   <tr key={u.id} className="border-t border-gray-100">
                     <td className="px-4 py-2.5 text-gray-900">
-                      {u.email ?? '—'}
+                      {u.name ?? <span className="text-gray-400">—</span>}
                       {isSelf && <span className="ml-2 text-xs text-gray-400">(you)</span>}
                     </td>
+                    <td className="px-4 py-2.5 text-gray-500">{u.email ?? '—'}</td>
                     <td className="px-4 py-2.5">
                       <span
                         className={
@@ -235,6 +268,13 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
                     <td className="px-4 py-2.5 text-gray-500">{fmtDate(u.lastSignInAt)}</td>
                     <td className="px-4 py-2.5">
                       <div className="flex justify-end gap-2 flex-wrap">
+                        <button
+                          onClick={() => editName(u)}
+                          disabled={busy}
+                          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Edit name
+                        </button>
                         <button
                           onClick={() => resetPassword(u)}
                           disabled={busy}
