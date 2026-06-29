@@ -15,6 +15,22 @@ metadata:
 
 ---
 
+### Session 15 — memory reseed + graph refresh · stale-security-callout reconcile (#244) · #92 light patterns BUILT end-to-end + MERGED + LIVE (2026-06-29)
+
+> **⏹️ S15 CLOSE.** One conversation = S15 (Jason). Reseeded local memory from `docs/context` (master had raced ahead — Naldo's weekend #82/#81/#83/#90/#91/#93 was already on master), refreshed the graphify graph (1947 nodes / 4927 edges, AST-only), confirmed prod auth LIVE, then built **#92 light patterns** end-to-end and merged it. `npm install` was needed at start (Naldo's #81 added `@supabase/ssr`, missing from my stale node_modules).
+>
+> **🎯 SHIPPED (all merged + LIVE):**
+> - **Stale-security-callout reconcile (PR #244):** the ledger's top banner still said "2 CRITICALs LIVE / AUTH_GATE OFF" — verified on prod that #81 auth is LIVE (`/customers`→307 `/login`; the GHL-contacts + `/api/customers` → 401) and **both audit CRITICALs are CLOSED**; flipped the banner 🔴→🟢 + fixed the stale #80/#81 rows. (The "2 open Naldo PRs to review" #228/#229 were already merged — moot.)
+> - **#92 light patterns (PR #247 → master `0cc3b20`):** customer-selectable, inventory-aware patterns, built **behind the scenes — NO new portal swatches** (Jason's call: enough buttons already); only the **"Blue & White" swatch → "Frozen"** rename. The customer's effective colors (Build-your-own / named swatch / as-designed) match a pattern by color **SET** → the **portal render** shows ONE solid per item for no-strand combos (matched strands stay intermixed; C9 roofline multi-color) AND the **materials projection** orders the real strand / round-robins offered solids — a **shared resolver** (`resolveInstalls` / `buildRenderColorMap`) keeps picture = order. New **operator fulfillability gate** (`detectUnfulfillable`): red per-item flags in "From your design" + a clickable red Send-banner + **blocked Send** + a fresh **Send-time re-check** (closes the edit-after-Calculate window); **fails OPEN** when offered-colors are unknown. **Customer side silently filters** (never blocked). Built across **4 sliced commits, continuously** (one rolling PR, no merges between — Jason's request).
+>
+> **🔍 Process:** TDD throughout; ran an **adversarial review WORKFLOW (15 agents → 11 confirmed findings)** before merge — **all addressed.** Keystone fix: the gate was failing **CLOSED** on null/empty/failed offered-colors (unconfigured bindings → route 200s empty) → could permanently block Send on a valid quote → now **fails OPEN** (`offeredIsKnown`). Also fixed: stale-gate false-negative (Send-time re-check), as-designed projection drift (deterministic), render flash, a Promise.all coupling, a misleading "share it manually" message on a fulfillability block. **Live-verified** the render on the portal (recolors, Frozen, zero console errors) + Jason eyeballed on device (one-color-per-item ✓ · matched intermixed ✓ · roofline multi ✓). **Locked decision:** a manually-shared link can still show an unsupplied color → **staff discipline** ("don't share with warnings"), NOT silent substitution (which would hide the problem from staff). `render-readonly.ts` is **quote-tool-only → NO design-tool relay** (verified the design tool has no render-readonly/colorOverride). No migration.
+>
+> **⚠️ NALDO heads-up:** #92 Slices 2/4 touch his `materialsProjection` / bindings (ADDITIVE — no behavior change to existing inventory flows) + add `/api/inventory/offered-colors`. Jason to relay.
+>
+> **State at close:** master `0cc3b20`; #92 + #244 merged + auto-deployed to prod; local clean + current; graph refreshed; gates **tsc 0 · lint 0 · vitest 1031**. **NEXT:** #205/#203 on-device AI roof-feature-accuracy pass + eyeball the "Roof feature" editor dropdown (needs Jason on the Konva canvas + live AI); else backlog (#46 fonts · #52/#53/#54 training · #56 mobile · #41 referral · #29 editor restyle).
+
+---
+
 ### Session 14 — AGENTS governance rules · llm-council + karpathy skills · #63 draw-on-strand · #82 inventory plan + Slice-2b relay · branch cleanup · S14 self-review (2026-06-26 → resumed 2026-06-29)
 
 > **⏹️ S14 CLOSE.** One conversation = S14 (started Fri 2026-06-26, paused over the weekend, resumed Mon 2026-06-29 — a pause, not a new session). Jason shipped a focused governance + #63 set; **Naldo independently shipped a MASSIVE amount over the weekend** (his S7–S13 thread — see [[session_log_naldo]]). Master raced from ~#150 to ~#242; local clean + current at close.
