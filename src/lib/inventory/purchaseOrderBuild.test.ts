@@ -41,7 +41,12 @@ function makeDb() {
             });
           }
           if (table === 'quotes') {
-            return resolve({ data: testQuoteIds.map((id) => ({ id })), error: null });
+            // New #92 query: all active quotes with is_test + approval_snapshot;
+            // test-ness is derived in JS from is_test (not an .eq filter).
+            return resolve({
+              data: ['R', 'T'].map((id) => ({ id, is_test: testQuoteIds.includes(id), approval_snapshot: null })),
+              error: null,
+            });
           }
           if (table === 'designs') {
             return resolve({

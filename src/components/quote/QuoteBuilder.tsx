@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type {
   QuoteResult,
   QuoteInputs,
@@ -30,6 +30,8 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -148,6 +150,9 @@ export default function QuoteBuilder({
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
+  // from a send FAILURE so we never tell the operator to share the link manually.
+  const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
@@ -196,6 +201,25 @@ export default function QuoteBuilder({
   // True while a per-item recommended write-back (scene PUT) is in flight, so
   // the checkboxes disable to prevent racing PUTs.
   const [recommendBusy, setRecommendBusy] = useState(false);
+  // #92 — offered solid colors per item type (from the bindings), fetched once.
+  // With the live design scene it flags items we can't supply → blocks Send.
+  const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // Fail OPEN: only gate when the offered catalog is positively known. A null/empty/
+  // failed offered fetch (unconfigured bindings, cold start, network blip) must never
+  // falsely flag every item or block Send — it just means "can't verify yet".
+  const unfulfillable = useMemo(
+    () => (offeredIsKnown(offeredColors) ? detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)) : []),
+    [breakdownScene, offeredColors],
+  );
+  const hasUnfulfillable = unfulfillable.length > 0;
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -1023,8 +1047,34 @@ export default function QuoteBuilder({
     if (!savedQuoteId) return;
     setSendStatus('sending');
     setSendError(null);
+    setSendBlockedMsg(null);
     setGhlSyncWarning(null);
     setCopiedUrl(false);
+
+    // #92 — re-check fulfillability against the FRESHEST design at Send time: the
+    // breakdown-driven gate can be stale if the operator edited the canvas after
+    // Calculate. Flush the editor's pending save, re-fetch the live scene, re-check.
+    // Fails open (offered unknown / fetch error → don't block on the re-check).
+    if (designId && offeredIsKnown(offeredColors)) {
+      try {
+        await editorFlushRef.current?.();
+        const dres = await fetch(`/api/designs/${designId}`);
+        const ddata = await dres.json();
+        if (dres.ok) {
+          const liveScene = ddata?.design?.scene ?? { yardsticks: [], items: [] };
+          const bad = detectUnfulfillable(liveScene.items, offeredFromLists(offeredColors));
+          if (bad.length > 0) {
+            setSendBlockedMsg(
+              `Can’t send — ${bad.length} item${bad.length === 1 ? '' : 's'} we can’t supply. Recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see “From your design”), then Calculate again. Don’t share the link until it’s fixed.`,
+            );
+            setSendStatus('idle');
+            return;
+          }
+        }
+      } catch {
+        // The re-check itself failed (flush/network) — don't block the send on it.
+      }
+    }
 
     const url = portalUrlFor(savedQuoteId);
     // Copy first so if the stage-move fails the operator still has the
@@ -2629,6 +2679,21 @@ export default function QuoteBuilder({
               </div>
             )}
 
+            {hasUnfulfillable && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                {`⚠️ This design has ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — see the red notes in `}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline font-semibold hover:text-red-700 cursor-pointer"
+                >
+                  “From your design”
+                </button>
+                {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -2636,7 +2701,7 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending'}
+                disabled={sendStatus === 'sending' || hasUnfulfillable}
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
@@ -2649,6 +2714,21 @@ export default function QuoteBuilder({
             {sendStatus === 'error' && (
               <p className="mt-3 text-sm text-red-600">
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
+              </p>
+            )}
+
+            {sendBlockedMsg && (
+              <p className="mt-3 text-sm text-red-600 font-medium">
+                {sendBlockedMsg}{' '}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline cursor-pointer hover:text-red-700"
+                >
+                  Jump to it
+                </button>
               </p>
             )}
 
