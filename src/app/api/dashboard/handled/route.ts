@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
   //    independently and its outcome persisted. NOTE: whether GHL mark-read clears
   //    the conversation unread badge is UNVERIFIED pending a human-watched live
   //    test (see the spike + memory).
-  const sync = await runHandledWriteback(local.target, operator?.email ?? 'operator');
+  const sync = await runHandledWriteback(local.target, operator?.email ?? operator?.id ?? 'operator');
   await recordWriteback(itemId, sync);
 
   return NextResponse.json({ ok: true, sync });

@@ -20,6 +20,7 @@ import {
   modifyThread,
 } from '@/lib/integrations/gmail';
 import type { HandledTarget } from './store';
+import { handledByTag } from './assignment';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThread } from './gmail';
@@ -210,7 +211,8 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
 }
 
 function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // Bound it: keeps a stray verbose API body out of the stored handled_channel_sync.
+  return (err instanceof Error ? err.message : String(err)).slice(0, 500);
 }
 
 /**
@@ -238,8 +240,7 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
 
   if (target.ghlContactId && isHighLevelConfigured()) {
     try {
-      const tag = `handled-by-${operatorLabel}`.toLowerCase().replace(/\s+/g, '-');
-      await addContactTags(target.ghlContactId, ['dashboard-handled', tag]);
+      await addContactTags(target.ghlContactId, ['dashboard-handled', handledByTag(operatorLabel)]);
       sync.ghlTags = 'ok';
     } catch (err) {
       sync.ghlTags = 'failed';

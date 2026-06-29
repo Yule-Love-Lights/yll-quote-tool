@@ -10,3 +10,13 @@ export function claimState(assignedTo: string | null, currentOperator: string | 
   if (currentOperator && assignedTo === currentOperator) return 'mine';
   return 'other';
 }
+
+/** A GHL-safe `handled-by-<who>` tag from an operator label (email/id). Strips
+ *  punctuation (@, ., spaces) to a dash slug so the tag write doesn't fail. */
+export function handledByTag(operatorLabel: string): string {
+  const slug = operatorLabel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `handled-by-${slug || 'operator'}`;
+}
