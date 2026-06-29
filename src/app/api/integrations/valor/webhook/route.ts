@@ -49,8 +49,11 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
-import { createJobFromQuote } from '@/lib/jobs';
+import { createJobFromQuote, type JobRow } from '@/lib/jobs';
 import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
+import { getJobWorkOrder } from '@/lib/inventory/jobs';
+import { notifyTelegram } from '@/lib/integrations/telegramNotify';
+import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -267,10 +270,34 @@ export async function POST(req: NextRequest) {
   // a job already exists for the quote — the SHARED-table guard shared with #82).
   // BEST-EFFORT: a failure here must NOT break the webhook or the booking — the
   // payment is already recorded. A missing job can be reconciled later.
+  let job: JobRow | null = null;
   try {
-    await createJobFromQuote(quote.id);
+    job = await createJobFromQuote(quote.id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] job auto-create failed:', err);
+  }
+
+  // #82 follow-up — proactive prep ping to the inventory Telegram group with the
+  // job's full projected materials list (the same work-order projection staff get
+  // by email). Best-effort + dormancy-aware (notifyTelegram no-ops unless the bot
+  // is enabled): a ping failure must never break the webhook or the booking.
+  try {
+    if (job) {
+      const wo = await getJobWorkOrder(job.id);
+      if (wo) {
+        await notifyTelegram(
+          prepJobMessage({
+            customerName: wo.job.customerName,
+            jobNumber: wo.job.jobNumber,
+            materials: wo.materials.materials,
+            unbound: wo.materials.unbound,
+            baseUrl: (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, ''),
+          }),
+        );
+      }
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] prep ping failed:', err);
   }
 
   // #82 Phase 3 — event-driven auto-PO. Naldo's rule: the scheduled cron sends

@@ -14,7 +14,7 @@ import { createHmac } from 'crypto';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl, createJobFromQuote } = vi.hoisted(() => ({
+const { sbRef, hl, createJobFromQuote, notifyTelegram, getJobWorkOrder } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     sendSms: vi.fn(async () => ({})),
@@ -26,6 +26,20 @@ const { sbRef, hl, createJobFromQuote } = vi.hoisted(() => ({
   // wiring (called once on booking, never on replay) without touching the
   // jobs table. Its OWN idempotency is covered in src/lib/jobs.test.ts.
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
+  // Proactive prep ping (#82 follow-up): the work order feeds the message; the
+  // notifier is mocked so we assert it fires once per booking, never on replay.
+  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  getJobWorkOrder: vi.fn(async () => ({
+    job: {
+      id: 'job-1', jobNumber: 1042, quoteId: 'quote-1', designId: null,
+      stage: 'awaiting_materials', status: 'to_schedule', installDate: null,
+      customerName: 'Jordan Smith', customerAddress: null, stockDecrementedAt: null,
+    },
+    materials: {
+      materials: [{ sku: '1001', name: 'C9 Warm White', qty: 120, onHand: 200, short: false }],
+      unbound: [], totalLines: 1,
+    },
+  })),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -35,6 +49,14 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/lib/jobs', () => ({
   createJobFromQuote,
+}));
+
+vi.mock('@/lib/integrations/telegramNotify', () => ({
+  notifyTelegram,
+}));
+
+vi.mock('@/lib/inventory/jobs', () => ({
+  getJobWorkOrder,
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -164,6 +186,13 @@ describe('Valor webhook — happy path', () => {
     // #83 Phase 2: booking auto-creates exactly one Job from the quote.
     expect(createJobFromQuote).toHaveBeenCalledTimes(1);
     expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
+
+    // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
+    expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
+    expect(notifyTelegram).toHaveBeenCalledTimes(1);
+    expect(notifyTelegram.mock.calls[0][0]).toContain('New job to prep');
+    expect(notifyTelegram.mock.calls[0][0]).toContain('Jordan Smith');
+    expect(notifyTelegram.mock.calls[0][0]).toContain('C9 Warm White');
   });
 
   it('still books even if the job auto-create throws (best-effort)', async () => {
@@ -229,6 +258,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     // Lost the race → the winning request creates the job; this replay must not.
     expect(createJobFromQuote).not.toHaveBeenCalled();
+    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping on replay
   });
 
   it('short-circuits when the quote is already marked paid', async () => {
@@ -241,6 +271,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(json.alreadyPaid).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
+    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
   });
 });
 
