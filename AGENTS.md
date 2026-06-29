@@ -17,6 +17,8 @@ Adopt these four principles by default when writing, reviewing, or refactoring *
 - **Branch BEFORE you edit.** Create your `jason/`/`naldo/` feature branch *first* — never start editing on `master`'s working tree (even uncommitted), then scramble to move the changes onto a branch later.
 - **Trace the full side-effect chain before presenting an approach** — especially for subtle gesture / shared-editor-core changes. (e.g. a `dragstart→stopDrag` plan had to be reversed mid-build once it was found to trigger `dragend→bake→mid-draw redraw`; verifying the whole chain first avoids approving-then-reversing.)
 - **After a `git checkout` / branch switch, `Read` a file before you `Edit` it** — the harness requires a fresh read post-switch; doing it proactively avoids failed-edit retries.
+- **Read the giant `task_ledger.md` surgically.** Its rows are enormous single lines — grab a narrow line-range or `grep -o` just the bit you need; don't pull whole sections into context (it's the biggest avoidable context drain in a long session).
+- **Don't open a separate PR for every tiny docs/ledger tweak.** Batch the bundle-able ones into one PR or fold them into your session-close sync; only land a docs change on its own when something downstream needs it first (e.g. a rule before the work it governs).
 
 # Codebase navigation — prefer the graphify graph for big-picture questions
 
