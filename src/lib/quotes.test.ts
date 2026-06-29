@@ -34,11 +34,16 @@ import { saveQuote, updateQuote, deleteTestQuotes } from './quotes';
 // so a test can assert the RLS-safe path. ───────────────────────────────────
 function makeFake() {
   const fromCalls: string[] = [];
+  const inserts: Record<string, unknown>[] = [];
   const builder: Record<string, unknown> = {};
   const ret = () => builder;
-  for (const m of ['select', 'insert', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
+  for (const m of ['select', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
     builder[m] = ret;
   }
+  builder.insert = (row: Record<string, unknown>) => {
+    inserts.push(row);
+    return builder;
+  };
   builder.single = async () => ({ data: { id: 'new-id' }, error: null });
   builder.maybeSingle = async () => ({ data: { id: 'new-id' }, error: null });
   builder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
@@ -49,7 +54,7 @@ function makeFake() {
     },
     rpc: async () => ({ data: 1, error: null }),
   };
-  return { client, fromCalls };
+  return { client, fromCalls, inserts };
 }
 
 // ── Fake B (#93): in-memory tables, for is_test + scoped-delete assertions. ──
@@ -176,6 +181,28 @@ describe('updateQuote', () => {
 
   it('returns null when Supabase is unconfigured', async () => {
     expect(await updateQuote('q1', INPUTS, RESULT)).toBeNull();
+  });
+});
+
+// #90 actor audit trail: saveQuote stamps created_by (the operator's user id).
+describe('saveQuote created_by', () => {
+  it('writes the caller id into created_by on insert', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    // saveQuote(customer, inputs, result, serviceType, isTest, createdBy)
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT, undefined, false, 'op-1');
+
+    expect(service.inserts[0]).toMatchObject({ created_by: 'op-1' });
+  });
+
+  it('writes created_by null when no caller id (dormant auth)', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(service.inserts[0]).toMatchObject({ created_by: null });
   });
 });
 

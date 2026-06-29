@@ -4,7 +4,7 @@ import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -178,6 +178,10 @@ export async function POST(req: NextRequest) {
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
     // row; otherwise save a fresh quote.
     const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
+    // Actor audit trail (#90): stamp the creating operator on a NEW quote only
+    // (created_by is create-attribution; a re-price must not rewrite it). null
+    // while the auth gate is dormant (no session).
+    const operator = await getOperator();
     // On update, only touch the customer columns when the request actually
     // carried a customer object — omitting it must not reset the stored
     // name/address to the Anonymous sentinels.
@@ -190,7 +194,14 @@ export async function POST(req: NextRequest) {
           // undefined → leave the stored service_type untouched on update.
           serviceType ?? undefined,
         )
-      : await saveQuote(safeCustomer, quoteInputs, result, serviceType ?? DEFAULT_SERVICE_TYPE, isTest);
+      : await saveQuote(
+          safeCustomer,
+          quoteInputs,
+          result,
+          serviceType ?? DEFAULT_SERVICE_TYPE,
+          isTest,
+          operator?.id ?? null,
+        );
     return NextResponse.json({
       customer: safeCustomer,
       result,

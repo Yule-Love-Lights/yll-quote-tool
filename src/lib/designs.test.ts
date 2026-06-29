@@ -36,6 +36,7 @@ import {
   uploadDesignSatellite,
   deleteDesign,
   deleteDesignsForQuote,
+  createDesign,
 } from './designs';
 
 // ─── design upload size cap (audit #22) ─────────────────────────────────────
@@ -221,5 +222,46 @@ describe('deleteDesignsForQuote', () => {
   it('returns 0 when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await deleteDesignsForQuote('quote-1')).toBe(0);
+  });
+});
+
+// ─── createDesign actor audit trail (#90) ───────────────────────────────────
+
+// Minimal insert-capturing fake: createDesign with no photoBase64 only runs
+// from('designs').insert({...}).select('id').single().
+function makeInsertSb() {
+  const inserts: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = {
+    insert: (row: Record<string, unknown>) => {
+      inserts.push(row);
+      return builder;
+    },
+    select: () => builder,
+    single: async () => ({ data: { id: 'd1' }, error: null }),
+  };
+  return { client: { from: () => builder }, inserts };
+}
+
+describe('createDesign created_by (#90)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('stamps the caller id into created_by', async () => {
+    const sb = makeInsertSb();
+    sbRef.current = sb.client;
+
+    await createDesign({ createdBy: 'op-1' });
+
+    expect(sb.inserts[0]).toMatchObject({ created_by: 'op-1' });
+  });
+
+  it('writes created_by null when no caller id', async () => {
+    const sb = makeInsertSb();
+    sbRef.current = sb.client;
+
+    await createDesign({});
+
+    expect(sb.inserts[0]).toMatchObject({ created_by: null });
   });
 });

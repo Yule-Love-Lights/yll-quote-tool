@@ -142,6 +142,9 @@ export async function saveQuote(
   // once here at insert; updateQuote never touches it (is_test is immutable, so
   // the derived job/invoice can trust the quote link).
   isTest = false,
+  // Actor audit trail (#90): the operator's Supabase user id, or null when the
+  // auth gate is dormant (no session). Stamped once, on create.
+  createdBy: string | null = null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -177,6 +180,7 @@ export async function saveQuote(
       // it here makes the explicit-status read path correct from row one.
       status: 'draft' satisfies QuoteStatus,
       is_test: isTest,
+      created_by: createdBy,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')

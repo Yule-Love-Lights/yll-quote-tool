@@ -7,9 +7,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { save, update } = vi.hoisted(() => ({
+const { save, update, operatorRef } = vi.hoisted(() => ({
   save: vi.fn(async () => ({ id: 'new-id' })),
   update: vi.fn(async () => ({ id: 'existing-id' })),
+  operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
 }));
 
 vi.mock('@/lib/quotes', () => ({
@@ -21,6 +22,13 @@ vi.mock('@/lib/quotes', () => ({
 vi.mock('@/lib/designs', () => ({
   isValidDesignId: () => false,
   getDesign: vi.fn(),
+}));
+
+// Auth: gate allows (requireOperator → null); getOperator returns whatever the
+// test sets, so we can assert the actor id is threaded to saveQuote as created_by.
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: async () => null,
+  getOperator: async () => operatorRef.current,
 }));
 
 import { POST } from './route';
@@ -53,6 +61,7 @@ const REAL_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  operatorRef.current = null;
 });
 
 describe('POST /api/quote — validation hardening', () => {
@@ -93,6 +102,36 @@ describe('POST /api/quote — validation hardening', () => {
     const res = await POST(makeReq({ inputs }));
     expect(res.status).toBe(200);
     expect(save).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/quote — created_by actor trail (#90)', () => {
+  it('threads the authenticated operator id to saveQuote as created_by', async () => {
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    const res = await POST(makeReq({ inputs: validInputs() }));
+    expect(res.status).toBe(200);
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by)
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(), // customer
+      expect.anything(), // inputs
+      expect.anything(), // result
+      expect.anything(), // serviceType
+      expect.anything(), // isTest
+      'op-1', // created_by
+    );
+  });
+
+  it('threads null when no operator session (dormant auth)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs() }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+    );
   });
 });
 
