@@ -645,10 +645,17 @@ export async function mergeContactsById(
   const merged = mergeContacts(primary, secondary);
 
   // 1. Repoint the secondary's items + follow-ups onto the primary (BEFORE delete).
-  await sb.from('inbox_items').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
-  await sb.from('follow_ups').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
+  //    MUST check these: if a repoint fails and we still delete the secondary, its
+  //    ON DELETE CASCADE would wipe the un-repointed items/follow-ups (lost history).
+  const { error: itemsErr } = await sb.from('inbox_items').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
+  if (itemsErr) return { ok: false, error: itemsErr.message };
+  const { error: fuErr } = await sb.from('follow_ups').update({ contact_id: primaryId }).eq('contact_id', secondaryId);
+  if (fuErr) return { ok: false, error: fuErr.message };
 
-  // 2. Delete the secondary (frees its UNIQUE ghl_contact_id).
+  // 2. Delete the secondary (frees its UNIQUE ghl_contact_id). Not transactional:
+  //    a failure on the primary update below leaves the primary with its OLD
+  //    identifiers — no data loss, and a re-run merges cleanly. (A Postgres RPC
+  //    could make the whole sequence atomic if this ever matters.)
   const { error: delErr } = await sb.from('dashboard_contacts').delete().eq('id', secondaryId);
   if (delErr) return { ok: false, error: delErr.message };
 

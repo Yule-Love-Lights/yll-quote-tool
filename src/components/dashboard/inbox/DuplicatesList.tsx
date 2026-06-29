@@ -16,17 +16,21 @@ export function DuplicatesList({ initialPairs }: { initialPairs: DuplicateContac
   const [pairs, setPairs] = useState<DuplicateContactView[]>(initialPairs);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
-  const merge = useCallback(async (primaryId: string, secondaryId: string, key: string) => {
+  const merge = useCallback(async (pair: DuplicateContactView, primaryId: string, secondaryId: string) => {
+    const key = pairKey(pair);
     setBusyKey(key);
     setPairs((prev) => prev.filter((p) => pairKey(p) !== key)); // optimistic
     try {
-      await fetch('/api/dashboard/contacts/merge', {
+      const res = await fetch('/api/dashboard/contacts/merge', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ primaryId, secondaryId }),
       });
+      // Restore the pair if the merge was rejected, so a failure is visible
+      // rather than silently vanishing.
+      if (!res.ok) setPairs((prev) => [pair, ...prev]);
     } catch {
-      // A reload re-fetches the true list if the merge failed.
+      setPairs((prev) => [pair, ...prev]);
     } finally {
       setBusyKey(null);
     }
@@ -68,7 +72,7 @@ export function DuplicatesList({ initialPairs }: { initialPairs: DuplicateContac
                 <button
                   type="button"
                   disabled={busyKey === key}
-                  onClick={() => merge(p.a.id, p.b.id, key)}
+                  onClick={() => merge(p, p.a.id, p.b.id)}
                   className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
                   style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
                 >
@@ -77,7 +81,7 @@ export function DuplicatesList({ initialPairs }: { initialPairs: DuplicateContac
                 <button
                   type="button"
                   disabled={busyKey === key}
-                  onClick={() => merge(p.b.id, p.a.id, key)}
+                  onClick={() => merge(p, p.b.id, p.a.id)}
                   className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                   style={{ color: 'var(--op-text-2)', border: '1px solid var(--op-border)' }}
                 >
