@@ -3,21 +3,34 @@ import { validateNewUser, canDeleteUser, canChangeRole } from './accountGuards';
 
 describe('validateNewUser', () => {
   it('accepts a well-formed admin or operator', () => {
-    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'admin' }).ok).toBe(true);
-    expect(validateNewUser({ email: 'b@x.com', password: '12345678', role: 'operator' }).ok).toBe(true);
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'admin', name: 'Ada' }).ok).toBe(true);
+    expect(validateNewUser({ email: 'b@x.com', password: '12345678', role: 'operator', name: 'Bob' }).ok).toBe(true);
   });
 
   it('rejects a bad email', () => {
-    expect(validateNewUser({ email: 'nope', password: 'longenough', role: 'operator' }).ok).toBe(false);
-    expect(validateNewUser({ email: '', password: 'longenough', role: 'operator' }).ok).toBe(false);
+    expect(validateNewUser({ email: 'nope', password: 'longenough', role: 'operator', name: 'Bob' }).ok).toBe(false);
+    expect(validateNewUser({ email: '', password: 'longenough', role: 'operator', name: 'Bob' }).ok).toBe(false);
   });
 
   it('rejects a short password (< 8 chars)', () => {
-    expect(validateNewUser({ email: 'a@x.com', password: 'short', role: 'operator' }).ok).toBe(false);
+    expect(validateNewUser({ email: 'a@x.com', password: 'short', role: 'operator', name: 'Bob' }).ok).toBe(false);
   });
 
   it('rejects an unknown role', () => {
-    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'superuser' }).ok).toBe(false);
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'superuser', name: 'Bob' }).ok).toBe(false);
+  });
+
+  it('rejects a missing/blank name (required on create)', () => {
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: '' }).ok).toBe(false);
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: '   ' }).ok).toBe(false);
+  });
+
+  it('accepts a name with surrounding whitespace (trimmed by the caller)', () => {
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: '  Jane  ' }).ok).toBe(true);
+  });
+
+  it('rejects a name longer than 80 chars', () => {
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: 'x'.repeat(81) }).ok).toBe(false);
   });
 });
 

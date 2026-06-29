@@ -220,6 +220,11 @@ export async function attachQuoteToCustomer(
 // One-shot, idempotent promotion of every identity-bearing, not-yet-linked quote
 // into the customers/properties tables. Safe to re-run (scans only quotes WHERE
 // customer_id IS NULL; find-or-create dedups). Returns a summary.
+//
+// Test quotes (is_test=true, ledger #93) are EXCLUDED: this is the only path
+// that writes persisted customers/properties rows, and those tables aren't FK-
+// cascaded from quotes — so promoting a test quote would both leak it into the
+// customer list and leave an orphan that "Delete test data" can't reach.
 export async function backfillCustomersFromQuotes(
   limit = 5000,
 ): Promise<{ scanned: number; linked: number; skipped: number }> {
@@ -230,6 +235,9 @@ export async function backfillCustomersFromQuotes(
     .from('quotes')
     .select('id, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address')
     .is('customer_id', null)
+    // is_test IS NOT TRUE → real quotes only (false + any legacy NULL during a
+    // migration window); excludes test quotes. Null-safe on purpose.
+    .not('is_test', 'is', true)
     .order('created_at', { ascending: true })
     .limit(limit);
   if (error) {

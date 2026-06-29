@@ -17,6 +17,8 @@ import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { isActiveFulfillment } from './jobs';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
+import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { poSentMessage } from '@/lib/integrations/telegramMessages';
 
 export type POInput = { sku: string; needed: number; onHand: number };
 export type POLine = { sku: string; needed: number; onHand: number; order: number };
@@ -53,9 +55,22 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
     .from('jobs')
     .select('quote_id, status, stock_decremented_at')
     .is('stock_decremented_at', null);
-  const active = (jobRows ?? []).filter(
+  let active = (jobRows ?? []).filter(
     (j) => isActiveFulfillment((j as { status: string }).status) && (j as { quote_id: string | null }).quote_id,
   ) as { quote_id: string }[];
+  if (!active.length) return { lines: [], jobCount: 0 };
+
+  // Test Quote safety (ledger #93): a test job IS a real jobs row, but its
+  // materials must NEVER reach the real supplier PO. is_test lives on the quote —
+  // drop any active job whose quote is a test quote before aggregating demand.
+  const allQuoteIds = [...new Set(active.map((j) => j.quote_id))];
+  const { data: testRows } = await db
+    .from('quotes')
+    .select('id')
+    .eq('is_test', true)
+    .in('id', allQuoteIds);
+  const testQuoteIds = new Set((testRows ?? []).map((r) => (r as { id: string }).id));
+  active = active.filter((j) => !testQuoteIds.has(j.quote_id));
   if (!active.length) return { lines: [], jobCount: 0 };
 
   const quoteIds = [...new Set(active.map((j) => j.quote_id))];
@@ -105,6 +120,19 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });
+    // #82 follow-up — proactive ping to the inventory group with what was ordered.
+    // Best-effort: a ping failure must not flip a successful send into an error.
+    try {
+      await notifyTelegram(
+        poSentMessage({
+          lines: po.lines.map((l) => ({ name: l.name, sku: l.sku, order: l.order })),
+          jobCount: po.jobCount,
+          baseUrl: appBaseUrl(),
+        }),
+      );
+    } catch (err) {
+      console.error('emailSupplierPurchaseOrder: PO sent ping failed:', err);
+    }
     return { ok: true };
   } catch (err) {
     console.error('emailSupplierPurchaseOrder failed:', err);

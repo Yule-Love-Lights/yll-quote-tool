@@ -47,7 +47,7 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     const { data, error } = await sb
       .from('quotes')
       .select(
-        'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at',
+        'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, is_test',
       )
       .eq('id', id)
       .maybeSingle<QuoteRowForPortal>();

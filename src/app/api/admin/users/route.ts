@@ -1,6 +1,6 @@
 // Operator account management — admin-only (ledger #81 Slice 3).
 //   GET  /api/admin/users  → list every operator account.
-//   POST /api/admin/users  → create one { email, password, role }.
+//   POST /api/admin/users  → create one { name, email, password, role } (name required).
 //
 // Every handler requires a real ADMIN session (requireAdmin — NOT dormancy-
 // bypassed; fails closed without an admin) and uses the Supabase service-role
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  let body: { email?: unknown; password?: unknown; role?: unknown };
+  let body: { email?: unknown; password?: unknown; role?: unknown; name?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -49,15 +49,18 @@ export async function POST(req: NextRequest) {
   const email = typeof body.email === 'string' ? body.email.trim() : '';
   const password = typeof body.password === 'string' ? body.password : '';
   const role = typeof body.role === 'string' ? body.role : 'operator';
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
 
-  const v = validateNewUser({ email, password, role });
+  const v = validateNewUser({ email, password, role, name });
   if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
 
   const { data, error } = await sb.auth.admin.createUser({
     email,
     password,
     email_confirm: true, // no SMTP — admin-set passwords; account usable immediately
-    app_metadata: { role },
+    // name lives in app_metadata (admin-only, like role) so an operator can't
+    // self-spoof their attribution via the self-service password route (#81 names).
+    app_metadata: { role, name },
   });
   if (error || !data?.user) {
     // Prefer the stable GoTrue error code; fall back to message text for older

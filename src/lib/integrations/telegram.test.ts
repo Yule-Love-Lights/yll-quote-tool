@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { verifyTelegramSecret, isAllowedChat, cleanTelegramCommand } from './telegram';
+import { verifyTelegramSecret, isAllowedChat, cleanTelegramCommand, allowedChats } from './telegram';
 
 describe('verifyTelegramSecret (#82 Phase 3)', () => {
   it('accepts a matching secret (constant-time)', () => {
@@ -37,6 +37,26 @@ describe('isAllowedChat', () => {
     process.env.TELEGRAM_ALLOWED_CHATS = '123';
     expect(isAllowedChat(null)).toBe(false);
     expect(isAllowedChat(undefined)).toBe(false);
+  });
+});
+
+describe('allowedChats', () => {
+  const prev = process.env.TELEGRAM_ALLOWED_CHATS;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.TELEGRAM_ALLOWED_CHATS;
+    else process.env.TELEGRAM_ALLOWED_CHATS = prev;
+  });
+
+  it('parses a comma-separated list, trimming and dropping empties', () => {
+    process.env.TELEGRAM_ALLOWED_CHATS = ' -5462733377 , 987654321 ,';
+    expect(allowedChats()).toEqual(['-5462733377', '987654321']);
+  });
+
+  it('returns [] when unset or empty', () => {
+    delete process.env.TELEGRAM_ALLOWED_CHATS;
+    expect(allowedChats()).toEqual([]);
+    process.env.TELEGRAM_ALLOWED_CHATS = '';
+    expect(allowedChats()).toEqual([]);
   });
 });
 
