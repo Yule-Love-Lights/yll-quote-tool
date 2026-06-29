@@ -66,6 +66,39 @@ const B: Bindings = {
   'mini:Warm White': 'MINIWW',
 };
 
+// #92 bindings: solid spritzers (for round-robin) + a couple of solid minis.
+const BP: Bindings = {
+  ...B,
+  'spritzer:blue:24': 'SPBLUE24',
+  'spritzer:cool-white:24': 'SPCW24',
+  'mini:Pure White': 'MINIPW',
+  'mini:Blue': 'MINIBLUE',
+};
+const onlyCat = (ls: MaterialLine[], c: string) => ls.filter((l) => l.category === c);
+
+describe('projectMaterials — #92 pattern-aware', () => {
+  it('whole-house pattern with a mini strand → orders the strand × string count', () => {
+    const ls = onlyCat(projectMaterials(scene([MINI('m1', 'bush', 3, [])]), BP, {}, ['red', 'green', 'cool-white']), 'mini'); // Grinch
+    expect(ls).toEqual([{ sku: '43346', qty: 3, category: 'mini', conceptKey: 'mini:grinch', label: 'grinch mini (bush) × 3', sceneItemId: 'm1' }]);
+  });
+
+  it('whole-house pattern with a spritzer strand → orders that strand for the size', () => {
+    const ls = onlyCat(projectMaterials(scene([SP('s1', '24', [])]), BP, {}, ['green', 'red']), 'spritzer'); // Christmas → 61342 (24")
+    expect(ls).toEqual([{ sku: '61342', qty: 1, category: 'spritzer', conceptKey: 'spritzer:christmas:24', label: '24" christmas spritzer', sceneItemId: 's1' }]);
+  });
+
+  it('pattern with NO spritzer strand → round-robin OFFERED solids, never an un-offered color', () => {
+    // Ocean = teal+blue+pure-white; no Ocean spritzer; teal not offered → blue/cool-white cycle.
+    const ls = onlyCat(projectMaterials(scene([SP('s1', '24', []), SP('s2', '24', []), SP('s3', '24', [])]), BP, {}, ['teal', 'blue', 'cool-white']), 'spritzer');
+    expect(ls.map((l) => l.sku)).toEqual(['SPBLUE24', 'SPCW24', 'SPBLUE24']);
+  });
+
+  it('as-designed (no choice): an item authored in a pattern\'s colors → its strand', () => {
+    const ls = onlyCat(projectMaterials(scene([MINI('m1', 'bush', 1, ['red', 'green', 'cool-white'])]), BP), 'mini');
+    expect(ls).toEqual([{ sku: '43346', qty: 1, category: 'mini', conceptKey: 'mini:grinch', label: 'grinch mini (bush) × 1', sceneItemId: 'm1' }]);
+  });
+});
+
 describe('projectMaterials — wreaths', () => {
   it('decorated wreath → base + bow + fee', () => {
     const lines = projectMaterials(scene([W('w1', '36noble', 'fullDecor')]), B);

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { SceneItem, QuoteSpritzerSize } from '@/lib/design/sceneTypes';
-import { resolveInstalls, offeredFromBindings, type OfferedColors } from './resolveInstalls';
+import { resolveInstalls, offeredFromBindings, resolveColorChoice, type OfferedColors } from './resolveInstalls';
 import { miniKey, spritzerKey } from './concepts';
+import { matchPattern } from './patternSkus';
 
 // ── minimal scene-item factories (cast partials; the resolver only reads a few fields) ──
 const sp = (id: string, colors: string[], size: QuoteSpritzerSize = '24'): SceneItem =>
@@ -36,7 +37,7 @@ describe('resolveInstalls — strand path', () => {
     const o = offered(ALL_MINI, { '24': SPRITZER_24 });
     const got = resolveInstalls([mini('b1', []), mini('b2', [])], ['red', 'green', 'cool-white'], o); // = Grinch
     for (const id of ['b1', 'b2']) {
-      expect(got.get(id)).toEqual({ kind: 'strand', sku: '43346', colorIds: ['red', 'green', 'cool-white'] });
+      expect(got.get(id)).toEqual({ kind: 'strand', sku: '43346', colorIds: ['red', 'green', 'cool-white'], patternId: 'grinch' });
     }
   });
 
@@ -84,6 +85,25 @@ describe('resolveInstalls — as-designed keeps each item its own color', () => 
     const got = resolveInstalls([mini('b1', ['red']), mini('b2', ['blue'])], null, o);
     expect(got.get('b1')).toEqual({ kind: 'solid', colorId: 'red' });
     expect(got.get('b2')).toEqual({ kind: 'solid', colorId: 'blue' });
+  });
+});
+
+describe('resolveColorChoice (snapshot → effective colors)', () => {
+  it("'custom' returns the build-your-own colors; empty custom → null (as-designed)", () => {
+    expect(resolveColorChoice('custom', ['red', 'green'])).toEqual(['red', 'green']);
+    expect(resolveColorChoice('custom', [])).toBeNull();
+  });
+
+  it('a named scheme returns its color ids (which can then match a pattern)', () => {
+    const ids = resolveColorChoice('christmas', []);
+    expect(ids).not.toBeNull();
+    expect(matchPattern(ids as string[])?.id).toBe('christmas');
+  });
+
+  it("'as-designed' / unknown / absent → null", () => {
+    expect(resolveColorChoice('as-designed', [])).toBeNull();
+    expect(resolveColorChoice(undefined, undefined)).toBeNull();
+    expect(resolveColorChoice('not-a-real-scheme', [])).toBeNull();
   });
 });
 

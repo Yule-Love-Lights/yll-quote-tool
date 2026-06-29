@@ -25,6 +25,7 @@ import type { Bindings } from './bindings';
 import { matchPattern } from './patternSkus';
 import { miniKey, spritzerKey } from './concepts';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
+import { resolveSchemeColorIds, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 
 const DEFAULT_COLOR_ID = 'warm-white';
 const DEFAULT_SPRITZER_SIZE: QuoteSpritzerSize = '24';
@@ -55,9 +56,37 @@ export function offeredFromBindings(bindings: Bindings | null | undefined): Offe
 
 export type InstallDecision =
   // Order this strand SKU directly; render the pattern intermixed (colorIds).
-  | { kind: 'strand'; sku: string; colorIds: string[] }
+  | { kind: 'strand'; sku: string; colorIds: string[]; patternId: string }
   // Render a single color; order it via the per-color binding (miniKey/spritzerKey).
   | { kind: 'solid'; colorId: string };
+
+// The customer's effective whole-house color choice as resolved palette ids, or
+// null = as-designed. Read from the frozen approval snapshot's customerSelection:
+// a 'custom' (Build-your-own) scheme → its color ids; a named scheme → the scheme's
+// ids; 'as-designed'/unknown/empty-custom → null.
+export function resolveColorChoice(
+  colorSchemeId: string | null | undefined,
+  customPattern: string[] | null | undefined,
+): string[] | null {
+  if (colorSchemeId === CUSTOM_SCHEME_ID) {
+    const cp = Array.isArray(customPattern) ? customPattern.filter((c) => typeof c === 'string') : [];
+    return cp.length > 0 ? cp : null;
+  }
+  return resolveSchemeColorIds(colorSchemeId) ?? null;
+}
+
+// Pull the color choice out of a raw approval_snapshot jsonb (untyped). Returns null
+// for a missing/un-approved snapshot → as-designed.
+export function colorChoiceFromSnapshot(snapshot: unknown): string[] | null {
+  const sel = (snapshot as { customerSelection?: { colorSchemeId?: unknown; customPattern?: unknown } } | null)
+    ?.customerSelection;
+  if (!sel) return null;
+  const schemeId = typeof sel.colorSchemeId === 'string' ? sel.colorSchemeId : null;
+  const customPattern = Array.isArray(sel.customPattern)
+    ? sel.customPattern.filter((c): c is string => typeof c === 'string')
+    : null;
+  return resolveColorChoice(schemeId, customPattern);
+}
 
 type Colorable = { id: string; type: 'mini' | 'spritzer'; colors: string[]; size: QuoteSpritzerSize };
 
@@ -112,7 +141,7 @@ export function resolveInstalls(
     if (pattern) {
       const strandSku = it.type === 'mini' ? pattern.miniSku : pattern.spritzerSku?.[it.size];
       if (strandSku) {
-        result.set(it.id, { kind: 'strand', sku: strandSku, colorIds: pattern.colorSet });
+        result.set(it.id, { kind: 'strand', sku: strandSku, colorIds: pattern.colorSet, patternId: pattern.id });
         continue;
       }
     }

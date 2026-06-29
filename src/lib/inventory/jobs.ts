@@ -13,6 +13,7 @@ import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
 import { listOnHand, upsertOnHand } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialsView } from './materialsProjection';
+import { colorChoiceFromSnapshot } from './resolveInstalls';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -157,22 +158,24 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   let customerName: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let colorChoice: string[] | null = null; // #92 — the customer's approved color pick
   if (job.quote_id) {
     const [{ data: design }, { data: quote }] = await Promise.all([
       db.from('designs').select('scene').eq('quote_id', job.quote_id).maybeSingle(),
-      db.from('quotes').select('customer_name, customer_address, is_test').eq('id', job.quote_id).maybeSingle(),
+      db.from('quotes').select('customer_name, customer_address, is_test, approval_snapshot').eq('id', job.quote_id).maybeSingle(),
     ]);
     if (design?.scene) scene = design.scene as Scene;
     if (quote) {
-      const q = quote as { customer_name: string | null; customer_address: string | null; is_test: boolean | null };
+      const q = quote as { customer_name: string | null; customer_address: string | null; is_test: boolean | null; approval_snapshot: unknown };
       customerName = q.customer_name ?? null;
       customerAddress = q.customer_address ?? null;
       isTest = !!q.is_test;
+      colorChoice = colorChoiceFromSnapshot(q.approval_snapshot);
     }
   }
 
   const { bindings } = await getInventoryBindings();
-  const lines = projectMaterials(scene, bindings);
+  const lines = projectMaterials(scene, bindings, {}, colorChoice);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
   const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
