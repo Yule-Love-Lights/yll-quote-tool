@@ -17,6 +17,8 @@ import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { isActiveFulfillment } from './jobs';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
+import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { poSentMessage } from '@/lib/integrations/telegramMessages';
 
 export type POInput = { sku: string; needed: number; onHand: number };
 export type POLine = { sku: string; needed: number; onHand: number; order: number };
@@ -118,6 +120,19 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });
+    // #82 follow-up — proactive ping to the inventory group with what was ordered.
+    // Best-effort: a ping failure must not flip a successful send into an error.
+    try {
+      await notifyTelegram(
+        poSentMessage({
+          lines: po.lines.map((l) => ({ name: l.name, sku: l.sku, order: l.order })),
+          jobCount: po.jobCount,
+          baseUrl: appBaseUrl(),
+        }),
+      );
+    } catch (err) {
+      console.error('emailSupplierPurchaseOrder: PO sent ping failed:', err);
+    }
     return { ok: true };
   } catch (err) {
     console.error('emailSupplierPurchaseOrder failed:', err);
