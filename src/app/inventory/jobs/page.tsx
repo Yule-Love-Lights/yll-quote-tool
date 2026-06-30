@@ -99,7 +99,7 @@ export default function JobsBoardPage() {
             No active jobs yet — a job appears here once a customer pays their deposit.
           </div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${FULFILLMENT_STAGES.length}, minmax(220px, 1fr))` }}>
+          <div className="grid gap-3 overflow-x-auto pb-2" style={{ gridTemplateColumns: `repeat(${FULFILLMENT_STAGES.length}, minmax(220px, 1fr))` }}>
             {FULFILLMENT_STAGES.map((stage) => {
               const col = cards.filter((c) => c.stage === stage);
               return (
