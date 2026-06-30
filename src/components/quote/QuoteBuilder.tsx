@@ -1562,6 +1562,25 @@ export default function QuoteBuilder({
               <p className="text-xs text-blue-700">
                 Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
               </p>
+              {/* #95: quick link to open the house on Google Maps (standard pin, not
+                  Street View) — precise coords once analyzed, else the matched/typed
+                  address. Lets staff jump to the location themselves. */}
+              {(form.customer.address.trim() !== '' || googleAddress != null) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={
+                      geoLat != null && geoLng != null
+                        ? `https://www.google.com/maps/search/?api=1&query=${geoLat},${geoLng}`
+                        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleAddress ?? form.customer.address.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 font-medium underline hover:text-blue-900"
+                  >
+                    View on Google Maps ↗
+                  </a>
+                </p>
+              )}
               {googleAddress && (
                 <p className="mt-2 text-xs text-blue-800">
                   <span className="font-semibold">Matched:</span> {googleAddress}
