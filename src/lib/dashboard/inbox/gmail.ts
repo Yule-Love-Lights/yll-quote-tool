@@ -140,10 +140,20 @@ export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): Gm
   };
 }
 
-export function normalizeGmailThread(thread: GmailThreadLite): NormalizedTouch {
+export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<string>): NormalizedTouch {
   const { lastInboundAt, lastOutboundAt, latest } = partition(thread.messages);
   const answered = isAnsweredByOutbound({ lastInboundAt, lastOutboundAt });
   const email = thread.from?.email ? normalizeEmail(thread.from.email) : null;
+  const senderEmail = thread.from?.email;
+  const leadKind =
+    suppressed && senderEmail && suppressed.has(senderEmail.toLowerCase())
+      ? 'automated'
+      : classifyMessage({
+          fromAddress: thread.from?.email ?? null,
+          subject: thread.subject ?? null,
+          preview: latest?.snippet ?? null,
+          hasListUnsubscribe: thread.hasListUnsubscribe,
+        });
   return {
     source: 'gmail',
     externalId: thread.threadId,
@@ -160,11 +170,6 @@ export function normalizeGmailThread(thread: GmailThreadLite): NormalizedTouch {
       displayName: thread.from?.name ? normalizeName(thread.from.name) : null,
     },
     raw: thread,
-    leadKind: classifyMessage({
-      fromAddress: thread.from?.email ?? null,
-      subject: thread.subject ?? null,
-      preview: latest?.snippet ?? null,
-      hasListUnsubscribe: thread.hasListUnsubscribe,
-    }),
+    leadKind,
   };
 }

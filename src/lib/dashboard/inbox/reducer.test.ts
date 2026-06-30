@@ -60,6 +60,21 @@ describe('decideInboxState — reopen on new inbound', () => {
     expect(d.reopened).toBe(true);
     expect(d.escalationLevel).toBe(0);
   });
+
+  it('does NOT reopen a handled item when the inbound is the SAME message (reconcile re-ingest)', () => {
+    const existing: ExistingItemState = { status: 'handled', notifiedLevels: [1, 2], lastMessageAt: T };
+    const d = decideInboxState({ existing, touch: touch({ lastMessageAt: T }), now: at(2 * HOUR) });
+    expect(d.status).toBe('handled');
+    expect(d.reopened).toBe(false);
+    expect(d.escalationLevel).toBe(0);
+  });
+
+  it('reopens a handled item only when a NEWER inbound arrives', () => {
+    const existing: ExistingItemState = { status: 'handled', notifiedLevels: [1, 2], lastMessageAt: T };
+    const d = decideInboxState({ existing, touch: touch({ lastMessageAt: at(3 * HOUR) }), now: at(4 * HOUR) });
+    expect(d.status).toBe('unresponded');
+    expect(d.reopened).toBe(true);
+  });
 });
 
 describe('decideInboxState — dismissed is sticky', () => {
