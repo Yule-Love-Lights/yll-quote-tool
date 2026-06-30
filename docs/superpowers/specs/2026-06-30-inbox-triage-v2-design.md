@@ -98,3 +98,20 @@ a happy-path/failure route test + review). All gates green (`tsc · lint · vite
 
 v2 builds on v1. Merge order: **v1 (#258) first** (its migration is already applied to prod), then v2 onto
 fresh master. v2 itself needs no migration and no new secrets/scopes.
+
+## Addendum — snooze / "Followed" (2026-06-30, confirmed A + B)
+
+A fourth card action **"Followed"** — snoozes an item (hides it until the customer messages
+again), distinct from "Handled" (resolved). Gated: only available once we've followed up.
+
+- **Unlock A:** sending a reply in-tool (the reply route) auto-marks the item Followed.
+- **Unlock B:** a manual "I followed up" action (e.g. `POST /api/dashboard/followed`) for phone /
+  outside-tool follow-ups — marks Followed without sending anything.
+- A Followed item hides from the open list and reappears only on a NEW inbound — relies on the
+  reopen-only-on-newer-message fix (PR #262).
+- **Data (decide in planning):** a `followed_up_at timestamptz` flag on `inbox_items` (no status-enum
+  migration churn) + the open-list query excludes items with `followed_up_at` set (until a newer
+  inbound clears/over-rides it), is the leaning option vs. adding a `'followed'` status value.
+- **UI:** "Followed" button enabled only after a reply (A); a manual "Mark followed" covers B; a
+  "Followed (N)" filter/section surfaces snoozed items.
+- Builds after the core v2 reply feature (A depends on reply-inline existing).
