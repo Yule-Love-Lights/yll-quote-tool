@@ -415,6 +415,26 @@ export async function releaseContact(contactId: string, operatorId: string): Pro
 
 // ─── Handled write-back support ─────────────────────────────────────────────
 
+// ─── Prior-state helper (private) ───────────────────────────────────────────
+
+/** Read an item's current status + followed_up_at BEFORE a state-changing update
+ *  so we can log { from } in dashboard_activity. Returns undefined when the item
+ *  is not found or the client is unavailable. */
+async function priorStateOf(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  itemId: string,
+): Promise<{ status: string; wasFollowed: boolean } | undefined> {
+  if (!sb) return undefined;
+  const { data } = await sb
+    .from('inbox_items')
+    .select('status, followed_up_at')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!data) return undefined;
+  const row = data as { status: string; followed_up_at: string | null };
+  return { status: row.status, wasFollowed: !!row.followed_up_at };
+}
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -432,6 +452,7 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
 export async function markItemHandledLocal(itemId: string, operatorId: string, now: Date): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'handled', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
@@ -443,7 +464,7 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
   if (!data) return { ok: false, error: 'Item not found or already handled' };
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId });
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId, detail: { from } });
   return {
     ok: true,
     target: {
@@ -459,6 +480,7 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
 export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
@@ -466,7 +488,7 @@ export async function dismissItem(itemId: string, operatorId: string, now: Date)
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId });
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
   return { ok: true };
@@ -478,12 +500,13 @@ export async function dismissItem(itemId: string, operatorId: string, now: Date)
 export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { error } = await sb
     .from('inbox_items')
     .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId);
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId });
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
   return { ok: true };
 }
 
@@ -806,6 +829,113 @@ export async function mergeContactsById(
   await sb
     .from('dashboard_activity')
     .insert({ actor: operatorId, action: 'merged', contact_id: primaryId, detail: { mergedFrom: secondaryId } });
+  return { ok: true };
+}
+
+// ─── In-Works + Completed buckets ───────────────────────────────────────────
+
+export type InWorksItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  preview: string | null;
+  customerName: string | null;
+  lastActivityAt: string | null;
+};
+export type InWorksResult =
+  | { ok: true; awaiting: InWorksItem[]; handled: InWorksItem[] }
+  | { ok: false; error: string };
+
+const IN_WORKS_SELECT =
+  'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+
+function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'): InWorksItem[] {
+  return (rows ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
+    return {
+      id: String(row.id),
+      source: row.source as InboxSource,
+      channel: (row.channel as string | null) ?? null,
+      preview: (row.preview as string | null) ?? null,
+      customerName: (c?.display_name as string | null) ?? null,
+      lastActivityAt: (row[tsKey] as string | null) ?? null,
+    };
+  });
+}
+
+/** Two-group In-Works list: items being actively followed up (awaiting) + locally
+ *  handled items that aren't yet dismissed or completed (handled). Both sorted
+ *  stalest-first so the longest-waiting surface at the top. */
+export async function listInWorks(limit = 200): Promise<InWorksResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const aw = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .not('followed_up_at', 'is', null)
+    .not('status', 'in', '(completed,dismissed)')
+    .order('followed_up_at', { ascending: true })
+    .limit(limit);
+  const hd = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .eq('status', 'handled')
+    .is('followed_up_at', null)
+    .order('handled_at', { ascending: true })
+    .limit(limit);
+  if (aw.error) return { ok: false, error: aw.error.message };
+  if (hd.error) return { ok: false, error: hd.error.message };
+  return {
+    ok: true,
+    awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
+    handled: mapInWorksRow(hd.data ?? [], 'handled_at'),
+  };
+}
+
+export type CompletedResult = { ok: true; items: InWorksItem[] } | { ok: false; error: string };
+
+/** Recent completed items, newest-first, for the Completed tab. */
+export async function listCompleted(limit = 200): Promise<CompletedResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .eq('status', 'completed')
+    .order('handled_at', { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, items: mapInWorksRow(data ?? [], 'handled_at') };
+}
+
+/** Mark an item completed: capture prior state, stamp status + handled fields,
+ *  clear followed_up_at, and write a detailed activity log entry. */
+export async function markItemCompleted(
+  itemId: string,
+  operatorId: string,
+  now: Date,
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
+  const { error } = await sb
+    .from('inbox_items')
+    .update({
+      status: 'completed',
+      followed_up_at: null,
+      handled_by: operatorId,
+      handled_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    })
+    .eq('id', itemId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'completed',
+    inbox_item_id: itemId,
+    detail: { from },
+  });
   return { ok: true };
 }
 
