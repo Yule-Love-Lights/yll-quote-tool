@@ -16,7 +16,15 @@ vi.mock('./displayId', () => ({
   allocateNumber: (seq: string) => allocRef.current(seq),
 }));
 
-import { createJobFromQuote, getJob, getJobByQuote, listJobs, setJobStatus } from './jobs';
+import {
+  createJobFromQuote,
+  getJob,
+  getJobByQuote,
+  getJobDetail,
+  listJobs,
+  listJobsForAdmin,
+  setJobStatus,
+} from './jobs';
 
 // ── A tiny per-table fake Supabase ──────────────────────────────────────────
 // Records every insert/update payload and serves canned reads per table. Each
@@ -51,6 +59,7 @@ function makeSb(tables: Record<string, TableData>) {
       return builder;
     },
     eq: () => builder,
+    in: () => builder,
     order: () => builder,
     limit: () => builder,
     single: async () => {
@@ -292,5 +301,145 @@ describe('setJobStatus', () => {
     const { client } = makeSb({ jobs: { read: null } });
     sbRef.current = client;
     expect(await setJobStatus('missing', 'scheduled')).toBeNull();
+  });
+});
+
+describe('listJobsForAdmin', () => {
+  it('joins customer identity + is_test from the linked quote (all statuses)', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          {
+            id: 'j1',
+            job_number: 1001,
+            quote_id: 'q1',
+            status: 'requires_invoicing',
+            type: 'one_off',
+            install_date: null,
+            created_at: '2026-06-01',
+            line_items: [{ label: 'Roofline', amount: 1200 }],
+          },
+          {
+            id: 'j2',
+            job_number: 1002,
+            quote_id: 'q2',
+            status: 'to_schedule',
+            type: 'one_off',
+            install_date: '2026-12-01',
+            created_at: '2026-06-02',
+            line_items: [],
+          },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false },
+          { id: 'q2', customer_name: 'Test Bob', customer_address: '2 Oak', is_test: true },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({
+      id: 'j1',
+      jobNumber: 1001,
+      quoteId: 'q1',
+      status: 'requires_invoicing',
+      type: 'one_off',
+      customerName: 'Alice',
+      customerAddress: '1 Main St',
+      isTest: false,
+      itemCount: 1,
+    });
+    expect(cards[1]).toMatchObject({
+      id: 'j2',
+      customerName: 'Test Bob',
+      isTest: true,
+      installDate: '2026-12-01',
+      itemCount: 0,
+    });
+  });
+
+  it('nulls customer identity when a job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          {
+            id: 'j1',
+            job_number: null,
+            quote_id: null,
+            status: 'to_schedule',
+            type: 'one_off',
+            install_date: null,
+            created_at: '2026-06-01',
+            line_items: null,
+          },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    expect(cards[0]).toMatchObject({ id: 'j1', customerName: null, isTest: false, itemCount: 0 });
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listJobsForAdmin()).toEqual([]);
+  });
+});
+
+describe('getJobDetail', () => {
+  it('returns the job with joined customer + the linked invoice', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'requires_invoicing', line_items: [] } },
+      quotes: {
+        read: {
+          customer_name: 'Alice',
+          customer_email: 'a@x.com',
+          customer_phone: '555-0100',
+          customer_address: '1 Main St',
+          is_test: false,
+        },
+      },
+      invoices: { read: { id: 'inv1', balance: 500, status: 'draft' } },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail).toMatchObject({
+      job: { id: 'j1' },
+      customerName: 'Alice',
+      customerEmail: 'a@x.com',
+      customerPhone: '555-0100',
+      isTest: false,
+      invoice: { id: 'inv1', balance: 500 },
+    });
+  });
+
+  it('returns a null invoice (and carries is_test) when no invoice exists yet', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Bob', is_test: true } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.invoice).toBeNull();
+    expect(detail?.isTest).toBe(true);
+  });
+
+  it('returns null when the job does not exist', async () => {
+    const { client } = makeSb({ jobs: { read: null } });
+    sbRef.current = client;
+    expect(await getJobDetail('missing')).toBeNull();
+  });
+
+  it('returns null when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await getJobDetail('j1')).toBeNull();
   });
 });

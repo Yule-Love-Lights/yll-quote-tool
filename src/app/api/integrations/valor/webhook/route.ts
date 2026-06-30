@@ -32,6 +32,7 @@ import {
   parseWebhookEvent,
   verifyWebhookSignature,
   isValorConfigured,
+  type ValorWebhookEvent,
 } from '@/lib/integrations/valor';
 import {
   sendSms,
@@ -49,7 +50,8 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
-import { createJobFromQuote, type JobRow } from '@/lib/jobs';
+import { createJobFromQuote, getJobByQuote, setJobStatus, type JobRow } from '@/lib/jobs';
+import { getInvoiceByJob } from '@/lib/invoices';
 import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
@@ -194,6 +196,16 @@ export async function POST(req: NextRequest) {
   // is logged loudly in case it ever signals a real booking we failed to map.
   if (!event.orderRef) {
     return NextResponse.json({ ok: true, ignored: 'no-order-ref' });
+  }
+
+  // Balance payment branch (ledger #83 pay-link): a `bal_<quoteId>` ref is the
+  // remaining 50% balance, NOT a deposit — mark the linked INVOICE paid + close the
+  // job, and do NOT run the deposit/booking path. (HMAC already verified above.)
+  const balanceMatch = event.orderRef.match(
+    /^bal_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  );
+  if (balanceMatch) {
+    return handleBalancePayment(balanceMatch[1]!, event);
   }
 
   const sb = getSupabaseServiceClient()!;
@@ -442,4 +454,82 @@ export async function POST(req: NextRequest) {
     customerEmailSent,
     internalEmailSent,
   });
+}
+
+// Handle a #83 balance pay-link payment (orderRef `bal_<quoteId>`): mark the linked
+// invoice paid + close the job. HMAC + config already verified by the caller.
+// Test-safe: a test quote's balance is never collected via real Valor — ignore one
+// defensively. Idempotent: an atomic claim flips the invoice paid at most once.
+async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): Promise<NextResponse> {
+  if (!event.approved) {
+    console.warn(
+      `[api/integrations/valor/webhook] non-approved balance txn for quote ${quoteId}: response_code=${event.responseCode}`,
+    );
+    return NextResponse.json({ ok: true, balance: true, declined: true });
+  }
+
+  const sb = getSupabaseServiceClient()!;
+  const { data: quote } = await sb
+    .from('quotes')
+    .select('id, is_test')
+    .eq('id', quoteId)
+    .maybeSingle<{ id: string; is_test: boolean }>();
+  if (!quote) return NextResponse.json({ ok: true, ignored: 'balance-no-quote' });
+  if (quote.is_test) {
+    console.warn(`[api/integrations/valor/webhook] ignoring balance webhook for TEST quote ${quoteId}`);
+    return NextResponse.json({ ok: true, ignored: 'test-quote' });
+  }
+
+  const job = await getJobByQuote(quoteId);
+  const invoice = job ? await getInvoiceByJob(job.id) : null;
+  if (!invoice) return NextResponse.json({ ok: true, ignored: 'balance-no-invoice' });
+  if (invoice.status === 'paid') {
+    return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
+  }
+
+  // Verify the paid amount actually covers the balance (review CRITICAL). The
+  // webhook is the source of truth — any approved bal_-tagged txn on this EPI
+  // reaches here — so do NOT settle a full balance on a short / partial / unrelated
+  // payment. 1-cent tolerance for float rounding; a shortfall is logged + ignored
+  // (the invoice stays unpaid for staff to reconcile).
+  const paid = event.amountUsd;
+  if (paid == null || paid + 0.01 < invoice.balance) {
+    console.error(
+      `[api/integrations/valor/webhook] balance underpayment for quote ${quoteId}: paid=${paid} expected>=${invoice.balance}`,
+    );
+    return NextResponse.json({ ok: true, balance: true, underpaid: true });
+  }
+
+  // Atomic claim — only the first webhook flips an unpaid invoice to paid (Valor
+  // retries up to 3×), so the job-close fires at most once.
+  const paidAt = new Date().toISOString();
+  const { data: claimed, error: claimErr } = await sb
+    .from('invoices')
+    .update({
+      status: 'paid',
+      balance: 0,
+      paid_at: paidAt,
+      valor_balance_txn_id: event.txnId,
+      valor_receipt_url: event.receiptUrl,
+    })
+    .eq('id', invoice.id)
+    .neq('status', 'paid')
+    .select('id');
+  if (claimErr) {
+    console.error('[api/integrations/valor/webhook] balance settle write failed:', claimErr);
+    return NextResponse.json({ error: 'Failed to record the balance payment' }, { status: 500 });
+  }
+  if (!claimed || (Array.isArray(claimed) && claimed.length === 0)) {
+    return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
+  }
+
+  // Close the job once the balance is collected (best-effort — payment is recorded).
+  if (job && job.status === 'requires_invoicing') {
+    try {
+      await setJobStatus(job.id, 'done');
+    } catch (err) {
+      console.error('[api/integrations/valor/webhook] balance: job close failed:', err);
+    }
+  }
+  return NextResponse.json({ ok: true, balance: true, paid: true, paidAt });
 }

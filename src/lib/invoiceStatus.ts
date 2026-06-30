@@ -22,12 +22,14 @@ export const INVOICE_STATUSES: readonly InvoiceStatus[] = [
 
 // Legal forward transitions. An invoice can be paid directly from draft (the
 // auto-charge succeeds on creation) or after awaiting_payment (the pay-link is
-// paid). Cancel is reachable from every non-cancelled state (a paid invoice can
-// be cancelled → manual refund). `cancelled` is terminal.
+// paid). A PAID invoice can REOPEN to awaiting_payment when a booked order is
+// amended UP or a tax-exemption is restored (more becomes owed — #83 re-sync).
+// Cancel is reachable from every non-cancelled state (a paid invoice can be
+// cancelled → manual refund). `cancelled` is terminal.
 const TRANSITIONS: Record<InvoiceStatus, readonly InvoiceStatus[]> = {
   draft: ['awaiting_payment', 'paid', 'cancelled'],
   awaiting_payment: ['paid', 'cancelled'],
-  paid: ['cancelled'],
+  paid: ['awaiting_payment', 'cancelled'],
   cancelled: [],
 };
 

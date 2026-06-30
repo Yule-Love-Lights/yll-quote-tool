@@ -6,6 +6,7 @@ describe('invoiceStatus.canTransition', () => {
     expect(canTransition('draft', 'awaiting_payment')).toBe(true);
     expect(canTransition('draft', 'paid')).toBe(true); // auto-charge succeeds on creation
     expect(canTransition('awaiting_payment', 'paid')).toBe(true); // pay-link paid
+    expect(canTransition('paid', 'awaiting_payment')).toBe(true); // reopen: amended up / tax restored
   });
 
   it('allows cancel from any non-cancelled state, including paid (→ manual refund)', () => {
@@ -15,7 +16,7 @@ describe('invoiceStatus.canTransition', () => {
   });
 
   it('forbids backward / terminal / nonsense transitions', () => {
-    expect(canTransition('paid', 'awaiting_payment')).toBe(false);
+    expect(canTransition('paid', 'draft')).toBe(false);
     expect(canTransition('awaiting_payment', 'draft')).toBe(false);
     expect(canTransition('cancelled', 'paid')).toBe(false);
     expect(canTransition('paid', 'paid')).toBe(false);

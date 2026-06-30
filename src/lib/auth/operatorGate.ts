@@ -19,6 +19,7 @@
 const PUBLIC_QUOTE_SUBROUTES = new Set([
   'approve',
   'pay',
+  'pay-balance', // customer pays the remaining 50% balance (#83 pay-link)
   'view',
   'decline',
   'request-changes',

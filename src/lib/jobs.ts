@@ -12,6 +12,7 @@
 import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
 import { allocateNumber } from './displayId';
 import { canTransition, type JobStatus } from './jobStatus';
+import { getInvoiceByJob, type InvoiceRow } from './invoices';
 import type { LineItem } from './pricing/pricingEngine';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
@@ -81,6 +82,133 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
     return [];
   }
   return (data ?? []) as unknown as JobRow[];
+}
+
+// A billing-board row: the job distilled for the operator /admin/jobs list, with
+// the linked quote's customer identity + is_test joined on (the job's own
+// customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard
+// join, but for the BILLING view — ALL statuses, newest first.
+export type JobAdminCard = {
+  id: string;
+  jobNumber: number | null;
+  quoteId: string | null;
+  status: JobStatus;
+  type: JobRow['type'];
+  customerName: string | null;
+  customerAddress: string | null;
+  isTest: boolean;
+  installDate: string | null;
+  createdAt: string;
+  itemCount: number;
+};
+
+/**
+ * The jobs list for the operator billing view (/admin/jobs). Reads every job
+ * (newest first) and joins each linked quote's customer name/address + is_test.
+ * Test jobs stay VISIBLE here (badged) — only the dashboard metrics exclude them
+ * (#93). Returns [] when Supabase isn't configured.
+ */
+export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
+  const db = sb();
+  if (!db) return [];
+
+  const jobs = await listJobs(limit);
+  if (!jobs.length) return [];
+
+  const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
+  const byQuote = new Map<
+    string,
+    { name: string | null; address: string | null; isTest: boolean }
+  >();
+  if (quoteIds.length) {
+    const { data } = await db
+      .from('quotes')
+      .select('id, customer_name, customer_address, is_test')
+      .in('id', quoteIds);
+    for (const q of (data ?? []) as {
+      id: string;
+      customer_name: string | null;
+      customer_address: string | null;
+      is_test: boolean | null;
+    }[]) {
+      byQuote.set(q.id, {
+        name: q.customer_name ?? null,
+        address: q.customer_address ?? null,
+        isTest: !!q.is_test,
+      });
+    }
+  }
+
+  return jobs.map((j) => {
+    const c = j.quote_id ? byQuote.get(j.quote_id) : undefined;
+    return {
+      id: j.id,
+      jobNumber: j.job_number,
+      quoteId: j.quote_id,
+      status: j.status,
+      type: j.type,
+      customerName: c?.name ?? null,
+      customerAddress: c?.address ?? null,
+      isTest: c?.isTest ?? false,
+      installDate: j.install_date,
+      createdAt: j.created_at,
+      itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
+    };
+  });
+}
+
+// The full billing detail for one job (/admin/jobs/[id]): the job row, the linked
+// quote's customer identity + is_test, and the linked invoice (if one exists yet).
+export type JobDetail = {
+  job: JobRow;
+  customerName: string | null;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  customerAddress: string | null;
+  isTest: boolean;
+  invoice: InvoiceRow | null;
+};
+
+/**
+ * The billing detail for one job — the job row + the linked quote's customer
+ * identity + is_test + the linked invoice (null until the job is completed).
+ * Returns null when Supabase isn't configured or the job is missing.
+ */
+export async function getJobDetail(id: string): Promise<JobDetail | null> {
+  const db = sb();
+  if (!db) return null;
+
+  const job = await getJob(id);
+  if (!job) return null;
+
+  let customerName: string | null = null;
+  let customerEmail: string | null = null;
+  let customerPhone: string | null = null;
+  let customerAddress: string | null = null;
+  let isTest = false;
+  if (job.quote_id) {
+    const { data } = await db
+      .from('quotes')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test')
+      .eq('id', job.quote_id)
+      .maybeSingle<{
+        customer_name: string | null;
+        customer_email: string | null;
+        customer_phone: string | null;
+        customer_address: string | null;
+        is_test: boolean | null;
+      }>();
+    if (data) {
+      customerName = data.customer_name ?? null;
+      customerEmail = data.customer_email ?? null;
+      customerPhone = data.customer_phone ?? null;
+      customerAddress = data.customer_address ?? null;
+      isTest = !!data.is_test;
+    }
+  }
+
+  const invoice = await getInvoiceByJob(id);
+  return { job, customerName, customerEmail, customerPhone, customerAddress, isTest, invoice };
 }
 
 // The minimal quote shape createJobFromQuote needs.

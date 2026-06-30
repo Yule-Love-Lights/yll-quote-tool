@@ -1,0 +1,289 @@
+// Amend a booked order (ledger #83 Phase 4, the delicate one — SPEC §4.4).
+//
+// POST /api/quotes/[id]/amend   (operator-only)
+// Body: { reason: string }   — why the order was amended (required, ≤500 chars).
+// Response: { ok, requiresReconsent, status, amendment: {...} } | { error, code? }
+//
+// Re-opening a BOOKED order rewrites the "freeze snapshot / read-only after
+// approval" assumption, so this is handled carefully + server-side:
+//   • Only a booked (deposit-paid) order can be amended — it has a deposit to apply.
+//   • The new total is the quote's CURRENT server-priced result.total (re-priced by
+//     editing the order in the builder + Calculate — Jason's existing #31 flow);
+//     we NEVER trust a client-supplied total (audit lesson).
+//   • The amendment entry from computeAmendment() is APPENDED to
+//     approval_snapshot.amendments[] — the original signed snapshot is preserved
+//     (the signature attests to the original agreement).
+//   • The linked invoice (if the job was completed) is re-synced to the new totals.
+//   • A total change moves the quote to the re-consent status (changes_requested):
+//     the customer re-approves the new total before any balance is charged (the
+//     SPEC §9 default — staff-initiated; re-notification is a follow-up).
+//
+// No money moves here (no Valor) — collecting the new balance is the separate,
+// gated "Charge remaining balance" step.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
+import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { getJobByQuote } from '@/lib/jobs';
+import type { QuoteStatus } from '@/lib/quoteStatus';
+import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import {
+  AMENDMENT_EMAIL_SUBJECT,
+  amendmentSmsBody,
+  amendmentEmailHtml,
+} from '@/lib/integrations/quoteMessages';
+
+export const runtime = 'nodejs';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_REASON = 500;
+
+type QuoteRow = {
+  id: string;
+  status: QuoteStatus | null;
+  deposit_amount_usd: number | null;
+  deposit_paid_at: string | null;
+  result: (InvoicePricingInput & { total: number }) | null;
+  approval_snapshot: {
+    customerSelection?: { currentTotalUsd?: number };
+    amendments?: AmendmentTrailEntry[];
+  } | null;
+  // For the optional, staff-initiated customer notice + test-safety (#93).
+  customer_name: string | null;
+  highlevel_contact_id: string | null;
+  is_test: boolean;
+};
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+
+  const { id } = await params;
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
+  }
+
+  let body: { reason?: unknown; notifyCustomer?: unknown };
+  try {
+    body = (await req.json()) as { reason?: unknown; notifyCustomer?: unknown };
+  } catch {
+    body = {};
+  }
+  const notifyCustomer = body.notifyCustomer === true;
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) {
+    return NextResponse.json({ error: 'A reason is required', code: 'reason-required' }, { status: 400 });
+  }
+  if (reason.length > MAX_REASON) {
+    return NextResponse.json({ error: `Reason must be ≤ ${MAX_REASON} characters` }, { status: 400 });
+  }
+
+  const sb = getSupabaseServiceClient()!;
+  const { data: quote, error: fetchErr } = await sb
+    .from('quotes')
+    .select(
+      'id, status, deposit_amount_usd, deposit_paid_at, result, approval_snapshot, customer_name, highlevel_contact_id, is_test',
+    )
+    .eq('id', id)
+    .single<QuoteRow>();
+  if (fetchErr || !quote) {
+    return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  // Only a BOOKED order has a paid deposit to keep applied through the amendment.
+  if (!quote.deposit_paid_at) {
+    return NextResponse.json(
+      { error: 'Only a booked order (deposit paid) can be amended', code: 'not-booked' },
+      { status: 409 },
+    );
+  }
+
+  const snap = quote.approval_snapshot ?? {};
+  const amendments = Array.isArray(snap.amendments) ? snap.amendments : [];
+  const last = amendments[amendments.length - 1];
+  // Prior agreed total: the last amendment's new_total, else the original agreed
+  // total in the snapshot, else the current result (a never-amended fresh book).
+  const previousTotal =
+    last?.new_total ?? snap.customerSelection?.currentTotalUsd ?? quote.result?.total ?? 0;
+  const depositPaid = quote.deposit_amount_usd ?? 0;
+  // The NEW total = the quote's current server-priced result (re-priced in the
+  // builder). Never a client value.
+  const newTotal = quote.result?.total ?? previousTotal;
+
+  // Linked job → invoice (exists only once the job is completed): the prior balance
+  // + the row to re-sync.
+  const job = await getJobByQuote(id);
+  const invoice = job ? await getInvoiceByJob(job.id) : null;
+  // The trail's previous_balance is derived from the SAME base as previous_total
+  // (review LOW — internal consistency), not from the live invoice.balance (which
+  // is re-synced separately below for collection).
+  const previousBalance = Math.max(0, previousTotal - depositPaid);
+
+  // Actor for the trail — the named operator once #81 is live; 'staff' while dormant.
+  const op = await getOperator();
+  const by = op?.name ? `staff:${op.name}` : op?.email ? `staff:${op.email}` : 'staff';
+
+  let amendment: AmendmentTrailEntry;
+  try {
+    amendment = computeAmendment({ previousTotal, depositPaid, previousBalance, newTotal, by, reason });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'Invalid amendment' },
+      { status: 400 },
+    );
+  }
+
+  // No real price change → guide the operator to re-price in the builder first
+  // (this MVP records the financial delta; line-level edits happen in the builder).
+  if (Math.abs(amendment.delta) < 0.005) {
+    return NextResponse.json(
+      {
+        error:
+          'No price change detected — edit the order in the builder (Calculate) first, then record the amendment.',
+        code: 'no-change',
+      },
+      { status: 409 },
+    );
+  }
+
+  // Concurrency guard (review HIGH): re-read the snapshot immediately before the
+  // write and abort if the amendments trail grew since our initial read. This
+  // narrows the read-modify-write window on the auditable financial trail. A FULLY
+  // atomic append would be a Postgres RPC (jsonb concat) — flagged for Jason's data
+  // layer; `quotes` has no updated_at trigger to optimistic-lock on. The realistic
+  // double-click/retry is already blocked by the no-change 409 above + the UI
+  // disabling the button mid-request.
+  const { data: fresh } = await sb
+    .from('quotes')
+    .select('approval_snapshot')
+    .eq('id', id)
+    .maybeSingle<{ approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null }>();
+  const freshAmendments = Array.isArray(fresh?.approval_snapshot?.amendments)
+    ? fresh!.approval_snapshot!.amendments!
+    : [];
+  if (freshAmendments.length !== amendments.length) {
+    return NextResponse.json(
+      { error: 'The order changed while you were amending — please retry.', code: 'concurrent-amend' },
+      { status: 409 },
+    );
+  }
+
+  // Persist: APPEND the trail entry (never overwrite the original signed snapshot).
+  // The quote's lifecycle status is left UNCHANGED — it stays `booked` (the deposit
+  // is still paid). Re-consent is tracked by the amendment trail (requiresReconsent),
+  // NOT by overloading the quote status: booked→changes_requested is not a legal
+  // transition (quoteStatus.ts) and would make a paid order read as a change-request
+  // everywhere deriveStatus() is used (review HIGH ×3).
+  const newSnapshot = { ...(fresh?.approval_snapshot ?? snap), amendments: [...freshAmendments, amendment] };
+  const { error: upErr } = await sb
+    .from('quotes')
+    .update({ approval_snapshot: newSnapshot })
+    .eq('id', id);
+  if (upErr) {
+    console.error('[api/quotes/:id/amend] snapshot update failed:', upErr);
+    return NextResponse.json({ error: 'Failed to record the amendment' }, { status: 500 });
+  }
+
+  // Re-sync the linked invoice (if the job was completed) to the re-priced totals,
+  // so the balance the operator collects matches the amended order. Skip a
+  // cancelled invoice (don't resurrect it).
+  if (invoice && invoice.status !== 'cancelled' && quote.result) {
+    const totals = computeInvoiceTotals(quote.result, depositPaid, {
+      taxOverridden: invoice.tax_overridden,
+    });
+    // Reconcile the invoice STATUS to the new balance (review MEDIUM): an
+    // amended-UP already-paid invoice reopens to awaiting_payment (more is owed);
+    // an amended-DOWN invoice that the deposit now covers settles to paid. A
+    // draft/awaiting invoice with a remaining balance is left as-is.
+    const reconciledStatus =
+      totals.balance <= 0 ? 'paid' : invoice.status === 'paid' ? 'awaiting_payment' : invoice.status;
+    const { error: invErr } = await sb
+      .from('invoices')
+      .update({
+        subtotal: totals.subtotal,
+        discount: totals.discount,
+        tax: totals.tax,
+        total: totals.total,
+        deposit_applied: totals.deposit_applied,
+        balance: totals.balance,
+        credit_note: totals.credit_note,
+        status: reconciledStatus,
+      })
+      .eq('id', invoice.id);
+    if (invErr) {
+      // The amendment trail is already recorded; an invoice-sync failure is
+      // reconcilable (re-run the amendment / edit the invoice). Surface it.
+      console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
+    }
+  }
+
+  // Optional, STAFF-INITIATED customer notice of the change (SPEC §4.4 re-consent
+  // default — the operator opts in). Best-effort + TEST-SAFE: a test quote NEVER
+  // fires a real SMS/email. Failures don't fail the amendment (already recorded).
+  let notified = false;
+  let notifyError: string | undefined;
+  if (notifyCustomer) {
+    if (quote.is_test) {
+      notifyError = 'test-quote'; // simulated — no real message sent
+    } else if (!quote.highlevel_contact_id || !isHighLevelConfigured()) {
+      notifyError = 'not-configured';
+    } else {
+      const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+      const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+      const portalUrl = `${baseUrl}/portal/${id}`;
+      const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+      try {
+        await sendSms({
+          contactId: quote.highlevel_contact_id,
+          message: amendmentSmsBody(firstName, amendment.new_balance, phone),
+          fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
+        });
+        await sendEmail({
+          contactId: quote.highlevel_contact_id,
+          subject: AMENDMENT_EMAIL_SUBJECT,
+          html: amendmentEmailHtml({
+            firstName,
+            newTotalUsd: amendment.new_total,
+            newBalanceUsd: amendment.new_balance,
+            portalUrl,
+            phone,
+          }),
+          emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+        });
+        notified = true;
+      } catch (err) {
+        // Don't leak the raw integration error back to the operator response —
+        // a stable coded sentinel (review LOW); the detail is logged.
+        notifyError = 'send-failed';
+        console.warn(
+          '[api/quotes/:id/amend] customer notify failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    requiresReconsent: requiresReconsent(amendment),
+    // The lifecycle status is intentionally unchanged (stays booked); re-consent
+    // lives in the amendment trail, surfaced to the operator + (optionally) the customer.
+    status: quote.status ?? 'booked',
+    isTest: !!quote.is_test,
+    notified,
+    notifyError,
+    amendment: {
+      previous_total: amendment.previous_total,
+      new_total: amendment.new_total,
+      delta: amendment.delta,
+      new_balance: amendment.new_balance,
+      credit_note: amendment.credit_note ?? 0,
+      overpayment: !!amendment.overpayment,
+    },
+  });
+}
