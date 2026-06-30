@@ -279,6 +279,16 @@ export function InboxList({
                 >
                   Followed
                 </button>
+                <button
+                  type="button"
+                  disabled={busyId === item.id}
+                  onClick={() => act(item.id, '/api/dashboard/completed')}
+                  title="Mark this item completed"
+                  className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
+                >
+                  Mark completed
+                </button>
                 {item.source === 'gmail' ? (
                   <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
                     Reply in Gmail
