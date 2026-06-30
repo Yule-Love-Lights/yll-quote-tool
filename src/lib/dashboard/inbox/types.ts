@@ -60,6 +60,8 @@ export type NormalizedTouch = {
   subject?: string | null;
   identity: ContactIdentity;
   raw?: unknown;
+  leadKind?: 'lead' | 'automated' | null;
+  quoteValue?: number | null;
 };
 
 /** A single open inbox item shaped for the /inbox UI (server-fetch → client prop).
@@ -73,6 +75,9 @@ export type OpenInboxItem = {
   preview: string | null;
   subject: string | null;
   escalationLevel: number;
+  leadKind: 'lead' | 'automated';
+  quoteValue: number | null;
+  isReturning: boolean;
   /** The linked contact id (for claim/assign actions); null on an unlinked item. */
   contactId: string | null;
   /** The contact's current assignee (auth.users id), or null when unclaimed. */

@@ -55,6 +55,8 @@ export type ItemRow = {
   escalation_level: number;
   notified_levels: number[];
   raw: unknown;
+  lead_kind: string | null;
+  quote_value: number | null;
 };
 
 export type IngestPlan = {
@@ -125,6 +127,8 @@ export function planIngest(input: {
     escalation_level: decision.escalationLevel,
     notified_levels: notifiedLevels,
     raw: touch.raw ?? null,
+    lead_kind: touch.leadKind ?? 'lead',
+    quote_value: touch.quoteValue ?? null,
   };
 
   return {
@@ -311,13 +315,33 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const { data, error } = await sb
     .from('inbox_items')
     .select(
-      'id, source, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, ' +
+      'id, source, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
         'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
     )
     .eq('status', 'unresponded')
-    .order('last_message_at', { ascending: false })
+    .order('last_message_at', { ascending: true })
     .limit(limit);
   if (error) return { ok: false, error: error.message };
+
+  // "Returning" proxy: a contact with >1 inbox_items across ALL statuses (any
+  // channel, incl. handled/dismissed history). NOTE: a single customer with two
+  // channels open right now also reads as returning — acceptable for v1 (we chose
+  // this over the dormant quote_customer_id link).
+  const contactIds = [...new Set((data ?? []).map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
+  const returning = new Set<string>();
+  if (contactIds.length) {
+    const { data: counts } = await sb
+      .from('inbox_items')
+      .select('contact_id')
+      .in('contact_id', contactIds);
+    const tally = new Map<string, number>();
+    for (const row of counts ?? []) {
+      const cid = (row as { contact_id: string }).contact_id;
+      tally.set(cid, (tally.get(cid) ?? 0) + 1);
+    }
+    for (const [cid, n] of tally) if (n > 1) returning.add(cid);
+  }
+
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): OpenInboxItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
@@ -329,6 +353,9 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       preview: (row.preview as string | null) ?? null,
       subject: (row.subject as string | null) ?? null,
       escalationLevel: (row.escalation_level as number | null) ?? 0,
+      leadKind: (row.lead_kind === 'automated' ? 'automated' : 'lead'),
+      quoteValue: (row.quote_value as number | null) ?? null,
+      isReturning: row.contact_id ? returning.has(row.contact_id as string) : false,
       contactId: (row.contact_id as string | null) ?? null,
       assignedTo: (c?.assigned_to as string | null) ?? null,
       contact: c
@@ -444,7 +471,8 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   const { data, error } = await sb
     .from('inbox_items')
     .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
-    .eq('status', 'unresponded');
+    .eq('status', 'unresponded')
+    .or('lead_kind.is.null,lead_kind.neq.automated');
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
