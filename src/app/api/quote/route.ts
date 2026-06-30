@@ -20,6 +20,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // or fed to calculateQuote. 500 is far above any real quote.
 const MAX_ARRAY_LEN = 500;
 
+// #102: per-quote custom $/ft override cap. A roofline/stake $/ft is realistically
+// single-to-low-double digits; 1000 is far above any real rate and just blocks
+// absurd/overflow values (the engine separately ignores ≤0/NaN, falling back to
+// the difficulty table).
+const MAX_CUSTOM_RATE = 1000;
+
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
 // instead of an opaque downstream 500.
@@ -97,6 +103,18 @@ export async function POST(req: NextRequest) {
   for (const f of difficultyFields) {
     if (!VALID_DIFFICULTIES.includes(q[f] as string)) {
       return NextResponse.json({ error: `Invalid ${f}` }, { status: 400 });
+    }
+  }
+  // #102: optional per-item-type custom $/ft. When present, must be a finite
+  // number in [0, MAX_CUSTOM_RATE]; a clean 400 beats an opaque downstream NaN.
+  const customRateFields = ['santasCustomRate', 'gingerbreadCustomRate', 'winterWonderlandCustomRate', 'stakeLightingCustomRate'] as const;
+  for (const f of customRateFields) {
+    const v = q[f];
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_CUSTOM_RATE)) {
+      return NextResponse.json(
+        { error: `${f} must be a number between 0 and ${MAX_CUSTOM_RATE} if provided` },
+        { status: 400 },
+      );
     }
   }
 

@@ -58,6 +58,8 @@ describe('guessAssignments', () => {
       name: 'Christmas Lights',
       stages: [
         { id: 'open', name: '📭Open' },
+        { id: 'phonecall', name: 'Phone Call/Pre-Bid Visit' },
+        { id: 'prevopen', name: 'Previous Year Open' },
         { id: 'prevquotes', name: 'Previous Year Quotes' },
         { id: 'makequote', name: 'Make Quote' },
         { id: 'bidsent', name: '📨Bid Sent' },
@@ -73,15 +75,19 @@ describe('guessAssignments', () => {
     const g = guessAssignments(PIPELINES);
     expect(g.HIGHLEVEL_PIPELINE_ID.value).toBe('sC6JEcxlGnNDasanlXDN');
     expect(g.HIGHLEVEL_PIPELINE_ID.pipelineName).toBe('Christmas Lights');
-    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.value).toBe('makequote');
+    // A brand-new card lands at the ENTRY stage (📭Open), never the internal
+    // "Make Quote" stage.
+    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.value).toBe('open');
     expect(g.HIGHLEVEL_STAGE_QUOTE_SENT.value).toBe('bidsent');
     expect(g.HIGHLEVEL_STAGE_QUOTE_INTERESTED.value).toBe('interested');
     expect(g.HIGHLEVEL_STAGE_QUOTE_SIGNED.value).toBe('approved');
   });
 
-  it('does not mistake "Previous Year Quotes" for the "Make Quote" (created) stage', () => {
+  it('for the new-card stage picks the FIRST "open" stage (📭Open), not "Previous Year Open" or "Make Quote"', () => {
     const g = guessAssignments(PIPELINES);
-    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.stageName).toBe('Make Quote');
+    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.stageName).toBe('📭Open');
+    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.value).not.toBe('makequote');
+    expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.value).not.toBe('prevopen');
   });
 
   it('returns null values (no crash) when there are no pipelines', () => {

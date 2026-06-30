@@ -178,7 +178,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
 export async function findOrCreateOpportunityForContact(input: {
   contactId: string;
   pipelineId: string;
-  fallbackStageId: string;   // e.g., HIGHLEVEL_STAGE_QUOTE_CREATED (Make Quote)
+  fallbackStageId: string;   // HIGHLEVEL_STAGE_QUOTE_CREATED — the ENTRY stage (e.g. Open), never Make Quote
   fallbackName: string;       // used only if we create
   monetaryValue?: number;
 }): Promise<{ opportunity: HighLevelOpportunity; created: boolean }> {

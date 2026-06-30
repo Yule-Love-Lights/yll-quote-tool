@@ -5,7 +5,6 @@ import type {
   QuoteResult,
   QuoteInputs,
   CustomLineItem,
-  RooflineDifficulty,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
@@ -17,6 +16,7 @@ import {
   type QuoteFormData,
   type FormCustomer,
   type StoredCustomer,
+  type DifficultyChoice,
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
@@ -782,8 +782,12 @@ export default function QuoteBuilder({
       ...f,
       santasFootage: r.santasFootage,
       santasDifficulty: r.santasDifficulty,
+      // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
+      // custom $/ft on these two types — keeps the difficulty + rate consistent.
+      santasCustomRate: 0,
       gingerbreadFootage: r.gingerbreadFootage,
       gingerbreadDifficulty: r.gingerbreadDifficulty,
+      gingerbreadCustomRate: 0,
     }));
     // Satellite polylines — seed them so the satellite tab is ready for
     // complex / commercial rooflines without re-analyzing. #97: only (re)set the
@@ -961,6 +965,22 @@ export default function QuoteBuilder({
 
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
+
+  // #102: difficulty dropdown change. Choosing "Custom…" pre-seeds the $/ft field
+  // from the current preset's rate (so staff tweak a real number, not 0) unless a
+  // custom rate is already entered; preset choices just set the difficulty.
+  const setDifficulty = (
+    diffKey: 'santasDifficulty' | 'gingerbreadDifficulty' | 'winterWonderlandDifficulty' | 'stakeLightingDifficulty',
+    rateKey: 'santasCustomRate' | 'gingerbreadCustomRate' | 'winterWonderlandCustomRate' | 'stakeLightingCustomRate',
+    table: Record<'easy' | 'medium' | 'hard', number>,
+    next: DifficultyChoice,
+  ) =>
+    setForm(f => {
+      if (next !== 'custom') return { ...f, [diffKey]: next };
+      const prev = f[diffKey];
+      const seed = f[rateKey] > 0 ? f[rateKey] : prev === 'custom' ? table.medium : table[prev];
+      return { ...f, [diffKey]: 'custom', [rateKey]: seed };
+    });
 
   const setCustomer = (k: keyof FormCustomer, v: string) =>
     setForm(f => ({ ...f, customer: { ...f.customer, [k]: v } }));
@@ -2092,11 +2112,20 @@ export default function QuoteBuilder({
                                 onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
                               <span className="text-xs text-gray-500">ft</span>
                               <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
-                                onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                                onChange={e => setDifficulty('winterWonderlandDifficulty', 'winterWonderlandCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                                 <option value="easy">Easy</option>
                                 <option value="medium">Medium</option>
                                 <option value="hard">Hard</option>
+                                <option value="custom">Custom…</option>
                               </select>
+                              {form.winterWonderlandDifficulty === 'custom' && (
+                                <>
+                                  <input className="border border-gray-200 rounded px-2 py-1 text-xs w-16" type="number" min="0" step="0.5" placeholder="0"
+                                    value={form.winterWonderlandCustomRate || ''}
+                                    onChange={e => set('winterWonderlandCustomRate', Number(e.target.value))} />
+                                  <span className="text-xs text-gray-500">$/ft</span>
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2130,11 +2159,20 @@ export default function QuoteBuilder({
                                 onChange={e => set('stakeLightingFootage', Number(e.target.value))} />
                               <span className="text-xs text-gray-500">ft</span>
                               <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.stakeLightingDifficulty}
-                                onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
+                                onChange={e => setDifficulty('stakeLightingDifficulty', 'stakeLightingCustomRate', BUSINESS_RULES.stakeLightingRates, e.target.value as DifficultyChoice)}>
                                 <option value="easy">Easy</option>
                                 <option value="medium">Medium</option>
                                 <option value="hard">Hard</option>
+                                <option value="custom">Custom…</option>
                               </select>
+                              {form.stakeLightingDifficulty === 'custom' && (
+                                <>
+                                  <input className="border border-gray-200 rounded px-2 py-1 text-xs w-16" type="number" min="0" step="0.5" placeholder="0"
+                                    value={form.stakeLightingCustomRate || ''}
+                                    onChange={e => set('stakeLightingCustomRate', Number(e.target.value))} />
+                                  <span className="text-xs text-gray-500">$/ft</span>
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2165,11 +2203,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.santasDifficulty}
-                    onChange={e => set('santasDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('santasDifficulty', 'santasCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.santasDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.santasCustomRate || ''}
+                        onChange={e => set('santasCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.santasFootage === 0 && (
@@ -2192,11 +2240,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.gingerbreadDifficulty}
-                    onChange={e => set('gingerbreadDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('gingerbreadDifficulty', 'gingerbreadCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.gingerbreadDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.gingerbreadCustomRate || ''}
+                        onChange={e => set('gingerbreadCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.gingerbreadFootage === 0 && (
@@ -2219,11 +2277,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.winterWonderlandDifficulty}
-                    onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('winterWonderlandDifficulty', 'winterWonderlandCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.winterWonderlandDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.winterWonderlandCustomRate || ''}
+                        onChange={e => set('winterWonderlandCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.winterWonderlandFootage === 0 && (
@@ -2246,11 +2314,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.stakeLightingDifficulty}
-                    onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('stakeLightingDifficulty', 'stakeLightingCustomRate', BUSINESS_RULES.stakeLightingRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $6/ft</option>
                     <option value="medium">Medium — $7/ft</option>
                     <option value="hard">Hard — $8/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.stakeLightingDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.stakeLightingCustomRate || ''}
+                        onChange={e => set('stakeLightingCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.stakeLightingFootage === 0 && (
