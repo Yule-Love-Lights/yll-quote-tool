@@ -2,6 +2,15 @@
 
 > Split out of `task_ledger.md` on 2026-06-30 (S16) for token efficiency. Completed + shelved task rows live here, byte-for-byte; the lean ACTIVE ledger is `task_ledger.md`.
 
+### ↳ S16 shipped (2026-06-30, Jason)
+| # | Task | Size | Notes | Old # |
+|---|------|------|-------|-------|
+| 95 | ✅ **DONE S16 (PR #264).** **"Analyze from address" → Google Maps link in the blue box.** Add a "View on Google Maps" pin link to the house's address/coords (alongside the Analyze-from-address button) so staff can open the location directly. **Locked:** standard map pin (not Street View specifically). | S | small | S16 |
+| 97 | ✅ **DONE S16 (PR #260).** **Manual street-photo upload should KEEP the pulled satellite tab + its measurements.** Today manual upload deliberately resets satellite lines/base64/calibration (`QuoteBuilder.tsx` ~595) → pulling from address then uploading a manual street photo wipes the good Google satellite + its polylines. Change: manual street upload replaces ONLY the street/design photo; the satellite tab + polylines + scale stay intact. **Locked (Jason S16):** applies whether satellite came from Google (analyze-from-address) OR was itself manually uploaded. | S–M | bug-ish | S16 |
+| 98 | ✅ **DONE S16 (PR #266).** **Settings → Hotkeys page (per-account, remappable).** A general remappable hotkey list stored per operator-login (auth is live) so staff can keep their own keys on any device. **Ship first:** a NEW **Draw↔Select** swap (default `Q`) + make the **existing** editor hotkeys remappable (undo, redo, copy, paste, fullscreen, delete, duplicate, escape + any others found — enumerate from the code at build). ⚙️ Likely touches the editor-core keymap → relay. | M | ⚙️ relay-likely | S16 |
+| 99 | ✅ **DONE S16 (PR #270).** **Marquee select on TOUCH / intersect, not full-enclose.** In Select mode, once the selection box *touches* an item it's selected. **Locked (Jason S16): REPLACE the enclose behavior entirely** (not a separate mode/modifier). ⚙️ Editor-core selection geometry → relay. | M | ⚙️ relay | S16 |
+| 100 | ✅ **DONE S16 (PR #271).** **New "Curtain" mini binding** (peer of Bush / Tree / Column / Railing) → groups selected mini strands into one **"Curtain Lights – N strings"** line item (minis hung down from the roof in a curtain). **Locked (Jason S16):** priced **$35/string** (same as Railing, by strand count); ≥2 selected mini strands group into one line (like Railing's `MiniGroupItem`). ⚙️ Editor-core binding dropdown + `sceneTypes` + `materialsProjection` + portal line item → relay. | M | ⚙️ relay | S16 |
+
 ## ✅ Completed
 | # | Task | Size | Shipped | Old # |
 |---|------|------|---------|-------|
