@@ -592,14 +592,12 @@ export default function QuoteBuilder({
     setAnalysisNotes(null);
     setAnalysisError(null);
     setAnalysisWarning(null);
-    // Reset stale state from any prior Google/address analysis so the manual
-    // upload doesn't silently reuse satellite lines, base64, or calibration.
-    setSatellitePreview(null);
-    setSatelliteSantasLines([]);
-    setSatelliteGingerbreadLines([]);
-    setSatelliteC9Lines([]);
-    setSatelliteStakeLines([]);
-    setSatelliteFeetPerPixel(null);
+    // #97: a manual street-photo upload swaps ONLY the street/design photo — it
+    // does NOT touch the satellite tab. Keep any prior (address-pulled or
+    // manually-uploaded) satellite image, traced lines, and scale, so swapping a
+    // bad Google street view for a better photo of the SAME house keeps the good
+    // satellite + its measurements. (Use the satellite upload slot to replace it
+    // if it's actually for a different house.)
     setGoogleAddress(null);
     setPhotoBase64(null);
     setPhotoMediaType(null);
@@ -788,10 +786,20 @@ export default function QuoteBuilder({
       gingerbreadDifficulty: r.gingerbreadDifficulty,
     }));
     // Satellite polylines — seed them so the satellite tab is ready for
-    // complex / commercial rooflines without re-analyzing.
-    setSatelliteSantasLines(r.satelliteSantasLines ?? []);
-    setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
-    setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    // complex / commercial rooflines without re-analyzing. #97: only (re)set the
+    // satellite tab when THIS analysis actually carried satellite data (an address
+    // pull). A manual street-photo analyze (analyze-photo) carries none, so leave
+    // the existing satellite image, lines, and scale intact.
+    const hasSatelliteData =
+      data.satelliteBase64 != null ||
+      data.satelliteFeetPerPixel != null ||
+      (r.satelliteSantasLines?.length ?? 0) > 0 ||
+      (r.satelliteGingerbreadLines?.length ?? 0) > 0;
+    if (hasSatelliteData) {
+      setSatelliteSantasLines(r.satelliteSantasLines ?? []);
+      setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
+      setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    }
     // The bridge auto-design (#35 Phase 2): roofline lines → tagged C9 strands
     // (#33) AND per-unit detections → scene items at the detected spots. The
     // route sanitizes (unknown sizes/tiers/boxes are dropped, not fatal). If
@@ -924,10 +932,11 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      // Do NOT clear the satellite here (H1): handlePhotoSelect already wiped
-      // any prior Google satellite when this street photo was chosen, so the
-      // only satellite that can be present now is a manual one the operator
-      // uploaded for THIS house — clearing it would silently drop the #9 data.
+      // Do NOT clear the satellite here: #97 — handlePhotoSelect no longer wipes
+      // the satellite on a street swap, and applyAnalysisResult only (re)sets it
+      // when the analysis carried satellite data (it doesn't for analyze-photo).
+      // So whatever satellite is present (address-pulled or manual, for THIS
+      // house) is preserved with its traced lines + scale.
       if (data.result) {
         applyAnalysisResult(data);
       } else {
