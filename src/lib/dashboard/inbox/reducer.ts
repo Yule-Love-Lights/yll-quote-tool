@@ -44,28 +44,32 @@ export function decideInboxState(input: {
     return { status: 'dismissed', escalationLevel: 0, autoResolved: false, reopened: false };
   }
 
-  // Outbound latest message → answered → auto-resolve.
+  // Outbound latest message → answered → auto-resolve. A COMPLETED item stays
+  // completed: our own outbound to a done customer must not un-complete it, and
+  // the reconcile re-ingests that outbound every run (which would otherwise
+  // downgrade completed→handled and erase the completion attribution).
   if (isAnsweredByDirection(touch.direction)) {
+    if (existing?.status === 'completed') {
+      return { status: 'completed', escalationLevel: 0, autoResolved: false, reopened: false };
+    }
     return { status: 'handled', escalationLevel: 0, autoResolved: existing?.status !== 'handled', reopened: false };
   }
 
-  // Inbound + unanswered. Reopen a handled item ONLY when a genuinely NEW inbound
-  // arrived since we handled it. The reconcile cron re-ingests the same
-  // conversation every run, so without this guard a handled item reopens on the
-  // SAME message it was handled for (the bug). (On reopen the escalate cron resets
-  // the clock when notified_levels is cleared — see store.planIngest.)
-  const wasHandled = existing?.status === 'handled';
-  if (wasHandled) {
+  // A genuinely-newer inbound reopens a RESOLVED item (handled or completed); the
+  // same message re-ingested by the reconcile cron leaves it as-is. (Newsletters
+  // are classified 'automated' at ingest, so they never present as a real reopen.)
+  const wasResolved = existing?.status === 'handled' || existing?.status === 'completed';
+  if (wasResolved) {
     const newerInbound =
       existing?.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime();
     if (!newerInbound) {
-      return { status: 'handled', escalationLevel: 0, autoResolved: false, reopened: false };
+      return { status: existing!.status, escalationLevel: 0, autoResolved: false, reopened: false };
     }
   }
   return {
     status: 'unresponded',
     escalationLevel: escalationLevel(touch.lastMessageAt, now),
     autoResolved: false,
-    reopened: wasHandled,
+    reopened: wasResolved,
   };
 }

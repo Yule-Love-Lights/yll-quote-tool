@@ -1,11 +1,12 @@
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
-import { listDueFollowUps, listFollowedItems, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { listDueFollowUps, listInWorks, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
 import { computeResponseMetrics } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
-import { FollowedSection } from '@/components/dashboard/inbox/FollowedSection';
+import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
 import { ResponseStats } from '@/components/dashboard/inbox/ResponseStats';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
@@ -14,12 +15,13 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator, followedRes] = await Promise.all([
+  const [openRes, followRes, metricsRes, operator, inWorksRes, days] = await Promise.all([
     listOpenItems(),
     listDueFollowUps(now),
     listItemsForMetrics(),
     getOperator(),
-    listFollowedItems(),
+    listInWorks(),
+    getFollowUpDays(),
   ]);
 
   return (
@@ -33,9 +35,14 @@ export default async function InboxPage() {
             Every unanswered customer message across channels. Reply from your phone or GHL, then
             mark it Handled — or it auto-clears when you reply.
           </p>
-          <Link href="/inbox/duplicates" className="text-sm mt-2 inline-block" style={{ color: 'var(--brand-evergreen-3)' }}>
-            Manage duplicate contacts →
-          </Link>
+          <div className="flex gap-4 mt-2">
+            <Link href="/inbox/duplicates" className="text-sm inline-block" style={{ color: 'var(--brand-evergreen-3)' }}>
+              Manage duplicate contacts →
+            </Link>
+            <Link href="/inbox/activity" className="text-sm inline-block" style={{ color: 'var(--brand-evergreen-3)' }}>
+              Activity log →
+            </Link>
+          </div>
         </header>
 
         {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
@@ -54,7 +61,14 @@ export default async function InboxPage() {
           </div>
         )}
 
-        {followedRes.ok && followedRes.items.length > 0 && <FollowedSection items={followedRes.items} nowMs={now.getTime()} />}
+        {inWorksRes.ok && (inWorksRes.awaiting.length > 0 || inWorksRes.handled.length > 0) && (
+          <InWorksSection
+            awaiting={inWorksRes.awaiting}
+            handled={inWorksRes.handled}
+            followUpDays={days}
+            nowMs={now.getTime()}
+          />
+        )}
 
         {metricsRes.ok && (
           <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} truncated={metricsRes.truncated} />

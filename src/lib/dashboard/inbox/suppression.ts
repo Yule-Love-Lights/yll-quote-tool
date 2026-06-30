@@ -46,3 +46,14 @@ export async function addSuppressedSenders(values: (string | null | undefined)[]
   for (const a of additions) current.add(a);
   await sb.from('app_settings').upsert({ key: KEY, value: [...current] }, { onConflict: 'key' });
 }
+
+/** Remove senders from the suppression list (normalized). Best-effort. */
+export async function removeSuppressedSenders(values: (string | null | undefined)[]): Promise<void> {
+  const drop = new Set(normalizeSuppressionValues(values));
+  if (!drop.size) return;
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  const current = await getSuppressedSenders();
+  const next = [...current].filter((v) => !drop.has(v));
+  await sb.from('app_settings').upsert({ key: KEY, value: next }, { onConflict: 'key' });
+}

@@ -11,8 +11,8 @@ describe('inbox source/status constants', () => {
   it('lists the four ingestion sources', () => {
     expect(INBOX_SOURCES).toEqual(['ghl', 'gmail', 'quotetool', 'homeworks']);
   });
-  it('lists the three item statuses', () => {
-    expect(INBOX_STATUSES).toEqual(['unresponded', 'handled', 'dismissed']);
+  it('lists the four item statuses (completed added in #58 v3)', () => {
+    expect(INBOX_STATUSES).toEqual(['unresponded', 'handled', 'dismissed', 'completed']);
   });
   it('names the escalation levels', () => {
     expect(ESCALATION_LEVEL).toEqual({ NONE: 0, AMBER: 1, RED: 2, EOD: 3 });

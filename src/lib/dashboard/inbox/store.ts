@@ -28,7 +28,8 @@ import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem } from './responseMetrics';
-import { addSuppressedSenders } from './suppression';
+import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
+import { inverseOf, type ReverseAction } from './lifecycle';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -415,6 +416,26 @@ export async function releaseContact(contactId: string, operatorId: string): Pro
 
 // ─── Handled write-back support ─────────────────────────────────────────────
 
+// ─── Prior-state helper (private) ───────────────────────────────────────────
+
+/** Read an item's current status + followed_up_at BEFORE a state-changing update
+ *  so we can log { from } in dashboard_activity. Returns undefined when the item
+ *  is not found or the client is unavailable. */
+async function priorStateOf(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  itemId: string,
+): Promise<{ status: string; wasFollowed: boolean } | undefined> {
+  if (!sb) return undefined;
+  const { data } = await sb
+    .from('inbox_items')
+    .select('status, followed_up_at')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!data) return undefined;
+  const row = data as { status: string; followed_up_at: string | null };
+  return { status: row.status, wasFollowed: !!row.followed_up_at };
+}
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -432,6 +453,7 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
 export async function markItemHandledLocal(itemId: string, operatorId: string, now: Date): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'handled', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
@@ -443,7 +465,7 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
   if (!data) return { ok: false, error: 'Item not found or already handled' };
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId });
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId, detail: { from } });
   return {
     ok: true,
     target: {
@@ -459,14 +481,19 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
 export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId)
+    .neq('status', 'dismissed')
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId });
+  // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
+  // (a stray reverse of that row would un-suppress a still-dismissed sender).
+  if (!data) return { ok: true };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
   return { ok: true };
@@ -478,12 +505,13 @@ export async function dismissItem(itemId: string, operatorId: string, now: Date)
 export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
   const { error } = await sb
     .from('inbox_items')
     .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId);
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId });
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
   return { ok: true };
 }
 
@@ -809,6 +837,113 @@ export async function mergeContactsById(
   return { ok: true };
 }
 
+// ─── In-Works + Completed buckets ───────────────────────────────────────────
+
+export type InWorksItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  preview: string | null;
+  customerName: string | null;
+  lastActivityAt: string | null;
+};
+export type InWorksResult =
+  | { ok: true; awaiting: InWorksItem[]; handled: InWorksItem[] }
+  | { ok: false; error: string };
+
+const IN_WORKS_SELECT =
+  'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+
+function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'): InWorksItem[] {
+  return (rows ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
+    return {
+      id: String(row.id),
+      source: row.source as InboxSource,
+      channel: (row.channel as string | null) ?? null,
+      preview: (row.preview as string | null) ?? null,
+      customerName: (c?.display_name as string | null) ?? null,
+      lastActivityAt: (row[tsKey] as string | null) ?? null,
+    };
+  });
+}
+
+/** Two-group In-Works list: items being actively followed up (awaiting) + locally
+ *  handled items that aren't yet dismissed or completed (handled). Both sorted
+ *  stalest-first so the longest-waiting surface at the top. */
+export async function listInWorks(limit = 200): Promise<InWorksResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const aw = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .not('followed_up_at', 'is', null)
+    .not('status', 'in', '(completed,dismissed)')
+    .order('followed_up_at', { ascending: true })
+    .limit(limit);
+  const hd = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .eq('status', 'handled')
+    .is('followed_up_at', null)
+    .order('handled_at', { ascending: true })
+    .limit(limit);
+  if (aw.error) return { ok: false, error: aw.error.message };
+  if (hd.error) return { ok: false, error: hd.error.message };
+  return {
+    ok: true,
+    awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
+    handled: mapInWorksRow(hd.data ?? [], 'handled_at'),
+  };
+}
+
+export type CompletedResult = { ok: true; items: InWorksItem[] } | { ok: false; error: string };
+
+/** Recent completed items, newest-first, for the Completed tab. */
+export async function listCompleted(limit = 200): Promise<CompletedResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select(IN_WORKS_SELECT)
+    .eq('status', 'completed')
+    .order('handled_at', { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, items: mapInWorksRow(data ?? [], 'handled_at') };
+}
+
+/** Mark an item completed: capture prior state, stamp status + handled fields,
+ *  clear followed_up_at, and write a detailed activity log entry. */
+export async function markItemCompleted(
+  itemId: string,
+  operatorId: string,
+  now: Date,
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const from = await priorStateOf(sb, itemId);
+  const { error } = await sb
+    .from('inbox_items')
+    .update({
+      status: 'completed',
+      followed_up_at: null,
+      handled_by: operatorId,
+      handled_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    })
+    .eq('id', itemId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'completed',
+    inbox_item_id: itemId,
+    detail: { from },
+  });
+  return { ok: true };
+}
+
 // ─── Send-target resolver ────────────────────────────────────────────────────
 
 export type ReplyItem = {
@@ -847,4 +982,128 @@ export async function getItemForReply(itemId: string): Promise<ReplyItem | null>
     customerName: (c?.display_name ?? null) ?? (raw?.customer_name ?? null),
     quoteTotal: (row.quote_value as number | null) ?? null,
   };
+}
+
+// ─── Audit-log read ──────────────────────────────────────────────────────────
+
+export type ActivityRow = {
+  id: string;
+  action: string;
+  actor: string | null;
+  actorName: string | null;
+  itemId: string | null;
+  customerName: string | null;
+  at: string | null;
+  reversible: boolean;
+};
+export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
+
+const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
+
+/** Paginated, newest-first read of dashboard_activity, joined to the customer
+ *  display name via inbox_item → dashboard_contact. actorName is left null
+ *  (no operator-name map exists — UI can label 'system' explicitly). */
+export async function listActivity(limit = 100): Promise<ActivityResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('dashboard_activity')
+    .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  const rows: ActivityRow[] = (data ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    const item = (row.inbox_items as { dashboard_contacts?: { display_name?: string | null } | null } | null) ?? null;
+    return {
+      id: String(row.id),
+      action: String(row.action),
+      actor: (row.actor as string | null) ?? null,
+      actorName: null,
+      itemId: (row.inbox_item_id as string | null) ?? null,
+      customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
+      at: (row.created_at as string | null) ?? null,
+      reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+    };
+  });
+  return { ok: true, rows };
+}
+
+// ─── State reverse ───────────────────────────────────────────────────────────
+
+/** Reverse a prior state-change activity entry back to the item's prior state.
+ *  Fetches the activity row, validates it's reversible, applies the inverse via
+ *  inverseOf(), un-suppresses the sender if the reversed action was 'dismissed',
+ *  and logs a 'reversed' activity row. */
+export async function reverseItemState(
+  activityId: string,
+  operatorId: string,
+  now: Date,
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+
+  const { data: act } = await sb
+    .from('dashboard_activity')
+    .select('action, inbox_item_id, detail')
+    .eq('id', activityId)
+    .maybeSingle();
+  if (!act) return { ok: false, error: 'Activity entry not found' };
+
+  const a = act as {
+    action: string;
+    inbox_item_id: string | null;
+    detail: { from?: { status?: string; wasFollowed?: boolean } } | null;
+  };
+  if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
+
+  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed'];
+  if (!reversible.includes(a.action as ReverseAction)) {
+    return { ok: false, error: 'This entry cannot be reversed' };
+  }
+  const action = a.action as ReverseAction;
+
+  // Only reverse if the item is STILL in the state this action produced — otherwise
+  // a later action superseded it and reversing now would clobber the newer state
+  // (this also de-dupes a double-clicked reverse).
+  const { data: cur } = await sb
+    .from('inbox_items')
+    .select('status, followed_up_at')
+    .eq('id', a.inbox_item_id)
+    .maybeSingle();
+  if (!cur) return { ok: false, error: 'Item not found' };
+  const curRow = cur as { status: string; followed_up_at: string | null };
+  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
+
+  const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);
+
+  const upd: Record<string, unknown> = { updated_at: now.toISOString() };
+  if (t.status) upd.status = t.status;
+  if (t.clearFollowed) upd.followed_up_at = null;
+  if (t.setFollowed) upd.followed_up_at = now.toISOString();
+
+  const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  if (error) return { ok: false, error: error.message };
+
+  if (t.unsuppress) {
+    const { data: c } = await sb
+      .from('inbox_items')
+      .select('dashboard_contacts ( primary_email, primary_phone )')
+      .eq('id', a.inbox_item_id)
+      .maybeSingle();
+    const dc = (
+      c as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null
+    )?.dashboard_contacts;
+    if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
+  }
+
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'reversed',
+    inbox_item_id: a.inbox_item_id,
+    detail: { reversed_action: a.action },
+  });
+
+  return { ok: true };
 }

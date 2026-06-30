@@ -10,7 +10,7 @@
 export const INBOX_SOURCES = ['ghl', 'gmail', 'quotetool', 'homeworks'] as const;
 export type InboxSource = (typeof INBOX_SOURCES)[number];
 
-export const INBOX_STATUSES = ['unresponded', 'handled', 'dismissed'] as const;
+export const INBOX_STATUSES = ['unresponded', 'handled', 'dismissed', 'completed'] as const;
 export type InboxStatus = (typeof INBOX_STATUSES)[number];
 
 export type Direction = 'inbound' | 'outbound';
