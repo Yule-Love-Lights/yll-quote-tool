@@ -120,12 +120,17 @@ export function GoogleReviews({ rating, totalReviews, reviews, reviewsUrl }: Goo
                   aria-selected={i === idx}
                   aria-label={`Review ${i + 1} of ${count}`}
                   onClick={() => setIdx(i)}
-                  className={`w-2.5 h-2.5 rounded-full cursor-pointer transition-[background-color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F] ${
-                    i === idx
-                      ? 'bg-[#E8B862] shadow-[0_0_10px_rgba(232,184,98,0.55)]'
-                      : 'bg-[#3C4F43] hover:bg-[#55695D]'
-                  }`}
-                />
+                  className="group grid place-items-center w-6 h-6 -mx-0.5 rounded-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F]"
+                >
+                  <span
+                    aria-hidden
+                    className={`w-2.5 h-2.5 rounded-full transition-[background-color,box-shadow] duration-200 ${
+                      i === idx
+                        ? 'bg-[#E8B862] shadow-[0_0_10px_rgba(232,184,98,0.55)]'
+                        : 'bg-[#3C4F43] group-hover:bg-[#55695D]'
+                    }`}
+                  />
+                </button>
               ))}
             </div>
 
