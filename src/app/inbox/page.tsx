@@ -1,10 +1,11 @@
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
-import { listDueFollowUps, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { listDueFollowUps, listFollowedItems, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
 import { computeResponseMetrics } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
+import { FollowedSection } from '@/components/dashboard/inbox/FollowedSection';
 import { ResponseStats } from '@/components/dashboard/inbox/ResponseStats';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
@@ -13,11 +14,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator] = await Promise.all([
+  const [openRes, followRes, metricsRes, operator, followedRes] = await Promise.all([
     listOpenItems(),
     listDueFollowUps(now),
     listItemsForMetrics(),
     getOperator(),
+    listFollowedItems(),
   ]);
 
   return (
@@ -51,6 +53,8 @@ export default async function InboxPage() {
             <span style={{ opacity: 0.7 }}>Details: {openRes.error}</span>
           </div>
         )}
+
+        {followedRes.ok && followedRes.items.length > 0 && <FollowedSection items={followedRes.items} nowMs={now.getTime()} />}
 
         {metricsRes.ok && (
           <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} truncated={metricsRes.truncated} />
