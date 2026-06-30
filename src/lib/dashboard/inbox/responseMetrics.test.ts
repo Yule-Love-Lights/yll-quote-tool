@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { computeResponseMetrics } from './responseMetrics';
+import {
+  computeResponseMetrics,
+  bucketOfResponse,
+  filterByWindow,
+  computeTrend,
+  reopenRate,
+  computeResponseAnalytics,
+} from './responseMetrics';
 import type { MetricItem } from './responseMetrics';
 
 const MIN = 60_000;
@@ -14,10 +21,18 @@ function handled(responseMin: number, rep: string | null, lastAgoMin = 600): Met
     handledAt: new Date(lastMessageAt.getTime() + responseMin * MIN),
     handledBy: rep,
     source: 'ghl',
+    createdAt: lastMessageAt,
   };
 }
 function open(ageMin: number): MetricItem {
-  return { status: 'unresponded', lastMessageAt: ago(ageMin * MIN), handledAt: null, handledBy: null, source: 'ghl' };
+  return {
+    status: 'unresponded',
+    lastMessageAt: ago(ageMin * MIN),
+    handledAt: null,
+    handledBy: null,
+    source: 'ghl',
+    createdAt: ago(ageMin * MIN),
+  };
 }
 
 describe('computeResponseMetrics — empty', () => {
@@ -68,8 +83,144 @@ describe('computeResponseMetrics — clamps negative response times', () => {
       handledAt: ago(60 * MIN), // before the message — clamp to 0
       handledBy: 'rep-A',
       source: 'gmail',
+      createdAt: T,
     };
     const m = computeResponseMetrics([weird], T);
     expect(m.medianResponseMs).toBe(0);
+  });
+});
+
+// ─── Task 1: buckets + window filter + extended computeResponseMetrics ───────
+
+const T2 = new Date('2026-06-30T12:00:00Z');
+const agoMs = (ms: number) => new Date(T2.getTime() - ms);
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+describe('bucketOfResponse', () => {
+  it('maps durations to the right bucket key', () => {
+    expect(bucketOfResponse(10 * MIN)).toBe('15m');
+    expect(bucketOfResponse(45 * MIN)).toBe('1h');
+    expect(bucketOfResponse(3 * HOUR)).toBe('4h');
+    expect(bucketOfResponse(20 * HOUR)).toBe('1d');
+    expect(bucketOfResponse(2 * DAY)).toBe('3d');
+    expect(bucketOfResponse(6 * DAY)).toBe('1w');
+    expect(bucketOfResponse(10 * DAY)).toBe('over');
+  });
+});
+
+describe('filterByWindow', () => {
+  const items: MetricItem[] = [
+    {
+      status: 'handled',
+      lastMessageAt: agoMs(2 * DAY),
+      handledAt: agoMs(2 * DAY),
+      handledBy: 'a',
+      source: 'ghl',
+      createdAt: agoMs(2 * DAY),
+    },
+    {
+      status: 'handled',
+      lastMessageAt: agoMs(40 * DAY),
+      handledAt: agoMs(40 * DAY),
+      handledBy: 'a',
+      source: 'ghl',
+      createdAt: agoMs(40 * DAY),
+    },
+  ];
+  it('null=all; 30d drops the 40-day item; 90d keeps both', () => {
+    expect(filterByWindow(items, null, T2)).toHaveLength(2);
+    expect(filterByWindow(items, 30, T2)).toHaveLength(1);
+    expect(filterByWindow(items, 90, T2)).toHaveLength(2);
+  });
+});
+
+describe('computeResponseMetrics — buckets + time-to-completed', () => {
+  const items: MetricItem[] = [
+    {
+      status: 'handled',
+      lastMessageAt: agoMs(3 * HOUR),
+      handledAt: agoMs(2 * HOUR),
+      handledBy: 'a',
+      source: 'ghl',
+      createdAt: agoMs(5 * HOUR),
+    },
+    {
+      status: 'completed',
+      lastMessageAt: agoMs(5 * DAY),
+      handledAt: agoMs(1 * DAY),
+      handledBy: 'a',
+      source: 'ghl',
+      createdAt: agoMs(3 * DAY),
+    },
+  ];
+  it('bucket distribution over handled responses', () => {
+    const m = computeResponseMetrics(items, T2);
+    expect(m.buckets.reduce((s, b) => s + b.count, 0)).toBe(1);
+    expect(m.buckets.find((b) => b.key === '1h')?.count).toBe(1);
+  });
+  it('median time-to-completed for completed items', () => {
+    expect(computeResponseMetrics(items, T2).timeToCompletedMedianMs).toBe(2 * DAY);
+  });
+});
+
+// ─── Task 2: trend + reopen rate + computeResponseAnalytics ─────────────────
+
+describe('computeTrend', () => {
+  it('this-week median + direction', () => {
+    const items: MetricItem[] = [
+      {
+        status: 'handled',
+        lastMessageAt: agoMs(2 * DAY),
+        handledAt: new Date(agoMs(2 * DAY).getTime() + HOUR),
+        handledBy: 'a',
+        source: 'ghl',
+        createdAt: agoMs(2 * DAY),
+      },
+    ];
+    const t = computeTrend(items, T2);
+    expect(t.thisWeekMs).toBe(HOUR);
+    expect(['faster', 'slower', 'flat', 'na']).toContain(t.direction);
+  });
+});
+
+describe('reopenRate', () => {
+  it('ratio capped at 1, null when no handled', () => {
+    expect(reopenRate(10, 3)).toBeCloseTo(0.3);
+    expect(reopenRate(0, 0)).toBeNull();
+    expect(reopenRate(2, 5)).toBe(1);
+  });
+});
+
+describe('computeResponseAnalytics', () => {
+  it('assembles three windows + trend + reopen', () => {
+    const items: MetricItem[] = [
+      {
+        status: 'handled',
+        lastMessageAt: agoMs(2 * DAY),
+        handledAt: agoMs(2 * DAY),
+        handledBy: 'a',
+        source: 'ghl',
+        createdAt: agoMs(2 * DAY),
+      },
+      {
+        status: 'handled',
+        lastMessageAt: agoMs(45 * DAY),
+        handledAt: agoMs(45 * DAY),
+        handledBy: 'a',
+        source: 'ghl',
+        createdAt: agoMs(45 * DAY),
+      },
+    ];
+    const reopen = {
+      all: { handled: 10, reopened: 2 },
+      '90': { handled: 8, reopened: 1 },
+      '30': { handled: 5, reopened: 0 },
+    };
+    const a = computeResponseAnalytics(items, reopen, T2, false);
+    expect(a.windows.all.handled).toBe(2);
+    expect(a.windows['30'].handled).toBe(1);
+    expect(a.reopen.all).toBeCloseTo(0.2);
+    expect(a.reopen['30']).toBe(0);
   });
 });
