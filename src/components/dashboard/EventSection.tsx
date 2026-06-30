@@ -19,19 +19,19 @@ export function EventSection({ data }: { data: EventSummary }) {
       <dl className="grid grid-cols-3 gap-3">
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Booked</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {data.booked}
           </dd>
         </div>
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Pending</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {data.pending}
           </dd>
         </div>
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Revenue</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {fmtMoney(data.bookedRevenue)}
           </dd>
         </div>

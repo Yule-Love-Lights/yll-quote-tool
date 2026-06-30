@@ -19,19 +19,19 @@ export function PermanentSection({ data }: { data: PermanentSummary }) {
       <dl className="grid grid-cols-3 gap-3">
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>In care</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {data.inCare}
           </dd>
         </div>
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Pending</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {data.pending}
           </dd>
         </div>
         <div>
           <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Booked</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
             {fmtMoney(data.bookedRevenue)}
           </dd>
         </div>
