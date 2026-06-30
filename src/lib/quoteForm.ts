@@ -21,19 +21,31 @@ import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 
 export type FormCustomer = { name: string; address: string; phone: string; email: string };
 
+// #102: the difficulty dropdown gains a 4th choice, 'custom', which reveals a
+// numeric $/ft field (the *CustomRate fields below). On the wire the difficulty
+// stays a valid RooflineDifficulty (engine ignores it once a positive custom
+// rate is present) — see buildQuoteInputs/toWireRate. Form-state only.
+export type DifficultyChoice = RooflineDifficulty | 'custom';
+
 export type QuoteFormData = {
   customer: FormCustomer;
   // Service line this quote belongs to (#58 Phase 2b). Holiday by default;
   // rides the quotes.service_type column, NOT the pricing inputs jsonb.
   serviceType: ServiceType;
   santasFootage: number;
-  santasDifficulty: RooflineDifficulty;
+  santasDifficulty: DifficultyChoice;
+  // Per-quote custom $/ft (#102), used only when the matching difficulty is
+  // 'custom'. 0 = none (the dropdown sits on a preset). Per item-type.
+  santasCustomRate: number;
   gingerbreadFootage: number;
-  gingerbreadDifficulty: RooflineDifficulty;
+  gingerbreadDifficulty: DifficultyChoice;
+  gingerbreadCustomRate: number;
   winterWonderlandFootage: number;
-  winterWonderlandDifficulty: RooflineDifficulty;
+  winterWonderlandDifficulty: DifficultyChoice;
+  winterWonderlandCustomRate: number;
   stakeLightingFootage: number;
-  stakeLightingDifficulty: RooflineDifficulty;
+  stakeLightingDifficulty: DifficultyChoice;
+  stakeLightingCustomRate: number;
   // Staff's recommended roofline (the portal default). Undefined → the engine
   // auto-picks the option closest to the $1,000 minimum (#17). Set via the
   // breakdown's recommend radios.
@@ -64,12 +76,16 @@ export const initialFormData: QuoteFormData = {
   serviceType: DEFAULT_SERVICE_TYPE,
   santasFootage: 0,
   santasDifficulty: 'medium',
+  santasCustomRate: 0,
   gingerbreadFootage: 0,
   gingerbreadDifficulty: 'medium',
+  gingerbreadCustomRate: 0,
   winterWonderlandFootage: 0,
   winterWonderlandDifficulty: 'medium',
+  winterWonderlandCustomRate: 0,
   stakeLightingFootage: 0,
   stakeLightingDifficulty: 'easy', // Stake Lighting defaults to Easy / $6/ft (Naldo)
+  stakeLightingCustomRate: 0,
   miniLightItems: [],
   spritzers: [],
   wreaths: [],
@@ -85,6 +101,25 @@ export const initialFormData: QuoteFormData = {
   installTiming: 'none',
 };
 
+// #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
+// choice sends a placeholder valid difficulty (the engine ignores it once a
+// positive customRate is present) plus the custom $/ft; a preset choice sends
+// just the difficulty and no rate key (legacy-clean). A 'custom' choice with a
+// non-positive rate degrades to the fallback preset rather than $0.
+// A stored custom $/ft counts as active only when it's a positive finite number
+// — matches the engine's resolveRate guard, so the dropdown and the price agree.
+function customRateActive(rate: number | undefined): boolean {
+  return Number.isFinite(rate) && (rate as number) > 0;
+}
+
+type WireRate = { difficulty: RooflineDifficulty; customRate?: number };
+function toWireRate(choice: DifficultyChoice, customRate: number, fallback: RooflineDifficulty): WireRate {
+  if (choice === 'custom') {
+    return customRate > 0 ? { difficulty: fallback, customRate } : { difficulty: fallback };
+  }
+  return { difficulty: choice };
+}
+
 // Form → engine inputs. `rooflineChoiceOverride` lets the breakdown's staff-pick
 // radios re-quote with a specific choice without waiting on the async form-state
 // update (#17 Phase 1b).
@@ -93,15 +128,25 @@ export function buildQuoteInputs(
   rooflineChoiceOverride?: RooflineChoice,
 ): QuoteInputs {
   const effectiveRooflineChoice = rooflineChoiceOverride ?? form.rooflineChoice;
+  // #102 per-item-type custom $/ft → wire (santas/gingerbread/WW fall back to
+  // 'medium', stake to 'easy', matching their preset defaults).
+  const santas = toWireRate(form.santasDifficulty, form.santasCustomRate, 'medium');
+  const gingerbread = toWireRate(form.gingerbreadDifficulty, form.gingerbreadCustomRate, 'medium');
+  const winterWonderland = toWireRate(form.winterWonderlandDifficulty, form.winterWonderlandCustomRate, 'medium');
+  const stakeLighting = toWireRate(form.stakeLightingDifficulty, form.stakeLightingCustomRate, 'easy');
   return {
     santasFootage: form.santasFootage,
-    santasDifficulty: form.santasDifficulty,
+    santasDifficulty: santas.difficulty,
+    ...(santas.customRate !== undefined ? { santasCustomRate: santas.customRate } : {}),
     gingerbreadFootage: form.gingerbreadFootage,
-    gingerbreadDifficulty: form.gingerbreadDifficulty,
+    gingerbreadDifficulty: gingerbread.difficulty,
+    ...(gingerbread.customRate !== undefined ? { gingerbreadCustomRate: gingerbread.customRate } : {}),
     winterWonderlandFootage: form.winterWonderlandFootage,
-    winterWonderlandDifficulty: form.winterWonderlandDifficulty,
+    winterWonderlandDifficulty: winterWonderland.difficulty,
+    ...(winterWonderland.customRate !== undefined ? { winterWonderlandCustomRate: winterWonderland.customRate } : {}),
     stakeLightingFootage: form.stakeLightingFootage,
-    stakeLightingDifficulty: form.stakeLightingDifficulty,
+    stakeLightingDifficulty: stakeLighting.difficulty,
+    ...(stakeLighting.customRate !== undefined ? { stakeLightingCustomRate: stakeLighting.customRate } : {}),
     // Only sent when staff has explicitly recommended one — otherwise the
     // engine auto-picks (closest to the $1,000 minimum).
     ...(effectiveRooflineChoice ? { rooflineChoice: effectiveRooflineChoice } : {}),
@@ -179,13 +224,23 @@ export function inputsToFormData(
     },
     serviceType: serviceType ?? DEFAULT_SERVICE_TYPE,
     santasFootage: i.santasFootage ?? 0,
-    santasDifficulty: i.santasDifficulty ?? 'medium',
+    // #102: a stored positive custom rate rehydrates the dropdown to 'custom'
+    // and seeds the numeric field; otherwise the stored preset difficulty.
+    santasDifficulty: customRateActive(i.santasCustomRate) ? 'custom' : (i.santasDifficulty ?? 'medium'),
+    santasCustomRate: i.santasCustomRate ?? 0,
     gingerbreadFootage: i.gingerbreadFootage ?? 0,
-    gingerbreadDifficulty: i.gingerbreadDifficulty ?? 'medium',
+    gingerbreadDifficulty: customRateActive(i.gingerbreadCustomRate) ? 'custom' : (i.gingerbreadDifficulty ?? 'medium'),
+    gingerbreadCustomRate: i.gingerbreadCustomRate ?? 0,
     winterWonderlandFootage: i.winterWonderlandFootage ?? 0,
-    winterWonderlandDifficulty: i.winterWonderlandDifficulty ?? 'medium',
+    winterWonderlandDifficulty: customRateActive(i.winterWonderlandCustomRate)
+      ? 'custom'
+      : (i.winterWonderlandDifficulty ?? 'medium'),
+    winterWonderlandCustomRate: i.winterWonderlandCustomRate ?? 0,
     stakeLightingFootage: i.stakeLightingFootage ?? 0,
-    stakeLightingDifficulty: i.stakeLightingDifficulty ?? 'easy',
+    stakeLightingDifficulty: customRateActive(i.stakeLightingCustomRate)
+      ? 'custom'
+      : (i.stakeLightingDifficulty ?? 'easy'),
+    stakeLightingCustomRate: i.stakeLightingCustomRate ?? 0,
     ...(i.rooflineChoice ? { rooflineChoice: i.rooflineChoice } : {}),
     miniLightItems: i.miniLightItems ?? [],
     spritzers: i.spritzers ?? [],
