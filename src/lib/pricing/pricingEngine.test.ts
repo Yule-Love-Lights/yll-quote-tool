@@ -422,6 +422,13 @@ describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2
     expect(r.lineItems).toEqual([{ label: 'Column – 3 strings', amount: 105 }]); // 3 × $35; trunk ignored
   });
 
+  it('prices Curtain Lights at $35/string, no wrap style (like a railing) — #100', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'curtain', wrapStyle: 'trunk', stringCount: 4 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Curtain Lights – 4 strings', amount: 140 }]); // 4 × $35; trunk ignored
+  });
+
   it('trees STILL vary by wrap style (canopy vs trunk)', () => {
     const r = calculateQuote(emptyInputs({
       miniLightItems: [{ type: 'tree', wrapStyle: 'trunk', stringCount: 2 }],

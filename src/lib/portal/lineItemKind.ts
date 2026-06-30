@@ -32,6 +32,7 @@ const TREE_RE = /^Tree\b/i;
 const BUSH_RE = /^Bush\b/i;
 const COLUMN_RE = /^Column\b/i;
 const RAILING_RE = /^Railing\b/i;
+const CURTAIN_RE = /^Curtain\b/i; // "Curtain Lights – N strings" (#100) — priced/linked like a railing
 // Standalone bow (#28): "Bow" or "Bows × 3". ANCHORED — wreath/garland labels
 // contain "With Bow" mid-string and must keep matching their own kinds.
 const BOW_RE = /^Bows?\b/i;
@@ -50,6 +51,8 @@ export function parseLineItem(label: string): ParsedLineItem {
   // Railing — its own kind as of #34 (still PRICED like a bush at $35/string;
   // the kind only drives the portal icon/tier/scene-linkage).
   if (RAILING_RE.test(label)) return { kind: 'railing', detail: extractStrings(label) };
+  // Curtain Lights (#100) — grouped minis hung from the roof; priced like a railing.
+  if (CURTAIN_RE.test(label)) return { kind: 'curtain', detail: extractStrings(label) };
 
   // Standalone bow (#28). Detail = "1 bow" / "N bows".
   if (BOW_RE.test(label)) return { kind: 'bow', detail: extractBowDetail(label) };

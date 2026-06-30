@@ -2305,7 +2305,7 @@ export async function renderEditor(
           sharedBulbType.length === 1 && sharedBulbType[0] === "c9"
             ? [["santas-roofline", "Santa's Roofline"], ["gingerbread", "Gingerbread"], ["winter-wonderland", "Winter Wonderland"], ["stake-lighting", "Stake Lighting"]]
             : sharedBulbType.length === 1 && sharedBulbType[0] === "mini"
-            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"], ["railing", "Railing"]]
+            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"], ["railing", "Railing"], ["curtain", "Curtain"]]
             : [];
         // RELAY: roof-feature options are shared with the standalone design tool —
         // mirror any change there too (#82 Slice 2b clip-feature tag). Shown only
@@ -2329,7 +2329,7 @@ export async function renderEditor(
         // have no wrap (the quote prices both per string and ignores
         // wrapStyle; only bushes/trees vary canopy vs trunk).
         const wrapSurface = sSurface.length === 1 && ["bush", "tree"].includes(sSurface[0]);
-        const countSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing"].includes(sSurface[0]);
+        const countSurface = sSurface.length === 1 && ["bush", "tree", "column", "railing", "curtain"].includes(sSurface[0]);
         return `
       <section>
         <h3>Quote binding</h3>
@@ -2523,12 +2523,12 @@ export async function renderEditor(
       const surfSel = sb.querySelector("#sel-surface") as HTMLSelectElement | null;
       surfSel?.addEventListener("change", () => {
         const v = surfSel.value;
-        // Railing across a multi-selection means ONE railing built from these
-        // strands — emit a single MiniGroupItem (projection bills one
-        // "Railing – N strings") instead of tagging each strand as its own
-        // billed railing. Default the string count to the member count.
-        if (v === "railing" && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId)) {
-          groupSelectedMini("railing", sel.length);
+        // Railing or Curtain across a multi-selection means ONE grouped unit built
+        // from these strands — emit a single MiniGroupItem (projection bills one
+        // "Railing – N strings" / "Curtain Lights – N strings") instead of tagging
+        // each strand as its own billed unit. Default the string count to the member count.
+        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId)) {
+          groupSelectedMini(v, sel.length);
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3293,8 +3293,9 @@ export async function renderEditor(
           <option value="tree" ${sSurface === "tree" ? "selected" : ""}>Tree</option>
           <option value="column" ${sSurface === "column" ? "selected" : ""}>Column</option>
           <option value="railing" ${sSurface === "railing" ? "selected" : ""}>Railing</option>
+          <option value="curtain" ${sSurface === "curtain" ? "selected" : ""}>Curtain</option>
         </select>
-        ${sSurface === "railing" || sSurface === "column" ? "" : `
+        ${sSurface === "railing" || sSurface === "column" || sSurface === "curtain" ? "" : `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
         <select id="sel-mg-wrapstyle" class="yardstick-select">
           <option value="canopy" ${sWrap === "canopy" ? "selected" : ""}>Canopy</option>
