@@ -2503,7 +2503,7 @@ export default function QuoteBuilder({
                 // their own "recommend one" radio above and are filtered out of these
                 // rows, so 'ridge' here only ever matches Winter Wonderland.
                 const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
-                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
+                  'tree', 'bush', 'column', 'railing', 'curtain', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
                 ]);
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),

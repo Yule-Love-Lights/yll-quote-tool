@@ -154,6 +154,7 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   column: Sparkles,
   bow: Ribbon,
   railing: Fence,
+  curtain: Lightbulb,
   'stake-lighting': Lightbulb,
 };
 
