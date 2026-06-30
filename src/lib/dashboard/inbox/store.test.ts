@@ -142,7 +142,7 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseClient: () => null,
 }));
 
-import { listOpenItems } from './store';
+import { listOpenItems, listEscalatableItems } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
  *  All intermediate chaining methods (select, eq, order, limit, in) return `self`
@@ -150,7 +150,7 @@ import { listOpenItems } from './store';
 function makeBuilder(result: { data: unknown; error: null | { message: string } }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'order', 'limit', 'in']) {
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -261,5 +261,25 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(item.leadKind).toBe('lead'); // null → default 'lead'
     expect(item.quoteValue).toBeNull();
     expect(item.isReturning).toBe(false); // no contact_id
+  });
+});
+
+// ─── listEscalatableItems — escalation skips automated noise ─────────────────
+
+describe('listEscalatableItems — .or filter excludes automated but keeps NULL', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('includes an .or call with the lead_kind filter so automated items are excluded but pre-migration NULL rows are not', async () => {
+    const { builder, calls } = makeBuilder({ data: [], error: null });
+    sbRef.current = { from: () => builder };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+
+    const orCall = calls.find((c) => c.method === 'or');
+    expect(orCall).toBeDefined();
+    expect(orCall!.args[0]).toBe('lead_kind.is.null,lead_kind.neq.automated');
   });
 });

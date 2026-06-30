@@ -146,6 +146,11 @@ export function InboxList({
         )}
         <Link href="/inbox/settings" aria-label="Inbox settings" style={{ color: 'var(--op-text-2)' }}>⚙</Link>
       </div>
+      {visible.length === 0 ? (
+        <p className="text-sm py-6 text-center" style={{ color: 'var(--op-text-2)' }}>
+          Nothing in this view — switch channel{summary.filtered > 0 ? ' or Show filtered' : ''}.
+        </p>
+      ) : (
       <ul className="space-y-3">
         {visible.map((item) => {
         const esc = escalation(item.escalationLevel);
@@ -264,6 +269,7 @@ export function InboxList({
         );
         })}
       </ul>
+      )}
     </>
   );
 }

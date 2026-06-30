@@ -323,6 +323,10 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     .limit(limit);
   if (error) return { ok: false, error: error.message };
 
+  // "Returning" proxy: a contact with >1 inbox_items across ALL statuses (any
+  // channel, incl. handled/dismissed history). NOTE: a single customer with two
+  // channels open right now also reads as returning — acceptable for v1 (we chose
+  // this over the dormant quote_customer_id link).
   const contactIds = [...new Set((data ?? []).map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
   const returning = new Set<string>();
   if (contactIds.length) {
@@ -467,7 +471,8 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   const { data, error } = await sb
     .from('inbox_items')
     .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
-    .eq('status', 'unresponded');
+    .eq('status', 'unresponded')
+    .or('lead_kind.is.null,lead_kind.neq.automated');
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;

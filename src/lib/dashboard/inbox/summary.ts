@@ -21,10 +21,10 @@ export function buildInboxSummary(items: OpenInboxItem[], nowMs: number): InboxS
   const byChannel = Object.fromEntries(INBOX_SOURCES.map((s) => [s, 0])) as Record<InboxSource, number>;
   let oldestWaitingMs = 0;
   let overdue = 0;
-  let quotesWaitingUsd = 0;
+  let quoteCents = 0;
   for (const i of leads) {
     byChannel[i.source] += 1;
-    if (i.quoteValue) quotesWaitingUsd += i.quoteValue;
+    if (i.quoteValue) quoteCents += Math.round(i.quoteValue * 100);
     if (i.lastMessageAt) {
       const wait = nowMs - new Date(i.lastMessageAt).getTime();
       if (wait > oldestWaitingMs) oldestWaitingMs = wait;
@@ -36,7 +36,7 @@ export function buildInboxSummary(items: OpenInboxItem[], nowMs: number): InboxS
     filtered: items.length - leads.length,
     overdue,
     oldestWaitingMs,
-    quotesWaitingUsd,
+    quotesWaitingUsd: quoteCents / 100,
     byChannel,
   };
 }
