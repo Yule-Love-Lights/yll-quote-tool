@@ -323,7 +323,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     .limit(limit);
   if (error) return { ok: false, error: error.message };
 
-  const contactIds = [...new Set((data ?? []).map((r: any) => r.contact_id).filter(Boolean))];
+  const contactIds = [...new Set((data ?? []).map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
   const returning = new Set<string>();
   if (contactIds.length) {
     const { data: counts } = await sb

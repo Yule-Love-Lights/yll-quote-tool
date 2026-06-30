@@ -63,7 +63,7 @@ describe('normalizeQuoteTouch — leadKind + quoteValue', () => {
   });
 
   it('stamps quoteValue null when total is null', () => {
-    const touch = normalizeQuoteTouch(quote({ total: null as any }));
+    const touch = normalizeQuoteTouch(quote({ total: null }));
     expect(touch.leadKind).toBe('lead');
     expect(touch.quoteValue).toBeNull();
   });
