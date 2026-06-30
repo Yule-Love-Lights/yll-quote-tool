@@ -52,7 +52,8 @@ export type Surface =
   | 'bush'
   | 'tree'
   | 'column'
-  | 'railing'; // grouped mini-light wraps (A2). Tags today; needs a price-book rate (v0.5) to bill.
+  | 'railing' // grouped mini-light wraps (A2). Tags today; needs a price-book rate (v0.5) to bill.
+  | 'curtain'; // mini lights hung from the roof in a curtain — grouped + billed per string at the railing rate (#100)
 // Physical roof feature for a c9 roofline run — drives clip-SKU selection in the
 // inventory materials engine (#82 Slice 2b). NET-NEW + optional, so the core
 // geometry stays byte-identical and data without it is simply "unset". Distinct

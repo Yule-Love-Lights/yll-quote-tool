@@ -30,6 +30,7 @@ export type PortalLineItemKind =
   | 'column'
   | 'bow'
   | 'railing'
+  | 'curtain'
   | 'stake-lighting';
 
 export type PortalLineItem = {

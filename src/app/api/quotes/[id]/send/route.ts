@@ -147,6 +147,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
   }
 
+  // Require a linked HighLevel contact for a real (non-test) send. Without one
+  // the customer is never texted/emailed (the messaging block below is gated on
+  // highlevel_contact_id) and there's no card to advance — so a "send" with no
+  // contact silently reaches nobody. Block BEFORE stamping so the quote isn't
+  // falsely marked "sent". Test quotes are exempt (they simulate the whole flow
+  // and never touch a real contact); a ?retryGhl reconcile is exempt too (the
+  // original send already passed this gate).
+  if (!isGhlRetry && !quote.is_test && !quote.highlevel_contact_id) {
+    return NextResponse.json(
+      {
+        error:
+          'Pick a HighLevel contact for this quote before sending — without one we can’t text or email the customer or move their pipeline card.',
+        code: 'no-contact',
+      },
+      { status: 400 },
+    );
+  }
+
   // On a GHL-only retry the quote keeps its original sent timestamp.
   const sentAt = quote.quote_sent_at ?? new Date().toISOString();
 

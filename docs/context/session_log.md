@@ -15,6 +15,24 @@ metadata:
 
 ---
 
+### Session 16 — #94 token-efficiency pass + S16 task intake (#94–#104) · shipped #95/#97/#98/#99/#100 (3 design-tool relays) (2026-06-30)
+
+> **⏹️ S16 CLOSE.** One conversation = S16 (Jason). Big run: a token-efficiency overhaul, a 12-task intake, and 5 shipped features (all merged + LIVE on prod).
+>
+> **🪶 #94 TOKEN-EFFICIENCY (Jason-side DONE; ⛔ Naldo-blocked for FINAL close):** proposed-first, then built — (1) **continuity-doc restructure** (lossless active/archive split; per-session boot read **~98k → ~40k tok, ≈60%**; ledger 125→28KB, session_log 141→14KB, project_quote 34→15KB; full history in `*_archive.md`), built + verified by a workflow (all lossless); (2) **caveman** skill pack installed GLOBALLY + an always-on SessionStart hook (Jason ran the install + the hook script himself — the auto-mode classifier blocked me on untrusted-code-integration + self-modification; that's expected); (3) **llm-council dedupe** = keep both (repo canonical, verified in sync); (4) **AGENTS "Token-efficiency defaults" + "Skills placement"**; (5) **caveman-compress TRIED → reverted** (only 1.7–5.9% on fact-dense specs — lesson: caveman helps prose, not specs); **(6) archive-on-cadence wired into `/wrap` + AGENTS** so the docs auto-stay-lean (this wrap is the first run). **Remaining for #94:** Naldo's assistant rotates `session_log_naldo.md` the same way.
+>
+> **🎯 SHIPPED + LIVE (5 features, each gates-green + on-device-verified):** **#95** Google Maps "View on Google Maps" link in the analyze-from-address box (PR #264) · **#97** manual street-photo upload KEEPS the pulled satellite tab + measurements (PR #260) · **#98** per-account design-editor **hotkeys** — `Settings → Hotkeys`, data-driven keymap, Draw/Select toggle (Q) + Ctrl+D duplicate, stored in `user_metadata` (PR #266; 32-agent adversarial review → 6 low, dispositioned) · **#99** marquee select on **touch/intersect** not full-enclose (PR #270) · **#100** **"Curtain" mini binding** → "Curtain Lights – N strings" @ $35/string, recommendable (PR #271). **S16 intake** (PRs #255/#256): #94–#104 + reactivated #15, captured with locked decisions.
+>
+> **🔗 3 DESIGN-TOOL RELAYS (Jason direct-pushed to `design-tool` main, byte-identical, verified):** #98 keymap (`keymap.ts` + `editor.ts` keyHandler, `9eea56c`) · #99 marquee (`selectMatchingInRect`, `5410135`) · #100 curtain (`Surface` enum in `api.ts` + 5 `editor.ts` spots, `7423434`). Cores in sync.
+>
+> **Decisions locked (don't re-ask):** caveman = Jason's standing default (per-machine global hook; off = "stop caveman"/"normal mode"). Direct-push relays to `design-tool` main are OK (Jason approved S16). #98 strict modifier-matching is intentional (incidental loose chords dropped). #98 storage = `user_metadata` (self-service). **#104 (when built) = Option A: stable scene-item id threaded pricing→adapter→portal — absorbs the #90 sceneLinks stable-id residual.** #96 portal variants = Christmas/Permanent/Event (Bistro dropped), FUTURE.
+>
+> **⚠️ NALDO heads-up:** #98 adds `/api/account/hotkeys` + `Settings/Hotkeys` + the editor-core keymap (relayed). #100 touches pricing (`pricingEngine` mini types/labels) + portal (`lineItemKind`/`WhatsIncluded`/`portal/types`) + `QuoteBuilder` RECOMMENDABLE_KINDS — all ADDITIVE (new `curtain` surface; existing flows unchanged). #99/#100 editor-core relayed.
+>
+> **State at close:** master `f96a895` + the wrap PR; 5 features + intake merged + LIVE; gates **tsc 0 · lint 0 · vitest 1246**; local reseeded lean. **NEXT (S17):** remaining S16 batch — **#101** edit portal swatch colors · **#102** custom $/ft (per item-type) · **#103** side-of-house tag (relay) · **#104** click-to-edit line price (Option A, the big one) · **#15** Street View move up/down the street. Also: #94 fully closes once Naldo rotates his log; #205/#203 on-device AI roof-feature pass still pending.
+
+---
+
 ### Session 15 — memory reseed + graph refresh · stale-security-callout reconcile (#244) · #92 light patterns BUILT end-to-end + MERGED + LIVE (2026-06-29)
 
 > **⏹️ S15 CLOSE.** One conversation = S15 (Jason). Reseeded local memory from `docs/context` (master had raced ahead — Naldo's weekend #82/#81/#83/#90/#91/#93 was already on master), refreshed the graphify graph (1947 nodes / 4927 edges, AST-only), confirmed prod auth LIVE, then built **#92 light patterns** end-to-end and merged it. `npm install` was needed at start (Naldo's #81 added `@supabase/ssr`, missing from my stale node_modules).
