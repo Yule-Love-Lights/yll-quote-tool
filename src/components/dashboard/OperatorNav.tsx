@@ -12,6 +12,7 @@ type NavItem = { label: string; href: string; match: OperatorArea[] };
 // top-level item.
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
+  { label: 'Inbox', href: '/inbox', match: ['inbox'] },
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },

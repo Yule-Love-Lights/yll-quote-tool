@@ -2,6 +2,7 @@ import { OperatorNav } from './dashboard/OperatorNav';
 
 export type OperatorArea =
   | 'home'
+  | 'inbox'
   | 'insights'
   | 'quotes'
   | 'customers'

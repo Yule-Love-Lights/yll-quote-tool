@@ -70,6 +70,42 @@ export type HighLevelOpportunity = {
   monetaryValue?: number;
 };
 
+// ─── Conversations API shapes (subset) — dashboard /inbox, #58 ─────────────
+// Field names confirmed against the LIVE API by scripts/spikes/ghl-conversations.ts
+// (2026-06-28). Note the two surprises encoded downstream: `lastMessageDate` is
+// epoch-MS on the search endpoint (an ISO string on the messages endpoint), and
+// the message channel comes from `lastMessageType`/`messageType` — NOT the
+// conversation-level `type` (which is the contact channel class, e.g. TYPE_PHONE).
+export type HighLevelConversation = {
+  id: string;
+  locationId?: string;
+  contactId?: string;
+  lastMessageDate?: number | string;
+  lastMessageType?: string;       // TYPE_SMS | TYPE_EMAIL | TYPE_CALL | TYPE_FACEBOOK | ...
+  lastMessageBody?: string;
+  lastMessageDirection?: string;  // 'inbound' | 'outbound'
+  unreadCount?: number;
+  fullName?: string;
+  contactName?: string;
+  email?: string;
+  phone?: string;
+  type?: string;                  // contact channel class — do NOT use as message channel
+  tags?: string[];
+  assignedTo?: string;
+};
+
+export type HighLevelMessage = {
+  id: string;
+  direction?: string;             // 'inbound' | 'outbound' (absent on some email/call rows)
+  status?: string;                // 'delivered' | 'read' | 'completed' | ...
+  type?: number;                  // 1 call | 2 sms | 3 email
+  messageType?: string;           // TYPE_SMS | TYPE_CALL | TYPE_EMAIL
+  body?: string;
+  contactId?: string;
+  conversationId?: string;
+  dateAdded?: string;             // ISO 8601 on this endpoint
+};
+
 // ─── Home.works via Zapier webhook ────────────────────────────────────────
 // Zapier is the middleman because home.works doesn't expose a direct API
 // suitable for this integration. Our tool POSTs a JSON payload to a Zapier
