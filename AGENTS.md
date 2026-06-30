@@ -46,7 +46,7 @@ Default habits to keep sessions cheap (S16 task #94):
 - **On long sessions, delegate broad searches** to compressed subagents (`cavecrew` / `Explore`) so tool-results stay small.
 - **Batch independent tool calls** in one message.
 - **Don't re-read** a file the harness already tracks as edited.
-- **Keep continuity docs lean** — tight ledger Notes; completed tasks in `task_ledger_archive.md`; session logs keep only the latest ~3 (older in `session_log_archive.md`); `project_quote_tool` history in its archive.
+- **Keep continuity docs lean — archive on cadence, don't wait to be asked.** Tight ledger Notes; completed tasks → `task_ledger_archive.md`; session logs keep only the latest ~3 (older → `session_log_archive.md`); `project_quote_tool` history in its archive. **This happens automatically at every session close (a `/wrap` step), and a fresh session self-checks at start and archives if they've grown** — so the docs never balloon between manual cleanups and the dev never has to remember to ask.
 - **The `caveman` skill compresses OUTPUT** — per-machine opt-in via a SessionStart hook.
 
 **Skills placement.** Repo-shared skills live in `.claude/skills/` (git-synced to both devs); per-machine / global skills in `~/.claude/skills/`. Choose **repo** for team skills, **global** for personal. Don't keep the same skill in both (drift) — the **`llm-council` canonical copy is the repo one**.
