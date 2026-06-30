@@ -1506,7 +1506,7 @@ export default function QuoteBuilder({
             <p className="text-xs text-amber-600 mb-3">
               Testing mode — name / phone / email are optional. Address is optional too, but helps if you want to tie the quote to a real property.
             </p>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={lbl}>Name</label>
                 <input className={inp} placeholder="Jane Smith (optional)"
@@ -2034,7 +2034,7 @@ export default function QuoteBuilder({
                     )}
 
                     {/* Per-line edit panels — front gutterline / ridge+sides / C9s / Stake. */}
-                    <div className="mt-4 grid grid-cols-2 gap-4">
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-red-500 rounded"></span>
@@ -2193,7 +2193,7 @@ export default function QuoteBuilder({
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Santa's — Front Gutterline (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
                   <input className={inp} type="number" min="0" placeholder="0"
@@ -2230,7 +2230,7 @@ export default function QuoteBuilder({
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
               <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
                   <input className={inp} type="number" min="0" placeholder="0"
@@ -2267,7 +2267,7 @@ export default function QuoteBuilder({
           <div className={`transition-opacity ${form.winterWonderlandFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="C9s — Custom Runs">
               <p className="text-xs text-gray-400 mb-3">Enter manually — C9 bulb runs.</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
                   <input className={inp} type="number" min="0" placeholder="0"
@@ -2304,7 +2304,7 @@ export default function QuoteBuilder({
           <div className={`transition-opacity ${form.stakeLightingFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Stake Lighting">
               <p className="text-xs text-gray-400 mb-3">Enter manually — staked ground runs.</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
                   <input className={inp} type="number" min="0" placeholder="0"
