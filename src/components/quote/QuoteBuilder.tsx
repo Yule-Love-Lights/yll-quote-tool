@@ -2548,13 +2548,31 @@ export default function QuoteBuilder({
                       );
                     }
                   }
-                  return (
-                    <div key={i} className="flex justify-between items-center text-sm gap-2">
+                  const rowInner = (
+                    <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
                         {item.label}
                       </span>
                       <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                    </>
+                  );
+                  // A recommendable row wraps its content in a <label> so clicking
+                  // ANYWHERE on the row (the item name, not just the 13px box)
+                  // toggles the recommendation — mirroring the roofline option rows
+                  // above. Without this the bare checkbox is the only hit target, so
+                  // clicking the item name does nothing. Non-recommendable rows have
+                  // no checkbox to toggle, so they stay plain (non-clickable) divs.
+                  return checkbox ? (
+                    <label
+                      key={i}
+                      className="flex justify-between items-center text-sm gap-2 cursor-pointer rounded px-2 py-1.5 -mx-2 hover:bg-gray-100"
+                    >
+                      {rowInner}
+                    </label>
+                  ) : (
+                    <div key={i} className="flex justify-between items-center text-sm gap-2">
+                      {rowInner}
                     </div>
                   );
                 });
