@@ -71,6 +71,7 @@ export type IngestPlan = {
   autoResolved: boolean;
   reopened: boolean;
   ambiguous: boolean;
+  clearFollowedUp: boolean;
 };
 
 /**
@@ -111,6 +112,12 @@ export function planIngest(input: {
     }
   }
 
+  // Clear the followed/snooze flag only when a genuinely-newer message arrives
+  // (so a reconcile re-ingesting the SAME message preserves the snooze). null
+  // existing timestamp → treat as newer (mirrors the handled-reopen guard).
+  const clearFollowedUp =
+    !!existing && (existing.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime());
+
   // notified_levels is owned by the escalate cron. Ingest only PRESERVES it
   // (and resets it on reopen) — it must never advance a level, or the cron would
   // skip that escalation email.
@@ -140,6 +147,7 @@ export function planIngest(input: {
     autoResolved: decision.autoResolved,
     reopened: decision.reopened,
     ambiguous,
+    clearFollowedUp,
   };
 }
 
@@ -279,6 +287,10 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     itemUpsert.handled_by = null; // system auto-resolve
     itemUpsert.handled_at = now.toISOString();
   }
+  // Followed/snooze flag: clear it on a genuinely-newer message so the item
+  // returns to the open list. OMITTED otherwise → the upsert preserves the
+  // existing value (re-ingesting the same message keeps the snooze).
+  if (plan.clearFollowedUp) itemUpsert.followed_up_at = null;
   const { data: itemData, error: itemErr } = await sb
     .from('inbox_items')
     .upsert(itemUpsert, { onConflict: 'source,external_id' })
@@ -322,6 +334,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
         'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
     )
     .eq('status', 'unresponded')
+    .is('followed_up_at', null)
     .order('last_message_at', { ascending: true })
     .limit(limit);
   if (error) return { ok: false, error: error.message };
@@ -453,10 +466,61 @@ export async function dismissItem(itemId: string, operatorId: string, now: Date)
   return { ok: true };
 }
 
+/** Snooze an item: stamp followed_up_at (the reply route does this on send [A]; a
+ *  manual "I followed up" does it without sending [B]). Hides from the open list
+ *  until a newer message clears it. Service-role glue. */
+export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { error } = await sb
+    .from('inbox_items')
+    .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
+    .eq('id', itemId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId });
+  return { ok: true };
+}
+
 export async function recordWriteback(itemId: string, sync: unknown): Promise<void> {
   const sb = getSupabaseServiceClient();
   if (!sb) return;
   await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+}
+
+export type FollowedItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  preview: string | null;
+  followedUpAt: string | null;
+  customerName: string | null;
+};
+export type FollowedItemsResult = { ok: true; items: FollowedItem[] } | { ok: false; error: string };
+
+export async function listFollowedItems(limit = 100): Promise<FollowedItemsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('id, source, channel, preview, followed_up_at, dashboard_contacts ( display_name )')
+    .not('followed_up_at', 'is', null)
+    .neq('status', 'dismissed')
+    .order('followed_up_at', { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  const items: FollowedItem[] = (data ?? []).map((r) => {
+    const row = r as unknown as Record<string, unknown>;
+    const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
+    return {
+      id: String(row.id),
+      source: row.source as InboxSource,
+      channel: (row.channel as string | null) ?? null,
+      preview: (row.preview as string | null) ?? null,
+      followedUpAt: (row.followed_up_at as string | null) ?? null,
+      customerName: (c?.display_name as string | null) ?? null,
+    };
+  });
+  return { ok: true, items };
 }
 
 // ─── Escalation support ─────────────────────────────────────────────────────
