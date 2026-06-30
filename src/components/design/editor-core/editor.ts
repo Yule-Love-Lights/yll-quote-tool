@@ -18,6 +18,7 @@ import { createPole } from "./pole";
 import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
+import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -121,7 +122,7 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -4794,46 +4795,65 @@ export async function renderEditor(
     const tag = (document.activeElement as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-    // Undo / redo — Ctrl+Z (or Cmd+Z) and Ctrl+Shift+Z (or Cmd+Shift+Z) / Ctrl+Y.
-    const meta = e.ctrlKey || e.metaKey;
-    if (meta && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
+    // Enter while tracing commits the polyline — a fixed contextual behavior,
+    // NOT remappable. Everything else dispatches through the configurable keymap
+    // (#98): pass no override and DEFAULT_KEYMAP reproduces the original
+    // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Delete / Esc set.
+    if (e.key === "Enter" && tool.drawingStyle === "trace" && tracePts) {
+      finishTrace();
       return;
     }
-    if (meta && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      redo();
-      return;
-    }
-    if (meta && e.key.toLowerCase() === "c") {
-      if (selectedIds.size === 0) return; // let the browser handle (e.g. nothing to copy)
-      copySelectedToClipboard();
-      e.preventDefault();
-      return;
-    }
-    if (meta && e.key.toLowerCase() === "v") {
-      if (clipboard.length === 0) return;
-      pasteFromClipboard();
-      e.preventDefault();
-      return;
-    }
-
-    if (e.key === "Escape" || e.key === "Enter") {
-      if (tool.drawingStyle === "trace" && tracePts) {
-        finishTrace();
-      } else if (e.key === "Escape") {
-        if (selectedIds.size > 0) {
+    const action = resolveAction(e, opts.keymap ?? DEFAULT_KEYMAP, "core");
+    if (!action) return;
+    switch (action) {
+      case "undo":
+        e.preventDefault();
+        undo();
+        break;
+      case "redo":
+        e.preventDefault();
+        redo();
+        break;
+      case "copy":
+        if (selectedIds.size === 0) return; // let the browser handle (e.g. nothing to copy)
+        copySelectedToClipboard();
+        e.preventDefault();
+        break;
+      case "paste":
+        if (clipboard.length === 0) return;
+        pasteFromClipboard();
+        e.preventDefault();
+        break;
+      case "duplicate": {
+        if (selectedIds.size === 0) return;
+        // Clone the selection in place without clobbering the user's clipboard.
+        const savedClipboard = clipboard;
+        copySelectedToClipboard();
+        pasteFromClipboard();
+        clipboard = savedClipboard;
+        e.preventDefault();
+        break;
+      }
+      case "delete":
+        if (selectedIds.size === 0) return;
+        deleteSelected();
+        e.preventDefault();
+        break;
+      case "cancel":
+        // Esc: finish an in-progress trace, else clear selection, else cancel.
+        // (No preventDefault — matches the original Esc behavior.)
+        if (tool.drawingStyle === "trace" && tracePts) {
+          finishTrace();
+        } else if (selectedIds.size > 0) {
           clearSelection();
         } else {
           cancelInProgress();
         }
-      }
-    }
-    if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.size > 0) {
-      deleteSelected();
-      e.preventDefault();
+        break;
+      case "toggleDrawSelect":
+        setToolMode(toolMode === "draw" ? "select" : "draw");
+        e.preventDefault();
+        break;
     }
   };
   window.addEventListener("keydown", keyHandler);
