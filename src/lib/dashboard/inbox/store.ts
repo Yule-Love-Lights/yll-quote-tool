@@ -486,9 +486,13 @@ export async function dismissItem(itemId: string, operatorId: string, now: Date)
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId)
+    .neq('status', 'dismissed')
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) return { ok: false, error: error.message };
+  // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
+  // (a stray reverse of that row would un-suppress a still-dismissed sender).
+  if (!data) return { ok: true };
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
@@ -1057,12 +1061,27 @@ export async function reverseItemState(
   if (!reversible.includes(a.action as ReverseAction)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
+  const action = a.action as ReverseAction;
 
-  const t = inverseOf(a.action as ReverseAction, a.detail?.from as { status?: InboxStatus } | undefined);
+  // Only reverse if the item is STILL in the state this action produced — otherwise
+  // a later action superseded it and reversing now would clobber the newer state
+  // (this also de-dupes a double-clicked reverse).
+  const { data: cur } = await sb
+    .from('inbox_items')
+    .select('status, followed_up_at')
+    .eq('id', a.inbox_item_id)
+    .maybeSingle();
+  if (!cur) return { ok: false, error: 'Item not found' };
+  const curRow = cur as { status: string; followed_up_at: string | null };
+  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
+
+  const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);
 
   const upd: Record<string, unknown> = { updated_at: now.toISOString() };
   if (t.status) upd.status = t.status;
   if (t.clearFollowed) upd.followed_up_at = null;
+  if (t.setFollowed) upd.followed_up_at = now.toISOString();
 
   const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
   if (error) return { ok: false, error: error.message };

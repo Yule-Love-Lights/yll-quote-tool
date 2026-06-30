@@ -29,14 +29,17 @@ describe('isStale', () => {
 });
 describe('inverseOf', () => {
   it('un-dismiss restores prior status and un-suppresses', () => {
-    expect(inverseOf('dismissed', { status: 'unresponded' })).toEqual({ status: 'unresponded', clearFollowed: false, unsuppress: true });
+    expect(inverseOf('dismissed', { status: 'unresponded' })).toEqual({ status: 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: true });
   });
   it('un-complete falls back to handled when no prior', () => {
-    expect(inverseOf('completed')).toEqual({ status: 'handled', clearFollowed: false, unsuppress: false });
+    expect(inverseOf('completed')).toEqual({ status: 'handled', clearFollowed: false, setFollowed: false, unsuppress: false });
+  });
+  it('un-complete restores the awaiting (followed) bucket when it was followed before', () => {
+    expect(inverseOf('completed', { status: 'handled', wasFollowed: true })).toEqual({ status: 'handled', clearFollowed: false, setFollowed: true, unsuppress: false });
   });
   it('un-handle -> needs reply; un-follow clears the flag only', () => {
-    expect(inverseOf('handled')).toEqual({ status: 'unresponded', clearFollowed: false, unsuppress: false });
-    expect(inverseOf('followed')).toEqual({ status: null, clearFollowed: true, unsuppress: false });
+    expect(inverseOf('handled')).toEqual({ status: 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: false });
+    expect(inverseOf('followed')).toEqual({ status: null, clearFollowed: true, setFollowed: false, unsuppress: false });
   });
 });
 describe('clampFollowUpDays', () => {

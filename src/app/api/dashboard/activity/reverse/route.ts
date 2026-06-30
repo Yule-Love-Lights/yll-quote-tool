@@ -28,6 +28,11 @@ export async function POST(req: NextRequest) {
 
   const operator = await getOperator();
   const res = await reverseItemState(activityId, operator?.id ?? 'system', new Date());
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
+  if (!res.ok) {
+    // Client-side cases (not found / not reversible / superseded) are 400; only a
+    // missing service-role config is a real 503.
+    const status = res.error === 'Supabase service role not configured' ? 503 : 400;
+    return NextResponse.json({ error: res.error }, { status });
+  }
   return NextResponse.json({ ok: true });
 }

@@ -108,4 +108,11 @@ describe('decideInboxState — completed reopens like handled', () => {
     expect(d.status).toBe('unresponded');
     expect(d.reopened).toBe(true);
   });
+  it('stays completed on an OUTBOUND touch (our reply / reconcile re-ingest must not downgrade it)', () => {
+    const existing: ExistingItemState = { status: 'completed', notifiedLevels: [], lastMessageAt: T };
+    const d = decideInboxState({ existing, touch: touch({ direction: 'outbound', lastMessageAt: at(3 * HOUR) }), now: at(4 * HOUR) });
+    expect(d.status).toBe('completed');
+    expect(d.autoResolved).toBe(false);
+    expect(d.reopened).toBe(false);
+  });
 });

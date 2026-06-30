@@ -44,8 +44,14 @@ export function decideInboxState(input: {
     return { status: 'dismissed', escalationLevel: 0, autoResolved: false, reopened: false };
   }
 
-  // Outbound latest message → answered → auto-resolve.
+  // Outbound latest message → answered → auto-resolve. A COMPLETED item stays
+  // completed: our own outbound to a done customer must not un-complete it, and
+  // the reconcile re-ingests that outbound every run (which would otherwise
+  // downgrade completed→handled and erase the completion attribution).
   if (isAnsweredByDirection(touch.direction)) {
+    if (existing?.status === 'completed') {
+      return { status: 'completed', escalationLevel: 0, autoResolved: false, reopened: false };
+    }
     return { status: 'handled', escalationLevel: 0, autoResolved: existing?.status !== 'handled', reopened: false };
   }
 

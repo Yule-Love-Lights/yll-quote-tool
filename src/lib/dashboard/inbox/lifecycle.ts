@@ -18,18 +18,20 @@ export function isStale(lastActivityIso: string | null, days: number, now: Date)
 }
 
 export type ReverseAction = 'handled' | 'followed' | 'completed' | 'dismissed';
-export type ReverseTarget = { status: InboxStatus | null; clearFollowed: boolean; unsuppress: boolean };
+export type ReverseTarget = { status: InboxStatus | null; clearFollowed: boolean; setFollowed: boolean; unsuppress: boolean };
 
 export function inverseOf(action: ReverseAction, from?: { status?: InboxStatus; wasFollowed?: boolean }): ReverseTarget {
   switch (action) {
     case 'dismissed':
-      return { status: from?.status ?? 'unresponded', clearFollowed: false, unsuppress: true };
+      return { status: from?.status ?? 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: true };
     case 'completed':
-      return { status: from?.status ?? 'handled', clearFollowed: false, unsuppress: false };
+      // Restore the prior bucket: if it was awaiting-reply (followed) before being
+      // completed, re-set the follow flag so the reverse returns it to that group.
+      return { status: from?.status ?? 'handled', clearFollowed: false, setFollowed: !!from?.wasFollowed, unsuppress: false };
     case 'handled':
-      return { status: 'unresponded', clearFollowed: false, unsuppress: false };
+      return { status: 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: false };
     case 'followed':
-      return { status: null, clearFollowed: true, unsuppress: false };
+      return { status: null, clearFollowed: true, setFollowed: false, unsuppress: false };
   }
 }
 
