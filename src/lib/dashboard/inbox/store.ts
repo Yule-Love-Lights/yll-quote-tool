@@ -27,6 +27,7 @@ import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity }
 import { decideInboxState } from './reducer';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem } from './responseMetrics';
+import { addSuppressedSenders } from './suppression';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -437,12 +438,16 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
 export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .select('dashboard_contacts ( primary_email, primary_phone )')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId });
+  const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
+  if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
   return { ok: true };
 }
 
@@ -730,4 +735,44 @@ export async function mergeContactsById(
     .from('dashboard_activity')
     .insert({ actor: operatorId, action: 'merged', contact_id: primaryId, detail: { mergedFrom: secondaryId } });
   return { ok: true };
+}
+
+// ─── Send-target resolver ────────────────────────────────────────────────────
+
+export type ReplyItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  externalId: string;
+  ghlContactId: string | null;
+  customerName: string | null;
+  quoteTotal: number | null;
+};
+
+/**
+ * Resolve the send-target coordinates for a reply action: source, channel,
+ * external ID, GHL contact ID, customer name, and quote total. The GHL contact
+ * ID and customer name fall back to the raw payload if the contact row is absent.
+ */
+export async function getItemForReply(itemId: string): Promise<ReplyItem | null> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return null;
+  const { data } = await sb
+    .from('inbox_items')
+    .select('id, source, channel, external_id, quote_value, raw, dashboard_contacts ( ghl_contact_id, display_name )')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as unknown as Record<string, unknown>;
+  const c = (row.dashboard_contacts as { ghl_contact_id?: string | null; display_name?: string | null } | null) ?? null;
+  const raw = (row.raw as { highlevel_contact_id?: string | null; customer_name?: string | null } | null) ?? null;
+  return {
+    id: String(row.id),
+    source: row.source as InboxSource,
+    channel: (row.channel as string | null) ?? null,
+    externalId: String(row.external_id),
+    ghlContactId: (c?.ghl_contact_id ?? null) ?? (raw?.highlevel_contact_id ?? null),
+    customerName: (c?.display_name ?? null) ?? (raw?.customer_name ?? null),
+    quoteTotal: (row.quote_value as number | null) ?? null,
+  };
 }
