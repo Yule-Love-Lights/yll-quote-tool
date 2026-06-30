@@ -89,13 +89,13 @@ function gm(over: Partial<{ labelIds: string[]; internalDate: string; snippet: s
 
 describe('gmailMessageFromMe', () => {
   it('is true for a SENT-labelled message', () => {
-    expect(gmailMessageFromMe(gm({ labelIds: ['SENT'], from: 'cust@example.com' }), OUR)).toBe(true);
+    expect(gmailMessageFromMe(gm({ labelIds: ['SENT'], from: 'cust@example.com' }), { ourEmail: OUR })).toBe(true);
   });
   it('is true when the From address is our mailbox (e.g. an escalation email in sales@)', () => {
-    expect(gmailMessageFromMe(gm({ from: 'Yule Love Lights <sales@yulelovelights.com>' }), OUR)).toBe(true);
+    expect(gmailMessageFromMe(gm({ from: 'Yule Love Lights <sales@yulelovelights.com>' }), { ourEmail: OUR })).toBe(true);
   });
   it('is false for a customer message', () => {
-    expect(gmailMessageFromMe(gm({ from: 'cust@example.com' }), OUR)).toBe(false);
+    expect(gmailMessageFromMe(gm({ from: 'cust@example.com' }), { ourEmail: OUR })).toBe(false);
   });
 });
 
@@ -105,7 +105,7 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
       id: 'thr-1',
       messages: [gm({ internalDate: '1782690000000', from: 'A Customer <cust@example.com>', subject: 'Quote?', snippet: 'Can I get a quote?' })],
     };
-    const t = normalizeGmailThread(mapGmailThread(raw, OUR));
+    const t = normalizeGmailThread(mapGmailThread(raw, { ourEmail: OUR }));
     expect(t.source).toBe('gmail');
     expect(t.externalId).toBe('thr-1');
     expect(t.direction).toBe('inbound');
@@ -122,7 +122,7 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
         gm({ internalDate: '1782693000000', labelIds: ['SENT'], from: OUR, snippet: 'replied' }),
       ],
     };
-    expect(normalizeGmailThread(mapGmailThread(raw, OUR)).direction).toBe('outbound');
+    expect(normalizeGmailThread(mapGmailThread(raw, { ourEmail: OUR })).direction).toBe('outbound');
   });
 
   it('never produces an Invalid Date from a malformed internalDate (would crash .toISOString)', () => {
@@ -130,8 +130,20 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
       id: 'thr-bad',
       messages: [gm({ internalDate: 'not-a-number', from: 'cust@example.com', snippet: 'hi' })],
     };
-    const t = normalizeGmailThread(mapGmailThread(raw, OUR));
+    const t = normalizeGmailThread(mapGmailThread(raw, { ourEmail: OUR }));
     expect(Number.isNaN(t.lastMessageAt.getTime())).toBe(false);
     expect(() => t.lastMessageAt.toISOString()).not.toThrow();
+  });
+
+  it('treats any sender on our domain as from-us (kills the escalation self-ingest)', () => {
+    const raw = {
+      id: 't1',
+      messages: [
+        { id: 'm1', labelIds: ['INBOX'], internalDate: '1000',
+          payload: { headers: [{ name: 'From', value: 'Yule Love Lights <sales@yulelovelights.com>' }, { name: 'Subject', value: 'URGENT: 28 customer messages still unanswered' }] } },
+      ],
+    };
+    const thread = mapGmailThread(raw, { ourEmail: 'info@yulelovelights.com', ourDomain: 'yulelovelights.com', internalAddrs: ['sales@yulelovelights.com'] });
+    expect(thread.messages[0].fromMe).toBe(true);
   });
 });

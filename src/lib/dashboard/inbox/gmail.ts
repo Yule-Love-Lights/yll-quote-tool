@@ -92,20 +92,29 @@ function parseDisplayName(headerValue: string): string | null {
  * our own mailbox. The latter is what neutralizes the self-ingest loop: an
  * escalation email delivered to sales@ has From: sales@, so it reads as "from us"
  * → outbound → the reducer skips it (never a fake lead).
+ *
+ * The identity object widens the check from a single address to our whole domain
+ * and any explicitly listed internal addresses (e.g. sales@), so escalation emails
+ * sent from sub-addresses on our domain never appear as fake leads.
  */
-export function gmailMessageFromMe(m: RawGmailMessage, ourEmail: string): boolean {
+export type GmailIdentity = { ourEmail: string; ourDomain?: string | null; internalAddrs?: string[] };
+
+export function gmailMessageFromMe(m: RawGmailMessage, identity: GmailIdentity): boolean {
   if (m.labelIds?.includes('SENT')) return true;
   const from = getHeader(m, 'From');
   const addr = from ? parseEmailAddress(from) : null;
-  return addr !== null && addr === ourEmail.trim().toLowerCase();
+  if (!addr) return false;
+  if (addr === identity.ourEmail.trim().toLowerCase()) return true;
+  if (identity.ourDomain && addr.endsWith(`@${identity.ourDomain.trim().toLowerCase()}`)) return true;
+  return (identity.internalAddrs ?? []).some((a) => a.trim().toLowerCase() === addr);
 }
 
-export function mapGmailThread(raw: RawGmailThread, ourEmail: string): GmailThreadLite {
+export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): GmailThreadLite {
   const rawMessages = raw.messages ?? [];
   const messages: GmailMessageLite[] = rawMessages.map((m) => {
     const ms = Number(m.internalDate ?? 0);
     return {
-      fromMe: gmailMessageFromMe(m, ourEmail),
+      fromMe: gmailMessageFromMe(m, identity),
       // Guard against a non-numeric internalDate: an Invalid Date would later
       // throw at .toISOString() during the upsert.
       at: new Date(Number.isFinite(ms) ? ms : 0),
@@ -114,7 +123,7 @@ export function mapGmailThread(raw: RawGmailThread, ourEmail: string): GmailThre
   });
   const subject = rawMessages[0] ? getHeader(rawMessages[0], 'Subject') : undefined;
   // External party = the From of the latest inbound message on the thread.
-  const latestInbound = [...rawMessages].reverse().find((m) => !gmailMessageFromMe(m, ourEmail));
+  const latestInbound = [...rawMessages].reverse().find((m) => !gmailMessageFromMe(m, identity));
   const fromHeader = latestInbound ? getHeader(latestInbound, 'From') : undefined;
   return {
     threadId: raw.id,
