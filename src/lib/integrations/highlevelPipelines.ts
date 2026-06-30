@@ -41,10 +41,12 @@ const PRIMARY_INCLUDE = 'christmas';
 const PRIMARY_EXCLUDE = 'commercial';
 
 // Ordered keyword hints per stage env var — first keyword that matches a stage
-// (in order) wins, so more-specific phrases come first ("make quote" before a
-// bare "quote" would over-match "Previous Year Quotes").
+// (in order) wins, so more-specific phrases come first.
+// QUOTE_CREATED is the stage the tool uses when it has to CREATE a brand-new card
+// (contact had none) — it must be the pipeline's ENTRY stage (e.g. "Open"), NEVER
+// an internal stage like "Make Quote".
 const STAGE_HINTS: { envVar: string; keywords: string[] }[] = [
-  { envVar: 'HIGHLEVEL_STAGE_QUOTE_CREATED', keywords: ['make quote', 'new quote', 'quote created'] },
+  { envVar: 'HIGHLEVEL_STAGE_QUOTE_CREATED', keywords: ['new lead', 'open'] },
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_SENT', keywords: ['bid sent', 'sent'] },
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_INTERESTED', keywords: ['interested'] },
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_SIGNED', keywords: ['approved', 'signed', 'booked'] },
