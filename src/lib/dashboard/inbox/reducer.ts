@@ -14,6 +14,9 @@ import { escalationLevel, isAnsweredByDirection } from './escalation';
 export type ExistingItemState = {
   status: InboxStatus;
   notifiedLevels: number[];
+  /** When the item's current last message arrived — lets us tell a genuinely-new
+   *  inbound (reopen) from the reconcile re-ingesting the SAME message (stay handled). */
+  lastMessageAt?: Date | null;
 };
 
 export type IngestDecision = {
@@ -46,12 +49,23 @@ export function decideInboxState(input: {
     return { status: 'handled', escalationLevel: 0, autoResolved: existing?.status !== 'handled', reopened: false };
   }
 
-  // Inbound + unanswered. Reopen a handled item (the escalate cron resets the
-  // clock when notified_levels is cleared on reopen — see store.planIngest).
+  // Inbound + unanswered. Reopen a handled item ONLY when a genuinely NEW inbound
+  // arrived since we handled it. The reconcile cron re-ingests the same
+  // conversation every run, so without this guard a handled item reopens on the
+  // SAME message it was handled for (the bug). (On reopen the escalate cron resets
+  // the clock when notified_levels is cleared — see store.planIngest.)
+  const wasHandled = existing?.status === 'handled';
+  if (wasHandled) {
+    const newerInbound =
+      existing?.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime();
+    if (!newerInbound) {
+      return { status: 'handled', escalationLevel: 0, autoResolved: false, reopened: false };
+    }
+  }
   return {
     status: 'unresponded',
     escalationLevel: escalationLevel(touch.lastMessageAt, now),
     autoResolved: false,
-    reopened: existing?.status === 'handled',
+    reopened: wasHandled,
   };
 }

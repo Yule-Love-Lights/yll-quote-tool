@@ -38,6 +38,7 @@ import {
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
 import { etDayKey } from './normalize';
 import { ESCALATION_LEVEL } from './types';
+import { getSuppressedSenders } from './suppression';
 import {
   type EscalationEmailItem,
   eodDigestHtml,
@@ -62,13 +63,14 @@ export type ReconcileSummary = {
 export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}): Promise<ReconcileSummary> {
   try {
     const { conversations } = await searchConversations({ limit: opts.limit ?? 50 });
+    const suppressed = await getSuppressedSenders();
     let ingested = 0;
     let skipped = 0;
     let autoResolved = 0;
     let ambiguous = 0;
     let errors = 0;
     for (const c of conversations) {
-      const res = await ingestTouch(normalizeGhlConversation(c), now);
+      const res = await ingestTouch(normalizeGhlConversation(c, suppressed), now);
       if (!res.ok) {
         errors++;
         continue;
@@ -179,6 +181,7 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
   try {
     const token = await getAccessToken();
     const threads = await listInboxThreads(token, { maxResults: opts.maxResults ?? 25 });
+    const suppressed = await getSuppressedSenders();
     let ingested = 0;
     let skipped = 0;
     let autoResolved = 0;
@@ -193,7 +196,7 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
           skipped++;
           continue;
         }
-        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, identity)), now);
+        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, identity), suppressed), now);
         if (!res.ok) {
           errors++;
           continue;

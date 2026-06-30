@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { applyAppSettings } from '@/lib/clientSettings';
+import { DEFAULT_KEYMAP, resolveAction, normalizeKeymap, type KeyMap } from './editor-core/keymap';
 import './design-editor.css';
 
 type Props = {
@@ -36,6 +37,8 @@ const BAR_HEIGHT = 40; // px — the React control bar above the editor.
 export default function DesignEditor({ designId, onClose, height = 600, onReady }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
+  // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
+  const [keymap, setKeymap] = useState<KeyMap>(DEFAULT_KEYMAP);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
   const onReadyRef = useRef(onReady);
@@ -57,10 +60,22 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       // also re-reads the palette via the storage seam (same cached fetch).
       await applyAppSettings();
       if (cancelled) return;
+      // #98: load this operator's per-account hotkeys before the editor mounts so
+      // its key handler uses their bindings. Best-effort — default keymap on any
+      // failure. (Remaps in Settings apply on the editor's next mount.)
+      let km = DEFAULT_KEYMAP;
+      try {
+        const res = await fetch('/api/account/hotkeys');
+        if (res.ok) km = normalizeKeymap((await res.json()).hotkeys);
+      } catch {
+        // keep defaults
+      }
+      if (cancelled) return;
+      setKeymap(km);
       // showQuoteBinding: true → the quote embed shows the per-item "Quote
       // binding" panels (surface/included + billed quote spec). The design
       // tool's standalone/dashboard embeds leave it off (#27 A1).
-      handle = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true });
+      handle = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true, keymap: km });
       if (cancelled) {
         handle?.();
         handle = null;
@@ -101,26 +116,24 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
     return () => window.removeEventListener('keydown', onKey);
   }, [expanded]);
 
-  // "F" toggles full screen (#44) — the ideal flow is pull/upload → analyze →
-  // press F → full-screen editor with the house ready. F (not spacebar) because
-  // the editor core already owns Space for hold-to-pan the canvas (editor.ts) —
-  // overloading Space would fight panning, and inside full screen you still need
-  // Space to pan the enlarged canvas. F has no collision (the editor core only
-  // handles Space / Esc / Enter / Ctrl-combos / Delete), so it's a safe toggle.
-  // Guards: ignore while typing in a field, ignore when a modifier is held (so
-  // Ctrl/Cmd+F browser-find still works), and ignore auto-repeat from a held key.
+  // Full-screen toggle (#44, default "F") — pull/upload → analyze → toggle →
+  // full-screen editor with the house ready. The binding is configurable (#98,
+  // the shell-scoped "fullscreen" action); F (not Space) because the editor core
+  // owns Space for hold-to-pan. resolveAction is strict on modifiers, so
+  // Ctrl/Cmd+F browser-find still works. Guards: ignore typing in a field +
+  // auto-repeat from a held key.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'f' && e.key !== 'F') return;
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.repeat) return;
       const el = document.activeElement as HTMLElement | null;
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (resolveAction(e, keymap, 'shell') !== 'fullscreen') return;
       e.preventDefault();
       setExpanded((v) => !v);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [keymap]);
 
   // The host just changed size (full-screen toggle) — nudge the editor to refit
   // its canvas to the new box. The editor also has a ResizeObserver, but a
