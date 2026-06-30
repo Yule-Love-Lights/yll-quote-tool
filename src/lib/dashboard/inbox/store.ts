@@ -27,7 +27,7 @@ import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity }
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
-import type { MetricItem } from './responseMetrics';
+import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
 
@@ -730,17 +730,17 @@ export type MetricsResult =
   | { ok: true; items: MetricItem[]; truncated: boolean }
   | { ok: false; error: string };
 
-/** Items in the trailing `sinceDays` window (by last_message_at) for analytics.
- *  `truncated` is true when the window hit the row cap, so the UI can say the
- *  stats are based on a sample rather than silently under-reporting. */
-export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult> {
+/** All-time items for analytics (capped at METRICS_ROW_CAP, newest first by
+ *  last_message_at). `truncated` is true when the cap was hit, so the UI can say
+ *  the stats are based on the most recent sample rather than under-reporting.
+ *  The component windows down to 90/30 days client-side. */
+export async function listItemsForMetrics(): Promise<MetricsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
   const { data, error } = await sb
     .from('inbox_items')
-    .select('status, last_message_at, handled_at, handled_by, source')
-    .gte('last_message_at', since)
+    .select('status, last_message_at, handled_at, handled_by, source, created_at')
+    .order('last_message_at', { ascending: false })
     .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((r): MetricItem => ({
@@ -749,8 +749,36 @@ export async function listItemsForMetrics(sinceDays = 30): Promise<MetricsResult
     handledAt: r.handled_at ? new Date(r.handled_at as string) : null,
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,
+    createdAt: r.created_at ? new Date(r.created_at as string) : null,
   }));
   return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
+}
+
+/** Reopen-rate inputs: DISTINCT inbox_items handled vs reopened, per window
+ *  (all-time / 90d / 30d). Distinct (not per-event) so a re-handled or re-reopened
+ *  item counts once — a faithful "of the customers we handled, how many came back". */
+export async function getReopenCounts(now: Date): Promise<ReopenCounts> {
+  const fresh = (): ReopenCounts => ({
+    all: { handled: 0, reopened: 0 },
+    '90': { handled: 0, reopened: 0 },
+    '30': { handled: 0, reopened: 0 },
+  });
+  const sb = getSupabaseServiceClient();
+  if (!sb) return fresh();
+  const windowDays: Record<WindowKey, number | null> = { all: null, '90': 90, '30': 30 };
+  const distinct = async (action: 'handled' | 'reopened', sinceIso: string | null): Promise<number> => {
+    let q = sb.from('dashboard_activity').select('inbox_item_id').eq('action', action).not('inbox_item_id', 'is', null);
+    if (sinceIso) q = q.gte('created_at', sinceIso);
+    const { data } = await q.limit(5000);
+    return new Set((data ?? []).map((r) => (r as { inbox_item_id: string }).inbox_item_id)).size;
+  };
+  const out = fresh();
+  for (const k of ['all', '90', '30'] as WindowKey[]) {
+    const days = windowDays[k];
+    const sinceIso = days == null ? null : new Date(now.getTime() - days * 86_400_000).toISOString();
+    out[k] = { handled: await distinct('handled', sinceIso), reopened: await distinct('reopened', sinceIso) };
+  }
+  return out;
 }
 
 // ─── Identity merge (Phase 1.5) ─────────────────────────────────────────────
