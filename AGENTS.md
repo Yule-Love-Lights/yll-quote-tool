@@ -37,6 +37,20 @@ Staleness guards (the graph is a point-in-time snapshot and drifts):
 - Treat it as a **map for orientation, not ground truth** — verify any file / function / line it cites against the live code before acting on it.
 - If it seems unaware of recent work, fall back to grep/read.
 
+# Token-efficiency defaults
+
+Default habits to keep sessions cheap (S16 task #94):
+
+- **graphify-first** for architecture / cross-cutting questions ("how does X flow", "what touches Y"); grep/read for targeted one-function/one-line lookups.
+- **Read code surgically** — line-ranges / `Grep`, not whole 1800–4000-line files into context.
+- **On long sessions, delegate broad searches** to compressed subagents (`cavecrew` / `Explore`) so tool-results stay small.
+- **Batch independent tool calls** in one message.
+- **Don't re-read** a file the harness already tracks as edited.
+- **Keep continuity docs lean — archive on cadence, don't wait to be asked.** Tight ledger Notes; completed tasks → `task_ledger_archive.md`; session logs keep only the latest ~3 (older → `session_log_archive.md`); `project_quote_tool` history in its archive. **This happens automatically at every session close (a `/wrap` step), and a fresh session self-checks at start and archives if they've grown** — so the docs never balloon between manual cleanups and the dev never has to remember to ask.
+- **The `caveman` skill compresses OUTPUT** — per-machine opt-in via a SessionStart hook.
+
+**Skills placement.** Repo-shared skills live in `.claude/skills/` (git-synced to both devs); per-machine / global skills in `~/.claude/skills/`. Choose **repo** for team skills, **global** for personal. Don't keep the same skill in both (drift) — the **`llm-council` canonical copy is the repo one**.
+
 # Multi-dev collaboration (Jason + Naldo)
 
 Two devs work in this repo on **different machines**. **Naldo owns the dashboard** (the `/` homepage, task #58); **Jason owns everything else** (portal, quote builder, pricing engine, design editor, training, settings). Both **PR into `master` — never commit to `master` directly** — and run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) green before committing. New-machine setup → `docs/context/ONBOARDING_NALDO.md`.
