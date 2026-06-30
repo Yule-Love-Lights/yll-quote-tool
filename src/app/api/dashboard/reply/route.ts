@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { isUuid } from '@/lib/dashboard/inbox/validate';
-import { getItemForReply, markItemHandledLocal, recordWriteback } from '@/lib/dashboard/inbox/store';
+import { getItemForReply, markItemFollowed, markItemHandledLocal, recordWriteback } from '@/lib/dashboard/inbox/store';
 import { resolveReplyTarget } from '@/lib/dashboard/inbox/reply';
 import { sendSms, sendEmail } from '@/lib/integrations/highlevel';
 import { runHandledWriteback } from '@/lib/dashboard/inbox/sync';
@@ -74,6 +74,10 @@ export async function POST(req: NextRequest) {
     const sync = await runHandledWriteback(local.target, operator.email ?? operator.id);
     await recordWriteback(itemId, sync);
   }
+
+  // Sent in-tool → snooze as "Followed" (awaiting their reply). Best-effort: a
+  // failure here must not unsend or fail the request.
+  await markItemFollowed(itemId, operator.id, new Date());
 
   return NextResponse.json({ ok: true });
 }
