@@ -1948,8 +1948,8 @@ export default function QuoteBuilder({
                       {!addMode && activeSantasLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                         <div
                           key={`sh-${li}-${pi}`}
-                          className="absolute w-4 h-4 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          className="absolute w-5 h-5 rounded-full bg-red-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                          style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)` }}
                           onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'santas', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('santas', li, pi)}
                           title="Drag to move • Double-click to delete"
@@ -1958,8 +1958,8 @@ export default function QuoteBuilder({
                       {!addMode && activeGingerbreadLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                         <div
                           key={`gh-${li}-${pi}`}
-                          className="absolute w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          className="absolute w-5 h-5 rounded-full bg-blue-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                          style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)` }}
                           onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'gingerbread', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('gingerbread', li, pi)}
                           title="Drag to move • Double-click to delete"
@@ -1968,8 +1968,8 @@ export default function QuoteBuilder({
                       {!addMode && activeC9Lines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                         <div
                           key={`c9h-${li}-${pi}`}
-                          className="absolute w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          className="absolute w-5 h-5 rounded-full bg-emerald-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                          style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)` }}
                           onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'c9', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('c9', li, pi)}
                           title="Drag to move • Double-click to delete"
@@ -1978,8 +1978,8 @@ export default function QuoteBuilder({
                       {!addMode && activeStakeLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
                         <div
                           key={`stakeh-${li}-${pi}`}
-                          className="absolute w-4 h-4 rounded-full bg-purple-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform"
-                          style={{ left: `calc(${x * 100}% - 8px)`, top: `calc(${y * 100}% - 8px)` }}
+                          className="absolute w-5 h-5 rounded-full bg-purple-500 border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                          style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)` }}
                           onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'stake', lineIdx: li, ptIdx: pi }); }}
                           onDoubleClick={() => deletePoint('stake', li, pi)}
                           title="Drag to move • Double-click to delete"
