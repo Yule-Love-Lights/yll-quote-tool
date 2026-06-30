@@ -36,6 +36,7 @@ export type ExistingItem = {
   contactId: string | null;
   status: InboxStatus;
   notifiedLevels: number[];
+  lastMessageAt: Date | null;
 };
 
 export type ContactOp =
@@ -89,7 +90,7 @@ export function planIngest(input: {
   const { candidates, existing, touch, now } = input;
 
   const decision = decideInboxState({
-    existing: existing ? { status: existing.status, notifiedLevels: existing.notifiedLevels } : null,
+    existing: existing ? { status: existing.status, notifiedLevels: existing.notifiedLevels, lastMessageAt: existing.lastMessageAt } : null,
     touch,
     now,
   });
@@ -187,7 +188,7 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
   if (!sb) return null;
   const { data } = await sb
     .from('inbox_items')
-    .select('id, contact_id, status, notified_levels')
+    .select('id, contact_id, status, notified_levels, last_message_at')
     .eq('source', source)
     .eq('external_id', externalId)
     .maybeSingle();
@@ -198,6 +199,7 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     contactId: (row.contact_id as string | null) ?? null,
     status: row.status as InboxStatus,
     notifiedLevels: (row.notified_levels as number[] | null) ?? [],
+    lastMessageAt: row.last_message_at ? new Date(row.last_message_at as string) : null,
   };
 }
 

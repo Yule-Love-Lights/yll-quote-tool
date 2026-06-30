@@ -64,7 +64,7 @@ describe('planIngest — new conversation, no existing item', () => {
 
 describe('planIngest — existing item keeps its contact link', () => {
   it('keeps the linked contact and reopens a handled item on new inbound', () => {
-    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'handled', notifiedLevels: [1, 2] };
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'handled', notifiedLevels: [1, 2], lastMessageAt: null };
     const plan = planIngest({ candidates: [], existing, touch: touch(), now: at(10 * 60_000) });
     expect(plan.contactOp.kind).toBe('keep');
     if (plan.contactOp.kind === 'keep') expect(plan.contactOp.contactId).toBe('A');
@@ -74,7 +74,7 @@ describe('planIngest — existing item keeps its contact link', () => {
   });
 
   it('auto-resolves on an outbound touch', () => {
-    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [1] };
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [1], lastMessageAt: null };
     const plan = planIngest({ candidates: [], existing, touch: touch({ direction: 'outbound' }), now: at(6 * HOUR) });
     expect(plan.item.status).toBe('handled');
     expect(plan.autoResolved).toBe(true);
