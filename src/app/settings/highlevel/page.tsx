@@ -11,7 +11,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { isHighLevelConfigured, listPipelines } from '@/lib/integrations/highlevel';
-import { parsePipelines, type Pipeline } from '@/lib/integrations/highlevelPipelines';
+import { parsePipelines, guessAssignments, type Pipeline } from '@/lib/integrations/highlevelPipelines';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +41,8 @@ export default async function HighLevelSettingsPage() {
       loadError = err instanceof Error ? err.message : 'Failed to load pipelines from HighLevel';
     }
   }
+  // Best-guess mapping for each env var (suggestion only — confirm below).
+  const guesses = guessAssignments(pipelines);
 
   return (
     <OperatorShell active="settings">
@@ -70,15 +72,25 @@ export default async function HighLevelSettingsPage() {
             {ENV_VARS.map(({ name, desc }) => {
               const value = process.env[name];
               const set = !!value;
+              const guess = guesses[name];
+              // For the pipeline var the guess label is the pipeline name; for a
+              // stage var it's the stage name.
+              const guessLabel = name === 'HIGHLEVEL_PIPELINE_ID' ? guess?.pipelineName : guess?.stageName;
               return (
                 <div
                   key={name}
                   className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm"
                   style={{ borderColor: 'var(--op-border)' }}
                 >
-                  <div>
+                  <div className="min-w-0">
                     <code className="text-xs font-semibold text-gray-800">{name}</code>
                     <p className="text-xs text-gray-500 mt-0.5">{desc}</p>
+                    {guess?.value && (
+                      <p className="text-[11px] text-gray-600 mt-1">
+                        Best guess: <span className="font-medium">{guessLabel}</span>{' '}
+                        <code className="font-mono text-gray-500 break-all">{guess.value}</code>
+                      </p>
+                    )}
                   </div>
                   <div className="text-right shrink-0">
                     {set ? (
