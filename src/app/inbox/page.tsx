@@ -1,13 +1,13 @@
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
-import { listDueFollowUps, listInWorks, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import { getReopenCounts, listDueFollowUps, listInWorks, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
-import { computeResponseMetrics } from '@/lib/dashboard/inbox/responseMetrics';
+import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
-import { ResponseStats } from '@/components/dashboard/inbox/ResponseStats';
+import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
 // client list then revalidates every ~25s.
@@ -15,13 +15,14 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator, inWorksRes, days] = await Promise.all([
+  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen] = await Promise.all([
     listOpenItems(),
     listDueFollowUps(now),
     listItemsForMetrics(),
     getOperator(),
     listInWorks(),
     getFollowUpDays(),
+    getReopenCounts(now),
   ]);
 
   return (
@@ -71,7 +72,7 @@ export default async function InboxPage() {
         )}
 
         {metricsRes.ok && (
-          <ResponseStats metrics={computeResponseMetrics(metricsRes.items, now)} truncated={metricsRes.truncated} />
+          <ResponseAnalytics data={computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated)} />
         )}
       </div>
     </OperatorShell>
