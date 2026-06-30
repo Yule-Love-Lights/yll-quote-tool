@@ -1,4 +1,5 @@
 import { OperatorShell } from '@/components/OperatorShell';
+import { FollowUpDaysSetting } from './FollowUpDaysSetting';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,10 @@ export default function InboxSettingsPage() {
           Escalation timing and noise-filter controls will live here. Escalation is currently amber after 1h,
           red after 4h, with an end-of-day digest (America/New_York).
         </p>
+
+        <div className="mt-6 border rounded-lg p-4" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}>
+          <FollowUpDaysSetting />
+        </div>
       </div>
     </OperatorShell>
   );
