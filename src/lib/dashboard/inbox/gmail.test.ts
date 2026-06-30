@@ -181,3 +181,40 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
     expect(normalizeGmailThread(mapped).leadKind).toBe('lead');
   });
 });
+
+describe('normalizeGmailThread — sender-suppression set (layer 3)', () => {
+  it('classifies a suppressed sender as automated regardless of content', () => {
+    const t = normalizeGmailThread(
+      thread({ from: { email: 'spam@vendor.com', name: 'Vendor' } }),
+      new Set(['spam@vendor.com']),
+    );
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('is case-insensitive when matching the suppressed email', () => {
+    const t = normalizeGmailThread(
+      thread({ from: { email: 'Spam@Vendor.com', name: 'Vendor' } }),
+      new Set(['spam@vendor.com']),
+    );
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('classifies as lead when the sender is NOT in the suppressed set', () => {
+    const t = normalizeGmailThread(
+      thread({ from: { email: 'legit@customer.com', name: 'Legit Customer' } }),
+      new Set(['spam@vendor.com']),
+    );
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('classifies normally (by content) when suppressed set is undefined', () => {
+    // no suppressed arg — should fall through to classifyMessage
+    const t = normalizeGmailThread(thread({ from: { email: 'spam@vendor.com', name: 'Vendor' } }));
+    expect(t.leadKind).toBe('lead'); // no automated signals in the default thread fixture
+  });
+
+  it('classifies normally when suppressed set is empty', () => {
+    const t = normalizeGmailThread(thread({ from: { email: 'spam@vendor.com', name: 'Vendor' } }), new Set());
+    expect(t.leadKind).toBe('lead');
+  });
+});
