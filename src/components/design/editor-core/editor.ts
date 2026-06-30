@@ -18,6 +18,7 @@ import { createPole } from "./pole";
 import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
+import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -121,7 +122,7 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -1127,78 +1128,48 @@ export async function renderEditor(
     redrawScene();
   }
 
-  // Find every strand of the active bulb type whose path intersects (or has any
-  // point inside) the rectangle, and add them to the selection.
+  // #99: marquee select on TOUCH — select any item (of the active tool category)
+  // whose RENDERED bounds overlap the marquee, rather than only items fully
+  // enclosed or whose center is inside. Uses each item's Konva bounding box in
+  // layer coordinates (the same space the marquee rect is built in).
   function selectMatchingInRect(x1: number, y1: number, x2: number, y2: number) {
     selectedYardstickId = null;
+    // Build id → rendered node once. Items are direct children of drawLayer, each
+    // tagged with an "itemId" attr (see redrawScene); the marquee preview + other
+    // chrome have no itemId so they're skipped.
+    const nodeById = new Map<string, Konva.Node>();
+    for (const n of drawLayer.getChildren()) {
+      const id = n.getAttr("itemId");
+      if (typeof id === "string") nodeById.set(id, n);
+    }
+    // AABB overlap of the item's rendered bounds with the marquee (touch counts).
+    const touches = (id: string): boolean => {
+      const node = nodeById.get(id);
+      if (!node) return false;
+      const r = node.getClientRect({ relativeTo: drawLayer });
+      return r.x <= x2 && r.x + r.width >= x1 && r.y <= y2 && r.y + r.height >= y1;
+    };
     let matchIds: string[];
     if (tool.category === "decor" && tool.decorType === "wreath") {
-      // In decor → wreath mode, marquee picks wreaths whose center is inside the box.
-      matchIds = allWreaths()
-        .filter((w) => w.x >= x1 && w.x <= x2 && w.y >= y1 && w.y <= y2)
-        .map((w) => w.id);
+      matchIds = allWreaths().filter((w) => touches(w.id)).map((w) => w.id);
     } else if (tool.category === "decor" && tool.decorType === "bow") {
-      matchIds = allBows()
-        .filter((b) => b.x >= x1 && b.x <= x2 && b.y >= y1 && b.y <= y2)
-        .map((b) => b.id);
+      matchIds = allBows().filter((b) => touches(b.id)).map((b) => b.id);
     } else if (tool.category === "decor" && tool.decorType === "spritzer") {
-      matchIds = allSpritzers()
-        .filter((s) => s.x >= x1 && s.x <= x2 && s.y >= y1 && s.y <= y2)
-        .map((s) => s.id);
+      matchIds = allSpritzers().filter((s) => touches(s.id)).map((s) => s.id);
     } else if (tool.category === "text") {
-      matchIds = allTexts()
-        .filter((t) => t.x >= x1 && t.x <= x2 && t.y >= y1 && t.y <= y2)
-        .map((t) => t.id);
+      matchIds = allTexts().filter((t) => touches(t.id)).map((t) => t.id);
     } else if (tool.category === "custom") {
-      matchIds = allCustoms()
-        .filter((c) => c.x >= x1 && c.x <= x2 && c.y >= y1 && c.y <= y2)
-        .map((c) => c.id);
+      matchIds = allCustoms().filter((c) => touches(c.id)).map((c) => c.id);
     } else if (tool.category === "poles") {
-      matchIds = allPoles()
-        .filter((p) => p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2)
-        .map((p) => p.id);
+      matchIds = allPoles().filter((p) => touches(p.id)).map((p) => p.id);
     } else if (tool.category === "decor" && tool.decorType === "garland") {
-      // Decor → Garland: pick garlands that have any polyline point in the box.
-      matchIds = allGarlands()
-        .filter((g) => {
-          for (let i = 0; i < g.points.length; i += 2) {
-            const px = g.points[i];
-            const py = g.points[i + 1];
-            if (px >= x1 && px <= x2 && py >= y1 && py <= y2) return true;
-          }
-          return false;
-        })
-        .map((g) => g.id);
+      matchIds = allGarlands().filter((g) => touches(g.id)).map((g) => g.id);
     } else if (tool.category === "lights" && tool.scattershot) {
-      // Scattershot mode: pick mini-light areas whose bounds overlap the box.
-      matchIds = allMiniAreas()
-        .filter((a) => {
-          let ax1: number, ay1: number, ax2: number, ay2: number;
-          if (a.shape === "polygon" && a.points && a.points.length >= 6) {
-            ax1 = Infinity; ay1 = Infinity; ax2 = -Infinity; ay2 = -Infinity;
-            for (let i = 0; i + 1 < a.points.length; i += 2) {
-              ax1 = Math.min(ax1, a.points[i]); ax2 = Math.max(ax2, a.points[i]);
-              ay1 = Math.min(ay1, a.points[i + 1]); ay2 = Math.max(ay2, a.points[i + 1]);
-            }
-          } else {
-            ax1 = a.x ?? 0; ay1 = a.y ?? 0;
-            ax2 = ax1 + (a.width ?? 0); ay2 = ay1 + (a.height ?? 0);
-          }
-          return ax1 <= x2 && ax2 >= x1 && ay1 <= y2 && ay2 >= y1;
-        })
-        .map((a) => a.id);
+      matchIds = allMiniAreas().filter((a) => touches(a.id)).map((a) => a.id);
     } else {
-      // Default: strand items whose bulbType matches AND have any point in the box.
+      // Strand items of the active bulb type whose rendered bounds touch the box.
       matchIds = allStrands()
-        .filter((s) => {
-          if (s.bulbType !== tool.bulbType) return false;
-          for (let i = 0; i < s.points.length; i += 2) {
-            const px = s.points[i];
-            const py = s.points[i + 1];
-            if (px >= x1 && px <= x2 && py >= y1 && py <= y2) return true;
-          }
-          return false;
-        })
+        .filter((s) => s.bulbType === tool.bulbType && touches(s.id))
         .map((s) => s.id);
     }
     selectedIds = new Set(matchIds);
@@ -4794,46 +4765,65 @@ export async function renderEditor(
     const tag = (document.activeElement as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-    // Undo / redo — Ctrl+Z (or Cmd+Z) and Ctrl+Shift+Z (or Cmd+Shift+Z) / Ctrl+Y.
-    const meta = e.ctrlKey || e.metaKey;
-    if (meta && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
+    // Enter while tracing commits the polyline — a fixed contextual behavior,
+    // NOT remappable. Everything else dispatches through the configurable keymap
+    // (#98): pass no override and DEFAULT_KEYMAP reproduces the original
+    // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Delete / Esc set.
+    if (e.key === "Enter" && tool.drawingStyle === "trace" && tracePts) {
+      finishTrace();
       return;
     }
-    if (meta && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      redo();
-      return;
-    }
-    if (meta && e.key.toLowerCase() === "c") {
-      if (selectedIds.size === 0) return; // let the browser handle (e.g. nothing to copy)
-      copySelectedToClipboard();
-      e.preventDefault();
-      return;
-    }
-    if (meta && e.key.toLowerCase() === "v") {
-      if (clipboard.length === 0) return;
-      pasteFromClipboard();
-      e.preventDefault();
-      return;
-    }
-
-    if (e.key === "Escape" || e.key === "Enter") {
-      if (tool.drawingStyle === "trace" && tracePts) {
-        finishTrace();
-      } else if (e.key === "Escape") {
-        if (selectedIds.size > 0) {
+    const action = resolveAction(e, opts.keymap ?? DEFAULT_KEYMAP, "core");
+    if (!action) return;
+    switch (action) {
+      case "undo":
+        e.preventDefault();
+        undo();
+        break;
+      case "redo":
+        e.preventDefault();
+        redo();
+        break;
+      case "copy":
+        if (selectedIds.size === 0) return; // let the browser handle (e.g. nothing to copy)
+        copySelectedToClipboard();
+        e.preventDefault();
+        break;
+      case "paste":
+        if (clipboard.length === 0) return;
+        pasteFromClipboard();
+        e.preventDefault();
+        break;
+      case "duplicate": {
+        if (selectedIds.size === 0) return;
+        // Clone the selection in place without clobbering the user's clipboard.
+        const savedClipboard = clipboard;
+        copySelectedToClipboard();
+        pasteFromClipboard();
+        clipboard = savedClipboard;
+        e.preventDefault();
+        break;
+      }
+      case "delete":
+        if (selectedIds.size === 0) return;
+        deleteSelected();
+        e.preventDefault();
+        break;
+      case "cancel":
+        // Esc: finish an in-progress trace, else clear selection, else cancel.
+        // (No preventDefault — matches the original Esc behavior.)
+        if (tool.drawingStyle === "trace" && tracePts) {
+          finishTrace();
+        } else if (selectedIds.size > 0) {
           clearSelection();
         } else {
           cancelInProgress();
         }
-      }
-    }
-    if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.size > 0) {
-      deleteSelected();
-      e.preventDefault();
+        break;
+      case "toggleDrawSelect":
+        setToolMode(toolMode === "draw" ? "select" : "draw");
+        e.preventDefault();
+        break;
     }
   };
   window.addEventListener("keydown", keyHandler);
