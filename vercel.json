@@ -7,6 +7,22 @@
     {
       "path": "/api/inventory/purchase-order/auto-send",
       "schedule": "0 13 */3 * *"
+    },
+    {
+      "path": "/api/dashboard/ghl/reconcile",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/dashboard/quotetool/reconcile",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/dashboard/gmail/poll",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/dashboard/escalate",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
