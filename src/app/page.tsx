@@ -13,16 +13,22 @@ import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { WorkflowBoard } from '@/components/dashboard/WorkflowBoard';
 import { Worklist } from '@/components/dashboard/Worklist';
 import { ServiceSections } from '@/components/dashboard/ServiceSections';
+import { listItemsForMetrics, getReopenCounts } from '@/lib/dashboard/inbox/store';
+import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 
 // Always render fresh — the dashboard reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const [quotes, jobs] = await Promise.all([
+  const now = new Date();
+  const [quotes, jobs, metricsRes, reopen] = await Promise.all([
     listQuotesForDashboard(500),
     listJobsForWorkflowBoard(),
+    listItemsForMetrics(),
+    getReopenCounts(now),
   ]);
-  const now = new Date();
+  const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
   const workflowBoard = computeWorkflowBoard(quotes, jobs);
@@ -38,6 +44,7 @@ export default async function DashboardPage() {
         <WorkflowBoard board={workflowBoard} />
         <Worklist items={worklist} />
         <ServiceSections holiday={holiday} permanent={permanent} event={event} />
+        {analytics && <ResponseAnalytics data={analytics} />}
       </div>
     </OperatorShell>
   );
