@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: Wrap up the current work session — run the gates, update the continuity memory (without changing the session number), open a close/docs PR off fresh master, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
+description: Wrap up the current work session — run the gates, update the continuity memory (without changing the session number), append a session self-assessment, open a close/docs PR off fresh master, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
 license: MIT
 ---
 
@@ -37,7 +37,15 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
      decisions (so they aren't re-litigated), and any cross-dev heads-up (shared-file
      or other-area touches the other owner should know about).
 
-3. **Commit + open a PR off FRESH master** (PR-not-master applies to docs too).
+3. **Append the session self-assessment** (the running scorecard — earlier `/wrap` runs
+   skipped this). Add a newest-on-top entry to the **local** memory file
+   `~/.claude/projects/<project>/memory/feedback_self_assessment.md`. It is **local-only**
+   — NOT mirrored to `docs/context`, so it does NOT go in the docs PR (just write the
+   file). Match the file's format: **What I did** · **❌ Mistakes** (each with the lesson)
+   · **✅ Did right** · **🎯 Habits to apply**. Be honest + specific — real corrections,
+   not platitudes. The session log captures *what* shipped; this captures *how I worked*.
+
+4. **Commit + open a PR off FRESH master** (PR-not-master applies to docs too).
    - `git fetch`, branch your sync off the latest `origin/master` so the PR is only
      your delta (git auto-merges non-overlapping edits; hand-resolve only a literal
      same-line clash).
@@ -47,7 +55,7 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
      auto-merge — `master` → prod. On the dev's go: re-verify master is current
      ("always merge current"), bring the branch up to date + re-gate, then merge.
 
-4. **Hand off.** Output a **ready-to-paste prompt for the next session**: the session
+5. **Hand off.** Output a **ready-to-paste prompt for the next session**: the session
    number to use, master's state, what's pending / next up, and any "do first" items
    (e.g. reseed local memory if master moved a lot, refresh the graph). Mirror the
    start-protocol shape the dev uses to begin a session.
