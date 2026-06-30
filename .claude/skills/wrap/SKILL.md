@@ -26,6 +26,13 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    - Update the unified docs as needed: `task_ledger.md` (mark shipped tasks ✅ + the
      Shipped session) and `project_quote_tool.md` (current state / next up). Read the
      giant ledger rows **surgically** (narrow ranges / `grep -o`).
+   - **Keep the continuity docs lean — archive on cadence (runs EVERY close, so the dev
+     never has to ask).** Move newly-✅ ledger rows `task_ledger.md` → `task_ledger_archive.md`;
+     if your session log now holds > 3 sessions, move the oldest beyond the latest 3 →
+     `session_log_archive.md` (your OWN log only); trim the CLAUDE.md self-review journal to
+     the cumulative scorecard + latest ~2 sessions. Move content **byte-verbatim** (the
+     archives are the full record). Then reseed local memory from `docs/context` so the next
+     session boots lean.
    - Capture: what shipped, the ending state (master SHA + gate counts), confirmed
      decisions (so they aren't re-litigated), and any cross-dev heads-up (shared-file
      or other-area touches the other owner should know about).
