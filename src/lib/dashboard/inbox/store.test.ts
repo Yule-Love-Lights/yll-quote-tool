@@ -321,6 +321,26 @@ describe('planIngest — clearFollowedUp', () => {
     const plan = planIngest({ candidates: [], existing, touch: touch(), now: at(HOUR) });
     expect(plan.clearFollowedUp).toBe(true);
   });
+
+  it('sets clearFollowedUp=false on our OWN newer OUTBOUND reply (a sent reply must NOT wipe the snooze)', () => {
+    const existing: ExistingItem = {
+      id: 'i1',
+      contactId: 'A',
+      status: 'handled', // a sent reply marked it handled + followed
+      notifiedLevels: [],
+      lastMessageAt: T, // the customer's inbound
+    };
+    // the reconcile cron re-ingests our outbound reply, newer than the inbound —
+    // direction-agnostic clearing would null followed_up_at and the item would
+    // vanish from BOTH lists. The inbound gate keeps it snoozed.
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ direction: 'outbound', lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.clearFollowedUp).toBe(false);
+  });
 });
 
 // ─── listEscalatableItems — escalation skips automated noise ─────────────────

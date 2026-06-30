@@ -45,7 +45,11 @@ export async function POST(req: NextRequest) {
   if (item.source === 'ghl') {
     try {
       const { messages } = await getConversationMessages(item.externalId);
-      recentMessages = messages
+      // GHL returns messages newest-first; sort oldest→newest so the prompt's
+      // "Recent conversation (oldest first)" holds and slice(-8) keeps the
+      // LATEST eight (the customer's most recent message ends the thread).
+      recentMessages = [...messages]
+        .sort((a, b) => (a.dateAdded ?? '').localeCompare(b.dateAdded ?? ''))
         .slice(-8)
         .map((m) => ({
           fromCustomer: m.direction !== 'outbound',

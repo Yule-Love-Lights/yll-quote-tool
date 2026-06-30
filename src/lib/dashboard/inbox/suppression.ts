@@ -17,7 +17,10 @@ export function normalizeSuppressionValues(values: (string | null | undefined)[]
     if (!s) continue;
     const email = s.includes('@') ? normalizeEmail(s) : null;
     const phone = !email ? normalizePhone(s) : null;
-    const norm = email ?? phone ?? s.toLowerCase();
+    // Only suppress on a value that normalizes to a real email or phone — a
+    // malformed identifier would never match a future sender and would just
+    // grow the stored list as garbage.
+    const norm = email ?? phone;
     if (norm) out.add(norm);
   }
   return [...out];

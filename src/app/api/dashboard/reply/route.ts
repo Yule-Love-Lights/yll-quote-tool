@@ -54,10 +54,16 @@ export async function POST(req: NextRequest) {
         fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
       });
     } else {
+      const html = text
+        .trim()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>');
       await sendEmail({
         contactId: target.contactId,
         subject: 'Re: your Yule Love Lights inquiry',
-        html: text.trim().replace(/\n/g, '<br>'),
+        html,
         emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
       });
     }

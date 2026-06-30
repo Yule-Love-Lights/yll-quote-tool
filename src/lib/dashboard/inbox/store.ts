@@ -25,6 +25,7 @@ import type {
 import { normalizeEmail, normalizePhone } from './normalize';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
+import { isAnsweredByDirection } from './escalation';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem } from './responseMetrics';
 import { addSuppressedSenders } from './suppression';
@@ -112,11 +113,16 @@ export function planIngest(input: {
     }
   }
 
-  // Clear the followed/snooze flag only when a genuinely-newer message arrives
-  // (so a reconcile re-ingesting the SAME message preserves the snooze). null
-  // existing timestamp → treat as newer (mirrors the handled-reopen guard).
+  // Clear the followed/snooze flag only when a genuinely-newer INBOUND message
+  // arrives (so a reconcile re-ingesting the SAME message preserves the snooze,
+  // and — critically — our OWN outbound reply, which is newer than the customer's
+  // inbound, does NOT wipe the snooze: a sent reply leaves the item 'handled' +
+  // followed, awaiting their next inbound). null existing timestamp → treat as
+  // newer (mirrors the handled-reopen guard).
   const clearFollowedUp =
-    !!existing && (existing.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime());
+    !!existing &&
+    !isAnsweredByDirection(touch.direction) &&
+    (existing.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime());
 
   // notified_levels is owned by the escalate cron. Ingest only PRESERVES it
   // (and resets it on reopen) — it must never advance a level, or the cron would
