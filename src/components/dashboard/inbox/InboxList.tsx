@@ -37,6 +37,12 @@ export function InboxList({
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
+  const [composerFor, setComposerFor] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState('');
+  const [draftBusy, setDraftBusy] = useState<string | null>(null);
+  const [sendBusy, setSendBusy] = useState<string | null>(null);
+  const [replyChannel, setReplyChannel] = useState<'sms' | 'email'>('email');
+  const [composerError, setComposerError] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
   // from an interval callback, so render stays pure and "waiting Xm" stays live.
   const [now, setNow] = useState<number>(nowMs);
@@ -263,8 +269,133 @@ export function InboxList({
                 >
                   Not a lead
                 </button>
+                <button
+                  type="button"
+                  disabled={busyId === item.id}
+                  onClick={() => act(item.id, '/api/dashboard/followed')}
+                  title="I followed up — snooze until they reply"
+                  className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
+                >
+                  Followed
+                </button>
+                {item.source === 'gmail' ? (
+                  <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
+                    Reply in Gmail
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setComposerFor(composerFor === item.id ? null : item.id);
+                      setDraftText('');
+                      setComposerError(null);
+                    }}
+                    className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                    style={{ border: '1px solid var(--op-border)', color: 'var(--op-text)' }}
+                  >
+                    {composerFor === item.id ? 'Cancel' : 'Reply'}
+                  </button>
+                )}
               </div>
             </div>
+            {composerFor === item.id && (
+              <div className="mt-3 space-y-2">
+                {item.source === 'quotetool' && (
+                  <div className="flex gap-2">
+                    {(['email', 'sms'] as const).map((ch) => (
+                      <button
+                        key={ch}
+                        type="button"
+                        onClick={() => setReplyChannel(ch)}
+                        className="px-3 py-1 rounded-md text-xs"
+                        style={{
+                          border: ch === replyChannel ? '2px solid var(--brand-evergreen)' : '1px solid var(--op-border)',
+                          color: 'var(--op-text)',
+                        }}
+                      >
+                        {ch === 'email' ? 'Email' : 'SMS'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={draftBusy === item.id}
+                  onClick={async () => {
+                    setDraftBusy(item.id);
+                    setComposerError(null);
+                    try {
+                      const res = await fetch('/api/dashboard/draft', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ itemId: item.id }),
+                      });
+                      const data = (await res.json()) as { ok?: boolean; draft?: string; error?: string };
+                      if (data.ok && data.draft) {
+                        setDraftText(data.draft);
+                      } else {
+                        setComposerError(data.error ?? 'Failed to generate draft.');
+                      }
+                    } catch {
+                      setComposerError('Network error generating draft.');
+                    } finally {
+                      setDraftBusy(null);
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text)' }}
+                >
+                  {draftBusy === item.id ? 'Drafting…' : 'AI draft'}
+                </button>
+                <textarea
+                  value={draftText}
+                  onChange={(e) => setDraftText(e.target.value)}
+                  rows={4}
+                  placeholder="Type your reply…"
+                  className="w-full rounded-md p-2 text-sm resize-y"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text)', background: 'var(--op-bg-raised)' }}
+                />
+                {composerError && (
+                  <p className="text-xs" style={{ color: '#dc2626' }}>{composerError}</p>
+                )}
+                <button
+                  type="button"
+                  disabled={!draftText.trim() || sendBusy === item.id}
+                  onClick={async () => {
+                    setSendBusy(item.id);
+                    setComposerError(null);
+                    try {
+                      const res = await fetch('/api/dashboard/reply', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({
+                          itemId: item.id,
+                          text: draftText,
+                          channel: item.source === 'quotetool' ? replyChannel : undefined,
+                        }),
+                      });
+                      const data = (await res.json()) as { ok?: boolean; error?: string };
+                      if (data.ok) {
+                        setComposerFor(null);
+                        setDraftText('');
+                        setItems((prev) => prev.filter((i) => i.id !== item.id));
+                      } else {
+                        setComposerError(data.error ?? 'Failed to send reply.');
+                      }
+                    } catch {
+                      setComposerError('Network error sending reply.');
+                    } finally {
+                      setSendBusy(null);
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
+                  style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+                >
+                  {sendBusy === item.id ? 'Sending…' : 'Send'}
+                </button>
+              </div>
+            )}
           </li>
         );
         })}

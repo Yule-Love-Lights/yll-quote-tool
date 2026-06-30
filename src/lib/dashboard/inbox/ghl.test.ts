@@ -86,3 +86,32 @@ describe('normalizeGhlConversation — maps a raw GHL conversation to a Normaliz
     expect(t.leadKind).toBe('lead');
   });
 });
+
+describe('normalizeGhlConversation — sender-suppression set (layer 3)', () => {
+  it('classifies as automated when the normalized email is in the suppressed set', () => {
+    // normalizeEmail('cristina@example.com') → 'cristina@example.com'
+    const t = normalizeGhlConversation(conversation(), new Set(['cristina@example.com']));
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('classifies as automated when the normalized phone is in the suppressed set', () => {
+    // normalizePhone('(631) 555-2223') → '+16315552223'
+    const t = normalizeGhlConversation(conversation(), new Set(['+16315552223']));
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('classifies as lead when neither email nor phone is in the suppressed set', () => {
+    const t = normalizeGhlConversation(conversation(), new Set(['other@example.com']));
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('classifies normally when suppressed set is undefined', () => {
+    const t = normalizeGhlConversation(conversation());
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('classifies normally when suppressed set is empty', () => {
+    const t = normalizeGhlConversation(conversation(), new Set());
+    expect(t.leadKind).toBe('lead');
+  });
+});

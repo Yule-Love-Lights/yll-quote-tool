@@ -25,8 +25,10 @@ import type {
 import { normalizeEmail, normalizePhone } from './normalize';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
+import { isAnsweredByDirection } from './escalation';
 import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem } from './responseMetrics';
+import { addSuppressedSenders } from './suppression';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -35,6 +37,7 @@ export type ExistingItem = {
   contactId: string | null;
   status: InboxStatus;
   notifiedLevels: number[];
+  lastMessageAt: Date | null;
 };
 
 export type ContactOp =
@@ -69,6 +72,7 @@ export type IngestPlan = {
   autoResolved: boolean;
   reopened: boolean;
   ambiguous: boolean;
+  clearFollowedUp: boolean;
 };
 
 /**
@@ -88,7 +92,7 @@ export function planIngest(input: {
   const { candidates, existing, touch, now } = input;
 
   const decision = decideInboxState({
-    existing: existing ? { status: existing.status, notifiedLevels: existing.notifiedLevels } : null,
+    existing: existing ? { status: existing.status, notifiedLevels: existing.notifiedLevels, lastMessageAt: existing.lastMessageAt } : null,
     touch,
     now,
   });
@@ -108,6 +112,17 @@ export function planIngest(input: {
       contactOp = { kind: 'insert', identity: touch.identity, ambiguous: false };
     }
   }
+
+  // Clear the followed/snooze flag only when a genuinely-newer INBOUND message
+  // arrives (so a reconcile re-ingesting the SAME message preserves the snooze,
+  // and — critically — our OWN outbound reply, which is newer than the customer's
+  // inbound, does NOT wipe the snooze: a sent reply leaves the item 'handled' +
+  // followed, awaiting their next inbound). null existing timestamp → treat as
+  // newer (mirrors the handled-reopen guard).
+  const clearFollowedUp =
+    !!existing &&
+    !isAnsweredByDirection(touch.direction) &&
+    (existing.lastMessageAt == null || touch.lastMessageAt.getTime() > existing.lastMessageAt.getTime());
 
   // notified_levels is owned by the escalate cron. Ingest only PRESERVES it
   // (and resets it on reopen) — it must never advance a level, or the cron would
@@ -138,6 +153,7 @@ export function planIngest(input: {
     autoResolved: decision.autoResolved,
     reopened: decision.reopened,
     ambiguous,
+    clearFollowedUp,
   };
 }
 
@@ -186,7 +202,7 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
   if (!sb) return null;
   const { data } = await sb
     .from('inbox_items')
-    .select('id, contact_id, status, notified_levels')
+    .select('id, contact_id, status, notified_levels, last_message_at')
     .eq('source', source)
     .eq('external_id', externalId)
     .maybeSingle();
@@ -197,6 +213,7 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     contactId: (row.contact_id as string | null) ?? null,
     status: row.status as InboxStatus,
     notifiedLevels: (row.notified_levels as number[] | null) ?? [],
+    lastMessageAt: row.last_message_at ? new Date(row.last_message_at as string) : null,
   };
 }
 
@@ -276,6 +293,10 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     itemUpsert.handled_by = null; // system auto-resolve
     itemUpsert.handled_at = now.toISOString();
   }
+  // Followed/snooze flag: clear it on a genuinely-newer message so the item
+  // returns to the open list. OMITTED otherwise → the upsert preserves the
+  // existing value (re-ingesting the same message keeps the snooze).
+  if (plan.clearFollowedUp) itemUpsert.followed_up_at = null;
   const { data: itemData, error: itemErr } = await sb
     .from('inbox_items')
     .upsert(itemUpsert, { onConflict: 'source,external_id' })
@@ -319,6 +340,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
         'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
     )
     .eq('status', 'unresponded')
+    .is('followed_up_at', null)
     .order('last_message_at', { ascending: true })
     .limit(limit);
   if (error) return { ok: false, error: error.message };
@@ -437,12 +459,31 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
 export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .select('dashboard_contacts ( primary_email, primary_phone )')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId });
+  const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
+  if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  return { ok: true };
+}
+
+/** Snooze an item: stamp followed_up_at (the reply route does this on send [A]; a
+ *  manual "I followed up" does it without sending [B]). Hides from the open list
+ *  until a newer message clears it. Service-role glue. */
+export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { error } = await sb
+    .from('inbox_items')
+    .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
+    .eq('id', itemId);
+  if (error) return { ok: false, error: error.message };
+  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId });
   return { ok: true };
 }
 
@@ -450,6 +491,42 @@ export async function recordWriteback(itemId: string, sync: unknown): Promise<vo
   const sb = getSupabaseServiceClient();
   if (!sb) return;
   await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+}
+
+export type FollowedItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  preview: string | null;
+  followedUpAt: string | null;
+  customerName: string | null;
+};
+export type FollowedItemsResult = { ok: true; items: FollowedItem[] } | { ok: false; error: string };
+
+export async function listFollowedItems(limit = 100): Promise<FollowedItemsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('id, source, channel, preview, followed_up_at, dashboard_contacts ( display_name )')
+    .not('followed_up_at', 'is', null)
+    .neq('status', 'dismissed')
+    .order('followed_up_at', { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  const items: FollowedItem[] = (data ?? []).map((r) => {
+    const row = r as unknown as Record<string, unknown>;
+    const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
+    return {
+      id: String(row.id),
+      source: row.source as InboxSource,
+      channel: (row.channel as string | null) ?? null,
+      preview: (row.preview as string | null) ?? null,
+      followedUpAt: (row.followed_up_at as string | null) ?? null,
+      customerName: (c?.display_name as string | null) ?? null,
+    };
+  });
+  return { ok: true, items };
 }
 
 // ─── Escalation support ─────────────────────────────────────────────────────
@@ -730,4 +807,44 @@ export async function mergeContactsById(
     .from('dashboard_activity')
     .insert({ actor: operatorId, action: 'merged', contact_id: primaryId, detail: { mergedFrom: secondaryId } });
   return { ok: true };
+}
+
+// ─── Send-target resolver ────────────────────────────────────────────────────
+
+export type ReplyItem = {
+  id: string;
+  source: InboxSource;
+  channel: string | null;
+  externalId: string;
+  ghlContactId: string | null;
+  customerName: string | null;
+  quoteTotal: number | null;
+};
+
+/**
+ * Resolve the send-target coordinates for a reply action: source, channel,
+ * external ID, GHL contact ID, customer name, and quote total. The GHL contact
+ * ID and customer name fall back to the raw payload if the contact row is absent.
+ */
+export async function getItemForReply(itemId: string): Promise<ReplyItem | null> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return null;
+  const { data } = await sb
+    .from('inbox_items')
+    .select('id, source, channel, external_id, quote_value, raw, dashboard_contacts ( ghl_contact_id, display_name )')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as unknown as Record<string, unknown>;
+  const c = (row.dashboard_contacts as { ghl_contact_id?: string | null; display_name?: string | null } | null) ?? null;
+  const raw = (row.raw as { highlevel_contact_id?: string | null; customer_name?: string | null } | null) ?? null;
+  return {
+    id: String(row.id),
+    source: row.source as InboxSource,
+    channel: (row.channel as string | null) ?? null,
+    externalId: String(row.external_id),
+    ghlContactId: (c?.ghl_contact_id ?? null) ?? (raw?.highlevel_contact_id ?? null),
+    customerName: (c?.display_name ?? null) ?? (raw?.customer_name ?? null),
+    quoteTotal: (row.quote_value as number | null) ?? null,
+  };
 }

@@ -64,7 +64,7 @@ describe('planIngest — new conversation, no existing item', () => {
 
 describe('planIngest — existing item keeps its contact link', () => {
   it('keeps the linked contact and reopens a handled item on new inbound', () => {
-    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'handled', notifiedLevels: [1, 2] };
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'handled', notifiedLevels: [1, 2], lastMessageAt: null };
     const plan = planIngest({ candidates: [], existing, touch: touch(), now: at(10 * 60_000) });
     expect(plan.contactOp.kind).toBe('keep');
     if (plan.contactOp.kind === 'keep') expect(plan.contactOp.contactId).toBe('A');
@@ -74,7 +74,7 @@ describe('planIngest — existing item keeps its contact link', () => {
   });
 
   it('auto-resolves on an outbound touch', () => {
-    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [1] };
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [1], lastMessageAt: null };
     const plan = planIngest({ candidates: [], existing, touch: touch({ direction: 'outbound' }), now: at(6 * HOUR) });
     expect(plan.item.status).toBe('handled');
     expect(plan.autoResolved).toBe(true);
@@ -145,12 +145,12 @@ vi.mock('@/lib/supabase', () => ({
 import { listOpenItems, listEscalatableItems } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
- *  All intermediate chaining methods (select, eq, order, limit, in) return `self`
- *  so callers can chain freely. The spy arrays let us assert on what was called. */
+ *  All intermediate chaining methods (select, eq, order, limit, in, or, is) return
+ *  `self` so callers can chain freely. The spy arrays let us assert on what was called. */
 function makeBuilder(result: { data: unknown; error: null | { message: string } }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or']) {
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -261,6 +261,85 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(item.leadKind).toBe('lead'); // null → default 'lead'
     expect(item.quoteValue).toBeNull();
     expect(item.isReturning).toBe(false); // no contact_id
+  });
+
+  it('filters out followed items via .is("followed_up_at", null)', async () => {
+    const { builder: mainBuilder, calls: mainCalls } = makeBuilder({ data: [], error: null });
+    sbRef.current = { from: (_table: string) => mainBuilder };
+
+    const result = await listOpenItems(50);
+    expect(result.ok).toBe(true);
+
+    const isCall = mainCalls.find((c) => c.method === 'is');
+    expect(isCall).toBeDefined();
+    expect(isCall!.args[0]).toBe('followed_up_at');
+    expect(isCall!.args[1]).toBeNull();
+  });
+});
+
+// ─── planIngest — clearFollowedUp ────────────────────────────────────────────
+
+describe('planIngest — clearFollowedUp', () => {
+  it('sets clearFollowedUp=true when touch.lastMessageAt is genuinely newer than existing.lastMessageAt', () => {
+    const existing: ExistingItem = {
+      id: 'i1',
+      contactId: 'A',
+      status: 'unresponded',
+      notifiedLevels: [],
+      lastMessageAt: T, // base time
+    };
+    // touch arrives 1 hour after the existing message
+    const plan = planIngest({ candidates: [], existing, touch: touch({ lastMessageAt: at(HOUR) }), now: at(2 * HOUR) });
+    expect(plan.clearFollowedUp).toBe(true);
+  });
+
+  it('sets clearFollowedUp=false when touch.lastMessageAt equals existing.lastMessageAt (same-message re-ingest, preserves snooze)', () => {
+    const existing: ExistingItem = {
+      id: 'i1',
+      contactId: 'A',
+      status: 'unresponded',
+      notifiedLevels: [],
+      lastMessageAt: T, // same timestamp as touch
+    };
+    const plan = planIngest({ candidates: [], existing, touch: touch({ lastMessageAt: T }), now: at(HOUR) });
+    expect(plan.clearFollowedUp).toBe(false);
+  });
+
+  it('sets clearFollowedUp=false when there is no existing item (new conversation)', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
+    expect(plan.clearFollowedUp).toBe(false);
+  });
+
+  it('sets clearFollowedUp=true when existing.lastMessageAt is null (mirrors handled-reopen guard)', () => {
+    const existing: ExistingItem = {
+      id: 'i1',
+      contactId: 'A',
+      status: 'handled',
+      notifiedLevels: [],
+      lastMessageAt: null, // null → treat touch as newer
+    };
+    const plan = planIngest({ candidates: [], existing, touch: touch(), now: at(HOUR) });
+    expect(plan.clearFollowedUp).toBe(true);
+  });
+
+  it('sets clearFollowedUp=false on our OWN newer OUTBOUND reply (a sent reply must NOT wipe the snooze)', () => {
+    const existing: ExistingItem = {
+      id: 'i1',
+      contactId: 'A',
+      status: 'handled', // a sent reply marked it handled + followed
+      notifiedLevels: [],
+      lastMessageAt: T, // the customer's inbound
+    };
+    // the reconcile cron re-ingests our outbound reply, newer than the inbound —
+    // direction-agnostic clearing would null followed_up_at and the item would
+    // vanish from BOTH lists. The inbound gate keeps it snoozed.
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ direction: 'outbound', lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.clearFollowedUp).toBe(false);
   });
 });
 

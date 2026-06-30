@@ -40,12 +40,15 @@ function previewOf(c: GhlConversation, channel: Channel | null, direction: Direc
   return null;
 }
 
-export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
+export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<string>): NormalizedTouch {
   const channel = channelOf(c.lastMessageType);
   const direction = directionOf(c.lastMessageDirection);
   const email = c.email ? normalizeEmail(c.email) : null;
   const phone = c.phone ? normalizePhone(c.phone) : null;
   const preview = previewOf(c, channel, direction);
+  const isSuppressed =
+    suppressed != null &&
+    ((email != null && suppressed.has(email)) || (phone != null && suppressed.has(phone)));
   return {
     source: 'ghl',
     externalId: c.id,
@@ -62,6 +65,6 @@ export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
       displayName: normalizeName(c.fullName ?? c.contactName ?? ''),
     },
     raw: c,
-    leadKind: classifyMessage({ fromAddress: null, subject: null, preview }),
+    leadKind: isSuppressed ? 'automated' : classifyMessage({ fromAddress: null, subject: null, preview }),
   };
 }
