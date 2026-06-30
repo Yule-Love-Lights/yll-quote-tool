@@ -7,6 +7,7 @@
 import type { HighLevelConversation } from '@/lib/integrations/types';
 import type { Channel, Direction, NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
+import { classifyMessage } from './classify';
 
 /** The raw GHL conversation shape this adapter consumes (from /conversations/search). */
 export type GhlConversation = HighLevelConversation;
@@ -44,6 +45,7 @@ export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
   const direction = directionOf(c.lastMessageDirection);
   const email = c.email ? normalizeEmail(c.email) : null;
   const phone = c.phone ? normalizePhone(c.phone) : null;
+  const preview = previewOf(c, channel, direction);
   return {
     source: 'ghl',
     externalId: c.id,
@@ -51,7 +53,7 @@ export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
     direction,
     channel,
     lastMessageAt: toDate(c.lastMessageDate ?? 0),
-    preview: previewOf(c, channel, direction),
+    preview,
     subject: null,
     identity: {
       ghlContactId: c.contactId ?? null,
@@ -60,5 +62,6 @@ export function normalizeGhlConversation(c: GhlConversation): NormalizedTouch {
       displayName: normalizeName(c.fullName ?? c.contactName ?? ''),
     },
     raw: c,
+    leadKind: classifyMessage({ fromAddress: null, subject: null, preview }),
   };
 }

@@ -1,9 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { claimState } from '@/lib/dashboard/inbox/assignment';
+import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
+import { InboxSummaryStrip } from './InboxSummaryStrip';
 
 const SOURCE_LABEL: Record<string, string> = {
   ghl: 'GHL',
@@ -37,6 +40,8 @@ export function InboxList({
   // `now` is seeded from the server render (stable across hydration) and ticked
   // from an interval callback, so render stays pure and "waiting Xm" stays live.
   const [now, setNow] = useState<number>(nowMs);
+  const [channel, setChannel] = useState<'all' | 'ghl' | 'gmail' | 'quotetool' | 'homeworks'>('all');
+  const [showFiltered, setShowFiltered] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -109,6 +114,11 @@ export function InboxList({
     [currentOperatorId, refresh],
   );
 
+  const summary = buildInboxSummary(items, now);
+  const visible = items
+    .filter((i) => showFiltered || i.leadKind !== 'automated')
+    .filter((i) => channel === 'all' || i.source === channel);
+
   if (items.length === 0) {
     return (
       <p className="text-sm" style={{ color: 'var(--op-text-2)' }}>
@@ -118,8 +128,31 @@ export function InboxList({
   }
 
   return (
-    <ul className="space-y-3">
-      {items.map((item) => {
+    <>
+      <InboxSummaryStrip summary={summary} />
+      <div className="flex items-center flex-wrap gap-2 mb-4">
+        {(['all', 'gmail', 'ghl', 'quotetool'] as const).map((c) => (
+          <button key={c} type="button" onClick={() => setChannel(c)}
+            className="px-3 py-1.5 rounded-md text-sm"
+            style={{ border: c === channel ? '2px solid var(--brand-evergreen)' : '1px solid var(--op-border)', color: 'var(--op-text)' }}>
+            {c === 'all' ? `All ${summary.openLeads}` : `${SOURCE_LABEL[c] ?? c} ${summary.byChannel[c] ?? 0}`}
+          </button>
+        ))}
+        <span className="flex-1" />
+        {summary.filtered > 0 && (
+          <button type="button" onClick={() => setShowFiltered((v) => !v)} className="text-sm underline" style={{ color: 'var(--op-text-2)' }}>
+            {showFiltered ? 'Hide filtered' : `Show ${summary.filtered} filtered`}
+          </button>
+        )}
+        <Link href="/inbox/settings" aria-label="Inbox settings" style={{ color: 'var(--op-text-2)' }}>⚙</Link>
+      </div>
+      {visible.length === 0 ? (
+        <p className="text-sm py-6 text-center" style={{ color: 'var(--op-text-2)' }}>
+          Nothing in this view — switch channel{summary.filtered > 0 ? ' or Show filtered' : ''}.
+        </p>
+      ) : (
+      <ul className="space-y-3">
+        {visible.map((item) => {
         const esc = escalation(item.escalationLevel);
         const waiting = item.lastMessageAt
           ? formatWaiting(now - new Date(item.lastMessageAt).getTime())
@@ -145,6 +178,15 @@ export function InboxList({
                   <span className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-2)' }}>
                     {SOURCE_LABEL[item.source] ?? item.source}
                   </span>
+                  {item.quoteValue ? (
+                    <span className="text-xs font-medium" style={{ color: 'var(--op-text)' }}>${Math.round(item.quoteValue).toLocaleString()}</span>
+                  ) : null}
+                  <span className="text-xs uppercase tracking-wide" style={{ color: item.isReturning ? 'var(--op-text-2)' : 'var(--brand-evergreen-3)' }}>
+                    {item.isReturning ? 'Returning' : 'New lead'}
+                  </span>
+                  {item.leadKind === 'automated' && (
+                    <span className="text-xs" style={{ color: 'var(--op-text-2)' }}>· filtered</span>
+                  )}
                 </div>
                 {item.subject && (
                   <p className="text-sm mt-1 truncate" style={{ color: 'var(--op-text)' }}>
@@ -225,7 +267,9 @@ export function InboxList({
             </div>
           </li>
         );
-      })}
-    </ul>
+        })}
+      </ul>
+      )}
+    </>
   );
 }

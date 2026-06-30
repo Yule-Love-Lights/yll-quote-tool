@@ -171,6 +171,11 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
     return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 0, error: 'Gmail not configured' };
   }
   const ourEmail = process.env.GMAIL_USER || 'me';
+  const ourDomain = ourEmail.includes('@') ? ourEmail.split('@')[1] : null;
+  const internalAddrs = [process.env.HIGHLEVEL_EMAIL_FROM]
+    .map((v) => (v && v.includes('<') ? v.match(/<([^>]+)>/)?.[1] : v))
+    .filter((v): v is string => !!v && v.includes('@'));
+  const identity = { ourEmail, ourDomain, internalAddrs };
   try {
     const token = await getAccessToken();
     const threads = await listInboxThreads(token, { maxResults: opts.maxResults ?? 25 });
@@ -188,7 +193,7 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
           skipped++;
           continue;
         }
-        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, ourEmail)), now);
+        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, identity)), now);
         if (!res.ok) {
           errors++;
           continue;

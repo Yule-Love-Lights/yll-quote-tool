@@ -71,4 +71,18 @@ describe('normalizeGhlConversation — maps a raw GHL conversation to a Normaliz
     const raw = conversation();
     expect(normalizeGhlConversation(raw).raw).toBe(raw);
   });
+
+  it('classifies automated when preview contains "Reply STOP to opt out"', () => {
+    const t = normalizeGhlConversation(
+      conversation({ lastMessageBody: 'Thanks for contacting us. Reply STOP to opt out of messages.' }),
+    );
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('classifies a normal conversation as a lead', () => {
+    const t = normalizeGhlConversation(
+      conversation({ lastMessageBody: 'How much does it cost to put up lights on my house?' }),
+    );
+    expect(t.leadKind).toBe('lead');
+  });
 });
