@@ -14,6 +14,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { projectScene } from '@/lib/design/projectScene';
 import { calculateQuote, type LineItem } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable, type UnfulfillableItem } from '@/lib/inventory/detectUnfulfillable';
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -26,6 +28,7 @@ type Props = {
 
 export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
   const [lines, setLines] = useState<LineItem[] | null>(null);
+  const [unfulfillable, setUnfulfillable] = useState<UnfulfillableItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,10 +36,20 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/designs/${designId}`);
+      // Load the design + offered-colors in parallel, but isolate the offered fetch
+      // so an inventory hiccup can never break this panel (it resolves to null, not
+      // a rejection that fails the whole batch).
+      const [res, offRaw] = await Promise.all([
+        fetch(`/api/designs/${designId}`),
+        fetch('/api/inventory/offered-colors').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Could not load the design');
       const scene: Scene = data?.design?.scene ?? { yardsticks: [], items: [] };
+      // Fail OPEN: only flag when the offered catalog is positively known (a missing/
+      // empty/failed offered set must not paint every valid item red).
+      const offered = offRaw as OfferedColorLists | null;
+      setUnfulfillable(offeredIsKnown(offered) ? detectUnfulfillable(scene.items, offeredFromLists(offered)) : []);
       const p = projectScene(scene);
       // Price ONLY the per-unit projection — zero roofline/fees — so the line
       // items here are exactly the design-driven part of the future quote.
@@ -74,7 +87,7 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
   const total = (lines ?? []).reduce((s, l) => s + l.amount, 0);
 
   return (
-    <div className="mt-3 border border-gray-200 rounded-md p-3 bg-gray-50">
+    <div id="from-your-design" className="mt-3 border border-gray-200 rounded-md p-3 bg-gray-50 scroll-mt-4">
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
           From your design{lines ? ` — ${lines.length} item${lines.length === 1 ? '' : 's'}` : ''}
@@ -89,6 +102,20 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
         </button>
       </div>
       {error && <p className="text-xs text-red-600">{error}</p>}
+      {unfulfillable.length > 0 && (
+        <div className="mb-2 rounded border border-red-300 bg-red-50 p-2">
+          <p className="text-[11px] font-semibold text-red-700 uppercase tracking-wide mb-1">
+            {`⚠️ ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — fix before sending`}
+          </p>
+          <ul className="space-y-0.5">
+            {unfulfillable.map((u) => (
+              <li key={u.sceneItemId} className="text-xs text-red-700">
+                {u.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {lines && lines.length === 0 && !error && (
         <p className="text-xs text-gray-400">
           No billable items drawn yet — minis, spritzers, wreaths, garland, and bows you place on the

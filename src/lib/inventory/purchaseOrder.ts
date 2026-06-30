@@ -14,6 +14,7 @@ import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
 import { listOnHand } from './onHand';
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
+import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
@@ -64,12 +65,20 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   // materials must NEVER reach the real supplier PO. is_test lives on the quote —
   // drop any active job whose quote is a test quote before aggregating demand.
   const allQuoteIds = [...new Set(active.map((j) => j.quote_id))];
-  const { data: testRows } = await db
+  const { data: quoteRows } = await db
     .from('quotes')
-    .select('id')
-    .eq('is_test', true)
+    .select('id, is_test, approval_snapshot')
     .in('id', allQuoteIds);
-  const testQuoteIds = new Set((testRows ?? []).map((r) => (r as { id: string }).id));
+  const testQuoteIds = new Set(
+    (quoteRows ?? []).filter((r) => (r as { is_test: boolean | null }).is_test).map((r) => (r as { id: string }).id),
+  );
+  // #92 — each active quote's approved color choice, for the pattern-aware projection.
+  const colorChoiceByQuote = new Map(
+    (quoteRows ?? []).map((r) => [
+      (r as { id: string }).id,
+      colorChoiceFromSnapshot((r as { approval_snapshot: unknown }).approval_snapshot),
+    ]),
+  );
   active = active.filter((j) => !testQuoteIds.has(j.quote_id));
   if (!active.length) return { lines: [], jobCount: 0 };
 
@@ -83,7 +92,8 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   const needBySku = new Map<string, number>();
   for (const j of active) {
     const scene = (sceneByQuote.get(j.quote_id) ?? { yardsticks: [], items: [] }) as Scene;
-    for (const a of aggregateMaterials(projectMaterials(scene, bindings))) {
+    const colorChoice = colorChoiceByQuote.get(j.quote_id) ?? null;
+    for (const a of aggregateMaterials(projectMaterials(scene, bindings, {}, colorChoice))) {
       needBySku.set(a.sku, (needBySku.get(a.sku) ?? 0) + a.qty);
     }
   }

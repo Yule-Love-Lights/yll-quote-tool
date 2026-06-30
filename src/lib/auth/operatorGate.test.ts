@@ -33,6 +33,12 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified, #82)
       '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82)
       '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82)
+      '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/ghl/webhook', // GHL webhook (shared-secret in the route, #58)
+      '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
+      '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -59,6 +65,10 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/send', // operator action
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/video', // operator-managed
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60', // DELETE
+      '/api/inbox', // #58 operator-only open-items feed
+      '/api/dashboard/handled', // #58 operator action
+      '/api/dashboard/dismiss', // #58 operator action
+      '/api/dashboard/followup', // #58 operator action (mark follow-up done)
     ]) {
       expect(isPublicPath(p), p).toBe(false);
     }

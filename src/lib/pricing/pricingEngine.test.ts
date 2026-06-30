@@ -186,6 +186,88 @@ describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)',
   });
 });
 
+describe('calculateQuote — custom $/ft override (#102)', () => {
+  it("prices Santa's at the custom rate, ignoring the difficulty table", () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'hard', santasCustomRate: 5, // 100 × $5 (NOT 12)
+    }));
+    const santas = r.lineItems.find((li) => li.label.includes("Santa's Roofline"))!;
+    expect(santas.amount).toBe(500);
+    expect(santas.label).toContain('$5/ft'); // label shows the rate, not "hard"
+  });
+
+  it('prices Gingerbread front + ridge/sides each at its own custom rate', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', santasCustomRate: 5,            // front 100 × $5 = 500
+      gingerbreadFootage: 50, gingerbreadDifficulty: 'hard', gingerbreadCustomRate: 9, // ridge 50 × $9 = 450
+      rooflineChoice: 'gingerbread',
+    }));
+    const ging = r.lineItems.find((li) => li.label.includes('Gingerbread'))!;
+    expect(ging.amount).toBe(950);
+    // both options carry the overridden prices for the portal switch
+    expect(r.rooflineOptions.santas).toEqual({ footage: 100, amount: 500 });
+    expect(r.rooflineOptions.gingerbread).toEqual({ footage: 150, amount: 950 });
+  });
+
+  it('prices Winter Wonderland (C9) at the custom rate', () => {
+    const r = calculateQuote(emptyInputs({
+      winterWonderlandFootage: 40, winterWonderlandDifficulty: 'easy', winterWonderlandCustomRate: 15, // 40 × $15
+    }));
+    const ww = r.lineItems.find((li) => li.label.startsWith('Winter Wonderland'))!;
+    expect(ww.amount).toBe(600);
+    expect(ww.label).toContain('$15/ft');
+  });
+
+  it('prices Stake Lighting at the custom rate, ignoring its $6/$7/$8 table', () => {
+    const r = calculateQuote(emptyInputs({
+      stakeLightingFootage: 100, stakeLightingDifficulty: 'hard', stakeLightingCustomRate: 4, // 100 × $4 (NOT 8)
+    }));
+    const stake = r.lineItems.find((li) => li.label.startsWith('Stake Lighting –'))!;
+    expect(stake.amount).toBe(400);
+    expect(stake.label).toContain('$4/ft');
+  });
+
+  it('falls back to the difficulty-table rate when the custom rate is absent/≤0/NaN', () => {
+    const table = calculateQuote(emptyInputs({ santasFootage: 100, santasDifficulty: 'hard' })); // 1200
+    expect(table.lineItems[0].amount).toBe(1200);
+    for (const bad of [0, -5, NaN, Infinity]) {
+      const r = calculateQuote(emptyInputs({ santasFootage: 100, santasDifficulty: 'hard', santasCustomRate: bad }));
+      expect(r.lineItems[0].amount).toBe(1200); // ignores the bad override, uses $12
+      expect(r.lineItems[0].label).toContain('hard'); // label stays the difficulty word
+    }
+  });
+
+  it('handles a fractional custom $/ft (rounds the product, shows the rate in the label)', () => {
+    const r = calculateQuote(emptyInputs({
+      winterWonderlandFootage: 33, winterWonderlandDifficulty: 'easy', winterWonderlandCustomRate: 7.5, // 247.5 → 248
+    }));
+    const ww = r.lineItems.find((li) => li.label.startsWith('Winter Wonderland'))!;
+    expect(ww.amount).toBe(248);
+    expect(ww.label).toContain('$7.5/ft');
+  });
+
+  it('rounds Gingerbread front + ridge/sides per-component with fractional custom rates', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 15, santasDifficulty: 'medium', santasCustomRate: 2.5,       // front 15 × 2.5 = 37.5 → 38
+      gingerbreadFootage: 15, gingerbreadDifficulty: 'medium', gingerbreadCustomRate: 2.5, // ridge 37.5 → 38
+      rooflineChoice: 'gingerbread',
+    }));
+    // each component is rounded independently: 38 + 38 = 76 (NOT round(75.0) = 75)
+    expect(r.rooflineOptions.gingerbread).toEqual({ footage: 30, amount: 76 });
+  });
+
+  it('does not change global rates or other types', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', santasCustomRate: 5, // 500
+      stakeLightingFootage: 100, stakeLightingDifficulty: 'medium',        // 700 (its table, untouched)
+      rooflineChoice: 'santas',
+    }));
+    expect(r.lineItems.find((li) => li.label.includes("Santa's Roofline"))!.amount).toBe(500);
+    expect(r.lineItems.find((li) => li.label.startsWith('Stake Lighting –'))!.amount).toBe(700);
+    expect(BUSINESS_RULES.rooflineRates).toEqual({ easy: 8, medium: 10, hard: 12 });
+  });
+});
+
 describe('calculateQuote — line-item categories', () => {
   it('prices mini lights by string count and wrap style', () => {
     const r = calculateQuote(emptyInputs({
@@ -420,6 +502,13 @@ describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2
       miniLightItems: [{ type: 'column', wrapStyle: 'trunk', stringCount: 3 }],
     }));
     expect(r.lineItems).toEqual([{ label: 'Column – 3 strings', amount: 105 }]); // 3 × $35; trunk ignored
+  });
+
+  it('prices Curtain Lights at $35/string, no wrap style (like a railing) — #100', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'curtain', wrapStyle: 'trunk', stringCount: 4 }],
+    }));
+    expect(r.lineItems).toEqual([{ label: 'Curtain Lights – 4 strings', amount: 140 }]); // 4 × $35; trunk ignored
   });
 
   it('trees STILL vary by wrap style (canopy vs trunk)', () => {

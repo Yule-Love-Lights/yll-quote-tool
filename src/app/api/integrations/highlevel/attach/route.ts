@@ -6,7 +6,8 @@
 // opening the quote tool — they were captured via a lead form and placed
 // at "📭Open" in the Christmas Lights pipeline. We find that card and
 // attach our quote to it (no duplicate). If (rare) the contact has no
-// opportunity in the pipeline yet, we create one at "Make Quote" stage.
+// opportunity in the pipeline yet, we create one at the ENTRY stage
+// (HIGHLEVEL_STAGE_QUOTE_CREATED — e.g. 📭Open, never the internal "Make Quote").
 //
 // POST /api/integrations/highlevel/attach
 // Body:

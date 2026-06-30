@@ -93,9 +93,9 @@ function isIncluded(item: { included?: boolean }): boolean {
 
 // The mini-light surfaces that project to a priced mini unit. Railing prices
 // like a bush (canopy/standard rate, no wrap style) — see calculateMiniLights.
-type MiniSurface = 'bush' | 'tree' | 'column' | 'railing';
+type MiniSurface = 'bush' | 'tree' | 'column' | 'railing' | 'curtain';
 function asMiniSurface(s: unknown): MiniSurface | null {
-  return s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' ? s : null;
+  return s === 'bush' || s === 'tree' || s === 'column' || s === 'railing' || s === 'curtain' ? s : null;
 }
 
 // Audit fix (Finding #103): does this scene item map to a per-unit category,

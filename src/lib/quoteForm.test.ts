@@ -7,18 +7,24 @@ import {
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 
+const VALID = ['easy', 'medium', 'hard'];
+
 // A fully-populated form, exercising every mapped field.
 const fullForm: QuoteFormData = {
   customer: { name: 'Jane Doe', address: '12 Elm St', phone: '555-0101', email: 'jane@x.com' },
   serviceType: 'event', // non-default, to exercise the field
   santasFootage: 120,
   santasDifficulty: 'hard',
+  santasCustomRate: 0,
   gingerbreadFootage: 80,
   gingerbreadDifficulty: 'easy',
+  gingerbreadCustomRate: 0,
   winterWonderlandFootage: 40,
   winterWonderlandDifficulty: 'medium',
+  winterWonderlandCustomRate: 0,
   stakeLightingFootage: 60,
   stakeLightingDifficulty: 'hard',
+  stakeLightingCustomRate: 0,
   rooflineChoice: 'gingerbread',
   miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }],
   spritzers: [{ size: '24', quantity: 2 }],
@@ -71,6 +77,62 @@ describe('buildQuoteInputs', () => {
   it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
     expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
     expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
+  });
+
+  it('sends a custom $/ft per item-type and a valid placeholder difficulty (#102)', () => {
+    const inputs = buildQuoteInputs({
+      ...fullForm,
+      santasDifficulty: 'custom', santasCustomRate: 5,
+      stakeLightingDifficulty: 'custom', stakeLightingCustomRate: 4,
+    });
+    expect(inputs.santasCustomRate).toBe(5);
+    expect(VALID.includes(inputs.santasDifficulty)).toBe(true); // wire difficulty stays valid
+    expect(inputs.stakeLightingCustomRate).toBe(4);
+    // preset types send no custom rate key
+    expect('gingerbreadCustomRate' in inputs).toBe(false);
+    expect('winterWonderlandCustomRate' in inputs).toBe(false);
+  });
+
+  it('omits the custom rate key for preset difficulties (#102)', () => {
+    const inputs = buildQuoteInputs(fullForm); // all four on presets, rates 0
+    expect('santasCustomRate' in inputs).toBe(false);
+    expect('stakeLightingCustomRate' in inputs).toBe(false);
+  });
+
+  it('degrades a custom choice with a non-positive rate to the preset (#102)', () => {
+    const inputs = buildQuoteInputs({ ...fullForm, santasDifficulty: 'custom', santasCustomRate: 0 });
+    expect('santasCustomRate' in inputs).toBe(false); // no rate sent
+    expect(VALID.includes(inputs.santasDifficulty)).toBe(true); // a real preset, not 'custom'
+  });
+
+  it('is idempotent across the real edit loop: stored inputs → form → inputs → form (#102)', () => {
+    // The PERSISTED wire shape (placeholder difficulty + customRate, NO 'custom').
+    const stored = { ...buildQuoteInputs(fullForm), santasDifficulty: 'medium' as const, santasCustomRate: 5 };
+    const form1 = inputsToFormData(fullForm.customer, stored, fullForm.serviceType);
+    expect(form1.santasDifficulty).toBe('custom');
+    expect(form1.santasCustomRate).toBe(5);
+    // re-Calculate → re-open: the dropdown + rate must be stable.
+    const form2 = inputsToFormData(fullForm.customer, buildQuoteInputs(form1), fullForm.serviceType);
+    expect(form2.santasDifficulty).toBe('custom');
+    expect(form2.santasCustomRate).toBe(5);
+    // a non-positive raw rate hydrates back to the preset, never 'custom'.
+    const lowForm = inputsToFormData({}, { santasDifficulty: 'hard', santasCustomRate: 0 });
+    expect(lowForm.santasDifficulty).toBe('hard');
+  });
+
+  it('round-trips a custom $/ft through inputs → form (#102)', () => {
+    const form = {
+      ...fullForm,
+      santasDifficulty: 'custom' as const, santasCustomRate: 5,
+      winterWonderlandDifficulty: 'custom' as const, winterWonderlandCustomRate: 12,
+    };
+    const restored = inputsToFormData(form.customer, buildQuoteInputs(form), form.serviceType);
+    expect(restored.santasDifficulty).toBe('custom');
+    expect(restored.santasCustomRate).toBe(5);
+    expect(restored.winterWonderlandDifficulty).toBe('custom');
+    expect(restored.winterWonderlandCustomRate).toBe(12);
+    // untouched types stay on their presets
+    expect(restored.stakeLightingDifficulty).toBe('hard');
   });
 
   it('sends installTiming only when a month is picked; omits it for none (#40)', () => {

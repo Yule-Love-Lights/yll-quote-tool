@@ -1,0 +1,55 @@
+import { describe, it, expect } from 'vitest';
+import { isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS } from './followups';
+
+describe('isDueToday — evaluated in America/New_York', () => {
+  it('is true for a follow-up due later the same ET day', () => {
+    // due 16:00 EDT, now 17:00 EDT — same ET day.
+    expect(isDueToday(new Date('2026-06-28T20:00:00Z'), new Date('2026-06-28T21:00:00Z'))).toBe(true);
+  });
+  it('is true for an overdue follow-up (past ET day still surfaces)', () => {
+    expect(isDueToday(new Date('2026-06-27T13:00:00Z'), new Date('2026-06-28T13:00:00Z'))).toBe(true);
+  });
+  it('is false for a follow-up due a future ET day', () => {
+    expect(isDueToday(new Date('2026-06-30T13:00:00Z'), new Date('2026-06-28T13:00:00Z'))).toBe(false);
+  });
+  it('uses the ET calendar day, not the UTC day', () => {
+    // both instants are 2026-06-28 in ET (22:00 and 23:00 EDT) though UTC is the 29th.
+    expect(isDueToday(new Date('2026-06-29T02:00:00Z'), new Date('2026-06-29T03:00:00Z'))).toBe(true);
+  });
+});
+
+describe('dueFollowUps — pending + due-today only', () => {
+  const now = new Date('2026-06-28T16:00:00Z');
+  const today = new Date('2026-06-28T15:00:00Z');
+  const future = new Date('2026-07-05T15:00:00Z');
+  const overdue = new Date('2026-06-20T15:00:00Z');
+  const items = [
+    { id: 'a', status: 'pending', dueAt: today },
+    { id: 'b', status: 'done', dueAt: today }, // excluded — not pending
+    { id: 'c', status: 'pending', dueAt: future }, // excluded — not yet due
+    { id: 'd', status: 'pending', dueAt: overdue }, // included — overdue
+  ];
+  it('returns only pending follow-ups that are due today or overdue', () => {
+    expect(dueFollowUps(items, now).map((f) => f.id)).toEqual(['a', 'd']);
+  });
+});
+
+describe('quoteSentNoReplyFollowUp — system-created follow-up', () => {
+  const sentAt = new Date('2026-06-28T15:00:00Z');
+  const DAY = 86_400_000;
+  it('is due 3 days after the quote was sent, with the system reason and no creator', () => {
+    const fu = quoteSentNoReplyFollowUp({ contactId: 'c1', inboxItemId: 'i1', sentAt });
+    expect(fu.reason).toBe(FOLLOWUP_REASONS.quoteSentNoReply);
+    expect(fu.reason).toBe('quote_sent_no_reply');
+    expect(fu.status).toBe('pending');
+    expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + 3 * DAY);
+    expect(fu.contactId).toBe('c1');
+    expect(fu.inboxItemId).toBe('i1');
+    expect(fu.createdBy).toBeNull();
+    expect(fu.assignedTo).toBeNull();
+  });
+  it('honors a custom afterDays', () => {
+    const fu = quoteSentNoReplyFollowUp({ contactId: null, inboxItemId: null, sentAt, afterDays: 5 });
+    expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + 5 * DAY);
+  });
+});

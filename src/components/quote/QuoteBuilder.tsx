@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type {
   QuoteResult,
   QuoteInputs,
   CustomLineItem,
-  RooflineDifficulty,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
@@ -17,6 +16,7 @@ import {
   type QuoteFormData,
   type FormCustomer,
   type StoredCustomer,
+  type DifficultyChoice,
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
@@ -30,6 +30,8 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
+import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
+import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -148,6 +150,9 @@ export default function QuoteBuilder({
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
+  // from a send FAILURE so we never tell the operator to share the link manually.
+  const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
@@ -196,6 +201,25 @@ export default function QuoteBuilder({
   // True while a per-item recommended write-back (scene PUT) is in flight, so
   // the checkboxes disable to prevent racing PUTs.
   const [recommendBusy, setRecommendBusy] = useState(false);
+  // #92 — offered solid colors per item type (from the bindings), fetched once.
+  // With the live design scene it flags items we can't supply → blocks Send.
+  const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // Fail OPEN: only gate when the offered catalog is positively known. A null/empty/
+  // failed offered fetch (unconfigured bindings, cold start, network blip) must never
+  // falsely flag every item or block Send — it just means "can't verify yet".
+  const unfulfillable = useMemo(
+    () => (offeredIsKnown(offeredColors) ? detectUnfulfillable(breakdownScene?.items ?? [], offeredFromLists(offeredColors)) : []),
+    [breakdownScene, offeredColors],
+  );
+  const hasUnfulfillable = unfulfillable.length > 0;
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -568,14 +592,12 @@ export default function QuoteBuilder({
     setAnalysisNotes(null);
     setAnalysisError(null);
     setAnalysisWarning(null);
-    // Reset stale state from any prior Google/address analysis so the manual
-    // upload doesn't silently reuse satellite lines, base64, or calibration.
-    setSatellitePreview(null);
-    setSatelliteSantasLines([]);
-    setSatelliteGingerbreadLines([]);
-    setSatelliteC9Lines([]);
-    setSatelliteStakeLines([]);
-    setSatelliteFeetPerPixel(null);
+    // #97: a manual street-photo upload swaps ONLY the street/design photo — it
+    // does NOT touch the satellite tab. Keep any prior (address-pulled or
+    // manually-uploaded) satellite image, traced lines, and scale, so swapping a
+    // bad Google street view for a better photo of the SAME house keeps the good
+    // satellite + its measurements. (Use the satellite upload slot to replace it
+    // if it's actually for a different house.)
     setGoogleAddress(null);
     setPhotoBase64(null);
     setPhotoMediaType(null);
@@ -760,14 +782,28 @@ export default function QuoteBuilder({
       ...f,
       santasFootage: r.santasFootage,
       santasDifficulty: r.santasDifficulty,
+      // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
+      // custom $/ft on these two types — keeps the difficulty + rate consistent.
+      santasCustomRate: 0,
       gingerbreadFootage: r.gingerbreadFootage,
       gingerbreadDifficulty: r.gingerbreadDifficulty,
+      gingerbreadCustomRate: 0,
     }));
     // Satellite polylines — seed them so the satellite tab is ready for
-    // complex / commercial rooflines without re-analyzing.
-    setSatelliteSantasLines(r.satelliteSantasLines ?? []);
-    setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
-    setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    // complex / commercial rooflines without re-analyzing. #97: only (re)set the
+    // satellite tab when THIS analysis actually carried satellite data (an address
+    // pull). A manual street-photo analyze (analyze-photo) carries none, so leave
+    // the existing satellite image, lines, and scale intact.
+    const hasSatelliteData =
+      data.satelliteBase64 != null ||
+      data.satelliteFeetPerPixel != null ||
+      (r.satelliteSantasLines?.length ?? 0) > 0 ||
+      (r.satelliteGingerbreadLines?.length ?? 0) > 0;
+    if (hasSatelliteData) {
+      setSatelliteSantasLines(r.satelliteSantasLines ?? []);
+      setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
+      setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    }
     // The bridge auto-design (#35 Phase 2): roofline lines → tagged C9 strands
     // (#33) AND per-unit detections → scene items at the detected spots. The
     // route sanitizes (unknown sizes/tiers/boxes are dropped, not fatal). If
@@ -900,10 +936,11 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      // Do NOT clear the satellite here (H1): handlePhotoSelect already wiped
-      // any prior Google satellite when this street photo was chosen, so the
-      // only satellite that can be present now is a manual one the operator
-      // uploaded for THIS house — clearing it would silently drop the #9 data.
+      // Do NOT clear the satellite here: #97 — handlePhotoSelect no longer wipes
+      // the satellite on a street swap, and applyAnalysisResult only (re)sets it
+      // when the analysis carried satellite data (it doesn't for analyze-photo).
+      // So whatever satellite is present (address-pulled or manual, for THIS
+      // house) is preserved with its traced lines + scale.
       if (data.result) {
         applyAnalysisResult(data);
       } else {
@@ -928,6 +965,22 @@ export default function QuoteBuilder({
 
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
+
+  // #102: difficulty dropdown change. Choosing "Custom…" pre-seeds the $/ft field
+  // from the current preset's rate (so staff tweak a real number, not 0) unless a
+  // custom rate is already entered; preset choices just set the difficulty.
+  const setDifficulty = (
+    diffKey: 'santasDifficulty' | 'gingerbreadDifficulty' | 'winterWonderlandDifficulty' | 'stakeLightingDifficulty',
+    rateKey: 'santasCustomRate' | 'gingerbreadCustomRate' | 'winterWonderlandCustomRate' | 'stakeLightingCustomRate',
+    table: Record<'easy' | 'medium' | 'hard', number>,
+    next: DifficultyChoice,
+  ) =>
+    setForm(f => {
+      if (next !== 'custom') return { ...f, [diffKey]: next };
+      const prev = f[diffKey];
+      const seed = f[rateKey] > 0 ? f[rateKey] : prev === 'custom' ? table.medium : table[prev];
+      return { ...f, [diffKey]: 'custom', [rateKey]: seed };
+    });
 
   const setCustomer = (k: keyof FormCustomer, v: string) =>
     setForm(f => ({ ...f, customer: { ...f.customer, [k]: v } }));
@@ -1023,8 +1076,34 @@ export default function QuoteBuilder({
     if (!savedQuoteId) return;
     setSendStatus('sending');
     setSendError(null);
+    setSendBlockedMsg(null);
     setGhlSyncWarning(null);
     setCopiedUrl(false);
+
+    // #92 — re-check fulfillability against the FRESHEST design at Send time: the
+    // breakdown-driven gate can be stale if the operator edited the canvas after
+    // Calculate. Flush the editor's pending save, re-fetch the live scene, re-check.
+    // Fails open (offered unknown / fetch error → don't block on the re-check).
+    if (designId && offeredIsKnown(offeredColors)) {
+      try {
+        await editorFlushRef.current?.();
+        const dres = await fetch(`/api/designs/${designId}`);
+        const ddata = await dres.json();
+        if (dres.ok) {
+          const liveScene = ddata?.design?.scene ?? { yardsticks: [], items: [] };
+          const bad = detectUnfulfillable(liveScene.items, offeredFromLists(offeredColors));
+          if (bad.length > 0) {
+            setSendBlockedMsg(
+              `Can’t send — ${bad.length} item${bad.length === 1 ? '' : 's'} we can’t supply. Recolor or remove ${bad.length === 1 ? 'it' : 'them'} (see “From your design”), then Calculate again. Don’t share the link until it’s fixed.`,
+            );
+            setSendStatus('idle');
+            return;
+          }
+        }
+      } catch {
+        // The re-check itself failed (flush/network) — don't block the send on it.
+      }
+    }
 
     const url = portalUrlFor(savedQuoteId);
     // Copy first so if the stage-move fails the operator still has the
@@ -1503,6 +1582,25 @@ export default function QuoteBuilder({
               <p className="text-xs text-blue-700">
                 Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
               </p>
+              {/* #95: quick link to open the house on Google Maps (standard pin, not
+                  Street View) — precise coords once analyzed, else the matched/typed
+                  address. Lets staff jump to the location themselves. */}
+              {(form.customer.address.trim() !== '' || googleAddress != null) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={
+                      geoLat != null && geoLng != null
+                        ? `https://www.google.com/maps/search/?api=1&query=${geoLat},${geoLng}`
+                        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleAddress ?? form.customer.address.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 font-medium underline hover:text-blue-900"
+                  >
+                    View on Google Maps ↗
+                  </a>
+                </p>
+              )}
               {googleAddress && (
                 <p className="mt-2 text-xs text-blue-800">
                   <span className="font-semibold">Matched:</span> {googleAddress}
@@ -2014,11 +2112,20 @@ export default function QuoteBuilder({
                                 onChange={e => set('winterWonderlandFootage', Number(e.target.value))} />
                               <span className="text-xs text-gray-500">ft</span>
                               <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.winterWonderlandDifficulty}
-                                onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                                onChange={e => setDifficulty('winterWonderlandDifficulty', 'winterWonderlandCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                                 <option value="easy">Easy</option>
                                 <option value="medium">Medium</option>
                                 <option value="hard">Hard</option>
+                                <option value="custom">Custom…</option>
                               </select>
+                              {form.winterWonderlandDifficulty === 'custom' && (
+                                <>
+                                  <input className="border border-gray-200 rounded px-2 py-1 text-xs w-16" type="number" min="0" step="0.5" placeholder="0"
+                                    value={form.winterWonderlandCustomRate || ''}
+                                    onChange={e => set('winterWonderlandCustomRate', Number(e.target.value))} />
+                                  <span className="text-xs text-gray-500">$/ft</span>
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2052,11 +2159,20 @@ export default function QuoteBuilder({
                                 onChange={e => set('stakeLightingFootage', Number(e.target.value))} />
                               <span className="text-xs text-gray-500">ft</span>
                               <select className="border border-gray-200 rounded px-2 py-1 text-xs bg-white" value={form.stakeLightingDifficulty}
-                                onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
+                                onChange={e => setDifficulty('stakeLightingDifficulty', 'stakeLightingCustomRate', BUSINESS_RULES.stakeLightingRates, e.target.value as DifficultyChoice)}>
                                 <option value="easy">Easy</option>
                                 <option value="medium">Medium</option>
                                 <option value="hard">Hard</option>
+                                <option value="custom">Custom…</option>
                               </select>
+                              {form.stakeLightingDifficulty === 'custom' && (
+                                <>
+                                  <input className="border border-gray-200 rounded px-2 py-1 text-xs w-16" type="number" min="0" step="0.5" placeholder="0"
+                                    value={form.stakeLightingCustomRate || ''}
+                                    onChange={e => set('stakeLightingCustomRate', Number(e.target.value))} />
+                                  <span className="text-xs text-gray-500">$/ft</span>
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2087,11 +2203,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.santasDifficulty}
-                    onChange={e => set('santasDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('santasDifficulty', 'santasCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.santasDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.santasCustomRate || ''}
+                        onChange={e => set('santasCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.santasFootage === 0 && (
@@ -2114,11 +2240,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.gingerbreadDifficulty}
-                    onChange={e => set('gingerbreadDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('gingerbreadDifficulty', 'gingerbreadCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.gingerbreadDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.gingerbreadCustomRate || ''}
+                        onChange={e => set('gingerbreadCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.gingerbreadFootage === 0 && (
@@ -2141,11 +2277,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.winterWonderlandDifficulty}
-                    onChange={e => set('winterWonderlandDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('winterWonderlandDifficulty', 'winterWonderlandCustomRate', BUSINESS_RULES.rooflineRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $8/ft</option>
                     <option value="medium">Medium — $10/ft</option>
                     <option value="hard">Hard — $12/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.winterWonderlandDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.winterWonderlandCustomRate || ''}
+                        onChange={e => set('winterWonderlandCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.winterWonderlandFootage === 0 && (
@@ -2168,11 +2314,21 @@ export default function QuoteBuilder({
                 <div>
                   <label className={lbl}>Difficulty</label>
                   <select className={sel} value={form.stakeLightingDifficulty}
-                    onChange={e => set('stakeLightingDifficulty', e.target.value as RooflineDifficulty)}>
+                    onChange={e => setDifficulty('stakeLightingDifficulty', 'stakeLightingCustomRate', BUSINESS_RULES.stakeLightingRates, e.target.value as DifficultyChoice)}>
                     <option value="easy">Easy — $6/ft</option>
                     <option value="medium">Medium — $7/ft</option>
                     <option value="hard">Hard — $8/ft</option>
+                    <option value="custom">Custom…</option>
                   </select>
+                  {form.stakeLightingDifficulty === 'custom' && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <span className="text-sm text-gray-500">$</span>
+                      <input className={inp} type="number" min="0" step="0.5" placeholder="0"
+                        value={form.stakeLightingCustomRate || ''}
+                        onChange={e => set('stakeLightingCustomRate', Number(e.target.value))} />
+                      <span className="text-sm text-gray-500 whitespace-nowrap">/ft</span>
+                    </div>
+                  )}
                 </div>
               </div>
               {form.stakeLightingFootage === 0 && (
@@ -2425,7 +2581,7 @@ export default function QuoteBuilder({
                 // their own "recommend one" radio above and are filtered out of these
                 // rows, so 'ridge' here only ever matches Winter Wonderland.
                 const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
-                  'tree', 'bush', 'column', 'railing', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
+                  'tree', 'bush', 'column', 'railing', 'curtain', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
                 ]);
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
@@ -2470,13 +2626,31 @@ export default function QuoteBuilder({
                       );
                     }
                   }
-                  return (
-                    <div key={i} className="flex justify-between items-center text-sm gap-2">
+                  const rowInner = (
+                    <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
                         {item.label}
                       </span>
                       <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                    </>
+                  );
+                  // A recommendable row wraps its content in a <label> so clicking
+                  // ANYWHERE on the row (the item name, not just the 13px box)
+                  // toggles the recommendation — mirroring the roofline option rows
+                  // above. Without this the bare checkbox is the only hit target, so
+                  // clicking the item name does nothing. Non-recommendable rows have
+                  // no checkbox to toggle, so they stay plain (non-clickable) divs.
+                  return checkbox ? (
+                    <label
+                      key={i}
+                      className="flex justify-between items-center text-sm gap-2 cursor-pointer rounded px-2 py-1.5 -mx-2 hover:bg-gray-100"
+                    >
+                      {rowInner}
+                    </label>
+                  ) : (
+                    <div key={i} className="flex justify-between items-center text-sm gap-2">
+                      {rowInner}
                     </div>
                   );
                 });
@@ -2629,6 +2803,21 @@ export default function QuoteBuilder({
               </div>
             )}
 
+            {hasUnfulfillable && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                {`⚠️ This design has ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — see the red notes in `}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline font-semibold hover:text-red-700 cursor-pointer"
+                >
+                  “From your design”
+                </button>
+                {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -2636,7 +2825,7 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending'}
+                disabled={sendStatus === 'sending' || hasUnfulfillable}
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
@@ -2649,6 +2838,21 @@ export default function QuoteBuilder({
             {sendStatus === 'error' && (
               <p className="mt-3 text-sm text-red-600">
                 Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
+              </p>
+            )}
+
+            {sendBlockedMsg && (
+              <p className="mt-3 text-sm text-red-600 font-medium">
+                {sendBlockedMsg}{' '}
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById('from-your-design')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  className="underline cursor-pointer hover:text-red-700"
+                >
+                  Jump to it
+                </button>
               </p>
             )}
 

@@ -35,6 +35,12 @@ const PUBLIC_API_EXACT = new Set([
   '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified in the route, #82 alt channel)
   '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
   '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82 low-stock alarm)
+  '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 inbox safety-net poll)
+  '/api/dashboard/ghl/webhook', // GHL "Customer Replied" webhook (shared-secret in the route, #58)
+  '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58 escalation engine)
+  '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
+  '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
+  '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
 ]);
 
 /**

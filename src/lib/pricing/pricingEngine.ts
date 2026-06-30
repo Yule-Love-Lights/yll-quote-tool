@@ -81,7 +81,7 @@ export const BUSINESS_RULES = {
 export type RooflineDifficulty = 'easy' | 'medium' | 'hard';
 
 export type MiniLightItem = {
-  type: 'tree' | 'bush' | 'column' | 'railing';
+  type: 'tree' | 'bush' | 'column' | 'railing' | 'curtain';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
 };
@@ -173,6 +173,15 @@ export interface QuoteInputs {
   // billed at its own $6/$7/$8 rates. Parallel sibling of Winter Wonderland.
   stakeLightingFootage: number;
   stakeLightingDifficulty: RooflineDifficulty;
+  // Per-quote custom $/ft overrides (#102). When a positive finite number, the
+  // engine prices that item-type at footage × this rate, IGNORING the difficulty
+  // table (rooflineRates / stakeLightingRates); absent or ≤ 0 falls back to the
+  // difficulty rate. Per item-type, per-quote — does NOT change the global rates.
+  // Optional for back-compat: quotes priced before this field stay valid.
+  santasCustomRate?: number;
+  gingerbreadCustomRate?: number;
+  winterWonderlandCustomRate?: number;
+  stakeLightingCustomRate?: number;
   // The roofline the quote defaults to (operator's pick). When omitted the
   // engine infers it from footage (Gingerbread if there's ridge/sides, else
   // Santa's, else none); the portal can switch it — see QuoteResult.rooflineOptions.
@@ -255,8 +264,30 @@ function units(n: number): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function rooflineCost(footage: number, difficulty: RooflineDifficulty): number {
-  return Math.round(units(footage) * BUSINESS_RULES.rooflineRates[difficulty]);
+// The effective $/ft for a roofline-family item: a per-quote custom override
+// (#102) when it's a positive finite number, else the difficulty-table rate.
+// A non-positive / NaN / Infinity custom rate falls back to the table so a
+// malformed override can never zero out or NaN a line.
+function resolveRate(
+  table: Record<RooflineDifficulty, number>,
+  difficulty: RooflineDifficulty,
+  customRate?: number,
+): number {
+  return Number.isFinite(customRate) && (customRate as number) > 0
+    ? (customRate as number)
+    : table[difficulty];
+}
+
+// The parenthetical on a roofline-family line label: the custom $/ft when an
+// override is active (#102), else the difficulty word (unchanged behavior).
+function rateLabel(difficulty: RooflineDifficulty, customRate?: number): string {
+  return Number.isFinite(customRate) && (customRate as number) > 0
+    ? `$${customRate}/ft`
+    : difficulty;
+}
+
+function rooflineCost(footage: number, difficulty: RooflineDifficulty, customRate?: number): number {
+  return Math.round(units(footage) * resolveRate(BUSINESS_RULES.rooflineRates, difficulty, customRate));
 }
 
 // Both mutually-exclusive roofline options, priced from the captured footage.
@@ -266,8 +297,12 @@ function rooflineCost(footage: number, difficulty: RooflineDifficulty): number {
 // is priced at its own difficulty (Gingerbread = the front cost + the
 // ridge/sides cost). The portal shows both; only the recommended one is billed.
 function rooflineOptionsFor(inputs: QuoteInputs): QuoteResult['rooflineOptions'] {
-  const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty);
-  const ridgeSidesCost = rooflineCost(inputs.gingerbreadFootage, inputs.gingerbreadDifficulty);
+  const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty, inputs.santasCustomRate);
+  const ridgeSidesCost = rooflineCost(
+    inputs.gingerbreadFootage,
+    inputs.gingerbreadDifficulty,
+    inputs.gingerbreadCustomRate,
+  );
 
   const santas =
     inputs.santasFootage > 0 ? { footage: inputs.santasFootage, amount: frontCost } : null;
@@ -328,7 +363,7 @@ function rooflineLineItem(
   if (choice === 'santas' && options.santas) {
     return [
       {
-        label: `Santa's Roofline – ${inputs.santasFootage}ft (${inputs.santasDifficulty})`,
+        label: `Santa's Roofline – ${inputs.santasFootage}ft (${rateLabel(inputs.santasDifficulty, inputs.santasCustomRate)})`,
         amount: options.santas.amount,
       },
     ];
@@ -350,8 +385,12 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
   if (!(inputs.winterWonderlandFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
-      label: `Winter Wonderland – ${inputs.winterWonderlandFootage}ft (${inputs.winterWonderlandDifficulty})`,
-      amount: rooflineCost(inputs.winterWonderlandFootage, inputs.winterWonderlandDifficulty),
+      label: `Winter Wonderland – ${inputs.winterWonderlandFootage}ft (${rateLabel(inputs.winterWonderlandDifficulty, inputs.winterWonderlandCustomRate)})`,
+      amount: rooflineCost(
+        inputs.winterWonderlandFootage,
+        inputs.winterWonderlandDifficulty,
+        inputs.winterWonderlandCustomRate,
+      ),
     },
   ];
 }
@@ -364,9 +403,14 @@ function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
   if (!(inputs.stakeLightingFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
-      label: `Stake Lighting – ${inputs.stakeLightingFootage}ft (${inputs.stakeLightingDifficulty})`,
+      label: `Stake Lighting – ${inputs.stakeLightingFootage}ft (${rateLabel(inputs.stakeLightingDifficulty, inputs.stakeLightingCustomRate)})`,
       amount: Math.round(
-        units(inputs.stakeLightingFootage) * BUSINESS_RULES.stakeLightingRates[inputs.stakeLightingDifficulty],
+        units(inputs.stakeLightingFootage) *
+          resolveRate(
+            BUSINESS_RULES.stakeLightingRates,
+            inputs.stakeLightingDifficulty,
+            inputs.stakeLightingCustomRate,
+          ),
       ),
     },
   ];
@@ -381,12 +425,13 @@ const MINI_LIGHT_TYPE_LABELS: Record<MiniLightItem['type'], string> = {
   bush: 'Bush',
   column: 'Column',
   railing: 'Railing',
+  curtain: 'Curtain Lights',
 };
 
 // Mini-light surfaces with NO wrap style — they run strands at the standard
 // per-string cost (the canopy rate, same as a bush) and label without a "wrap"
 // qualifier (Jason, S5). Only TREES vary by wrap style (canopy vs trunk).
-const NO_WRAP_STYLE_TYPES: ReadonlySet<MiniLightItem['type']> = new Set(['column', 'railing']);
+const NO_WRAP_STYLE_TYPES: ReadonlySet<MiniLightItem['type']> = new Set(['column', 'railing', 'curtain']);
 
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
   return inputs.miniLightItems.map(item => {

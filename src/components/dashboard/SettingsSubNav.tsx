@@ -11,12 +11,16 @@ const ITEMS = [
   { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },
   // Test-quote tools + saved-quotes dev actions (#93).
   { label: 'Quotes', href: '/settings/quotes', key: 'quotes' as const },
+  // Per-account editor keyboard shortcuts (#98).
+  { label: 'Hotkeys', href: '/settings/hotkeys', key: 'hotkeys' as const },
+  // HighLevel CRM setup helper — pipeline + stage IDs for the env vars.
+  { label: 'HighLevel', href: '/settings/highlevel', key: 'highlevel' as const },
 ];
 
 export function SettingsSubNav({
   active,
 }: {
-  active: 'settings' | 'training' | 'customer-portal' | 'accounts' | 'quotes';
+  active: 'settings' | 'training' | 'customer-portal' | 'accounts' | 'quotes' | 'hotkeys' | 'highlevel';
 }) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>

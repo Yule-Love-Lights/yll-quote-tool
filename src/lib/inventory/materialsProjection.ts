@@ -36,6 +36,7 @@ import {
   WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
 } from './concepts';
 import { projectClips } from './clipRules';
+import { resolveInstalls, offeredFromBindings } from './resolveInstalls';
 
 export type MaterialCategory =
   | 'wreath' | 'wreath-bow' | 'wreath-fee'
@@ -98,10 +99,22 @@ function strandFeet(strand: StrandItem, scene: Scene): number {
   return ppf > 0 ? lengthPx / ppf : 0;
 }
 
-export function projectMaterials(scene: Scene, bindings: Bindings, clipRules: ClipRules = {}): MaterialLine[] {
+export function projectMaterials(
+  scene: Scene,
+  bindings: Bindings,
+  clipRules: ClipRules = {},
+  // #92 — the customer's whole-house color choice (resolved palette ids), or null
+  // = as-designed. Drives which mini/spritzer SKU each item resolves to.
+  colorChoice: string[] | null = null,
+): MaterialLine[] {
   const out: MaterialLine[] = [];
   const items = Array.isArray(scene?.items) ? scene.items : [];
   const b = bindings ?? {};
+
+  // #92 — per mini/spritzer item: a real pattern STRAND (one SKU) or a SOLID color
+  // (round-robin of the OFFERED colors). Both this projection and the portal render
+  // consume the same resolver so the order and the picture can't disagree.
+  const installs = resolveInstalls(items, colorChoice, offeredFromBindings(b));
 
   const push = (sceneItemId: string, category: MaterialCategory, conceptKey: string, qty: number, label: string) => {
     if (qty <= 0) return;
@@ -139,8 +152,14 @@ export function projectMaterials(scene: Scene, bindings: Bindings, clipRules: Cl
 
     if (isSpritzer(item)) {
       const size = item.quoteSize ?? DEFAULT_SPRITZER_SIZE;
-      const paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
-      push(item.id, 'spritzer', spritzerKey(paletteId, size), 1, `${size}" ${colorLabel(paletteId)} spritzer`);
+      const decision = installs.get(item.id);
+      if (decision?.kind === 'strand') {
+        // A matched pattern with a spritzer strand for this size → order it directly.
+        out.push({ sku: decision.sku, qty: 1, category: 'spritzer', conceptKey: spritzerKey(decision.patternId, size), label: `${size}" ${decision.patternId} spritzer`, sceneItemId: item.id });
+      } else {
+        const paletteId = decision?.kind === 'solid' ? decision.colorId : (item.colorPattern?.[0] ?? DEFAULT_PALETTE);
+        push(item.id, 'spritzer', spritzerKey(paletteId, size), 1, `${size}" ${colorLabel(paletteId)} spritzer`);
+      }
       push(item.id, 'spritzer-pole', spritzerPoleKey(size), 1, `${size}" spritzer pole`);
       continue;
     }
@@ -210,8 +229,15 @@ export function projectMaterials(scene: Scene, bindings: Bindings, clipRules: Cl
       stringCount = intAtLeast1(item.stringCount);
     }
     if (surface) {
-      const label = colorLabel(paletteId);
-      push(item.id, 'mini', miniKey(label), stringCount, `${label} mini (${surface}) × ${stringCount}`);
+      const decision = installs.get(item.id);
+      if (decision?.kind === 'strand') {
+        // A matched pattern → order N strings of its mini strand directly.
+        out.push({ sku: decision.sku, qty: stringCount, category: 'mini', conceptKey: miniKey(decision.patternId), label: `${decision.patternId} mini (${surface}) × ${stringCount}`, sceneItemId: item.id });
+      } else {
+        const colorId = decision?.kind === 'solid' ? decision.colorId : paletteId;
+        const label = colorLabel(colorId);
+        push(item.id, 'mini', miniKey(label), stringCount, `${label} mini (${surface}) × ${stringCount}`);
+      }
       continue;
     }
 
