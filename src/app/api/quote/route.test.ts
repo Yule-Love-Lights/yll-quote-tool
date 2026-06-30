@@ -103,6 +103,26 @@ describe('POST /api/quote — validation hardening', () => {
     expect(res.status).toBe(200);
     expect(save).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts a valid custom $/ft override (#102)', async () => {
+    const inputs = validInputs();
+    inputs.santasFootage = 100;
+    inputs.santasCustomRate = 5;
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-numeric / out-of-range custom $/ft with 400 (#102)', async () => {
+    for (const bad of ['5', -1, 1001, NaN, Infinity]) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.stakeLightingCustomRate = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('POST /api/quote — created_by actor trail (#90)', () => {
