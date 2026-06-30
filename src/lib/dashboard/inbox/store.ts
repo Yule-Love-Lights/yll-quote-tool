@@ -1008,7 +1008,11 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('dashboard_activity')
+    // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
+    // reconcile touch — thousands) and 'escalated' would otherwise bury the
+    // handled/dismissed/followed/completed rows (and their Reverse buttons).
     .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+    .not('action', 'in', '(ingested,escalated)')
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) return { ok: false, error: error.message };
