@@ -307,12 +307,18 @@ describe('applyProjectionToInputs — design overrides per-unit, else falls back
     const s = scene([strand({ surface: 'bush', stringCount: 1 })]);
     const inputs = baseInputs({
       santasFootage: 180,
+      // #102: a per-quote custom $/ft override must survive design projection
+      // (the spread preserves it) so a design-linked quote keeps its custom rate.
+      santasCustomRate: 7,
+      stakeLightingCustomRate: 4.5,
       customLineItems: [{ label: 'Custom', amount: 99 }],
       rushFee: true,
       takedown: 'premium',
     });
     const out = applyProjectionToInputs(inputs, s);
     expect(out.santasFootage).toBe(180);
+    expect(out.santasCustomRate).toBe(7); // #102 override preserved
+    expect(out.stakeLightingCustomRate).toBe(4.5);
     expect(out.customLineItems).toEqual([{ label: 'Custom', amount: 99 }]);
     expect(out.rushFee).toBe(true);
     expect(out.takedown).toBe('premium');

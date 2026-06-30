@@ -14,3 +14,21 @@ describe('parseLineItem — Stake Lighting', () => {
     expect(parseLineItem('Winter Wonderland – 50ft (easy)').kind).toBe('ridge');
   });
 });
+
+describe('parseLineItem — custom $/ft labels (#102)', () => {
+  // The #102 custom rate replaces the "(medium)" token with "($X/ft)". Pin the
+  // kind + footage so the label→kind→buildLineItemId→approve-route selection
+  // chain can't silently regress (the "$5/ft" must not be mistaken for footage,
+  // and "/ft" must not trip the Stake/Ridge/Roofline classifiers).
+  it('classifies custom-rate labels to the same kind as preset labels', () => {
+    expect(parseLineItem("Santa's Roofline – 100ft ($5/ft)").kind).toBe('roofline');
+    expect(parseLineItem('Winter Wonderland – 40ft ($15/ft)').kind).toBe('ridge');
+    expect(parseLineItem('Stake Lighting – 100ft ($4/ft)').kind).toBe('stake-lighting');
+  });
+
+  it('extracts the real footage, not the rate digits', () => {
+    expect(parseLineItem("Santa's Roofline – 100ft ($5/ft)").detail).toBe('100 ft');
+    expect(parseLineItem('Stake Lighting – 50ft ($6.5/ft)').detail).toBe('50 ft'); // fractional rate
+    expect(parseLineItem('Stake Lighting – 50ft ($6.5/ft)').kind).toBe('stake-lighting');
+  });
+});
