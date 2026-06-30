@@ -32,6 +32,7 @@ import {
   internalViewedEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { getOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -68,6 +69,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
+  }
+
+  // A logged-in operator opening the portal is a STAFF preview, not a customer
+  // view — don't notify, count, or log it. #81 gives staff a Supabase session;
+  // a customer has none, so getOperator() is the signal. (When auth is
+  // unconfigured/dormant it returns null → every view counts as a customer view,
+  // the pre-#81 behavior — a safe fallback.) Checked first so a staff preview
+  // touches neither the DB nor GHL.
+  if (await getOperator()) {
+    return NextResponse.json({ ok: true, skipped: 'staff' });
   }
 
   const sb = getSupabaseServiceClient()!;
