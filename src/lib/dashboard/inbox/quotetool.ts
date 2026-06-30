@@ -33,6 +33,8 @@ export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch {
       displayName: q.customer_name ? normalizeName(q.customer_name) : null,
     },
     raw: q,
+    leadKind: 'lead',
+    quoteValue: q.total ?? null,
   };
 }
 

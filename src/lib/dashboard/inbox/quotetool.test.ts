@@ -55,6 +55,20 @@ describe('normalizeQuoteTouch', () => {
   });
 });
 
+describe('normalizeQuoteTouch — leadKind + quoteValue', () => {
+  it('stamps leadKind lead and the quote dollar value', () => {
+    const touch = normalizeQuoteTouch(quote({ total: 2218.5 }));
+    expect(touch.leadKind).toBe('lead');
+    expect(touch.quoteValue).toBe(2218.5);
+  });
+
+  it('stamps quoteValue null when total is null', () => {
+    const touch = normalizeQuoteTouch(quote({ total: null as any }));
+    expect(touch.leadKind).toBe('lead');
+    expect(touch.quoteValue).toBeNull();
+  });
+});
+
 describe('quoteFollowUpDecision', () => {
   it('creates a quote_sent_no_reply follow-up for a sent, unapproved quote', () => {
     const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z' }));

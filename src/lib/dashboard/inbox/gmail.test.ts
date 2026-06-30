@@ -16,6 +16,7 @@ function thread(over: Partial<GmailThreadLite> = {}): GmailThreadLite {
     subject: 'Holiday lights quote',
     from: { email: 'Cust@Example.com', name: 'A Customer' },
     messages: [msg(false, '2026-06-28T14:00:00Z', 'Can I get a quote?')],
+    hasListUnsubscribe: false,
     ...over,
   };
 }
@@ -145,5 +146,38 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
     };
     const thread = mapGmailThread(raw, { ourEmail: 'info@yulelovelights.com', ourDomain: 'yulelovelights.com', internalAddrs: ['sales@yulelovelights.com'] });
     expect(thread.messages[0].fromMe).toBe(true);
+  });
+
+  it('sets hasListUnsubscribe true when any message has that header', () => {
+    const raw: RawGmailThread = {
+      id: 'thr-unsub',
+      messages: [
+        {
+          id: 'm1',
+          internalDate: '1782690000000',
+          snippet: 'View online / Unsubscribe',
+          payload: {
+            headers: [
+              { name: 'From', value: 'newsletter@marketing.com' },
+              { name: 'Subject', value: 'Your weekly digest' },
+              { name: 'List-Unsubscribe', value: '<mailto:unsub@marketing.com>' },
+            ],
+          },
+        },
+      ],
+    };
+    const mapped = mapGmailThread(raw, { ourEmail: OUR });
+    expect(mapped.hasListUnsubscribe).toBe(true);
+    expect(normalizeGmailThread(mapped).leadKind).toBe('automated');
+  });
+
+  it('sets hasListUnsubscribe false and leadKind lead for a normal customer thread', () => {
+    const raw: RawGmailThread = {
+      id: 'thr-cust',
+      messages: [gm({ internalDate: '1782690000000', from: 'A Customer <cust@example.com>', subject: 'Quote request', snippet: 'Hi, can I get a quote?' })],
+    };
+    const mapped = mapGmailThread(raw, { ourEmail: OUR });
+    expect(mapped.hasListUnsubscribe).toBe(false);
+    expect(normalizeGmailThread(mapped).leadKind).toBe('lead');
   });
 });

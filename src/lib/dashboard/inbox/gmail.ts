@@ -11,6 +11,7 @@
 import type { NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName } from './normalize';
 import { isAnsweredByOutbound } from './escalation';
+import { classifyMessage } from './classify';
 
 export type GmailMessageLite = {
   /** Did the YLL workspace account send this message (a SENT message). */
@@ -26,6 +27,8 @@ export type GmailThreadLite = {
   from?: { email?: string; name?: string };
   /** All messages on the thread (any order). */
   messages: GmailMessageLite[];
+  /** True when any raw message carried a List-Unsubscribe header (bulk/marketing). */
+  hasListUnsubscribe: boolean;
 };
 
 function partition(messages: GmailMessageLite[]): {
@@ -125,6 +128,7 @@ export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): Gm
   // External party = the From of the latest inbound message on the thread.
   const latestInbound = [...rawMessages].reverse().find((m) => !gmailMessageFromMe(m, identity));
   const fromHeader = latestInbound ? getHeader(latestInbound, 'From') : undefined;
+  const hasListUnsubscribe = rawMessages.some((m) => !!getHeader(m, 'List-Unsubscribe'));
   return {
     threadId: raw.id,
     subject,
@@ -132,6 +136,7 @@ export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): Gm
       ? { email: parseEmailAddress(fromHeader) ?? undefined, name: parseDisplayName(fromHeader) ?? undefined }
       : undefined,
     messages,
+    hasListUnsubscribe,
   };
 }
 
@@ -155,5 +160,11 @@ export function normalizeGmailThread(thread: GmailThreadLite): NormalizedTouch {
       displayName: thread.from?.name ? normalizeName(thread.from.name) : null,
     },
     raw: thread,
+    leadKind: classifyMessage({
+      fromAddress: thread.from?.email ?? null,
+      subject: thread.subject ?? null,
+      preview: latest?.snippet ?? null,
+      hasListUnsubscribe: thread.hasListUnsubscribe,
+    }),
   };
 }
