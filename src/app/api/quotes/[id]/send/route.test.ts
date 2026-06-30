@@ -170,6 +170,47 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(updatePayloads.some((p) => 'ghl_stage_synced_at' in p)).toBe(true);
   });
 
+  it('blocks a real send when no HighLevel contact is linked (400 no-contact, never stamped)', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      highlevel_contact_id: null,
+      highlevel_opportunity_id: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('no-contact');
+    // not marked sent, and no GHL / messaging side effects fired
+    expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.createOpportunity).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('still sends a TEST quote with no contact (simulated — contact not required)', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      highlevel_contact_id: null,
+      highlevel_opportunity_id: null,
+      is_test: true,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    // stamped sent locally, but never touched a real GHL card or messaged anyone
+    expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(true);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
   it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent)', async () => {
     const alreadySent = {
       ...FRESH_QUOTE,
