@@ -1198,7 +1198,9 @@ export default function QuoteBuilder({
           opportunityName: form.customer.address.trim()
             ? `Holiday Lights — ${form.customer.address.trim()}`
             : undefined,
-          monetaryValue: result?.total,
+          // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
+          // deposit webhook later resets it to the customer's actual selection).
+          monetaryValue: result?.fullYule?.total ?? result?.total,
         }),
       });
       const data = await res.json();
@@ -2673,7 +2675,72 @@ export default function QuoteBuilder({
         {/* ── Result ── */}
         {result && (
           <div ref={resultRef} className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
-            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-4 pb-2 border-b border-gray-100">
+            {/* Totals — moved to the top (#107). The headline shows the "Full Yule"
+                ceiling (all items + the most-expensive roofline) via result.fullYule;
+                the billed figures + the recommended-subtotal gate below stay on the
+                SELECTED roofline. Falls back to the selected figures on pre-#107 quotes. */}
+            {(() => {
+              const h = result.fullYule ?? result;
+              return (
+                <>
+                  {/* Subtotals */}
+                  <div className="space-y-1.5 text-sm text-gray-600">
+                    <div className="flex justify-between">
+                      <span>Subtotal</span>
+                      <span className="tabular-nums">{usd(h.subtotalBeforeDiscount)}</span>
+                    </div>
+                    {h.discountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Discount</span>
+                        <span className="tabular-nums">−{usd(h.discountAmount)}</span>
+                      </div>
+                    )}
+                    {h.earlyInstallDiscountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Early-install discount</span>
+                        <span className="tabular-nums">−{usd(h.earlyInstallDiscountAmount)}</span>
+                      </div>
+                    )}
+                    {h.rushFeeAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Rush fee</span>
+                        <span className="tabular-nums">{usd(h.rushFeeAmount)}</span>
+                      </div>
+                    )}
+                    {h.takedownAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Premium takedown</span>
+                        <span className="tabular-nums">{usd(h.takedownAmount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(h.taxableAmount)})</span>
+                      <span className="tabular-nums">{usd(h.taxAmount)}</span>
+                    </div>
+                  </div>
+
+                  {/* Total + split */}
+                  <div className="border-t border-gray-300 mt-3 pt-4">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-lg font-bold text-gray-900">Total</span>
+                      <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(h.total)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="bg-green-50 border border-green-200 rounded-md p-3">
+                        <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
+                        <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(h.depositAmount)}</p>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
+                        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
+                        <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(h.balanceDue)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mt-6 pt-5 mb-4 pb-2 border-t border-b border-gray-200">
               Quote Breakdown
             </h2>
 
@@ -2866,60 +2933,6 @@ export default function QuoteBuilder({
                   );
                 });
               })()}
-            </div>
-
-            {/* Subtotals */}
-            <div className="border-t border-gray-200 pt-3 space-y-1.5 text-sm text-gray-600">
-              <div className="flex justify-between">
-                <span>Subtotal</span>
-                <span className="tabular-nums">{usd(result.subtotalBeforeDiscount)}</span>
-              </div>
-              {result.discountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Discount</span>
-                  <span className="tabular-nums">−{usd(result.discountAmount)}</span>
-                </div>
-              )}
-              {result.earlyInstallDiscountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Early-install discount</span>
-                  <span className="tabular-nums">−{usd(result.earlyInstallDiscountAmount)}</span>
-                </div>
-              )}
-              {result.rushFeeAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Rush fee</span>
-                  <span className="tabular-nums">{usd(result.rushFeeAmount)}</span>
-                </div>
-              )}
-              {result.takedownAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Premium takedown</span>
-                  <span className="tabular-nums">{usd(result.takedownAmount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(result.taxableAmount)})</span>
-                <span className="tabular-nums">{usd(result.taxAmount)}</span>
-              </div>
-            </div>
-
-            {/* Total + split */}
-            <div className="border-t border-gray-300 mt-3 pt-4">
-              <div className="flex justify-between items-baseline">
-                <span className="text-lg font-bold text-gray-900">Total</span>
-                <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(result.total)}</span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="bg-green-50 border border-green-200 rounded-md p-3">
-                  <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
-                  <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(result.depositAmount)}</p>
-                </div>
-                <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
-                  <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
-                  <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(result.balanceDue)}</p>
-                </div>
-              </div>
             </div>
 
             {/* #12: recommended-only subtotal — what the customer's portal opens
