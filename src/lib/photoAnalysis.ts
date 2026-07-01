@@ -20,7 +20,7 @@ export type LineSegment = {
 };
 
 export type MiniLightDetection = {
-  type: 'tree' | 'bush' | 'column';
+  type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
   box: [number, number, number, number]; // [x, y, width, height] normalized 0-1
@@ -238,12 +238,13 @@ ROOFLINE TRACING — CRITICAL RULES (failures here are the #1 cause of under-quo
 
 RIDGE & SIDES (GINGERBREAD) — gingerbreadLines holds TWO kinds of run: (a) every RIDGE — the highest horizontal line where two slopes meet at the top (on a gable roof, one long line running front-to-back; on a hip roof, shorter and sometimes hidden behind the front slope); and (b) every SIDE run — the side-facing gutters, eaves, and rakes from the rules above. ALWAYS trace a ridge when a horizontal peak is visible, even if the slope below has skylights/dormers/dark shingles — the ridge is the top edge regardless of what's below it. Only return gingerbreadLines = [] when there is genuinely no ridge AND no side run visible (e.g., a straight-on view of a pure hip roof with no visible top ridge and no side elevations in frame).
 
-MINI LIGHT DETECTION — in addition to roofline, identify every bush, tree, and column visible in the photo that could get mini lights.
+MINI LIGHT DETECTION — in addition to roofline, identify every bush, tree, column, and railing visible in the photo that could get mini lights.
 
 TYPES:
 - bush: low landscaping shrubs (hedges, foundation plantings, topiaries). Wrap style "canopy" — lights drape over the canopy.
 - tree: anything from 6ft sapling to 30ft mature tree. Small trees (<10ft) use "canopy" wrap. Larger trees wrap the trunk + major branches, use "trunk" wrap.
 - column: porch columns, lamp posts, entry columns. Wrap style "canopy" (spiral wrap).
+- railing: a deck, porch, balcony, or fence railing — mini lights run ALONG the top rail. Wrap style "canopy". The bounding box should hug the horizontal run of the rail. Common on front porches, decks, and balconies.
 
 STRING COUNT guidelines (each string = one 50ct 5MM strand):
 A 50ct 5MM strand covers 25ft at 6" bulb spacing. Estimate how many strands it would realistically take to fully wrap/cover the item.
@@ -256,6 +257,7 @@ A 50ct 5MM strand covers 25ft at 6" bulb spacing. Estimate how many strands it w
 - Medium tree (10-20ft): 5-8 strings, trunk
 - Large tree (20ft+): 8-14 strings, trunk
 - Column/lamp post (standard 8ft): 2-3 strings, canopy
+- Railing (measured along the top rail): ~1 string per 25ft — short porch rail (~15ft): 1 string; long or wraparound deck rail (25-40ft): 2 strings, canopy
 
 For each detection, return a bounding box in normalized 0-1 coords: [x, y, width, height] where (x,y) is the top-left corner. Round string counts to whole numbers. Only include items clearly visible and suitable for lighting (skip distant background trees or items in neighbor's yard).
 
@@ -382,7 +384,7 @@ You MUST respond with ONLY valid JSON matching this schema. No markdown fences, 
   "satelliteGingerbreadFootage": number,
   "preferredSource": "street" | "satellite",
   "miniLightDetections": [
-    { "type": "bush" | "tree" | "column", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
+    { "type": "bush" | "tree" | "column" | "railing", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
   ],
   "wreathDetections": [
     { "size": "24noble" | "30noble" | "36noble" | "48noble" | "60noble" | "72noble", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "front door wreath ~30in" }

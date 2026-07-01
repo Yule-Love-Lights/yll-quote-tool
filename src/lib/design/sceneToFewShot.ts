@@ -9,14 +9,15 @@
 //
 // Pure + photo-dims-driven, mirroring seedFromAnalysis's conventions:
 //   tagged C9 strands (santas-roofline / gingerbread) → LineSegment polylines
-//   mini strands + Scattershot areas (bush/tree/column) → MiniLightDetection
+//   mini strands + Scattershot areas (bush/tree/column/railing) → MiniLightDetection
 //   wreaths / spritzers → centered boxes sized from the scene's yardstick
 //   garland runs → bounding-box detections
-// Railing groups/strands are SKIPPED — the analyzer's detection vocabulary
-// has no railing type (it never detects them; staff draw them).
+// Railings ARE taught (the analyzer detects them now); a railing GROUP emits one
+// detection boxing its member strands. CURTAINS are still skipped — kept editable
+// for the future but out of the analyzer's detection vocabulary (#52).
 
 import type { Scene, SceneItem, Yardstick } from './sceneTypes';
-import { isStrand, isMiniArea, isWreath, isSpritzer, isGarland } from './sceneTypes';
+import { isStrand, isMiniArea, isMiniGroup, isWreath, isSpritzer, isGarland } from './sceneTypes';
 import type {
   LineSegment,
   MiniLightDetection,
@@ -173,11 +174,11 @@ export function sceneToFewShotPieces(
         // shape — skip (both are manual-only categories, not AI-trained).
         continue;
       }
-      // Mini strands wrapped on a surface → detections. Railing strands (and
-      // grouped members) aren't in the analyzer's vocabulary — skip.
+      // Mini strands wrapped on a surface → detections. Grouped members (railing
+      // members) carry groupId and are emitted via their GROUP below, not here.
       if (item.bulbType === 'mini' && !item.groupId) {
         const surface = item.surface;
-        if (surface === 'bush' || surface === 'tree' || surface === 'column') {
+        if (surface === 'bush' || surface === 'tree' || surface === 'column' || surface === 'railing') {
           const box = pointsBoundingBox(item.points, photoW, photoH);
           if (box) {
             const stringCount = Math.max(1, Math.round(item.stringCount ?? 1));
@@ -189,6 +190,30 @@ export function sceneToFewShotPieces(
               label: `${surface} — ${stringCount} string${stringCount === 1 ? '' : 's'}`,
             });
           }
+        }
+      }
+      continue;
+    }
+
+    if (isMiniGroup(item)) {
+      // A grouped railing (e.g. a deck rail drawn as several segments): the group
+      // holds the billed count. Emit ONE detection boxing all member strands.
+      // Curtains stay OUT (editable but not analyzer-taught, #52).
+      if (item.surface === 'railing') {
+        const memberPoints: number[] = [];
+        for (const other of items) {
+          if (isStrand(other) && other.groupId === item.id) memberPoints.push(...other.points);
+        }
+        const box = pointsBoundingBox(memberPoints, photoW, photoH);
+        if (box) {
+          const stringCount = Math.max(1, Math.round(item.stringCount ?? 1));
+          out.miniLightDetections.push({
+            type: 'railing',
+            wrapStyle: item.wrapStyle ?? 'canopy',
+            stringCount,
+            box,
+            label: `railing — ${stringCount} string${stringCount === 1 ? '' : 's'}`,
+          });
         }
       }
       continue;
