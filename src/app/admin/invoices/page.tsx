@@ -56,7 +56,7 @@ export default function InvoicesAdminPage() {
   });
 
   return (
-    <OperatorShell active="quotes">
+    <OperatorShell active="invoices">
       <div className="max-w-6xl mx-auto">
         <BillingSubNav active="invoices" />
 

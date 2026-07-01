@@ -5,6 +5,8 @@ export type OperatorArea =
   | 'inbox'
   | 'insights'
   | 'quotes'
+  | 'jobs'
+  | 'invoices'
   | 'customers'
   | 'inventory'
   | 'new'

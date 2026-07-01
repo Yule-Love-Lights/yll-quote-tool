@@ -62,7 +62,7 @@ export default function JobsAdminPage() {
   });
 
   return (
-    <OperatorShell active="quotes">
+    <OperatorShell active="jobs">
       <div className="max-w-6xl mx-auto">
         <BillingSubNav active="jobs" />
 
