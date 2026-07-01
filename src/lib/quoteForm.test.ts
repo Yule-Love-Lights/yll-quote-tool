@@ -39,6 +39,7 @@ const fullForm: QuoteFormData = {
   discountAmount: 20,
   waiveMinimum: true, // non-default, to exercise the field
   installTiming: 'none', // manual-discount path; early-install has its own tests
+  lineItemPriceOverrides: {},
 };
 
 describe('buildQuoteInputs', () => {
@@ -133,6 +134,15 @@ describe('buildQuoteInputs', () => {
     expect(restored.winterWonderlandCustomRate).toBe(12);
     // untouched types stay on their presets
     expect(restored.stakeLightingDifficulty).toBe('hard');
+  });
+
+  it('round-trips lineItemPriceOverrides; omits the key when empty (#104)', () => {
+    const ov = { 'spritzer-a': { amount: 0, reason: 'comp' }, 'roofline-santas': { amount: 600 } };
+    const inputs = buildQuoteInputs({ ...fullForm, lineItemPriceOverrides: ov });
+    expect(inputs.lineItemPriceOverrides).toEqual(ov);
+    expect('lineItemPriceOverrides' in buildQuoteInputs(fullForm)).toBe(false); // empty {} → omitted
+    const restored = inputsToFormData(fullForm.customer, inputs, fullForm.serviceType);
+    expect(restored.lineItemPriceOverrides).toEqual(ov);
   });
 
   it('sends installTiming only when a month is picked; omits it for none (#40)', () => {

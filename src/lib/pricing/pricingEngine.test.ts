@@ -318,6 +318,63 @@ describe('calculateQuote — stable line ids (#104 PR1, additive)', () => {
   });
 });
 
+describe('calculateQuote — per-quote price override (#104 PR3)', () => {
+  it('overrides a line to $0 (free spritzers) — presence-keyed, NOT truthy', () => {
+    const base = calculateQuote(emptyInputs({ spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }] }));
+    expect(base.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95); // 24" = $95
+
+    const r = calculateQuote(emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+      lineItemPriceOverrides: { 'spritzer-a': { amount: 0 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(0); // $0 applied, not dropped as falsy
+    expect(r.subtotalBeforeDiscount).toBe(0); // totals recompute from the override
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBe(0);
+  });
+
+  it('overrides to an arbitrary total and recomputes the subtotal', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-b' }], // $70
+      lineItemPriceOverrides: { 'mini-b': { amount: 50, reason: 'goodwill comp' } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'mini-b')!.amount).toBe(50);
+    expect(r.subtotalBeforeDiscount).toBe(50);
+  });
+
+  it('overrides the roofline TOTAL on both the billed line and the portal option', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', rooflineChoice: 'santas', // $1000
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 600 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'roofline-santas')!.amount).toBe(600);
+    expect(r.rooflineOptions.santas!.amount).toBe(600); // the portal's option row reflects it too
+  });
+
+  it('ignores an override whose line id is not present (orphan / deleted item)', () => {
+    const r = calculateQuote(emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+      lineItemPriceOverrides: { 'mini-deleted': { amount: 0 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95); // unchanged
+  });
+
+  it('falls back to the computed amount for a bad override value (negative / NaN / Infinity)', () => {
+    for (const bad of [-5, NaN, Infinity]) {
+      const r = calculateQuote(emptyInputs({
+        spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+        lineItemPriceOverrides: { 'spritzer-a': { amount: bad } },
+      }));
+      expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95);
+    }
+  });
+
+  it('no overrides map → pricing unchanged', () => {
+    const r = calculateQuote(emptyInputs({ spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }] }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95);
+  });
+});
+
 describe('calculateQuote — line-item categories', () => {
   it('prices mini lights by string count and wrap style', () => {
     const r = calculateQuote(emptyInputs({
