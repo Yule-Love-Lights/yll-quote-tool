@@ -183,6 +183,38 @@ describe('computeInvoiceTotals', () => {
     expect(t.deposit_applied).toBe(33.34);
     expect(Number.isNaN(t.balance)).toBe(false);
   });
+
+  // B4 fix: rush/takedown fees must be represented in the breakdown so that
+  // Subtotal − Discount + Fees + Tax === Total (to the cent).
+  it('includes rush + takedown fees in the breakdown and the identity holds', () => {
+    // E.g. $4,500 subtotal, $300 rush+takedown fees, 8.75% tax on $4,800 = $420
+    // total = $5,220.
+    const pricing = {
+      subtotalBeforeDiscount: 4500,
+      discountAmount: 0,
+      earlyInstallDiscountAmount: 0,
+      rushFeeAmount: 150,
+      takedownAmount: 150,
+      taxAmount: 420,
+      total: 5220,
+    };
+    const t = computeInvoiceTotals(pricing, 2610); // 50% deposit
+    expect(t.fees).toBe(300);
+    // Breakdown identity: subtotal − discount + fees + tax === total
+    expect(t.subtotal - t.discount + t.fees + t.tax).toBe(t.total);
+    expect(t.total).toBe(5220);
+    expect(t.balance).toBe(2610);
+  });
+
+  it('fees defaults to 0 when not present in the pricing input (backward compat)', () => {
+    const t = computeInvoiceTotals(
+      { subtotalBeforeDiscount: 920, discountAmount: 0, taxAmount: 80, total: 1000 },
+      500,
+    );
+    expect(t.fees).toBe(0);
+    // Identity: subtotal − discount + fees + tax === total
+    expect(t.subtotal - t.discount + t.fees + t.tax).toBeCloseTo(t.total, 2);
+  });
 });
 
 // ─── DB: createInvoiceFromJob ───────────────────────────────────────────────

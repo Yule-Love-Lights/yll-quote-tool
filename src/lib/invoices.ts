@@ -69,6 +69,10 @@ export type InvoicePricingInput = {
   subtotalBeforeDiscount?: number;
   discountAmount?: number;
   earlyInstallDiscountAmount?: number;
+  // B4 fix: rush install + premium takedown fees are part of the total but were
+  // previously omitted from the breakdown, causing Subtotal − Discount + Tax ≠ Total.
+  rushFeeAmount?: number;
+  takedownAmount?: number;
   taxAmount?: number;
   total: number;
 };
@@ -76,6 +80,8 @@ export type InvoicePricingInput = {
 export type InvoiceTotals = {
   subtotal: number;
   discount: number;
+  /** Combined rush-install + premium-takedown fees (0 when neither applies). */
+  fees: number;
   tax: number;
   total: number;
   deposit_applied: number;
@@ -106,6 +112,10 @@ export function computeInvoiceTotals(
 
   const subtotal = round2(pricing.subtotalBeforeDiscount ?? 0);
   const discount = round2((pricing.discountAmount ?? 0) + (pricing.earlyInstallDiscountAmount ?? 0));
+  // B4 fix: rush install + premium takedown fees are added to taxableAmount by the
+  // pricing engine (pricingEngine.ts:753) and therefore included in the total. They
+  // must appear in the breakdown so Subtotal − Discount + Fees + Tax === Total.
+  const fees = round2((pricing.rushFeeAmount ?? 0) + (pricing.takedownAmount ?? 0));
   const tax = overridden ? 0 : fullTax;
   // Overriding tax removes exactly the tax line from the total.
   const total = round2(overridden ? round2(pricing.total) - fullTax : pricing.total);
@@ -114,7 +124,7 @@ export function computeInvoiceTotals(
   const balance = round2(Math.max(0, total - deposit_applied));
   const credit_note = round2(Math.max(0, deposit_applied - total));
 
-  return { subtotal, discount, tax, total, deposit_applied, balance, credit_note };
+  return { subtotal, discount, fees, tax, total, deposit_applied, balance, credit_note };
 }
 
 // ─── DB helpers ─────────────────────────────────────────────────────────────

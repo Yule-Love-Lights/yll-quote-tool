@@ -172,6 +172,19 @@ export default function InvoiceDetailPage() {
                     <dd>−{money(inv.discount)}</dd>
                   </div>
                 )}
+                {(() => {
+                  // B4 fix: rush-install + premium-takedown fees are included in
+                  // the total but were previously invisible in the breakdown, causing
+                  // Subtotal − Discount + Tax ≠ Total. Derive the fees from the
+                  // stored fields (no DB column needed — total is the source of truth).
+                  const fees = Math.round((inv.total - (inv.subtotal - inv.discount + inv.tax)) * 100) / 100;
+                  return fees > 0 ? (
+                    <div className="flex justify-between">
+                      <dt>Rush / takedown fees</dt>
+                      <dd>{money(fees)}</dd>
+                    </div>
+                  ) : null;
+                })()}
                 <div className="flex justify-between">
                   <dt>Tax{inv.tax_overridden ? ' (overridden)' : ''}</dt>
                   <dd>{money(inv.tax)}</dd>
