@@ -37,7 +37,7 @@ import {
 import {
   sendSms,
   sendEmail,
-  updateOpportunityStage,
+  updateOpportunity,
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
@@ -353,9 +353,11 @@ export async function POST(req: NextRequest) {
     quote.total ??
     depositUsd * 2;
 
-  // 1. HighLevel: move the opportunity card → ⏰Approved. Falls back to the
-  //    SIGNED stage var (same stage id per the ledger) if the dedicated
-  //    APPROVED var isn't set.
+  // 1. HighLevel: move the opportunity card → ⏰Approved AND reset its value to
+  //    what the customer ACTUALLY approved (#107 — the card carried the "Full
+  //    Yule" ceiling pre-approval; `totalUsd` above is the approved-selection
+  //    total from the snapshot). Falls back to the SIGNED stage var (same stage
+  //    id per the ledger) if the dedicated APPROVED var isn't set.
   let stageUpdated = false;
   let stageError: string | undefined;
   const approvedStage =
@@ -368,7 +370,13 @@ export async function POST(req: NextRequest) {
     stageError = 'HIGHLEVEL_STAGE_QUOTE_APPROVED env var not set';
   } else {
     try {
-      await updateOpportunityStage(quote.highlevel_opportunity_id, approvedStage);
+      await updateOpportunity(quote.highlevel_opportunity_id, {
+        pipelineStageId: approvedStage,
+        // Guard 0/missing so a degenerate total never BLANKS a live card:
+        // updateOpportunity omits `undefined` but would push a literal `0`.
+        // Mirrors the attach route's `> 0` guard.
+        monetaryValue: totalUsd > 0 ? totalUsd : undefined,
+      });
       stageUpdated = true;
     } catch (err) {
       console.warn('[api/integrations/valor/webhook] HL stage move failed:', hlErrorMessage(err));

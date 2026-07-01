@@ -768,3 +768,93 @@ describe('calculateQuote — money-integrity guards', () => {
     expect(r.total).toBe(0);
   });
 });
+
+describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
+  // The headline builder total shows the most-expensive version of the quote:
+  // all items + the max roofline (Gingerbread if present, else Santa's). This is
+  // additive — the billed `total`/`subtotalBeforeDiscount` stay on the SELECTED
+  // roofline; only `fullYule.*` reflects the ceiling.
+  it('uses Gingerbread even when Santa\'s is the recommended roofline', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+    }));
+    // Billed (selected = Santa's) — unchanged
+    expect(r.subtotalBeforeDiscount).toBe(1000);
+    expect(r.total).toBe(1087.5);       // 1000 + 8.75% tax
+    expect(r.depositAmount).toBe(543.75);
+    // Ceiling (Gingerbread)
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1400);
+    expect(r.fullYule?.total).toBe(1522.5);      // 1400 + 8.75% tax
+    expect(r.fullYule?.depositAmount).toBe(761.25);
+    expect(r.fullYule?.balanceDue).toBe(761.25);
+  });
+
+  it('equals the selected figures when Gingerbread IS the selected roofline (no-op)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.total).toBe(1522.5);
+    expect(r.fullYule?.total).toBe(r.total);
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(r.subtotalBeforeDiscount);
+  });
+
+  it('falls back to Santa\'s when there is no distinct Gingerbread footage', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // Santa's 1000, no gingerbread
+      rooflineChoice: 'santas',
+    }));
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1000);
+    expect(r.fullYule?.total).toBe(r.total);
+  });
+
+  it('equals the selected figures when there is no roofline at all', () => {
+    const r = calculateQuote(emptyInputs({
+      wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }], // rest only, 355
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(355);
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(355);
+    expect(r.fullYule?.total).toBe(r.total);
+  });
+
+  it('swaps the selected roofline for the max on top of the rest of the quote', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+      wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }], // rest 355
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(1355);              // 1000 + 355
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1755);    // 1400 + 355
+  });
+
+  it('uses the TRUE max roofline when a #104 override inverts the natural order', () => {
+    // Naturally Gingerbread ($1400) > Santa's ($1000), but a per-quote override
+    // makes Santa's $5000. The ceiling must follow the real max (Santa's), not
+    // blindly prefer Gingerbread — else it would land BELOW the billed total.
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'santas',
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 5000 } },
+    }));
+    expect(r.rooflineOptions.santas?.amount).toBe(5000);
+    expect(r.subtotalBeforeDiscount).toBe(5000);           // billed = overridden Santa's
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(5000); // ceiling = true max, NOT Gingerbread 1400
+  });
+
+  it('applies a percentage discount to the ceiling subtotal, not the selected one', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+      discount: { type: 'percentage', amount: 0.1 },           // 10%
+    }));
+    expect(r.discountAmount).toBe(100);          // 10% of 1000
+    expect(r.fullYule?.discountAmount).toBe(140); // 10% of 1400
+    expect(r.fullYule?.total).toBe(1370.25);      // (1400 − 140) × 1.0875
+  });
+});
