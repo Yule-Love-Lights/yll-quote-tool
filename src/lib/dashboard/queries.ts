@@ -28,7 +28,11 @@ const DASHBOARD_QUOTES_SELECT =
   // terminal states (cancelled/declined/lost) that timestamps alone can't
   // express. Without status, a cancelled-but-deposited order falls through
   // deposit_paid_at→'booked' and inflates revenue and the board.
-  'status, viewed_at';
+  'status, viewed_at, ' +
+  // Rebook Part D: customer_id feeds the "Rebook last season" button on the
+  // customer detail page. NULL on quotes saved before the backfill runs; the
+  // button hides itself when no customer_id is resolvable across the quotes.
+  'customer_id';
 
 /**
  * Fetch quotes for the dashboard, returning a discriminated result so callers

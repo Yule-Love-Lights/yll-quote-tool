@@ -33,6 +33,10 @@ export type DashboardQuote = {
   status?: QuoteStatus | null;
   /** Customer first-viewed timestamp (#68). Optional — not all surfaces select it. */
   viewed_at?: string | null;
+  /** Stable customer id (rebook Part D). Optional — surfaces that don't select it
+   *  (e.g. the dashboard KPI path) leave it undefined; the customer detail page
+   *  adds it via DASHBOARD_QUOTES_SELECT. */
+  customer_id?: string | null;
 };
 
 /** The 5 KPIs shown in the header strip. */
