@@ -41,7 +41,12 @@ export const DEFAULT_COLOR_SCHEME_ID = 'as-designed';
 // NOTE: 'cool-white' is the palette id; the customer-facing label is "Pure
 // White" (the real product name). The id stays 'cool-white' so it keeps matching
 // the editor palette + any saved patterns — only the label is customer-facing.
-export const COLOR_SCHEMES: ColorScheme[] = [
+// The BUILT-IN default scheme list. #101 makes the live list data-driven from
+// app_settings (Settings → Customer Portal); this is the factory default the
+// stored list is seeded from + falls back to. Resolvers below take an optional
+// `schemes` list so the portal/#92 can resolve against the operator's configured
+// swatches instead of these defaults.
+export const DEFAULT_COLOR_SCHEMES: ColorScheme[] = [
   // ── Solids ──
   // "Staff's pick" = the as-designed render (no override): the look our team
   // composed for this house. The single-solid Red / Green / Purple / Blue presets
@@ -60,18 +65,30 @@ export const COLOR_SCHEMES: ColorScheme[] = [
   { id: 'blue-white',  label: 'Frozen',      colorIds: ['blue', 'blue', 'cool-white', 'cool-white'] }, // #92 — renamed from "Blue & White"; id kept so saved quotes don't break
 ];
 
-const SCHEME_MAP = new Map<string, ColorScheme>(COLOR_SCHEMES.map((s) => [s.id, s]));
-
-// Resolve a scheme id to its full record. Unknown / missing ids fall back to the
-// default ("as designed") so a stale id from an old quote never breaks rendering.
-export function getColorScheme(id: string | null | undefined): ColorScheme {
-  return (id ? SCHEME_MAP.get(id) : undefined) ?? SCHEME_MAP.get(DEFAULT_COLOR_SCHEME_ID) ?? COLOR_SCHEMES[0];
+// Resolve a scheme id to its full record within a given scheme list (defaults to
+// the built-ins). Unknown / missing ids fall back to the default ("as designed")
+// so a stale id from an old quote never breaks rendering; a list missing
+// as-designed falls back to its first entry.
+export function getColorScheme(
+  id: string | null | undefined,
+  schemes: ColorScheme[] = DEFAULT_COLOR_SCHEMES,
+): ColorScheme {
+  const map = new Map<string, ColorScheme>(schemes.map((s) => [s.id, s]));
+  return (
+    (id ? map.get(id) : undefined) ??
+    map.get(DEFAULT_COLOR_SCHEME_ID) ??
+    schemes[0] ??
+    DEFAULT_COLOR_SCHEMES[0]
+  );
 }
 
 // The color-id override the read-only renderer applies, or null for "as designed"
 // (no override). Unknown ids → null (render as drawn) via the default fallback.
-export function resolveSchemeColorIds(id: string | null | undefined): string[] | null {
-  return getColorScheme(id).colorIds;
+export function resolveSchemeColorIds(
+  id: string | null | undefined,
+  schemes: ColorScheme[] = DEFAULT_COLOR_SCHEMES,
+): string[] | null {
+  return getColorScheme(id, schemes).colorIds;
 }
 
 // ─── Build-your-own custom pattern (#49) ────────────────────────────────────
@@ -85,34 +102,44 @@ export const CUSTOM_SCHEME_ID = 'custom';
 // Max colors in a customer-built pattern (keeps it sane + the swatch row short).
 export const MAX_CUSTOM_PATTERN = 8;
 
-// Colors a customer can build a pattern from: every built-in bulb color EXCEPT
-// black (an off bulb). Ids only — the picker resolves hex/label via colorOf.
-export const BUILDABLE_COLOR_IDS: string[] = DEFAULT_COLORS.filter((c) => c.id !== 'black').map(
-  (c) => c.id,
-);
-
-const BUILDABLE_SET = new Set(BUILDABLE_COLOR_IDS);
+// The BUILT-IN default build-your-own palette: every built-in bulb color EXCEPT
+// black (an off bulb). #101 makes the live palette data-driven (operators can
+// curate which of these colors are offered). Ids only — the picker resolves
+// hex/label via colorOf.
+export const DEFAULT_BUILDABLE_COLOR_IDS: string[] = DEFAULT_COLORS.filter(
+  (c) => c.id !== 'black',
+).map((c) => c.id);
 
 // Sanitize a customer-built pattern from any source (client body / stored
-// snapshot): keep only valid buildable color ids, in order, capped at
-// MAX_CUSTOM_PATTERN. Returns [] for anything invalid. The scan itself is bounded
-// (slice up front) so an attacker-controlled megabyte array can't drive unbounded
-// work — a real client never sends more than MAX_CUSTOM_PATTERN ids anyway.
-export function sanitizeCustomPattern(input: unknown): string[] {
+// snapshot): keep only ids in the offered buildable list (defaults to the
+// built-ins), in order, capped at MAX_CUSTOM_PATTERN. Returns [] for anything
+// invalid. The scan itself is bounded (slice up front) so an attacker-controlled
+// megabyte array can't drive unbounded work — a real client never sends more than
+// MAX_CUSTOM_PATTERN ids anyway.
+export function sanitizeCustomPattern(
+  input: unknown,
+  buildable: string[] = DEFAULT_BUILDABLE_COLOR_IDS,
+): string[] {
   if (!Array.isArray(input)) return [];
+  const set = new Set(buildable);
   const out: string[] = [];
   for (const v of input.slice(0, MAX_CUSTOM_PATTERN * 4)) {
     if (out.length >= MAX_CUSTOM_PATTERN) break;
-    if (typeof v === 'string' && BUILDABLE_SET.has(v)) out.push(v);
+    if (typeof v === 'string' && set.has(v)) out.push(v);
   }
   return out;
 }
 
-// Known scheme ids = the presets + 'custom'. The approve route validates an
-// incoming colorSchemeId against this before freezing it into the snapshot, so a
-// junk id can't be persisted as "what the customer approved" (rendering already
-// falls back safely, but the authoritative record should be a real id).
-const KNOWN_SCHEME_IDS = new Set<string>([...COLOR_SCHEMES.map((s) => s.id), CUSTOM_SCHEME_ID]);
-export function isKnownColorSchemeId(id: unknown): id is string {
-  return typeof id === 'string' && KNOWN_SCHEME_IDS.has(id);
+// Whether a scheme id is one the customer could legitimately have chosen: a
+// scheme in the given list (defaults to the built-ins) or 'custom'. The approve
+// route validates an incoming colorSchemeId against the LIVE list before freezing
+// it into the snapshot, so a junk id can't be persisted as "what the customer
+// approved" (rendering already falls back safely, but the record should be real).
+export function isKnownColorSchemeId(
+  id: unknown,
+  schemes: ColorScheme[] = DEFAULT_COLOR_SCHEMES,
+): id is string {
+  if (typeof id !== 'string') return false;
+  if (id === CUSTOM_SCHEME_ID) return true;
+  return schemes.some((s) => s.id === id);
 }

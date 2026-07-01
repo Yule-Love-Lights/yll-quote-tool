@@ -25,7 +25,12 @@ import type { Bindings } from './bindings';
 import { matchPattern } from './patternSkus';
 import { miniKey, spritzerKey } from './concepts';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
-import { resolveSchemeColorIds, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import {
+  resolveSchemeColorIds,
+  CUSTOM_SCHEME_ID,
+  DEFAULT_COLOR_SCHEMES,
+  type ColorScheme,
+} from '@/lib/design/colorSchemes';
 
 const DEFAULT_COLOR_ID = 'warm-white';
 const DEFAULT_SPRITZER_SIZE: QuoteSpritzerSize = '24';
@@ -102,20 +107,36 @@ export type InstallDecision =
 export function resolveColorChoice(
   colorSchemeId: string | null | undefined,
   customPattern: string[] | null | undefined,
+  schemes: ColorScheme[] = DEFAULT_COLOR_SCHEMES,
 ): string[] | null {
   if (colorSchemeId === CUSTOM_SCHEME_ID) {
     const cp = Array.isArray(customPattern) ? customPattern.filter((c) => typeof c === 'string') : [];
     return cp.length > 0 ? cp : null;
   }
-  return resolveSchemeColorIds(colorSchemeId) ?? null;
+  return resolveSchemeColorIds(colorSchemeId, schemes) ?? null;
 }
 
 // Pull the color choice out of a raw approval_snapshot jsonb (untyped). Returns null
 // for a missing/un-approved snapshot → as-designed.
 export function colorChoiceFromSnapshot(snapshot: unknown): string[] | null {
-  const sel = (snapshot as { customerSelection?: { colorSchemeId?: unknown; customPattern?: unknown } } | null)
-    ?.customerSelection;
+  const sel = (
+    snapshot as {
+      customerSelection?: { colorSchemeId?: unknown; customPattern?: unknown; colorIds?: unknown };
+    } | null
+  )?.customerSelection;
   if (!sel) return null;
+  // #101: prefer the colorIds FROZEN at approve-time — resolved against the swatch
+  // list the customer actually saw, so a later scheme edit can't shift a historical
+  // order's materials (picture = order). Older snapshots have no frozen colorIds →
+  // re-resolve the id against the BUILT-IN defaults (tolerant, unchanged behavior).
+  if ('colorIds' in sel) {
+    const frozen = sel.colorIds;
+    if (frozen === null) return null;
+    if (Array.isArray(frozen)) {
+      const ids = frozen.filter((c): c is string => typeof c === 'string');
+      return ids.length > 0 ? ids : null;
+    }
+  }
   const schemeId = typeof sel.colorSchemeId === 'string' ? sel.colorSchemeId : null;
   const customPattern = Array.isArray(sel.customPattern)
     ? sel.customPattern.filter((c): c is string => typeof c === 'string')

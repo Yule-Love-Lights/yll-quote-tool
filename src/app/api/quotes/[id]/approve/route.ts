@@ -60,6 +60,8 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
+import { getAppSettings } from '@/lib/appSettings';
+import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
 // Audit fix (g1-route): server-side recompute of the approved selection mirrors
@@ -199,6 +201,7 @@ type ApprovalSnapshot = {
     takedownSelected: boolean;  // #4 — customer's premium-takedown choice
     colorSchemeId: string;      // #10 — customer's light color/pattern choice
     customPattern: string[];    // #49 — build-your-own pattern (color ids), [] unless colorSchemeId === 'custom'
+    colorIds: string[] | null;  // #101 — the RESOLVED effective colors, frozen at approve-time (null = as-designed) so a later swatch edit can't retro-change this order's materials
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
@@ -273,13 +276,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // in the snapshot as the authoritative record of what they approved. Validated
   // against the known scheme set (presets + 'custom'); anything unknown/absent
   // falls back to 'as-designed' (older clients / no design / junk POST).
-  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId)
+  // #101 — the LIVE operator-configured swatch list + build-your-own palette.
+  // Validate/sanitize + freeze the color choice against exactly what the customer
+  // saw, so a later Settings edit can't retro-change this approved order.
+  const { swatches } = await getAppSettings();
+  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, swatches.schemes)
     ? body.colorSchemeId
     : DEFAULT_COLOR_SCHEME_ID;
-  // #49 — build-your-own pattern, sanitized (valid palette ids only, capped).
+  // #49 — build-your-own pattern, sanitized (offered palette ids only, capped).
   // Only meaningful when they chose 'custom'; empty otherwise.
   const customPattern =
-    requestedSchemeId === CUSTOM_SCHEME_ID ? sanitizeCustomPattern(body.customPattern) : [];
+    requestedSchemeId === CUSTOM_SCHEME_ID
+      ? sanitizeCustomPattern(body.customPattern, swatches.buildableColorIds)
+      : [];
   // Collapse an empty custom selection back to the default so the frozen snapshot
   // is self-consistent: 'custom' with zero colors renders identically to
   // 'as-designed', so we store 'as-designed' rather than a contradictory record.
@@ -467,6 +476,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       takedownSelected,
       colorSchemeId,
       customPattern,
+      // #101 — freeze the resolved colors (from the live swatch list) so #92
+      // materials always match what the customer saw, even after a Settings edit.
+      colorIds: resolveColorChoice(colorSchemeId, customPattern, swatches.schemes),
       installTiming,
       installDiscountUsd: snapshotInstallDiscountUsd,
     },

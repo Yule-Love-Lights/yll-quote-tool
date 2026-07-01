@@ -10,10 +10,8 @@
 import { Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import {
-  COLOR_SCHEMES,
   CUSTOM_SCHEME_ID,
   DEFAULT_COLOR_SCHEME_ID,
-  BUILDABLE_COLOR_IDS,
   MAX_CUSTOM_PATTERN,
 } from '@/lib/design/colorSchemes';
 import { colorOf } from '@/components/design/editor-core/colors';
@@ -44,6 +42,8 @@ export function LightColorPicker() {
     setColorScheme,
     customPattern,
     setCustomPattern,
+    schemes,
+    buildableColorIds,
     locked,
     showDaylight,
     toggleDaylight,
@@ -114,7 +114,7 @@ export function LightColorPicker() {
           aria-disabled={locked || undefined}
           className={`flex flex-wrap gap-2.5 md:gap-3 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
         >
-          {COLOR_SCHEMES.map((s) => {
+          {schemes.map((s) => {
             const active = colorSchemeId === s.id;
             return (
               <button
@@ -207,7 +207,7 @@ export function LightColorPicker() {
               Add a color
             </p>
             <div className="flex flex-wrap gap-2" aria-label="Add a color to your pattern">
-              {BUILDABLE_COLOR_IDS.map((id) => (
+              {buildableColorIds.map((id) => (
                 <button
                   key={id}
                   type="button"

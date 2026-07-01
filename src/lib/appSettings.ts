@@ -10,6 +10,12 @@ import {
   DEFAULT_RENDER_SETTINGS,
   type RenderSettings,
 } from '@/components/design/editor-core/renderSettings';
+import {
+  type ColorScheme,
+  DEFAULT_COLOR_SCHEMES,
+  DEFAULT_BUILDABLE_COLOR_IDS,
+  DEFAULT_COLOR_SCHEME_ID,
+} from './design/colorSchemes';
 
 // Customer-facing portal settings (Settings → Customer Portal).
 export type PortalSettings = {
@@ -20,15 +26,30 @@ export type PortalSettings = {
   hideEarlyInstallDiscounts: boolean;
 };
 
+// Customer-portal light-color swatches (#101) — the presets the customer picks
+// from + the palette they can build a custom pattern from. Data-driven from
+// app_settings so staff can rename/reorder/add/remove swatches without a deploy.
+// Curated from the existing built-in palette (no new hex).
+export type SwatchSettings = {
+  schemes: ColorScheme[];
+  buildableColorIds: string[];
+};
+
 export type AppSettings = {
   colors: BulbColor[];
   defaults: ToolDefaults;
   render: RenderSettings;
   portal: PortalSettings;
+  swatches: SwatchSettings;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
   hideEarlyInstallDiscounts: false,
+};
+
+export const DEFAULT_SWATCH_SETTINGS: SwatchSettings = {
+  schemes: DEFAULT_COLOR_SCHEMES,
+  buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS,
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -36,6 +57,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaults: {},
   render: DEFAULT_RENDER_SETTINGS,
   portal: DEFAULT_PORTAL_SETTINGS,
+  swatches: DEFAULT_SWATCH_SETTINGS,
 };
 
 // ── Validators (also used by the API route on write) ────────────────────────
@@ -106,6 +128,78 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+// ── Swatch settings (#101) ──────────────────────────────────────────────────
+
+// Ensure the "as designed" scheme is present + first: it's the safe default
+// (no recolor) the portal opens on, and getColorScheme falls back to it — a list
+// without it could apply an unwanted override on load. Never removable in the UI.
+function withAsDesignedFirst(schemes: ColorScheme[]): ColorScheme[] {
+  const asDesigned =
+    schemes.find((s) => s.id === DEFAULT_COLOR_SCHEME_ID) ??
+    DEFAULT_COLOR_SCHEMES.find((s) => s.id === DEFAULT_COLOR_SCHEME_ID)!;
+  return [asDesigned, ...schemes.filter((s) => s.id !== DEFAULT_COLOR_SCHEME_ID)];
+}
+
+// Normalize a stored/posted scheme list against the current palette. Drops junk
+// entries + dup ids; a scheme's colorIds must be null ("as designed") or a
+// non-empty list of ids that exist in the palette (curate-from-existing, #101).
+// Returns null for a non-array (caller falls back to defaults); otherwise always
+// returns a list with "as designed" pinned first. Unlike colors, MISSING built-in
+// schemes are NOT re-added — removal is a first-class operator choice.
+export function normalizeSchemes(v: unknown, validColorIds: Set<string>): ColorScheme[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: ColorScheme[] = [];
+  const seen = new Set<string>();
+  for (const raw of v) {
+    if (!isPlainObject(raw)) continue;
+    const id = raw.id;
+    const label = raw.label;
+    if (typeof id !== 'string' || id.trim() === '' || seen.has(id)) continue;
+    if (typeof label !== 'string' || label.trim() === '') continue;
+    let colorIds: string[] | null;
+    if (raw.colorIds === null) {
+      colorIds = null;
+    } else if (Array.isArray(raw.colorIds)) {
+      const ids = raw.colorIds.filter((c): c is string => typeof c === 'string' && validColorIds.has(c));
+      if (ids.length === 0) continue; // a non-null pattern referencing no valid color is broken → drop
+      colorIds = ids;
+    } else {
+      continue;
+    }
+    seen.add(id);
+    out.push({ id, label, colorIds });
+  }
+  return withAsDesignedFirst(out);
+}
+
+// Normalize the build-your-own palette: real, non-black palette ids only, unique,
+// in order. Returns null for a non-array (caller falls back to defaults).
+export function normalizeBuildable(v: unknown, validColorIds: Set<string>): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const c of v) {
+    if (typeof c === 'string' && c !== 'black' && validColorIds.has(c) && !seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+// Sanitize a posted swatches patch to its known fields, validating colorIds/
+// buildable ids against the given palette. Unknown/invalid fields are dropped;
+// the caller merges over current so a partial write keeps the other field.
+export function sanitizeSwatches(v: unknown, validColorIds: Set<string>): Partial<SwatchSettings> {
+  if (!isPlainObject(v)) return {};
+  const out: Partial<SwatchSettings> = {};
+  const schemes = normalizeSchemes(v.schemes, validColorIds);
+  if (schemes) out.schemes = schemes;
+  const buildable = normalizeBuildable(v.buildableColorIds, validColorIds);
+  if (buildable) out.buildableColorIds = buildable;
+  return out;
+}
+
 // Ensure every built-in default color is present (matched by id). Built-ins can't
 // be deleted (designs reference them), so a built-in absent from a stored palette
 // is always one added to DEFAULT_COLORS *after* that palette was saved — surface it
@@ -128,11 +222,28 @@ export async function getAppSettings(): Promise<AppSettings> {
     return DEFAULT_APP_SETTINGS;
   }
   const map = new Map<string, unknown>((data ?? []).map((r) => [r.key as string, r.value]));
+  const colors = withMissingBuiltins(normalizeColors(map.get('colors')) ?? DEFAULT_COLORS);
+  // Schemes/buildable are validated against the LIVE palette so a stored scheme
+  // referencing a since-removed color is cleaned, keeping swatches consistent.
+  const validColorIds = new Set(colors.map((c) => c.id));
+  const rawSwatches = map.get('swatches');
+  const storedSchemes = normalizeSchemes(
+    isPlainObject(rawSwatches) ? rawSwatches.schemes : undefined,
+    validColorIds,
+  );
+  const storedBuildable = normalizeBuildable(
+    isPlainObject(rawSwatches) ? rawSwatches.buildableColorIds : undefined,
+    validColorIds,
+  );
   return {
-    colors: withMissingBuiltins(normalizeColors(map.get('colors')) ?? DEFAULT_COLORS),
+    colors,
     defaults: isPlainObject(map.get('defaults')) ? (map.get('defaults') as ToolDefaults) : {},
     render: { ...DEFAULT_RENDER_SETTINGS, ...sanitizeRender(map.get('render')) },
     portal: { ...DEFAULT_PORTAL_SETTINGS, ...sanitizePortal(map.get('portal')) },
+    swatches: {
+      schemes: storedSchemes ?? DEFAULT_SWATCH_SETTINGS.schemes,
+      buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
+    },
   };
 }
 
@@ -142,6 +253,7 @@ export async function putAppSettings(patch: {
   defaults?: ToolDefaults;
   render?: Partial<RenderSettings>;
   portal?: Partial<PortalSettings>;
+  swatches?: Partial<SwatchSettings>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -163,6 +275,16 @@ export async function putAppSettings(patch: {
     // Merge over current stored portal so a partial write keeps other fields.
     const cur = (await getAppSettings()).portal;
     rows.push({ key: 'portal', value: { ...cur, ...sanitizePortal(patch.portal) } });
+  }
+  if (patch.swatches !== undefined) {
+    // Validate against the live palette + merge over current so a partial write
+    // (e.g. only buildableColorIds) keeps the other field.
+    const current = await getAppSettings();
+    const validColorIds = new Set(current.colors.map((c) => c.id));
+    rows.push({
+      key: 'swatches',
+      value: { ...current.swatches, ...sanitizeSwatches(patch.swatches, validColorIds) },
+    });
   }
 
   if (rows.length > 0) {

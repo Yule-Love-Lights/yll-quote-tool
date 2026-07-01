@@ -43,6 +43,14 @@ vi.mock('@/lib/integrations/valorCheckout', () => ({
   isValorCheckoutEnabled: () => valorCheckout.enabled.value,
 }));
 
+// #101: the route reads the live swatch list via getAppSettings to validate +
+// freeze the color choice. Stub it to the factory defaults (built-in swatches) so
+// these approval tests don't route an app_settings query through the quote mock.
+vi.mock('@/lib/appSettings', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/appSettings')>('@/lib/appSettings');
+  return { ...actual, getAppSettings: async () => actual.DEFAULT_APP_SETTINGS };
+});
+
 import { POST } from './route';
 
 // A QuoteResult whose portal line items are: Santa's $1200, Gingerbread $1500
