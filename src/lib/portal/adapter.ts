@@ -169,6 +169,12 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // engine's exact label (custom labels never contain "Gingerbread Ridge",
       // so the shim above is a no-op for them).
       if (customRecommended.get(raw.label)) item.recommended = true;
+      // #12: Winter Wonderland + Stake are measurement-driven (no scene item to
+      // hold `recommended` when drawn as manual footage), so their staff-recommend
+      // flag rides the quote inputs — matched by the stable line id (#104).
+      // attachSceneLinks preserves this (it spreads ...li in the WW/Stake branch).
+      if (raw.id === 'winter-wonderland' && inputs?.winterWonderlandRecommended) item.recommended = true;
+      if (raw.id === 'stake-lighting' && inputs?.stakeLightingRecommended) item.recommended = true;
       return item;
     });
 }

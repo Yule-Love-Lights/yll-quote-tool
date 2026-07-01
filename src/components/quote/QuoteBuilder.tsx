@@ -2715,7 +2715,8 @@ export default function QuoteBuilder({
                   const sceneItemIds = linked?.sceneItemIds;
                   let checkbox: React.ReactNode = null;
                   if (designId && sceneItemIds && sceneItemIds.length > 0 && linked && RECOMMENDABLE_KINDS.has(linked.kind)) {
-                    // Design-driven per-unit row → toggle persists on the scene.
+                    // Design-driven per-unit row (incl. strand-drawn WW/Stake) →
+                    // toggle persists on the scene.
                     const checked = !!linked?.recommended;
                     checkbox = (
                       <input
@@ -2726,6 +2727,24 @@ export default function QuoteBuilder({
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
                         aria-label={`Recommend ${item.label}`}
                         title="Recommend this item to the customer"
+                      />
+                    );
+                  } else if (item.id === 'winter-wonderland' || item.id === 'stake-lighting') {
+                    // #12: MANUAL-footage Winter Wonderland / Stake (no scene strand
+                    // to hold the flag) → recommend rides the quote inputs. Saves on
+                    // the next Calculate, like the custom-row checkbox.
+                    const isWW = item.id === 'winter-wonderland';
+                    const checked = isWW ? form.winterWonderlandRecommended : form.stakeLightingRecommended;
+                    checkbox = (
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer accent-green-600"
+                        checked={checked}
+                        onChange={() =>
+                          set(isWW ? 'winterWonderlandRecommended' : 'stakeLightingRecommended', !checked)
+                        }
+                        aria-label={`Recommend ${item.label}`}
+                        title="Recommend this item to the customer (saves on Calculate)"
                       />
                     );
                   } else {
