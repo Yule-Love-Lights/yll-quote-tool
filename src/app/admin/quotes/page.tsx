@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
+import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
@@ -171,6 +172,7 @@ export default function QuotesAdminPage() {
   return (
     <OperatorShell active="quotes">
       <div className="max-w-6xl mx-auto">
+        <BillingSubNav active="quotes" />
         <div className="flex justify-between items-center mb-6">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
