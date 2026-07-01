@@ -373,6 +373,16 @@ describe('calculateQuote — per-quote price override (#104 PR3)', () => {
     const r = calculateQuote(emptyInputs({ spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }] }));
     expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95);
   });
+
+  it('a roofline TOTAL override wins over the #102 custom $/ft (last-write-wins)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', santasCustomRate: 20, // #102 → 100 × $20 = $2000
+      rooflineChoice: 'santas',
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 600 } }, // #104 total override
+    }));
+    expect(r.rooflineOptions.santas!.amount).toBe(600); // override wins over the $/ft
+    expect(r.lineItems.find((li) => li.id === 'roofline-santas')!.amount).toBe(600);
+  });
 });
 
 describe('calculateQuote — line-item categories', () => {
