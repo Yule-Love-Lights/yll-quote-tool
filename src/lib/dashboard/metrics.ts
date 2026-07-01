@@ -1,5 +1,6 @@
 import { DASHBOARD_CONFIG } from './config';
 import type { DashboardQuote, Kpis } from './types';
+import { deriveStatus } from '@/lib/quoteStatus';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -36,7 +37,18 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     const sentAt = q.quote_sent_at;
     const total = q.total ?? 0;
 
-    if (approvedAt) {
+    // B7 fix: derive the canonical status first so terminal-state orders
+    // (cancelled/declined/lost) are excluded from booked revenue even when
+    // customer_approved_at or deposit_paid_at is set.  deriveStatus returns
+    // the persisted status when it is a terminal/branch state, so this
+    // requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
+    const derivedStatus = deriveStatus(q);
+    const isTerminal =
+      derivedStatus === 'cancelled' ||
+      derivedStatus === 'declined' ||
+      derivedStatus === 'lost';
+
+    if (approvedAt && !isTerminal) {
       bookedRevenue += total;
       const approvedMs = new Date(approvedAt).getTime();
       if (approvedMs >= recentCutoff) bookedRevenueRecent += total;

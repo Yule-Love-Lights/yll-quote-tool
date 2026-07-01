@@ -75,6 +75,47 @@ describe('computeKpis — booked revenue', () => {
   });
 });
 
+describe('computeKpis — cancelled orders excluded from booked revenue (B7)', () => {
+  it('a cancelled order with customer_approved_at does NOT count as booked revenue', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ total: 5000, customer_approved_at: '2026-06-01T00:00:00Z', status: 'cancelled' }),
+        makeQuote({ total: 2000, customer_approved_at: '2026-06-01T00:00:00Z' }), // real booking
+      ],
+      NOW,
+    );
+    expect(k.bookedRevenue).toBe(2000); // only the non-cancelled one
+  });
+
+  it('a cancelled order with deposit_paid_at AND customer_approved_at does NOT inflate revenue', () => {
+    const k = computeKpis(
+      [
+        makeQuote({
+          total: 8000,
+          customer_approved_at: '2026-06-01T00:00:00Z',
+          deposit_paid_at: '2026-06-02T00:00:00Z',
+          status: 'cancelled',
+        }),
+      ],
+      NOW,
+    );
+    expect(k.bookedRevenue).toBe(0);
+    expect(k.bookedRevenueRecent).toBe(0);
+  });
+
+  it('declined and lost orders also do NOT count as booked revenue', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ total: 3000, customer_approved_at: '2026-06-01T00:00:00Z', status: 'declined' }),
+        makeQuote({ total: 4000, customer_approved_at: '2026-06-01T00:00:00Z', status: 'lost' }),
+        makeQuote({ total: 1000, customer_approved_at: '2026-06-01T00:00:00Z' }), // real booking
+      ],
+      NOW,
+    );
+    expect(k.bookedRevenue).toBe(1000);
+  });
+});
+
 describe('computeKpis — active quotes / customers', () => {
   it('counts only sent-but-not-approved quotes within the active window as active', () => {
     const recentSent = new Date(NOW.getTime() - 5 * 86400_000).toISOString();

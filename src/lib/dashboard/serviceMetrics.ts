@@ -6,6 +6,18 @@ import type {
   PermanentSummary,
   ServiceType,
 } from './types';
+import { deriveStatus } from '@/lib/quoteStatus';
+
+/**
+ * B7 fix: returns true when a quote is in a terminal state (cancelled/declined/
+ * lost). Terminal orders must not count toward booked/inCare/installed counts
+ * or revenue even when customer_approved_at or deposit_paid_at is set.
+ * Requires `status` to be present on the row (selected by DASHBOARD_QUOTES_SELECT).
+ */
+function isTerminalStatus(q: DashboardQuote): boolean {
+  const s = deriveStatus(q);
+  return s === 'cancelled' || s === 'declined' || s === 'lost';
+}
 
 /** NULL service_type rows are Holiday (the legacy default). */
 export function serviceTypeOf(q: DashboardQuote): ServiceType {
@@ -39,6 +51,7 @@ export function computeHolidayBreakdown(quotes: DashboardQuote[]): HolidayBreakd
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'holiday') continue;
     if (!q.customer_approved_at) continue;
+    if (isTerminalStatus(q)) continue; // B7 fix: exclude cancelled/declined/lost
 
     bookedTotal += 1;
 
@@ -75,10 +88,10 @@ export function computePermanentSummary(quotes: DashboardQuote[]): PermanentSumm
 
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'permanent') continue;
-    if (q.customer_approved_at) {
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
       inCare += 1;
       bookedRevenue += q.total ?? 0;
-    } else if (q.quote_sent_at) {
+    } else if (q.quote_sent_at && !isTerminalStatus(q)) {
       pending += 1;
     }
   }
@@ -93,10 +106,10 @@ export function computeEventSummary(quotes: DashboardQuote[]): EventSummary {
 
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'event') continue;
-    if (q.customer_approved_at) {
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
       booked += 1;
       bookedRevenue += q.total ?? 0;
-    } else if (q.quote_sent_at) {
+    } else if (q.quote_sent_at && !isTerminalStatus(q)) {
       pending += 1;
     }
   }
