@@ -48,6 +48,7 @@ import {
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
+import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
@@ -140,6 +141,43 @@ export default async function PortalPage({
       </main>
     );
   }
+  // Bug fix (#83 B3 UI): a quote in a terminal branch (declined/cancelled/lost)
+  // or under revision (changes_requested) must NOT show the approve+pay flow —
+  // the customer could otherwise pay/approve a quote staff already killed or are
+  // revising. The server already rejects it (the /approve status gate + /pay's
+  // approve-first guard); this is the matching UI gate. Skip the gate once the
+  // customer has approved (`quote.approval`) so a booked quote later marked
+  // 'cancelled' still renders its confirmation/booked view rather than this
+  // neutral notice. Mirrors the empty-quote guard above (page-level read-only
+  // fallback before the interactive UI mounts).
+  if (!quote.approval && !isPortalActionable(quote.quoteStatus)) {
+    const isRevising = quote.quoteStatus === 'changes_requested';
+    return (
+      <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
+        <QuoteViewTracker quoteId={quoteId} />
+        <h1 className="text-2xl font-semibold sm:text-3xl">
+          {isRevising ? 'Your quote is being updated' : 'This quote is no longer available'}
+        </h1>
+        <p className="mt-4 max-w-md text-base text-slate-300">
+          {quote.customer.firstName ? `Thanks, ${quote.customer.firstName} — ` : 'Thanks — '}
+          {isRevising
+            ? "we're revising your quote and we'll send you the updated version shortly."
+            : "this quote has been closed. If you'd like to move forward, just reach out and we'll be happy to help."}
+        </p>
+        <p className="mt-6 text-sm text-slate-400">
+          Questions? Call us at{' '}
+          <a
+            href={`tel:${team.phone.replace(/[^\d+]/g, '')}`}
+            className="font-medium text-amber-300 underline-offset-2 hover:underline"
+          >
+            {team.phone}
+          </a>
+          .
+        </p>
+      </main>
+    );
+  }
+
   // #22 — live Google reviews (rating + featured 5-star testimonials). Null when
   // GOOGLE_PLACE_ID isn't set, the Places API call fails, or Google returns no
   // usable reviews → the section keeps its mock block below.

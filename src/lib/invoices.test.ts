@@ -16,6 +16,7 @@ import {
   getInvoiceByJob,
   getInvoiceDetail,
   listInvoicesForAdmin,
+  markInvoicePaidManually,
   setInvoiceStatus,
   setInvoiceTaxOverride,
 } from './invoices';
@@ -85,6 +86,10 @@ function makeFakeSupabase(initial: { jobs?: Row[]; quotes?: Row[]; invoices?: Ro
       },
       eq(col: string, val: unknown) {
         state.filters.push((r) => r[col] === val);
+        return builder;
+      },
+      neq(col: string, val: unknown) {
+        state.filters.push((r) => r[col] !== val);
         return builder;
       },
       in(col: string, vals: unknown[]) {
@@ -182,6 +187,38 @@ describe('computeInvoiceTotals', () => {
     expect(t.total).toBe(100.01);
     expect(t.deposit_applied).toBe(33.34);
     expect(Number.isNaN(t.balance)).toBe(false);
+  });
+
+  // B4 fix: rush/takedown fees must be represented in the breakdown so that
+  // Subtotal − Discount + Fees + Tax === Total (to the cent).
+  it('includes rush + takedown fees in the breakdown and the identity holds', () => {
+    // E.g. $4,500 subtotal, $300 rush+takedown fees, 8.75% tax on $4,800 = $420
+    // total = $5,220.
+    const pricing = {
+      subtotalBeforeDiscount: 4500,
+      discountAmount: 0,
+      earlyInstallDiscountAmount: 0,
+      rushFeeAmount: 150,
+      takedownAmount: 150,
+      taxAmount: 420,
+      total: 5220,
+    };
+    const t = computeInvoiceTotals(pricing, 2610); // 50% deposit
+    expect(t.fees).toBe(300);
+    // Breakdown identity: subtotal − discount + fees + tax === total
+    expect(t.subtotal - t.discount + t.fees + t.tax).toBe(t.total);
+    expect(t.total).toBe(5220);
+    expect(t.balance).toBe(2610);
+  });
+
+  it('fees defaults to 0 when not present in the pricing input (backward compat)', () => {
+    const t = computeInvoiceTotals(
+      { subtotalBeforeDiscount: 920, discountAmount: 0, taxAmount: 80, total: 1000 },
+      500,
+    );
+    expect(t.fees).toBe(0);
+    // Identity: subtotal − discount + fees + tax === total
+    expect(t.subtotal - t.discount + t.fees + t.tax).toBeCloseTo(t.total, 2);
   });
 });
 
@@ -390,6 +427,63 @@ describe('setInvoiceTaxOverride', () => {
     sbRef.current = fake.client;
     expect(await setInvoiceTaxOverride('nope', true)).toBeNull();
   });
+
+  // B3 fix: a PAID invoice must never be re-opened by a tax-override change.
+  // Collecting the balance already settled the debt — re-pricing cannot resurrect it.
+  it('throws a 409-style error when the invoice is already paid (no resurrection)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        {
+          id: 'i1',
+          quote_id: 'q1',
+          deposit_applied: 2446.88,
+          subtotal: 4500,
+          discount: 0,
+          tax: 393.75,
+          total: 4893.75,
+          balance: 0,
+          credit_note: 0,
+          status: 'paid',
+          tax_overridden: false,
+          paid_at: '2026-06-01T12:00:00Z',
+        },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    await expect(setInvoiceTaxOverride('i1', true)).rejects.toThrow(/paid/i);
+    // The invoice must not be touched — status and paid_at stay unchanged.
+    expect(fake.tables.invoices[0]).toMatchObject({ status: 'paid', paid_at: '2026-06-01T12:00:00Z' });
+  });
+
+  it('still works normally for a draft invoice (no regression)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'draft', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    expect(inv!.status).toBe('draft');
+    expect(inv!.tax).toBe(0);
+  });
+
+  it('still works normally for an awaiting_payment invoice (no regression)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'awaiting_payment', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    // Exemption zeroes tax — deposit now > total, so it should settle to paid
+    // OR if balance is still positive it stays awaiting_payment.
+    // Here: total = 4500, deposit = 2446.88, balance = 2053.12 → still awaiting.
+    expect(inv!.tax).toBe(0);
+    expect(inv!.status).toBe('awaiting_payment');
+  });
 });
 
 describe('getInvoiceDetail', () => {
@@ -421,5 +515,51 @@ describe('getInvoiceDetail', () => {
   it('returns null when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await getInvoiceDetail('i1')).toBeNull();
+  });
+});
+
+// ─── DB: markInvoicePaidManually ────────────────────────────────────────────
+
+describe('markInvoicePaidManually', () => {
+  it('marks an awaiting_payment invoice paid, zeroes balance, stamps paid_at', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const inv = await markInvoicePaidManually('i1');
+    expect(inv).toBeTruthy();
+    expect(inv!.status).toBe('paid');
+    expect(inv!.balance).toBe(0);
+    expect(inv!.paid_at).toBeTruthy();
+  });
+
+  it('is idempotent — a paid invoice is returned as-is with no write', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+    const updateSpy = vi.spyOn(fake.client, 'from');
+
+    const inv = await markInvoicePaidManually('i1');
+    expect(inv!.status).toBe('paid');
+    // We can't easily spy on the update call depth, but we can verify the
+    // returned invoice is exactly the existing one (no new paid_at).
+    expect(inv!.paid_at).toBe('2026-01-01T00:00:00Z');
+    updateSpy.mockRestore();
+  });
+
+  it('throws when the invoice is cancelled', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'cancelled', balance: 500, paid_at: null }],
+    });
+    sbRef.current = fake.client;
+    await expect(markInvoicePaidManually('i1')).rejects.toThrow(/cancelled/);
+  });
+
+  it('returns null when the invoice does not exist', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await markInvoicePaidManually('nope')).toBeNull();
   });
 });

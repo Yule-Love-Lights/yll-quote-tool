@@ -72,6 +72,62 @@ function mkJob(status: string | null, ...amounts: number[]): WorkflowJob {
   return { status, line_items: amounts.map((amount) => ({ amount })) };
 }
 
+describe('computeWorkflowBoard — cancelled orders excluded from booked bucket (B7)', () => {
+  it('a cancelled order with deposit_paid_at does NOT count as booked', () => {
+    const board = computeWorkflowBoard([
+      mkQuote({
+        id: 'cancelled-booked',
+        total: 5000,
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z',
+        deposit_paid_at: '2026-06-04T00:00:00Z',
+        status: 'cancelled',
+      }),
+    ]);
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
+  });
+
+  it('a cancelled order with customer_approved_at does NOT count as approved', () => {
+    const board = computeWorkflowBoard([
+      mkQuote({
+        id: 'cancelled-approved',
+        total: 3000,
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z',
+        status: 'cancelled',
+      }),
+    ]);
+    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0 });
+    // A cancelled quote should not inflate any forward-progress bucket
+    expect(board.quotes.booked.count + board.quotes.approved.count + board.quotes.awaitingResponse.count).toBe(0);
+  });
+
+  it('declined and lost orders are also excluded from forward-progress buckets', () => {
+    const board = computeWorkflowBoard([
+      mkQuote({ id: 'd', total: 2000, quote_sent_at: '2026-06-02T00:00:00Z', status: 'declined' }),
+      mkQuote({ id: 'l', total: 1500, quote_sent_at: '2026-06-02T00:00:00Z', status: 'lost' }),
+    ]);
+    // Neither should appear in awaitingResponse (even though they have quote_sent_at)
+    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
+  });
+
+  it('a non-cancelled booked order still counts correctly', () => {
+    const board = computeWorkflowBoard([
+      mkQuote({
+        id: 'real-booked',
+        total: 4000,
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z',
+        deposit_paid_at: '2026-06-04T00:00:00Z',
+        status: 'booked',
+      }),
+    ]);
+    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000 });
+  });
+});
+
 describe('computeWorkflowBoard — jobs column', () => {
   it('buckets jobs by billing status, summing line-item amounts for the total', () => {
     const board = computeWorkflowBoard(

@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
+import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -171,6 +173,7 @@ export default function QuotesAdminPage() {
   return (
     <OperatorShell active="quotes">
       <div className="max-w-6xl mx-auto">
+        <BillingSubNav active="quotes" />
         <div className="flex justify-between items-center mb-6">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
@@ -342,10 +345,11 @@ export default function QuotesAdminPage() {
                         <button
                           disabled={busy === q.id}
                           onClick={() => remove(q.id)}
-                          className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded"
+                          className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded mr-1"
                         >
                           Delete
                         </button>
+                        <PipelineActionsMenu quoteId={q.id} onDone={refresh} />
                       </td>
                     </tr>
                   );

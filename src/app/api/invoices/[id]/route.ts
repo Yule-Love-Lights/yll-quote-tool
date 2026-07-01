@@ -47,7 +47,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (typeof body.taxOverridden !== 'boolean') {
     return NextResponse.json({ error: 'taxOverridden (boolean) is required' }, { status: 400 });
   }
-  const invoice = await setInvoiceTaxOverride(id, body.taxOverridden);
+  let invoice;
+  try {
+    invoice = await setInvoiceTaxOverride(id, body.taxOverridden);
+  } catch (err) {
+    // B3 fix: setInvoiceTaxOverride throws when the invoice is already paid.
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Cannot update invoice', code: 'invoice-paid' },
+      { status: 409 },
+    );
+  }
   if (!invoice) {
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
   }

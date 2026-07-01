@@ -86,6 +86,15 @@ function makeReq(retryGhl = false): NextRequest {
   return {
     headers: { get: () => null },
     nextUrl: { origin: 'https://quote.example.com', searchParams: params },
+    json: async () => { throw new Error('no body'); },
+  } as unknown as NextRequest;
+}
+
+function makeReqWithBody(body: Record<string, unknown>): NextRequest {
+  return {
+    headers: { get: () => null },
+    nextUrl: { origin: 'https://quote.example.com', searchParams: new URLSearchParams() },
+    json: async () => body,
   } as unknown as NextRequest;
 }
 const params = Promise.resolve({ id: ID });
@@ -233,6 +242,7 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-26T00:00:00Z',
       ghl_stage_synced_at: null,
+      status: 'sent',
     };
     const { client } = makeSb(alreadySent);
     sbRef.current = client;
@@ -243,5 +253,143 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(json.alreadySent).toBe(true);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quotes/[id]/send — channel split', () => {
+  const FULL_QUOTE = {
+    ...FRESH_QUOTE,
+    is_test: false,
+  };
+
+  beforeEach(() => {
+    process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'stage_bid_sent';
+    process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
+    hl.configured.value = true;
+    hl.updateOpportunity.mockResolvedValue({ id: 'opp_1' });
+  });
+
+  it('channel:sms — calls sendSms but NOT sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('sms');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('channel:email — calls sendEmail but NOT sendSms', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'email' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('email');
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('no body (default) — calls both sendSms and sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('both');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+  });
+
+  it('channel:both — calls both sendSms and sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('both');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+  });
+});
+
+describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () => {
+  it('treats a changes_requested quote as a fresh re-send: stamps status=sent, fires messaging', async () => {
+    const changesRequested = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-26T00:00:01Z',
+      status: 'changes_requested',
+    };
+    const { client, updatePayloads } = makeSb(changesRequested);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // Must NOT return alreadySent — this is a real re-send
+    expect(json.alreadySent).toBeUndefined();
+    expect(json.ok).toBe(true);
+    // status re-stamped to 'sent'
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    // messaging fired
+    expect(hl.sendSms).toHaveBeenCalled();
+    expect(hl.sendEmail).toHaveBeenCalled();
+  });
+
+  it('a plain sent/viewed quote still short-circuits (existing alreadySent guard unchanged)', async () => {
+    const alreadySent = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-26T00:00:01Z',
+      status: 'sent',
+    };
+    const { client } = makeSb(alreadySent);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('is_test changes_requested resend: stamps sent but never messages or moves GHL card', async () => {
+    const changesRequested = {
+      ...FRESH_QUOTE,
+      highlevel_contact_id: null,
+      highlevel_opportunity_id: null,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: null,
+      status: 'changes_requested',
+      is_test: true,
+    };
+    const { client, updatePayloads } = makeSb(changesRequested);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });

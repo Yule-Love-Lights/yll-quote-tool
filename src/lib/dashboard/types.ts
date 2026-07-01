@@ -6,6 +6,7 @@
 // existing dashboard imports from './types' keep working.
 export { type ServiceType, SERVICE_TYPES } from '@/lib/serviceType';
 import type { ServiceType } from '@/lib/serviceType';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 /** A `quotes` row trimmed to the columns the dashboard actually reads. */
 export type DashboardQuote = {
@@ -24,6 +25,14 @@ export type DashboardQuote = {
   highlevel_contact_id: string | null;
   /** Holiday/permanent/event. NULL on legacy rows; treat NULL as 'holiday'. */
   service_type: ServiceType | null;
+  /**
+   * Persisted status column (B7 fix: required so deriveStatus can identify
+   * terminal states like 'cancelled' that timestamps alone can't express).
+   * Optional for backward-compat with tests that don't set it.
+   */
+  status?: QuoteStatus | null;
+  /** Customer first-viewed timestamp (#68). Optional — not all surfaces select it. */
+  viewed_at?: string | null;
 };
 
 /** The 5 KPIs shown in the header strip. */
