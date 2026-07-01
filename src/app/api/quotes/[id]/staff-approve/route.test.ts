@@ -101,13 +101,17 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     expect(res.status).toBe(404);
   });
 
-  it('409s when the quote is in draft — illegal transition', async () => {
+  it('allows staff-approve from draft (offline/in-person close — draft→approved is legal per spec)', async () => {
+    // ALLOWED_TRANSITIONS explicitly includes draft → approved:
+    //   "approved from draft = deliberate offline/in-person close"
+    // Staff-approve is exactly that path, so the route must approve it (200).
     const { client } = makeSb({ ...BASE_SENT_QUOTE, status: 'draft', quote_sent_at: null });
     sbRef.current = client;
     const res = await POST(makeReq(), ctx());
     const json = await res.json();
-    expect(res.status).toBe(409);
-    expect(json.code).toBe('illegal-transition');
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.approved).toBe(true);
   });
 
   it('409s when the quote is booked — cannot re-approve a booked quote', async () => {
