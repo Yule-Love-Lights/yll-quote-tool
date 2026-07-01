@@ -130,3 +130,24 @@ const ALLOWED_TRANSITIONS: Readonly<Record<QuoteStatus, readonly QuoteStatus[]>>
 export function canTransition(from: QuoteStatus, to: QuoteStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
+
+// Bug fix (B3 UI): the customer portal shows the approve + pay controls only
+// while a quote is still live. A quote in a terminal branch (declined /
+// cancelled / lost) is closed; one in changes_requested is being revised.
+// In either case the customer must NOT be able to approve/pay — the server
+// already rejects it (the /approve status gate + /pay's approve-first guard),
+// this is the matching UI gate so they don't even SEE the controls.
+//
+// Takes a string so page/component code can pass PortalQuote.quoteStatus
+// (typed as string) without a cast; an unknown/undefined value is treated as
+// actionable (fail-open to the normal flow — the server is the real gate).
+const NON_ACTIONABLE_PORTAL_STATUSES: ReadonlySet<string> = new Set([
+  'declined',
+  'cancelled',
+  'lost',
+  'changes_requested',
+]);
+
+export function isPortalActionable(status: string | null | undefined): boolean {
+  return !status || !NON_ACTIONABLE_PORTAL_STATUSES.has(status);
+}

@@ -3,6 +3,7 @@ import {
   deriveStatus,
   canTransition,
   isQuoteStatus,
+  isPortalActionable,
   QUOTE_STATUSES,
   type QuoteStatus,
   type QuoteStatusRow,
@@ -165,5 +166,29 @@ describe('isQuoteStatus / QUOTE_STATUSES', () => {
   });
   it('covers all union members (no orphans)', () => {
     expect(QUOTE_STATUSES.length).toBe(9);
+  });
+});
+
+describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
+  it('allows the live pre-booked/booked states', () => {
+    for (const s of ['draft', 'sent', 'viewed', 'approved', 'booked'] as const) {
+      expect(isPortalActionable(s)).toBe(true);
+    }
+  });
+
+  it('blocks terminal states (declined/cancelled/lost)', () => {
+    expect(isPortalActionable('declined')).toBe(false);
+    expect(isPortalActionable('cancelled')).toBe(false);
+    expect(isPortalActionable('lost')).toBe(false);
+  });
+
+  it('blocks changes_requested (being revised)', () => {
+    expect(isPortalActionable('changes_requested')).toBe(false);
+  });
+
+  it('fails open for unknown / null / undefined (server is the real gate)', () => {
+    expect(isPortalActionable(null)).toBe(true);
+    expect(isPortalActionable(undefined)).toBe(true);
+    expect(isPortalActionable('some-future-status')).toBe(true);
   });
 });
