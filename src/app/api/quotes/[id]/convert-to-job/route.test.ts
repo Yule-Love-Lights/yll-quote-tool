@@ -78,6 +78,8 @@ const BASE_QUOTE = {
   deposit_paid_at: null,
   total: 1000,
   is_test: false,
+  // No customer Valor checkout in flight — the in-flight guard doesn't fire.
+  valor_order_ref: null,
 };
 
 beforeEach(() => {
@@ -131,6 +133,22 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 
+  it('409s (payment-in-flight) when a customer Valor checkout is in progress — no booking write, no job created', async () => {
+    // Approved, deposit not yet paid, but valor_order_ref set = a customer
+    // hosted-page checkout was started. Booking now would race the webhook and
+    // could drop the real payment, so we refuse.
+    const { client, updatePayloads } = makeSb({ ...BASE_QUOTE, valor_order_ref: 'ord_abc' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('payment-in-flight');
+    // No booking write and no job creation — the operator reconciles first.
+    expect(updatePayloads).toHaveLength(0);
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
+
   it('books successfully: writes deposit_paid_at, deposit_amount_usd, status=booked guarded by .is(deposit_paid_at, null), calls createJobFromQuote once', async () => {
     const { client, updatePayloads } = makeSb(BASE_QUOTE);
     sbRef.current = client;
@@ -176,10 +194,14 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     expect(updatePayloads[0].deposit_amount_usd).toBe(9999);
   });
 
-  it('is idempotent when the quote is already booked — returns alreadyBooked:true, no duplicate write', async () => {
+  it('is idempotent when the quote is already booked — returns alreadyBooked:true, no duplicate write (even with valor_order_ref set: a genuinely-paid Valor quote)', async () => {
+    // A Valor-paid quote has BOTH deposit_paid_at AND valor_order_ref set. The
+    // already-booked branch must win over the payment-in-flight guard, so this
+    // returns alreadyBooked (not the 409 payment-in-flight).
     const { client, updatePayloads } = makeSb({
       ...BASE_QUOTE,
       deposit_paid_at: '2026-07-01T01:00:00Z',
+      valor_order_ref: 'ord_paid',
     });
     sbRef.current = client;
 

@@ -36,6 +36,10 @@ type QuoteForBooking = {
   deposit_paid_at: string | null;
   total: number | null;
   is_test: boolean;
+  // Set by /api/quotes/[id]/pay when a customer Valor hosted-page checkout is
+  // initiated, BEFORE deposit_paid_at is stamped by the webhook. A non-null
+  // value with deposit_paid_at still null means a card payment is in flight.
+  valor_order_ref: string | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -66,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, customer_approved_at, deposit_paid_at, total, is_test')
+    .select('id, customer_approved_at, deposit_paid_at, total, is_test, valor_order_ref')
     .eq('id', id)
     .maybeSingle<QuoteForBooking>();
 
@@ -84,6 +88,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!quote.customer_approved_at) {
     return NextResponse.json(
       { error: 'Quote must be approved before converting to a job', code: 'not-approved' },
+      { status: 409 },
+    );
+  }
+
+  // Money-safety: refuse to manual-book while a customer Valor checkout is in
+  // flight. /api/quotes/[id]/pay stamps valor_order_ref before the customer
+  // completes the hosted-page deposit; the Valor webhook then books the quote
+  // via the SAME .is('deposit_paid_at', null) atomic claim this route uses. If
+  // we won that claim mid-checkout, the webhook would short-circuit as
+  // "alreadyPaid" and DROP the real payment (no valor_txn_id/receipt stored,
+  // and deposit_amount_usd left at the operator-typed value → the later invoice
+  // over-bills). Surfacing the ambiguity to the operator is the conservative
+  // choice: they confirm it settled (or reconcile in Valor) before booking by
+  // hand. A started-but-abandoned checkout also lands here — that's correct for
+  // a money op; the operator reconciles rather than us shadowing a live charge.
+  if (quote.valor_order_ref) {
+    return NextResponse.json(
+      {
+        error:
+          'A customer card payment is in progress for this quote — confirm it settled (or reconcile in Valor) before booking manually.',
+        code: 'payment-in-flight',
+      },
       { status: 409 },
     );
   }
