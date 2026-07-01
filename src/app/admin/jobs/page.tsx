@@ -7,6 +7,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import type { JobAdminCard } from '@/lib/jobs';
 import { JOB_STATUSES, type JobStatus } from '@/lib/jobStatus';
 import { JobStatusBadge, JOB_STATUS_LABELS } from '@/components/admin/JobStatusBadge';
+import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 
 // Operator BILLING list of jobs (ledger #83). A job is auto-created when a quote
 // is booked (deposit paid) and flows to_schedule → installed → requires_invoicing
@@ -172,9 +173,12 @@ export default function JobsAdminPage() {
                         Detail
                       </Link>
                       {j.quoteId && (
-                        <Link href={`/quote/${j.quoteId}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded">
+                        <Link href={`/quote/${j.quoteId}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1">
                           Quote
                         </Link>
+                      )}
+                      {j.quoteId && (
+                        <PipelineActionsMenu quoteId={j.quoteId} onDone={refresh} />
                       )}
                     </td>
                   </tr>

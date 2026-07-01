@@ -7,6 +7,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge, INVOICE_STATUS_LABELS } from '@/components/admin/InvoiceStatusBadge';
 import type { InvoiceAdminCard } from '@/lib/invoices';
 import { INVOICE_STATUSES, type InvoiceStatus } from '@/lib/invoiceStatus';
+import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 
 // Operator BILLING list of invoices (ledger #83). An invoice is auto-created when
 // a job is marked complete (full total, deposit applied → balance). Test invoices
@@ -160,9 +161,12 @@ export default function InvoicesAdminPage() {
                       <InvoiceStatusBadge status={inv.status} />
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
-                      <Link href={`/admin/invoices/${inv.id}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded">
+                      <Link href={`/admin/invoices/${inv.id}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1">
                         Detail
                       </Link>
+                      {inv.quoteId && (
+                        <PipelineActionsMenu quoteId={inv.quoteId} onDone={refresh} />
+                      )}
                     </td>
                   </tr>
                 ))}

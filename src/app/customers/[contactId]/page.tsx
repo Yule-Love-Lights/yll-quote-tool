@@ -7,6 +7,7 @@ import { statusOf } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
+import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
@@ -175,7 +176,8 @@ export default async function CustomerDetailPage({
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">
-                        <Link href={`/quote/${q.id}`} className="text-xs hover:underline" style={{ color: 'var(--op-primary)' }}>Open</Link>
+                        <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>
+                        <PipelineActionsMenu quoteId={q.id} />
                       </td>
                     </tr>
                   ))}

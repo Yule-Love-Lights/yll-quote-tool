@@ -6,6 +6,7 @@ import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -314,12 +315,6 @@ export default function QuotesAdminPage() {
                       <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         <Link
-                          href={`/admin/quotes/${q.id}`}
-                          className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
-                        >
-                          Details
-                        </Link>
-                        <Link
                           href={`/quote/${q.id}`}
                           className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1"
                         >
@@ -350,10 +345,11 @@ export default function QuotesAdminPage() {
                         <button
                           disabled={busy === q.id}
                           onClick={() => remove(q.id)}
-                          className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded"
+                          className="text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs px-2 py-1 rounded mr-1"
                         >
                           Delete
                         </button>
+                        <PipelineActionsMenu quoteId={q.id} onDone={refresh} />
                       </td>
                     </tr>
                   );
