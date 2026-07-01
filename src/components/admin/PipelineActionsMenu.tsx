@@ -43,6 +43,16 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       }
       return res;
     }
+    case 'create-job':
+      // Booked but job auto-create failed: re-run it via convert-to-job's
+      // already-booked branch (idempotent createJobFromQuote). depositUsd is
+      // ignored on an already-booked quote; force:true clears any stale
+      // valor_order_ref in-flight guard. No prompt needed.
+      return fetch(`/api/quotes/${q}/convert-to-job`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ depositUsd: 0, force: true }),
+      });
     case 'mark-complete':
       return rec.job ? fetch(`/api/jobs/${rec.job.id}/complete`, { method: 'POST' }) : null;
     case 'collect-payment':

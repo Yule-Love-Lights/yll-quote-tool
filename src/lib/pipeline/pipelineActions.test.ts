@@ -21,6 +21,14 @@ describe('pipelineActions', () => {
   it('approved (unbooked) → convert-to-job + details', () => {
     expect(kinds({ ...base, quoteStatus: 'approved' })).toEqual(['convert-to-job', 'details']);
   });
+  it('booked but job is null (auto-create failed at deposit) → create-job + details', () => {
+    expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: null }))
+      .toEqual(['create-job', 'details']);
+  });
+  it('booked WITH a job does not offer create-job', () => {
+    expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'to_schedule' } }))
+      .not.toContain('create-job');
+  });
   it('booked + job to_schedule → mark-complete, amend, cancel, details', () => {
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'to_schedule' } }))
       .toEqual(['mark-complete', 'amend', 'cancel', 'details']);

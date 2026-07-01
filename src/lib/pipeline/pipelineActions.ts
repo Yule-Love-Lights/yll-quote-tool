@@ -21,6 +21,7 @@ export type PipelineAction =
   | { kind: 'send'; channel: 'email' | 'sms' | 'both'; label: string }
   | { kind: 'mark-approved'; label: string }
   | { kind: 'convert-to-job'; label: string }
+  | { kind: 'create-job'; label: string }
   | { kind: 'mark-complete'; label: string }
   | { kind: 'collect-payment'; label: string }
   | { kind: 'close'; label: string }
@@ -61,6 +62,12 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
     case 'booked': {
       const job = r.job ?? null;
       const inv = r.invoice ?? null;
+      // Rare recovery: booked (deposit paid) but auto job-create failed, so no
+      // job exists. Offer (re)create — createJobFromQuote is idempotent, and
+      // convert-to-job's already-booked branch re-runs it.
+      if (!job) {
+        a.push({ kind: 'create-job', label: 'Create job' });
+      }
       if (job && job.status !== 'done' && job.status !== 'cancelled') {
         if (job.status === 'to_schedule' || job.status === 'scheduled' || job.status === 'installed') {
           a.push({ kind: 'mark-complete', label: 'Mark installed / complete' });
