@@ -44,21 +44,37 @@ describe('sceneToFewShotPieces', () => {
     expect(out.miniLightDetections).toHaveLength(0);
   });
 
-  it('converts surface-tagged mini strands to detections; skips grouped + railing strands', () => {
+  it('converts surface-tagged mini strands to detections (incl. railings); skips grouped members', () => {
     const out = sceneToFewShotPieces(
       scene([
         miniStrand('m1', 'bush', [100, 400, 300, 450], { stringCount: 3, wrapStyle: 'canopy' }),
-        miniStrand('m2', 'bush', [0, 0, 10, 10], { groupId: 'grp-1' }), // grouped → skip
-        miniStrand('m3', 'railing', [0, 0, 10, 10]), // railing → no analyzer vocab
+        miniStrand('m2', 'bush', [0, 0, 10, 10], { groupId: 'grp-1' }), // grouped member → skip (emitted via its group)
+        miniStrand('m3', 'railing', [100, 200, 500, 200], { stringCount: 2 }), // railing → NOW taught
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(2);
+    const bush = out.miniLightDetections.find((d) => d.type === 'bush')!;
+    expect(bush).toMatchObject({ type: 'bush', stringCount: 3, box: [0.1, 0.8, 0.2, 0.1], label: 'bush — 3 strings' });
+    const rail = out.miniLightDetections.find((d) => d.type === 'railing')!;
+    expect(rail).toMatchObject({ type: 'railing', stringCount: 2, label: 'railing — 2 strings' });
+  });
+
+  it('emits ONE railing detection for a grouped railing (boxing its member strands); skips curtains', () => {
+    const out = sceneToFewShotPieces(
+      scene([
+        miniStrand('rm1', 'railing', [100, 200, 300, 200], { groupId: 'rg' }),
+        miniStrand('rm2', 'railing', [300, 200, 500, 200], { groupId: 'rg' }),
+        { id: 'rg', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 4, memberIds: ['rm1', 'rm2'] },
+        miniStrand('cur', 'curtain', [0, 0, 100, 0], { stringCount: 5 }), // curtain → NOT taught
       ]),
       W, H,
     );
     expect(out.miniLightDetections).toHaveLength(1);
-    const d = out.miniLightDetections[0];
-    expect(d.type).toBe('bush');
-    expect(d.stringCount).toBe(3);
-    expect(d.box).toEqual([0.1, 0.8, 0.2, 0.1]);
-    expect(d.label).toBe('bush — 3 strings');
+    expect(out.miniLightDetections[0]).toMatchObject({ type: 'railing', stringCount: 4 });
+    // box spans both members: x 100→500, y 200 (padded height) → [0.1, …, 0.4, …]
+    expect(out.miniLightDetections[0].box[0]).toBeCloseTo(0.1, 5);
+    expect(out.miniLightDetections[0].box[2]).toBeCloseTo(0.4, 5);
   });
 
   it('converts box and polygon mini-areas, defaulting wrapStyle/stringCount', () => {

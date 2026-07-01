@@ -115,6 +115,47 @@ describe('computeHolidayBreakdown — totals', () => {
   });
 });
 
+describe('computeHolidayBreakdown — cancelled orders excluded (B7)', () => {
+  it('a cancelled holiday quote with customer_approved_at does NOT count as booked', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({
+        service_type: 'holiday',
+        customer_approved_at: '2026-09-10T00:00:00Z',
+        status: 'cancelled',
+        total: 4000,
+      }),
+      makeQuote({
+        service_type: 'holiday',
+        customer_approved_at: '2026-09-11T00:00:00Z',
+        total: 2000,
+      }),
+    ]);
+    expect(out.bookedTotal).toBe(1); // only the non-cancelled one
+  });
+});
+
+describe('computePermanentSummary — cancelled orders excluded (B7)', () => {
+  it('a cancelled permanent quote with customer_approved_at does NOT count as inCare or revenue', () => {
+    const out = computePermanentSummary([
+      makeQuote({ service_type: 'permanent', customer_approved_at: '2026-09-10T00:00:00Z', total: 10000, status: 'cancelled' }),
+      makeQuote({ service_type: 'permanent', customer_approved_at: '2026-09-10T00:00:00Z', total: 5000 }),
+    ]);
+    expect(out.inCare).toBe(1);
+    expect(out.bookedRevenue).toBe(5000);
+  });
+});
+
+describe('computeEventSummary — cancelled orders excluded (B7)', () => {
+  it('a cancelled event quote with customer_approved_at does NOT count as booked or revenue', () => {
+    const out = computeEventSummary([
+      makeQuote({ service_type: 'event', customer_approved_at: '2026-10-01T00:00:00Z', total: 6000, status: 'cancelled' }),
+      makeQuote({ service_type: 'event', customer_approved_at: '2026-10-02T00:00:00Z', total: 3000 }),
+    ]);
+    expect(out.booked).toBe(1);
+    expect(out.bookedRevenue).toBe(3000);
+  });
+});
+
 describe('computePermanentSummary', () => {
   it('inCare = count of approved permanent quotes; pending = sent-not-approved', () => {
     const out = computePermanentSummary(

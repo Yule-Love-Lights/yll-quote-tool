@@ -82,4 +82,17 @@ describe('PATCH /api/invoices/[id] — tax override', () => {
     const res = await PATCH(patchReq({ taxOverridden: false }), ctx());
     expect(res.status).toBe(404);
   });
+
+  // B3: setInvoiceTaxOverride throws on an already-paid invoice → the route must
+  // surface a clean 409 (not a 500) so the UI can show a sensible message.
+  it('409s when setInvoiceTaxOverride throws (invoice already paid)', async () => {
+    setInvoiceTaxOverride.mockRejectedValueOnce(
+      new Error('Cannot change the tax override on an already-paid invoice.'),
+    );
+    const res = await PATCH(patchReq({ taxOverridden: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('invoice-paid');
+    expect(json.error).toMatch(/paid/i);
+  });
 });

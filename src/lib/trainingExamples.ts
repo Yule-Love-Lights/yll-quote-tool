@@ -24,6 +24,7 @@ import {
 } from './designs';
 import { getQuoteRaw } from './quotes';
 import { sceneToFewShotPieces } from './design/sceneToFewShot';
+import { applyItemCorrections, type ItemCorrection } from './design/sceneCorrections';
 import { embedImage } from './embeddings';
 import { summarizeSeedFinalDiff } from './seedFinalDiff';
 import { computeBiasSummary, formatBiasNote, type SeedFinalPair } from './seedFinalStats';
@@ -344,6 +345,55 @@ export async function updateTrainingExample(
   const { error } = await sb.from('training_examples').update(row).eq('id', id);
   if (error) {
     console.error('updateTrainingExample error:', error);
+    return false;
+  }
+  return true;
+}
+
+function sanitizeTrainingInputs(inputs: TrainingExampleInputs): TrainingExampleInputs {
+  return {
+    santasFootage: asFootage(inputs.santasFootage),
+    santasDifficulty: asDifficulty(inputs.santasDifficulty),
+    gingerbreadFootage: asFootage(inputs.gingerbreadFootage),
+    gingerbreadDifficulty: asDifficulty(inputs.gingerbreadDifficulty),
+    ...(typeof inputs.winterWonderlandFootage === 'number'
+      ? { winterWonderlandFootage: asFootage(inputs.winterWonderlandFootage) }
+      : {}),
+    ...(typeof inputs.stakeLightingFootage === 'number'
+      ? { stakeLightingFootage: asFootage(inputs.stakeLightingFootage) }
+      : {}),
+  };
+}
+
+// #52 — staff correction of a saved example: fix the roofline footage/difficulty
+// (final_inputs) and/or per-item detections (final_scene — mini strand counts,
+// spritzer/wreath size, wreath/garland tier, garland length). Only the addressed
+// items' valid fields change; everything else in the scene is preserved verbatim.
+// No re-embed/recompute — the few-shot derives detections from final_scene live
+// at analyze time.
+export async function correctTrainingExample(
+  id: string,
+  patch: { finalInputs?: TrainingExampleInputs; itemCorrections?: Record<string, ItemCorrection> },
+): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+  const row: Record<string, unknown> = {};
+
+  if (patch.finalInputs) {
+    row.final_inputs = sanitizeTrainingInputs(patch.finalInputs);
+  }
+
+  const corrections = patch.itemCorrections;
+  if (corrections && Object.keys(corrections).length) {
+    const current = await getTrainingExample(id);
+    if (!current) return false;
+    row.final_scene = applyItemCorrections(current.final_scene, corrections);
+  }
+
+  if (!Object.keys(row).length) return true;
+  const { error } = await sb.from('training_examples').update(row).eq('id', id);
+  if (error) {
+    console.error('correctTrainingExample error:', error);
     return false;
   }
   return true;

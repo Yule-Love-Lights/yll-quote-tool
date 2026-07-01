@@ -46,6 +46,7 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { deriveStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -76,8 +77,16 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   customer_name: string | null;
   total: number | null;
+  // #107: the saved pricing result carries the "Full Yule" ceiling total; the
+  // Bid-Sent card value uses it (falling back to `total` on pre-#107 quotes).
+  result: { total?: number | null; fullYule?: { total?: number | null } | null } | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  deposit_paid_at: string | null;
+  viewed_at: string | null;
+  // The persisted lifecycle status — used to detect changes_requested and
+  // allow a legitimate re-send instead of short-circuiting on quote_sent_at.
+  status: string | null;
   // Audit fix (send-route-ghl-sync-state): the GHL stage-sync outcome is
   // tracked separately from quote_sent_at so a quote whose pipeline card
   // never advanced is discoverable + retryable.
@@ -115,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at, ghl_stage_synced_at, is_test')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -137,8 +146,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // through to re-run ONLY the GHL stage block — we do NOT re-stamp
   // quote_sent_at and we SKIP the customer SMS/email (already delivered on the
   // original send) so a retry can't double-message the customer.
+  //
+  // Bug fix (B1): a 'changes_requested' quote is a legitimate re-send —
+  // the customer asked for changes, staff edited the quote, and now need to
+  // deliver the revised version. canTransition('changes_requested','sent') is
+  // legal, and pipelineActions offers Send for this status. Fall through to
+  // the full send path (re-stamp status='sent', re-message, re-advance GHL)
+  // instead of short-circuiting on quote_sent_at.
+  const currentStatus = deriveStatus({
+    quote_sent_at: quote.quote_sent_at,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    viewed_at: quote.viewed_at,
+    status: (quote.status as import('@/lib/quoteStatus').QuoteStatus | null) ?? null,
+  });
+  const isResend = currentStatus === 'changes_requested';
   const isGhlRetry = !!quote.quote_sent_at && retryGhl && quote.ghl_stage_synced_at == null;
-  if (quote.quote_sent_at && !isGhlRetry) {
+  if (quote.quote_sent_at && !isGhlRetry && !isResend) {
     return NextResponse.json({
       ok: true,
       sentAt: quote.quote_sent_at,
@@ -166,7 +190,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // On a GHL-only retry the quote keeps its original sent timestamp.
-  const sentAt = quote.quote_sent_at ?? new Date().toISOString();
+  // On a resend (changes_requested → sent) we re-stamp with the current
+  // time so the audit trail reflects when the revised quote was delivered.
+  const sentAt = (isGhlRetry && !isResend)
+    ? (quote.quote_sent_at ?? new Date().toISOString())
+    : new Date().toISOString();
 
   // Stamp the DB FIRST (fresh send only), before the HL call, so we don't
   // double-fire the stage move on retries. Same pattern as /approve.
@@ -199,9 +227,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const stageSent = process.env.HIGHLEVEL_STAGE_QUOTE_SENT;
   const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
-  // Card title = the customer's name; value = the quote total.
+  // Card title = the customer's name; value = the "Full Yule" ceiling (#107),
+  // falling back to the billed total on pre-#107 quotes.
   const cardName = quote.customer_name?.trim() || 'Yule Love Lights quote';
-  const monetaryValue = typeof quote.total === 'number' ? quote.total : undefined;
+  const ceilingTotal = quote.result?.fullYule?.total;
+  const monetaryValue =
+    typeof ceilingTotal === 'number'
+      ? ceilingTotal
+      : typeof quote.total === 'number'
+        ? quote.total
+        : undefined;
 
   if (quote.is_test) {
     // Test Quote (#93): simulate the send — never move a real GHL pipeline card.

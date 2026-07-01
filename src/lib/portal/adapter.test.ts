@@ -184,4 +184,84 @@ describe('quoteRowToPortalQuote — recommended flag on custom line items (#12)'
     const stakes = portal.lineItems.find((li) => li.label === 'Pathway stakes')!;
     expect(stakes.recommended).toBeUndefined();
   });
+
+  it('carries WW/Stake recommend from the quote inputs onto their portal rows (#12)', () => {
+    const inputs = emptyInputs({
+      winterWonderlandFootage: 50,
+      winterWonderlandRecommended: true,
+      stakeLightingFootage: 40,
+      // stakeLightingRecommended left false
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const ww = portal.lineItems.find((li) => /Wonderland/.test(li.label))!;
+    const stake = portal.lineItems.find((li) => li.kind === 'stake-lighting')!;
+    expect(ww.recommended).toBe(true); // flag honored
+    expect(stake.recommended).toBeUndefined(); // not flagged
+  });
+});
+
+// ── Bug 3: portal status + decline_reason surfacing ───────────────────────
+// The loader must select status + decline_reason and thread them into PortalQuote
+// so the portal can gate the approve+pay UI for terminal/branch quotes.
+
+function rowWithStatus(
+  result: QuoteResult,
+  status: string | null,
+  decline_reason: string | null = null,
+): QuoteRowForPortal {
+  return {
+    ...rowWith(result),
+    status: status as QuoteRowForPortal['status'],
+    decline_reason,
+  };
+}
+
+describe('quoteRowToPortalQuote — quoteStatus + declineReason (Bug 3)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+
+  it('exposes quoteStatus on a normal sent/active quote (null persisted status)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWithStatus(result, null), photos: PHOTOS })!;
+    // No persisted status → deriveStatus yields 'draft' (no timestamps on this row)
+    expect(portal.quoteStatus).toBeDefined();
+    expect(typeof portal.quoteStatus).toBe('string');
+  });
+
+  it('exposes quoteStatus="declined" on a declined quote', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithStatus(result, 'declined', 'Too expensive'),
+      photos: PHOTOS,
+    })!;
+    expect(portal.quoteStatus).toBe('declined');
+    expect(portal.declineReason).toBe('Too expensive');
+  });
+
+  it('exposes quoteStatus="cancelled" on a cancelled quote', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithStatus(result, 'cancelled'),
+      photos: PHOTOS,
+    })!;
+    expect(portal.quoteStatus).toBe('cancelled');
+    expect(portal.declineReason).toBeNull();
+  });
+
+  it('exposes quoteStatus="changes_requested" on an under-revision quote', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithStatus(result, 'changes_requested'),
+      photos: PHOTOS,
+    })!;
+    expect(portal.quoteStatus).toBe('changes_requested');
+  });
+
+  it('a normal quote (sent, no persisted status) does not expose a terminal quoteStatus', () => {
+    const rowSent: QuoteRowForPortal = {
+      ...rowWith(result),
+      quote_sent_at: '2026-06-25T00:00:00Z',
+      status: null,
+      decline_reason: null,
+    };
+    const portal = quoteRowToPortalQuote({ row: rowSent, photos: PHOTOS })!;
+    // deriveStatus → 'sent' (timestamp-based), not a terminal/branch state
+    expect(['declined', 'cancelled', 'lost', 'changes_requested']).not.toContain(portal.quoteStatus);
+  });
 });

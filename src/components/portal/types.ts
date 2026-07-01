@@ -35,6 +35,13 @@ export type PortalLineItemKind =
 
 export type PortalLineItem = {
   id: string;
+  // #104: the engine's STABLE line id (`mini-<sceneItemId>`, `roofline-santas`,
+  // `winter-wonderland`, …), carried from result.lineItems. Used to link scene
+  // items by IDENTITY (not list position — closes the #90 same-count reorder/swap
+  // mis-map) and to key a per-quote price override. `id` above stays position-based
+  // for back-compat with the selection / package / approval-snapshot consumers.
+  // Undefined for legacy saved results (pre-#104) + custom/manual rows.
+  stableId?: string;
   kind: PortalLineItemKind;
   label: string;        // "Front-left tree"
   detail: string;       // "4 strands" or "180 ft"
@@ -188,6 +195,14 @@ export type PortalQuote = {
     fullName: string;
     address: string;
   };
+  // Bug fix (B3): the derived quote lifecycle status so the portal can gate the
+  // approve+pay UI. When this is a terminal/branch state (declined/cancelled/
+  // lost/changes_requested) the portal must show a read-only closed/under-
+  // revision state instead of the approve+pay controls.
+  quoteStatus?: string;
+  // The reason the customer declined (or null/absent for non-declines). Shown
+  // on the portal's closed-state screen to acknowledge the customer's feedback.
+  declineReason?: string | null;
   photo: {
     before: string;     // URL of daytime photo
     after: string;      // URL of a lit "after" image ('' since #36 — the

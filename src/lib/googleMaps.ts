@@ -94,15 +94,24 @@ export async function fetchStreetView(
   return { base64: buf.toString('base64'), mediaType: 'image/jpeg' };
 }
 
-// Check whether Street View imagery exists at the given location before
-// consuming a billable tile request. Returns true when a panorama is available.
-export async function hasStreetView(lat: number, lng: number): Promise<boolean> {
+// The panorama Google snaps to for a location, from the (free) Street View
+// metadata endpoint: its status + the pano's ACTUAL coords/id. Used to step the
+// camera along the road and land on real adjacent panoramas (#15).
+export type StreetViewPano = { status: string; panoId?: string; lat?: number; lng?: number };
+
+export async function resolveStreetViewPano(lat: number, lng: number): Promise<StreetViewPano> {
   const key = getKey();
   const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&source=outdoor&key=${key}`;
   const res = await fetchWithTimeout(url);
-  if (!res.ok) return false;
+  if (!res.ok) return { status: 'HTTP_ERROR' };
   const data = await res.json();
-  return data.status === 'OK';
+  return { status: data.status, panoId: data.pano_id, lat: data.location?.lat, lng: data.location?.lng };
+}
+
+// Check whether Street View imagery exists at the given location before
+// consuming a billable tile request. Returns true when a panorama is available.
+export async function hasStreetView(lat: number, lng: number): Promise<boolean> {
+  return (await resolveStreetViewPano(lat, lng)).status === 'OK';
 }
 
 // Static Maps API — top-down satellite view of the property.

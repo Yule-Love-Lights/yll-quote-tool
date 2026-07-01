@@ -126,6 +126,23 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(typeof syncWrite!.ghl_stage_synced_at).toBe('string');
   });
 
+  it('sets the Bid-Sent card value to the "Full Yule" ceiling when present (#107)', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      total: 4200, // billed (selected roofline)
+      result: { total: 4200, fullYule: { total: 5000 } }, // ceiling
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    // the linked card is advanced to Bid Sent with the CEILING as its value
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: 'stage_bid_sent', monetaryValue: 5000 }),
+    );
+  });
+
   it('persists ghl_sync_error (and still stamps quote_sent_at) when the GHL stage move throws', async () => {
     hl.updateOpportunity.mockRejectedValueOnce(new Error('GHL 500'));
     const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });
@@ -216,6 +233,7 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-26T00:00:00Z',
       ghl_stage_synced_at: null,
+      status: 'sent',
     };
     const { client } = makeSb(alreadySent);
     sbRef.current = client;
@@ -226,5 +244,73 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(json.alreadySent).toBe(true);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () => {
+  it('treats a changes_requested quote as a fresh re-send: stamps status=sent, fires messaging', async () => {
+    const changesRequested = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-26T00:00:01Z',
+      status: 'changes_requested',
+    };
+    const { client, updatePayloads } = makeSb(changesRequested);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // Must NOT return alreadySent — this is a real re-send
+    expect(json.alreadySent).toBeUndefined();
+    expect(json.ok).toBe(true);
+    // status re-stamped to 'sent'
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    // messaging fired
+    expect(hl.sendSms).toHaveBeenCalled();
+    expect(hl.sendEmail).toHaveBeenCalled();
+  });
+
+  it('a plain sent/viewed quote still short-circuits (existing alreadySent guard unchanged)', async () => {
+    const alreadySent = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-26T00:00:01Z',
+      status: 'sent',
+    };
+    const { client } = makeSb(alreadySent);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('is_test changes_requested resend: stamps sent but never messages or moves GHL card', async () => {
+    const changesRequested = {
+      ...FRESH_QUOTE,
+      highlevel_contact_id: null,
+      highlevel_opportunity_id: null,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: null,
+      status: 'changes_requested',
+      is_test: true,
+    };
+    const { client, updatePayloads } = makeSb(changesRequested);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });

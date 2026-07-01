@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -2321,6 +2321,17 @@ export async function renderEditor(
           ["metal", "Metal roof (flag)"],
         ];
         const sRoofFeature = uniq(sel.map((s) => s.roofFeature ?? ""));
+        // RELAY: side-of-house options are shared with the standalone design tool
+        // (#103). A staff tag shown for c9 + permanent strands; no pricing yet.
+        const showSideOfHouse =
+          sharedBulbType.length === 1 && (sharedBulbType[0] === "c9" || sharedBulbType[0] === "permanent");
+        const sideOfHouseOpts: [string, string][] = [
+          ["front", "Front"],
+          ["back", "Back"],
+          ["left", "Left"],
+          ["right", "Right"],
+        ];
+        const sSideOfHouse = uniq(sel.map((s) => s.sideOfHouse ?? ""));
         const sSurface = uniq(sel.map((s) => s.surface ?? ""));
         const sInc = uniq(sel.map((s) => s.included ?? true));
         const sWrap = uniq(sel.map((s) => s.wrapStyle ?? "canopy"));
@@ -2347,6 +2358,13 @@ export async function renderEditor(
           ${roofFeatureOpts.map(([v, l]) => `<option value="${v}" ${sRoofFeature.length === 1 && sRoofFeature[0] === v ? "selected" : ""}>${l}</option>`).join("")}
         </select>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Clip type for the materials list. Metal = no clip (flag for staff). No window/C7 lighting.</div>
+        ` : ""}
+        ${showSideOfHouse ? `
+        <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Side of house</label>
+        <select id="sel-side-of-house" class="yardstick-select">
+          <option value="">${sSideOfHouse.length > 1 ? "— mixed —" : "— none —"}</option>
+          ${sideOfHouseOpts.map(([v, l]) => `<option value="${v}" ${sSideOfHouse.length === 1 && sSideOfHouse[0] === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
         ` : ""}
         ${wrapSurface ? `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
@@ -2536,6 +2554,10 @@ export async function renderEditor(
       const roofSel = sb.querySelector("#sel-roof-feature") as HTMLSelectElement | null;
       roofSel?.addEventListener("change", () => {
         updateSelected((s) => ({ ...s, roofFeature: roofSel.value ? (roofSel.value as RoofFeature) : null }));
+      });
+      const sideSel = sb.querySelector("#sel-side-of-house") as HTMLSelectElement | null;
+      sideSel?.addEventListener("change", () => {
+        updateSelected((s) => ({ ...s, sideOfHouse: sideSel.value ? (sideSel.value as SideOfHouse) : null }));
       });
       const wrapSel = sb.querySelector("#sel-wrapstyle") as HTMLSelectElement | null;
       wrapSel?.addEventListener("change", () => {

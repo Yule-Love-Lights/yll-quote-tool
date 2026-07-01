@@ -28,6 +28,13 @@ function garland(id: string) {
 }
 
 const li = (id: string, kind: PortalLineItem['kind']): PortalLineItem => ({ id, kind, label: id, detail: '', price: 10 });
+// #104 PR2: a line item carrying the engine's stable id (post-#104 saved results).
+const liId = (
+  id: string,
+  kind: PortalLineItem['kind'],
+  stableId: string,
+  over: Partial<PortalLineItem> = {},
+): PortalLineItem => ({ id, kind, label: id, detail: '', price: 10, stableId, ...over });
 
 describe('attachSceneLinks', () => {
   const scene: Scene = {
@@ -220,5 +227,66 @@ describe('attachSceneLinks — count-mismatch guard (#33)', () => {
     const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
     expect(byId['roofline-santas']).toEqual(['rs1']);
     expect(byId['bush-1']).toBeUndefined();
+  });
+});
+
+// #104 PR2 — id-based linkage closes the #90 residual: a same-count reorder/swap
+// (which slipped past the #33 count guard and mis-linked positionally) now links
+// by the stable scene-item id instead. Legacy (no stableId) rows keep the zip.
+describe('attachSceneLinks — id-based linkage (#104 PR2, closes #90)', () => {
+  it('links by stable id, NOT list position — reorder/swap-proof', () => {
+    // Frozen at scene order [b1, b2]; the scene was later REORDERED to [b2, b1]
+    // (same count → the old positional zip mis-linked bush-1 → b2).
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b2', 'bush', { stringCount: 1 }), strand('b1', 'bush', { stringCount: 2 })] as SceneItem[],
+    };
+    const out = attachSceneLinks([liId('bush-1', 'bush', 'mini-b1'), liId('bush-2', 'bush', 'mini-b2')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    expect(byId['bush-1']).toEqual(['b1']); // correct despite the reorder (was ['b2'] positionally)
+    expect(byId['bush-2']).toEqual(['b2']);
+  });
+
+  it('drops a deleted item’s link but keeps survivors linked (vs the old skip-all)', () => {
+    // b1 deleted; only b2 remains. The #33 count guard would skip the WHOLE category.
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b2', 'bush', { stringCount: 1 })] as SceneItem[],
+    };
+    const out = attachSceneLinks([liId('bush-1', 'bush', 'mini-b1'), liId('bush-2', 'bush', 'mini-b2')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    expect(byId['bush-1']).toBeUndefined(); // its scene item is gone → link dropped
+    expect(byId['bush-2']).toEqual(['b2']); // survivor still links
+  });
+
+  it('carries recommended by id even after a reorder', () => {
+    const scene: Scene = {
+      yardsticks: [],
+      items: [
+        strand('b2', 'bush', { stringCount: 1 }),
+        strand('b1', 'bush', { stringCount: 1, recommended: true }),
+      ] as SceneItem[],
+    };
+    const out = attachSceneLinks([liId('bush-1', 'bush', 'mini-b1'), liId('bush-2', 'bush', 'mini-b2')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l]));
+    expect(byId['bush-1'].recommended).toBe(true); // b1 is recommended, matched by id
+    expect(byId['bush-2'].recommended).toBeUndefined();
+  });
+
+  it('strips a stale sceneItemIds when the stable-id item is gone', () => {
+    const scene: Scene = { yardsticks: [], items: [] as SceneItem[] };
+    const out = attachSceneLinks([liId('bush-1', 'bush', 'mini-gone', { sceneItemIds: ['old'] })], scene);
+    expect(out[0].sceneItemIds).toBeUndefined();
+  });
+
+  it('legacy rows (no stableId) still use the positional zip unchanged', () => {
+    const scene: Scene = {
+      yardsticks: [],
+      items: [strand('b1', 'bush', { stringCount: 1 }), strand('b2', 'bush', { stringCount: 1 })] as SceneItem[],
+    };
+    const out = attachSceneLinks([li('bush-1', 'bush'), li('bush-2', 'bush')], scene);
+    const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+    expect(byId['bush-1']).toEqual(['b1']);
+    expect(byId['bush-2']).toEqual(['b2']);
   });
 });

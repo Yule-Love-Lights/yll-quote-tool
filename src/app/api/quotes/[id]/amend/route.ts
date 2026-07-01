@@ -26,6 +26,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
 import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -193,32 +194,75 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // so the balance the operator collects matches the amended order. Skip a
   // cancelled invoice (don't resurrect it).
   if (invoice && invoice.status !== 'cancelled' && quote.result) {
-    const totals = computeInvoiceTotals(quote.result, depositPaid, {
-      taxOverridden: invoice.tax_overridden,
-    });
-    // Reconcile the invoice STATUS to the new balance (review MEDIUM): an
-    // amended-UP already-paid invoice reopens to awaiting_payment (more is owed);
-    // an amended-DOWN invoice that the deposit now covers settles to paid. A
-    // draft/awaiting invoice with a remaining balance is left as-is.
-    const reconciledStatus =
-      totals.balance <= 0 ? 'paid' : invoice.status === 'paid' ? 'awaiting_payment' : invoice.status;
-    const { error: invErr } = await sb
-      .from('invoices')
-      .update({
-        subtotal: totals.subtotal,
-        discount: totals.discount,
-        tax: totals.tax,
-        total: totals.total,
-        deposit_applied: totals.deposit_applied,
-        balance: totals.balance,
-        credit_note: totals.credit_note,
-        status: reconciledStatus,
-      })
-      .eq('id', invoice.id);
-    if (invErr) {
-      // The amendment trail is already recorded; an invoice-sync failure is
-      // reconcilable (re-run the amendment / edit the invoice). Surface it.
-      console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
+    // B10 fix (re-read): re-fetch the invoice immediately before the status
+    // decision + write to reduce the clobber window. A concurrent balance-webhook
+    // or mark-paid between the earlier read and this write could flip the invoice
+    // to 'paid'; without a re-read, the stale 'draft'/'awaiting_payment' status
+    // would overwrite that settlement. The re-read narrows (but cannot eliminate)
+    // that race; a fully atomic approach would require a Postgres RPC.
+    const freshInvoice = job ? await getInvoiceByJob(job.id) : null;
+    const invoiceForSync = freshInvoice ?? invoice;
+
+    if (invoiceForSync.status !== 'cancelled') {
+      const totals = computeInvoiceTotals(quote.result, depositPaid, {
+        taxOverridden: invoiceForSync.tax_overridden,
+      });
+      // Reconcile the invoice STATUS to the new balance (review MEDIUM): an
+      // amended-UP already-paid invoice reopens to awaiting_payment (more is owed);
+      // an amended-DOWN invoice that the deposit now covers settles to paid. A
+      // draft/awaiting invoice with a remaining balance is left as-is.
+      const reconciledStatus: InvoiceStatus =
+        totals.balance <= 0
+          ? 'paid'
+          : invoiceForSync.status === 'paid'
+            ? 'awaiting_payment'
+            : invoiceForSync.status;
+
+      // B10 fix (defense-in-depth guard): gate the bare status write through
+      // canTransition. Every transition the amend re-sync actually performs is
+      // already legal (draft/awaiting_payment→paid, paid→awaiting_payment, and the
+      // no-op self-transitions all live in invoiceStatus.ts's TRANSITIONS table),
+      // so this never blocks a real amend — it's a belt-and-suspenders check that
+      // catches a future illegal transition (e.g. resurrecting a cancelled invoice)
+      // instead of writing it blindly. A self-transition (status unchanged) is
+      // permitted so we still re-sync the money fields.
+      if (
+        reconciledStatus !== invoiceForSync.status &&
+        !canTransition(invoiceForSync.status, reconciledStatus)
+      ) {
+        console.error(
+          `[api/quotes/:id/amend] illegal invoice transition ${invoiceForSync.status} → ${reconciledStatus} (invoice ${invoiceForSync.id}) — skipping re-sync`,
+        );
+      } else {
+        // B10 fix (paid_at): maintain paid_at to match the reconciled status.
+        // Stamp on settle-to-paid (amend-down); clear on reopen (amend-up).
+        const paidAtPatch: Record<string, unknown> = {};
+        if (reconciledStatus === 'paid' && invoiceForSync.status !== 'paid') {
+          paidAtPatch.paid_at = new Date().toISOString();
+        } else if (reconciledStatus === 'awaiting_payment' && invoiceForSync.status === 'paid') {
+          paidAtPatch.paid_at = null;
+        }
+
+        const { error: invErr } = await sb
+          .from('invoices')
+          .update({
+            subtotal: totals.subtotal,
+            discount: totals.discount,
+            tax: totals.tax,
+            total: totals.total,
+            deposit_applied: totals.deposit_applied,
+            balance: totals.balance,
+            credit_note: totals.credit_note,
+            status: reconciledStatus,
+            ...paidAtPatch,
+          })
+          .eq('id', invoiceForSync.id);
+        if (invErr) {
+          // The amendment trail is already recorded; an invoice-sync failure is
+          // reconcilable (re-run the amendment / edit the invoice). Surface it.
+          console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
+        }
+      }
     }
   }
 

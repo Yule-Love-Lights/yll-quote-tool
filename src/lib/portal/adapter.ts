@@ -22,6 +22,7 @@ import type {
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import type { PortalPhotos } from './photos';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -74,6 +75,15 @@ export type QuoteRowForPortal = {
   // When the deposit webhook confirmed payment (#38). NULL = approved but not
   // yet paid. Optional for back-compat with older callers/tests.
   deposit_paid_at?: string | null;
+  // Bug fix (B3): status + decline_reason let the portal gate the approve+pay
+  // UI for terminal/branch quotes (declined/cancelled/lost/changes_requested).
+  // Optional for back-compat with older callers/tests that don't select them.
+  status?: QuoteStatus | null;
+  decline_reason?: string | null;
+  // quote_sent_at + viewed_at used by deriveStatus so the B3 status gate is
+  // accurate for legacy rows without a persisted status column.
+  quote_sent_at?: string | null;
+  viewed_at?: string | null;
   // Test Quote (ledger #93): drives the portal's "Simulate deposit paid" path.
   // Optional for back-compat with older callers/tests.
   is_test?: boolean | null;
@@ -161,11 +171,20 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
         label: raw.label.replace(/Gingerbread Ridge/g, 'Gingerbread'),
         detail,
         price: raw.amount,
+        // #104: carry the engine's stable id so attachSceneLinks can link by
+        // identity (not position). Absent on legacy results → positional fallback.
+        ...(raw.id ? { stableId: raw.id } : {}),
       };
       // A custom line item flagged `recommended` by staff (#12). Matched by the
       // engine's exact label (custom labels never contain "Gingerbread Ridge",
       // so the shim above is a no-op for them).
       if (customRecommended.get(raw.label)) item.recommended = true;
+      // #12: Winter Wonderland + Stake are measurement-driven (no scene item to
+      // hold `recommended` when drawn as manual footage), so their staff-recommend
+      // flag rides the quote inputs — matched by the stable line id (#104).
+      // attachSceneLinks preserves this (it spreads ...li in the WW/Stake branch).
+      if (raw.id === 'winter-wonderland' && inputs?.winterWonderlandRecommended) item.recommended = true;
+      if (raw.id === 'stake-lighting' && inputs?.stakeLightingRecommended) item.recommended = true;
       return item;
     });
 }
@@ -387,5 +406,17 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.
     isTest: row.is_test ?? false,
+    // Bug fix (B3): derive the current status from the row (explicit persisted
+    // status wins for branch/terminal states; timestamps are the fallback for
+    // legacy rows) and thread it into PortalQuote so the portal can gate the
+    // approve+pay UI for dead/under-revision quotes.
+    quoteStatus: deriveStatus({
+      quote_sent_at: row.quote_sent_at ?? null,
+      customer_approved_at: row.customer_approved_at ?? null,
+      deposit_paid_at: row.deposit_paid_at ?? null,
+      viewed_at: row.viewed_at ?? null,
+      status: row.status ?? null,
+    }) as string,
+    declineReason: row.decline_reason ?? null,
   };
 }

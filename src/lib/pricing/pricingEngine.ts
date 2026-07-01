@@ -80,14 +80,26 @@ export const BUSINESS_RULES = {
 
 export type RooflineDifficulty = 'easy' | 'medium' | 'hard';
 
-export type MiniLightItem = {
+// #104: the per-unit input types carry an OPTIONAL stable line id + the scene
+// item ids they cover, threaded from the design projection (applyProjectionToInputs)
+// so each priced LineItem can be identified by IDENTITY, not list position. Optional
+// for back-compat (manual/legacy quotes have no design) and additive — nothing reads
+// them yet in this PR. See LineItem + the projectScene thread.
+type LineIdentity = {
+  /** Stable per-line id (e.g. `mini-<sceneItemId>`), for override keying + scene links. */
+  id?: string;
+  /** The design scene item id(s) this line controls (for hide/toggle + scene links). */
+  sceneItemIds?: string[];
+};
+
+export type MiniLightItem = LineIdentity & {
   type: 'tree' | 'bush' | 'column' | 'railing' | 'curtain';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
 };
 
 export type SpritzerSize = '16' | '24' | '32';
-export type Spritzer = {
+export type Spritzer = LineIdentity & {
   size: SpritzerSize;
   quantity: number;
 };
@@ -103,7 +115,7 @@ export type WreathSize =
 // `bow` = Non-Decorated, `fullDecor` = Decorated (#17; the old `labor` tier was retired).
 export type DecorTier = 'bow' | 'fullDecor';
 
-export type Wreath = {
+export type Wreath = LineIdentity & {
   size: WreathSize;
   tier: DecorTier;
   quantity: number;
@@ -112,7 +124,7 @@ export type Wreath = {
 export type GarlandLength = '4.5ft' | '9ft';
 export type GarlandType = 'noble';
 
-export type GarlandItem = {
+export type GarlandItem = LineIdentity & {
   length: GarlandLength;
   type: GarlandType;
   tier: DecorTier;
@@ -121,7 +133,7 @@ export type GarlandItem = {
 
 // Standalone bow (#28) — bills flat per bow (no size/tier; the drawn size on a
 // design is visual-only, like every per-unit item).
-export type BowLineInput = {
+export type BowLineInput = LineIdentity & {
   quantity: number;
 };
 
@@ -138,6 +150,10 @@ export type Discount = {
 // an ordinary line item on the quote + portal. Priced exactly as entered (no
 // price-book lookup): line amount = amount × quantity.
 export type CustomLineItem = {
+  // #104: optional stable id so a per-quote price override binds to this custom
+  // row by identity (not list position). Generated once in the builder; no scene
+  // link (custom items aren't on the design).
+  id?: string;
   label: string;
   amount: number; // unit price
   quantity?: number; // default 1
@@ -210,6 +226,21 @@ export interface QuoteInputs {
   // (BUSINESS_RULES.earlyInstallDiscounts) comes off the item subtotal and the
   // rush-install fee is suppressed (mutually exclusive). Absent/'none' = no promo.
   installTiming?: EarlyInstallTiming;
+  // #104: per-quote line-item TOTAL overrides, keyed by the STABLE line id
+  // (`mini-<sceneItemId>`, `roofline-santas`/`-gingerbread`, `winter-wonderland`,
+  // `stake-lighting`, or a custom id). Sets a line's billed total for THIS quote
+  // only (e.g. free spritzers = $0) — global rates are untouched. Keyed by identity
+  // so it survives re-Calculate + design reorders; a key whose line no longer
+  // exists is simply ignored. `reason` is an optional staff note (not priced).
+  // Optional/additive — absent means no overrides.
+  lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
+  // Staff "recommend to the customer" flags (#12) for the measurement-driven
+  // Winter Wonderland + Stake lines. Per-unit items carry `recommended` on the
+  // scene item, but WW/Stake are typed-footage lines with no scene item when
+  // drawn manually — so the flag rides the quote inputs. NOT priced (like
+  // customLineItem.recommended); the adapter surfaces it to the portal.
+  winterWonderlandRecommended?: boolean;
+  stakeLightingRecommended?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -219,11 +250,36 @@ export interface QuoteInputs {
 export type LineItem = {
   label: string;
   amount: number;
+  // #104: optional stable line id + the scene item ids this line controls, carried
+  // from the input (per-unit lines) or a descriptive constant (roofline/WW/stake).
+  // Additive — the adapter/portal still key off position in this PR; a later PR
+  // switches scene-links + the per-quote price override to key off `id`.
+  id?: string;
+  sceneItemIds?: string[];
 };
 
 // One mutually-exclusive roofline option (Santa's or Gingerbread): the total
 // footage it covers and its dollar amount.
 export type RooflineOption = { footage: number; amount: number };
+
+// #107: the "Full Yule" ceiling — the quote priced with the MOST-EXPENSIVE
+// roofline (Gingerbread if present, else Santa's) instead of the selected one.
+// Additive/display-only: the billed figures on QuoteResult stay on the selected
+// roofline; this mirrors the same discount/fee/tax/deposit math on the ceiling
+// subtotal so the builder headline can show the sticker (= "The Full Yule" tier).
+export type FullYuleTotals = {
+  subtotalBeforeDiscount: number;
+  discountAmount: number;
+  earlyInstallDiscountAmount: number;
+  subtotalAfterDiscount: number;
+  rushFeeAmount: number;
+  takedownAmount: number;
+  taxableAmount: number;
+  taxAmount: number;
+  total: number;
+  depositAmount: number;
+  balanceDue: number;
+};
 
 export interface QuoteResult {
   lineItems: LineItem[];
@@ -248,6 +304,10 @@ export interface QuoteResult {
     santas: RooflineOption | null;
     gingerbread: RooflineOption | null;
   };
+  // #107: the ceiling figures (all items + the max roofline). Optional so quote
+  // results saved before #107 read back without it — consumers fall back to the
+  // selected figures (`fullYule?.total ?? total`).
+  fullYule?: FullYuleTotals;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -365,6 +425,7 @@ function rooflineLineItem(
       {
         label: `Santa's Roofline – ${inputs.santasFootage}ft (${rateLabel(inputs.santasDifficulty, inputs.santasCustomRate)})`,
         amount: options.santas.amount,
+        id: 'roofline-santas', // #104 stable id (matches the portal adapter's option id)
       },
     ];
   }
@@ -373,6 +434,7 @@ function rooflineLineItem(
       {
         label: `Gingerbread – ${options.gingerbread.footage}ft (front + ridge + sides)`,
         amount: options.gingerbread.amount,
+        id: 'roofline-gingerbread', // #104 stable id (matches the portal adapter's option id)
       },
     ];
   }
@@ -391,6 +453,7 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
         inputs.winterWonderlandDifficulty,
         inputs.winterWonderlandCustomRate,
       ),
+      id: 'winter-wonderland', // #104 stable id (single footage-driven line)
     },
   ];
 }
@@ -412,6 +475,7 @@ function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
             inputs.stakeLightingCustomRate,
           ),
       ),
+      id: 'stake-lighting', // #104 stable id (single footage-driven line)
     },
   ];
 }
@@ -433,6 +497,15 @@ const MINI_LIGHT_TYPE_LABELS: Record<MiniLightItem['type'], string> = {
 // qualifier (Jason, S5). Only TREES vary by wrap style (canopy vs trunk).
 const NO_WRAP_STYLE_TYPES: ReadonlySet<MiniLightItem['type']> = new Set(['column', 'railing', 'curtain']);
 
+// #104: carry a per-unit input's stable id + scene links onto its emitted LineItem,
+// only when present so legacy/manual lines stay a clean { label, amount }.
+function withIdentity(item: LineIdentity): Pick<LineItem, 'id' | 'sceneItemIds'> {
+  return {
+    ...(item.id ? { id: item.id } : {}),
+    ...(item.sceneItemIds ? { sceneItemIds: item.sceneItemIds } : {}),
+  };
+}
+
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
   return inputs.miniLightItems.map(item => {
     const count = units(item.stringCount);
@@ -441,12 +514,13 @@ function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
       return {
         label: `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${strings}`,
         amount: count * BUSINESS_RULES.miniLightRates.canopy,
+        ...withIdentity(item),
       };
     }
     const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
     const amount = count * rate;
     const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
-    return { label, amount };
+    return { label, amount, ...withIdentity(item) };
   });
 }
 
@@ -462,7 +536,7 @@ function calculateSpritzers(inputs: QuoteInputs): LineItem[] {
     const label = qty === 1
       ? `${item.size}" Spritzer`
       : `${item.size}" Spritzers × ${qty}`;
-    return { label, amount };
+    return { label, amount, ...withIdentity(item) };
   });
 }
 
@@ -491,7 +565,7 @@ function calculateWreaths(inputs: QuoteInputs): LineItem[] {
     const amount = price * qty;
     const base = `${WREATH_SIZE_LABELS[item.size]} Wreath – ${TIER_LABELS[item.tier]}`;
     const label = qty === 1 ? base : `${base} × ${qty}`;
-    return { label, amount };
+    return { label, amount, ...withIdentity(item) };
   });
 }
 
@@ -510,7 +584,7 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
     const amount = price * qty;
     const base = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland – ${TIER_LABELS[item.tier]}`;
     const label = qty === 1 ? base : `${base} × ${qty}`;
-    return { label, amount };
+    return { label, amount, ...withIdentity(item) };
   });
 }
 
@@ -537,6 +611,7 @@ function calculateBows(inputs: QuoteInputs): LineItem[] {
       return {
         label: qty === 1 ? 'Bow' : `Bows × ${qty}`,
         amount: qty * BUSINESS_RULES.standaloneBowPrice,
+        ...withIdentity(b),
       };
     });
 }
@@ -567,8 +642,53 @@ function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
           ? Math.floor(c.quantity)
           : 1;
       const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
-      return { label, amount: c.amount * qty };
+      return { label, amount: c.amount * qty, ...(c.id ? { id: c.id } : {}) };
     });
+}
+
+// ─────────────────────────────────────────────────────────
+// Per-quote line-item TOTAL overrides (#104)
+// ─────────────────────────────────────────────────────────
+
+// The override for a line id, or undefined. PRESENCE-keyed (`id in map`), NEVER
+// truthiness — 0 is a valid, intentional override ("free spritzers"). A missing
+// id, a non-finite, or a negative amount falls back to the computed price.
+function overrideAmount(
+  id: string | undefined,
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): number | undefined {
+  if (!id || !overrides || !Object.prototype.hasOwnProperty.call(overrides, id)) return undefined;
+  const a = overrides[id]?.amount;
+  return typeof a === 'number' && Number.isFinite(a) && a >= 0 ? a : undefined;
+}
+
+// Replace each line's billed amount with its override (by stable id), if any.
+function applyLineOverrides(
+  lines: LineItem[],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): LineItem[] {
+  if (!overrides) return lines;
+  return lines.map((li) => {
+    const a = overrideAmount(li.id, overrides);
+    return a === undefined ? li : { ...li, amount: a };
+  });
+}
+
+// A roofline TOTAL override targets the OPTION amount (both Santa's + Gingerbread
+// are exposed to the portal from rooflineOptions; the billed line is then built
+// from the overridden option, so the two stay consistent).
+function applyRooflineOverrides(
+  options: QuoteResult['rooflineOptions'],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): QuoteResult['rooflineOptions'] {
+  if (!overrides) return options;
+  const santasAmt = overrideAmount('roofline-santas', overrides);
+  const gingerAmt = overrideAmount('roofline-gingerbread', overrides);
+  return {
+    santas: options.santas && santasAmt !== undefined ? { ...options.santas, amount: santasAmt } : options.santas,
+    gingerbread:
+      options.gingerbread && gingerAmt !== undefined ? { ...options.gingerbread, amount: gingerAmt } : options.gingerbread,
+  };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -579,22 +699,31 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   // "Rest of the quote" — everything except the Santa's/Gingerbread choice
   // (C9/Winter Wonderland is independent and belongs here). Computed first so
   // the recommended roofline can be auto-picked relative to the $1,000 minimum.
-  const restItems: LineItem[] = [
-    ...calculateWinterWonderland(inputs),
-    ...calculateStakeLighting(inputs),
-    ...calculateMiniLights(inputs),
-    ...calculateSpritzers(inputs),
-    ...calculateWreaths(inputs),
-    ...calculateGarland(inputs),
-    ...calculateBows(inputs),
-    ...calculateCustomLineItems(inputs),
-  ];
+  // #104: per-quote line-item TOTAL overrides (keyed by stable id) are applied to
+  // the rest items + the roofline options up front, so restSubtotal, the roofline
+  // auto-choice, the billed subtotal, tax/total/deposit, and the $1,000 gate all
+  // reflect the overridden amounts consistently.
+  const overrides = inputs.lineItemPriceOverrides;
+  const restItems: LineItem[] = applyLineOverrides(
+    [
+      ...calculateWinterWonderland(inputs),
+      ...calculateStakeLighting(inputs),
+      ...calculateMiniLights(inputs),
+      ...calculateSpritzers(inputs),
+      ...calculateWreaths(inputs),
+      ...calculateGarland(inputs),
+      ...calculateBows(inputs),
+      ...calculateCustomLineItems(inputs),
+    ],
+    overrides,
+  );
   const restSubtotal = restItems.reduce((sum, item) => sum + item.amount, 0);
 
   // Both roofline options are exposed (so the builder + portal can show both),
   // but only the recommended one is billed — Santa's and Gingerbread are
-  // mutually exclusive (#17).
-  const rooflineOptions = rooflineOptionsFor(inputs);
+  // mutually exclusive (#17). A per-quote roofline TOTAL override (#104) applies
+  // to the option amount; the billed line is then built from the overridden option.
+  const rooflineOptions = applyRooflineOverrides(rooflineOptionsFor(inputs), overrides);
   const rooflineChoice = resolveRooflineChoice(inputs, restSubtotal, rooflineOptions);
 
   // Recommended roofline first (keeps it at the top of the breakdown), then
@@ -606,6 +735,71 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
 
   const subtotalBeforeDiscount = lineItems.reduce((sum, item) => sum + item.amount, 0);
 
+  // Billed figures — priced on the SELECTED roofline.
+  const tail = computeTotalsTail(subtotalBeforeDiscount, inputs);
+
+  // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
+  // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
+  // customer-side approval gate on the portal instead (see lib/portal/adapter
+  // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
+  // preserve the home.works payload contract (downstream still reads the flag).
+  const minimumApplied = false;
+
+  // #107 "Full Yule" ceiling — swap the SELECTED roofline for the MOST-EXPENSIVE
+  // one (Gingerbread if present, else Santa's) and re-run the identical
+  // discount/fee/tax/deposit math. Additive: the billed figures above are
+  // untouched; this only powers the operator builder's headline sticker.
+  const selectedRooflineAmount =
+    rooflineChoice === 'santas'
+      ? rooflineOptions.santas?.amount ?? 0
+      : rooflineChoice === 'gingerbread'
+        ? rooflineOptions.gingerbread?.amount ?? 0
+        : 0;
+  // The true MAX — not just "gingerbread if present". Naturally gingerbread
+  // (front + ridge + sides) ≥ santas (front), but a #104 per-quote override can
+  // set either amount arbitrarily, so take the actual larger of the two.
+  const maxRooflineAmount = Math.max(
+    rooflineOptions.santas?.amount ?? 0,
+    rooflineOptions.gingerbread?.amount ?? 0,
+  );
+  const fullSubtotalBeforeDiscount =
+    subtotalBeforeDiscount - selectedRooflineAmount + maxRooflineAmount;
+  const fullTail = computeTotalsTail(fullSubtotalBeforeDiscount, inputs);
+  const fullYule: FullYuleTotals = {
+    subtotalBeforeDiscount: fullSubtotalBeforeDiscount,
+    ...fullTail,
+  };
+
+  return {
+    lineItems,
+    subtotalBeforeDiscount,
+    discountAmount: tail.discountAmount,
+    earlyInstallDiscountAmount: tail.earlyInstallDiscountAmount,
+    subtotalAfterDiscount: tail.subtotalAfterDiscount,
+    minimumApplied,
+    rushFeeAmount: tail.rushFeeAmount,
+    takedownAmount: tail.takedownAmount,
+    taxableAmount: tail.taxableAmount,
+    taxAmount: tail.taxAmount,
+    total: tail.total,
+    depositAmount: tail.depositAmount,
+    balanceDue: tail.balanceDue,
+    rooflineChoice,
+    rooflineOptions,
+    fullYule,
+  };
+}
+
+// The subtotal → total tail: manual discount, early-install promo, rush + premium
+// fees, tax, 50% deposit split. Pure fn of the pre-discount subtotal + the fee/
+// discount inputs, so the SELECTED subtotal (billed) and the "Full Yule" ceiling
+// subtotal (#107) run through ONE formula — the two computations can't drift apart
+// in maintenance. (Each still rounds on its own input, so the outputs aren't a
+// linear function of each other — that's expected.)
+function computeTotalsTail(
+  subtotalBeforeDiscount: number,
+  inputs: QuoteInputs,
+): Omit<FullYuleTotals, 'subtotalBeforeDiscount'> {
   let discountAmount = 0;
   if (inputs.discount) {
     discountAmount = inputs.discount.type === 'percentage'
@@ -627,12 +821,6 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const earlyInstallDiscountAmount =
     Math.round(subtotalBeforeDiscount * earlyInstallRate * 100) / 100;
 
-  // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
-  // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
-  // customer-side approval gate on the portal instead (see lib/portal/adapter
-  // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
-  // preserve the home.works payload contract (downstream still reads the flag).
-  const minimumApplied = false;
   // Clamp at 0: an over-large manual discount and/or early-install promo must
   // never drive the item subtotal — and therefore the total/deposit — negative.
   // Valid quotes are unaffected (postDiscount − earlyInstall is already >= 0).
@@ -651,12 +839,9 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const balanceDue = Math.round((total - depositAmount) * 100) / 100;
 
   return {
-    lineItems,
-    subtotalBeforeDiscount,
     discountAmount,
     earlyInstallDiscountAmount,
     subtotalAfterDiscount,
-    minimumApplied,
     rushFeeAmount,
     takedownAmount,
     taxableAmount,
@@ -664,7 +849,5 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     total,
     depositAmount,
     balanceDue,
-    rooflineChoice,
-    rooflineOptions,
   };
 }
