@@ -72,6 +72,10 @@ export type QuoteFormData = {
   // #104: per-quote line-item TOTAL overrides, keyed by stable line id. Edited via
   // the breakdown's click-to-edit price; `{}` = none. Rides the inputs jsonb.
   lineItemPriceOverrides: Record<string, { amount: number; reason?: string }>;
+  // Staff "recommend" flags (#12) for the manual-footage Winter Wonderland + Stake
+  // lines (no scene item to hold the flag). Toggled on the breakdown; ride inputs.
+  winterWonderlandRecommended: boolean;
+  stakeLightingRecommended: boolean;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -103,6 +107,8 @@ export const initialFormData: QuoteFormData = {
   waiveMinimum: false,
   installTiming: 'none',
   lineItemPriceOverrides: {},
+  winterWonderlandRecommended: false,
+  stakeLightingRecommended: false,
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -171,6 +177,9 @@ export function buildQuoteInputs(
     ...(Object.keys(form.lineItemPriceOverrides).length > 0
       ? { lineItemPriceOverrides: form.lineItemPriceOverrides }
       : {}),
+    // #12: WW/Stake recommend flags — only sent when set (legacy-clean).
+    ...(form.winterWonderlandRecommended ? { winterWonderlandRecommended: true } : {}),
+    ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -269,5 +278,7 @@ export function inputsToFormData(
     installTiming: i.installTiming ?? 'none',
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
+    winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
+    stakeLightingRecommended: i.stakeLightingRecommended ?? false,
   };
 }

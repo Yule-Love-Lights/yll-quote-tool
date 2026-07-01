@@ -184,4 +184,19 @@ describe('quoteRowToPortalQuote — recommended flag on custom line items (#12)'
     const stakes = portal.lineItems.find((li) => li.label === 'Pathway stakes')!;
     expect(stakes.recommended).toBeUndefined();
   });
+
+  it('carries WW/Stake recommend from the quote inputs onto their portal rows (#12)', () => {
+    const inputs = emptyInputs({
+      winterWonderlandFootage: 50,
+      winterWonderlandRecommended: true,
+      stakeLightingFootage: 40,
+      // stakeLightingRecommended left false
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const ww = portal.lineItems.find((li) => /Wonderland/.test(li.label))!;
+    const stake = portal.lineItems.find((li) => li.kind === 'stake-lighting')!;
+    expect(ww.recommended).toBe(true); // flag honored
+    expect(stake.recommended).toBeUndefined(); // not flagged
+  });
 });

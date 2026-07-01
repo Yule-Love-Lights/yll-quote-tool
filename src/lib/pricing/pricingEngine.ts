@@ -234,6 +234,13 @@ export interface QuoteInputs {
   // exists is simply ignored. `reason` is an optional staff note (not priced).
   // Optional/additive — absent means no overrides.
   lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
+  // Staff "recommend to the customer" flags (#12) for the measurement-driven
+  // Winter Wonderland + Stake lines. Per-unit items carry `recommended` on the
+  // scene item, but WW/Stake are typed-footage lines with no scene item when
+  // drawn manually — so the flag rides the quote inputs. NOT priced (like
+  // customLineItem.recommended); the adapter surfaces it to the portal.
+  winterWonderlandRecommended?: boolean;
+  stakeLightingRecommended?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────
