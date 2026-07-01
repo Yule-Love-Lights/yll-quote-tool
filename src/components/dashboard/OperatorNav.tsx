@@ -15,6 +15,8 @@ const ITEMS: NavItem[] = [
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
+  { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
+  { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
   { label: 'Insights', href: '/insights', match: ['insights'] },
   { label: 'Settings', href: '/settings', match: ['settings', 'training'] },

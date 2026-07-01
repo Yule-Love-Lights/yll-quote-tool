@@ -4,6 +4,7 @@ import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
+import type { AmendmentTrailEntry } from './amend';
 
 export type QuoteListItem = {
   id: string;
@@ -252,6 +253,22 @@ export type QuoteRaw = {
   result: QuoteResult | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
+  // Booking + view-receipt lifecycle timestamps (#83 / #68). Included so
+  // deriveStatus(row) can resolve to booked/viewed on staff-side detail views
+  // without a second fetch. Additive — the edit flow ignores them.
+  deposit_paid_at: string | null;
+  viewed_at: string | null;
+  // The stored order total (dollars); may differ from result.total after an
+  // amendment. NULL on legacy / uncalculated rows.
+  total: number | null;
+  // The frozen approval snapshot jsonb (#83 Phase 4): the customer's signed
+  // selection plus the post-approval `amendments[]` trail. Untyped beyond the
+  // amendments array the detail view reads — old/future snapshots degrade
+  // gracefully.
+  approval_snapshot: {
+    amendments?: AmendmentTrailEntry[];
+    [key: string]: unknown;
+  } | null;
   // Explicit lifecycle status + display number (ledger #83 Phase 1). NULL on
   // legacy / pre-migration rows.
   status: QuoteStatus | null;
@@ -269,7 +286,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, status, decline_reason, quote_number, is_test',
+      'id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test',
     )
     .eq('id', id)
     .maybeSingle();
