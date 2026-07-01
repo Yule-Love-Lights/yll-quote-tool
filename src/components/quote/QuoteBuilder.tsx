@@ -49,6 +49,94 @@ const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
+// #104: click-to-edit a breakdown line's TOTAL (per-quote override). Shows the
+// price as a button; click → inline number field; Enter/blur commits, Esc cancels.
+// When overridden, a "custom · was $X ✕" chip shows the computed baseline + resets.
+// stopPropagation/preventDefault so it never toggles a recommendable row's <label>.
+function EditablePrice({
+  amount,
+  baseAmount,
+  overridden,
+  disabled,
+  onCommit,
+  onReset,
+}: {
+  amount: number;
+  baseAmount: number;
+  overridden: boolean;
+  disabled: boolean;
+  onCommit: (n: number) => void;
+  onReset: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
+  const start = () => {
+    if (disabled) return;
+    setVal(String(amount));
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const n = Number(val);
+    if (Number.isFinite(n) && n >= 0 && n !== amount) onCommit(n);
+  };
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <span className="text-gray-400">$</span>
+        <input
+          autoFocus
+          type="number"
+          min="0"
+          step="1"
+          className="w-24 border border-green-400 rounded px-1.5 py-0.5 text-sm text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-green-500"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      {overridden && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReset();
+          }}
+          disabled={disabled}
+          title={`Custom price for this quote — reset to ${usd(baseAmount)}`}
+          className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
+        >
+          custom · was {usd(baseAmount)} ✕
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        disabled={disabled}
+        title="Click to set a custom price for this quote"
+        className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
+          overridden ? 'text-amber-700' : 'text-gray-900'
+        }`}
+      >
+        {usd(amount)}
+      </button>
+    </span>
+  );
+}
+
 // A measurement polyline on the satellite image (normalized 0–1 coords).
 // #82 2c: `feature` is the AI's per-segment physical roof feature (mirrors
 // photoAnalysis RoofFeatureClass), carried into the seed so roofline strands
@@ -132,6 +220,11 @@ export default function QuoteBuilder({
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
   const [result, setResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
+  // #104: the overrides-stripped baseline (from /api/quote) — powers the "custom ·
+  // was $X" flag per overridden line. Seeded to the saved result on reopen (an
+  // existing override then reads "was <itself>" until the next Calculate returns a
+  // real baseline — harmless, and re-Calculate refreshes it).
+  const [baselineResult, setBaselineResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -998,6 +1091,21 @@ export default function QuoteBuilder({
   const updateCustomLineItem = (i: number, patch: Partial<CustomLineItem>) =>
     set('customLineItems', form.customLineItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
 
+  // #104: click-to-edit a line's TOTAL (per-quote override, keyed by stable id).
+  // Commit sets the override in form AND re-prices in place with the new map
+  // (bypassing async form state, like recommendRoofline); reset removes the key.
+  const commitLinePrice = (id: string, amount: number) => {
+    const next = { ...form.lineItemPriceOverrides, [id]: { amount } };
+    setForm((f) => ({ ...f, lineItemPriceOverrides: next }));
+    void runQuote(undefined, next);
+  };
+  const resetLinePrice = (id: string) => {
+    const next = { ...form.lineItemPriceOverrides };
+    delete next[id];
+    setForm((f) => ({ ...f, lineItemPriceOverrides: next }));
+    void runQuote(undefined, next);
+  };
+
   // Pick a HighLevel contact → pre-fill the customer block below.
   // Precedence: HL data wins if the contact has a value for that field. If
   // HL has nothing (e.g., contact was created without an email), we keep
@@ -1165,7 +1273,12 @@ export default function QuoteBuilder({
   // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
   // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
   // (#17 Phase 1b) without waiting on the async form-state update.
-  const runQuote = async (rooflineChoiceOverride?: RooflineChoice) => {
+  const runQuote = async (
+    rooflineChoiceOverride?: RooflineChoice,
+    // #104: an explicit overrides map to price with (bypasses async form state,
+    // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place.
+    overridesOverride?: QuoteFormData['lineItemPriceOverrides'],
+  ) => {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -1181,7 +1294,10 @@ export default function QuoteBuilder({
     // new quote), recalculating UPDATES that row in place — no more duplicate
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
-    const inputs = buildQuoteInputs(form, rooflineChoiceOverride);
+    const inputs = buildQuoteInputs(
+      overridesOverride ? { ...form, lineItemPriceOverrides: overridesOverride } : form,
+      rooflineChoiceOverride,
+    );
 
     try {
       // Flush a pending design edit first (#8 M6): /api/quote projects the
@@ -1210,6 +1326,7 @@ export default function QuoteBuilder({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
       setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       setSavedQuoteId(newQuoteId);
       // Persist the staff-confirmed satellite measurement lines onto the
@@ -1275,6 +1392,7 @@ export default function QuoteBuilder({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
       setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104
       if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -2586,6 +2704,11 @@ export default function QuoteBuilder({
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
                 );
+                // #104: baseline (overrides-stripped) amount per stable line id, for
+                // the "custom · was $X" chip on an overridden row.
+                const baseById = new Map(
+                  (baselineResult?.lineItems ?? []).filter((li) => li.id).map((li) => [li.id, li.amount]),
+                );
                 let customCursor = 0; // consume custom matchers in order
                 return rows.map((item, i) => {
                   const linked = breakdownLinked[i];
@@ -2626,13 +2749,28 @@ export default function QuoteBuilder({
                       );
                     }
                   }
+                  // #104: rows carrying a stable id (per-unit / Winter Wonderland /
+                  // Stake) get a click-to-edit total. Custom + roofline rows (no id
+                  // here) keep a plain price for now.
+                  const priceCell = item.id ? (
+                    <EditablePrice
+                      amount={item.amount}
+                      baseAmount={baseById.get(item.id) ?? item.amount}
+                      overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
+                      disabled={loading}
+                      onCommit={(n) => commitLinePrice(item.id!, n)}
+                      onReset={() => resetLinePrice(item.id!)}
+                    />
+                  ) : (
+                    <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                  );
                   const rowInner = (
                     <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
                         {item.label}
                       </span>
-                      <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                      {priceCell}
                     </>
                   );
                   // A recommendable row wraps its content in a <label> so clicking
