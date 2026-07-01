@@ -70,6 +70,14 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   // the projected item, so design-driven recommended items reach the portal.
   type ProjEntry = { sceneItemIds: string[]; recommended?: boolean };
   const proj = projectScene(scene);
+  // #104 PR2 — id-based linkage. Each projected per-unit line has a STABLE id
+  // (`mini-<sceneItemId>` etc.), and (post-#104 PR1) each saved line item carries
+  // the same id in `stableId`. Match by that id so a same-count reorder/swap can't
+  // mis-link (closes the #90 residual): identity, not list position. A line whose
+  // id no longer projects (its scene item was deleted) drops its link cleanly.
+  const projById = new Map<string, ProjEntry>(
+    proj.items.map((p) => [p.id, { sceneItemIds: p.sceneItemIds, recommended: p.recommended }]),
+  );
   const toEntries = (cat: ProjectedCategory): ProjEntry[] =>
     proj.items.filter((p) => p.category === cat).map((p) => ({ sceneItemIds: p.sceneItemIds, recommended: p.recommended }));
   const queue: Record<ProjectedCategory, ProjEntry[]> = {
@@ -125,7 +133,22 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
         : { ...li, sceneItemIds: stakeIds };
 
     const cat = KIND_TO_CATEGORY[li.kind];
-    if (cat && catLinkable[cat]) {
+    if (!cat) return li; // custom / unknown → no scene link
+
+    // #104 PR2: prefer IDENTITY-based matching when the line carries a stable id
+    // (any post-#104 saved result). Reorder/swap-proof; a deleted item drops its
+    // link (no live scene item to hide) instead of mis-linking to a sibling.
+    if (li.stableId !== undefined) {
+      const entry = projById.get(li.stableId);
+      if (!entry) return stripSceneLink(li); // its scene item is gone → no live link
+      return entry.recommended
+        ? { ...li, sceneItemIds: entry.sceneItemIds, recommended: true }
+        : { ...li, sceneItemIds: entry.sceneItemIds };
+    }
+
+    // Legacy fallback (pre-#104 results with no stable id): the original per-category
+    // positional zip, guarded by the count-mismatch check.
+    if (catLinkable[cat]) {
       const entry = queue[cat][cursor[cat]++];
       if (entry) {
         // Carry `recommended` from the projected scene item. Custom rows (no
@@ -135,6 +158,16 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
           : { ...li, sceneItemIds: entry.sceneItemIds };
       }
     }
-    return li; // custom / unknown / unmatched → no scene link
+    return li; // unmatched → no scene link
   });
+}
+
+// #104 PR2: a stable-id line whose scene item was deleted after Calculate has no
+// live scene item to hide — drop any stale sceneItemIds so the portal doesn't try
+// to hide a non-existent item.
+function stripSceneLink(li: PortalLineItem): PortalLineItem {
+  if (li.sceneItemIds === undefined) return li;
+  const rest = { ...li };
+  delete rest.sceneItemIds;
+  return rest;
 }

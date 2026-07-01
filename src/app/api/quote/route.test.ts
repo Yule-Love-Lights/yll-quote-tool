@@ -123,6 +123,47 @@ describe('POST /api/quote — validation hardening', () => {
       expect(save).not.toHaveBeenCalled();
     }
   });
+
+  it('accepts a valid lineItemPriceOverrides map (#104)', async () => {
+    const inputs = validInputs();
+    inputs.lineItemPriceOverrides = { 'spritzer-1': { amount: 0, reason: 'comp' }, 'roofline-santas': { amount: 600 } };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a baseline with the overrides stripped (#104)', async () => {
+    const inputs = validInputs();
+    inputs.spritzers = [{ size: '24', quantity: 1, id: 'spritzer-x' }];
+    inputs.lineItemPriceOverrides = { 'spritzer-x': { amount: 0 } };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { lineItems: { id?: string; amount: number }[] };
+      baseline: { lineItems: { id?: string; amount: number }[] };
+    };
+    expect(body.result.lineItems.find((li) => li.id === 'spritzer-x')!.amount).toBe(0); // override applied
+    expect(body.baseline.lineItems.find((li) => li.id === 'spritzer-x')!.amount).toBe(95); // baseline stripped
+  });
+
+  it('rejects a malformed lineItemPriceOverrides with 400 (#104)', async () => {
+    const bads: unknown[] = [
+      [], // array, not object
+      { x: 5 }, // value not an object
+      { x: { amount: -1 } }, // negative
+      { x: { amount: NaN } }, // NaN
+      { x: { amount: 'free' } }, // non-number
+      { x: { amount: 5, reason: 42 } }, // non-string reason
+    ];
+    for (const bad of bads) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.lineItemPriceOverrides = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('POST /api/quote — created_by actor trail (#90)', () => {

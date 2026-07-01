@@ -39,6 +39,9 @@ const fullForm: QuoteFormData = {
   discountAmount: 20,
   waiveMinimum: true, // non-default, to exercise the field
   installTiming: 'none', // manual-discount path; early-install has its own tests
+  lineItemPriceOverrides: {},
+  winterWonderlandRecommended: false,
+  stakeLightingRecommended: false,
 };
 
 describe('buildQuoteInputs', () => {
@@ -133,6 +136,27 @@ describe('buildQuoteInputs', () => {
     expect(restored.winterWonderlandCustomRate).toBe(12);
     // untouched types stay on their presets
     expect(restored.stakeLightingDifficulty).toBe('hard');
+  });
+
+  it('round-trips lineItemPriceOverrides; omits the key when empty (#104)', () => {
+    const ov = { 'spritzer-a': { amount: 0, reason: 'comp' }, 'roofline-santas': { amount: 600 } };
+    const inputs = buildQuoteInputs({ ...fullForm, lineItemPriceOverrides: ov });
+    expect(inputs.lineItemPriceOverrides).toEqual(ov);
+    expect('lineItemPriceOverrides' in buildQuoteInputs(fullForm)).toBe(false); // empty {} → omitted
+    const restored = inputsToFormData(fullForm.customer, inputs, fullForm.serviceType);
+    expect(restored.lineItemPriceOverrides).toEqual(ov);
+  });
+
+  it('sends WW/Stake recommend flags only when set; hydrates them back (#12)', () => {
+    const on = buildQuoteInputs({ ...fullForm, winterWonderlandRecommended: true, stakeLightingRecommended: true });
+    expect(on.winterWonderlandRecommended).toBe(true);
+    expect(on.stakeLightingRecommended).toBe(true);
+    const off = buildQuoteInputs(fullForm);
+    expect('winterWonderlandRecommended' in off).toBe(false);
+    expect('stakeLightingRecommended' in off).toBe(false);
+    const restored = inputsToFormData(fullForm.customer, on, fullForm.serviceType);
+    expect(restored.winterWonderlandRecommended).toBe(true);
+    expect(inputsToFormData({}, {}).stakeLightingRecommended).toBe(false); // legacy default
   });
 
   it('sends installTiming only when a month is picked; omits it for none (#40)', () => {

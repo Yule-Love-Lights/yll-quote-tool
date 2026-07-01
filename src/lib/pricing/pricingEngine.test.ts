@@ -268,6 +268,123 @@ describe('calculateQuote — custom $/ft override (#102)', () => {
   });
 });
 
+describe('calculateQuote — stable line ids (#104 PR1, additive)', () => {
+  it('carries the input stable id + sceneItemIds onto per-unit line items', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-x', sceneItemIds: ['x'] }],
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-y', sceneItemIds: ['y'] }],
+    }));
+    const bush = r.lineItems.find((li) => li.label.startsWith('Bush'))!;
+    expect(bush.id).toBe('mini-x');
+    expect(bush.sceneItemIds).toEqual(['x']);
+    expect(bush.amount).toBe(70); // 2 × $35 — pricing unchanged
+    expect(r.lineItems.find((li) => li.label.includes('Spritzer'))!.id).toBe('spritzer-y');
+  });
+
+  it('gives roofline / Winter Wonderland / Stake descriptive stable ids', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', rooflineChoice: 'santas',
+      winterWonderlandFootage: 20, winterWonderlandDifficulty: 'easy',
+      stakeLightingFootage: 20, stakeLightingDifficulty: 'easy',
+    }));
+    expect(r.lineItems.find((li) => li.label.includes("Santa's Roofline"))!.id).toBe('roofline-santas');
+    expect(r.lineItems.find((li) => li.label.startsWith('Winter Wonderland'))!.id).toBe('winter-wonderland');
+    expect(r.lineItems.find((li) => li.label.startsWith('Stake Lighting'))!.id).toBe('stake-lighting');
+  });
+
+  it('gives Gingerbread its own stable id', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 50, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.lineItems.find((li) => li.label.includes('Gingerbread'))!.id).toBe('roofline-gingerbread');
+  });
+
+  it('carries a custom line item id when present', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ id: 'custom-1', label: 'Flagpole', amount: 95 }],
+    }));
+    expect(r.lineItems.find((li) => li.label === 'Flagpole')!.id).toBe('custom-1');
+  });
+
+  it('omits id/sceneItemIds for legacy inputs that have none (stays {label,amount})', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 1 }],
+    }));
+    const bush = r.lineItems.find((li) => li.label.startsWith('Bush'))!;
+    expect('id' in bush).toBe(false);
+    expect('sceneItemIds' in bush).toBe(false);
+  });
+});
+
+describe('calculateQuote — per-quote price override (#104 PR3)', () => {
+  it('overrides a line to $0 (free spritzers) — presence-keyed, NOT truthy', () => {
+    const base = calculateQuote(emptyInputs({ spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }] }));
+    expect(base.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95); // 24" = $95
+
+    const r = calculateQuote(emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+      lineItemPriceOverrides: { 'spritzer-a': { amount: 0 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(0); // $0 applied, not dropped as falsy
+    expect(r.subtotalBeforeDiscount).toBe(0); // totals recompute from the override
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBe(0);
+  });
+
+  it('overrides to an arbitrary total and recomputes the subtotal', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-b' }], // $70
+      lineItemPriceOverrides: { 'mini-b': { amount: 50, reason: 'goodwill comp' } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'mini-b')!.amount).toBe(50);
+    expect(r.subtotalBeforeDiscount).toBe(50);
+  });
+
+  it('overrides the roofline TOTAL on both the billed line and the portal option', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', rooflineChoice: 'santas', // $1000
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 600 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'roofline-santas')!.amount).toBe(600);
+    expect(r.rooflineOptions.santas!.amount).toBe(600); // the portal's option row reflects it too
+  });
+
+  it('ignores an override whose line id is not present (orphan / deleted item)', () => {
+    const r = calculateQuote(emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+      lineItemPriceOverrides: { 'mini-deleted': { amount: 0 } },
+    }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95); // unchanged
+  });
+
+  it('falls back to the computed amount for a bad override value (negative / NaN / Infinity)', () => {
+    for (const bad of [-5, NaN, Infinity]) {
+      const r = calculateQuote(emptyInputs({
+        spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }],
+        lineItemPriceOverrides: { 'spritzer-a': { amount: bad } },
+      }));
+      expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95);
+    }
+  });
+
+  it('no overrides map → pricing unchanged', () => {
+    const r = calculateQuote(emptyInputs({ spritzers: [{ size: '24', quantity: 1, id: 'spritzer-a' }] }));
+    expect(r.lineItems.find((li) => li.id === 'spritzer-a')!.amount).toBe(95);
+  });
+
+  it('a roofline TOTAL override wins over the #102 custom $/ft (last-write-wins)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', santasCustomRate: 20, // #102 → 100 × $20 = $2000
+      rooflineChoice: 'santas',
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 600 } }, // #104 total override
+    }));
+    expect(r.rooflineOptions.santas!.amount).toBe(600); // override wins over the $/ft
+    expect(r.lineItems.find((li) => li.id === 'roofline-santas')!.amount).toBe(600);
+  });
+});
+
 describe('calculateQuote — line-item categories', () => {
   it('prices mini lights by string count and wrap style', () => {
     const r = calculateQuote(emptyInputs({
@@ -649,5 +766,95 @@ describe('calculateQuote — money-integrity guards', () => {
     }));
     expect(Number.isFinite(r.total)).toBe(true);
     expect(r.total).toBe(0);
+  });
+});
+
+describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
+  // The headline builder total shows the most-expensive version of the quote:
+  // all items + the max roofline (Gingerbread if present, else Santa's). This is
+  // additive — the billed `total`/`subtotalBeforeDiscount` stay on the SELECTED
+  // roofline; only `fullYule.*` reflects the ceiling.
+  it('uses Gingerbread even when Santa\'s is the recommended roofline', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+    }));
+    // Billed (selected = Santa's) — unchanged
+    expect(r.subtotalBeforeDiscount).toBe(1000);
+    expect(r.total).toBe(1087.5);       // 1000 + 8.75% tax
+    expect(r.depositAmount).toBe(543.75);
+    // Ceiling (Gingerbread)
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1400);
+    expect(r.fullYule?.total).toBe(1522.5);      // 1400 + 8.75% tax
+    expect(r.fullYule?.depositAmount).toBe(761.25);
+    expect(r.fullYule?.balanceDue).toBe(761.25);
+  });
+
+  it('equals the selected figures when Gingerbread IS the selected roofline (no-op)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.total).toBe(1522.5);
+    expect(r.fullYule?.total).toBe(r.total);
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(r.subtotalBeforeDiscount);
+  });
+
+  it('falls back to Santa\'s when there is no distinct Gingerbread footage', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // Santa's 1000, no gingerbread
+      rooflineChoice: 'santas',
+    }));
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1000);
+    expect(r.fullYule?.total).toBe(r.total);
+  });
+
+  it('equals the selected figures when there is no roofline at all', () => {
+    const r = calculateQuote(emptyInputs({
+      wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }], // rest only, 355
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(355);
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(355);
+    expect(r.fullYule?.total).toBe(r.total);
+  });
+
+  it('swaps the selected roofline for the max on top of the rest of the quote', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+      wreaths: [{ size: '30noble', tier: 'fullDecor', quantity: 1 }], // rest 355
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(1355);              // 1000 + 355
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(1755);    // 1400 + 355
+  });
+
+  it('uses the TRUE max roofline when a #104 override inverts the natural order', () => {
+    // Naturally Gingerbread ($1400) > Santa's ($1000), but a per-quote override
+    // makes Santa's $5000. The ceiling must follow the real max (Santa's), not
+    // blindly prefer Gingerbread — else it would land BELOW the billed total.
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'santas',
+      lineItemPriceOverrides: { 'roofline-santas': { amount: 5000 } },
+    }));
+    expect(r.rooflineOptions.santas?.amount).toBe(5000);
+    expect(r.subtotalBeforeDiscount).toBe(5000);           // billed = overridden Santa's
+    expect(r.fullYule?.subtotalBeforeDiscount).toBe(5000); // ceiling = true max, NOT Gingerbread 1400
+  });
+
+  it('applies a percentage discount to the ceiling subtotal, not the selected one', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400
+      rooflineChoice: 'santas',
+      discount: { type: 'percentage', amount: 0.1 },           // 10%
+    }));
+    expect(r.discountAmount).toBe(100);          // 10% of 1000
+    expect(r.fullYule?.discountAmount).toBe(140); // 10% of 1400
+    expect(r.fullYule?.total).toBe(1370.25);      // (1400 − 140) × 1.0875
   });
 });

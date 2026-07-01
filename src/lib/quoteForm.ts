@@ -69,6 +69,13 @@ export type QuoteFormData = {
   // Early-install promo (#40) staff pick: 'none' | 'september' (15%) | 'october'
   // (10%). Drives the engine discount + seeds the customer's portal timing.
   installTiming: EarlyInstallTiming;
+  // #104: per-quote line-item TOTAL overrides, keyed by stable line id. Edited via
+  // the breakdown's click-to-edit price; `{}` = none. Rides the inputs jsonb.
+  lineItemPriceOverrides: Record<string, { amount: number; reason?: string }>;
+  // Staff "recommend" flags (#12) for the manual-footage Winter Wonderland + Stake
+  // lines (no scene item to hold the flag). Toggled on the breakdown; ride inputs.
+  winterWonderlandRecommended: boolean;
+  stakeLightingRecommended: boolean;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -99,6 +106,9 @@ export const initialFormData: QuoteFormData = {
   discountAmount: 0,
   waiveMinimum: false,
   installTiming: 'none',
+  lineItemPriceOverrides: {},
+  winterWonderlandRecommended: false,
+  stakeLightingRecommended: false,
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -162,6 +172,14 @@ export function buildQuoteInputs(
     ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
     // Early-install promo (#40) — only sent when staff picked a month.
     ...(form.installTiming !== 'none' ? { installTiming: form.installTiming } : {}),
+    // #104: per-quote line-item overrides — only sent when at least one is set,
+    // so legacy quotes stay clean in the inputs jsonb.
+    ...(Object.keys(form.lineItemPriceOverrides).length > 0
+      ? { lineItemPriceOverrides: form.lineItemPriceOverrides }
+      : {}),
+    // #12: WW/Stake recommend flags — only sent when set (legacy-clean).
+    ...(form.winterWonderlandRecommended ? { winterWonderlandRecommended: true } : {}),
+    ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -258,5 +276,9 @@ export function inputsToFormData(
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
     installTiming: i.installTiming ?? 'none',
+    // #104: hydrate the per-quote overrides map (legacy quotes → {}).
+    lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
+    winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
+    stakeLightingRecommended: i.stakeLightingRecommended ?? false,
   };
 }

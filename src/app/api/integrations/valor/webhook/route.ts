@@ -37,7 +37,7 @@ import {
 import {
   sendSms,
   sendEmail,
-  updateOpportunityStage,
+  updateOpportunity,
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
@@ -353,9 +353,11 @@ export async function POST(req: NextRequest) {
     quote.total ??
     depositUsd * 2;
 
-  // 1. HighLevel: move the opportunity card → ⏰Approved. Falls back to the
-  //    SIGNED stage var (same stage id per the ledger) if the dedicated
-  //    APPROVED var isn't set.
+  // 1. HighLevel: move the opportunity card → ⏰Approved AND reset its value to
+  //    what the customer ACTUALLY approved (#107 — the card carried the "Full
+  //    Yule" ceiling pre-approval; `totalUsd` above is the approved-selection
+  //    total from the snapshot). Falls back to the SIGNED stage var (same stage
+  //    id per the ledger) if the dedicated APPROVED var isn't set.
   let stageUpdated = false;
   let stageError: string | undefined;
   const approvedStage =
@@ -368,7 +370,13 @@ export async function POST(req: NextRequest) {
     stageError = 'HIGHLEVEL_STAGE_QUOTE_APPROVED env var not set';
   } else {
     try {
-      await updateOpportunityStage(quote.highlevel_opportunity_id, approvedStage);
+      await updateOpportunity(quote.highlevel_opportunity_id, {
+        pipelineStageId: approvedStage,
+        // Guard 0/missing so a degenerate total never BLANKS a live card:
+        // updateOpportunity omits `undefined` but would push a literal `0`.
+        // Mirrors the attach route's `> 0` guard.
+        monetaryValue: totalUsd > 0 ? totalUsd : undefined,
+      });
       stageUpdated = true;
     } catch (err) {
       console.warn('[api/integrations/valor/webhook] HL stage move failed:', hlErrorMessage(err));
@@ -486,6 +494,15 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   if (invoice.status === 'paid') {
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
+  // B6 fix: a cancelled invoice must NEVER be resurrected by a late/retried webhook.
+  // Valor retries up to 3×: the booking may have been cancelled between the pay-link
+  // send and this webhook arriving. Ack 200 so Valor stops retrying; do NOT settle.
+  if (invoice.status === 'cancelled') {
+    console.warn(
+      `[api/integrations/valor/webhook] ignoring balance webhook for CANCELLED invoice ${invoice.id} (quote ${quoteId})`,
+    );
+    return NextResponse.json({ ok: true, ignored: 'invoice-cancelled' });
+  }
 
   // Verify the paid amount actually covers the balance (review CRITICAL). The
   // webhook is the source of truth — any approved bal_-tagged txn on this EPI
@@ -501,7 +518,12 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   }
 
   // Atomic claim — only the first webhook flips an unpaid invoice to paid (Valor
-  // retries up to 3×), so the job-close fires at most once.
+  // retries up to 3×), so the job-close fires at most once. B6 hardening (TOCTOU):
+  // claim ONLY when the status is still a settle-able state (draft/awaiting_payment)
+  // rather than `.neq('status','paid')`. This closes the residual race where the
+  // invoice flips to `cancelled` between the fast-path guard read above and this
+  // write — a cancelled invoice no longer matches the claim, so it can never be
+  // settled here (the .neq form would have let cancelled through).
   const paidAt = new Date().toISOString();
   const { data: claimed, error: claimErr } = await sb
     .from('invoices')
@@ -513,7 +535,7 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
       valor_receipt_url: event.receiptUrl,
     })
     .eq('id', invoice.id)
-    .neq('status', 'paid')
+    .in('status', ['draft', 'awaiting_payment'])
     .select('id');
   if (claimErr) {
     console.error('[api/integrations/valor/webhook] balance settle write failed:', claimErr);

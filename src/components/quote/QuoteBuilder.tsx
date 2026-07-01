@@ -49,6 +49,126 @@ const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
+// #104: a per-quote TOTAL override and the #102 custom $/ft on the SAME line
+// (roofline / Winter Wonderland / Stake) are mutually exclusive (last-write-wins,
+// surfaced in the UI). These maps link a line's stable override id ⇄ that type's
+// $/ft form fields so setting one clears the other. Per-unit lines have no $/ft,
+// so they're absent (no clearing).
+type RateFieldKeys = {
+  diffKey: 'santasDifficulty' | 'gingerbreadDifficulty' | 'winterWonderlandDifficulty' | 'stakeLightingDifficulty';
+  rateKey: 'santasCustomRate' | 'gingerbreadCustomRate' | 'winterWonderlandCustomRate' | 'stakeLightingCustomRate';
+  fallback: DifficultyChoice;
+};
+const OVERRIDE_ID_TO_RATE: Record<string, RateFieldKeys> = {
+  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: 'medium' },
+  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: 'medium' },
+  'winter-wonderland': { diffKey: 'winterWonderlandDifficulty', rateKey: 'winterWonderlandCustomRate', fallback: 'medium' },
+  'stake-lighting': { diffKey: 'stakeLightingDifficulty', rateKey: 'stakeLightingCustomRate', fallback: 'easy' },
+};
+const RATE_KEY_TO_OVERRIDE_ID: Record<string, string> = {
+  santasCustomRate: 'roofline-santas',
+  gingerbreadCustomRate: 'roofline-gingerbread',
+  winterWonderlandCustomRate: 'winter-wonderland',
+  stakeLightingCustomRate: 'stake-lighting',
+};
+
+// #104: click-to-edit a breakdown line's TOTAL (per-quote override). Shows the
+// price as a button; click → inline number field; Enter/blur commits, Esc cancels.
+// When overridden, a "custom · was $X ✕" chip shows the computed baseline + resets.
+// stopPropagation/preventDefault so it never toggles a recommendable row's <label>.
+function EditablePrice({
+  amount,
+  baseAmount,
+  overridden,
+  disabled,
+  onCommit,
+  onReset,
+}: {
+  amount: number;
+  baseAmount: number;
+  overridden: boolean;
+  disabled: boolean;
+  onCommit: (n: number) => void;
+  onReset: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
+  const start = () => {
+    if (disabled) return;
+    setVal(String(amount));
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const n = Number(val);
+    if (Number.isFinite(n) && n >= 0 && n !== amount) onCommit(n);
+  };
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <span className="text-gray-400">$</span>
+        <input
+          autoFocus
+          type="number"
+          min="0"
+          step="1"
+          className="w-24 border border-green-400 rounded px-1.5 py-0.5 text-sm text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-green-500"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      </span>
+    );
+  }
+  // Only claim a "was $X" when we have a DISTINCT computed baseline. On reopening a
+  // saved quote the baseline seeds from the (overridden) saved result, so
+  // baseAmount === amount until the next Calculate — show a plain "custom" chip
+  // then, not a misleading "was <the override itself>" (#104 review, low).
+  const showBase = baseAmount !== amount;
+  return (
+    <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      {overridden && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReset();
+          }}
+          disabled={disabled}
+          title={
+            showBase
+              ? `Custom price for this quote — reset to ${usd(baseAmount)}`
+              : 'Custom price for this quote — reset'
+          }
+          className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
+        >
+          custom{showBase ? ` · was ${usd(baseAmount)}` : ''} ✕
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        disabled={disabled}
+        title="Click to set a custom price for this quote"
+        className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
+          overridden ? 'text-amber-700' : 'text-gray-900'
+        }`}
+      >
+        {usd(amount)}
+      </button>
+    </span>
+  );
+}
+
 // A measurement polyline on the satellite image (normalized 0–1 coords).
 // #82 2c: `feature` is the AI's per-segment physical roof feature (mirrors
 // photoAnalysis RoofFeatureClass), carried into the seed so roofline strands
@@ -132,6 +252,11 @@ export default function QuoteBuilder({
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
   const [result, setResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
+  // #104: the overrides-stripped baseline (from /api/quote) — powers the "custom ·
+  // was $X" flag per overridden line. Seeded to the saved result on reopen (an
+  // existing override then reads "was <itself>" until the next Calculate returns a
+  // real baseline — harmless, and re-Calculate refreshes it).
+  const [baselineResult, setBaselineResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -424,6 +549,11 @@ export default function QuoteBuilder({
   const [svHeading, setSvHeading] = useState<number | null>(null);
   const [svPitch, setSvPitch] = useState<number>(0);
   const [svFov, setSvFov] = useState<number>(80);
+  // Camera (panorama) location for Street View. Starts at the house coords and
+  // moves along the street via #15 — distinct from geoLat/geoLng (the house =
+  // the aim target + Maps link + analysis coords, which never move).
+  const [svLat, setSvLat] = useState<number | null>(null);
+  const [svLng, setSvLng] = useState<number | null>(null);
   const [recapturing, setRecapturing] = useState(false);
   // Satellite polylines (editable from top-down view — better for commercial
   // properties and complex rooflines where a street-view angle misses the back).
@@ -605,6 +735,8 @@ export default function QuoteBuilder({
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
     setGeoLng(null);
+    setSvLat(null);
+    setSvLng(null);
     // A parked analysis context belongs to the PREVIOUS house — drop it.
     pendingContextRef.current = null;
   };
@@ -672,7 +804,9 @@ export default function QuoteBuilder({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          lat: geoLat, lng: geoLng,
+          // Rotate/tilt/zoom happen at the CURRENT camera (which may have moved
+          // along the street via #15), not always the house-nearest pano.
+          lat: svLat ?? geoLat, lng: svLng ?? geoLng,
           heading: nextHeading ?? undefined,
           pitch: nextPitch,
           fov: nextFov,
@@ -692,6 +826,48 @@ export default function QuoteBuilder({
       setSvFov(nextFov);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Street View refetch failed');
+    } finally {
+      setRecapturing(false);
+    }
+  };
+
+  // #15 — move the camera one panorama along the street (perpendicular to the
+  // camera→house look) and re-aim at the house, to shoot around a tree/truck the
+  // rotate-in-place angle can't clear. Like recapture: swaps the base photo,
+  // drops the stale seed, no Claude re-analysis. `reachedEnd` = edge of coverage.
+  const moveStreetView = async (direction: 'left' | 'right') => {
+    if (geoLat == null || geoLng == null) return;
+    setRecapturing(true);
+    setAnalysisError(null);
+    setAnalysisWarning(null);
+    try {
+      const res = await fetch('/api/streetview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction,
+          camLat: svLat ?? geoLat, camLng: svLng ?? geoLng,
+          houseLat: geoLat, houseLng: geoLng,
+          pitch: svPitch, fov: svFov,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Street View move failed');
+      if (data.reachedEnd) {
+        setAnalysisWarning('No further Street View this way — reached the edge of Google’s coverage.');
+        return;
+      }
+      pendingSeedRef.current = null;
+      setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      setPhotoBase64(data.photoBase64);
+      setPhotoMediaType(data.photoMediaType);
+      setSvLat(data.camLat);
+      setSvLng(data.camLng);
+      setSvHeading(typeof data.heading === 'number' ? data.heading : null);
+      setSvPitch(typeof data.pitch === 'number' ? data.pitch : svPitch);
+      setSvFov(typeof data.fov === 'number' ? data.fov : svFov);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Street View move failed');
     } finally {
       setRecapturing(false);
     }
@@ -751,7 +927,7 @@ export default function QuoteBuilder({
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
       preferredSource?: 'street' | 'satellite';
-      miniLightDetections?: { type: 'tree' | 'bush' | 'column'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
+      miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
       spritzerDetections?: { size: string; box: DetectionBox }[];
       garlandDetections?: { length: string; tier: string; box: DetectionBox }[];
@@ -891,8 +1067,8 @@ export default function QuoteBuilder({
       setPhotoFile(null);
       setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
       setGoogleAddress(data.formattedAddress ?? null);
-      if (typeof data.lat === 'number') setGeoLat(data.lat);
-      if (typeof data.lng === 'number') setGeoLng(data.lng);
+      if (typeof data.lat === 'number') { setGeoLat(data.lat); setSvLat(data.lat); }
+      if (typeof data.lng === 'number') { setGeoLng(data.lng); setSvLng(data.lng); }
       // Reset camera to default on fresh lookup so the rotation controls start
       // from Google's auto-chosen angle rather than a stale heading.
       setSvHeading(null);
@@ -979,7 +1155,11 @@ export default function QuoteBuilder({
       if (next !== 'custom') return { ...f, [diffKey]: next };
       const prev = f[diffKey];
       const seed = f[rateKey] > 0 ? f[rateKey] : prev === 'custom' ? table.medium : table[prev];
-      return { ...f, [diffKey]: 'custom', [rateKey]: seed };
+      // #104: choosing a custom $/ft clears any per-quote TOTAL override on that
+      // same line — the two are mutually exclusive (takes effect on next Calculate).
+      const overrides = { ...f.lineItemPriceOverrides };
+      delete overrides[RATE_KEY_TO_OVERRIDE_ID[rateKey]];
+      return { ...f, [diffKey]: 'custom', [rateKey]: seed, lineItemPriceOverrides: overrides };
     });
 
   const setCustomer = (k: keyof FormCustomer, v: string) =>
@@ -997,6 +1177,27 @@ export default function QuoteBuilder({
     set('customLineItems', form.customLineItems.filter((_, idx) => idx !== i));
   const updateCustomLineItem = (i: number, patch: Partial<CustomLineItem>) =>
     set('customLineItems', form.customLineItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
+
+  // click-to-edit a line's TOTAL. Commit sets the override (clearing any #102 $/ft
+  // on that line) and re-prices in place with the new form snapshot (bypassing
+  // async state); reset removes the key.
+  const commitLinePrice = (id: string, amount: number) => {
+    let finalForm: QuoteFormData = {
+      ...form,
+      lineItemPriceOverrides: { ...form.lineItemPriceOverrides, [id]: { amount } },
+    };
+    const rate = OVERRIDE_ID_TO_RATE[id];
+    if (rate) finalForm = { ...finalForm, [rate.diffKey]: rate.fallback, [rate.rateKey]: 0 };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
+  const resetLinePrice = (id: string) => {
+    const overrides = { ...form.lineItemPriceOverrides };
+    delete overrides[id];
+    const finalForm: QuoteFormData = { ...form, lineItemPriceOverrides: overrides };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
 
   // Pick a HighLevel contact → pre-fill the customer block below.
   // Precedence: HL data wins if the contact has a value for that field. If
@@ -1048,7 +1249,9 @@ export default function QuoteBuilder({
           opportunityName: form.customer.address.trim()
             ? `Holiday Lights — ${form.customer.address.trim()}`
             : undefined,
-          monetaryValue: result?.total,
+          // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
+          // deposit webhook later resets it to the customer's actual selection).
+          monetaryValue: result?.fullYule?.total ?? result?.total,
         }),
       });
       const data = await res.json();
@@ -1165,7 +1368,13 @@ export default function QuoteBuilder({
   // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
   // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
   // (#17 Phase 1b) without waiting on the async form-state update.
-  const runQuote = async (rooflineChoiceOverride?: RooflineChoice) => {
+  const runQuote = async (
+    rooflineChoiceOverride?: RooflineChoice,
+    // #104: an explicit form snapshot to price with (bypasses async form state,
+    // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place
+    // and may also clear the #102 $/ft on that line.
+    formOverride?: QuoteFormData,
+  ) => {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -1181,7 +1390,7 @@ export default function QuoteBuilder({
     // new quote), recalculating UPDATES that row in place — no more duplicate
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
-    const inputs = buildQuoteInputs(form, rooflineChoiceOverride);
+    const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
 
     try {
       // Flush a pending design edit first (#8 M6): /api/quote projects the
@@ -1210,6 +1419,7 @@ export default function QuoteBuilder({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
       setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       setSavedQuoteId(newQuoteId);
       // Persist the staff-confirmed satellite measurement lines onto the
@@ -1275,6 +1485,7 @@ export default function QuoteBuilder({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
       setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104
       if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -1742,10 +1953,23 @@ export default function QuoteBuilder({
                         Move the Camera
                       </span>
                       <span className="text-[11px] text-gray-500">
-                        Tree or truck in the way? Rotate, tilt, or zoom — then re-analyze. Best done before designing.
+                        Tree or truck in the way? Move along the street, rotate, tilt, or zoom — then re-analyze. Best done before designing.
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" disabled={recapturing}
+                        onClick={() => moveStreetView('left')}
+                        title="Move the camera to the next panorama along the street (re-aims at the house)"
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ◀ Along street
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => moveStreetView('right')}
+                        title="Move the camera to the next panorama along the street (re-aims at the house)"
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        Along street ▶
+                      </button>
+                      <span className="mx-1 text-gray-300">|</span>
                       <button type="button" disabled={recapturing}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
@@ -2515,7 +2739,72 @@ export default function QuoteBuilder({
         {/* ── Result ── */}
         {result && (
           <div ref={resultRef} className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
-            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-4 pb-2 border-b border-gray-100">
+            {/* Totals — moved to the top (#107). The headline shows the "Full Yule"
+                ceiling (all items + the most-expensive roofline) via result.fullYule;
+                the billed figures + the recommended-subtotal gate below stay on the
+                SELECTED roofline. Falls back to the selected figures on pre-#107 quotes. */}
+            {(() => {
+              const h = result.fullYule ?? result;
+              return (
+                <>
+                  {/* Subtotals */}
+                  <div className="space-y-1.5 text-sm text-gray-600">
+                    <div className="flex justify-between">
+                      <span>Subtotal</span>
+                      <span className="tabular-nums">{usd(h.subtotalBeforeDiscount)}</span>
+                    </div>
+                    {h.discountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Discount</span>
+                        <span className="tabular-nums">−{usd(h.discountAmount)}</span>
+                      </div>
+                    )}
+                    {h.earlyInstallDiscountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Early-install discount</span>
+                        <span className="tabular-nums">−{usd(h.earlyInstallDiscountAmount)}</span>
+                      </div>
+                    )}
+                    {h.rushFeeAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Rush fee</span>
+                        <span className="tabular-nums">{usd(h.rushFeeAmount)}</span>
+                      </div>
+                    )}
+                    {h.takedownAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Premium takedown</span>
+                        <span className="tabular-nums">{usd(h.takedownAmount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(h.taxableAmount)})</span>
+                      <span className="tabular-nums">{usd(h.taxAmount)}</span>
+                    </div>
+                  </div>
+
+                  {/* Total + split */}
+                  <div className="border-t border-gray-300 mt-3 pt-4">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-lg font-bold text-gray-900">Total</span>
+                      <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(h.total)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="bg-green-50 border border-green-200 rounded-md p-3">
+                        <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
+                        <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(h.depositAmount)}</p>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
+                        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
+                        <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(h.balanceDue)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mt-6 pt-5 mb-4 pb-2 border-t border-b border-gray-200">
               Quote Breakdown
             </h2>
 
@@ -2542,7 +2831,14 @@ export default function QuoteBuilder({
                         />
                         Santa&apos;s <span className="text-gray-400">(front roofline)</span>
                       </span>
-                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.santas.amount)}</span>
+                      <EditablePrice
+                        amount={result.rooflineOptions.santas.amount}
+                        baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
+                        overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
+                        disabled={loading}
+                        onCommit={(n) => commitLinePrice('roofline-santas', n)}
+                        onReset={() => resetLinePrice('roofline-santas')}
+                      />
                     </label>
                   )}
                   {result.rooflineOptions.gingerbread && (
@@ -2557,7 +2853,14 @@ export default function QuoteBuilder({
                         />
                         Gingerbread <span className="text-gray-400">(front + ridge + sides)</span>
                       </span>
-                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.gingerbread.amount)}</span>
+                      <EditablePrice
+                        amount={result.rooflineOptions.gingerbread.amount}
+                        baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
+                        overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
+                        disabled={loading}
+                        onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
+                        onReset={() => resetLinePrice('roofline-gingerbread')}
+                      />
                     </label>
                   )}
                 </div>
@@ -2586,13 +2889,19 @@ export default function QuoteBuilder({
                 const rows = result.lineItems.filter(
                   (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
                 );
+                // #104: baseline (overrides-stripped) amount per stable line id, for
+                // the "custom · was $X" chip on an overridden row.
+                const baseById = new Map(
+                  (baselineResult?.lineItems ?? []).filter((li) => li.id).map((li) => [li.id, li.amount]),
+                );
                 let customCursor = 0; // consume custom matchers in order
                 return rows.map((item, i) => {
                   const linked = breakdownLinked[i];
                   const sceneItemIds = linked?.sceneItemIds;
                   let checkbox: React.ReactNode = null;
                   if (designId && sceneItemIds && sceneItemIds.length > 0 && linked && RECOMMENDABLE_KINDS.has(linked.kind)) {
-                    // Design-driven per-unit row → toggle persists on the scene.
+                    // Design-driven per-unit row (incl. strand-drawn WW/Stake) →
+                    // toggle persists on the scene.
                     const checked = !!linked?.recommended;
                     checkbox = (
                       <input
@@ -2603,6 +2912,24 @@ export default function QuoteBuilder({
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
                         aria-label={`Recommend ${item.label}`}
                         title="Recommend this item to the customer"
+                      />
+                    );
+                  } else if (item.id === 'winter-wonderland' || item.id === 'stake-lighting') {
+                    // #12: MANUAL-footage Winter Wonderland / Stake (no scene strand
+                    // to hold the flag) → recommend rides the quote inputs. Saves on
+                    // the next Calculate, like the custom-row checkbox.
+                    const isWW = item.id === 'winter-wonderland';
+                    const checked = isWW ? form.winterWonderlandRecommended : form.stakeLightingRecommended;
+                    checkbox = (
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer accent-green-600"
+                        checked={checked}
+                        onChange={() =>
+                          set(isWW ? 'winterWonderlandRecommended' : 'stakeLightingRecommended', !checked)
+                        }
+                        aria-label={`Recommend ${item.label}`}
+                        title="Recommend this item to the customer (saves on Calculate)"
                       />
                     );
                   } else {
@@ -2626,13 +2953,28 @@ export default function QuoteBuilder({
                       );
                     }
                   }
+                  // #104: rows carrying a stable id (per-unit / Winter Wonderland /
+                  // Stake) get a click-to-edit total. Custom + roofline rows (no id
+                  // here) keep a plain price for now.
+                  const priceCell = item.id ? (
+                    <EditablePrice
+                      amount={item.amount}
+                      baseAmount={baseById.get(item.id) ?? item.amount}
+                      overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
+                      disabled={loading}
+                      onCommit={(n) => commitLinePrice(item.id!, n)}
+                      onReset={() => resetLinePrice(item.id!)}
+                    />
+                  ) : (
+                    <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                  );
                   const rowInner = (
                     <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
                         {item.label}
                       </span>
-                      <span className="font-medium tabular-nums">{usd(item.amount)}</span>
+                      {priceCell}
                     </>
                   );
                   // A recommendable row wraps its content in a <label> so clicking
@@ -2655,60 +2997,6 @@ export default function QuoteBuilder({
                   );
                 });
               })()}
-            </div>
-
-            {/* Subtotals */}
-            <div className="border-t border-gray-200 pt-3 space-y-1.5 text-sm text-gray-600">
-              <div className="flex justify-between">
-                <span>Subtotal</span>
-                <span className="tabular-nums">{usd(result.subtotalBeforeDiscount)}</span>
-              </div>
-              {result.discountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Discount</span>
-                  <span className="tabular-nums">−{usd(result.discountAmount)}</span>
-                </div>
-              )}
-              {result.earlyInstallDiscountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Early-install discount</span>
-                  <span className="tabular-nums">−{usd(result.earlyInstallDiscountAmount)}</span>
-                </div>
-              )}
-              {result.rushFeeAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Rush fee</span>
-                  <span className="tabular-nums">{usd(result.rushFeeAmount)}</span>
-                </div>
-              )}
-              {result.takedownAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Premium takedown</span>
-                  <span className="tabular-nums">{usd(result.takedownAmount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(result.taxableAmount)})</span>
-                <span className="tabular-nums">{usd(result.taxAmount)}</span>
-              </div>
-            </div>
-
-            {/* Total + split */}
-            <div className="border-t border-gray-300 mt-3 pt-4">
-              <div className="flex justify-between items-baseline">
-                <span className="text-lg font-bold text-gray-900">Total</span>
-                <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(result.total)}</span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="bg-green-50 border border-green-200 rounded-md p-3">
-                  <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
-                  <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(result.depositAmount)}</p>
-                </div>
-                <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
-                  <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
-                  <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(result.balanceDue)}</p>
-                </div>
-              </div>
             </div>
 
             {/* #12: recommended-only subtotal — what the customer's portal opens

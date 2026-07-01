@@ -47,7 +47,7 @@ import {
 export type NormalizedBox = [number, number, number, number]; // x, y, w, h — 0–1 of the photo
 
 export type MiniDetection = {
-  type: 'tree' | 'bush' | 'column';
+  type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: WrapStyle;
   stringCount: number;
   box: NormalizedBox;
@@ -101,7 +101,7 @@ const WARM_WHITE = ['warm-white'];
 const WREATH_VISUAL_SIZE_IN = 36;
 const SPRITZER_VISUAL_SIZE_IN = 24;
 
-const MINI_TYPES = new Set(['tree', 'bush', 'column']);
+const MINI_TYPES = new Set(['tree', 'bush', 'column', 'railing']);
 const WRAP_STYLES = new Set(['canopy', 'trunk']);
 const WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '60noble', '72noble']);
 const SPRITZER_SIZES = new Set(['16', '24', '32']);
@@ -303,9 +303,14 @@ function detectionItems(d: AnalysisDetections, w: number, h: number, ppf: number
     const r = pxBox(m.box, w, h);
     // Audit fix (finding #84): clamp the seeded string count to a sane ceiling.
     const stringCount = Math.min(Math.max(1, Math.round(m.stringCount)), REASONABLE_MAX_STRINGS);
-    if (m.type === 'column') {
-      // Columns stay strand-based (contract A2): a vertical line through the box.
+    if (m.type === 'column' || m.type === 'railing') {
+      // Columns + railings stay strand-based (contract A2): a straight line through
+      // the box — column = VERTICAL, railing = HORIZONTAL along the top rail.
       const cx = r.x + r.width / 2;
+      const cy = r.y + r.height / 2;
+      const points = m.type === 'column'
+        ? [cx, r.y, cx, r.y + r.height]
+        : [r.x, cy, r.x + r.width, cy];
       const strand: StrandItem = {
         id: `${SEED_PREFIX}mini-${i + 1}`,
         yardstickId: null,
@@ -314,8 +319,8 @@ function detectionItems(d: AnalysisDetections, w: number, h: number, ppf: number
         spacingIn: 6,
         drawingStyle: 'strand',
         colorPattern: [...WARM_WHITE],
-        points: [cx, r.y, cx, r.y + r.height],
-        surface: 'column',
+        points,
+        surface: m.type,
         included: true,
         wrapStyle: m.wrapStyle,
         stringCount,
