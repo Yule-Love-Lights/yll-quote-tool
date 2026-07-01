@@ -2,6 +2,12 @@
 
 > Split out of `task_ledger.md` on 2026-06-30 (S16) for token efficiency. Completed + shelved task rows live here, byte-for-byte; the lean ACTIVE ledger is `task_ledger.md`.
 
+### ↳ S18 shipped (2026-06-30, Naldo)
+| # | Task | Size | Notes | Old # |
+|---|------|------|-------|-------|
+| 105 | ✅ **DONE S18 (PR #275 → master `3cf6d64`, LIVE).** **Quote-view notification distinguishes staff vs customer.** The #68 read-receipt fired the "customer viewed" staff email + bumped `view_count` on EVERY portal open — including staff previews. `POST /api/quotes/[id]/view` now calls `getOperator()` FIRST → an operator session = staff preview → returns `{ ok:true, skipped:'staff' }` before any DB write / GHL email; customer path (`getOperator()` → null) unchanged; safe fallback when auth unconfigured/dormant. TDD (6 tests). **Live-verified**: minted a real operator session (service-role `admin.generateLink` → `verifyOtp` → `@supabase/ssr` cookie), curled both legs — staff skipped (no count/email), customer recorded (`view_count` 7→8). Jason area (`api/quotes/**`), flagged. | S | new bug/feature | S18 |
+| 56 (partial) | **Mobile responsive pass** — see the ACTIVE #56 row; the full responsive sweep SHIPPED S18 (PRs #278 dashboard / #279 builder / #280 staff / #281 portal / #282 editor-touch, all LIVE). #56 stays ACTIVE for the deferred tail (satellite-editor pinch-zoom + editor touch real-device confirm). | L | partial S18 | S10 |
+
 ### ↳ S16 shipped (2026-06-30, Jason)
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
