@@ -247,4 +247,72 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(json.notified).toBe(false);
     expect(sendSmsMock).not.toHaveBeenCalled();
   });
+
+  // B10 fix: amend-down that settles the invoice → paid_at must be stamped.
+  it('stamps paid_at when an amend-down settles the invoice to paid', async () => {
+    // Deposit $2500 > new total $2000 → balance = 0 → settle to paid.
+    const amendDownQuote = {
+      ...BOOKED_QUOTE,
+      deposit_amount_usd: 2500,
+      result: { subtotalBeforeDiscount: 2000, discountAmount: 0, taxAmount: 0, total: 2000 },
+    };
+    const sb = makeSb(amendDownQuote);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // Invoice currently awaiting_payment with a positive balance (pre-amend state).
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 500, status: 'awaiting_payment', tax_overridden: false, paid_at: null,
+    });
+
+    const res = await POST(req({ reason: 'removed a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate).toBeDefined();
+    expect(invUpdate.status).toBe('paid');
+    expect(invUpdate.paid_at).toBeTruthy(); // B10: must be stamped, not null
+    expect(typeof invUpdate.paid_at).toBe('string');
+  });
+
+  // B10 fix: amend-up that reopens a paid invoice → paid_at must be cleared.
+  it('clears paid_at when an amend-up reopens a paid invoice to awaiting_payment', async () => {
+    const sb = makeSb(BOOKED_QUOTE); // new total $5600 > deposit $2500 → balance $3100
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // Invoice currently paid (balance collected before the amend).
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate).toBeDefined();
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(invUpdate.paid_at).toBeNull(); // B10: must be cleared when reopened
+  });
+
+  // B10 fix: when the invoice was settled (paid) between the route's initial read
+  // and the re-sync, the re-read catches the fresh status and applies the correct
+  // transition (amend-up: paid → awaiting_payment, not the stale draft).
+  it('uses a fresh invoice read before re-syncing (reduces clobber window)', async () => {
+    // The mock returns 'paid' — simulating the invoice being settled concurrently.
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // getInvoiceByJob is now called TWICE: once for the initial read, once for the
+    // pre-sync re-read. Both return paid in this scenario.
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    // Amend-up: new balance > 0, old status paid → awaiting_payment, paid_at cleared.
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(invUpdate.paid_at).toBeNull();
+  });
 });
