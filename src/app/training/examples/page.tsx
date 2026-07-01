@@ -483,6 +483,11 @@ function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSa
                           <button type="button" onClick={() => bump(it.id, 1)}
                             className="border border-gray-300 rounded w-6 h-6 leading-none bg-white">+</button>
                           <span className="text-gray-400">strings</span>
+                          {it.surface === 'curtain' && (
+                            <span className="text-[10px] text-amber-600" title="Saved for the future — the analyzer doesn't detect curtains yet, so this doesn't change AI training.">
+                              stored · not yet AI-trained
+                            </span>
+                          )}
                         </div>
                       );
                     }

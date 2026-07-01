@@ -153,10 +153,12 @@ describe('applyItemCorrections (#52)', () => {
       'nope': { stringCount: 9 },
       'bush-1': { stringCount: 0 }, // clamps to 1
       'tree-1': { stringCount: 3.6 }, // rounds to 4
+      'col-1': { stringCount: 1e9 }, // clamps to the max
     }));
     expect(b['grp-member-1'].stringCount).toBe(5); // grouped → unchanged
     expect(b['bush-1'].stringCount).toBe(1);
     expect(b['tree-1'].stringCount).toBe(4);
+    expect(b['col-1'].stringCount).toBe(500); // MAX_STRING_COUNT
   });
 
   it('does not mutate the input scene', () => {

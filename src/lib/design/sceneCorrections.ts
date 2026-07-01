@@ -22,6 +22,9 @@ import {
 
 export type MiniSurface = 'bush' | 'tree' | 'column' | 'railing' | 'curtain';
 const MINI_SURFACES: MiniSurface[] = ['bush', 'tree', 'column', 'railing', 'curtain'];
+// Upper bound on a corrected strand count — generous enough to never trip a real
+// wrap, low enough that a crafted value can't poison a few-shot label.
+const MAX_STRING_COUNT = 500;
 
 export const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
 export const WREATH_SIZES: QuoteWreathSize[] = ['24noble', '30noble', '36noble', '48noble', '60noble', '72noble'];
@@ -94,7 +97,9 @@ export function applyItemCorrections(
       const c = corrections[item.id];
       if (!c) return item;
       if (isEditableMini(item) && typeof c.stringCount === 'number') {
-        return { ...item, stringCount: Math.max(1, Math.round(c.stringCount)) };
+        // Clamp to a sane range — a crafted huge count would otherwise poison a
+        // few-shot label. Mirrors seedFromAnalysis's REASONABLE_MAX_STRINGS guard.
+        return { ...item, stringCount: Math.min(MAX_STRING_COUNT, Math.max(1, Math.round(c.stringCount))) };
       }
       if (isSpritzer(item) && SPRITZER_SIZES.includes(c.quoteSize as QuoteSpritzerSize)) {
         return { ...item, quoteSize: c.quoteSize as QuoteSpritzerSize };
