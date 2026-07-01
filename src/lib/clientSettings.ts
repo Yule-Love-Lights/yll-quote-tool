@@ -7,6 +7,8 @@
 
 import { setPalette, DEFAULT_COLORS } from '@/components/design/editor-core/colors';
 import { setRenderSettings, DEFAULT_RENDER_SETTINGS } from '@/components/design/editor-core/renderSettings';
+// colorSchemes is client-safe (no server imports) — used for the swatches fallback.
+import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from './design/colorSchemes';
 // Type only — never import a runtime value from appSettings here (it pulls the
 // server-only Supabase client into the browser bundle).
 import type { AppSettings } from './appSettings';
@@ -16,9 +18,10 @@ const FALLBACK: AppSettings = {
   defaults: {},
   render: DEFAULT_RENDER_SETTINGS,
   // Inlined (this client file must not import appSettings' server runtime). The
-  // portal setting is read server-side on the portal page, not from this cache,
-  // so the fallback value is type-satisfaction only.
+  // portal + swatch settings are read server-side on the portal page, not from
+  // this cache, so these fallback values are type-satisfaction only.
   portal: { hideEarlyInstallDiscounts: false },
+  swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
 };
 
 let cache: Promise<AppSettings> | null = null;

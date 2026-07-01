@@ -10,6 +10,7 @@ import {
   normalizeColors,
   sanitizeRender,
   sanitizePortal,
+  sanitizeSwatches,
   isPlainObject,
 } from '@/lib/appSettings';
 import { requireOperator } from '@/lib/auth/supabaseServer';
@@ -46,8 +47,14 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal } = body as Record<string, unknown>;
-  if (colors === undefined && defaults === undefined && render === undefined && portal === undefined) {
+  const { colors, defaults, render, portal, swatches } = body as Record<string, unknown>;
+  if (
+    colors === undefined &&
+    defaults === undefined &&
+    render === undefined &&
+    portal === undefined &&
+    swatches === undefined
+  ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
   // Audit fix (#85): validate every provided key at the boundary and 400 on bad
@@ -68,12 +75,24 @@ export async function PUT(req: NextRequest) {
   if (portal !== undefined && Object.keys(sanitizePortal(portal)).length === 0) {
     return NextResponse.json({ error: 'no recognized portal fields' }, { status: 400 });
   }
+  // Swatches (#101): validate against the live palette so bad ids/labels are a
+  // clean 400 rather than a silently-dropped key that returns 200 with old values.
+  if (swatches !== undefined) {
+    const validColorIds = new Set((await getAppSettings()).colors.map((c) => c.id));
+    if (Object.keys(sanitizeSwatches(swatches, validColorIds)).length === 0) {
+      return NextResponse.json(
+        { error: 'swatches must have a valid schemes array and/or buildableColorIds array' },
+        { status: 400 },
+      );
+    }
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
       defaults: defaults as never,
       render: render as never,
       portal: portal as never,
+      swatches: swatches as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

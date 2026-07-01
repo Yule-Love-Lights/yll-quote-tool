@@ -206,6 +206,8 @@ export default async function PortalPage({
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
+        schemes={appSettings.swatches.schemes}
+        buildableColorIds={appSettings.swatches.buildableColorIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero

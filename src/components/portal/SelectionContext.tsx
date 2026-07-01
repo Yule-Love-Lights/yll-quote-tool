@@ -34,6 +34,9 @@ import {
   resolveSchemeColorIds,
   CUSTOM_SCHEME_ID,
   sanitizeCustomPattern,
+  DEFAULT_COLOR_SCHEMES,
+  DEFAULT_BUILDABLE_COLOR_IDS,
+  type ColorScheme,
 } from '@/lib/design/colorSchemes';
 
 type SelectionContextValue = {
@@ -101,6 +104,14 @@ type SelectionContextValue = {
   colorSchemeId: string;
   setColorScheme: (id: string) => void;
   colorOverride: string[] | null;
+  /**
+   * The operator-configured swatch presets + build-your-own palette (#101),
+   * data-driven from app_settings and passed down by the portal page. The picker
+   * renders these instead of the built-in constants; colorOverride resolves
+   * against `schemes`. Default to the built-ins when no props are provided.
+   */
+  schemes: ColorScheme[];
+  buildableColorIds: string[];
   /**
    * Build-your-own custom pattern (#49): the customer's ordered list of palette
    * color ids. Active when colorSchemeId === 'custom' — it then drives
@@ -180,6 +191,10 @@ export type SelectionProviderProps = {
   // (and the quote isn't approved), the Sep/Oct picker is hidden + the discount
   // is forced off.
   earlyInstallDiscountsHidden?: boolean;
+  // Operator-configured light-color swatches + build-your-own palette (#101),
+  // from app_settings. Default to the built-ins for callers that don't pass them.
+  schemes?: ColorScheme[];
+  buildableColorIds?: string[];
   children: React.ReactNode;
 };
 
@@ -195,6 +210,8 @@ export function SelectionProvider({
   daylightAvailable = false,
   initialInstallTiming = 'none',
   earlyInstallDiscountsHidden = false,
+  schemes = DEFAULT_COLOR_SCHEMES,
+  buildableColorIds = DEFAULT_BUILDABLE_COLOR_IDS,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -269,11 +286,11 @@ export function SelectionProvider({
   // never reach the renderer (empty → null = "as designed", no recolor).
   const colorOverride = useMemo(() => {
     if (colorSchemeId === CUSTOM_SCHEME_ID) {
-      const clean = sanitizeCustomPattern(customPattern);
+      const clean = sanitizeCustomPattern(customPattern, buildableColorIds);
       return clean.length > 0 ? clean : null;
     }
-    return resolveSchemeColorIds(colorSchemeId);
-  }, [colorSchemeId, customPattern]);
+    return resolveSchemeColorIds(colorSchemeId, schemes);
+  }, [colorSchemeId, customPattern, schemes, buildableColorIds]);
 
   // #61 — daytime⇄lit-design view toggle, lifted from the hero so the Light Color
   // section can flip the hero's day/night view. View-only (never gated by locked).
@@ -434,6 +451,8 @@ export function SelectionProvider({
     colorSchemeId,
     setColorScheme: locked ? noop : setColorScheme,
     colorOverride,
+    schemes,
+    buildableColorIds,
     customPattern,
     setCustomPattern: locked ? noop : setCustomPattern,
     locked,

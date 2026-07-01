@@ -15,6 +15,9 @@ const { putSpy } = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
+  // #101: the swatches validation path reads the live palette via getAppSettings;
+  // no client → getAppSettings returns DEFAULT_APP_SETTINGS (built-in palette).
+  getSupabaseServiceClient: () => null,
 }));
 
 vi.mock('@/lib/appSettings', async () => {
@@ -67,6 +70,20 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
 
   it('still 400s when nothing is provided', async () => {
     const res = await PUT(makeReq({}));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('persists a valid swatches patch (#101)', async () => {
+    const res = await PUT(
+      makeReq({ swatches: { schemes: [{ id: 'as-designed', label: 'x', colorIds: null }], buildableColorIds: ['red'] } }),
+    );
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledOnce();
+  });
+
+  it('400s on a swatches patch with no recognized fields (#101)', async () => {
+    const res = await PUT(makeReq({ swatches: { schemes: 'nope', buildableColorIds: 'nope' } }));
     expect(res.status).toBe(400);
     expect(putSpy).not.toHaveBeenCalled();
   });

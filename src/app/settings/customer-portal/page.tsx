@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
+import { PortalSwatchEditor } from '@/components/settings/PortalSwatchEditor';
 
 type Status = 'loading' | 'idle' | 'saving' | 'saved' | 'error';
 
@@ -115,6 +116,9 @@ export default function CustomerPortalSettingsPage() {
             {status === 'error' && <span className="text-red-600">{error ?? 'Something went wrong'}</span>}
           </div>
         </div>
+
+        {/* #101 — light-color swatch editor (data-driven COLOR_SCHEMES). */}
+        <PortalSwatchEditor />
       </main>
     </OperatorShell>
   );

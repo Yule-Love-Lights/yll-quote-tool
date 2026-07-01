@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { isBulbColor, normalizeColors, sanitizeRender, sanitizePortal } from './appSettings';
+import {
+  isBulbColor,
+  normalizeColors,
+  sanitizeRender,
+  sanitizePortal,
+  normalizeSchemes,
+  normalizeBuildable,
+  sanitizeSwatches,
+} from './appSettings';
+
+// A representative palette id set (mirrors the built-in DEFAULT_COLORS ids used
+// by the swatch validators).
+const PALETTE = new Set(['warm-white', 'cool-white', 'red', 'green', 'blue', 'yellow', 'black']);
 
 const red = { id: 'red', label: 'Red', hex: '#ff0000', glow: '#ff8888' };
 
@@ -65,5 +77,59 @@ describe('sanitizePortal', () => {
     expect(sanitizePortal({ other: true })).toEqual({});
     expect(sanitizePortal(null)).toEqual({});
     expect(sanitizePortal('x')).toEqual({});
+  });
+});
+
+describe('normalizeSchemes (#101)', () => {
+  it('keeps valid schemes, dropping junk + dup ids, and pins as-designed first', () => {
+    const out = normalizeSchemes(
+      [
+        { id: 'red-gold', label: 'Red & Gold', colorIds: ['red', 'yellow'] },
+        { id: 'as-designed', label: "Team's look", colorIds: null },
+        { id: 'red-gold', label: 'dup', colorIds: ['red'] }, // dup id → dropped
+        { id: '', label: 'blank id', colorIds: null }, // invalid → dropped
+        { id: 'x', label: 'x', colorIds: 'nope' }, // bad colorIds → dropped
+      ],
+      PALETTE,
+    );
+    expect(out).not.toBeNull();
+    expect(out![0].id).toBe('as-designed'); // pinned first
+    expect(out!.map((s) => s.id)).toEqual(['as-designed', 'red-gold']);
+  });
+
+  it('filters colorIds to real palette ids; drops a scheme left with none', () => {
+    const out = normalizeSchemes(
+      [{ id: 'mix', label: 'Mix', colorIds: ['red', 'not-a-color'] }, { id: 'ghost', label: 'Ghost', colorIds: ['not-a-color'] }],
+      PALETTE,
+    );
+    expect(out!.find((s) => s.id === 'mix')?.colorIds).toEqual(['red']); // junk id filtered
+    expect(out!.find((s) => s.id === 'ghost')).toBeUndefined(); // no valid color → dropped
+  });
+
+  it('adds as-designed even to an empty/all-invalid list; returns null for non-array', () => {
+    expect(normalizeSchemes([], PALETTE)!.map((s) => s.id)).toEqual(['as-designed']);
+    expect(normalizeSchemes('nope', PALETTE)).toBeNull();
+  });
+});
+
+describe('normalizeBuildable (#101)', () => {
+  it('keeps real non-black palette ids, unique + in order', () => {
+    expect(normalizeBuildable(['red', 'black', 'green', 'red', 'nope', 5], PALETTE)).toEqual(['red', 'green']);
+  });
+  it('returns null for a non-array', () => {
+    expect(normalizeBuildable('x', PALETTE)).toBeNull();
+    expect(normalizeBuildable(undefined, PALETTE)).toBeNull();
+  });
+});
+
+describe('sanitizeSwatches (#101)', () => {
+  it('normalizes both fields; omits a field that is absent/invalid', () => {
+    const out = sanitizeSwatches({ buildableColorIds: ['red', 'blue'] }, PALETTE);
+    expect(out.buildableColorIds).toEqual(['red', 'blue']);
+    expect('schemes' in out).toBe(false); // no schemes provided → not merged
+  });
+  it('returns {} for a non-object (→ 400 at the route)', () => {
+    expect(sanitizeSwatches(null, PALETTE)).toEqual({});
+    expect(sanitizeSwatches('x', PALETTE)).toEqual({});
   });
 });

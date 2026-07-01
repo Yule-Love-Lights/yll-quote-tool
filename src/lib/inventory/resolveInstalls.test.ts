@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SceneItem, QuoteSpritzerSize } from '@/lib/design/sceneTypes';
-import { resolveInstalls, offeredFromBindings, offeredIsKnown, resolveColorChoice, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
+import { resolveInstalls, offeredFromBindings, offeredIsKnown, resolveColorChoice, colorChoiceFromSnapshot, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
 import { miniKey, spritzerKey } from './concepts';
 import { matchPattern } from './patternSkus';
 
@@ -128,6 +128,38 @@ describe('resolveColorChoice (snapshot → effective colors)', () => {
     expect(resolveColorChoice('as-designed', [])).toBeNull();
     expect(resolveColorChoice(undefined, undefined)).toBeNull();
     expect(resolveColorChoice('not-a-real-scheme', [])).toBeNull();
+  });
+
+  it('resolves against an explicit operator scheme list (#101)', () => {
+    const schemes = [
+      { id: 'as-designed', label: 'x', colorIds: null },
+      { id: 'red-gold', label: 'Red & Gold', colorIds: ['red', 'yellow'] },
+    ];
+    expect(resolveColorChoice('red-gold', [], schemes)).toEqual(['red', 'yellow']);
+  });
+});
+
+describe('colorChoiceFromSnapshot (#101 frozen colorIds)', () => {
+  it('prefers the frozen colorIds over re-resolving the scheme id', () => {
+    // Operator later edited/removed 'christmas', but the order froze what the
+    // customer saw → materials use the frozen colors, not a live re-resolve.
+    const snap = { customerSelection: { colorSchemeId: 'christmas', customPattern: [], colorIds: ['red', 'green'] } };
+    expect(colorChoiceFromSnapshot(snap)).toEqual(['red', 'green']);
+  });
+
+  it('frozen null → as-designed (no override)', () => {
+    const snap = { customerSelection: { colorSchemeId: 'as-designed', customPattern: [], colorIds: null } };
+    expect(colorChoiceFromSnapshot(snap)).toBeNull();
+  });
+
+  it('an OLD snapshot without frozen colorIds re-resolves the id (back-compat)', () => {
+    const snap = { customerSelection: { colorSchemeId: 'christmas', customPattern: [] } };
+    expect(colorChoiceFromSnapshot(snap)).not.toBeNull(); // re-resolved from built-in defaults
+  });
+
+  it('missing / un-approved snapshot → null', () => {
+    expect(colorChoiceFromSnapshot(null)).toBeNull();
+    expect(colorChoiceFromSnapshot({})).toBeNull();
   });
 });
 
