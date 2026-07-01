@@ -5,6 +5,7 @@ import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
+import { attachQuoteToCustomer } from './customers';
 
 export type QuoteListItem = {
   id: string;
@@ -191,6 +192,27 @@ export async function saveQuote(
     console.error('Supabase saveQuote error:', error);
     return null;
   }
+
+  // Attach to the persistent customers/properties tables (Phase 5 identity).
+  // Best-effort: a link failure MUST NOT fail the save — the quote row already
+  // exists; we just log and continue. Skipped for test quotes (is_test=true)
+  // because the customers/properties tables aren't FK-cascaded from quotes, so a
+  // test quote would leak into the customer list and leave an orphan that the
+  // "Delete test data" sweep can't reach.
+  if (!isTest) {
+    try {
+      await attachQuoteToCustomer({
+        id: data.id,
+        customer_name: customer.name ?? null,
+        customer_email: customer.email ?? null,
+        customer_phone: customer.phone ?? null,
+        customer_address: customer.address ?? null,
+      });
+    } catch (err) {
+      console.warn('saveQuote: attachQuoteToCustomer failed (non-fatal):', err);
+    }
+  }
+
   return { id: data.id };
 }
 

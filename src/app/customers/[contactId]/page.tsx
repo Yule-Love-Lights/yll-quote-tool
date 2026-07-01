@@ -8,6 +8,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
+import { RebookButton } from '@/components/dashboard/RebookButton';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
@@ -89,6 +90,12 @@ export default async function CustomerDetailPage({
     .filter(q => q.customer_approved_at)
     .reduce((sum, q) => sum + (q.total ?? 0), 0);
 
+  // Resolve the stable customer_id for the "Rebook last season" button (Part D).
+  // Any quote's customer_id works — they all map to the same customer row after
+  // backfill. If none is populated yet (pre-backfill), the button is hidden.
+  const customerId: string | null =
+    quotes.find(q => q.customer_id)?.customer_id ?? null;
+
   return (
     <OperatorShell active="customers">
       <div className="max-w-4xl mx-auto w-full">
@@ -106,17 +113,21 @@ export default async function CustomerDetailPage({
               {quotes.length} quote{quotes.length === 1 ? '' : 's'} · {fmtMoney(bookedSpend)} booked
             </p>
           </div>
-          {hlUrl && (
-            <a
-              href={hlUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm"
-              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
-            >
-              View in HighLevel ↗
-            </a>
-          )}
+          <div className="shrink-0 flex items-center gap-2">
+            {/* Rebook last season (Part D): hidden until the backfill populates customer_id. */}
+            {customerId && <RebookButton customerId={customerId} />}
+            {hlUrl && (
+              <a
+                href={hlUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm"
+                style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+              >
+                View in HighLevel ↗
+              </a>
+            )}
+          </div>
         </header>
 
         {/* Live HighLevel panel */}
