@@ -26,6 +26,12 @@ const MAX_ARRAY_LEN = 500;
 // the difficulty table).
 const MAX_CUSTOM_RATE = 1000;
 
+// #104: per-quote line-TOTAL override caps. A line total (roofline can be a few
+// thousand) is realistically well under this; the cap just blocks absurd/overflow
+// values. reason is a short staff note.
+const MAX_OVERRIDE_AMOUNT = 1_000_000;
+const MAX_OVERRIDE_REASON_LEN = 500;
+
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
 // instead of an opaque downstream 500.
@@ -115,6 +121,39 @@ export async function POST(req: NextRequest) {
         { error: `${f} must be a number between 0 and ${MAX_CUSTOM_RATE} if provided` },
         { status: 400 },
       );
+    }
+  }
+  // #104: optional per-quote line-item TOTAL overrides — a map of stableId →
+  // { amount, reason? }. Validate at the boundary so a malformed override is a
+  // clean 400 rather than an opaque downstream NaN (the engine casts inputs).
+  if (q.lineItemPriceOverrides !== undefined) {
+    const ov = q.lineItemPriceOverrides;
+    if (!isObj(ov) || Array.isArray(ov)) {
+      return NextResponse.json({ error: 'lineItemPriceOverrides must be an object if provided' }, { status: 400 });
+    }
+    const keys = Object.keys(ov);
+    if (keys.length > MAX_ARRAY_LEN) {
+      return NextResponse.json({ error: 'too many lineItemPriceOverrides' }, { status: 400 });
+    }
+    for (const k of keys) {
+      const entry = (ov as Record<string, unknown>)[k];
+      if (!isObj(entry)) {
+        return NextResponse.json({ error: `lineItemPriceOverrides.${k} must be an object` }, { status: 400 });
+      }
+      const amt = (entry as Record<string, unknown>).amount;
+      if (!(typeof amt === 'number' && Number.isFinite(amt) && amt >= 0 && amt <= MAX_OVERRIDE_AMOUNT)) {
+        return NextResponse.json(
+          { error: `lineItemPriceOverrides.${k}.amount must be a number between 0 and ${MAX_OVERRIDE_AMOUNT}` },
+          { status: 400 },
+        );
+      }
+      const reason = (entry as Record<string, unknown>).reason;
+      if (reason !== undefined && !(typeof reason === 'string' && reason.length <= MAX_OVERRIDE_REASON_LEN)) {
+        return NextResponse.json(
+          { error: `lineItemPriceOverrides.${k}.reason must be a string ≤ ${MAX_OVERRIDE_REASON_LEN} chars` },
+          { status: 400 },
+        );
+      }
     }
   }
 

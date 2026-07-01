@@ -226,6 +226,14 @@ export interface QuoteInputs {
   // (BUSINESS_RULES.earlyInstallDiscounts) comes off the item subtotal and the
   // rush-install fee is suppressed (mutually exclusive). Absent/'none' = no promo.
   installTiming?: EarlyInstallTiming;
+  // #104: per-quote line-item TOTAL overrides, keyed by the STABLE line id
+  // (`mini-<sceneItemId>`, `roofline-santas`/`-gingerbread`, `winter-wonderland`,
+  // `stake-lighting`, or a custom id). Sets a line's billed total for THIS quote
+  // only (e.g. free spritzers = $0) — global rates are untouched. Keyed by identity
+  // so it survives re-Calculate + design reorders; a key whose line no longer
+  // exists is simply ignored. `reason` is an optional staff note (not priced).
+  // Optional/additive — absent means no overrides.
+  lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -609,6 +617,51 @@ function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
 }
 
 // ─────────────────────────────────────────────────────────
+// Per-quote line-item TOTAL overrides (#104)
+// ─────────────────────────────────────────────────────────
+
+// The override for a line id, or undefined. PRESENCE-keyed (`id in map`), NEVER
+// truthiness — 0 is a valid, intentional override ("free spritzers"). A missing
+// id, a non-finite, or a negative amount falls back to the computed price.
+function overrideAmount(
+  id: string | undefined,
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): number | undefined {
+  if (!id || !overrides || !Object.prototype.hasOwnProperty.call(overrides, id)) return undefined;
+  const a = overrides[id]?.amount;
+  return typeof a === 'number' && Number.isFinite(a) && a >= 0 ? a : undefined;
+}
+
+// Replace each line's billed amount with its override (by stable id), if any.
+function applyLineOverrides(
+  lines: LineItem[],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): LineItem[] {
+  if (!overrides) return lines;
+  return lines.map((li) => {
+    const a = overrideAmount(li.id, overrides);
+    return a === undefined ? li : { ...li, amount: a };
+  });
+}
+
+// A roofline TOTAL override targets the OPTION amount (both Santa's + Gingerbread
+// are exposed to the portal from rooflineOptions; the billed line is then built
+// from the overridden option, so the two stay consistent).
+function applyRooflineOverrides(
+  options: QuoteResult['rooflineOptions'],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
+): QuoteResult['rooflineOptions'] {
+  if (!overrides) return options;
+  const santasAmt = overrideAmount('roofline-santas', overrides);
+  const gingerAmt = overrideAmount('roofline-gingerbread', overrides);
+  return {
+    santas: options.santas && santasAmt !== undefined ? { ...options.santas, amount: santasAmt } : options.santas,
+    gingerbread:
+      options.gingerbread && gingerAmt !== undefined ? { ...options.gingerbread, amount: gingerAmt } : options.gingerbread,
+  };
+}
+
+// ─────────────────────────────────────────────────────────
 // Main quote calculator — add each category here as we build
 // ─────────────────────────────────────────────────────────
 
@@ -616,22 +669,31 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   // "Rest of the quote" — everything except the Santa's/Gingerbread choice
   // (C9/Winter Wonderland is independent and belongs here). Computed first so
   // the recommended roofline can be auto-picked relative to the $1,000 minimum.
-  const restItems: LineItem[] = [
-    ...calculateWinterWonderland(inputs),
-    ...calculateStakeLighting(inputs),
-    ...calculateMiniLights(inputs),
-    ...calculateSpritzers(inputs),
-    ...calculateWreaths(inputs),
-    ...calculateGarland(inputs),
-    ...calculateBows(inputs),
-    ...calculateCustomLineItems(inputs),
-  ];
+  // #104: per-quote line-item TOTAL overrides (keyed by stable id) are applied to
+  // the rest items + the roofline options up front, so restSubtotal, the roofline
+  // auto-choice, the billed subtotal, tax/total/deposit, and the $1,000 gate all
+  // reflect the overridden amounts consistently.
+  const overrides = inputs.lineItemPriceOverrides;
+  const restItems: LineItem[] = applyLineOverrides(
+    [
+      ...calculateWinterWonderland(inputs),
+      ...calculateStakeLighting(inputs),
+      ...calculateMiniLights(inputs),
+      ...calculateSpritzers(inputs),
+      ...calculateWreaths(inputs),
+      ...calculateGarland(inputs),
+      ...calculateBows(inputs),
+      ...calculateCustomLineItems(inputs),
+    ],
+    overrides,
+  );
   const restSubtotal = restItems.reduce((sum, item) => sum + item.amount, 0);
 
   // Both roofline options are exposed (so the builder + portal can show both),
   // but only the recommended one is billed — Santa's and Gingerbread are
-  // mutually exclusive (#17).
-  const rooflineOptions = rooflineOptionsFor(inputs);
+  // mutually exclusive (#17). A per-quote roofline TOTAL override (#104) applies
+  // to the option amount; the billed line is then built from the overridden option.
+  const rooflineOptions = applyRooflineOverrides(rooflineOptionsFor(inputs), overrides);
   const rooflineChoice = resolveRooflineChoice(inputs, restSubtotal, rooflineOptions);
 
   // Recommended roofline first (keeps it at the top of the breakdown), then
