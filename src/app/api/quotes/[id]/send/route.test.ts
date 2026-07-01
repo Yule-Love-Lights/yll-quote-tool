@@ -86,6 +86,15 @@ function makeReq(retryGhl = false): NextRequest {
   return {
     headers: { get: () => null },
     nextUrl: { origin: 'https://quote.example.com', searchParams: params },
+    json: async () => { throw new Error('no body'); },
+  } as unknown as NextRequest;
+}
+
+function makeReqWithBody(body: Record<string, unknown>): NextRequest {
+  return {
+    headers: { get: () => null },
+    nextUrl: { origin: 'https://quote.example.com', searchParams: new URLSearchParams() },
+    json: async () => body,
   } as unknown as NextRequest;
 }
 const params = Promise.resolve({ id: ID });
@@ -226,5 +235,75 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(json.alreadySent).toBe(true);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quotes/[id]/send — channel split', () => {
+  const FULL_QUOTE = {
+    ...FRESH_QUOTE,
+    is_test: false,
+  };
+
+  beforeEach(() => {
+    process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'stage_bid_sent';
+    process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
+    hl.configured.value = true;
+    hl.updateOpportunity.mockResolvedValue({ id: 'opp_1' });
+  });
+
+  it('channel:sms — calls sendSms but NOT sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('sms');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('channel:email — calls sendEmail but NOT sendSms', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'email' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('email');
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('no body (default) — calls both sendSms and sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('both');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+  });
+
+  it('channel:both — calls both sendSms and sendEmail', async () => {
+    const { client } = makeSb({ ...FULL_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.channel).toBe('both');
+    expect(hl.sendSms).toHaveBeenCalledOnce();
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
   });
 });
