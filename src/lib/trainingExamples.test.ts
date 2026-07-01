@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { exampleToFewShot, type TrainingExampleRow } from './trainingExamples';
+import { editableItems, applyItemCorrections } from './design/sceneCorrections';
 import type { Scene } from './design/sceneTypes';
 
 // A minimal scene: one tagged front-roofline C9 strand across a 1000×500 photo.
@@ -70,5 +71,97 @@ describe('exampleToFewShot', () => {
     expect(ex.photos[1].tag).toBe('satellite');
     expect(ex.satelliteSantasLines).toHaveLength(1);
     expect(ex.satelliteSantasFootage).toBe(50);
+  });
+});
+
+// #52 — inline edit of a saved example: enumerate + correct detections (mini
+// strand counts, spritzer/wreath size, wreath/garland tier, garland length).
+const MIXED: Scene = {
+  yardsticks: [],
+  items: [
+    { id: 'bush-1', yardstickId: null, kind: 'strand', bulbType: 'mini', spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [10, 10, 50, 10], surface: 'bush', stringCount: 2 },
+    { id: 'tree-1', yardstickId: null, kind: 'strand', bulbType: 'mini', spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [60, 10, 60, 80], surface: 'tree', stringCount: 4, wrapStyle: 'trunk' },
+    { id: 'col-1', yardstickId: null, kind: 'miniArea', shape: 'box', x: 100, y: 100, width: 20, height: 60, surface: 'column', stringCount: 3 },
+    // grouped mini (railing member) — skipped by the few-shot, so NOT editable
+    { id: 'grp-member-1', yardstickId: null, kind: 'strand', bulbType: 'mini', spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [200, 10, 240, 10], surface: 'bush', stringCount: 5, groupId: 'grp-1' },
+    // c9 roofline strand — not a mini
+    { id: 'c9-1', yardstickId: null, kind: 'strand', bulbType: 'c9', spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 100, 0], surface: 'santas-roofline' },
+    { id: 'sp-1', yardstickId: null, kind: 'spritzer', x: 300, y: 300, sizeIn: 24, colorPattern: ['warm-white'], quoteSize: '16' },
+    { id: 'wr-1', yardstickId: null, kind: 'wreath', x: 400, y: 100, sizeIn: 36, withLights: true, quoteSize: '36noble', tier: 'bow' },
+    { id: 'gr-1', yardstickId: null, kind: 'garland', points: [500, 50, 600, 50], drawingStyle: 'strand', withLights: true, quoteLength: '9ft', tier: 'fullDecor' },
+    // grouped railing — the GROUP holds the billed count (edit the group, not members)
+    { id: 'rail-grp-1', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 6, memberIds: ['grp-member-1'] },
+    // a standalone (ungrouped) curtain strand
+    { id: 'curtain-1', yardstickId: null, kind: 'strand', bulbType: 'mini', spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [700, 10, 740, 10], surface: 'curtain', stringCount: 4 },
+  ],
+};
+
+const byIdOf = (s: Scene) => Object.fromEntries(s.items.map((i) => [i.id, i])) as Record<string, Record<string, unknown>>;
+
+describe('editableItems (#52)', () => {
+  it('lists minis (bush/tree/column + railing group + curtain) + spritzer/wreath/garland; excludes grouped MEMBERS + c9', () => {
+    const items = editableItems(MIXED);
+    expect(items.map((i) => i.id)).toEqual(['bush-1', 'tree-1', 'col-1', 'sp-1', 'wr-1', 'gr-1', 'rail-grp-1', 'curtain-1']);
+    expect(items.find((i) => i.id === 'bush-1')).toMatchObject({ kind: 'mini', surface: 'bush', stringCount: 2 });
+    // the railing GROUP is editable (its count), its member strand is not
+    expect(items.find((i) => i.id === 'rail-grp-1')).toMatchObject({ kind: 'mini', surface: 'railing', stringCount: 6 });
+    expect(items.find((i) => i.id === 'grp-member-1')).toBeUndefined();
+    expect(items.find((i) => i.id === 'curtain-1')).toMatchObject({ kind: 'mini', surface: 'curtain', stringCount: 4 });
+    expect(items.find((i) => i.id === 'sp-1')).toMatchObject({ kind: 'spritzer', quoteSize: '16' });
+    expect(items.find((i) => i.id === 'wr-1')).toMatchObject({ kind: 'wreath', quoteSize: '36noble', tier: 'bow' });
+    expect(items.find((i) => i.id === 'gr-1')).toMatchObject({ kind: 'garland', quoteLength: '9ft', tier: 'fullDecor' });
+  });
+});
+
+describe('applyItemCorrections (#52)', () => {
+  it('corrects a mini strand count, preserving everything else', () => {
+    const b = byIdOf(applyItemCorrections(MIXED, { 'bush-1': { stringCount: 3 } }));
+    expect(b['bush-1'].stringCount).toBe(3); // 2 → 3
+    expect(b['tree-1'].stringCount).toBe(4); // untouched
+  });
+
+  it('corrects a grouped railing count + a standalone curtain count', () => {
+    const b = byIdOf(applyItemCorrections(MIXED, { 'rail-grp-1': { stringCount: 8 }, 'curtain-1': { stringCount: 2 } }));
+    expect(b['rail-grp-1'].stringCount).toBe(8); // group count 6 → 8
+    expect(b['curtain-1'].stringCount).toBe(2); // curtain 4 → 2
+  });
+
+  it('changes spritzer + wreath size and wreath/garland tier', () => {
+    const b = byIdOf(applyItemCorrections(MIXED, {
+      'sp-1': { quoteSize: '32' },
+      'wr-1': { quoteSize: '48noble', tier: 'fullDecor' },
+      'gr-1': { quoteLength: '4.5ft', tier: 'bow' },
+    }));
+    expect(b['sp-1'].quoteSize).toBe('32');
+    expect(b['wr-1']).toMatchObject({ quoteSize: '48noble', tier: 'fullDecor' });
+    expect(b['gr-1']).toMatchObject({ quoteLength: '4.5ft', tier: 'bow' });
+  });
+
+  it('ignores values invalid for the item kind', () => {
+    const b = byIdOf(applyItemCorrections(MIXED, {
+      'sp-1': { quoteSize: '36noble' }, // a wreath size on a spritzer → rejected
+      'wr-1': { quoteSize: '16', tier: 'nope' }, // spritzer size + bad tier → both rejected
+    }));
+    expect(b['sp-1'].quoteSize).toBe('16'); // unchanged
+    expect(b['wr-1']).toMatchObject({ quoteSize: '36noble', tier: 'bow' }); // unchanged
+  });
+
+  it('ignores non-editable ids (grouped mini, c9, unknown) and clamps counts', () => {
+    const b = byIdOf(applyItemCorrections(MIXED, {
+      'grp-member-1': { stringCount: 9 },
+      'c9-1': { stringCount: 9 },
+      'nope': { stringCount: 9 },
+      'bush-1': { stringCount: 0 }, // clamps to 1
+      'tree-1': { stringCount: 3.6 }, // rounds to 4
+    }));
+    expect(b['grp-member-1'].stringCount).toBe(5); // grouped → unchanged
+    expect(b['bush-1'].stringCount).toBe(1);
+    expect(b['tree-1'].stringCount).toBe(4);
+  });
+
+  it('does not mutate the input scene', () => {
+    const before = JSON.parse(JSON.stringify(MIXED));
+    applyItemCorrections(MIXED, { 'bush-1': { stringCount: 7 }, 'sp-1': { quoteSize: '32' } });
+    expect(MIXED).toEqual(before);
   });
 });

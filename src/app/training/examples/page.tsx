@@ -8,7 +8,19 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import type { TrainingExampleListItem, TrainingExampleRow } from '@/lib/trainingExamples';
+import type {
+  TrainingExampleListItem,
+  TrainingExampleRow,
+  TrainingExampleInputs,
+} from '@/lib/trainingExamples';
+import {
+  editableItems,
+  SPRITZER_SIZES,
+  WREATH_SIZES,
+  GARLAND_LENGTHS,
+  TIERS,
+  type ItemCorrection,
+} from '@/lib/design/sceneCorrections';
 import { sceneToFewShotPieces } from '@/lib/design/sceneToFewShot';
 import AnnotatedPhoto, { type OverlayBox } from '@/components/training/AnnotatedPhoto';
 import { OperatorShell } from '@/components/OperatorShell';
@@ -18,6 +30,9 @@ const BLUE = '#3b82f6'; // Gingerbread / ridge+sides
 const AMBER = '#f59e0b'; // C9 / Winter Wonderland
 const GREEN = '#22c55e'; // mini-light detections
 const PURPLE = '#a855f7'; // wreaths/spritzers/garland
+
+const tierLabel = (t: string) => (t === 'bow' ? 'Non-Decorated' : 'Decorated');
+const wreathLabel = (s: string) => s.replace('noble', '” Noble'); // 24noble → 24” Noble
 
 export default function TrainingExamplesPage() {
   const [items, setItems] = useState<TrainingExampleListItem[]>([]);
@@ -106,6 +121,20 @@ export default function TrainingExamplesPage() {
       refresh();
     } else {
       alert('Delete failed');
+    }
+  };
+
+  // #52 — after an inline edit saves, re-pull the open detail (so the overlays +
+  // derived counts reflect the correction) and refresh the list (row footage).
+  const reloadDetail = async (id: string) => {
+    const reqId = ++detailReqRef.current;
+    try {
+      const res = await fetch(`/api/training-examples/${id}`);
+      const data = await res.json().catch(() => ({}));
+      if (reqId !== detailReqRef.current) return;
+      if (res.ok) setDetail(data.example as TrainingExampleRow);
+    } finally {
+      refresh();
     }
   };
 
@@ -218,7 +247,9 @@ export default function TrainingExamplesPage() {
                     {detailError && (
                       <p className="text-xs text-red-600">Couldn&rsquo;t load this example: {detailError}</p>
                     )}
-                    {detail && detail.id === ex.id && <ExampleDetail example={detail} />}
+                    {detail && detail.id === ex.id && (
+                      <ExampleDetail example={detail} onSaved={() => reloadDetail(ex.id)} />
+                    )}
                   </div>
                 )}
               </div>
@@ -230,7 +261,7 @@ export default function TrainingExamplesPage() {
   );
 }
 
-function ExampleDetail({ example }: { example: TrainingExampleRow }) {
+function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSaved: () => void }) {
   const pieces = sceneToFewShotPieces(
     example.final_scene,
     example.street_w ?? 0,
@@ -243,6 +274,63 @@ function ExampleDetail({ example }: { example: TrainingExampleRow }) {
     ...pieces.garlandDetections.map((d) => ({ color: PURPLE, box: d.box, label: d.label })),
   ];
   const sat = example.satellite_lines;
+
+  // #52 — inline edit of the numbers the AI learns: roofline footage/difficulty
+  // + per-item detections (mini strand counts, spritzer/wreath size, tier,
+  // garland length). Saves to the frozen snapshot.
+  const editItems = editableItems(example.final_scene);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState<TrainingExampleInputs>(example.final_inputs);
+  const [corr, setCorr] = useState<Record<string, ItemCorrection>>({});
+
+  const startEdit = () => {
+    setDraft(example.final_inputs);
+    // Seed each editable item with its current values so unchanged items save
+    // as-is (re-applying the same value is a no-op) and the controls are simple.
+    const seed: Record<string, ItemCorrection> = {};
+    for (const it of editItems) {
+      if (it.kind === 'mini') seed[it.id] = { stringCount: it.stringCount };
+      else if (it.kind === 'spritzer') seed[it.id] = { quoteSize: it.quoteSize };
+      else if (it.kind === 'wreath') seed[it.id] = { quoteSize: it.quoteSize, tier: it.tier };
+      else seed[it.id] = { quoteLength: it.quoteLength, tier: it.tier };
+    }
+    setCorr(seed);
+    setSaveErr(null);
+    setEditing(true);
+  };
+  const setFootage = (k: keyof TrainingExampleInputs, v: string) =>
+    setDraft((d) => ({ ...d, [k]: Math.max(0, Math.round(Number(v) || 0)) }));
+  const setDifficulty = (
+    k: 'santasDifficulty' | 'gingerbreadDifficulty',
+    v: 'easy' | 'medium' | 'hard',
+  ) => setDraft((d) => ({ ...d, [k]: v }));
+  const bump = (id: string, delta: number) =>
+    setCorr((c) => ({ ...c, [id]: { ...c[id], stringCount: Math.max(1, (c[id]?.stringCount ?? 1) + delta) } }));
+  const setField = (id: string, patch: Partial<ItemCorrection>) =>
+    setCorr((c) => ({ ...c, [id]: { ...c[id], ...patch } }));
+
+  const save = async () => {
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const res = await fetch(`/api/training-examples/${example.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ finalInputs: draft, itemCorrections: corr }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `Save failed (${res.status})`);
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setSaveErr(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="grid md:grid-cols-2 gap-4">
       <div className="space-y-3">
@@ -285,50 +373,179 @@ function ExampleDetail({ example }: { example: TrainingExampleRow }) {
         )}
       </div>
       <div className="text-xs space-y-2 text-gray-600">
-        <div>
-          <div className="font-semibold text-gray-700">Final measurements (what the AI learns)</div>
-          <div>
-            Front {example.final_inputs.santasFootage} ft ({example.final_inputs.santasDifficulty}) ·
-            Ridge+Sides {example.final_inputs.gingerbreadFootage} ft ({example.final_inputs.gingerbreadDifficulty})
-            {(example.final_inputs.winterWonderlandFootage ?? 0) > 0 && (
-              <> · C9 {example.final_inputs.winterWonderlandFootage} ft</>
-            )}
-            {(example.final_inputs.stakeLightingFootage ?? 0) > 0 && (
-              <> · Stake {example.final_inputs.stakeLightingFootage} ft</>
-            )}
-          </div>
-          {sat?.santasFootage != null && (
+        {!editing ? (
+          <>
             <div>
-              Satellite-derived: front {sat.santasFootage} ft · ridge+sides {sat.gingerbreadFootage ?? '—'} ft
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-gray-700">Final measurements (what the AI learns)</div>
+                <button onClick={startEdit} className="text-blue-600 hover:underline">✎ Edit</button>
+              </div>
+              <div>
+                Front {example.final_inputs.santasFootage} ft ({example.final_inputs.santasDifficulty}) ·
+                Ridge+Sides {example.final_inputs.gingerbreadFootage} ft ({example.final_inputs.gingerbreadDifficulty})
+                {(example.final_inputs.winterWonderlandFootage ?? 0) > 0 && (
+                  <> · C9 {example.final_inputs.winterWonderlandFootage} ft</>
+                )}
+                {(example.final_inputs.stakeLightingFootage ?? 0) > 0 && (
+                  <> · Stake {example.final_inputs.stakeLightingFootage} ft</>
+                )}
+              </div>
+              {sat?.santasFootage != null && (
+                <div>
+                  Satellite-derived: front {sat.santasFootage} ft · ridge+sides {sat.gingerbreadFootage ?? '—'} ft
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        <div>
-          <div className="font-semibold text-gray-700">Items from the final design</div>
-          <div>
-            {pieces.miniLightDetections.length} mini · {pieces.wreathDetections.length} wreath ·{' '}
-            {pieces.spritzerDetections.length} spritzer · {pieces.garlandDetections.length} garland
+            <div>
+              <div className="font-semibold text-gray-700">Items from the final design</div>
+              <div>
+                {pieces.miniLightDetections.length} mini · {pieces.wreathDetections.length} wreath ·{' '}
+                {pieces.spritzerDetections.length} spritzer · {pieces.garlandDetections.length} garland
+              </div>
+              {(pieces.miniLightDetections.length > 0 ||
+                pieces.wreathDetections.length > 0 ||
+                pieces.spritzerDetections.length > 0 ||
+                pieces.garlandDetections.length > 0) && (
+                <ul className="list-disc pl-4 mt-1">
+                  {pieces.miniLightDetections.map((d, i) => (
+                    <li key={`m${i}`}>{d.label} ({d.wrapStyle})</li>
+                  ))}
+                  {pieces.wreathDetections.map((d, i) => (
+                    <li key={`w${i}`}>{d.label} — {d.tier}</li>
+                  ))}
+                  {pieces.spritzerDetections.map((d, i) => (
+                    <li key={`s${i}`}>{d.label}</li>
+                  ))}
+                  {pieces.garlandDetections.map((d, i) => (
+                    <li key={`g${i}`}>{d.label} — {d.tier}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="space-y-2 border border-blue-200 bg-blue-50 rounded p-2">
+            <div className="font-semibold text-gray-700">Correct the measurements the AI learns</div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-0.5">
+                Front (Santa&rsquo;s) ft
+                <input type="number" min={0} value={draft.santasFootage}
+                  onChange={(e) => setFootage('santasFootage', e.target.value)}
+                  className="border border-gray-300 rounded px-1.5 py-0.5" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                Front difficulty
+                <select value={draft.santasDifficulty}
+                  onChange={(e) => setDifficulty('santasDifficulty', e.target.value as 'easy' | 'medium' | 'hard')}
+                  className="border border-gray-300 rounded px-1.5 py-0.5">
+                  <option value="easy">easy</option><option value="medium">medium</option><option value="hard">hard</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-0.5">
+                Ridge+Sides (Gingerbread) ft
+                <input type="number" min={0} value={draft.gingerbreadFootage}
+                  onChange={(e) => setFootage('gingerbreadFootage', e.target.value)}
+                  className="border border-gray-300 rounded px-1.5 py-0.5" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                Ridge+Sides difficulty
+                <select value={draft.gingerbreadDifficulty}
+                  onChange={(e) => setDifficulty('gingerbreadDifficulty', e.target.value as 'easy' | 'medium' | 'hard')}
+                  className="border border-gray-300 rounded px-1.5 py-0.5">
+                  <option value="easy">easy</option><option value="medium">medium</option><option value="hard">hard</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-0.5">
+                C9 (Winter Wonderland) ft
+                <input type="number" min={0} value={draft.winterWonderlandFootage ?? 0}
+                  onChange={(e) => setFootage('winterWonderlandFootage', e.target.value)}
+                  className="border border-gray-300 rounded px-1.5 py-0.5" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                Stake ft
+                <input type="number" min={0} value={draft.stakeLightingFootage ?? 0}
+                  onChange={(e) => setFootage('stakeLightingFootage', e.target.value)}
+                  className="border border-gray-300 rounded px-1.5 py-0.5" />
+              </label>
+            </div>
+            {editItems.length > 0 && (
+              <div>
+                <div className="font-semibold text-gray-700">Detections (what the AI learns)</div>
+                <div className="space-y-1 mt-1">
+                  {editItems.map((it) => {
+                    if (it.kind === 'mini') {
+                      return (
+                        <div key={it.id} className="flex items-center gap-2">
+                          <span className="capitalize w-20">{it.surface}</span>
+                          <button type="button" onClick={() => bump(it.id, -1)}
+                            className="border border-gray-300 rounded w-6 h-6 leading-none bg-white">−</button>
+                          <span className="w-6 text-center tabular-nums">{corr[it.id]?.stringCount ?? it.stringCount}</span>
+                          <button type="button" onClick={() => bump(it.id, 1)}
+                            className="border border-gray-300 rounded w-6 h-6 leading-none bg-white">+</button>
+                          <span className="text-gray-400">strings</span>
+                        </div>
+                      );
+                    }
+                    if (it.kind === 'spritzer') {
+                      return (
+                        <div key={it.id} className="flex items-center gap-2">
+                          <span className="w-20">Spritzer</span>
+                          <select value={corr[it.id]?.quoteSize ?? it.quoteSize}
+                            onChange={(e) => setField(it.id, { quoteSize: e.target.value })}
+                            className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+                            {SPRITZER_SIZES.map((s) => <option key={s} value={s}>{s}&Prime;</option>)}
+                          </select>
+                        </div>
+                      );
+                    }
+                    if (it.kind === 'wreath') {
+                      return (
+                        <div key={it.id} className="flex items-center gap-2 flex-wrap">
+                          <span className="w-20">Wreath</span>
+                          <select value={corr[it.id]?.quoteSize ?? it.quoteSize}
+                            onChange={(e) => setField(it.id, { quoteSize: e.target.value })}
+                            className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+                            {WREATH_SIZES.map((s) => <option key={s} value={s}>{wreathLabel(s)}</option>)}
+                          </select>
+                          <select value={corr[it.id]?.tier ?? it.tier}
+                            onChange={(e) => setField(it.id, { tier: e.target.value })}
+                            className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+                            {TIERS.map((t) => <option key={t} value={t}>{tierLabel(t)}</option>)}
+                          </select>
+                        </div>
+                      );
+                    }
+                    // garland
+                    return (
+                      <div key={it.id} className="flex items-center gap-2 flex-wrap">
+                        <span className="w-20">Garland</span>
+                        <select value={corr[it.id]?.quoteLength ?? it.quoteLength}
+                          onChange={(e) => setField(it.id, { quoteLength: e.target.value })}
+                          className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+                          {GARLAND_LENGTHS.map((l) => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                        <select value={corr[it.id]?.tier ?? it.tier}
+                          onChange={(e) => setField(it.id, { tier: e.target.value })}
+                          className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+                          {TIERS.map((t) => <option key={t} value={t}>{tierLabel(t)}</option>)}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {saveErr && <p className="text-red-600">{saveErr}</p>}
+            <div className="flex gap-2 pt-1">
+              <button onClick={save} disabled={saving}
+                className="bg-green-600 text-white rounded px-3 py-1 disabled:bg-green-300">
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => setEditing(false)} disabled={saving}
+                className="border border-gray-300 rounded px-3 py-1 bg-white">Cancel</button>
+            </div>
           </div>
-          {(pieces.miniLightDetections.length > 0 ||
-            pieces.wreathDetections.length > 0 ||
-            pieces.spritzerDetections.length > 0 ||
-            pieces.garlandDetections.length > 0) && (
-            <ul className="list-disc pl-4 mt-1">
-              {pieces.miniLightDetections.map((d, i) => (
-                <li key={`m${i}`}>{d.label} ({d.wrapStyle})</li>
-              ))}
-              {pieces.wreathDetections.map((d, i) => (
-                <li key={`w${i}`}>{d.label} — {d.tier}</li>
-              ))}
-              {pieces.spritzerDetections.map((d, i) => (
-                <li key={`s${i}`}>{d.label}</li>
-              ))}
-              {pieces.garlandDetections.map((d, i) => (
-                <li key={`g${i}`}>{d.label} — {d.tier}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+        )}
         <div>
           <div className="font-semibold text-gray-700">Provenance</div>
           <div>
