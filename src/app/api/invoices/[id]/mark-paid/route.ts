@@ -4,7 +4,10 @@
 // Valor terminal). Calls markInvoicePaidManually which atomically sets
 // status='paid', balance=0, paid_at=now (.neq('status','paid') claim) so
 // a double-click can't double-settle. Idempotent on an already-paid invoice.
-// Does NOT touch the job — use /api/jobs/[id]/close to finalize the job.
+// After the settle, close the linked job (requires_invoicing → done) so the
+// pipeline mirrors the Valor balance webhook (which closes the job on balance
+// settle). markInvoicePaidManually itself never touches the job, so the route
+// does the close best-effort — a job-close failure never fails the payment.
 //
 // Response: { ok, paid, invoice: { id, status, balance } }
 
@@ -12,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { markInvoicePaidManually } from '@/lib/invoices';
+import { getJob, setJobStatus } from '@/lib/jobs';
 
 export const runtime = 'nodejs';
 
@@ -42,6 +46,22 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
   if (!invoice) {
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+  }
+
+  // Close the linked job once payment is collected (best-effort — the payment is
+  // already recorded, so a job-close failure must never fail the request). This
+  // mirrors the Valor balance-settle path in the webhook: requires_invoicing → done.
+  // markInvoicePaidManually returns the full invoice row (incl. job_id) on every
+  // branch, so no extra read is needed to find the job.
+  try {
+    if (invoice.job_id) {
+      const job = await getJob(invoice.job_id);
+      if (job && job.status === 'requires_invoicing') {
+        await setJobStatus(job.id, 'done');
+      }
+    }
+  } catch (err) {
+    console.error('[api/invoices/:id/mark-paid] job close failed:', err);
   }
 
   return NextResponse.json({
