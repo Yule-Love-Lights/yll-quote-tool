@@ -261,12 +261,18 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
   // true but items empty — it must fall through and REPLACE the arrays with
   // empties, so the excluded items aren't silently resurrected from stale input.
   if (p.items.length === 0 && !p.hasProjectableItems) return inputs;
+  // #104: thread each projected line's stable id + scene item ids onto the priced
+  // input (same order as p.miniLightItems etc.), so calculateQuote can emit them on
+  // the LineItem and the override/scene-link can key by identity, not list position.
+  // A category-narrowing filter keeps `i.input` correctly typed per category.
+  const forCategory = <C extends ProjectedCategory>(category: C) =>
+    p.items.filter((i): i is Extract<ProjectedLineItem, { category: C }> => i.category === category);
   return {
     ...inputs,
-    miniLightItems: p.miniLightItems,
-    spritzers: p.spritzers,
-    wreaths: p.wreaths,
-    garland: p.garland,
-    bows: p.bows,
+    miniLightItems: forCategory('mini').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
+    spritzers: forCategory('spritzer').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
+    wreaths: forCategory('wreath').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
+    garland: forCategory('garland').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
+    bows: forCategory('bow').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
   };
 }
