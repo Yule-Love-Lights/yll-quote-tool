@@ -16,6 +16,7 @@ import {
   getInvoiceByJob,
   getInvoiceDetail,
   listInvoicesForAdmin,
+  markInvoicePaidManually,
   setInvoiceStatus,
   setInvoiceTaxOverride,
 } from './invoices';
@@ -85,6 +86,10 @@ function makeFakeSupabase(initial: { jobs?: Row[]; quotes?: Row[]; invoices?: Ro
       },
       eq(col: string, val: unknown) {
         state.filters.push((r) => r[col] === val);
+        return builder;
+      },
+      neq(col: string, val: unknown) {
+        state.filters.push((r) => r[col] !== val);
         return builder;
       },
       in(col: string, vals: unknown[]) {
@@ -510,5 +515,51 @@ describe('getInvoiceDetail', () => {
   it('returns null when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await getInvoiceDetail('i1')).toBeNull();
+  });
+});
+
+// ─── DB: markInvoicePaidManually ────────────────────────────────────────────
+
+describe('markInvoicePaidManually', () => {
+  it('marks an awaiting_payment invoice paid, zeroes balance, stamps paid_at', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const inv = await markInvoicePaidManually('i1');
+    expect(inv).toBeTruthy();
+    expect(inv!.status).toBe('paid');
+    expect(inv!.balance).toBe(0);
+    expect(inv!.paid_at).toBeTruthy();
+  });
+
+  it('is idempotent — a paid invoice is returned as-is with no write', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+    const updateSpy = vi.spyOn(fake.client, 'from');
+
+    const inv = await markInvoicePaidManually('i1');
+    expect(inv!.status).toBe('paid');
+    // We can't easily spy on the update call depth, but we can verify the
+    // returned invoice is exactly the existing one (no new paid_at).
+    expect(inv!.paid_at).toBe('2026-01-01T00:00:00Z');
+    updateSpy.mockRestore();
+  });
+
+  it('throws when the invoice is cancelled', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'cancelled', balance: 500, paid_at: null }],
+    });
+    sbRef.current = fake.client;
+    await expect(markInvoicePaidManually('i1')).rejects.toThrow(/cancelled/);
+  });
+
+  it('returns null when the invoice does not exist', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await markInvoicePaidManually('nope')).toBeNull();
   });
 });

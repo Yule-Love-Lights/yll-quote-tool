@@ -121,6 +121,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // failed card move can be reconciled without re-stamping/re-messaging.
   const retryGhl = req.nextUrl.searchParams.get('retryGhl') != null;
 
+  // Task 10 — Send channel split: accept an optional body { channel?: 'email' | 'sms' | 'both' }.
+  // Default is 'both' (back-compat — the admin Send button posts no body).
+  // Guard against a double-read: the body is only ever read once here.
+  let sendBody: { channel?: unknown } = {};
+  try { sendBody = await req.json(); } catch { sendBody = {}; }
+  const channel = (sendBody.channel === 'sms' || sendBody.channel === 'email' || sendBody.channel === 'both')
+    ? sendBody.channel
+    : 'both';
+  const doSms   = channel === 'both' || channel === 'sms';
+  const doEmail = channel === 'both' || channel === 'email';
+
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
@@ -339,28 +350,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const portalUrl = `${baseUrl}/portal/${id}`;
     const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
     const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
-    try {
-      await sendSms({
-        contactId: quote.highlevel_contact_id,
-        message: quoteSmsBody(firstName, portalUrl),
-        fromNumber,
-      });
-      smsSent = true;
-    } catch (err) {
-      console.warn('[api/quotes/:id/send] SMS send failed:', err);
-      messageError = hlErrorMessage(err);
+    if (doSms) {
+      try {
+        await sendSms({
+          contactId: quote.highlevel_contact_id,
+          message: quoteSmsBody(firstName, portalUrl),
+          fromNumber,
+        });
+        smsSent = true;
+      } catch (err) {
+        console.warn('[api/quotes/:id/send] SMS send failed:', err);
+        messageError = hlErrorMessage(err);
+      }
     }
-    try {
-      await sendEmail({
-        contactId: quote.highlevel_contact_id,
-        subject: QUOTE_EMAIL_SUBJECT,
-        html: quoteEmailHtml(firstName, portalUrl),
-        emailFrom,
-      });
-      emailSent = true;
-    } catch (err) {
-      console.warn('[api/quotes/:id/send] Email send failed:', err);
-      messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
+    if (doEmail) {
+      try {
+        await sendEmail({
+          contactId: quote.highlevel_contact_id,
+          subject: QUOTE_EMAIL_SUBJECT,
+          html: quoteEmailHtml(firstName, portalUrl),
+          emailFrom,
+        });
+        emailSent = true;
+      } catch (err) {
+        console.warn('[api/quotes/:id/send] Email send failed:', err);
+        messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
+      }
     }
   }
 
@@ -379,5 +394,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     smsSent,
     emailSent,
     messageError,
+    // Task 10 — channel split: echo the resolved channel for observability.
+    channel,
   });
 }
