@@ -54,6 +54,7 @@ import {
   internalApprovalEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { canTransition, deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import {
   CUSTOM_SCHEME_ID,
   DEFAULT_COLOR_SCHEME_ID,
@@ -107,6 +108,12 @@ type QuoteRow = {
   inputs: QuoteInputs | null;
   highlevel_contact_id: string | null;
   customer_approved_at: string | null;
+  // Bug fix (B2): needed for the status gate — we must derive the current
+  // status and reject illegal transitions (declined/cancelled/lost can't
+  // be re-approved).
+  status: QuoteStatus | null;
+  deposit_paid_at: string | null;
+  viewed_at: string | null;
   // #93 — whether staff sent the quote before this approval. Recorded as a
   // snapshot flag so a deliberate in-person close is distinguishable from a
   // stray pre-send approval on a leaked link (audit fix g1-route).
@@ -324,7 +331,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, quote_sent_at, is_test',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -345,6 +352,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         error: 'Quote already approved',
         code: 'already-approved',
         approvedAt: quote.customer_approved_at,
+      },
+      { status: 409 },
+    );
+  }
+
+  // Bug fix (B2): status machine gate — mirrors staff-approve's canTransition
+  // guard. Derive the current status (explicit persisted status wins for branch/
+  // terminal states; timestamps are the fallback for legacy rows). Then reject
+  // when the transition to 'approved' is not legal. This closes the window where
+  // a declined/cancelled/lost quote (customer_approved_at IS NULL, no guard) could
+  // be re-approved + re-booked with a real deposit charge.
+  const currentStatus = deriveStatus({
+    quote_sent_at: quote.quote_sent_at,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    viewed_at: quote.viewed_at,
+    status: quote.status,
+  });
+  if (!canTransition(currentStatus, 'approved')) {
+    return NextResponse.json(
+      {
+        error: `Quote cannot be approved from status '${currentStatus}'`,
+        code: 'illegal-transition',
+        currentStatus,
       },
       { status: 409 },
     );
@@ -500,6 +531,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // passed the SELECT can't both land here, because only the first matches the
   // `customer_approved_at IS NULL` predicate. `.select('id')` returns the
   // affected rows so we can tell whether WE won.
+  //
+  // Bug fix (B2): also exclude terminal states in the atomic write so a
+  // concurrent decline/cancel that fires between our SELECT and this UPDATE
+  // can't be raced past. A row whose status just moved to 'declined',
+  // 'cancelled', or 'lost' will no longer match and we get 0 updated rows →
+  // safe 409 for the concurrent caller.
   const { data: updatedRows, error: snapshotErr } = await sb
     .from('quotes')
     .update({
@@ -512,6 +549,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     .eq('id', id)
     .is('customer_approved_at', null)
+    .not('status', 'in', '("declined","cancelled","lost")')
     .select('id');
 
   if (snapshotErr) {

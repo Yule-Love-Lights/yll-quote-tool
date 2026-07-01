@@ -5,7 +5,7 @@
 // Invoices column lands in #83 Phase 3 (placeholder in the UI for now).
 
 import type { DashboardQuote } from './types';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { JOB_STATUSES, asJobStatus, type JobStatus } from '@/lib/jobStatus';
 
 /** A single status cell on the board: how many items and their total value. */
@@ -40,6 +40,19 @@ function emptyBucket(): StageBucket {
   return { count: 0, totalUsd: 0 };
 }
 
+/**
+ * Terminal statuses (B7 fix): a quote in a terminal state must not appear in
+ * any forward-progress board bucket. deriveStatus returns these only when the
+ * persisted `status` column carries them (timestamps alone can't express them),
+ * so the fix depends on `status` being selected by DASHBOARD_QUOTES_SELECT.
+ */
+const TERMINAL_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
+  'cancelled',
+  'declined',
+  'lost',
+  'changes_requested',
+]);
+
 function emptyJobBuckets(): Record<JobStatus, StageBucket> {
   return Object.fromEntries(JOB_STATUSES.map((s) => [s, emptyBucket()])) as Record<
     JobStatus,
@@ -62,12 +75,15 @@ export function computeWorkflowBoard(
 
   for (const q of quotes) {
     const status = deriveStatus(q);
+    // B7 fix: skip terminal-status orders — they must not inflate any
+    // forward-progress bucket (booked/approved/sent/draft).
+    if (TERMINAL_STATUSES.has(status)) continue;
     const bucket =
       status === 'booked'
         ? booked
         : status === 'approved'
           ? approved
-          : status === 'sent'
+          : status === 'sent' || status === 'viewed'
             ? awaitingResponse
             : draft;
     bucket.count += 1;
