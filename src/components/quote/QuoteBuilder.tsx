@@ -101,6 +101,11 @@ function EditablePrice({
       </span>
     );
   }
+  // Only claim a "was $X" when we have a DISTINCT computed baseline. On reopening a
+  // saved quote the baseline seeds from the (overridden) saved result, so
+  // baseAmount === amount until the next Calculate — show a plain "custom" chip
+  // then, not a misleading "was <the override itself>" (#104 review, low).
+  const showBase = baseAmount !== amount;
   return (
     <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
       {overridden && (
@@ -112,10 +117,14 @@ function EditablePrice({
             onReset();
           }}
           disabled={disabled}
-          title={`Custom price for this quote — reset to ${usd(baseAmount)}`}
+          title={
+            showBase
+              ? `Custom price for this quote — reset to ${usd(baseAmount)}`
+              : 'Custom price for this quote — reset'
+          }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
-          custom · was {usd(baseAmount)} ✕
+          custom{showBase ? ` · was ${usd(baseAmount)}` : ''} ✕
         </button>
       )}
       <button
