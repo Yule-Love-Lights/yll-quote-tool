@@ -200,9 +200,7 @@ export function normalizeBoxArray<T extends { box: [number, number, number, numb
     .filter(d => d.box[0] >= 0 && d.box[0] <= 1 && d.box[1] >= 0 && d.box[1] <= 1);
 }
 
-const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
-
-PACKAGES — there are TWO mutually-exclusive roofline options. Every roof-edge run you trace goes into EXACTLY ONE of them, decided by which way its roof plane faces:
+const ROOFLINE_TRACING_RULES = `PACKAGES — there are TWO mutually-exclusive roofline options. Every roof-edge run you trace goes into EXACTLY ONE of them, decided by which way its roof plane faces:
 - Santa's Roofline (red, "santasLines"): the FRONT roofline ONLY — the gutter/eave runs on the roof planes that FACE THE STREET, plus the rake edges of any FRONT-facing gable (the diagonals climbing to a street-facing peak). This is everything on the face of the house you see head-on from the curb.
 - Gingerbread (blue, "gingerbreadLines"): the RIDGE (peak) lines PLUS the SIDE rooflines — the gutter/eave runs on the planes that face LEFT/RIGHT (the side elevations, which recede from the camera), plus the rakes of any gable that faces sideways. Gingerbread is the upgrade sold as "front + ridge + sides", so it adds the ridge and the sides on top of the front.
 
@@ -236,7 +234,52 @@ ROOFLINE TRACING — CRITICAL RULES (failures here are the #1 cause of under-quo
 
 4. RAKE vs. GUTTER — on a gable-end (the triangular wall below a pitched peak), the two diagonal edges from eave to peak are RAKE lines; lights install along a rake the same way as a gutter. A rake belongs to whichever way its gable FACES: a FRONT-facing gable's rakes are Santa's (red); a gable whose triangle points to the SIDE has its rakes in Gingerbread (blue). The horizontal eave at the bottom of a gable follows the same front/side rule. A single front gable adds ~2× (slope length) of rake to Santa's.
 
-RIDGE & SIDES (GINGERBREAD) — gingerbreadLines holds TWO kinds of run: (a) every RIDGE — the highest horizontal line where two slopes meet at the top (on a gable roof, one long line running front-to-back; on a hip roof, shorter and sometimes hidden behind the front slope); and (b) every SIDE run — the side-facing gutters, eaves, and rakes from the rules above. ALWAYS trace a ridge when a horizontal peak is visible, even if the slope below has skylights/dormers/dark shingles — the ridge is the top edge regardless of what's below it. Only return gingerbreadLines = [] when there is genuinely no ridge AND no side run visible (e.g., a straight-on view of a pure hip roof with no visible top ridge and no side elevations in frame).
+RIDGE & SIDES (GINGERBREAD) — gingerbreadLines holds TWO kinds of run: (a) every RIDGE — the highest horizontal line where two slopes meet at the top (on a gable roof, one long line running front-to-back; on a hip roof, shorter and sometimes hidden behind the front slope); and (b) every SIDE run — the side-facing gutters, eaves, and rakes from the rules above. ALWAYS trace a ridge when a horizontal peak is visible, even if the slope below has skylights/dormers/dark shingles — the ridge is the top edge regardless of what's below it. Only return gingerbreadLines = [] when there is genuinely no ridge AND no side run visible (e.g., a straight-on view of a pure hip roof with no visible top ridge and no side elevations in frame).`;
+
+const OUTPUT_JSON_SCHEMA = `You MUST respond with ONLY valid JSON matching this schema. No markdown fences, no prose before or after:
+{
+  "santasFootage": number,
+  "santasDifficulty": "easy" | "medium" | "hard",
+  "santasLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "front gutter ~40ft", "feature": "gutter" }
+  ],
+  "gingerbreadFootage": number,
+  "gingerbreadDifficulty": "easy" | "medium" | "hard",
+  "gingerbreadLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" },
+    { "points": [[x1,y1], [x2,y2], ...], "label": "right side gutter ~25ft", "feature": "side" }
+  ],
+  "satelliteSantasLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "front edge ~55ft", "feature": "gutter" }
+  ],
+  "satelliteSantasFootage": number,
+  "satelliteGingerbreadLines": [
+    { "points": [[x1,y1], [x2,y2], ...], "label": "left + right front-section sides ~45ft", "feature": "side" },
+    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" }
+  ],
+  "satelliteGingerbreadFootage": number,
+  "preferredSource": "street" | "satellite",
+  "miniLightDetections": [
+    { "type": "bush" | "tree" | "column" | "railing", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
+  ],
+  "wreathDetections": [
+    { "size": "24noble" | "30noble" | "36noble" | "48noble" | "60noble" | "72noble", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "front door wreath ~30in" }
+  ],
+  "spritzerDetections": [
+    { "size": "16" | "24" | "32", "box": [x, y, w, h], "label": "metallic star spritzer 24in" }
+  ],
+  "garlandDetections": [
+    { "length": "9ft" | "4.5ft", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "porch railing garland ~18ft" }
+  ],
+  "notes": "1-2 sentences on what you saw and any caveats",
+  "confidence": "low" | "medium" | "high"
+}
+
+Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
+
+const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
+
+${ROOFLINE_TRACING_RULES}
 
 MINI LIGHT DETECTION — in addition to roofline, identify every bush, tree, column, and railing visible in the photo that could get mini lights.
 
@@ -360,46 +403,52 @@ Otherwise set it to "street".
 
 If you could not reliably trace the satellite roofline (heavy tree cover, low contrast, image unclear), set satelliteSantasLines to [] and satelliteGingerbreadLines to []. Note this in the "notes" field. The user will trace it manually — an empty array is MUCH better than a wrong one.
 
-You MUST respond with ONLY valid JSON matching this schema. No markdown fences, no prose before or after:
-{
-  "santasFootage": number,
-  "santasDifficulty": "easy" | "medium" | "hard",
-  "santasLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "front gutter ~40ft", "feature": "gutter" }
-  ],
-  "gingerbreadFootage": number,
-  "gingerbreadDifficulty": "easy" | "medium" | "hard",
-  "gingerbreadLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" },
-    { "points": [[x1,y1], [x2,y2], ...], "label": "right side gutter ~25ft", "feature": "side" }
-  ],
-  "satelliteSantasLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "front edge ~55ft", "feature": "gutter" }
-  ],
-  "satelliteSantasFootage": number,
-  "satelliteGingerbreadLines": [
-    { "points": [[x1,y1], [x2,y2], ...], "label": "left + right front-section sides ~45ft", "feature": "side" },
-    { "points": [[x1,y1], [x2,y2], ...], "label": "main ridge ~30ft", "feature": "ridge" }
-  ],
-  "satelliteGingerbreadFootage": number,
-  "preferredSource": "street" | "satellite",
-  "miniLightDetections": [
-    { "type": "bush" | "tree" | "column" | "railing", "wrapStyle": "canopy" | "trunk", "stringCount": number, "box": [x, y, w, h], "label": "foundation bush ~3ft" }
-  ],
-  "wreathDetections": [
-    { "size": "24noble" | "30noble" | "36noble" | "48noble" | "60noble" | "72noble", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "front door wreath ~30in" }
-  ],
-  "spritzerDetections": [
-    { "size": "16" | "24" | "32", "box": [x, y, w, h], "label": "metallic star spritzer 24in" }
-  ],
-  "garlandDetections": [
-    { "length": "9ft" | "4.5ft", "tier": "bow" | "fullDecor", "box": [x, y, w, h], "label": "porch railing garland ~18ft" }
-  ],
-  "notes": "1-2 sentences on what you saw and any caveats",
-  "confidence": "low" | "medium" | "high"
-}
+${OUTPUT_JSON_SCHEMA}`;
 
-Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
+// #54: the COMPLETED-INSTALL analyzer. /training/new uploads photos of FINISHED
+// jobs, not bare houses to quote. The quoting SYSTEM_PROMPT above SUGGESTS where
+// lights could go (hallucinating boxes on a done install) — wrong tool. This
+// prompt RECORDS what is actually installed & lit in a night photo, so saved
+// training examples are ground truth, not a re-design. Shares the crown-jewel
+// ROOFLINE_TRACING_RULES + OUTPUT_JSON_SCHEMA with the quoting prompt so the
+// tracing discipline and output shape can't drift between the two modes.
+const COMPLETED_INSTALL_PROMPT = `You are a holiday lighting technician for Yule Love Lights, a Long Island NY Christmas lighting company. You are looking at a NIGHT photo of a COMPLETED installation — our lights are already installed and turned ON. Your job is to RECORD EXACTLY what was installed and is lit, as ground-truth training data.
+
+THIS IS NOT A DESIGN TASK. Do not suggest, add, or "recommend" anything. Report ONLY light that is visibly ON in this photo. If a roof edge is dark, a bush is bare, or a spot has no wreath, it does not exist for your purposes — leave it out. A missed item is fine; an INVENTED item corrupts our training data.
+
+${ROOFLINE_TRACING_RULES}
+
+COMPLETED-INSTALL ROOFLINE — apply every tracing rule above, with ONE change: trace ONLY the roof runs that are ACTUALLY LIT. Follow the visible line of bulbs along the eave / rake / ridge. A roof edge with no bulbs on it was NOT installed — do not trace it (return fewer lines, or empty arrays, rather than tracing a dark edge). The red/blue Santa's-vs-Gingerbread split, the front-only scope, and the no-downspout / no-wire discipline all still apply. NIGHT-PHOTO CARE: glare and bloom fatten a lit string — trace the CENTERLINE of the run where it sits on the roof edge, not the outer glow. If a string sags below the gutter, place the polyline on the roof edge it hangs from, not the sag. Derive footage from the polyline as usual.
+
+MINI LIGHTS (as installed) — identify every bush, tree, column, and railing that is ACTUALLY WRAPPED and lit. Skip anything bare/unlit — we did not light it.
+- bush: a shrub/hedge glowing with wrapped mini lights. Wrap style "canopy".
+- tree: a wrapped tree; small (<10ft) "canopy", larger "trunk".
+- column: a lit porch column / lamp post, "canopy".
+- railing: a lit run along a deck / porch / balcony top rail, "canopy" — the box hugs the horizontal lit run.
+Estimate stringCount from the LIT extent (one 50ct 5MM strand ≈ 25ft): small bush 2-3, medium 3-5, large hedge 5-15, small tree 3-5, medium tree 5-8, large tree 8-14, column 2-3, railing ~1 per 25ft. Box each in normalized 0-1 coords [x,y,w,h]. Skip distant background / neighbor items.
+
+WREATHS (as installed) — detect wreaths ACTUALLY HUNG and lit. Report each one's position + best-guess size ("24noble"/"30noble"/"36noble"/"48noble"/"60noble"/"72noble") and tier ("bow" = lights + bow, "fullDecor" = lights + ornaments/ribbon). Do NOT propose empty spots. If no lit wreath is visible, return []. At night a lit wreath reads as a bright ring — only report clear ones (this is a lower-confidence detection than roofline/minis).
+
+SPRITZERS (as installed) — detect metallic starburst stakes ACTUALLY PLANTED and lit in the beds. ONE box per lit starburst head, small and square. These are small and easy to lose in night glare — report only clearly-lit starbursts; when unsure, OMIT. Return [] if none (lower-confidence than roofline/minis).
+
+GARLAND (as installed) — detect garland runs ACTUALLY INSTALLED and lit along a railing, archway, doorway, or beam. ONE tight box per lit run (box width × scale = linear feet). Do not confuse a lit garland swag with a roofline run or a mini-light string. Return [] if none (lower-confidence than roofline/minis).
+
+DIFFICULTY (of the install that was performed):
+- easy: single-story, ground-accessible, simple straight runs.
+- medium: two-story, multiple gables / dormers, some access obstacles.
+- hard: three+ stories OR very steep / complex roofline OR difficult access.
+
+LINE MARKUP — return each lit run you traced as a polyline in NORMALIZED IMAGE COORDINATES (0.0-1.0), origin top-left, as an array of [x,y] points following the lit edge. Include a short label and a "feature" (gutter / peak / ridge / side / metal) exactly as defined in the roofline rules above. There is no satellite image in this mode — leave the satellite arrays empty and set preferredSource to "street".
+
+${OUTPUT_JSON_SCHEMA}
+
+Record ONLY what is lit and visible tonight. Round footage to the nearest 5 feet. When the photo is too dark / unclear to be sure, use confidence "low" and return empty arrays rather than guessing.`;
+
+// #54: pick the base system prompt by analyzer mode. 'design' (default) = the
+// quoting analyzer; 'completed' = the completed-install recorder above.
+export function baseSystemPromptFor(mode: 'design' | 'completed'): string {
+  return mode === 'completed' ? COMPLETED_INSTALL_PROMPT : SYSTEM_PROMPT;
+}
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
@@ -566,6 +615,10 @@ export type AnalyzeOptions = {
   // #8 Stage C (C2): a corpus-wide "you systematically tend to X" calibration
   // block (already prefixed with blank lines), appended to the system prompt.
   corpusBiasNote?: string | null;
+  // #54: 'design' (default) = quote a bare house (SUGGEST placements); 'completed'
+  // = record what is actually installed & lit in a night photo of a finished job
+  // (/training/new ground-truth capture). Selects the base system prompt.
+  mode?: 'design' | 'completed';
 };
 
 export async function analyzePhoto(
@@ -589,7 +642,7 @@ export async function analyzePhoto(
     throw new Error(`Unsupported image type: ${mediaType}`);
   }
 
-  const { satellite, references = [], houseStyleHint, corpusBiasNote } = options;
+  const { satellite, references = [], houseStyleHint, corpusBiasNote, mode = 'design' } = options;
 
   const refMessages = buildReferenceMessages(references);
   const fewShotMessages = buildFewShotMessages(fewShotExamples);
@@ -626,7 +679,7 @@ export async function analyzePhoto(
   const satelliteSelfCheck = satellite
     ? `\n\nSATELLITE ORIENTATION SELF-CHECK (do this BEFORE finalizing the satellite polylines): the top-down view makes it easy to mislabel which edge is the front. (1) Find the road in the satellite image and CONFIRM it against the street-view image — the front roof edge is the one whose plane faces that road. (2) satelliteSantasLines (red) MUST be that road-facing FRONT edge; satelliteGingerbreadLines (blue) are its ridge PLUS the two SIDE edges. (3) Cross-check the result against the street view: if your red/blue assignment would put "front" on an edge the street view clearly shows is a side or the ridge, they are FLIPPED — swap them. A flipped front/side is the single most common satellite error, so verify orientation before answering.`
     : '';
-  const systemPrompt = SYSTEM_PROMPT + refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
+  const systemPrompt = baseSystemPromptFor(mode) + refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
 
   const content: Array<{ type: 'image'; source: { type: 'base64'; media_type: typeof validMediaTypes[number]; data: string } } | { type: 'text'; text: string }> = [
     {
@@ -650,7 +703,9 @@ export async function analyzePhoto(
   }
   content.push({
     type: 'text',
-    text: 'Estimate Christmas lighting measurements for this house. Polylines go on the street-view image only. Respond with JSON only.',
+    text: mode === 'completed'
+      ? 'This is a NIGHT photo of a COMPLETED install with the lights ON. Record ONLY what is actually installed and lit — trace the lit roof runs, and detect the wrapped / hung / planted items that are visibly lit. Do not suggest anything that is not there. Respond with JSON only.'
+      : 'Estimate Christmas lighting measurements for this house. Polylines go on the street-view image only. Respond with JSON only.',
   });
 
   const response = await client.messages.create({
