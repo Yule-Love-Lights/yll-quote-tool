@@ -28,6 +28,14 @@ const { deleteDesign, deleteDesignsForQuote } = vi.hoisted(() => ({
 }));
 vi.mock('./designs', () => ({ deleteDesign, deleteDesignsForQuote }));
 
+// Rebook Part A: mock customers so the attach-on-save wiring is testable here,
+// and so existing tests (which don't configure a full customers table) don't blow
+// up when saveQuote now calls attachQuoteToCustomer.
+const { attachQuoteToCustomerMock } = vi.hoisted(() => ({
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+}));
+vi.mock('./customers', () => ({ attachQuoteToCustomer: attachQuoteToCustomerMock }));
+
 import { saveQuote, updateQuote, deleteTestQuotes } from './quotes';
 
 // ── Fake A (#90): records which CLIENT a write goes through (service vs anon),
@@ -253,5 +261,43 @@ describe('deleteTestQuotes — ledger #93 cleanup', () => {
     expect(await deleteTestQuotes()).toBe(0);
     expect(deleteDesignsForQuote).not.toHaveBeenCalled();
     expect(fake.tables.quotes).toHaveLength(1);
+  });
+});
+
+// ── Rebook Part A: attach-on-save ───────────────────────────────────────────
+//
+// saveQuote now calls attachQuoteToCustomer after a successful insert.
+// The mock above (attachQuoteToCustomerMock) lets us assert on the call.
+
+describe('saveQuote — attach-on-save (rebook Part A)', () => {
+  it('calls attachQuoteToCustomer with the new quote id for a real (non-test) quote', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    const res = await saveQuote({ name: 'Bob', email: 'bob@x.com', phone: '555', address: '2 St' }, INPUTS, RESULT);
+    expect(res).toEqual({ id: 'new-id' });
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledOnce();
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'new-id' }),
+    );
+  });
+
+  it('does NOT call attachQuoteToCustomer for a test quote (is_test=true)', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    const res = await saveQuote({ name: 'Test' }, INPUTS, RESULT, undefined, true);
+    expect(res).toEqual({ id: 'new-id' });
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns the saved id when attachQuoteToCustomer throws (best-effort)', async () => {
+    attachQuoteToCustomerMock.mockRejectedValueOnce(new Error('link down'));
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    const res = await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+    expect(res).toEqual({ id: 'new-id' }); // save succeeds despite attach failure
   });
 });
