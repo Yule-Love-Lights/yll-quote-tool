@@ -486,6 +486,15 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   if (invoice.status === 'paid') {
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
+  // B6 fix: a cancelled invoice must NEVER be resurrected by a late/retried webhook.
+  // Valor retries up to 3×: the booking may have been cancelled between the pay-link
+  // send and this webhook arriving. Ack 200 so Valor stops retrying; do NOT settle.
+  if (invoice.status === 'cancelled') {
+    console.warn(
+      `[api/integrations/valor/webhook] ignoring balance webhook for CANCELLED invoice ${invoice.id} (quote ${quoteId})`,
+    );
+    return NextResponse.json({ ok: true, ignored: 'invoice-cancelled' });
+  }
 
   // Verify the paid amount actually covers the balance (review CRITICAL). The
   // webhook is the source of truth — any approved bal_-tagged txn on this EPI

@@ -427,4 +427,22 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     expect(updatePayloads).toHaveLength(0);
     expect(setJobStatus).not.toHaveBeenCalled();
   });
+
+  // B6 fix: a late or retried balance webhook must NOT resurrect a CANCELLED invoice.
+  // Valor retries up to 3×; the cancellation may arrive between the pay-link send
+  // and the webhook. The invoice must stay cancelled and the job must not be closed.
+  it('does NOT settle a CANCELLED invoice — 200 ack, no status change, job left alone', async () => {
+    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'cancelled', balance: 1350 });
+
+    const res = await POST(signedReq(BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ignored).toBe('invoice-cancelled');
+    expect(updatePayloads).toHaveLength(0); // invoice NOT touched
+    expect(setJobStatus).not.toHaveBeenCalled(); // job NOT closed
+  });
 });
