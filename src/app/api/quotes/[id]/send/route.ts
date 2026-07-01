@@ -77,6 +77,9 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   customer_name: string | null;
   total: number | null;
+  // #107: the saved pricing result carries the "Full Yule" ceiling total; the
+  // Bid-Sent card value uses it (falling back to `total` on pre-#107 quotes).
+  result: { total?: number | null; fullYule?: { total?: number | null } | null } | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
@@ -121,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -224,9 +227,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const stageSent = process.env.HIGHLEVEL_STAGE_QUOTE_SENT;
   const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
-  // Card title = the customer's name; value = the quote total.
+  // Card title = the customer's name; value = the "Full Yule" ceiling (#107),
+  // falling back to the billed total on pre-#107 quotes.
   const cardName = quote.customer_name?.trim() || 'Yule Love Lights quote';
-  const monetaryValue = typeof quote.total === 'number' ? quote.total : undefined;
+  const ceilingTotal = quote.result?.fullYule?.total;
+  const monetaryValue =
+    typeof ceilingTotal === 'number'
+      ? ceilingTotal
+      : typeof quote.total === 'number'
+        ? quote.total
+        : undefined;
 
   if (quote.is_test) {
     // Test Quote (#93): simulate the send — never move a real GHL pipeline card.

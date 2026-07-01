@@ -262,6 +262,25 @@ export type LineItem = {
 // footage it covers and its dollar amount.
 export type RooflineOption = { footage: number; amount: number };
 
+// #107: the "Full Yule" ceiling — the quote priced with the MOST-EXPENSIVE
+// roofline (Gingerbread if present, else Santa's) instead of the selected one.
+// Additive/display-only: the billed figures on QuoteResult stay on the selected
+// roofline; this mirrors the same discount/fee/tax/deposit math on the ceiling
+// subtotal so the builder headline can show the sticker (= "The Full Yule" tier).
+export type FullYuleTotals = {
+  subtotalBeforeDiscount: number;
+  discountAmount: number;
+  earlyInstallDiscountAmount: number;
+  subtotalAfterDiscount: number;
+  rushFeeAmount: number;
+  takedownAmount: number;
+  taxableAmount: number;
+  taxAmount: number;
+  total: number;
+  depositAmount: number;
+  balanceDue: number;
+};
+
 export interface QuoteResult {
   lineItems: LineItem[];
   subtotalBeforeDiscount: number;
@@ -285,6 +304,10 @@ export interface QuoteResult {
     santas: RooflineOption | null;
     gingerbread: RooflineOption | null;
   };
+  // #107: the ceiling figures (all items + the max roofline). Optional so quote
+  // results saved before #107 read back without it — consumers fall back to the
+  // selected figures (`fullYule?.total ?? total`).
+  fullYule?: FullYuleTotals;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -712,6 +735,71 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
 
   const subtotalBeforeDiscount = lineItems.reduce((sum, item) => sum + item.amount, 0);
 
+  // Billed figures — priced on the SELECTED roofline.
+  const tail = computeTotalsTail(subtotalBeforeDiscount, inputs);
+
+  // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
+  // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
+  // customer-side approval gate on the portal instead (see lib/portal/adapter
+  // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
+  // preserve the home.works payload contract (downstream still reads the flag).
+  const minimumApplied = false;
+
+  // #107 "Full Yule" ceiling — swap the SELECTED roofline for the MOST-EXPENSIVE
+  // one (Gingerbread if present, else Santa's) and re-run the identical
+  // discount/fee/tax/deposit math. Additive: the billed figures above are
+  // untouched; this only powers the operator builder's headline sticker.
+  const selectedRooflineAmount =
+    rooflineChoice === 'santas'
+      ? rooflineOptions.santas?.amount ?? 0
+      : rooflineChoice === 'gingerbread'
+        ? rooflineOptions.gingerbread?.amount ?? 0
+        : 0;
+  // The true MAX — not just "gingerbread if present". Naturally gingerbread
+  // (front + ridge + sides) ≥ santas (front), but a #104 per-quote override can
+  // set either amount arbitrarily, so take the actual larger of the two.
+  const maxRooflineAmount = Math.max(
+    rooflineOptions.santas?.amount ?? 0,
+    rooflineOptions.gingerbread?.amount ?? 0,
+  );
+  const fullSubtotalBeforeDiscount =
+    subtotalBeforeDiscount - selectedRooflineAmount + maxRooflineAmount;
+  const fullTail = computeTotalsTail(fullSubtotalBeforeDiscount, inputs);
+  const fullYule: FullYuleTotals = {
+    subtotalBeforeDiscount: fullSubtotalBeforeDiscount,
+    ...fullTail,
+  };
+
+  return {
+    lineItems,
+    subtotalBeforeDiscount,
+    discountAmount: tail.discountAmount,
+    earlyInstallDiscountAmount: tail.earlyInstallDiscountAmount,
+    subtotalAfterDiscount: tail.subtotalAfterDiscount,
+    minimumApplied,
+    rushFeeAmount: tail.rushFeeAmount,
+    takedownAmount: tail.takedownAmount,
+    taxableAmount: tail.taxableAmount,
+    taxAmount: tail.taxAmount,
+    total: tail.total,
+    depositAmount: tail.depositAmount,
+    balanceDue: tail.balanceDue,
+    rooflineChoice,
+    rooflineOptions,
+    fullYule,
+  };
+}
+
+// The subtotal → total tail: manual discount, early-install promo, rush + premium
+// fees, tax, 50% deposit split. Pure fn of the pre-discount subtotal + the fee/
+// discount inputs, so the SELECTED subtotal (billed) and the "Full Yule" ceiling
+// subtotal (#107) run through ONE formula — the two computations can't drift apart
+// in maintenance. (Each still rounds on its own input, so the outputs aren't a
+// linear function of each other — that's expected.)
+function computeTotalsTail(
+  subtotalBeforeDiscount: number,
+  inputs: QuoteInputs,
+): Omit<FullYuleTotals, 'subtotalBeforeDiscount'> {
   let discountAmount = 0;
   if (inputs.discount) {
     discountAmount = inputs.discount.type === 'percentage'
@@ -733,12 +821,6 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const earlyInstallDiscountAmount =
     Math.round(subtotalBeforeDiscount * earlyInstallRate * 100) / 100;
 
-  // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
-  // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
-  // customer-side approval gate on the portal instead (see lib/portal/adapter
-  // `minimumOrderSubtotal` + SelectionContext). `minimumApplied` stays false to
-  // preserve the home.works payload contract (downstream still reads the flag).
-  const minimumApplied = false;
   // Clamp at 0: an over-large manual discount and/or early-install promo must
   // never drive the item subtotal — and therefore the total/deposit — negative.
   // Valid quotes are unaffected (postDiscount − earlyInstall is already >= 0).
@@ -757,12 +839,9 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const balanceDue = Math.round((total - depositAmount) * 100) / 100;
 
   return {
-    lineItems,
-    subtotalBeforeDiscount,
     discountAmount,
     earlyInstallDiscountAmount,
     subtotalAfterDiscount,
-    minimumApplied,
     rushFeeAmount,
     takedownAmount,
     taxableAmount,
@@ -770,7 +849,5 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     total,
     depositAmount,
     balanceDue,
-    rooflineChoice,
-    rooflineOptions,
   };
 }

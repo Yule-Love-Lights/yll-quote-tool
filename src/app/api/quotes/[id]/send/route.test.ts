@@ -126,6 +126,23 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(typeof syncWrite!.ghl_stage_synced_at).toBe('string');
   });
 
+  it('sets the Bid-Sent card value to the "Full Yule" ceiling when present (#107)', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      total: 4200, // billed (selected roofline)
+      result: { total: 4200, fullYule: { total: 5000 } }, // ceiling
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    // the linked card is advanced to Bid Sent with the CEILING as its value
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: 'stage_bid_sent', monetaryValue: 5000 }),
+    );
+  });
+
   it('persists ghl_sync_error (and still stamps quote_sent_at) when the GHL stage move throws', async () => {
     hl.updateOpportunity.mockRejectedValueOnce(new Error('GHL 500'));
     const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });

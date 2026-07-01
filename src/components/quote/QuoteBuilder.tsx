@@ -549,6 +549,11 @@ export default function QuoteBuilder({
   const [svHeading, setSvHeading] = useState<number | null>(null);
   const [svPitch, setSvPitch] = useState<number>(0);
   const [svFov, setSvFov] = useState<number>(80);
+  // Camera (panorama) location for Street View. Starts at the house coords and
+  // moves along the street via #15 — distinct from geoLat/geoLng (the house =
+  // the aim target + Maps link + analysis coords, which never move).
+  const [svLat, setSvLat] = useState<number | null>(null);
+  const [svLng, setSvLng] = useState<number | null>(null);
   const [recapturing, setRecapturing] = useState(false);
   // Satellite polylines (editable from top-down view — better for commercial
   // properties and complex rooflines where a street-view angle misses the back).
@@ -730,6 +735,8 @@ export default function QuoteBuilder({
     // Manual upload has no Google coords — hide the rotation controls.
     setGeoLat(null);
     setGeoLng(null);
+    setSvLat(null);
+    setSvLng(null);
     // A parked analysis context belongs to the PREVIOUS house — drop it.
     pendingContextRef.current = null;
   };
@@ -797,7 +804,9 @@ export default function QuoteBuilder({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          lat: geoLat, lng: geoLng,
+          // Rotate/tilt/zoom happen at the CURRENT camera (which may have moved
+          // along the street via #15), not always the house-nearest pano.
+          lat: svLat ?? geoLat, lng: svLng ?? geoLng,
           heading: nextHeading ?? undefined,
           pitch: nextPitch,
           fov: nextFov,
@@ -817,6 +826,48 @@ export default function QuoteBuilder({
       setSvFov(nextFov);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Street View refetch failed');
+    } finally {
+      setRecapturing(false);
+    }
+  };
+
+  // #15 — move the camera one panorama along the street (perpendicular to the
+  // camera→house look) and re-aim at the house, to shoot around a tree/truck the
+  // rotate-in-place angle can't clear. Like recapture: swaps the base photo,
+  // drops the stale seed, no Claude re-analysis. `reachedEnd` = edge of coverage.
+  const moveStreetView = async (direction: 'left' | 'right') => {
+    if (geoLat == null || geoLng == null) return;
+    setRecapturing(true);
+    setAnalysisError(null);
+    setAnalysisWarning(null);
+    try {
+      const res = await fetch('/api/streetview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction,
+          camLat: svLat ?? geoLat, camLng: svLng ?? geoLng,
+          houseLat: geoLat, houseLng: geoLng,
+          pitch: svPitch, fov: svFov,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Street View move failed');
+      if (data.reachedEnd) {
+        setAnalysisWarning('No further Street View this way — reached the edge of Google’s coverage.');
+        return;
+      }
+      pendingSeedRef.current = null;
+      setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      setPhotoBase64(data.photoBase64);
+      setPhotoMediaType(data.photoMediaType);
+      setSvLat(data.camLat);
+      setSvLng(data.camLng);
+      setSvHeading(typeof data.heading === 'number' ? data.heading : null);
+      setSvPitch(typeof data.pitch === 'number' ? data.pitch : svPitch);
+      setSvFov(typeof data.fov === 'number' ? data.fov : svFov);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Street View move failed');
     } finally {
       setRecapturing(false);
     }
@@ -876,7 +927,7 @@ export default function QuoteBuilder({
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
       preferredSource?: 'street' | 'satellite';
-      miniLightDetections?: { type: 'tree' | 'bush' | 'column'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
+      miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
       spritzerDetections?: { size: string; box: DetectionBox }[];
       garlandDetections?: { length: string; tier: string; box: DetectionBox }[];
@@ -1016,8 +1067,8 @@ export default function QuoteBuilder({
       setPhotoFile(null);
       setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
       setGoogleAddress(data.formattedAddress ?? null);
-      if (typeof data.lat === 'number') setGeoLat(data.lat);
-      if (typeof data.lng === 'number') setGeoLng(data.lng);
+      if (typeof data.lat === 'number') { setGeoLat(data.lat); setSvLat(data.lat); }
+      if (typeof data.lng === 'number') { setGeoLng(data.lng); setSvLng(data.lng); }
       // Reset camera to default on fresh lookup so the rotation controls start
       // from Google's auto-chosen angle rather than a stale heading.
       setSvHeading(null);
@@ -1198,7 +1249,9 @@ export default function QuoteBuilder({
           opportunityName: form.customer.address.trim()
             ? `Holiday Lights — ${form.customer.address.trim()}`
             : undefined,
-          monetaryValue: result?.total,
+          // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
+          // deposit webhook later resets it to the customer's actual selection).
+          monetaryValue: result?.fullYule?.total ?? result?.total,
         }),
       });
       const data = await res.json();
@@ -1900,10 +1953,23 @@ export default function QuoteBuilder({
                         Move the Camera
                       </span>
                       <span className="text-[11px] text-gray-500">
-                        Tree or truck in the way? Rotate, tilt, or zoom — then re-analyze. Best done before designing.
+                        Tree or truck in the way? Move along the street, rotate, tilt, or zoom — then re-analyze. Best done before designing.
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" disabled={recapturing}
+                        onClick={() => moveStreetView('left')}
+                        title="Move the camera to the next panorama along the street (re-aims at the house)"
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        ◀ Along street
+                      </button>
+                      <button type="button" disabled={recapturing}
+                        onClick={() => moveStreetView('right')}
+                        title="Move the camera to the next panorama along the street (re-aims at the house)"
+                        className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                        Along street ▶
+                      </button>
+                      <span className="mx-1 text-gray-300">|</span>
                       <button type="button" disabled={recapturing}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
@@ -2673,7 +2739,72 @@ export default function QuoteBuilder({
         {/* ── Result ── */}
         {result && (
           <div ref={resultRef} className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
-            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-4 pb-2 border-b border-gray-100">
+            {/* Totals — moved to the top (#107). The headline shows the "Full Yule"
+                ceiling (all items + the most-expensive roofline) via result.fullYule;
+                the billed figures + the recommended-subtotal gate below stay on the
+                SELECTED roofline. Falls back to the selected figures on pre-#107 quotes. */}
+            {(() => {
+              const h = result.fullYule ?? result;
+              return (
+                <>
+                  {/* Subtotals */}
+                  <div className="space-y-1.5 text-sm text-gray-600">
+                    <div className="flex justify-between">
+                      <span>Subtotal</span>
+                      <span className="tabular-nums">{usd(h.subtotalBeforeDiscount)}</span>
+                    </div>
+                    {h.discountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Discount</span>
+                        <span className="tabular-nums">−{usd(h.discountAmount)}</span>
+                      </div>
+                    )}
+                    {h.earlyInstallDiscountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Early-install discount</span>
+                        <span className="tabular-nums">−{usd(h.earlyInstallDiscountAmount)}</span>
+                      </div>
+                    )}
+                    {h.rushFeeAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Rush fee</span>
+                        <span className="tabular-nums">{usd(h.rushFeeAmount)}</span>
+                      </div>
+                    )}
+                    {h.takedownAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Premium takedown</span>
+                        <span className="tabular-nums">{usd(h.takedownAmount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(h.taxableAmount)})</span>
+                      <span className="tabular-nums">{usd(h.taxAmount)}</span>
+                    </div>
+                  </div>
+
+                  {/* Total + split */}
+                  <div className="border-t border-gray-300 mt-3 pt-4">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-lg font-bold text-gray-900">Total</span>
+                      <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(h.total)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="bg-green-50 border border-green-200 rounded-md p-3">
+                        <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
+                        <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(h.depositAmount)}</p>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
+                        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
+                        <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(h.balanceDue)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mt-6 pt-5 mb-4 pb-2 border-t border-b border-gray-200">
               Quote Breakdown
             </h2>
 
@@ -2866,60 +2997,6 @@ export default function QuoteBuilder({
                   );
                 });
               })()}
-            </div>
-
-            {/* Subtotals */}
-            <div className="border-t border-gray-200 pt-3 space-y-1.5 text-sm text-gray-600">
-              <div className="flex justify-between">
-                <span>Subtotal</span>
-                <span className="tabular-nums">{usd(result.subtotalBeforeDiscount)}</span>
-              </div>
-              {result.discountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Discount</span>
-                  <span className="tabular-nums">−{usd(result.discountAmount)}</span>
-                </div>
-              )}
-              {result.earlyInstallDiscountAmount > 0 && (
-                <div className="flex justify-between text-green-600">
-                  <span>Early-install discount</span>
-                  <span className="tabular-nums">−{usd(result.earlyInstallDiscountAmount)}</span>
-                </div>
-              )}
-              {result.rushFeeAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Rush fee</span>
-                  <span className="tabular-nums">{usd(result.rushFeeAmount)}</span>
-                </div>
-              )}
-              {result.takedownAmount > 0 && (
-                <div className="flex justify-between">
-                  <span>Premium takedown</span>
-                  <span className="tabular-nums">{usd(result.takedownAmount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span>Tax ({(BUSINESS_RULES.taxRate * 100).toLocaleString('en-US', { maximumFractionDigits: 3 })}% on {usd(result.taxableAmount)})</span>
-                <span className="tabular-nums">{usd(result.taxAmount)}</span>
-              </div>
-            </div>
-
-            {/* Total + split */}
-            <div className="border-t border-gray-300 mt-3 pt-4">
-              <div className="flex justify-between items-baseline">
-                <span className="text-lg font-bold text-gray-900">Total</span>
-                <span className="text-2xl font-bold text-gray-900 tabular-nums">{usd(result.total)}</span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="bg-green-50 border border-green-200 rounded-md p-3">
-                  <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
-                  <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(result.depositAmount)}</p>
-                </div>
-                <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
-                  <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Balance at Install</p>
-                  <p className="text-xl font-bold text-gray-700 tabular-nums mt-0.5">{usd(result.balanceDue)}</p>
-                </div>
-              </div>
             </div>
 
             {/* #12: recommended-only subtotal — what the customer's portal opens

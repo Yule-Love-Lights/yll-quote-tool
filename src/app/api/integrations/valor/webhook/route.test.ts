@@ -28,7 +28,7 @@ const {
   hl: {
     sendSms: vi.fn(async () => ({})),
     sendEmail: vi.fn(async () => ({})),
-    updateOpportunityStage: vi.fn(async () => ({})),
+    updateOpportunity: vi.fn(async () => ({})),
     configured: { value: true },
   },
   // #83 balance pay-link branch helpers.
@@ -81,7 +81,7 @@ vi.mock('@/lib/inventory/jobs', () => ({
 vi.mock('@/lib/integrations/highlevel', () => ({
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
-  updateOpportunityStage: hl.updateOpportunityStage,
+  updateOpportunity: hl.updateOpportunity,
   isHighLevelConfigured: () => hl.configured.value,
   HighLevelError: class HighLevelError extends Error {},
 }));
@@ -200,8 +200,12 @@ describe('Valor webhook — happy path', () => {
     });
     expect(updatePayloads[0].deposit_paid_at).toBeTruthy();
 
-    // CRM move + customer receipt (sms + email) + internal "paid" email
-    expect(hl.updateOpportunityStage).toHaveBeenCalledWith('opp-1', 'stage-approved');
+    // CRM move + reset the card value to the customer's approved selection (#107)
+    // + customer receipt (sms + email) + internal "paid" email
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'stage-approved',
+      monetaryValue: 2700, // approval_snapshot.customerSelection.currentTotalUsd
+    });
     expect(hl.sendSms).toHaveBeenCalledTimes(1);
     expect(hl.sendEmail).toHaveBeenCalledTimes(2); // customer receipt + internal alert
 
@@ -260,7 +264,7 @@ describe('Valor webhook — verification probe (Verify and Update)', () => {
     expect(res.status).toBe(200);
     expect(json.verification).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });
 
@@ -275,7 +279,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
 
     expect(res.status).toBe(200);
     expect(json.alreadyPaid).toBe(true);
-    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(hl.sendEmail).not.toHaveBeenCalled();
     // Lost the race → the winning request creates the job; this replay must not.
@@ -331,7 +335,7 @@ describe('Valor webhook — rejects', () => {
     expect(json.ignored).toBe('no-matching-quote');
     expect(updatePayloads).toHaveLength(0);
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 
   it('acknowledges a declined transaction without booking it', async () => {
@@ -360,7 +364,7 @@ describe('Valor webhook — rejects', () => {
     expect(json.ignored).toBe('test-quote');
     expect(updatePayloads).toHaveLength(0); // never stamped paid
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(hl.updateOpportunityStage).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 });
