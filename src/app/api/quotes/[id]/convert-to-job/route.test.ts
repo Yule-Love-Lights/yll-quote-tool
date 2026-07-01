@@ -149,6 +149,57 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 
+  it('409s (payment-in-flight) when force is not true — no bypass', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_QUOTE, valor_order_ref: 'ord_abc' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250, force: false }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('payment-in-flight');
+    expect(updatePayloads).toHaveLength(0);
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
+
+  it('force:true bypasses the in-flight guard — books + creates the job (abandoned-checkout override)', async () => {
+    // valor_order_ref is set (a customer started a checkout) but the operator has
+    // confirmed no payment landed. force:true bypasses the payment-in-flight 409
+    // and proceeds to book.
+    const { client, updatePayloads } = makeSb({ ...BASE_QUOTE, valor_order_ref: 'ord_abandoned' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250, force: true }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(json.depositUsd).toBe(250);
+    expect(json.jobId).toBe(JOB_ID);
+    const booking = updatePayloads[0];
+    expect(booking).toMatchObject({ deposit_amount_usd: 250, status: 'booked' });
+    expect(createJobFromQuote).toHaveBeenCalledOnce();
+    expect(createJobFromQuote).toHaveBeenCalledWith(ID);
+  });
+
+  it('already-booked idempotency wins over force — a genuinely-paid Valor quote still returns alreadyBooked regardless of force:true', async () => {
+    // deposit_paid_at set = a real payment landed. force must NOT bypass the
+    // already-booked branch (it runs FIRST, before the in-flight guard).
+    const { client, updatePayloads } = makeSb({
+      ...BASE_QUOTE,
+      deposit_paid_at: '2026-07-01T01:00:00Z',
+      valor_order_ref: 'ord_paid',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250, force: true }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyBooked).toBe(true);
+    expect(updatePayloads).toHaveLength(0); // no double-write
+    expect(createJobFromQuote).toHaveBeenCalledOnce();
+  });
+
   it('books successfully: writes deposit_paid_at, deposit_amount_usd, status=booked guarded by .is(deposit_paid_at, null), calls createJobFromQuote once', async () => {
     const { client, updatePayloads } = makeSb(BASE_QUOTE);
     sbRef.current = client;

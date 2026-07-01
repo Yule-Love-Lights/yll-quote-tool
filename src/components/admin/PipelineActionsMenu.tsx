@@ -22,11 +22,26 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         alert('Enter a number >= 0');
         return null;
       }
-      return fetch(`/api/quotes/${q}/convert-to-job`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ depositUsd }),
-      });
+      const post = (force: boolean) =>
+        fetch(`/api/quotes/${q}/convert-to-job`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(force ? { depositUsd, force: true } : { depositUsd }),
+        });
+      const res = await post(false);
+      // Abandoned-checkout override: if a customer Valor checkout is flagged in
+      // flight, the operator can confirm no payment landed and book anyway.
+      if (res.status === 409) {
+        const body = await res.clone().json().catch(() => ({}));
+        if ((body as { code?: string }).code === 'payment-in-flight') {
+          const ok = window.confirm(
+            'A customer card payment may be in progress for this quote. Only book manually if you’ve confirmed no payment was taken. Book anyway?',
+          );
+          if (!ok) return null;
+          return post(true);
+        }
+      }
+      return res;
     }
     case 'mark-complete':
       return rec.job ? fetch(`/api/jobs/${rec.job.id}/complete`, { method: 'POST' }) : null;

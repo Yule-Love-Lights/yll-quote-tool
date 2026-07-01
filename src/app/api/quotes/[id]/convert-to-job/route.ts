@@ -2,9 +2,15 @@
 // approved quote to a job.
 //
 // POST /api/quotes/[id]/convert-to-job   (operator-only)
-// Body: { depositUsd: number }   — the deposit the customer paid offline (>= 0).
-//   0 is valid (a deferred/waived deposit). The amount is clamped to the quote
-//   total so we can never record a deposit greater than the order.
+// Body: { depositUsd: number, force?: boolean }
+//   depositUsd — the deposit the customer paid offline (>= 0). 0 is valid (a
+//     deferred/waived deposit). The amount is clamped to the quote total so we
+//     can never record a deposit greater than the order.
+//   force — operator override for the payment-in-flight guard. When a customer
+//     STARTED but ABANDONED a Valor checkout, valor_order_ref stays set forever
+//     and would permanently block manual booking. force:true bypasses that guard
+//     (the operator has confirmed no payment landed). It NEVER bypasses the
+//     already-booked idempotency branch — a genuinely-paid quote is still safe.
 // Response: { ok, booked, depositUsd, jobId } | { ok, alreadyBooked } | { error, code? }
 //
 // NO Valor charge here — this is a local status record only. The operator
@@ -56,7 +62,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // Parse + validate the deposit amount up front.
-  let body: { depositUsd?: unknown } = {};
+  let body: { depositUsd?: unknown; force?: unknown } = {};
   try {
     body = await req.json();
   } catch {
@@ -66,6 +72,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!Number.isFinite(depositUsd) || depositUsd < 0) {
     return NextResponse.json({ error: 'depositUsd must be a finite number >= 0' }, { status: 400 });
   }
+  const force = body.force === true;
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
@@ -101,9 +108,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // and deposit_amount_usd left at the operator-typed value → the later invoice
   // over-bills). Surfacing the ambiguity to the operator is the conservative
   // choice: they confirm it settled (or reconcile in Valor) before booking by
-  // hand. A started-but-abandoned checkout also lands here — that's correct for
-  // a money op; the operator reconciles rather than us shadowing a live charge.
-  if (quote.valor_order_ref) {
+  // hand. A started-but-abandoned checkout also lands here — but that would
+  // permanently dead-end manual booking (valor_order_ref never clears itself), so
+  // an operator who has confirmed no payment landed can pass force:true to bypass
+  // this guard and book by hand. force only reaches here AFTER the already-booked
+  // branch above, so it can never override a genuinely-paid quote.
+  if (quote.valor_order_ref && !force) {
     return NextResponse.json(
       {
         error:
