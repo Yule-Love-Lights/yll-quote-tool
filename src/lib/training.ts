@@ -4,11 +4,7 @@ import type { Spritzer, Wreath, GarlandItem } from './pricing/pricingEngine';
 
 export type PhotoTag =
   | 'front_install'
-  | 'front_takedown'
-  | 'side'
-  | 'back'
-  | 'satellite'
-  | 'detail'
+  | 'tree_bush'
   | 'other';
 
 export type TrainingPhoto = {

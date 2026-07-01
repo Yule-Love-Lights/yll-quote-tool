@@ -62,11 +62,7 @@ async function fileToBase64(file: File): Promise<{ base64: string; mediaType: st
 
 const PHOTO_TAG_LABELS: Record<PhotoTag, string> = {
   front_install: 'Front — Installed',
-  front_takedown: 'Front — Takedown',
-  side: 'Side view',
-  back: 'Back view',
-  satellite: 'Satellite',
-  detail: 'Detail shot',
+  tree_bush: 'Tree/Bush',
   other: 'Other',
 };
 
@@ -103,10 +99,7 @@ export default function NewTrainingHousePage() {
   // Training-specific fields
   const [address, setAddress] = useState('');
   const [yearCompleted, setYearCompleted] = useState<number | ''>('');
-  const [houseStyle, setHouseStyle] = useState('');
   const [notes, setNotes] = useState('');
-  const [scaleAnchor, setScaleAnchor] = useState('');
-  const [didntInstall, setDidntInstall] = useState('');
   const [aiFailureNotes, setAiFailureNotes] = useState('');
   const [costMaterials, setCostMaterials] = useState<number | ''>('');
   const [costLaborHours, setCostLaborHours] = useState<number | ''>('');
@@ -149,6 +142,10 @@ export default function NewTrainingHousePage() {
   // when WE set footage (from a polyline drag) so calibration doesn't treat
   // the rounded value as a new user input.
   const skipCalibRef = useRef(false);
+  // Prior line counts per type, so the polyline effect can zero a footage the
+  // moment its last segment is deleted (#53a: footage stayed stuck at the last
+  // value — "no lines ⇒ 0 ft").
+  const prevLineLensRef = useRef({ s: 0, g: 0, c: 0, st: 0 });
 
   useEffect(() => { feetPerUnitRef.current = feetPerUnit; }, [feetPerUnit]);
 
@@ -174,6 +171,22 @@ export default function NewTrainingHousePage() {
   // Polyline-driven footage updates — matches quote/new behavior.
   // Reads fpu from the ref so changing lines doesn't retrigger calibration.
   useEffect(() => {
+    const prev = prevLineLensRef.current;
+    const cur = {
+      s: santasLines.length,
+      g: gingerbreadLines.length,
+      c: c9Lines.length,
+      st: stakeLines.length,
+    };
+    // A list going non-empty → empty (last segment deleted) zeroes its footage.
+    // Guarded on the >0→0 transition so a manually-entered or AI-seeded footage
+    // that never had lines is left untouched.
+    if (cur.s === 0 && prev.s > 0 && santasFootage !== '') { skipCalibRef.current = true; setSantasFootage(''); }
+    if (cur.g === 0 && prev.g > 0 && gingerbreadFootage !== '') { skipCalibRef.current = true; setGingerbreadFootage(''); }
+    if (cur.c === 0 && prev.c > 0 && wwFootage !== '') { skipCalibRef.current = true; setWwFootage(''); }
+    if (cur.st === 0 && prev.st > 0 && stakeFootage !== '') { skipCalibRef.current = true; setStakeFootage(''); }
+    prevLineLensRef.current = cur;
+
     const fpu = feetPerUnitRef.current;
     if (fpu == null) return;
     const sFt = Math.round(polylineLength(santasLines, imgAspect) * fpu / 5) * 5;
@@ -439,6 +452,9 @@ export default function NewTrainingHousePage() {
       const blob = base64ToBlob(activePhoto.base64, activePhoto.mediaType);
       const fd = new FormData();
       fd.append('photo', blob, 'photo.jpg');
+      // #54: these are FINISHED installs — analyze in completed mode (record what
+      // is actually installed & lit), not the quoting "suggest placements" pass.
+      fd.append('mode', 'completed');
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
@@ -543,7 +559,6 @@ export default function NewTrainingHousePage() {
         body: JSON.stringify({
           address: address || undefined,
           yearCompleted: yearCompleted || undefined,
-          houseStyle: houseStyle || undefined,
           notes: notes || undefined,
           photos,
           santasFootage: santasFootage || undefined,
@@ -565,8 +580,6 @@ export default function NewTrainingHousePage() {
           spritzers: spritzersFromDetections,
           wreaths: wreathsFromDetections,
           garland: [...garlandFromDetections, ...garlandFromColumns],
-          scaleAnchor: scaleAnchor || null,
-          didntInstall: didntInstall || null,
           aiFailureNotes: aiFailureNotes || null,
           costMaterials: costMaterials === '' ? null : costMaterials,
           costLaborHours: costLaborHours === '' ? null : costLaborHours,
@@ -608,39 +621,8 @@ export default function NewTrainingHousePage() {
                 placeholder="2024" />
             </div>
             <div>
-              <label className={lbl}>House Style</label>
-              <select className={sel} value={houseStyle} onChange={e => setHouseStyle(e.target.value)}>
-                <option value="">— Select —</option>
-                <option value="cape">Cape</option>
-                <option value="ranch">Ranch</option>
-                <option value="colonial">Colonial</option>
-                <option value="split">Split Level</option>
-                <option value="tudor">Tudor</option>
-                <option value="custom">Custom / Luxury</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-            <div>
               <label className={lbl}>Notes</label>
               <input className={inp} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Anything unusual worth remembering" />
-            </div>
-            <div className="col-span-2">
-              <label className={lbl}>Scale Anchor <span className="text-gray-400 font-normal">(what in the photo gives the real-world scale?)</span></label>
-              <input
-                className={inp}
-                value={scaleAnchor}
-                onChange={e => setScaleAnchor(e.target.value)}
-                placeholder='e.g. "front door is 36in wide, garage door is 7ft tall"'
-              />
-            </div>
-            <div className="col-span-2">
-              <label className={lbl}>Didn&apos;t Install <span className="text-gray-400 font-normal">(items visible in photo that the customer skipped)</span></label>
-              <input
-                className={inp}
-                value={didntInstall}
-                onChange={e => setDidntInstall(e.target.value)}
-                placeholder='e.g. "customer declined ridgeline, skipped the lamp post bushes"'
-              />
             </div>
             <div className="col-span-2">
               <label className={lbl}>AI Failure Notes <span className="text-gray-400 font-normal">(where did Claude get this house wrong?)</span></label>
@@ -682,7 +664,7 @@ export default function NewTrainingHousePage() {
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-            {(['front_install', 'front_takedown', 'side', 'detail'] as PhotoTag[]).map(tag => (
+            {(['front_install', 'tree_bush'] as PhotoTag[]).map(tag => (
               <label key={tag} className="block">
                 <span className="text-xs font-medium text-gray-600 block mb-1">{PHOTO_TAG_LABELS[tag]}</span>
                 <input
