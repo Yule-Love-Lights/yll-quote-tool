@@ -200,7 +200,7 @@ export default function InvoiceDetailPage() {
                 <button
                   type="button"
                   onClick={toggleTax}
-                  disabled={busy || inv.status === 'cancelled'}
+                  disabled={busy || inv.status === 'cancelled' || inv.status === 'paid'}
                   className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-60"
                 >
                   {inv.tax_overridden ? 'Restore tax' : 'Mark tax-exempt (override)'}

@@ -390,6 +390,63 @@ describe('setInvoiceTaxOverride', () => {
     sbRef.current = fake.client;
     expect(await setInvoiceTaxOverride('nope', true)).toBeNull();
   });
+
+  // B3 fix: a PAID invoice must never be re-opened by a tax-override change.
+  // Collecting the balance already settled the debt — re-pricing cannot resurrect it.
+  it('throws a 409-style error when the invoice is already paid (no resurrection)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        {
+          id: 'i1',
+          quote_id: 'q1',
+          deposit_applied: 2446.88,
+          subtotal: 4500,
+          discount: 0,
+          tax: 393.75,
+          total: 4893.75,
+          balance: 0,
+          credit_note: 0,
+          status: 'paid',
+          tax_overridden: false,
+          paid_at: '2026-06-01T12:00:00Z',
+        },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    await expect(setInvoiceTaxOverride('i1', true)).rejects.toThrow(/paid/i);
+    // The invoice must not be touched — status and paid_at stay unchanged.
+    expect(fake.tables.invoices[0]).toMatchObject({ status: 'paid', paid_at: '2026-06-01T12:00:00Z' });
+  });
+
+  it('still works normally for a draft invoice (no regression)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'draft', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    expect(inv!.status).toBe('draft');
+    expect(inv!.tax).toBe(0);
+  });
+
+  it('still works normally for an awaiting_payment invoice (no regression)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'awaiting_payment', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    // Exemption zeroes tax — deposit now > total, so it should settle to paid
+    // OR if balance is still positive it stays awaiting_payment.
+    // Here: total = 4500, deposit = 2446.88, balance = 2053.12 → still awaiting.
+    expect(inv!.tax).toBe(0);
+    expect(inv!.status).toBe('awaiting_payment');
+  });
 });
 
 describe('getInvoiceDetail', () => {

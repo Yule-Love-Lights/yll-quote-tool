@@ -480,6 +480,18 @@ export async function setInvoiceTaxOverride(
   const invoice = await getInvoice(id);
   if (!invoice) return null;
 
+  // B3 fix: a PAID invoice's balance has already been collected — re-pricing
+  // cannot retroactively change what was charged. Applying a tax exemption to a
+  // paid invoice would require a refund in Valor, which must be handled manually.
+  // Refuse here so a paid invoice is never resurrected to 'awaiting_payment' with
+  // a bogus positive balance.
+  if (invoice.status === 'paid') {
+    throw new Error(
+      'Cannot change the tax override on an already-paid invoice. ' +
+        'A tax exemption on a collected balance requires a manual refund in Valor.',
+    );
+  }
+
   // Re-price from the source quote.result (full, un-overridden breakdown). Fall
   // back to the invoice's own stored figures if the quote/result is gone.
   let pricing: InvoicePricingInput = {
@@ -498,14 +510,15 @@ export async function setInvoiceTaxOverride(
   }
 
   const totals = computeInvoiceTotals(pricing, invoice.deposit_applied, { taxOverridden: overridden });
+  // At this point invoice.status is 'draft' | 'awaiting_payment' | 'cancelled'
+  // (the 'paid' case is refused above). An exemption that clears the balance
+  // settles the invoice to paid; otherwise the status is left unchanged.
   const reconciledStatus: InvoiceStatus =
     invoice.status === 'cancelled'
       ? 'cancelled'
       : totals.balance <= 0
         ? 'paid'
-        : invoice.status === 'paid'
-          ? 'awaiting_payment'
-          : invoice.status;
+        : invoice.status;
 
   const patch: Record<string, unknown> = {
     subtotal: totals.subtotal,
@@ -518,12 +531,9 @@ export async function setInvoiceTaxOverride(
     tax_overridden: overridden,
     status: reconciledStatus,
   };
-  // Keep paid_at consistent with the status (review MEDIUM): stamp it when an
-  // exemption settles the invoice, clear it when restoring tax reopens a paid one.
-  if (reconciledStatus === 'paid' && invoice.status !== 'paid') {
+  // Stamp paid_at when an exemption zeroes the balance and settles the invoice.
+  if (reconciledStatus === 'paid') {
     patch.paid_at = new Date().toISOString();
-  } else if (reconciledStatus === 'awaiting_payment' && invoice.status === 'paid') {
-    patch.paid_at = null;
   }
 
   const { data, error } = await db
