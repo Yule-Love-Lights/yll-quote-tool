@@ -927,7 +927,7 @@ export default function QuoteBuilder({
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
       preferredSource?: 'street' | 'satellite';
-      miniLightDetections?: { type: 'tree' | 'bush' | 'column'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
+      miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
       spritzerDetections?: { size: string; box: DetectionBox }[];
       garlandDetections?: { length: string; tier: string; box: DetectionBox }[];

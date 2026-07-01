@@ -19,7 +19,7 @@ import { useImageZoomPan } from '@/lib/useImageZoomPan';
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type LineSegment = { points: [number, number][]; label: string };
 type MiniLightDetection = {
-  type: 'tree' | 'bush' | 'column';
+  type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
   columnMode?: 'minilight' | 'garland';
@@ -394,11 +394,12 @@ export default function NewTrainingHousePage() {
   };
 
   // ─── Detection CRUD ───
-  const addDetection = (type: 'bush' | 'tree' | 'column') => {
+  const addDetection = (type: 'bush' | 'tree' | 'column' | 'railing') => {
     const defaults = {
-      bush:   { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new bush' },
-      tree:   { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'new tree' },
-      column: { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new column' },
+      bush:    { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new bush' },
+      tree:    { wrapStyle: 'trunk'  as const, stringCount: 4, label: 'new tree' },
+      column:  { wrapStyle: 'canopy' as const, stringCount: 2, label: 'new column' },
+      railing: { wrapStyle: 'canopy' as const, stringCount: 1, label: 'new railing' },
     }[type];
     setMiniLightDetections(dets => [...dets, { type, ...defaults, box: [0.4, 0.6, 0.15, 0.15] }]);
   };
@@ -490,7 +491,9 @@ export default function NewTrainingHousePage() {
           const footageFt = (wraps * circumIn) / 12;
           return Math.max(1, Math.round(footageFt / 25));
         };
-        setMiniLightDetections(detections.map(d => ({ ...d, stringCount: recalcStrings(d.box) })));
+        // Railings are a LINEAR top-rail run, not a cylindrical wrap — the AI's
+        // ~1-string-per-25ft count is already right; don't re-apply the wrap math.
+        setMiniLightDetections(detections.map(d => ({ ...d, stringCount: d.type === 'railing' ? d.stringCount : recalcStrings(d.box) })));
       } else {
         setMiniLightDetections(detections);
       }
@@ -1179,7 +1182,7 @@ export default function NewTrainingHousePage() {
                   </div>
                   {miniLightDetections.map((d, i) => {
                     const price = d.stringCount * MINI_LIGHT_RATES[d.wrapStyle];
-                    const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : 'C';
+                    const typeLetter = d.type === 'bush' ? 'B' : d.type === 'tree' ? 'T' : d.type === 'railing' ? 'R' : 'C';
                     return (
                       <div key={`drow-${i}`} className="grid grid-cols-[28px_1fr_1fr_64px_64px_24px] gap-2 items-center">
                         <span className="text-xs font-semibold text-amber-700">{typeLetter}{i + 1}</span>
@@ -1191,6 +1194,7 @@ export default function NewTrainingHousePage() {
                           <option value="bush">Bush</option>
                           <option value="tree">Tree</option>
                           <option value="column">Column</option>
+                          <option value="railing">Railing</option>
                         </select>
                         <select
                           className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
@@ -1239,6 +1243,8 @@ export default function NewTrainingHousePage() {
                   className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Tree</button>
                 <button type="button" onClick={() => addDetection('column')}
                   className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Column</button>
+                <button type="button" onClick={() => addDetection('railing')}
+                  className="text-xs font-medium text-amber-700 border border-amber-300 hover:border-amber-500 rounded px-3 py-1.5">+ Add Railing</button>
               </div>
             </div>
 

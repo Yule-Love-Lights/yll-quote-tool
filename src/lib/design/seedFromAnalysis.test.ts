@@ -65,6 +65,19 @@ describe('seedSceneFromAnalysis — conversion', () => {
     expect(col.stringCount).toBe(1);
   });
 
+  it('railing → a HORIZONTAL mini strand along the top rail (#52)', () => {
+    const seed: AnalysisSeed = { ...FULL_SEED, detections: { ...FULL_SEED.detections, miniLights: [
+      { type: 'railing', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.02] },
+    ] } };
+    const r = seedSceneFromAnalysis(emptyScene(), seed, W, H);
+    const rail = r.items.find((i) => isStrand(i) && i.surface === 'railing') as StrandItem;
+    expect(rail).toBeTruthy();
+    expect(rail.bulbType).toBe('mini');
+    // box px: x100 y200 w300 h10 → horizontal line at cy=205, x 100→400
+    expect(rail.points).toEqual([100, 205, 400, 205]);
+    expect(rail.stringCount).toBe(2);
+  });
+
   it('wreath / spritzer at box centers with the BILLED spec from the AI', () => {
     const wreath = out.items.find(isWreath) as WreathItem;
     expect([wreath.x, wreath.y]).toEqual([450, 200]);
