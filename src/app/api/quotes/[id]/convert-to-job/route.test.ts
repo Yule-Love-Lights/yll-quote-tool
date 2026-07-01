@@ -164,6 +164,18 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     expect(updatePayloads[0].deposit_amount_usd).toBe(800);
   });
 
+  it('records depositUsd as-is (unclamped) when quote.total is null (malformed/edge row)', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_QUOTE, total: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 9999 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // No total to clamp against → the operator-entered amount is recorded as-is.
+    expect(json.depositUsd).toBe(9999);
+    expect(updatePayloads[0].deposit_amount_usd).toBe(9999);
+  });
+
   it('is idempotent when the quote is already booked — returns alreadyBooked:true, no duplicate write', async () => {
     const { client, updatePayloads } = makeSb({
       ...BASE_QUOTE,

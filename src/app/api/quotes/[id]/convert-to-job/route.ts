@@ -88,7 +88,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Clamp the deposit so we can't record more than the quote total.
+  // Clamp the deposit so we can't record more than the quote total. A null
+  // total (a malformed / edge row — an approved quote virtually always has a
+  // total) is intentionally left unclamped: with no total to clamp against, we
+  // record the operator-entered amount as-is rather than silently zeroing it.
   const clamped = typeof quote.total === 'number' ? Math.min(depositUsd, quote.total) : depositUsd;
   const bookedAt = new Date().toISOString();
 
