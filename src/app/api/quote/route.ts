@@ -230,6 +230,12 @@ export async function POST(req: NextRequest) {
       }
     }
     const result = calculateQuote(quoteInputs);
+    // #104: a baseline result with the per-quote price overrides STRIPPED, so the
+    // builder breakdown can show "custom · was $X" per overridden line. Display-only
+    // (never saved; the persisted `result` keeps the overrides).
+    const baseline = quoteInputs.lineItemPriceOverrides
+      ? calculateQuote({ ...quoteInputs, lineItemPriceOverrides: undefined })
+      : result;
     const safeCustomer = (customer ?? {}) as Customer;
     // A valid quoteId means re-price that existing quote in place (the
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
@@ -262,6 +268,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       customer: safeCustomer,
       result,
+      baseline, // #104 — overrides-stripped, for the "was $X" display
       quoteId: saved?.id ?? null,
       persisted: saved !== null,
     });

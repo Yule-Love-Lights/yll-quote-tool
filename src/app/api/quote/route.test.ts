@@ -132,6 +132,20 @@ describe('POST /api/quote — validation hardening', () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 
+  it('returns a baseline with the overrides stripped (#104)', async () => {
+    const inputs = validInputs();
+    inputs.spritzers = [{ size: '24', quantity: 1, id: 'spritzer-x' }];
+    inputs.lineItemPriceOverrides = { 'spritzer-x': { amount: 0 } };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { lineItems: { id?: string; amount: number }[] };
+      baseline: { lineItems: { id?: string; amount: number }[] };
+    };
+    expect(body.result.lineItems.find((li) => li.id === 'spritzer-x')!.amount).toBe(0); // override applied
+    expect(body.baseline.lineItems.find((li) => li.id === 'spritzer-x')!.amount).toBe(95); // baseline stripped
+  });
+
   it('rejects a malformed lineItemPriceOverrides with 400 (#104)', async () => {
     const bads: unknown[] = [
       [], // array, not object
