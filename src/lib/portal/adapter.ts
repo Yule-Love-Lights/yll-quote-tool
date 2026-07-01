@@ -161,6 +161,9 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
         label: raw.label.replace(/Gingerbread Ridge/g, 'Gingerbread'),
         detail,
         price: raw.amount,
+        // #104: carry the engine's stable id so attachSceneLinks can link by
+        // identity (not position). Absent on legacy results → positional fallback.
+        ...(raw.id ? { stableId: raw.id } : {}),
       };
       // A custom line item flagged `recommended` by staff (#12). Matched by the
       // engine's exact label (custom labels never contain "Gingerbread Ridge",

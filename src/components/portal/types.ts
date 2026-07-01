@@ -35,6 +35,13 @@ export type PortalLineItemKind =
 
 export type PortalLineItem = {
   id: string;
+  // #104: the engine's STABLE line id (`mini-<sceneItemId>`, `roofline-santas`,
+  // `winter-wonderland`, …), carried from result.lineItems. Used to link scene
+  // items by IDENTITY (not list position — closes the #90 same-count reorder/swap
+  // mis-map) and to key a per-quote price override. `id` above stays position-based
+  // for back-compat with the selection / package / approval-snapshot consumers.
+  // Undefined for legacy saved results (pre-#104) + custom/manual rows.
+  stableId?: string;
   kind: PortalLineItemKind;
   label: string;        // "Front-left tree"
   detail: string;       // "4 strands" or "180 ft"
