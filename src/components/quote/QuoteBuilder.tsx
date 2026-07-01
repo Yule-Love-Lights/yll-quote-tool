@@ -49,6 +49,29 @@ const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
+// #104: a per-quote TOTAL override and the #102 custom $/ft on the SAME line
+// (roofline / Winter Wonderland / Stake) are mutually exclusive (last-write-wins,
+// surfaced in the UI). These maps link a line's stable override id ⇄ that type's
+// $/ft form fields so setting one clears the other. Per-unit lines have no $/ft,
+// so they're absent (no clearing).
+type RateFieldKeys = {
+  diffKey: 'santasDifficulty' | 'gingerbreadDifficulty' | 'winterWonderlandDifficulty' | 'stakeLightingDifficulty';
+  rateKey: 'santasCustomRate' | 'gingerbreadCustomRate' | 'winterWonderlandCustomRate' | 'stakeLightingCustomRate';
+  fallback: DifficultyChoice;
+};
+const OVERRIDE_ID_TO_RATE: Record<string, RateFieldKeys> = {
+  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: 'medium' },
+  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: 'medium' },
+  'winter-wonderland': { diffKey: 'winterWonderlandDifficulty', rateKey: 'winterWonderlandCustomRate', fallback: 'medium' },
+  'stake-lighting': { diffKey: 'stakeLightingDifficulty', rateKey: 'stakeLightingCustomRate', fallback: 'easy' },
+};
+const RATE_KEY_TO_OVERRIDE_ID: Record<string, string> = {
+  santasCustomRate: 'roofline-santas',
+  gingerbreadCustomRate: 'roofline-gingerbread',
+  winterWonderlandCustomRate: 'winter-wonderland',
+  stakeLightingCustomRate: 'stake-lighting',
+};
+
 // #104: click-to-edit a breakdown line's TOTAL (per-quote override). Shows the
 // price as a button; click → inline number field; Enter/blur commits, Esc cancels.
 // When overridden, a "custom · was $X ✕" chip shows the computed baseline + resets.
@@ -1072,7 +1095,11 @@ export default function QuoteBuilder({
       if (next !== 'custom') return { ...f, [diffKey]: next };
       const prev = f[diffKey];
       const seed = f[rateKey] > 0 ? f[rateKey] : prev === 'custom' ? table.medium : table[prev];
-      return { ...f, [diffKey]: 'custom', [rateKey]: seed };
+      // #104: choosing a custom $/ft clears any per-quote TOTAL override on that
+      // same line — the two are mutually exclusive (takes effect on next Calculate).
+      const overrides = { ...f.lineItemPriceOverrides };
+      delete overrides[RATE_KEY_TO_OVERRIDE_ID[rateKey]];
+      return { ...f, [diffKey]: 'custom', [rateKey]: seed, lineItemPriceOverrides: overrides };
     });
 
   const setCustomer = (k: keyof FormCustomer, v: string) =>
@@ -1091,19 +1118,25 @@ export default function QuoteBuilder({
   const updateCustomLineItem = (i: number, patch: Partial<CustomLineItem>) =>
     set('customLineItems', form.customLineItems.map((item, idx) => idx === i ? { ...item, ...patch } : item));
 
-  // #104: click-to-edit a line's TOTAL (per-quote override, keyed by stable id).
-  // Commit sets the override in form AND re-prices in place with the new map
-  // (bypassing async form state, like recommendRoofline); reset removes the key.
+  // click-to-edit a line's TOTAL. Commit sets the override (clearing any #102 $/ft
+  // on that line) and re-prices in place with the new form snapshot (bypassing
+  // async state); reset removes the key.
   const commitLinePrice = (id: string, amount: number) => {
-    const next = { ...form.lineItemPriceOverrides, [id]: { amount } };
-    setForm((f) => ({ ...f, lineItemPriceOverrides: next }));
-    void runQuote(undefined, next);
+    let finalForm: QuoteFormData = {
+      ...form,
+      lineItemPriceOverrides: { ...form.lineItemPriceOverrides, [id]: { amount } },
+    };
+    const rate = OVERRIDE_ID_TO_RATE[id];
+    if (rate) finalForm = { ...finalForm, [rate.diffKey]: rate.fallback, [rate.rateKey]: 0 };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
   };
   const resetLinePrice = (id: string) => {
-    const next = { ...form.lineItemPriceOverrides };
-    delete next[id];
-    setForm((f) => ({ ...f, lineItemPriceOverrides: next }));
-    void runQuote(undefined, next);
+    const overrides = { ...form.lineItemPriceOverrides };
+    delete overrides[id];
+    const finalForm: QuoteFormData = { ...form, lineItemPriceOverrides: overrides };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
   };
 
   // Pick a HighLevel contact → pre-fill the customer block below.
@@ -1275,9 +1308,10 @@ export default function QuoteBuilder({
   // (#17 Phase 1b) without waiting on the async form-state update.
   const runQuote = async (
     rooflineChoiceOverride?: RooflineChoice,
-    // #104: an explicit overrides map to price with (bypasses async form state,
-    // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place.
-    overridesOverride?: QuoteFormData['lineItemPriceOverrides'],
+    // #104: an explicit form snapshot to price with (bypasses async form state,
+    // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place
+    // and may also clear the #102 $/ft on that line.
+    formOverride?: QuoteFormData,
   ) => {
     setLoading(true);
     setError(null);
@@ -1294,10 +1328,7 @@ export default function QuoteBuilder({
     // new quote), recalculating UPDATES that row in place — no more duplicate
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
-    const inputs = buildQuoteInputs(
-      overridesOverride ? { ...form, lineItemPriceOverrides: overridesOverride } : form,
-      rooflineChoiceOverride,
-    );
+    const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
 
     try {
       // Flush a pending design edit first (#8 M6): /api/quote projects the
@@ -2660,7 +2691,14 @@ export default function QuoteBuilder({
                         />
                         Santa&apos;s <span className="text-gray-400">(front roofline)</span>
                       </span>
-                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.santas.amount)}</span>
+                      <EditablePrice
+                        amount={result.rooflineOptions.santas.amount}
+                        baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
+                        overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
+                        disabled={loading}
+                        onCommit={(n) => commitLinePrice('roofline-santas', n)}
+                        onReset={() => resetLinePrice('roofline-santas')}
+                      />
                     </label>
                   )}
                   {result.rooflineOptions.gingerbread && (
@@ -2675,7 +2713,14 @@ export default function QuoteBuilder({
                         />
                         Gingerbread <span className="text-gray-400">(front + ridge + sides)</span>
                       </span>
-                      <span className="font-medium tabular-nums">{usd(result.rooflineOptions.gingerbread.amount)}</span>
+                      <EditablePrice
+                        amount={result.rooflineOptions.gingerbread.amount}
+                        baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
+                        overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
+                        disabled={loading}
+                        onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
+                        onReset={() => resetLinePrice('roofline-gingerbread')}
+                      />
                     </label>
                   )}
                 </div>
