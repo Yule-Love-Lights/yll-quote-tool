@@ -452,6 +452,9 @@ export default function NewTrainingHousePage() {
       const blob = base64ToBlob(activePhoto.base64, activePhoto.mediaType);
       const fd = new FormData();
       fd.append('photo', blob, 'photo.jpg');
+      // #54: these are FINISHED installs — analyze in completed mode (record what
+      // is actually installed & lit), not the quoting "suggest placements" pass.
+      fd.append('mode', 'completed');
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');

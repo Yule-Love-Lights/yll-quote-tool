@@ -4,6 +4,7 @@ import {
   coerceFootage,
   normalizeLines,
   normalizeBoxArray,
+  baseSystemPromptFor,
 } from './photoAnalysis';
 import type { LineSegment } from './photoAnalysis';
 
@@ -79,5 +80,42 @@ describe('normalizeBoxArray — drops out-of-range boxes', () => {
     const out = normalizeBoxArray(dets);
     expect(out).toHaveLength(1);
     expect(out[0].label).toBe('bush');
+  });
+});
+
+// #54: the analyzer has two modes — the quoting/design prompt (SUGGEST placements
+// on a bare house) and the completed-install prompt (RECORD what is actually lit).
+describe('baseSystemPromptFor (#54 analyzer modes)', () => {
+  const design = baseSystemPromptFor('design');
+  const completed = baseSystemPromptFor('completed');
+
+  it('design mode returns the quoting prompt (suggest-framed)', () => {
+    expect(design).toContain('estimate roofline lighting measurements');
+    expect(design).toContain('SUGGEST GOOD PLACEMENT SPOTS');
+  });
+
+  it('completed mode returns the record-what-is-installed prompt', () => {
+    expect(completed).toContain('COMPLETED installation');
+    expect(completed).toContain('THIS IS NOT A DESIGN TASK');
+    expect(completed).toContain('ACTUALLY LIT');
+  });
+
+  it('completed mode drops the "suggest placement" framing', () => {
+    expect(completed).not.toContain('SUGGEST GOOD PLACEMENT SPOTS');
+    expect(completed).not.toContain('SUGGESTING WHERE to plant');
+  });
+
+  it('both modes share the roofline tracing rules + output schema (no drift)', () => {
+    // Anchor sentences from ROOFLINE_TRACING_RULES and OUTPUT_JSON_SCHEMA, which
+    // both prompts interpolate from the same shared consts.
+    for (const p of [design, completed]) {
+      expect(p).toContain('THE ONE TEST for every run');
+      expect(p).toContain('DOWNSPOUTS / leaders');
+      expect(p).toContain('You MUST respond with ONLY valid JSON');
+    }
+  });
+
+  it('the two modes are distinct prompts', () => {
+    expect(design).not.toBe(completed);
   });
 });

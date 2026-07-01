@@ -46,6 +46,9 @@ export async function POST(req: NextRequest) {
   }
 
   const houseStyleHint = (formData.get('houseStyle') as string | null)?.trim() || undefined;
+  // #54: /training/new sends mode=completed so the analyzer RECORDS the finished
+  // install instead of re-designing a bare house. Everything else defaults to design.
+  const mode = formData.get('mode') === 'completed' ? 'completed' : 'design';
 
   const arrayBuffer = await file.arrayBuffer();
   const base64 = Buffer.from(arrayBuffer).toString('base64');
@@ -68,6 +71,7 @@ export async function POST(req: NextRequest) {
       references,
       houseStyleHint,
       corpusBiasNote: biasNote,
+      mode,
     });
     fewShotCount = examples.length;
     fewShotBreakdown = breakdown;
