@@ -293,6 +293,30 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(invUpdate.paid_at).toBeNull(); // B10: must be cleared when reopened
   });
 
+  // B10 hardening: the defensive canTransition guard must NOT block any legal amend
+  // re-sync transition. draft→paid (amend-down settle) is legal, so the invoice is
+  // still written (guard is transparent for real amends — defense-in-depth only).
+  it('does NOT block a legal amend transition (canTransition guard is transparent)', async () => {
+    const amendDownQuote = {
+      ...BOOKED_QUOTE,
+      deposit_amount_usd: 2500,
+      result: { subtotalBeforeDiscount: 2000, discountAmount: 0, taxAmount: 0, total: 2000 },
+    };
+    const sb = makeSb(amendDownQuote);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // draft invoice with a balance → amend-down settles it to paid (draft→paid legal).
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 500, status: 'draft', tax_overridden: false, paid_at: null,
+    });
+
+    const res = await POST(req({ reason: 'removed a section' }), ctx());
+    expect(res.status).toBe(200);
+    // The write happened — the guard permitted the legal draft→paid transition.
+    expect(sb.updates.invoices).toHaveLength(1);
+    expect(sb.updates.invoices[0]).toMatchObject({ status: 'paid' });
+  });
+
   // B10 fix: when the invoice was settled (paid) between the route's initial read
   // and the re-sync, the re-read catches the fresh status and applies the correct
   // transition (amend-up: paid → awaiting_payment, not the stale draft).

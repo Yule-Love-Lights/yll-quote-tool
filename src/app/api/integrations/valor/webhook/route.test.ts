@@ -110,6 +110,7 @@ function makeSb(quote: Quote, claimRows: Array<{ id: string }>) {
     eq: () => builder,
     neq: () => builder,
     is: () => builder,
+    in: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     maybeSingle: async () => ({ data: quote, error: null }),
     then: (resolve: (v: unknown) => void) => {

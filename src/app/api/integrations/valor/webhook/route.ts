@@ -510,7 +510,12 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   }
 
   // Atomic claim — only the first webhook flips an unpaid invoice to paid (Valor
-  // retries up to 3×), so the job-close fires at most once.
+  // retries up to 3×), so the job-close fires at most once. B6 hardening (TOCTOU):
+  // claim ONLY when the status is still a settle-able state (draft/awaiting_payment)
+  // rather than `.neq('status','paid')`. This closes the residual race where the
+  // invoice flips to `cancelled` between the fast-path guard read above and this
+  // write — a cancelled invoice no longer matches the claim, so it can never be
+  // settled here (the .neq form would have let cancelled through).
   const paidAt = new Date().toISOString();
   const { data: claimed, error: claimErr } = await sb
     .from('invoices')
@@ -522,7 +527,7 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
       valor_receipt_url: event.receiptUrl,
     })
     .eq('id', invoice.id)
-    .neq('status', 'paid')
+    .in('status', ['draft', 'awaiting_payment'])
     .select('id');
   if (claimErr) {
     console.error('[api/integrations/valor/webhook] balance settle write failed:', claimErr);
