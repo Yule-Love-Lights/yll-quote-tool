@@ -461,6 +461,38 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
 }
 
 /**
+ * Manually mark an invoice paid — an operator recording an offline/external
+ * payment (cash / check / paid in the Valor terminal). Atomic claim
+ * (.neq('status','paid')) mirroring the Valor balance webhook: status='paid',
+ * balance=0, paid_at=now. Idempotent (a paid invoice is a no-op). Throws on a
+ * cancelled invoice. Does NOT touch the job — closing the job is the caller's
+ * concern (the close route / collect-then-close flow).
+ */
+export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+  const current = await getInvoice(id);
+  if (!current) return null;
+  if (current.status === 'cancelled') {
+    throw new Error(`markInvoicePaidManually: invoice ${id} is cancelled`);
+  }
+  if (current.status === 'paid') return current; // idempotent no-op
+  const paidAt = new Date().toISOString();
+  const { data, error } = await db
+    .from('invoices')
+    .update({ status: 'paid', balance: 0, paid_at: paidAt })
+    .eq('id', id)
+    .neq('status', 'paid')
+    .select(INVOICE_SELECT);
+  if (error) {
+    console.error('markInvoicePaidManually error:', error);
+    return null;
+  }
+  if (!data || (Array.isArray(data) && data.length === 0)) return await getInvoice(id); // raced
+  return (Array.isArray(data) ? data[0] : data) as unknown as InvoiceRow;
+}
+
+/**
  * Toggle the manual tax-override on an invoice (SPEC §4.3 — rare exemptions). When
  * ON, the tax line is dropped from the total; OFF restores it. RE-PRICES from the
  * source quote.result (not the invoice's possibly-already-zeroed stored values) so
