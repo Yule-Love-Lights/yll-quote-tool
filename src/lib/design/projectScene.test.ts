@@ -297,8 +297,13 @@ describe('applyProjectionToInputs — design overrides per-unit, else falls back
       wreath({ id: 'w', quoteSize: '24noble', tier: 'bow' }),
     ]);
     const out = applyProjectionToInputs(baseInputs(), s);
-    expect(out.miniLightItems).toEqual([{ type: 'tree', wrapStyle: 'trunk', stringCount: 2 }]); // not the form's bush/9
-    expect(out.wreaths).toEqual([{ size: '24noble', tier: 'bow', quantity: 1 }]);
+    // #104: the priced inputs now carry the projected stable id + scene item ids.
+    expect(out.miniLightItems).toEqual([
+      { type: 'tree', wrapStyle: 'trunk', stringCount: 2, id: 'mini-b', sceneItemIds: ['b'] },
+    ]); // not the form's bush/9
+    expect(out.wreaths).toEqual([
+      { size: '24noble', tier: 'bow', quantity: 1, id: 'wreath-w', sceneItemIds: ['w'] },
+    ]);
     expect(out.spritzers).toEqual([]);
     expect(out.garland).toEqual([]);
   });

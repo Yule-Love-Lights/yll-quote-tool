@@ -268,6 +268,56 @@ describe('calculateQuote — custom $/ft override (#102)', () => {
   });
 });
 
+describe('calculateQuote — stable line ids (#104 PR1, additive)', () => {
+  it('carries the input stable id + sceneItemIds onto per-unit line items', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-x', sceneItemIds: ['x'] }],
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-y', sceneItemIds: ['y'] }],
+    }));
+    const bush = r.lineItems.find((li) => li.label.startsWith('Bush'))!;
+    expect(bush.id).toBe('mini-x');
+    expect(bush.sceneItemIds).toEqual(['x']);
+    expect(bush.amount).toBe(70); // 2 × $35 — pricing unchanged
+    expect(r.lineItems.find((li) => li.label.includes('Spritzer'))!.id).toBe('spritzer-y');
+  });
+
+  it('gives roofline / Winter Wonderland / Stake descriptive stable ids', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', rooflineChoice: 'santas',
+      winterWonderlandFootage: 20, winterWonderlandDifficulty: 'easy',
+      stakeLightingFootage: 20, stakeLightingDifficulty: 'easy',
+    }));
+    expect(r.lineItems.find((li) => li.label.includes("Santa's Roofline"))!.id).toBe('roofline-santas');
+    expect(r.lineItems.find((li) => li.label.startsWith('Winter Wonderland'))!.id).toBe('winter-wonderland');
+    expect(r.lineItems.find((li) => li.label.startsWith('Stake Lighting'))!.id).toBe('stake-lighting');
+  });
+
+  it('gives Gingerbread its own stable id', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',
+      gingerbreadFootage: 50, gingerbreadDifficulty: 'medium',
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.lineItems.find((li) => li.label.includes('Gingerbread'))!.id).toBe('roofline-gingerbread');
+  });
+
+  it('carries a custom line item id when present', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ id: 'custom-1', label: 'Flagpole', amount: 95 }],
+    }));
+    expect(r.lineItems.find((li) => li.label === 'Flagpole')!.id).toBe('custom-1');
+  });
+
+  it('omits id/sceneItemIds for legacy inputs that have none (stays {label,amount})', () => {
+    const r = calculateQuote(emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 1 }],
+    }));
+    const bush = r.lineItems.find((li) => li.label.startsWith('Bush'))!;
+    expect('id' in bush).toBe(false);
+    expect('sceneItemIds' in bush).toBe(false);
+  });
+});
+
 describe('calculateQuote — line-item categories', () => {
   it('prices mini lights by string count and wrap style', () => {
     const r = calculateQuote(emptyInputs({
