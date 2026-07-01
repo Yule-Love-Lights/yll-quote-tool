@@ -101,7 +101,7 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
  * (draft→sent→viewed→approved→booked); the portal branches (decline / request
  * changes) and the admin cancel/lost can fire from the pre-booked states.
  *
- *   draft             → sent · cancelled · lost
+ *   draft             → sent · approved · cancelled · lost   (approved from draft = deliberate offline/in-person close)
  *   sent              → viewed · approved · changes_requested · declined · cancelled · lost
  *   viewed            → approved · changes_requested · declined · cancelled · lost
  *   approved          → booked · cancelled            (post-approval signed; only booking or cancel)
@@ -116,7 +116,7 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
  * transition.
  */
 const ALLOWED_TRANSITIONS: Readonly<Record<QuoteStatus, readonly QuoteStatus[]>> = {
-  draft: ['sent', 'cancelled', 'lost'],
+  draft: ['sent', 'approved', 'cancelled', 'lost'],
   sent: ['viewed', 'approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
   viewed: ['approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
   approved: ['booked', 'cancelled'],

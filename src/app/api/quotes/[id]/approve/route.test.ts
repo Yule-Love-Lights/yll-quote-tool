@@ -96,13 +96,16 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     inputs: null,
     highlevel_contact_id: null,
     customer_approved_at: null,
+    status: null,         // null = legacy/no explicit status; deriveStatus falls through to timestamps
+    deposit_paid_at: null,
+    viewed_at: null,
     quote_sent_at: '2026-06-25T00:00:00Z',
     ...overrides,
   };
 }
 
 // Fake Supabase builder. read = from().select().eq().single(); the guarded
-// approval update = from().update().eq().is().select() (returns rows); the
+// approval update = from().update().eq().is().not().select() (returns rows); the
 // notify-marker update = from().update().eq() (awaited via then). `updateRows`
 // controls what the guarded update returns (the TOCTOU race winner).
 function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: string }> | null = [{ id: ID }]) {
@@ -119,6 +122,7 @@ function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: s
     },
     eq: () => builder,
     is: () => builder,
+    not: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     // The guarded approval update terminates in .select('id') → resolves rows.
     then: (resolve: (v: unknown) => void) => {
@@ -297,6 +301,79 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
       { params },
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
+  it('rejects a declined quote with 409 (no write, no booking)', async () => {
+    // declined: customer_approved_at NULL (decline leaves it null), status='declined'
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ status: 'declined', deposit_paid_at: null }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('illegal-transition');
+    // No snapshot write must happen
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
+  });
+
+  it('rejects a cancelled quote with 409', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ status: 'cancelled', deposit_paid_at: null }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('illegal-transition');
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
+  });
+
+  it('rejects a lost quote with 409', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ status: 'lost', deposit_paid_at: null }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('illegal-transition');
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
+  });
+
+  it('allows a normal sent/viewed quote to approve (existing happy path unbroken)', async () => {
+    // sent quote: status null (legacy) + quote_sent_at set
+    const { client } = makeSb(
+      baseQuote({ status: null, deposit_paid_at: null }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+  });
+
+  it('allows a changes_requested quote to approve', async () => {
+    const { client } = makeSb(
+      baseQuote({ status: 'changes_requested', deposit_paid_at: null }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    // changes_requested → approved is NOT in the transition table, so this is 409
+    // (customer should wait for the resend; they can't self-approve a quote under revision)
+    // Actually check the transition table: changes_requested → ['sent','declined','cancelled','lost']
+    // 'approved' is NOT in that list, so this should be rejected too.
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('illegal-transition');
   });
 });
 

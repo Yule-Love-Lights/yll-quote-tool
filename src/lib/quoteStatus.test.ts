@@ -116,6 +116,7 @@ describe('deriveStatus — persisted status fallback', () => {
 describe('canTransition — legal transitions', () => {
   const legal: ReadonlyArray<[QuoteStatus, QuoteStatus]> = [
     ['draft', 'sent'],
+    ['draft', 'approved'],     // deliberate offline/in-person close (approvedWhileUnsent)
     ['draft', 'cancelled'],
     ['draft', 'lost'],
     ['sent', 'viewed'],
@@ -137,7 +138,6 @@ describe('canTransition — legal transitions', () => {
   });
 
   const illegal: ReadonlyArray<[QuoteStatus, QuoteStatus]> = [
-    ['draft', 'approved'],       // can't skip sent
     ['draft', 'booked'],
     ['sent', 'booked'],          // must approve first
     ['approved', 'declined'],    // can't decline a signed/approved quote
