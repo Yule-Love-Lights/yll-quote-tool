@@ -8,38 +8,9 @@ import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
-import { getSupabaseServiceClient, getSupabaseClient } from '@/lib/supabase';
-import type { AmendmentTrailEntry } from '@/lib/amend';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
-
-// Extra columns getQuoteRaw doesn't select but deriveStatus + the detail
-// display need.
-type QuoteLifecycleExtra = {
-  deposit_paid_at: string | null;
-  viewed_at: string | null;
-  total: number | null;
-  approval_snapshot: {
-    amendments?: AmendmentTrailEntry[];
-    [key: string]: unknown;
-  } | null;
-};
-
-async function getQuoteExtra(id: string): Promise<QuoteLifecycleExtra | null> {
-  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
-  if (!sb) return null;
-  const { data, error } = await sb
-    .from('quotes')
-    .select('deposit_paid_at, viewed_at, total, approval_snapshot')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) {
-    console.error('getQuoteExtra error:', error);
-    return null;
-  }
-  return (data as QuoteLifecycleExtra | null) ?? null;
-}
 
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
@@ -78,24 +49,15 @@ const fmtDate = (iso: string | null | undefined) =>
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  // Parallel-fetch: base quote row + extra lifecycle columns + job + (conditional) invoice
-  const [quote, extra] = await Promise.all([getQuoteRaw(id), getQuoteExtra(id)]);
-  if (!quote || !extra) notFound();
+  const quote = await getQuoteRaw(id);
+  if (!quote) notFound();
 
-  // Merge extra columns into the shape deriveStatus needs
-  const statusRow = {
-    quote_sent_at: quote.quote_sent_at,
-    customer_approved_at: quote.customer_approved_at,
-    deposit_paid_at: extra.deposit_paid_at,
-    viewed_at: extra.viewed_at,
-    status: quote.status,
-  };
-  const status = deriveStatus(statusRow);
+  const status = deriveStatus(quote);
 
   const job = await getJobByQuote(id);
   const invoice = job ? await getInvoiceByJob(job.id) : null;
 
-  const amendments = extra.approval_snapshot?.amendments ?? [];
+  const amendments = quote.approval_snapshot?.amendments ?? [];
 
   return (
     <OperatorShell active="quotes">
@@ -150,7 +112,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </div>
             <div className="flex justify-between">
               <dt>First viewed</dt>
-              <dd className="text-gray-800">{fmtDate(extra.viewed_at)}</dd>
+              <dd className="text-gray-800">{fmtDate(quote.viewed_at)}</dd>
             </div>
             <div className="flex justify-between">
               <dt>Approved</dt>
@@ -158,7 +120,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </div>
             <div className="flex justify-between">
               <dt>Deposit paid / booked</dt>
-              <dd className="text-gray-800">{fmtDate(extra.deposit_paid_at)}</dd>
+              <dd className="text-gray-800">{fmtDate(quote.deposit_paid_at)}</dd>
             </div>
           </dl>
         </div>
@@ -195,7 +157,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 )}
                 <div className="flex justify-between font-semibold text-gray-900">
                   <dt>Total</dt>
-                  <dd>{money(extra.total ?? quote.result.total)}</dd>
+                  <dd>{money(quote.total ?? quote.result.total)}</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt>Deposit</dt>
