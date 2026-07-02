@@ -21,6 +21,20 @@ type Props = {
 };
 
 const BAR_HEIGHT = 40; // px — the React control bar above the editor.
+const STRIP_HEIGHT = 36; // px — the #13 photo tab strip (rendered only when a base photo exists).
+
+// One tab in the photo strip: the base photo (id null) or an extra.
+type PhotoTab = { id: string | null; title: string };
+
+// Read a File as a data: URL — addDesignExtraPhoto strips the prefix server-side.
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
 
 // React shell around the vendored vanilla Konva editor (Option B). On mount it
 // dynamically imports the editor controller — so Konva (which touches the DOM)
@@ -39,12 +53,56 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
   const [keymap, setKeymap] = useState<KeyMap>(DEFAULT_KEYMAP);
+  // #13 multi-image: the photo tabs (base + extras) and which one the editor is
+  // mounted on (null = base). Switching remounts the editor on that photo —
+  // same teardown/remount pattern the standalone design tool uses between
+  // designs — after flushing any pending debounced save.
+  const [photoTabs, setPhotoTabs] = useState<PhotoTab[] | null>(null);
+  const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const addFileRef = useRef<HTMLInputElement>(null);
+  // The current mount's flushSave, for our own pre-switch flush (onReady hands
+  // the same thing to the parent).
+  const flushRef = useRef<(() => Promise<void>) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
   const onReadyRef = useRef(onReady);
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
+
+  // Load the photo tab list (base + extras). Re-runs after add/rename/delete.
+  const refreshPhotoTabs = async (id: string): Promise<PhotoTab[] | null> => {
+    try {
+      const res = await fetch(`/api/designs/${id}`);
+      if (!res.ok) return null;
+      const { design } = await res.json();
+      if (!design?.photoUrl) return null; // no base photo yet → no strip
+      const extras = Array.isArray(design.extraPhotos) ? design.extraPhotos : [];
+      const tabs: PhotoTab[] = [
+        { id: null, title: 'Photo 1' },
+        ...extras.map((p: { id: string; title: string | null }, i: number) => ({
+          id: p.id,
+          title: p.title || `Photo ${i + 2}`,
+        })),
+      ];
+      setPhotoTabs(tabs);
+      return tabs;
+    } catch {
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    // Defer out of the synchronous effect body (repo lint rule:
+    // react-hooks/set-state-in-effect) — reset, then the async refresh
+    // repopulates the strip.
+    queueMicrotask(() => {
+      setPhotoTabs(null);
+      setActivePhotoId(null);
+      void refreshPhotoTabs(designId);
+    });
+  }, [designId]);
 
   useEffect(() => {
     let handle: import('./editor-core/editor').EditorHandle | null = null;
@@ -75,21 +133,92 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       // showQuoteBinding: true → the quote embed shows the per-item "Quote
       // binding" panels (surface/included + billed quote spec). The design
       // tool's standalone/dashboard embeds leave it off (#27 A1).
-      handle = await renderEditor(host, designId, { embedded: true, showQuoteBinding: true, keymap: km });
+      handle = await renderEditor(host, designId, {
+        embedded: true,
+        showQuoteBinding: true,
+        keymap: km,
+        activePhotoId,
+      });
       if (cancelled) {
         handle?.();
         handle = null;
         return;
       }
-      onReadyRef.current?.(handle.flushSave ? () => handle!.flushSave!() : null);
+      flushRef.current = handle.flushSave ? () => handle!.flushSave!() : null;
+      onReadyRef.current?.(flushRef.current);
     })();
 
     return () => {
       cancelled = true;
+      flushRef.current = null;
       onReadyRef.current?.(null);
       handle?.();
     };
-  }, [designId]);
+  }, [designId, activePhotoId]);
+
+  // ─── #13 photo strip actions ───
+  const switchPhoto = async (id: string | null) => {
+    if (id === activePhotoId || photoBusy) return;
+    // Persist any pending debounced edits on the current photo before the
+    // remount tears the editor down.
+    try {
+      await flushRef.current?.();
+    } catch {
+      // destroy() also flushes best-effort; proceed.
+    }
+    setActivePhotoId(id);
+  };
+
+  const addPhoto = async (file: File) => {
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const res = await fetch(`/api/designs/${designId}/photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoBase64: dataUrl, photoMediaType: file.type || 'image/jpeg' }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(`Couldn't add the photo: ${data.error ?? res.status}`);
+        return;
+      }
+      const { photo } = await res.json();
+      await refreshPhotoTabs(designId);
+      await switchPhoto(photo.id as string);
+    } catch {
+      alert("Couldn't add the photo.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const renamePhoto = async (id: string, currentTitle: string) => {
+    const title = window.prompt('Photo name (empty for the default):', currentTitle);
+    if (title === null) return;
+    await fetch(`/api/designs/${designId}/photos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }).catch(() => null);
+    await refreshPhotoTabs(designId);
+  };
+
+  const deletePhoto = async (id: string, title: string) => {
+    if (!window.confirm(`Delete "${title}" and everything drawn on it? The main photo and its items are unaffected.`)) return;
+    setPhotoBusy(true);
+    try {
+      const res = await fetch(`/api/designs/${designId}/photos/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        alert("Couldn't delete the photo.");
+        return;
+      }
+      if (activePhotoId === id) setActivePhotoId(null);
+      await refreshPhotoTabs(designId);
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
 
   // Stop the page behind from scrolling while full screen.
   useEffect(() => {
@@ -158,7 +287,10 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
     ? 'overflow-hidden bg-[#0f1115]'
     : 'overflow-hidden rounded-lg border border-[#2e3340] bg-[#0f1115]';
 
-  const hostHeight: CSSProperties['height'] = expanded ? `calc(100vh - ${BAR_HEIGHT}px)` : height;
+  const showStrip = photoTabs !== null;
+  const hostHeight: CSSProperties['height'] = expanded
+    ? `calc(100vh - ${BAR_HEIGHT + (showStrip ? STRIP_HEIGHT : 0)}px)`
+    : height;
 
   const barBtn =
     'rounded border border-[#2e3340] bg-[#242833] hover:bg-[#2e3340] text-[#e8ebf0] px-2.5 py-1 text-xs cursor-pointer';
@@ -197,6 +329,64 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
           )}
         </div>
       </div>
+      {showStrip && (
+        <div
+          style={{ height: STRIP_HEIGHT }}
+          className="flex items-center gap-1 px-2 border-b border-[#2e3340] bg-[#161920] overflow-x-auto"
+        >
+          {(photoTabs ?? []).map((tab) => {
+            const active = tab.id === activePhotoId;
+            return (
+              <span
+                key={tab.id ?? 'base'}
+                className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs whitespace-nowrap cursor-pointer border ${
+                  active
+                    ? 'border-green-600 bg-[#1d2b22] text-[#d8e4dc]'
+                    : 'border-[#2e3340] bg-[#1a1d24] text-[#9aa3b2] hover:border-[#3a4150]'
+                }`}
+                onClick={() => void switchPhoto(tab.id)}
+                title={tab.id ? 'Click to switch · double-click to rename' : 'The main photo (measurement + satellite live here)'}
+                onDoubleClick={() => tab.id && void renamePhoto(tab.id, tab.title)}
+              >
+                {tab.title}
+                {tab.id && (
+                  <button
+                    type="button"
+                    className="ml-0.5 text-[#6b7484] hover:text-red-400"
+                    title="Delete this photo"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void deletePhoto(tab.id!, tab.title);
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            );
+          })}
+          <button
+            type="button"
+            className={`${barBtn} whitespace-nowrap`}
+            disabled={photoBusy}
+            onClick={() => addFileRef.current?.click()}
+            title="Add another photo of this house (side, backyard, garage…) — drawn items on it are quoted too; no AI analyze"
+          >
+            {photoBusy ? 'Adding…' : '+ Add photo'}
+          </button>
+          <input
+            ref={addFileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) void addPhoto(f);
+            }}
+          />
+        </div>
+      )}
       <div ref={hostRef} className="yll-design-host" style={{ height: hostHeight, width: '100%' }} />
     </div>
   );

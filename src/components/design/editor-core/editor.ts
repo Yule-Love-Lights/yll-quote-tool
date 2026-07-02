@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -122,7 +122,7 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -137,6 +137,34 @@ export async function renderEditor(
     else root.innerHTML = `<div class="project-empty">Couldn't load this design.</div>`;
     return () => {};
   }
+
+  // #13 multi-image: which photo of the design this mount edits. null = the
+  // base photo (every pre-multi-image design). The background loads from the
+  // matching extra photo; items are FILTERED to this photo at render and new
+  // items are STAMPED with it. The host remounts the editor to switch photos,
+  // so this is fixed for the lifetime of a mount. The full scene (including
+  // other photos' items) stays in memory and is saved whole — doSave
+  // serializes `scene`, never the stage.
+  const activePhotoId = opts.activePhotoId ?? null;
+  const activeExtra = activePhotoId
+    ? (design.extraPhotos ?? []).find((p) => p.id === activePhotoId) ?? null
+    : null;
+  const activeBgUrl = activePhotoId ? (activeExtra?.url ?? null) : design.photoUrl;
+  // An item belongs to the mounted photo when its photoId matches (absent/null
+  // = the base photo).
+  const onActivePhoto = (item: { photoId?: string | null }) => isItemOnPhoto(item, activePhotoId);
+  // Stamp a freshly-created item with the mounted photo. On the base photo the
+  // fields stay untouched — byte-identical to pre-multi-image items. On an
+  // extra, also drop any yardstick binding: yardsticks live on the base photo
+  // only, so a cross-photo scale must never attach (extras carry no
+  // measurement; staff size items visually).
+  const stampPhoto = <T extends { photoId?: string | null; yardstickId?: string | null }>(item: T): T => {
+    if (activePhotoId) {
+      item.photoId = activePhotoId;
+      item.yardstickId = null;
+    }
+    return item;
+  };
 
   root.innerHTML = `
     <div class="editor${opts.embedded ? " embedded" : ""}">
@@ -168,9 +196,9 @@ export async function renderEditor(
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
         </div>
-        <div class="stage-empty" id="empty"${design.photoUrl ? ' style="display:none"' : ""}>
-          <div>Upload a photo of the house to get started.</div>
-          <button class="upload" id="upload-btn">Upload Photo</button>
+        <div class="stage-empty" id="empty"${activeBgUrl ? ' style="display:none"' : ""}>
+          <div>${activePhotoId ? "This photo couldn't be loaded." : "Upload a photo of the house to get started."}</div>
+          <button class="upload" id="upload-btn"${activePhotoId ? ' style="display:none"' : ""}>Upload Photo</button>
           <input type="file" id="upload-file" accept="image/*" style="display:none" />
         </div>
       </div>
@@ -302,8 +330,11 @@ export async function renderEditor(
 
   // Helper: filter scene.items down to strand items.
   // Used in many read paths where we need strand-specific props (bulbType, colorPattern, etc).
+  // #13: photo-scoped — every allX() helper sees only the mounted photo's
+  // items, so sidebar lists/counts, bulk ops, and select-alls can never touch
+  // (or worse, bulk-delete) another photo's hidden items.
   function allStrands(): StrandItem[] {
-    return scene.items.filter(isStrand);
+    return scene.items.filter(isStrand).filter(onActivePhoto);
   }
 
   // --- Undo / redo history ---
@@ -560,7 +591,9 @@ export async function renderEditor(
     drawLayer.destroyChildren();
 
     let selectedYardstickNode: Konva.Group | null = null;
-    scene.yardsticks.forEach((ys, idx) => {
+    // #13: yardsticks are a BASE-photo concern (measurement lives on photo 1 —
+    // extras carry no scale). On an extra photo they neither render nor place.
+    (activePhotoId ? [] : scene.yardsticks).forEach((ys, idx) => {
       const isSel = selectedYardstickId === ys.id;
       const g = renderYardstick(ys, yardstickLabel(idx), isSel);
       g.on("click tap", (e) => {
@@ -590,6 +623,10 @@ export async function renderEditor(
 
     const selectedItemNodes: Konva.Node[] = [];
     for (const item of scene.items) {
+      // #13: render only the mounted photo's items. Other photos' items stay in
+      // `scene.items` (and in every save — doSave serializes the array) but get
+      // no nodes, so they can't be clicked, marquee'd, dragged, or deleted here.
+      if (!onActivePhoto(item)) continue;
       let g: Konva.Group;
       if (isStrand(item)) {
         g = renderStrand(item, ppfForStrand(item));
@@ -710,36 +747,37 @@ export async function renderEditor(
     return pxPerFoot(activeYs());
   }
 
+  // #13: all photo-scoped, like allStrands above.
   function allWreaths(): WreathItem[] {
-    return scene.items.filter(isWreath);
+    return scene.items.filter(isWreath).filter(onActivePhoto);
   }
 
   function allBows(): BowItem[] {
-    return scene.items.filter(isBow);
+    return scene.items.filter(isBow).filter(onActivePhoto);
   }
 
   function allGarlands(): GarlandItem[] {
-    return scene.items.filter(isGarland);
+    return scene.items.filter(isGarland).filter(onActivePhoto);
   }
 
   function allSpritzers(): SpritzerItem[] {
-    return scene.items.filter(isSpritzer);
+    return scene.items.filter(isSpritzer).filter(onActivePhoto);
   }
 
   function allTexts(): TextItem[] {
-    return scene.items.filter(isText);
+    return scene.items.filter(isText).filter(onActivePhoto);
   }
 
   function allCustoms(): CustomItem[] {
-    return scene.items.filter(isCustom);
+    return scene.items.filter(isCustom).filter(onActivePhoto);
   }
 
   function allPoles(): PoleItem[] {
-    return scene.items.filter(isPole);
+    return scene.items.filter(isPole).filter(onActivePhoto);
   }
 
   function allMiniAreas(): MiniAreaItem[] {
-    return scene.items.filter(isMiniArea);
+    return scene.items.filter(isMiniArea).filter(onActivePhoto);
   }
 
   // Garlands size themselves using their own yardstick (or the first one as
@@ -2530,7 +2568,7 @@ export async function renderEditor(
         ...scene,
         items: [
           ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
-          grp,
+          stampPhoto(grp),
         ],
       };
       scheduleSave();
@@ -3896,6 +3934,11 @@ export async function renderEditor(
   });
 
   (root.querySelector("#ys-btn") as HTMLElement).addEventListener("click", () => {
+    // #13: measurement lives on the base photo — no yardsticks on extras.
+    if (activePhotoId) {
+      alert("Yardsticks live on the main photo — switch to Photo 1 to measure.");
+      return;
+    }
     if (!bgImageNode) {
       alert("Upload a photo first.");
       return;
@@ -4077,7 +4120,7 @@ export async function renderEditor(
       tier: "bow",
       included: true,
     };
-    scene = { ...scene, items: [...scene.items, wreath] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(wreath)] };
     scheduleSave();
     commit();
   }
@@ -4091,7 +4134,7 @@ export async function renderEditor(
       sizeIn: tool.bowSizeIn,
       yardstickId: activeYs()?.id ?? null,
     };
-    scene = { ...scene, items: [...scene.items, bow] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(bow)] };
     scheduleSave();
     commit();
   }
@@ -4108,7 +4151,7 @@ export async function renderEditor(
       quoteSize: "24",
       included: true,
     };
-    scene = { ...scene, items: [...scene.items, spritzer] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(spritzer)] };
     scheduleSave();
     commit();
   }
@@ -4131,7 +4174,7 @@ export async function renderEditor(
       stringCount: 1,
       included: true,
     };
-    scene = { ...scene, items: [...scene.items, area] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(area)] };
     selectedIds = new Set([area.id]);
     scheduleSave();
     commit();
@@ -4150,7 +4193,7 @@ export async function renderEditor(
       outline: tool.textOutline,
       yardstickId: activeYs()?.id ?? null,
     };
-    scene = { ...scene, items: [...scene.items, item] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(item)] };
     scheduleSave();
     commit();
   }
@@ -4167,7 +4210,7 @@ export async function renderEditor(
       autoHalo: tool.customAutoHalo,
       yardstickId: activeYs()?.id ?? null,
     };
-    scene = { ...scene, items: [...scene.items, item] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(item)] };
     scheduleSave();
     commit();
   }
@@ -4182,7 +4225,7 @@ export async function renderEditor(
       baseType: tool.poleBaseType,
       yardstickId: activeYs()?.id ?? null,
     };
-    scene = { ...scene, items: [...scene.items, pole] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(pole)] };
     scheduleSave();
     commit();
   }
@@ -4201,7 +4244,7 @@ export async function renderEditor(
       ...permPropsForNewStrand(),
       ...quoteDefaultsForNewStrand(),
     };
-    scene = { ...scene, items: [...scene.items, strand] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(strand)] };
     scheduleSave();
     commit();
   }
@@ -4257,7 +4300,7 @@ export async function renderEditor(
       });
     }
     if (newStrands.length === 0) return;
-    scene = { ...scene, items: [...scene.items, ...newStrands] };
+    scene = { ...scene, items: [...scene.items, ...newStrands.map((s) => stampPhoto(s))] };
     scheduleSave();
     commit();
   }
@@ -4275,7 +4318,7 @@ export async function renderEditor(
       ...permPropsForNewStrand(),
       ...quoteDefaultsForNewStrand(),
     };
-    scene = { ...scene, items: [...scene.items, strand] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(strand)] };
     scheduleSave();
     commit();
   }
@@ -4296,7 +4339,7 @@ export async function renderEditor(
       yardstickId: activeYs()?.id ?? null,
       ...quoteDefaultsForNewGarland(),
     };
-    scene = { ...scene, items: [...scene.items, g] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(g)] };
     scheduleSave();
     commit();
   }
@@ -4312,7 +4355,7 @@ export async function renderEditor(
       yardstickId: activeYs()?.id ?? null,
       ...quoteDefaultsForNewGarland(),
     };
-    scene = { ...scene, items: [...scene.items, g] };
+    scene = { ...scene, items: [...scene.items, stampPhoto(g)] };
     scheduleSave();
     commit();
   }
@@ -5007,7 +5050,11 @@ export async function renderEditor(
   // before its font has arrived, it falls back to a serif. Once the browser
   // signals fonts ready, redraw so the right typeface shows up.
   fontsReady().then(() => requestCanvasRedraw());
-  if (design.photoUrl && design.photoW && design.photoH) {
+  // #13: mount on the active photo's image — an extra when activePhotoId is
+  // set, else the base photo as always.
+  if (activeExtra?.url && activeExtra.w && activeExtra.h) {
+    await loadPhoto(activeExtra.url, activeExtra.w, activeExtra.h);
+  } else if (!activePhotoId && design.photoUrl && design.photoW && design.photoH) {
     await loadPhoto(design.photoUrl, design.photoW, design.photoH);
   }
   redrawScene();
