@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeWorkflowBoard, type WorkflowJob } from './workflowBoard';
+import { computeWorkflowBoard, type WorkflowJob, type WorkflowInvoice } from './workflowBoard';
 import type { DashboardQuote } from './types';
 
 function mkQuote(overrides: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -153,5 +153,47 @@ describe('computeWorkflowBoard — jobs column', () => {
   it('treats null line_items as 0 in the job total', () => {
     const board = computeWorkflowBoard([], [{ status: 'scheduled', line_items: null }]);
     expect(board.jobs.scheduled).toEqual({ count: 1, totalUsd: 0 });
+  });
+});
+
+function mkInvoice(status: string | null, balance: number | null): WorkflowInvoice {
+  return { status, balance };
+}
+
+describe('computeWorkflowBoard — invoices column (#83 Phase 3 wired)', () => {
+  it('zeroes every invoices bucket when no invoices are passed', () => {
+    const board = computeWorkflowBoard([mkQuote()]);
+    expect(board.invoices.draft).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.invoices.awaiting_payment).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.invoices.paid).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.invoices.cancelled).toEqual({ count: 0, totalUsd: 0 });
+  });
+
+  it('buckets invoices by status, summing the outstanding balance for the total', () => {
+    const board = computeWorkflowBoard(
+      [],
+      [],
+      [
+        mkInvoice('draft', 1000),
+        mkInvoice('awaiting_payment', 2500),
+        mkInvoice('awaiting_payment', 500),
+        mkInvoice('paid', 0),
+        mkInvoice('cancelled', 800),
+      ],
+    );
+    expect(board.invoices.draft).toEqual({ count: 1, totalUsd: 1000 });
+    expect(board.invoices.awaiting_payment).toEqual({ count: 2, totalUsd: 3000 });
+    expect(board.invoices.paid).toEqual({ count: 1, totalUsd: 0 });
+    expect(board.invoices.cancelled).toEqual({ count: 1, totalUsd: 800 });
+  });
+
+  it('treats an unknown/legacy/null invoice status as draft (never drops a row)', () => {
+    const board = computeWorkflowBoard([], [], [mkInvoice('bogus', 100), mkInvoice(null, 50)]);
+    expect(board.invoices.draft).toEqual({ count: 2, totalUsd: 150 });
+  });
+
+  it('treats a null balance as 0 in the invoice total', () => {
+    const board = computeWorkflowBoard([], [], [mkInvoice('awaiting_payment', null)]);
+    expect(board.invoices.awaiting_payment).toEqual({ count: 1, totalUsd: 0 });
   });
 });

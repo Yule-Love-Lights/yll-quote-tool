@@ -1,6 +1,7 @@
 import {
   listQuotesForDashboard,
   listJobsForWorkflowBoard,
+  listInvoicesForWorkflowBoard,
   loadNeedsActionData,
 } from '@/lib/dashboard/queries';
 import { computeKpis } from '@/lib/dashboard/metrics';
@@ -28,16 +29,17 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, metricsRes, reopen] = await Promise.all([
+  const [quotes, jobs, invoices, metricsRes, reopen] = await Promise.all([
     listQuotesForDashboard(500),
     listJobsForWorkflowBoard(),
+    listInvoicesForWorkflowBoard(),
     listItemsForMetrics(),
     getReopenCounts(now),
   ]);
   const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
-  const workflowBoard = computeWorkflowBoard(quotes, jobs);
+  const workflowBoard = computeWorkflowBoard(quotes, jobs, invoices);
   const holiday = computeHolidayBreakdown(quotes);
   const permanent = computePermanentSummary(quotes);
   const event = computeEventSummary(quotes);

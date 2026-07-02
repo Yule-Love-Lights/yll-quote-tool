@@ -1,7 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from '@/lib/supabase';
 import type { DashboardQuote } from './types';
 import type { ViewEventRow } from './activity';
-import type { WorkflowJob } from './workflowBoard';
+import type { WorkflowJob, WorkflowInvoice } from './workflowBoard';
 import type { NeedsActionJob, NeedsActionInvoice } from './needsAction';
 
 /**
@@ -128,6 +128,49 @@ export async function listJobsForWorkflowBoard(limit = 1000): Promise<WorkflowJo
     return jobs.filter((j) => !(j.quote_id && testQuoteIds.has(j.quote_id)));
   } catch (err) {
     console.warn('listJobsForWorkflowBoard failed:', err);
+    return [];
+  }
+}
+
+/**
+ * Invoices for the Workflow board's Invoices column (ledger #83 Phase 3). Read-only,
+ * server-side aggregation source — just `status` + `balance` (the board sums the
+ * outstanding balance for the column total). BEST-EFFORT: returns [] on any error —
+ * including the `invoices` table not existing yet — so the dashboard still renders
+ * (Invoices column shows zeros) before the 2026-06-27-invoices.sql migration is
+ * applied. Mirrors listJobsForWorkflowBoard, including the #93 test-quote isolation
+ * (a test quote's invoice is a real invoices row; exclude it via the quote link).
+ * Server-only.
+ */
+export async function listInvoicesForWorkflowBoard(limit = 1000): Promise<WorkflowInvoice[]> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return [];
+  try {
+    const { data, error } = await sb
+      .from('invoices')
+      .select('status, balance, quote_id')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.warn('listInvoicesForWorkflowBoard (table not migrated yet?):', error.message);
+      return [];
+    }
+    const invoices = (data ?? []) as Array<WorkflowInvoice & { quote_id: string | null }>;
+    // Test Quote isolation (ledger #93): a test quote's invoice is a REAL invoices
+    // row, so it would inflate the board's Invoices column unless excluded. is_test
+    // lives only on the quote — derive it via the quote link (same pattern as
+    // listJobsForWorkflowBoard). Invoices with no quote_id are kept.
+    const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
+    const testQuoteIds = new Set<string>();
+    if (quoteIds.length) {
+      const { data: qrows } = await sb.from('quotes').select('id, is_test').in('id', quoteIds);
+      for (const q of (qrows ?? []) as Array<{ id: string; is_test: boolean | null }>) {
+        if (q.is_test) testQuoteIds.add(q.id);
+      }
+    }
+    return invoices.filter((i) => !(i.quote_id && testQuoteIds.has(i.quote_id)));
+  } catch (err) {
+    console.warn('listInvoicesForWorkflowBoard failed:', err);
     return [];
   }
 }
