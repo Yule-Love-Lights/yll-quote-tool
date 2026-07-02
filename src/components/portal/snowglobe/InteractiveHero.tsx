@@ -248,44 +248,6 @@ export function InteractiveHero({
       </div>
       </div>{/* /.portal-snow-stage-media */}
 
-      {/* #13 multi-image: thumbnail strip — tap to flip the hero to that photo,
-          lit with its own items. Hidden entirely for single-photo designs. */}
-      {design && extraPhotos.length > 0 && (
-        <div className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 mt-3 md:mt-4">
-          <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Photos of your home">
-            {[{ id: null as string | null, url: design.photoUrl, title: 'Photo 1' },
-              ...extraPhotos.map((p, i) => ({ id: p.id as string | null, url: p.url, title: p.title || `Photo ${i + 2}` }))].map((p) => {
-              const active = p.id === activePhotoId;
-              return (
-                <button
-                  key={p.id ?? 'base'}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => { setPhotoFailed(false); setActivePhotoId(p.id); }}
-                  className={`shrink-0 rounded-md overflow-hidden border-2 transition-colors ${
-                    active ? 'border-[#FFB744]' : 'border-[#2a3a30] hover:border-[#4a5a50]'
-                  }`}
-                  title={p.title}
-                >
-                  {p.url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.url} alt={p.title} className="w-[76px] h-[50px] object-cover block" />
-                  ) : (
-                    <span className="w-[76px] h-[50px] block bg-[#101a14]" />
-                  )}
-                  <span className={`block text-[10px] px-1 py-0.5 text-center truncate max-w-[76px] ${
-                    active ? 'text-[#FFD07A] bg-[#1d2b22]' : 'text-[#9fb8a8] bg-[#101a14]'
-                  }`}>
-                    {p.title}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Bottom content — price + package selector. On mobile it flows BELOW the
           aspect-locked photo box; on desktop it overlays the bottom of the stage. */}
       <div className="relative z-10 md:absolute md:bottom-0 md:left-0 md:right-0 pb-safe">
@@ -306,6 +268,43 @@ export function InteractiveHero({
                   deposit
                 </span>
               </div>
+              {/* #13 multi-image: thumbnail strip — BELOW the price, in line with
+                  the packages (Jason's CP3 call; on phones the price stacks above
+                  the strip naturally). Tap to flip the hero to that photo, lit
+                  with its own items. Hidden for single-photo designs. */}
+              {design && extraPhotos.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1 mt-4" role="tablist" aria-label="Photos of your home">
+                  {[{ id: null as string | null, url: design.photoUrl, title: 'Photo 1' },
+                    ...extraPhotos.map((p, i) => ({ id: p.id as string | null, url: p.url, title: p.title || `Photo ${i + 2}` }))].map((p) => {
+                    const active = p.id === activePhotoId;
+                    return (
+                      <button
+                        key={p.id ?? 'base'}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => { setPhotoFailed(false); setActivePhotoId(p.id); }}
+                        className={`shrink-0 rounded-md overflow-hidden border-2 transition-colors ${
+                          active ? 'border-[#FFB744]' : 'border-[#2a3a30] hover:border-[#4a5a50]'
+                        }`}
+                        title={p.title}
+                      >
+                        {p.url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={p.url} alt={p.title} className="w-[76px] h-[50px] object-cover block" />
+                        ) : (
+                          <span className="w-[76px] h-[50px] block bg-[#101a14]" />
+                        )}
+                        <span className={`block text-[10px] px-1 py-0.5 text-center truncate max-w-[76px] ${
+                          active ? 'text-[#FFD07A] bg-[#1d2b22]' : 'text-[#9fb8a8] bg-[#101a14]'
+                        }`}>
+                          {p.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Package selector */}
