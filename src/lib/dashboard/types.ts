@@ -118,8 +118,13 @@ export type CustomerStatus = 'draft' | 'sent' | 'approved';
 export type CustomerSummary = {
   /** Stable grouping key (HL contact id, else email/phone/name). */
   key: string;
-  /** HL contact id when present — drives the live detail link; null for walk-ins. */
+  /** HL contact id when present — the preferred detail-route id; null when this
+   *  customer was never linked to HighLevel. */
   contactId: string | null;
+  /** Stable customer_id (from the rebook backfill) — the detail-route id fallback
+   *  so a customer with no HL link is STILL clickable to their profile. Null on
+   *  pre-backfill legacy quotes that carry neither id. */
+  customerId: string | null;
   name: string;
   email: string | null;
   phone: string | null;
