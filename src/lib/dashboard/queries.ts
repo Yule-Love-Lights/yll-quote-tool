@@ -2,6 +2,7 @@ import { getSupabaseClient, getSupabaseServiceClient } from '@/lib/supabase';
 import type { DashboardQuote } from './types';
 import type { ViewEventRow } from './activity';
 import type { WorkflowJob } from './workflowBoard';
+import type { NeedsActionJob, NeedsActionInvoice } from './needsAction';
 
 /**
  * Discriminated result for the dashboard quotes read. AUDIT FIX
@@ -159,4 +160,55 @@ export async function getViewEventsForQuotes(quoteIds: string[]): Promise<ViewEv
     console.warn('getViewEventsForQuotes failed:', err);
     return [];
   }
+}
+
+// ─── Needs-Action data loader ─────────────────────────────────────────────────
+
+/**
+ * The combined data snapshot that `buildNeedsAction` needs: the same quote rows
+ * the dashboard already loads (passed in from the caller to avoid a second read),
+ * plus a lightweight jobs + invoices read.
+ *
+ * Callers pass `quotes` from an existing `listQuotesForDashboard` call — no
+ * second quotes query. Jobs + invoices are fetched here in parallel (Promise.all)
+ * so the total cost is one additional round-trip pair, not N+1.
+ *
+ * BEST-EFFORT: jobs/invoices return [] on any error (tables may not exist on
+ * older branches) — matches the same defensive pattern as `listJobsForWorkflowBoard`.
+ * Server-only.
+ */
+export async function loadNeedsActionData(
+  quotes: DashboardQuote[],
+  limit = 500,
+): Promise<{ quotes: DashboardQuote[]; jobs: NeedsActionJob[]; invoices: NeedsActionInvoice[] }> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return { quotes, jobs: [], invoices: [] };
+
+  const [jobsResult, invoicesResult] = await Promise.all([
+    sb
+      .from('jobs')
+      .select('id, quote_id, status, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit),
+    sb
+      .from('invoices')
+      .select('id, job_id, quote_id, status, balance, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit),
+  ]);
+
+  if (jobsResult.error) {
+    console.warn('loadNeedsActionData jobs (table not migrated yet?):', jobsResult.error.message);
+  }
+  if (invoicesResult.error) {
+    console.warn(
+      'loadNeedsActionData invoices (table not migrated yet?):',
+      invoicesResult.error.message,
+    );
+  }
+
+  const jobs = (jobsResult.data ?? []) as unknown as NeedsActionJob[];
+  const invoices = (invoicesResult.data ?? []) as unknown as NeedsActionInvoice[];
+
+  return { quotes, jobs, invoices };
 }
