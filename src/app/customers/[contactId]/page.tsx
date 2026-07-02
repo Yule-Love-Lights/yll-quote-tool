@@ -7,7 +7,7 @@ import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
-import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
+import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -201,7 +201,7 @@ export default async function CustomerDetailPage({
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">
                         <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>
-                        <PipelineActionsMenu quoteId={q.id} />
+                        <PipelineActionsMenuRefresh quoteId={q.id} />
                       </td>
                     </tr>
                   ))}
