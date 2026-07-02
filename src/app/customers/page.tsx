@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
-import { aggregateCustomers } from '@/lib/dashboard/customers';
+import { aggregateCustomers, customerRouteId } from '@/lib/dashboard/customers';
 import type { CustomerSummary } from '@/lib/dashboard/types';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
@@ -20,15 +20,18 @@ function fmtDate(iso: string): string {
 
 function CustomerRow({ c }: { c: CustomerSummary }) {
   const contact = c.email || c.phone || '—';
+  // Link to the detail page whenever we have a stable route id — the HighLevel
+  // contact id when present, else the backfilled customer_id. Only a truly
+  // identity-less walk-in (neither id) stays unclickable. (S22 fix: the link used
+  // to require highlevel_contact_id, so backfilled non-CRM customers were shown
+  // but never clickable.)
+  const routeId = customerRouteId(c);
   return (
     <tr className="border-t" style={{ borderColor: 'var(--op-border)' }}>
       <td className="px-3 py-2.5">
-        {/* Only customers with a HighLevel contact id link to a detail page (it
-            loads live HL data keyed by that id). Walk-ins with no CRM record
-            still appear, just not clickable. */}
-        {c.contactId ? (
+        {routeId ? (
           <Link
-            href={`/customers/${c.contactId}`}
+            href={`/customers/${encodeURIComponent(routeId)}`}
             className="font-medium hover:underline"
             style={{ color: 'var(--op-primary)' }}
           >
@@ -68,7 +71,8 @@ export default async function CustomersPage() {
             {customers.length} customer{customers.length === 1 ? '' : 's'}
           </h1>
           <p className="text-sm mt-1" style={{ color: 'var(--op-text-dim)' }}>
-            Grouped from every quote. Click a customer to see their live HighLevel profile + history.
+            Grouped from every quote. Click a customer to see their profile + quote history
+            (live HighLevel data when they&apos;re linked in the CRM).
           </p>
         </header>
 
