@@ -245,6 +245,40 @@ describe('Valor webhook — happy path', () => {
   });
 });
 
+describe('Valor webhook — deposit amount (records actual charged, flags shortfall)', () => {
+  it('records the actual amount when it matches the intended deposit', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    const res = await POST(signedReq(APPROVED_PAYLOAD)); // amount 1350 == intended 1350
+    expect(res.status).toBe(200);
+    expect(updatePayloads[0].deposit_amount_usd).toBe(1350);
+  });
+
+  it('records the ACTUAL (lower) amount + warns on a partial authorization, and STILL books', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, amount: '1000.00' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    // credits what was REALLY charged (1000), not the intended 1350 → truthful balance
+    expect(updatePayloads[0].deposit_amount_usd).toBe(1000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deposit shortfall'));
+    warn.mockRestore();
+  });
+
+  it('keeps the intended amount when the webhook carries no amount (no null overwrite)', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    const noAmount: Record<string, unknown> = { ...APPROVED_PAYLOAD };
+    delete noAmount.amount;
+    const res = await POST(signedReq(noAmount));
+    expect(res.status).toBe(200);
+    expect(updatePayloads[0].deposit_amount_usd).toBe(1350);
+  });
+});
+
 describe('Valor webhook — verification probe (Verify and Update)', () => {
   it('GET returns 200 for a reachability check', async () => {
     const res = await GET();
