@@ -262,6 +262,16 @@ export type Scene = {
   brightness?: number; // 0 = darkest, 50 = neutral, 100 = lightest
 };
 
+// One extra street photo as the editor sees it (#13 multi-image): a signed URL
+// + dims + optional staff title. Matches DesignWithPhoto.extraPhotos.
+export type EditorExtraPhoto = {
+  id: string;
+  url: string | null;
+  w: number;
+  h: number;
+  title: string | null;
+};
+
 // The shape the editor controller expects from its storage adapter's load.
 // `projectId`/`background` are design-tool app-shell concepts, unused under
 // Path B — kept optional so the ported controller compiles unchanged.
@@ -276,6 +286,10 @@ export type Design = {
   scene: Scene;
   createdAt: number;
   updatedAt: number;
+  // Extra street photos (#13 multi-image). Optional + additive — the design
+  // tool's own storage doesn't supply it and the editor treats absent as "no
+  // extras", so both apps compile/run unchanged without it.
+  extraPhotos?: EditorExtraPhoto[];
 };
 
 // One entry in the custom-graphic library (deferred in Phase 1).
@@ -298,6 +312,17 @@ export type BulbColor = {
 
 // Per-item-type tool defaults, keyed by item-type identifier.
 export type ToolDefaults = Record<string, Record<string, unknown>>;
+
+// #13 multi-image: does this item belong to the given photo? `photoId` on the
+// item and `activePhotoId` both use null/absent for the BASE photo, so every
+// pre-multi-image item matches the base mount. Pure — shared by the editor's
+// per-photo filtering and (later) the portal's per-photo rendering.
+export function isItemOnPhoto(
+  item: { photoId?: string | null },
+  activePhotoId: string | null,
+): boolean {
+  return (item.photoId ?? null) === activePhotoId;
+}
 
 // ---------------------------------------------------------------------------
 // Type guards used throughout the editor.

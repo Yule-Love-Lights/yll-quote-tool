@@ -95,6 +95,8 @@ export type DesignRow = {
   satellite_lines?: DesignSatelliteLines | null;
   // Extra street photos (#13). Nullable — pre-migration rows have null.
   extra_photos?: DesignExtraPhoto[] | null;
+  // Staff title for the BASE photo (#13) — null renders as "Photo 1".
+  photo_title?: string | null;
 };
 
 // What the GET route hands the editor: the row plus a freshly-signed,
@@ -117,6 +119,8 @@ export type DesignWithPhoto = {
   // Extra street photos (#13), each with a freshly-signed URL. Empty array for
   // designs without extras (incl. every pre-migration design).
   extraPhotos: { id: string; url: string | null; w: number; h: number; title: string | null }[];
+  // Staff title for the base photo (#13) — null renders as "Photo 1".
+  photoTitle: string | null;
 };
 
 const BUCKET = 'designs';
@@ -262,6 +266,7 @@ export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | 
       h: p.h,
       title: p.title ?? null,
     })),
+    photoTitle: row.photo_title ?? null,
   };
 }
 
@@ -732,6 +737,21 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
+  return true;
+}
+
+// Rename the BASE photo (#13) — null/empty clears back to "Photo 1".
+export async function updateDesignPhotoTitle(id: string, title: string | null): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+  const { error } = await sb
+    .from('designs')
+    .update({ photo_title: title?.trim() || null })
+    .eq('id', id);
+  if (error) {
+    console.error('updateDesignPhotoTitle:', error);
+    return false;
+  }
   return true;
 }
 

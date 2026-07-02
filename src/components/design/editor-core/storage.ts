@@ -60,6 +60,7 @@ function toEditorDesign(id: string, api: {
   photoUrl?: string | null;
   photoW?: number | null;
   photoH?: number | null;
+  extraPhotos?: Design['extraPhotos'];
 }): Design {
   return {
     id,
@@ -72,6 +73,8 @@ function toEditorDesign(id: string, api: {
     scene: api.scene ?? EMPTY_SCENE,
     createdAt: 0,
     updatedAt: 0,
+    // #13: extra street photos ride along so the editor can mount on one.
+    extraPhotos: api.extraPhotos ?? [],
   };
 }
 
