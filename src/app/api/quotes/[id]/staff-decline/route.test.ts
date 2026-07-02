@@ -1,0 +1,250 @@
+// Tests for POST /api/quotes/[id]/staff-decline (#83 ops).
+//
+// Operator records a decline the customer gave OUTSIDE the tool (phone/text):
+//   sent | viewed | changes_requested → declined
+//   writes status='declined', decline_reason=<reason|marker>,
+//   approval_snapshot.staffDeclined = { by, at, reason }
+//
+// Money/status-safety guards:
+//   - illegal status transitions are blocked (409) — approved/booked/terminal
+//   - the write is GUARDED: .or(declinable).is('deposit_paid_at', null) — a
+//     concurrent approval/booking can't be raced past (0 rows ⇒ 409)
+//   - already declined → idempotent 200 { alreadyDeclined: true }, no write
+//   - reason is optional (empty → a staff marker is stored); >2000 chars → 400
+//   - is_test → no real GHL/notify call (route makes none)
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { NextRequest } from 'next/server';
+
+const { requireOperatorMock, getOperatorMock, sbRef } = vi.hoisted(() => ({
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+  getOperatorMock: vi.fn(async () => null as { email: string | null } | null),
+  sbRef: { current: null as unknown },
+}));
+
+vi.mock('@/lib/supabase', () => ({
+  isSupabaseServiceConfigured: () => true,
+  getSupabaseServiceClient: () => sbRef.current,
+}));
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: requireOperatorMock,
+  getOperator: getOperatorMock,
+}));
+
+import { POST } from './route';
+
+const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+// A NextRequest stand-in. Pass a body to drive req.json(); omit it (or pass
+// undefined) to simulate a missing/invalid body (json() rejects).
+function makeReq(body?: unknown): NextRequest {
+  return {
+    headers: { get: () => null },
+    json: async () => {
+      if (body === undefined) throw new Error('no body');
+      return body;
+    },
+  } as unknown as NextRequest;
+}
+const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
+
+// Chainable Supabase mock.
+//   maybeSingle() → the quote row
+//   .update().eq().or().is().select() terminates via .then() → updateRows
+function makeSb(
+  quote: Record<string, unknown> | null,
+  updateRows: Array<{ id: string }> | null = [{ id: ID }],
+) {
+  const updatePayloads: Array<Record<string, unknown>> = [];
+  const orArgs: string[] = [];
+  let pendingIsUpdate = false;
+
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    from: () => builder,
+    select: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      pendingIsUpdate = true;
+      updatePayloads.push(payload);
+      return builder;
+    },
+    eq: () => builder,
+    or: (f: string) => {
+      orArgs.push(f);
+      return builder;
+    },
+    is: () => builder,
+    maybeSingle: async () => ({ data: quote, error: null }),
+    then: (resolve: (v: unknown) => void) => {
+      const isUpd = pendingIsUpdate;
+      pendingIsUpdate = false;
+      resolve(isUpd ? { data: updateRows, error: null } : { data: quote, error: null });
+    },
+  });
+  return { client: builder, updatePayloads, orArgs };
+}
+
+const BASE_SENT_QUOTE = {
+  id: ID,
+  status: 'sent' as const,
+  quote_sent_at: '2026-07-01T00:00:00Z',
+  viewed_at: null,
+  customer_approved_at: null,
+  deposit_paid_at: null,
+  approval_snapshot: null,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  requireOperatorMock.mockResolvedValue(null);
+  getOperatorMock.mockResolvedValue({ email: 'operator@example.com' });
+});
+
+describe('POST /api/quotes/[id]/staff-decline', () => {
+  it('400s on an invalid UUID', async () => {
+    const res = await POST(makeReq({ reason: 'x' }), ctx('not-a-uuid'));
+    expect(res.status).toBe(400);
+  });
+
+  it('404s when the quote does not exist', async () => {
+    const { client } = makeSb(null);
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(404);
+  });
+
+  it('declines a sent quote — writes status=declined, decline_reason, staffDeclined marker, guarded write', async () => {
+    const { client, updatePayloads, orArgs } = makeSb(BASE_SENT_QUOTE);
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Went with a competitor' }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.status).toBe('declined');
+    expect(json.staff).toBe(true);
+
+    const payload = updatePayloads[0];
+    expect(payload.status).toBe('declined');
+    expect(payload.decline_reason).toBe('Went with a competitor');
+    const snap = payload.approval_snapshot as { staffDeclined: { by: string | null; at: string; reason: string | null } };
+    expect(snap.staffDeclined.by).toBe('operator@example.com');
+    expect(typeof snap.staffDeclined.at).toBe('string');
+    expect(snap.staffDeclined.reason).toBe('Went with a competitor');
+    // Guard: the write is filtered to still-declinable rows.
+    expect(orArgs[0]).toContain('status.in.(sent,viewed,changes_requested)');
+    expect(orArgs[0]).toContain('status.is.null');
+  });
+
+  it('declines a viewed quote', async () => {
+    const { client } = makeSb({ ...BASE_SENT_QUOTE, status: 'viewed', viewed_at: '2026-07-01T01:00:00Z' });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'no' }), ctx());
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('declined');
+  });
+
+  it('declines a changes_requested quote', async () => {
+    const { client } = makeSb({ ...BASE_SENT_QUOTE, status: 'changes_requested' });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'no' }), ctx());
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('declined');
+  });
+
+  it('409s when the quote is approved — a signed/approved quote is not declinable', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...BASE_SENT_QUOTE,
+      status: 'approved',
+      customer_approved_at: '2026-07-01T02:00:00Z',
+    });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('illegal-transition');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  it('409s when the quote is booked (deposit paid)', async () => {
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      status: 'booked',
+      customer_approved_at: '2026-07-01T02:00:00Z',
+      deposit_paid_at: '2026-07-01T03:00:00Z',
+    });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('illegal-transition');
+  });
+
+  it('is idempotent when already declined — 200 alreadyDeclined, no write', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, status: 'declined' });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.alreadyDeclined).toBe(true);
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  it('handles a race (update returns 0 rows) as a 409', async () => {
+    const { client } = makeSb(BASE_SENT_QUOTE, []); // [] = race loser
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('invalid-status');
+  });
+
+  it('stores a default staff marker + null snapshot reason when no reason is given', async () => {
+    const { client, updatePayloads } = makeSb(BASE_SENT_QUOTE);
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: '' }), ctx());
+    expect(res.status).toBe(200);
+    const payload = updatePayloads[0];
+    expect(payload.decline_reason).toBe('Declined outside the tool (recorded by staff).');
+    expect((payload.approval_snapshot as { staffDeclined: { reason: unknown } }).staffDeclined.reason).toBeNull();
+  });
+
+  it('tolerates a missing/invalid body (no reason) rather than 400', async () => {
+    const { client, updatePayloads } = makeSb(BASE_SENT_QUOTE);
+    sbRef.current = client;
+    const res = await POST(makeReq(undefined), ctx()); // json() rejects
+    expect(res.status).toBe(200);
+    expect(updatePayloads[0].decline_reason).toBe('Declined outside the tool (recorded by staff).');
+  });
+
+  it('400s when the reason exceeds the length cap', async () => {
+    const { client } = makeSb(BASE_SENT_QUOTE);
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x'.repeat(2001) }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reason-too-long');
+  });
+
+  it('records staffDeclined.by as null when getOperator returns null (dormant gate)', async () => {
+    getOperatorMock.mockResolvedValueOnce(null);
+    const { client, updatePayloads } = makeSb(BASE_SENT_QUOTE);
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as { staffDeclined: { by: unknown } };
+    expect(snap.staffDeclined.by).toBeNull();
+  });
+
+  it('preserves existing approval_snapshot fields and adds staffDeclined', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...BASE_SENT_QUOTE,
+      approval_snapshot: { version: 1, someOtherField: 'value' },
+    });
+    sbRef.current = client;
+    await POST(makeReq({ reason: 'x' }), ctx());
+    const snap = updatePayloads[0].approval_snapshot as Record<string, unknown>;
+    expect(snap.someOtherField).toBe('value');
+    expect(snap.staffDeclined).toBeTruthy();
+  });
+});

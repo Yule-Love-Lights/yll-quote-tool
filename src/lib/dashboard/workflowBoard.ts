@@ -7,6 +7,7 @@
 import type { DashboardQuote } from './types';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { JOB_STATUSES, asJobStatus, type JobStatus } from '@/lib/jobStatus';
+import { INVOICE_STATUSES, asInvoiceStatus, type InvoiceStatus } from '@/lib/invoiceStatus';
 
 /** A single status cell on the board: how many items and their total value. */
 export type StageBucket = { count: number; totalUsd: number };
@@ -15,6 +16,14 @@ export type StageBucket = { count: number; totalUsd: number };
 export type WorkflowJob = {
   status: string | null;
   line_items: Array<{ amount?: number | null }> | null;
+};
+
+/** The minimal invoice shape the board aggregates (read server-side from
+ *  `invoices`). The column's money lens is the OUTSTANDING balance (what's still
+ *  to collect), so we only need the status + balance — not the full total. */
+export type WorkflowInvoice = {
+  status: string | null;
+  balance: number | null;
 };
 
 export type WorkflowBoard = {
@@ -34,6 +43,9 @@ export type WorkflowBoard = {
   };
   /** Per billing-status buckets for the JOBS column (Phase 2). */
   jobs: Record<JobStatus, StageBucket>;
+  /** Per billing-status buckets for the INVOICES column (Phase 3). Each bucket's
+   *  totalUsd is the summed OUTSTANDING balance for that status. */
+  invoices: Record<InvoiceStatus, StageBucket>;
 };
 
 function emptyBucket(): StageBucket {
@@ -60,6 +72,13 @@ function emptyJobBuckets(): Record<JobStatus, StageBucket> {
   >;
 }
 
+function emptyInvoiceBuckets(): Record<InvoiceStatus, StageBucket> {
+  return Object.fromEntries(INVOICE_STATUSES.map((s) => [s, emptyBucket()])) as Record<
+    InvoiceStatus,
+    StageBucket
+  >;
+}
+
 function jobValueUsd(job: WorkflowJob): number {
   return (job.line_items ?? []).reduce((sum, li) => sum + (li.amount ?? 0), 0);
 }
@@ -67,6 +86,7 @@ function jobValueUsd(job: WorkflowJob): number {
 export function computeWorkflowBoard(
   quotes: DashboardQuote[],
   jobs: WorkflowJob[] = [],
+  invoices: WorkflowInvoice[] = [],
 ): WorkflowBoard {
   const draft = emptyBucket();
   const awaitingResponse = emptyBucket();
@@ -99,5 +119,19 @@ export function computeWorkflowBoard(
     jobBuckets[status].totalUsd += jobValueUsd(j);
   }
 
-  return { quotes: { draft, awaitingResponse, approved, booked }, jobs: jobBuckets };
+  // Invoices: bucket by billing status; the value is the OUTSTANDING balance
+  // (what's still to collect). An unknown/legacy/null status falls back to
+  // 'draft' (a fresh invoice's starting state) so a row is never dropped.
+  const invoiceBuckets = emptyInvoiceBuckets();
+  for (const inv of invoices) {
+    const status = asInvoiceStatus(inv.status) ?? 'draft';
+    invoiceBuckets[status].count += 1;
+    invoiceBuckets[status].totalUsd += inv.balance ?? 0;
+  }
+
+  return {
+    quotes: { draft, awaitingResponse, approved, booked },
+    jobs: jobBuckets,
+    invoices: invoiceBuckets,
+  };
 }

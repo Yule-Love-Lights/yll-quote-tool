@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateCustomers, statusOf } from './customers';
+import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute } from './customers';
 import type { DashboardQuote } from './types';
 
 function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -113,5 +113,51 @@ describe('aggregateCustomers — sort', () => {
       makeQuote({ id: 'b', highlevel_contact_id: 'h2', created_at: '2026-06-20T00:00:00Z' }),
     ]);
     expect(out.map(c => c.contactId)).toEqual(['h2', 'h1']);
+  });
+});
+
+describe('aggregateCustomers — customerId (S22 profile-link fix)', () => {
+  it('surfaces the stable customer_id from any quote in the group', () => {
+    const out = aggregateCustomers([
+      makeQuote({ customer_email: 'a@x.com', customer_id: null, created_at: '2026-06-20T00:00:00Z' }),
+      makeQuote({ customer_email: 'a@x.com', customer_id: 'cust-1', created_at: '2026-05-01T00:00:00Z' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].customerId).toBe('cust-1');
+  });
+
+  it('customerId is null when no quote carries one (pre-backfill legacy)', () => {
+    const out = aggregateCustomers([makeQuote({ customer_email: 'a@x.com' })]);
+    expect(out[0].customerId).toBeNull();
+  });
+});
+
+describe('customerRouteId', () => {
+  const base = { key: 'k', name: 'N', email: null, phone: null, quoteCount: 1, bookedSpend: 0, latestQuoteAt: '2026-06-01T00:00:00Z', latestStatus: 'draft' as const, latestQuoteId: 'q1' };
+
+  it('prefers the HighLevel contact id when present', () => {
+    expect(customerRouteId({ ...base, contactId: 'h1', customerId: 'cust-1' })).toBe('h1');
+  });
+
+  it('falls back to the stable customer_id when there is no HL contact', () => {
+    expect(customerRouteId({ ...base, contactId: null, customerId: 'cust-1' })).toBe('cust-1');
+  });
+
+  it('is null for an identity-less walk-in (neither id)', () => {
+    expect(customerRouteId({ ...base, contactId: null, customerId: null })).toBeNull();
+  });
+});
+
+describe('matchesCustomerRoute', () => {
+  it('matches a quote by its HighLevel contact id', () => {
+    expect(matchesCustomerRoute(makeQuote({ highlevel_contact_id: 'h1' }), 'h1')).toBe(true);
+  });
+
+  it('matches a quote by its stable customer_id', () => {
+    expect(matchesCustomerRoute(makeQuote({ customer_id: 'cust-1' }), 'cust-1')).toBe(true);
+  });
+
+  it('does not match an unrelated quote', () => {
+    expect(matchesCustomerRoute(makeQuote({ highlevel_contact_id: 'h1', customer_id: 'cust-1' }), 'other')).toBe(false);
   });
 });

@@ -14,6 +14,20 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       });
     case 'mark-approved':
       return fetch(`/api/quotes/${q}/staff-approve`, { method: 'POST' });
+    case 'staff-decline': {
+      // Record a decline the customer gave outside the tool (phone/text). Reason
+      // is optional — Cancel on the prompt aborts; an empty reason is allowed.
+      const entered = window.prompt(
+        'Mark this quote declined (customer declined outside the tool). Optional reason:',
+        '',
+      );
+      if (entered === null) return null; // user cancelled
+      return fetch(`/api/quotes/${q}/staff-decline`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: entered.trim() }),
+      });
+    }
     case 'convert-to-job': {
       const entered = window.prompt('Deposit received (USD)? Enter 0 if none.', '');
       if (entered === null) return null; // user cancelled

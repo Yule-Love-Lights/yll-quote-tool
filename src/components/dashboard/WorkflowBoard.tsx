@@ -137,14 +137,23 @@ const JOB_DOTS = {
   cancelled: 'var(--op-text-dim)',
 } as const;
 
+const INVOICE_DOTS = {
+  draft: 'var(--brand-gold)',
+  awaiting_payment: '#D4537E',
+  paid: 'var(--brand-evergreen)',
+  cancelled: 'var(--op-text-dim)',
+} as const;
+
 const QUOTES_HREF = '/admin/quotes';
+const INVOICES_HREF = '/admin/invoices';
 
 /** The Jobber-style pipeline board (ledger #83): Quotes · Jobs · Invoices.
- *  Quotes + Jobs are live from real data; Invoices is a labeled placeholder
- *  until #83 Phase 3 wires the balance-collection flow. */
+ *  All three columns are live from real data — Invoices wired to the #83 Phase 3
+ *  billing flow (its money lens is the outstanding balance still to collect). */
 export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   const q = board.quotes;
   const j = board.jobs;
+  const inv = board.invoices;
 
   // Quotes headline = booked (the deals that converted), mirroring the KPI strip.
   const quoteRows: StatusRow[] = [
@@ -169,6 +178,18 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
     { key: 'cancelled', label: 'Cancelled', dot: JOB_DOTS.cancelled, bucket: j.cancelled },
   ];
   const jobsTotal = jobRows.reduce((sum, r) => sum + r.bucket.count, 0);
+
+  // Invoices column: the money lens is the OUTSTANDING balance (draft +
+  // awaiting_payment) — what's still to collect. Paid/cancelled show counts.
+  const invoiceRows: StatusRow[] = [
+    { key: 'draft', label: 'Draft', dot: INVOICE_DOTS.draft, bucket: inv.draft, href: INVOICES_HREF },
+    { key: 'awaiting_payment', label: 'Awaiting payment', dot: INVOICE_DOTS.awaiting_payment, bucket: inv.awaiting_payment, href: INVOICES_HREF },
+    { key: 'paid', label: 'Paid', dot: INVOICE_DOTS.paid, bucket: inv.paid, href: INVOICES_HREF },
+    { key: 'cancelled', label: 'Cancelled', dot: INVOICE_DOTS.cancelled, bucket: inv.cancelled, href: INVOICES_HREF },
+  ];
+  const invoicesTotal = invoiceRows.reduce((sum, r) => sum + r.bucket.count, 0);
+  const outstandingCount = inv.draft.count + inv.awaiting_payment.count;
+  const outstandingUsd = inv.draft.totalUsd + inv.awaiting_payment.totalUsd;
 
   return (
     <section aria-label="Workflow pipeline" className="mb-8">
@@ -203,38 +224,16 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
           footnote="Auto-created when a deposit is paid. Scheduling runs in home.works."
         />
 
-        {/* Invoices — Phase 3 placeholder. Visibly disabled so the pipeline reads
-            end-to-end without implying data that doesn't exist yet. */}
-        <section
-          aria-label="Invoices pipeline (coming soon)"
-          className="flex flex-col rounded-xl border border-dashed"
-          style={{ background: 'transparent', borderColor: 'var(--op-border-mid)' }}
-        >
-          <header className="px-4 pt-4 pb-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3
-                className="text-xs font-semibold uppercase tracking-wide"
-                style={{ color: 'var(--op-text-dim)' }}
-              >
-                Invoices
-              </h3>
-              <span
-                className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
-                style={{ background: 'var(--op-bg-hover)', color: 'var(--op-text-dim)' }}
-              >
-                Coming soon
-              </span>
-            </div>
-            <div className="mt-1 text-3xl font-semibold leading-none" style={{ color: 'var(--op-border-mid)' }}>
-              —
-            </div>
-          </header>
-          <div className="px-4 pb-4 border-t pt-3" style={{ borderColor: 'var(--op-border)' }}>
-            <p className="text-base" style={{ color: 'var(--op-text-dim)' }}>
-              Lands in Phase 3 — the 50% balance is collected via Valor after install.
-            </p>
-          </div>
-        </section>
+        <StageColumn
+          ariaLabel="Invoices pipeline"
+          title="Invoices"
+          accent="#378ADD"
+          headline={{ count: outstandingCount, valueUsd: outstandingUsd, suffix: 'outstanding' }}
+          rows={invoiceRows}
+          isEmpty={invoicesTotal === 0}
+          emptyLabel="No invoices yet — created when a job is marked complete."
+          footnote="Auto-created when a job is completed. The 50% balance is collected via Valor after install."
+        />
       </div>
     </section>
   );

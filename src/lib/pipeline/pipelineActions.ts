@@ -20,6 +20,7 @@ export type PipelineRecord = {
 export type PipelineAction =
   | { kind: 'send'; channel: 'email' | 'sms' | 'both'; label: string }
   | { kind: 'mark-approved'; label: string }
+  | { kind: 'staff-decline'; label: string }
   | { kind: 'convert-to-job'; label: string }
   | { kind: 'create-job'; label: string }
   | { kind: 'mark-complete'; label: string }
@@ -56,9 +57,13 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
     case 'viewed':
       a.push(...sendActions()); // resend
       a.push({ kind: 'mark-approved', label: 'Mark approved' });
+      // Staff records a decline the customer gave outside the tool (phone/text).
+      // Legal FROM sent/viewed/changes_requested per canTransition(_, 'declined').
+      a.push({ kind: 'staff-decline', label: 'Mark declined' });
       break;
     case 'changes_requested':
       a.push(...sendActions()); // edit + resend
+      a.push({ kind: 'staff-decline', label: 'Mark declined' });
       break;
     case 'approved':
       a.push({ kind: 'convert-to-job', label: 'Convert to job' });

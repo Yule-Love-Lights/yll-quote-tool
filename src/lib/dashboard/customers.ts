@@ -14,6 +14,30 @@ function nameOf(q: DashboardQuote): string | null {
 }
 
 /**
+ * The id used to route to a customer's detail page (`/customers/[id]`).
+ * Prefers the HighLevel contact id (preserves the existing URL for CRM-linked
+ * customers), falling back to the stable customer_id so a customer WITHOUT a HL
+ * link is still clickable to their profile (S22 fix — the backfill populated
+ * customer_id but the link was gated on highlevel_contact_id, so only HL-linked
+ * customers were clickable). Null only for an identity-less walk-in.
+ */
+export function customerRouteId(c: {
+  contactId: string | null;
+  customerId: string | null;
+}): string | null {
+  return c.contactId ?? c.customerId ?? null;
+}
+
+/**
+ * Whether a quote belongs to the customer addressed by `routeId` — matching on
+ * EITHER the HighLevel contact id or the stable customer_id, so the detail page
+ * resolves a customer reached by either kind of route id.
+ */
+export function matchesCustomerRoute(q: DashboardQuote, routeId: string): boolean {
+  return q.highlevel_contact_id === routeId || q.customer_id === routeId;
+}
+
+/**
  * Aggregate the quotes table into one row per customer (#58 Phase 3).
  * A "customer" = all quotes sharing a stable key (HL contact id, else
  * email/phone/name — same precedence as the KPI customer count). No separate
@@ -38,6 +62,7 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
 
     let bookedSpend = 0;
     let contactId: string | null = null;
+    let customerId: string | null = null;
     let name: string | null = nameOf(latest);
     let email: string | null = latest.customer_email;
     let phone: string | null = latest.customer_phone;
@@ -47,6 +72,7 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
       // Prefer any non-null identity fields found across the group so a blank
       // on the latest quote still shows real contact info.
       contactId = contactId ?? q.highlevel_contact_id;
+      customerId = customerId ?? q.customer_id ?? null;
       name = name ?? nameOf(q);
       email = email ?? q.customer_email;
       phone = phone ?? q.customer_phone;
@@ -55,6 +81,7 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
     summaries.push({
       key,
       contactId,
+      customerId,
       name: name ?? 'Unknown customer',
       email,
       phone,

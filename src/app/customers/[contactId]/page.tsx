@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
-import { statusOf } from '@/lib/dashboard/customers';
+import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
@@ -51,13 +51,23 @@ export default async function CustomerDetailPage({
   if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
     redirect('/login?from=/customers');
   }
-  const { contactId } = await params;
-  if (!contactId || contactId.length > 200) notFound();
+  // The route id is either a HighLevel contact id (CRM-linked customers) or a
+  // stable customer_id (backfilled non-CRM customers) — see customerRouteId.
+  const { contactId: routeId } = await params;
+  if (!routeId || routeId.length > 200) notFound();
 
-  // This customer's quotes (filtered from the same source the list uses).
+  // This customer's quotes (filtered from the same source the list uses), matched
+  // by EITHER id kind so a non-CRM customer resolves via their customer_id.
   const quotes: DashboardQuote[] = (await listQuotesForDashboard(500)).filter(
-    q => q.highlevel_contact_id === contactId,
+    q => matchesCustomerRoute(q, routeId),
   );
+
+  // The HighLevel contact id for this customer, if any of their quotes carry one.
+  // When the route id IS a HL id this is just that id; when the route id is a
+  // customer_id, this recovers the HL link (if the customer also has one) so the
+  // live panel + "View in HighLevel" still work.
+  const hlContactId: string | null =
+    quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id ?? null;
 
   // Activity feed: per-view events (best-effort — a missing quote_view_events
   // table never breaks the page) merged with each quote's lifecycle timestamps.
@@ -65,12 +75,15 @@ export default async function CustomerDetailPage({
   const activity = buildCustomerActivity(quotes, viewEvents);
 
   // Live HighLevel record. Best-effort — a CRM hiccup must not 404 a customer
-  // who has quotes here.
+  // who has quotes here. Only attempted when this customer actually has a HL
+  // contact id; a non-CRM customer simply shows their quote history.
   let contact: CrmContact | null = null;
   let hlError: string | null = null;
-  if (isHighLevelConfigured()) {
+  if (!hlContactId) {
+    hlError = 'This customer is not linked to HighLevel.';
+  } else if (isHighLevelConfigured()) {
     try {
-      contact = await getContact(contactId);
+      contact = await getContact(hlContactId);
     } catch {
       hlError = 'HighLevel is configured but this contact could not be loaded.';
     }
@@ -85,7 +98,7 @@ export default async function CustomerDetailPage({
     contact?.fullName?.trim() ||
     quotes.find(q => q.customer_name?.trim())?.customer_name?.trim() ||
     'Customer';
-  const hlUrl = highLevelContactUrl(contactId);
+  const hlUrl = hlContactId ? highLevelContactUrl(hlContactId) : null;
   const bookedSpend = quotes
     .filter(q => q.customer_approved_at)
     .reduce((sum, q) => sum + (q.total ?? 0), 0);

@@ -47,9 +47,9 @@ function NeedsActionRow({ item }: { item: NeedsActionItem }) {
 
 export function NeedsActionCard({ items }: { items: NeedsActionItem[] }) {
   return (
-    <section aria-label="Needs action" className="mb-8">
+    <section aria-label="Overdue / follow-up" className="mb-8">
       <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--op-text)' }}>
-        Needs Action
+        Overdue / follow-up
       </h2>
       <div
         className="rounded-lg border overflow-hidden"
