@@ -103,6 +103,15 @@ export type ItemBase = {
   // optional — core geometry stays byte-identical. RELAY: reaches the design
   // tool's scene types together with the #13 editor-core changes (PR2a).
   photoId?: string | null;
+  // #13 linked twins: this item is a RENDER-ONLY depiction of another item
+  // (the canonical), re-drawn on a different photo of the same house (staff
+  // re-draw the whole display per photo — one tree decorated in photo 1 AND
+  // photo 2 is still ONE billed tree). Twins are skipped by the pricing
+  // projection, materials projection, and fulfillability (same pattern as
+  // groupId members); the portal toggle/recolor reaches them via sceneLinks
+  // twin-expansion. Deleting the canonical deletes its twins; deleting a twin
+  // removes just that depiction. Absent/null = a normal billable item.
+  linkedToId?: string | null;
 };
 
 export type StrandItem = ItemBase & MiniBilling & {
@@ -322,6 +331,11 @@ export function isItemOnPhoto(
   activePhotoId: string | null,
 ): boolean {
   return (item.photoId ?? null) === activePhotoId;
+}
+
+// #13 linked twins: render-only depiction of a canonical item on another photo.
+export function isLinkedTwin(item: { linkedToId?: string | null }): boolean {
+  return !!item.linkedToId;
 }
 
 // ---------------------------------------------------------------------------

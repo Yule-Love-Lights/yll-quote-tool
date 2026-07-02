@@ -103,6 +103,8 @@ function asMiniSurface(s: unknown): MiniSurface | null {
 // but without the include/exclude gate, so an all-excluded design still registers
 // as "has projectable items" (and thus replaces rather than falls back).
 function isProjectableItem(item: Scene['items'][number]): boolean {
+  // #13 linked twins are render-only depictions — never projectable.
+  if (item.linkedToId) return false;
   if (isStrand(item)) return !item.groupId && asMiniSurface(item.surface) !== null;
   if (isMiniArea(item)) return asMiniSurface(item.surface) !== null;
   if (isMiniGroup(item)) return asMiniSurface(item.surface) !== null;
@@ -129,6 +131,10 @@ export function projectScene(scene: Scene): Projection {
 
   for (const item of sceneItems) {
     if (!isIncluded(item)) continue;
+    // #13 linked twins: a render-only depiction of an item on another photo —
+    // the CANONICAL item bills; twins never project (same pattern as grouped
+    // strands below).
+    if (item.linkedToId) continue;
 
     if (isStrand(item)) {
       // A grouped strand (a railing member) is priced via its MiniGroupItem —

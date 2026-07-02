@@ -290,3 +290,21 @@ describe('attachSceneLinks — id-based linkage (#104 PR2, closes #90)', () => {
     expect(byId['bush-2']).toEqual(['b2']);
   });
 });
+
+// ─── #13 linked twins — portal toggle reaches every depiction ────────────────
+describe('attachSceneLinks — #13 linked twins', () => {
+  it('expands a per-unit line\'s sceneItemIds with its canonical\'s twins', () => {
+    const canonical = wreath('w-canon');
+    const twin = { ...wreath('w-twin'), photoId: 'p2', linkedToId: 'w-canon' };
+    const scene = { yardsticks: [], items: [canonical, twin] as SceneItem[] };
+    const out = attachSceneLinks([li('wreath-1', 'wreath')], scene);
+    expect(out[0].sceneItemIds).toEqual(['w-canon', 'w-twin']);
+  });
+  it('expands tag-linked roofline lines with strand twins too', () => {
+    const canonical = strand('s-canon', 'santas-roofline');
+    const twin = { ...strand('s-twin', 'santas-roofline'), photoId: 'p2', linkedToId: 's-canon' };
+    const scene = { yardsticks: [], items: [canonical, twin] as SceneItem[] };
+    const out = attachSceneLinks([li('roofline-santas', 'roofline')], scene);
+    expect(out[0].sceneItemIds).toEqual(expect.arrayContaining(['s-canon', 's-twin']));
+  });
+});

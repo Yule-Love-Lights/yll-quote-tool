@@ -480,3 +480,20 @@ describe('projectScene — mixed scene preserves order + derived arrays', () => 
     expect(p.bows).toEqual([{ quantity: 1 }]);
   });
 });
+
+// ─── #13 linked twins — render-only depictions never project ────────────────
+describe('projectScene — #13 linked twins', () => {
+  it('skips twins in projection and per-unit items; canonical bills once', () => {
+    const canonical = wreath({ id: 'w-canon', quoteSize: '24noble', tier: 'bow' });
+    const twin = wreath({ id: 'w-twin', quoteSize: '24noble', tier: 'bow', photoId: 'p2', linkedToId: 'w-canon' });
+    const p = projectScene(scene([canonical, twin]));
+    expect(p.items.map((i) => i.id)).toEqual(['wreath-w-canon']);
+    expect(p.wreaths).toEqual([{ size: '24noble', tier: 'bow', quantity: 1 }]);
+  });
+  it('a twin-only scene has no projectable items (legacy fallback preserved)', () => {
+    const twin = wreath({ id: 'w-twin', linkedToId: 'gone' });
+    const p = projectScene(scene([twin]));
+    expect(p.items).toEqual([]);
+    expect(p.hasProjectableItems).toBe(false);
+  });
+});
