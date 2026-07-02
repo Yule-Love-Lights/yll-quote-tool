@@ -4521,7 +4521,9 @@ export async function renderEditor(
       });
     }
     if (newGarlands.length === 0) return;
-    scene = { ...scene, items: [...scene.items, ...newGarlands] };
+    // #13 fix: trace-mode garland was the one commit path without the photo
+    // stamp — drawn on an extra photo, the segments landed on the BASE photo.
+    scene = { ...scene, items: [...scene.items, ...newGarlands.map((g) => stampPhoto(g))] };
     scheduleSave();
     commit();
   }
