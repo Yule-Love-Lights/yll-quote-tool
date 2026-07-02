@@ -257,11 +257,36 @@ export async function POST(req: NextRequest) {
   // flips the row and proceeds to the side effects — the others update 0 rows and
   // bail as "already paid". Without this, two retries could both pass the
   // null-check above before either writes and double-fire the receipt + CRM move.
+  // Record the ACTUAL charged deposit (not the /pay-stamped INTENDED amount) so
+  // the invoice credits what was really collected and the balance stays truthful.
+  // A partial authorization (Valor approves '00' for less than asked) would else
+  // book at the full intended deposit and silently UNDER-BILL the balance. Keep
+  // the intended value when Valor carried no amount (don't null it); log a
+  // shortfall for staff but STILL book — a partial deposit is real money (unlike
+  // the balance path, which must refuse a short settle).
+  const intendedDeposit = quote.deposit_amount_usd;
+  const recordedDeposit =
+    typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd)
+      ? event.amountUsd
+      : intendedDeposit;
+  if (
+    typeof event.amountUsd === 'number' &&
+    typeof intendedDeposit === 'number' &&
+    event.amountUsd + 0.01 < intendedDeposit
+  ) {
+    console.warn(
+      `[api/integrations/valor/webhook] deposit shortfall for quote ${quote.id}: charged=${event.amountUsd} intended=${intendedDeposit}`,
+    );
+  }
+
   const paidAt = new Date().toISOString();
   const { data: claimed, error: stampErr } = await sb
     .from('quotes')
     .update({
       deposit_paid_at: paidAt,
+      // Record what was actually charged (see above) so a partial auth can't
+      // silently under-bill the later invoice balance.
+      deposit_amount_usd: recordedDeposit,
       // Explicit lifecycle status (ledger #83): deposit paid = booked. This
       // webhook is the source of truth for "booked", so it sets the status too.
       status: 'booked',
