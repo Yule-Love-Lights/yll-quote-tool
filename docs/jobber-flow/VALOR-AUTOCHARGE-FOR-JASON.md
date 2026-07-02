@@ -125,3 +125,88 @@ need a migration; the rest are noted as context.
 The surfaces land in a PR off `naldo/jobber-surfaces` — Jason's area + shared data
 layer, so **your review before Naldo merges.** Nothing in `valor.ts` or the
 deposit flow is touched in that PR; the seam is a new file.
+
+---
+
+# UPDATE — 2026-07-02 (Naldo S21): research refresh + DECISION
+
+> Ran a 9-agent research + adversarial-verify workflow (5 doc-sweep → 3 refute-lens
+> verifiers → synthesis) against the LIVE Valor docs to settle "can we finish
+> auto-charge." **Verdict: `yes-needs-one-live-test` — NOT doc-confirmable.** All 3
+> verifiers refuted "it works as documented"; all 3 said only a Valor staging test
+> settles it. **Naldo's call: SHIP THE PAY-LINK, call #83 functionally done; keep
+> auto-charge alive as a Jason-gated follow-up (do NOT scrap, do NOT build blind).**
+
+## What we CONFIRMED (narrows the original "3 unconfirmed links")
+
+The capability *architecture* exists and every endpoint takes creds we hold. The
+full chain, when/if built:
+
+| Step | Endpoint | Auth | Notes |
+|---|---|---|---|
+| 0. Deposit (LIVE) | `POST {securelink}/?pagesale` | BODY `appid`/`appkey`/`epi` | Returns only `{error_no,url,uid}` — **no `ref_txn_id`/`token`** in the response; those must come from the confirmation **webhook** (we already persist a token → `quotes.valor_vault_token`) or a txn lookup. |
+| 1. Create vault profile | `POST /api/valor-vault/addcustomer` | HEADER `Valor-App-ID`/`Valor-App-Key` | Returns `vault_customer_id` (= the `vault_id`). **Vault is a premium ISO add-on** — may not be provisioned for our EPI. |
+| 2. Vault the deposit card | `POST /api/valor-vault/addpaymentprofiletxn/{vault_id}` | HEADER auth | Body `ref_txn_id` (from step 0's webhook). |
+| 3. Read back the token | `GET /api/valor-vault/getpaymentprofile/{vault_id}` | HEADER auth | Returns each card's reusable `token` + `payment_id` + `masked_pan`. |
+| 4. Charge the balance | `POST {securelink}/?saleToken` | BODY `appid`/`appkey`/`epi` | `token` = step-3 token, `amount`, `invoicenumber`. **No customer present.** |
+
+## The blockers that keep this from being doc-confirmed (the honest gambles)
+
+1. **🚩 "Virtual Terminal ONLY" (biggest unknown).** Valor's official *Vault User
+   Guide* (Nov 2024) states verbatim that saved Vault cards **"can only be processed
+   through the Virtual Terminal"** (a human UI) — zero mention of API. This directly
+   contradicts a server-initiated API charge and may mean the API path is **disabled
+   for our EPI**. Must get Valor's written OK that API token-charging is enabled.
+2. **Token-linkage (the crux).** No doc states the `getpaymentprofile` token is a
+   valid input to `/?saleToken`. Its help text literally says *"Card token, received
+   from sale use it only"* — which points at a sale-echoed token and may forbid
+   delayed reuse. Equivalence is pure 40-char-hex format-matching. Unproven.
+3. **Auth/host crossing.** Vault calls are header-auth on `demo.valorpaytech.com`
+   (prod vault base URL is **undocumented**); the charge is body-auth on
+   `securelink`. Docs never confirm the header creds equal our body creds.
+4. **Truncated success schemas.** `/?saleToken` + `addpaymentprofiletxn` render 200
+   responses as `{}` — we can't even see from docs that a token sale returns an
+   `approval_code`.
+5. **MIT / stored-credential consent (compliance).** No Valor endpoint exposes an
+   MIT/stored-credential indicator field. Visa/MC require an initial
+   cardholder-authorized consent + a stored-credential indicator on every
+   merchant-initiated charge. Our epage deposit captures **no** "keep card on file"
+   consent today. This must be added at deposit regardless, and Valor must confirm
+   they set the network indicator.
+
+## The ONE test that settles it (when Valor access is available)
+
+Staging (`securelink-staging` + `demo.valorpaytech.com`), Valor test card:
+deposit → `addcustomer` → `addpaymentprofiletxn(ref_txn_id)` → `getpaymentprofile`
+→ `POST /?saleToken(token, $1)` **with no customer present** → expect APPROVED →
+void. In parallel, email Valor for **4 written confirmations**: (a) API
+token-charging enabled for our EPI, (b) `getpaymentprofile` token valid + reusable
+as a `/?saleToken` input, (c) MIT/stored-credential indicator set automatically,
+(d) the production vault base URL.
+
+## What SHIPPED instead (S21) — the balance-collection method for the trial
+
+**The customer PAY-LINK.** Operator opens the invoice → **"Copy customer pay-link"**
+→ sends the `/portal/[quoteId]/pay-balance` URL (the customer taps + pays the 50%
+balance on Valor's hosted page; the `bal_<quoteId>` webhook branch settles it). This
+is LOW effort (reuses the LIVE epage + webhook), **fully doc-confirmed**, and
+**compliant** (cardholder present each charge — no MIT/consent problem). The dormant
+disabled "Charge remaining balance" button was **removed from the operator UI**
+(the `BalanceChargeButton` stub was deleted + unmounted from the job/invoice detail
+pages) so the trial surface has no dead control; the `valorBalance.ts`
+`chargeBalanceOnFile` seam + the `VALOR_AUTO_CHARGE_ENABLED` gate stay in the
+codebase for when you wire step 4 (re-add a button then).
+
+## Ranked fallbacks (from the synthesis)
+
+1. **Pay-link** (shipped) — low effort, doc-confirmed, compliant; customer taps to pay.
+2. **Server auto-charge via `/?saleToken`** (the chain above) — the true one-click
+   UX; MEDIUM code but BLOCKED on the staging test + Valor confirmations above.
+3. **Recurring/Subscription API** (`/?addSubs` Run-at → `/?activateSub` → delete) —
+   same vault/token uncertainty + more moving parts; only worth it for a real
+   installment product.
+4. **Manual charge in Valor's Virtual Terminal** — zero code, the one stored-card
+   path Valor authoritatively supports today (needs the Vault add-on + operator
+   training); a stopgap if pay-link drop-off is a problem.
+5. **Scrap auto-charge**, keep two hosted-page links (deposit + balance) — lowest
+   risk, fully compliant.
