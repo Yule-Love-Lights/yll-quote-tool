@@ -6,7 +6,6 @@ import { useParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
-import { BalanceChargeButton } from '@/components/admin/BalanceChargeButton';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail } from '@/lib/invoices';
 
@@ -25,11 +24,16 @@ const fmtDate = (iso: string | null) =>
 export default function InvoiceDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
-  const [data, setData] = useState<InvoiceDetail | null>(null);
+  // The GET route echoes `autoChargeEnabled` alongside the InvoiceDetail so the
+  // "Charge saved card" button only appears when the Valor capability is on.
+  const [data, setData] = useState<(InvoiceDetail & { autoChargeEnabled?: boolean }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [sendingLink, setSendingLink] = useState(false);
+  const [charging, setCharging] = useState(false);
+  const [balanceMsg, setBalanceMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -43,7 +47,7 @@ export default function InvoiceDetailPage() {
       }
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Failed');
-      setData(body as InvoiceDetail);
+      setData(body as InvoiceDetail & { autoChargeEnabled?: boolean });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
     } finally {
@@ -90,6 +94,65 @@ export default function InvoiceDetailPage() {
           setTimeout(() => setCopied(false), 2000);
         })
         .catch(() => {});
+    }
+  };
+
+  // Text/email the customer their balance pay-link via GHL (no money moves).
+  const sendBalanceLink = async () => {
+    const invoice = data?.invoice;
+    if (!invoice?.quote_id) return;
+    setSendingLink(true);
+    setBalanceMsg(null);
+    try {
+      const res = await fetch(`/api/quotes/${invoice.quote_id}/send-balance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: 'both' }),
+      });
+      if (res.status === 401) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? 'Could not send');
+      // A per-channel failure still 200s with messageError set — surface it so the
+      // operator doesn't think a silently-failed channel was delivered.
+      setBalanceMsg(
+        body.messageError
+          ? `Partly sent — text ${body.smsSent ? 'ok' : 'failed'}, email ${body.emailSent ? 'ok' : 'failed'}: ${body.messageError}`
+          : body.smsSent || body.emailSent
+            ? 'Balance link sent to the customer ✓'
+            : 'Sent (no channel delivered)',
+      );
+    } catch (err) {
+      setBalanceMsg(err instanceof Error ? err.message : 'Could not send the balance link');
+    } finally {
+      setSendingLink(false);
+    }
+  };
+
+  // Operator-triggered charge of the saved card for the exact balance. Gated —
+  // only rendered when data.autoChargeEnabled. Confirms before charging.
+  const chargeBalance = async () => {
+    const invoice = data?.invoice;
+    if (!invoice) return;
+    if (!window.confirm(`Charge the saved card ${money(invoice.balance)} for the remaining balance?`)) return;
+    setCharging(true);
+    setBalanceMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/charge-balance`, { method: 'POST' });
+      if (res.status === 401) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error(body.error ?? 'The charge did not go through');
+      setBalanceMsg('Balance charged to the saved card ✓');
+      await load();
+    } catch (err) {
+      setBalanceMsg(err instanceof Error ? err.message : 'The charge did not go through');
+    } finally {
+      setCharging(false);
     }
   };
 
@@ -252,21 +315,43 @@ export default function InvoiceDetailPage() {
                 </button>
               </div>
 
-              <BalanceChargeButton balance={inv.balance} status={inv.status} />
-
               {inv.quote_id && inv.balance > 0 && inv.status !== 'paid' && inv.status !== 'cancelled' && (
-                <div className="mt-2">
-                  <button
-                    type="button"
-                    onClick={copyPayLink}
-                    className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50"
-                  >
-                    {copied ? 'Link copied ✓' : 'Copy customer pay-link'}
-                  </button>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Send this to the customer to pay the balance themselves (the fallback while auto-charge is
-                    pending).
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Collect the balance
                   </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={sendBalanceLink}
+                      disabled={sendingLink}
+                      className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
+                    >
+                      {sendingLink ? 'Sending…' : 'Text / email balance link'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={copyPayLink}
+                      className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50"
+                    >
+                      {copied ? 'Link copied ✓' : 'Copy link'}
+                    </button>
+                    {/* Gated: only shows when Valor card-on-file auto-charge is enabled. */}
+                    {data?.autoChargeEnabled && (
+                      <button
+                        type="button"
+                        onClick={chargeBalance}
+                        disabled={charging}
+                        className="text-sm font-semibold px-3 py-1.5 rounded-md border border-[#1f6f43] text-[#1f6f43] hover:bg-[#f0f7f2] disabled:opacity-60"
+                      >
+                        {charging ? 'Charging…' : `Charge saved card (${money(inv.balance)})`}
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1.5">
+                    The customer pays their remaining balance on Valor&rsquo;s secure page.
+                  </p>
+                  {balanceMsg && <p className="text-xs text-gray-600 mt-1.5">{balanceMsg}</p>}
                 </div>
               )}
             </div>

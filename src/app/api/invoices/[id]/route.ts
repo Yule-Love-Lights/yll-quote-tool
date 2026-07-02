@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getInvoiceDetail, setInvoiceTaxOverride } from '@/lib/invoices';
+import { isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
 
 export const runtime = 'nodejs';
 
@@ -23,7 +24,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!detail) {
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
   }
-  return NextResponse.json(detail);
+  // Echo the auto-charge flag so the operator UI only renders the "Charge saved
+  // card" button when the capability is actually enabled (else it stays hidden —
+  // the pay-link is the balance method until Valor is confirmed).
+  return NextResponse.json({ ...detail, autoChargeEnabled: isAutoChargeEnabled() });
 }
 
 // PATCH — operator toggles the manual tax-override (SPEC §4.3). Body:
