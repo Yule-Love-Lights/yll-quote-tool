@@ -6,7 +6,6 @@ import { useParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
-import { BalanceChargeButton } from '@/components/admin/BalanceChargeButton';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail } from '@/lib/invoices';
 
@@ -252,8 +251,6 @@ export default function InvoiceDetailPage() {
                 </button>
               </div>
 
-              <BalanceChargeButton balance={inv.balance} status={inv.status} />
-
               {inv.quote_id && inv.balance > 0 && inv.status !== 'paid' && inv.status !== 'cancelled' && (
                 <div className="mt-2">
                   <button
@@ -264,8 +261,7 @@ export default function InvoiceDetailPage() {
                     {copied ? 'Link copied ✓' : 'Copy customer pay-link'}
                   </button>
                   <p className="text-xs text-gray-400 mt-1">
-                    Send this to the customer to pay the balance themselves (the fallback while auto-charge is
-                    pending).
+                    Send this to the customer to pay their remaining balance online.
                   </p>
                 </div>
               )}
