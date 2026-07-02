@@ -20,14 +20,14 @@
 // the package differences. In production each package would swap to
 // its own rendered composite image.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
-import type { BulbColor } from '@/lib/design/sceneTypes';
+import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -71,6 +71,25 @@ export function InteractiveHero({
   } = useSelection();
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
+  // #13 multi-image: which photo the hero shows (null = the base photo). The
+  // thumbnail strip below the stage swaps it; each photo renders ITS OWN items
+  // (photoId-filtered scene) lit live, with the shared selection/color state.
+  const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
+  const extraPhotos = useMemo(
+    () => (design?.extraPhotos ?? []).filter((p) => p.url),
+    [design?.extraPhotos],
+  );
+  const activeExtra = activePhotoId ? extraPhotos.find((p) => p.id === activePhotoId) ?? null : null;
+  const activeUrl = activeExtra ? activeExtra.url : design?.photoUrl ?? null;
+  const activeW = activeExtra ? activeExtra.w : design?.photoW ?? null;
+  const activeH = activeExtra ? activeExtra.h : design?.photoH ?? null;
+  const activeScene = useMemo(
+    () =>
+      design
+        ? { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, activePhotoId)) }
+        : null,
+    [design, activePhotoId],
+  );
   // A broken hero image (e.g. an expired signed URL) must never show the
   // browser's broken-image icon. When the daytime <img> or the static
   // next/image errors, fall back to a neutral night-sky poster instead.
@@ -106,8 +125,7 @@ export function InteractiveHero({
   // Match the mobile media box to the photo's actual aspect (#65 review): the box
   // cover-fits the photo, so an exact aspect = no crop in ANY direction for any
   // uploaded photo, not just the 8/5 Street View. Fallback to 8/5 when unknown.
-  const mediaAspect =
-    design?.photoW && design?.photoH ? `${design.photoW} / ${design.photoH}` : undefined;
+  const mediaAspect = activeW && activeH ? `${activeW} / ${activeH}` : undefined;
 
   return (
     <section
@@ -122,17 +140,17 @@ export function InteractiveHero({
       >
       {/* Photo layer — the live design when one is linked, else the static render */}
       {design ? (
-        showDaylight && design.photoUrl && !photoFailed ? (
-          // Before: the plain daytime photo (the design's base image).
+        showDaylight && activeUrl && !photoFailed ? (
+          // Before: the plain daytime photo (the ACTIVE photo's image, #13).
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={design.photoUrl}
+            src={activeUrl}
             alt={`${alt} — before installation, daytime`}
             className="portal-snow-stage-photo absolute inset-0 w-full h-full object-cover"
             data-ready={ready ? 'true' : 'false'}
             onError={() => setPhotoFailed(true)}
           />
-        ) : showDaylight && design.photoUrl && photoFailed ? (
+        ) : showDaylight && activeUrl && photoFailed ? (
           // The daytime photo URL broke (e.g. expired signed URL): a neutral
           // night-sky poster instead of the browser's broken-image icon.
           <div
@@ -144,12 +162,13 @@ export function InteractiveHero({
             }}
           />
         ) : (
-          // After: the live, lit design rendered on the photo.
+          // After: the live, lit design rendered on the ACTIVE photo — its own
+          // items only (#13), shared selection/color state.
           <DesignCanvas
-            scene={design.scene}
-            photoUrl={design.photoUrl}
-            photoW={design.photoW}
-            photoH={design.photoH}
+            scene={activeScene ?? design.scene}
+            photoUrl={activeUrl}
+            photoW={activeW}
+            photoH={activeH}
             hiddenIds={hiddenSceneItemIds}
             colorOverride={colorOverride}
             palette={palette}
@@ -249,6 +268,43 @@ export function InteractiveHero({
                   deposit
                 </span>
               </div>
+              {/* #13 multi-image: thumbnail strip — BELOW the price, in line with
+                  the packages (Jason's CP3 call; on phones the price stacks above
+                  the strip naturally). Tap to flip the hero to that photo, lit
+                  with its own items. Hidden for single-photo designs. */}
+              {design && extraPhotos.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1 mt-4" role="tablist" aria-label="Photos of your home">
+                  {[{ id: null as string | null, url: design.photoUrl, title: 'Photo 1' },
+                    ...extraPhotos.map((p, i) => ({ id: p.id as string | null, url: p.url, title: p.title || `Photo ${i + 2}` }))].map((p) => {
+                    const active = p.id === activePhotoId;
+                    return (
+                      <button
+                        key={p.id ?? 'base'}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => { setPhotoFailed(false); setActivePhotoId(p.id); }}
+                        className={`shrink-0 rounded-md overflow-hidden border-2 transition-colors ${
+                          active ? 'border-[#FFB744]' : 'border-[#2a3a30] hover:border-[#4a5a50]'
+                        }`}
+                        title={p.title}
+                      >
+                        {p.url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={p.url} alt={p.title} className="w-[76px] h-[50px] object-cover block" />
+                        ) : (
+                          <span className="w-[76px] h-[50px] block bg-[#101a14]" />
+                        )}
+                        <span className={`block text-[10px] px-1 py-0.5 text-center truncate max-w-[76px] ${
+                          active ? 'text-[#FFD07A] bg-[#1d2b22]' : 'text-[#9fb8a8] bg-[#101a14]'
+                        }`}>
+                          {p.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Package selector */}

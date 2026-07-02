@@ -28,6 +28,7 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { PhotoGallery } from '@/components/portal/dark/PhotoGallery';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
 import { GoogleReviews } from '@/components/portal/dark/GoogleReviews';
@@ -276,6 +277,17 @@ export default async function PortalPage({
           palette={appSettings.colors}
           renderSettings={appSettings.render}
         />
+
+        {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
+            between the totals box above and Your Protection below). Renders
+            nothing for single-photo designs. */}
+        {quote.design && (
+          <PhotoGallery
+            design={quote.design}
+            palette={appSettings.colors}
+            renderSettings={appSettings.render}
+          />
+        )}
 
         {/* 4. Risk Reversal */}
         <RiskReversal />
