@@ -70,6 +70,15 @@ metadata:
 
 > **✅ SHIPPED S17 (Jason) → moved to `task_ledger_archive.md`:** **#101** editable portal swatches (data-drive `COLOR_SCHEMES` from `app_settings` + Settings→Customer Portal editor; #92 protected via approve-time colorIds freeze; PR #286) · **#102** custom $/ft per item-type (`*CustomRate` on QuoteInputs; PR #273) · **#104** click-to-edit line price — 5-PR epic (stable line-id thread → #90 closed → engine override → click-to-edit → roofline + #102 mutual-exclusion; PRs #289/#290/#291/#292/#296 + review-fix #295; LLM-council'd + adversarially reviewed) · **WW/Stake recommend** checkbox for manual footage (PR #294, #12). **The #90 sceneLinks reorder/swap residual is now CLOSED.**
 
+### ↳ Raised S21 (2026-07-02, Naldo) — found LIVE on prod during the #83 trial walkthrough; NOT yet built (S22 batch)
+| # | Task | Size | Notes | Old # |
+|---|------|------|-------|-------|
+| 109 | **Quote Options: "mark declined — sent manually" action.** No way for staff to record that a customer declined + was told outside the tool (phone/text). Scope w/ Naldo: a new entry-point into the `declined` status vs a distinct "handled outside the tool" flag. Jason area (pipelineActions / options menu). | S | S22 · Jason area | — |
+| 110 | **Job Options: surface "mark completed".** Confirm whether it exists only via `/admin/jobs/[id]/complete` and why it's not in the status-aware Options menu — likely a UI-wiring gap, not missing logic. Jason area. | S | S22 · Jason area | — |
+| 111 | **BUG: quote #1000 can't be marked approved** (customer already moved through the process manually). Root-cause: older quote missing a field a newer status-transition guard now requires (e.g. `displayId` / identity / pre-migration), OR a legal-transition-table block. Investigate before forcing status. Jason area. | M | 🔴 S22 · bug · Jason area | — |
+| 112 | **BUG: stale "Invoices — COMING SOON / Lands in Phase 3" placeholder live on prod** even though #83 Phase 3 (invoices) is DONE + LIVE. Find the stale roadmap-teaser component (dashboard, under a "Quotes → Jobs → Invoices" header) → wire to real invoices data or remove it — it contradicts the live feature. | S | 🔴 S22 · bug · dashboard | — |
+| 113 | **Only 1 customer shows a "customer profile" on the customer pages** — the S20 rebook backfill (#306) linked 9 quotes → 7 customers/properties, so why only 1? Check whether the UI "profile" is gated on a HighLevel/GHL contact link (Naldo's hunch) vs the `customers`/`properties` tables; reconcile. | M | S22 · investigate · Naldo/Jason area | — |
+
 ### ↳ Raised S18 (2026-06-30, Naldo) — scoped, NOT building now
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
