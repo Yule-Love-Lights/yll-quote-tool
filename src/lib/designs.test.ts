@@ -346,6 +346,18 @@ describe('deleteDesign (audit fix: customer-photo-retention-deletion)', () => {
     expect(calls.deletedIds).toEqual([ID]);
   });
 
+  it('extra-photo objects under the prefix ride the same erasure (#13 retention)', async () => {
+    const { client, calls } = makeSb({
+      objects: [{ name: 'photo.jpg' }, { name: 'satellite.png' }, { name: `extra-${PHOTO_A}.jpg` }],
+    });
+    sbRef.current = client;
+
+    expect(await deleteDesign(ID)).toBe(true);
+    expect(calls.removedPaths).toEqual([
+      [`${ID}/photo.jpg`, `${ID}/satellite.png`, `${ID}/extra-${PHOTO_A}.jpg`],
+    ]);
+  });
+
   it('still deletes the row when there are no bucket objects', async () => {
     const { client, calls } = makeSb({ objects: [] });
     sbRef.current = client;
