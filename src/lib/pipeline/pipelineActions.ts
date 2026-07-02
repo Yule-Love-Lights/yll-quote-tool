@@ -48,6 +48,10 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
   switch (r.quoteStatus) {
     case 'draft':
       a.push(...sendActions());
+      // A draft can be staff-approved directly — the "deliberate offline/in-person
+      // close" path (canTransition('draft','approved') is legal; the staff-approve
+      // route accepts it). Surfaced so an offline-closed draft has an approve action.
+      a.push({ kind: 'mark-approved', label: 'Mark approved' });
       break;
     case 'sent':
     case 'viewed':
