@@ -11,9 +11,10 @@
 // live in their own section below.
 
 import { useCallback, useEffect, useState } from 'react';
-import { projectScene } from '@/lib/design/projectScene';
+import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { calculateQuote, type LineItem } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
+import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable, type UnfulfillableItem } from '@/lib/inventory/detectUnfulfillable';
 
@@ -31,6 +32,10 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
   const [unfulfillable, setUnfulfillable] = useState<UnfulfillableItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #13: per-line photo tags — the scene (items carry photoId) + the extra-photo
+  // labels, captured on the same fetch. Untagged = photo 1.
+  const [sceneItems, setSceneItems] = useState<Scene['items']>([]);
+  const [photoLabels, setPhotoLabels] = useState<Map<string, string>>(new Map());
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -46,30 +51,39 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Could not load the design');
       const scene: Scene = data?.design?.scene ?? { yardsticks: [], items: [] };
+      setSceneItems(scene.items);
+      setPhotoLabels(extraPhotoLabels(data?.design?.extraPhotos));
       // Fail OPEN: only flag when the offered catalog is positively known (a missing/
       // empty/failed offered set must not paint every valid item red).
       const offered = offRaw as OfferedColorLists | null;
       setUnfulfillable(offeredIsKnown(offered) ? detectUnfulfillable(scene.items, offeredFromLists(offered)) : []);
-      const p = projectScene(scene);
       // Price ONLY the per-unit projection — zero roofline/fees — so the line
       // items here are exactly the design-driven part of the future quote.
-      const result = calculateQuote({
-        santasFootage: 0,
-        santasDifficulty: 'medium',
-        gingerbreadFootage: 0,
-        gingerbreadDifficulty: 'medium',
-        winterWonderlandFootage: 0,
-        winterWonderlandDifficulty: 'medium',
-        stakeLightingFootage: 0,
-        stakeLightingDifficulty: 'medium',
-        miniLightItems: p.miniLightItems,
-        spritzers: p.spritzers,
-        wreaths: p.wreaths,
-        garland: p.garland,
-        bows: p.bows,
-        takedown: 'included',
-        rushFee: false,
-      });
+      // applyProjectionToInputs is the SAME threading Calculate uses (#104), so
+      // the lines carry stable ids + sceneItemIds — which the #13 photo tags
+      // key off — and this panel can't drift from the real engine path.
+      const result = calculateQuote(
+        applyProjectionToInputs(
+          {
+            santasFootage: 0,
+            santasDifficulty: 'medium',
+            gingerbreadFootage: 0,
+            gingerbreadDifficulty: 'medium',
+            winterWonderlandFootage: 0,
+            winterWonderlandDifficulty: 'medium',
+            stakeLightingFootage: 0,
+            stakeLightingDifficulty: 'medium',
+            miniLightItems: [],
+            spritzers: [],
+            wreaths: [],
+            garland: [],
+            bows: [],
+            takedown: 'included',
+            rushFee: false,
+          },
+          scene,
+        ),
+      );
       setLines(result.lineItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the design');
@@ -125,12 +139,24 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
       {lines && lines.length > 0 && (
         <>
           <ul className="space-y-0.5">
-            {lines.map((l, i) => (
-              <li key={i} className="flex justify-between text-xs text-gray-700">
-                <span>{l.label}</span>
-                <span className="tabular-nums">{usd(l.amount)}</span>
-              </li>
-            ))}
+            {lines.map((l, i) => {
+              // #13: tag lines drawn on an extra photo so staff can trace them
+              // (untagged = photo 1). Staff-only — the portal never shows this.
+              const tag = photoLabelForLine(l.sceneItemIds, sceneItems, photoLabels);
+              return (
+                <li key={i} className="flex justify-between text-xs text-gray-700">
+                  <span>
+                    {l.label}
+                    {tag && (
+                      <span className="ml-1.5 rounded bg-gray-200 text-gray-600 px-1 py-0.5 text-[10px] font-medium align-middle">
+                        {tag}
+                      </span>
+                    )}
+                  </span>
+                  <span className="tabular-nums">{usd(l.amount)}</span>
+                </li>
+              );
+            })}
           </ul>
           <div className="flex justify-between text-xs font-semibold text-gray-800 border-t border-gray-200 mt-1.5 pt-1.5">
             <span>Design items subtotal</span>

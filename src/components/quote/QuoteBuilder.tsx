@@ -10,6 +10,7 @@ import type {
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
+import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
 import type { PortalLineItem } from '@/components/portal/types';
 import type { Scene } from '@/lib/design/sceneTypes';
 import {
@@ -323,6 +324,9 @@ export default function QuoteBuilder({
   // flag lives in form state). Bumped via designEditorKey so a write-back +
   // remount re-fetches the patched scene.
   const [breakdownScene, setBreakdownScene] = useState<Scene | null>(null);
+  // #13: extra-photo id → label ("Backyard" / "Photo 2"), captured with the
+  // scene fetch, for the staff-only per-row photo tags in the breakdown.
+  const [breakdownPhotoLabels, setBreakdownPhotoLabels] = useState<Map<string, string>>(new Map());
   // True while a per-item recommended write-back (scene PUT) is in flight, so
   // the checkboxes disable to prevent racing PUTs.
   const [recommendBusy, setRecommendBusy] = useState(false);
@@ -1506,6 +1510,7 @@ export default function QuoteBuilder({
       if (stale) return;
       if (!result || !designId) {
         setBreakdownScene(null);
+        setBreakdownPhotoLabels(new Map());
         return;
       }
       void (async () => {
@@ -1514,7 +1519,10 @@ export default function QuoteBuilder({
           const data = await res.json();
           if (!res.ok) return;
           const scene: Scene | undefined = data?.design?.scene;
-          if (!stale && scene) setBreakdownScene(scene);
+          if (!stale && scene) {
+            setBreakdownScene(scene);
+            setBreakdownPhotoLabels(extraPhotoLabels(data?.design?.extraPhotos));
+          }
         } catch {
           // Non-fatal: the breakdown still renders; only the design-item
           // checkboxes are unavailable until the next load.
@@ -2968,11 +2976,23 @@ export default function QuoteBuilder({
                   ) : (
                     <span className="font-medium tabular-nums">{usd(item.amount)}</span>
                   );
+                  // #13: staff-only photo tag — which photo this line's items
+                  // are drawn on (untagged = photo 1). Portal never shows this.
+                  const photoTag = photoLabelForLine(
+                    sceneItemIds,
+                    breakdownScene?.items ?? [],
+                    breakdownPhotoLabels,
+                  );
                   const rowInner = (
                     <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
                         {item.label}
+                        {photoTag && (
+                          <span className="rounded bg-gray-200 text-gray-600 px-1 py-0.5 text-[10px] font-medium">
+                            {photoTag}
+                          </span>
+                        )}
                       </span>
                       {priceCell}
                     </>

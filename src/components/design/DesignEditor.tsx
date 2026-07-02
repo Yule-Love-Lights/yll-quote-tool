@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { applyAppSettings } from '@/lib/clientSettings';
 import { DEFAULT_KEYMAP, resolveAction, normalizeKeymap, type KeyMap } from './editor-core/keymap';
+import { extraPhotoLabels } from '@/lib/design/photoLabels';
 import './design-editor.css';
 
 type Props = {
@@ -79,12 +80,10 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       const { design } = await res.json();
       if (!design?.photoUrl) return null; // no base photo yet → no strip
       const extras = Array.isArray(design.extraPhotos) ? design.extraPhotos : [];
+      const labels = extraPhotoLabels(extras);
       const tabs: PhotoTab[] = [
-        { id: null, title: 'Photo 1' },
-        ...extras.map((p: { id: string; title: string | null }, i: number) => ({
-          id: p.id,
-          title: p.title || `Photo ${i + 2}`,
-        })),
+        { id: null, title: (design.photoTitle as string | null)?.trim() || 'Photo 1' },
+        ...extras.map((p: { id: string }) => ({ id: p.id, title: labels.get(p.id) ?? 'Photo' })),
       ];
       setPhotoTabs(tabs);
       return tabs;
@@ -193,10 +192,11 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
     }
   };
 
-  const renamePhoto = async (id: string, currentTitle: string) => {
+  // Rename a tab — id null = the base photo (PATCHes the literal "base").
+  const renamePhoto = async (id: string | null, currentTitle: string) => {
     const title = window.prompt('Photo name (empty for the default):', currentTitle);
     if (title === null) return;
-    await fetch(`/api/designs/${designId}/photos/${id}`, {
+    await fetch(`/api/designs/${designId}/photos/${id ?? 'base'}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -345,8 +345,8 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
                     : 'border-[#2e3340] bg-[#1a1d24] text-[#9aa3b2] hover:border-[#3a4150]'
                 }`}
                 onClick={() => void switchPhoto(tab.id)}
-                title={tab.id ? 'Click to switch · double-click to rename' : 'The main photo (measurement + satellite live here)'}
-                onDoubleClick={() => tab.id && void renamePhoto(tab.id, tab.title)}
+                title={tab.id ? 'Click to switch · double-click to rename' : 'The main photo (measurement + satellite live here) · double-click to rename'}
+                onDoubleClick={() => void renamePhoto(tab.id, tab.title)}
               >
                 {tab.title}
                 {tab.id && (
