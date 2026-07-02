@@ -877,6 +877,50 @@ export default function QuoteBuilder({
     }
   };
 
+  // #13: grab the ADJACENT panorama (aimed at the house) as an EXTRA photo of
+  // the design — without moving the main camera or touching the base photo
+  // (moveStreetView/recapture REPLACE the base via the eager design effect;
+  // this deliberately routes around that). The editor remounts (key bump) so
+  // its photo strip picks up the new tab; staff draw the side angle there.
+  const [savingVantage, setSavingVantage] = useState(false);
+  const saveVantageAsExtra = async (direction: 'left' | 'right') => {
+    if (geoLat == null || geoLng == null || !designId || savingVantage) return;
+    setSavingVantage(true);
+    setAnalysisError(null);
+    setAnalysisWarning(null);
+    try {
+      const res = await fetch('/api/streetview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction,
+          camLat: svLat ?? geoLat, camLng: svLng ?? geoLng,
+          houseLat: geoLat, houseLng: geoLng,
+          pitch: svPitch, fov: svFov,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Street View fetch failed');
+      if (data.reachedEnd) {
+        setAnalysisWarning('No further Street View this way — reached the edge of Google’s coverage.');
+        return;
+      }
+      const post = await fetch(`/api/designs/${designId}/photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoBase64: data.photoBase64, photoMediaType: data.photoMediaType }),
+      });
+      const pdata = await post.json();
+      if (!post.ok) throw new Error(pdata.error ?? 'Could not save the extra photo');
+      // Remount the editor so its photo strip shows the new tab.
+      setDesignEditorKey((k) => k + 1);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Could not save the extra photo');
+    } finally {
+      setSavingVantage(false);
+    }
+  };
+
   // Re-run Claude analysis on the current street view image (after user rotated
   // to a clearer angle). Uses the same base64 already loaded — no extra fetch.
   const reanalyzeCurrent = async () => {
@@ -2032,6 +2076,26 @@ export default function QuoteBuilder({
                         {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
                       </button>
                     </div>
+                    {/* #13: grab an adjacent pano as an EXTRA photo (the main
+                        camera + base photo stay put; the editor strip gains a
+                        tab to draw the new angle on). */}
+                    {designId && (
+                      <div className="mt-2 flex items-center gap-2 flex-wrap">
+                        <button type="button" disabled={savingVantage || recapturing}
+                          onClick={() => void saveVantageAsExtra('left')}
+                          title="Fetch the next panorama to the left (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
+                          className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                          📌 ◀ Save prev angle as extra photo
+                        </button>
+                        <button type="button" disabled={savingVantage || recapturing}
+                          onClick={() => void saveVantageAsExtra('right')}
+                          title="Fetch the next panorama to the right (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
+                          className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
+                          Save next angle as extra photo ▶ 📌
+                        </button>
+                        {savingVantage && <span className="text-[11px] text-blue-700 font-medium">Saving extra photo…</span>}
+                      </div>
+                    )}
                     <div className="mt-2 text-[11px] text-gray-500 tabular-nums">
                       heading {svHeading ?? 'auto'}° · pitch {svPitch}° · fov {svFov}°
                       {recapturing && <span className="ml-2 text-blue-700 font-medium">Fetching new angle…</span>}
