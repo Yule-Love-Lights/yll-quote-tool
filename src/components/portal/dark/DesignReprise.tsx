@@ -11,12 +11,12 @@
 // — it only renders once the card scrolls near the viewport (Intersection
 // Observer), avoiding a second always-on Konva stage on initial page load.
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
-import type { BulbColor } from '@/lib/design/sceneTypes';
+import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 
 // Konva is client-only — keep it out of SSR (same pattern the hero uses).
@@ -51,6 +51,22 @@ export function DesignReprise({
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
+  // #13 multi-image: on-image ‹ › arrows step through the photos (no thumbnail
+  // strip here — too bulky for this card; Jason's call). Index 0 = base photo.
+  const photos = useMemo(
+    () => [
+      { id: null as string | null, url: design.photoUrl, w: design.photoW, h: design.photoH },
+      ...(design.extraPhotos ?? []).filter((p) => p.url).map((p) => ({ id: p.id as string | null, url: p.url, w: p.w as number | null, h: p.h as number | null })),
+    ],
+    [design],
+  );
+  const [photoIdx, setPhotoIdx] = useState(0);
+  const active = photos[Math.min(photoIdx, photos.length - 1)];
+  const activeScene = useMemo(
+    () => ({ ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, active.id)) }),
+    [design.scene, active.id],
+  );
+  const step = (d: 1 | -1) => setPhotoIdx((i) => (i + d + photos.length) % photos.length);
 
   // Lazy-mount the Konva canvas. IntersectionObserver is the REAL trigger — it
   // fires as the customer scrolls the card toward the viewport, so the second
@@ -103,11 +119,11 @@ export function DesignReprise({
   // Lock the card to the photo's real aspect so the cover-fit render crops
   // nothing — the whole house shows (matches the #66 hero decision). 8/5
   // fallback for the 640x400 Street View when dimensions are unknown.
-  const aspectRatio =
-    design.photoW && design.photoH ? `${design.photoW} / ${design.photoH}` : '8 / 5';
+  const aspectRatio = active.w && active.h ? `${active.w} / ${active.h}` : '8 / 5';
   // Numeric aspect (w/h) for the #51 row: card width = row-height × this, so the
   // card lands at a definite width at the fixed row height (a block's width:auto
-  // ignores aspect-ratio, so we compute it explicitly).
+  // ignores aspect-ratio, so we compute it explicitly). Pinned to the BASE photo
+  // so the #51 row can't jump widths when the customer steps photos.
   const cardAr = design.photoW && design.photoH ? design.photoW / design.photoH : 8 / 5;
 
   return (
@@ -124,7 +140,6 @@ export function DesignReprise({
       </p>
       <div
         ref={wrapRef}
-        aria-hidden="true"
         className={`relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] ${
           inRow
             ? 'w-full max-h-[70vh] lg:w-full lg:max-h-none lg:[height:var(--row-h)]'
@@ -132,21 +147,54 @@ export function DesignReprise({
         }`}
         style={{ aspectRatio }}
       >
+        {/* The canvas itself is decorative — aria-hidden scoped HERE so the #13
+            photo arrows below stay reachable for keyboard/SR users. */}
         {mounted && (
-          <DesignCanvas
-            scene={design.scene}
-            photoUrl={design.photoUrl}
-            photoW={design.photoW}
-            photoH={design.photoH}
-            hiddenIds={hiddenSceneItemIds}
-            colorOverride={colorOverride}
-            palette={palette}
-            renderSettings={renderSettings}
-            className="absolute inset-0"
-          />
+          <div aria-hidden="true" className="absolute inset-0">
+            <DesignCanvas
+              scene={activeScene}
+              photoUrl={active.url}
+              photoW={active.w}
+              photoH={active.h}
+              hiddenIds={hiddenSceneItemIds}
+              colorOverride={colorOverride}
+              palette={palette}
+              renderSettings={renderSettings}
+              className="absolute inset-0"
+            />
+          </div>
         )}
         {/* Brand watermark (#45) — corner overlay on the reprise render too. */}
         <LogoWatermark />
+        {/* #13 multi-image: on-image arrows + dots (only when extras exist). */}
+        {photos.length > 1 && (
+          <>
+            <button
+              type="button"
+              aria-label="Previous photo"
+              onClick={() => step(-1)}
+              className="absolute left-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/45 hover:bg-black/65 text-[#F4ECD8] text-lg leading-none flex items-center justify-center"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              aria-label="Next photo"
+              onClick={() => step(1)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/45 hover:bg-black/65 text-[#F4ECD8] text-lg leading-none flex items-center justify-center"
+            >
+              ›
+            </button>
+            <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5">
+              {photos.map((p, i) => (
+                <span
+                  key={p.id ?? 'base'}
+                  className={`w-1.5 h-1.5 rounded-full ${i === photoIdx ? 'bg-[#FFD07A]' : 'bg-white/35'}`}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <button
         type="button"
