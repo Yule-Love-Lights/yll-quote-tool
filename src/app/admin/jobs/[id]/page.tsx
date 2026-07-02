@@ -7,7 +7,6 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
-import { BalanceChargeButton } from '@/components/admin/BalanceChargeButton';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { JobDetail } from '@/lib/jobs';
 
@@ -296,7 +295,6 @@ export default function JobDetailPage() {
                       </p>
                     );
                   })()}
-                  <BalanceChargeButton balance={data.invoice.balance} status={data.invoice.status} />
                 </>
               ) : (
                 <>

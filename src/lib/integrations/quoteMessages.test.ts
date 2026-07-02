@@ -11,6 +11,9 @@ import {
   supplierOrderEmailHtml,
   lowStockEmailSubject,
   lowStockEmailHtml,
+  BALANCE_LINK_EMAIL_SUBJECT,
+  balanceLinkSmsBody,
+  balanceLinkEmailHtml,
 } from './quoteMessages';
 
 describe('supplier purchase order email (#82 Phase 3)', () => {
@@ -181,5 +184,47 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
 
   it('approval email subject is stable copy', () => {
     expect(APPROVAL_EMAIL_SUBJECT).toMatch(/approved/i);
+  });
+});
+
+describe('balance pay-link notifications (#83)', () => {
+  describe('balanceLinkSmsBody', () => {
+    it('greets by first name, shows the EXACT balance (cents), the pay link, and the phone', () => {
+      const sms = balanceLinkSmsBody('Jordan', 551.91, 'https://quote.yulelovelights.com/portal/abc/pay-balance', '(631) 517-0186');
+      expect(sms).toContain('Jordan');
+      expect(sms).toContain('$551.91'); // exact cents — it's a real payment amount
+      expect(sms).toContain('https://quote.yulelovelights.com/portal/abc/pay-balance');
+      expect(sms).toContain('(631) 517-0186');
+    });
+  });
+
+  describe('balanceLinkEmailHtml', () => {
+    it('includes the name, exact balance, pay link, and phone', () => {
+      const html = balanceLinkEmailHtml({
+        firstName: 'Jordan',
+        balanceUsd: 551.91,
+        payUrl: 'https://quote.yulelovelights.com/portal/abc/pay-balance',
+        phone: '(631) 517-0186',
+      });
+      expect(html).toContain('Jordan');
+      expect(html).toContain('$551.91');
+      expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc/pay-balance"');
+      expect(html).toContain('(631) 517-0186');
+    });
+
+    it('escapes HTML in the first name', () => {
+      const html = balanceLinkEmailHtml({
+        firstName: '<script>',
+        balanceUsd: 100,
+        payUrl: 'https://x/portal/1/pay-balance',
+        phone: '(631) 517-0186',
+      });
+      expect(html).not.toContain('<script>');
+      expect(html).toContain('&lt;script&gt;');
+    });
+  });
+
+  it('subject is stable copy about the balance', () => {
+    expect(BALANCE_LINK_EMAIL_SUBJECT).toMatch(/balance/i);
   });
 });

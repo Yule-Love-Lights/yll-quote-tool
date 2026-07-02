@@ -22,7 +22,12 @@ export type ChargeBalanceInput = {
 };
 
 export type ChargeBalanceResult =
-  | { ok: true; txnId: string | null; approvalCode: string | null; receiptUrl: string | null; raw: unknown }
+  // chargedUsd = the amount Valor ACTUALLY captured (parse from the S00 response),
+  // NOT the requested amount. null when Valor returns no amount. The caller MUST
+  // refuse to settle when it's null or short of the balance (a partial auth would
+  // otherwise under-bill + mark the invoice paid-in-full) — mirrors the balance
+  // webhook's short-settle guard.
+  | { ok: true; chargedUsd: number | null; txnId: string | null; approvalCode: string | null; receiptUrl: string | null; raw: unknown }
   | { ok: false; reason: 'not-enabled' | 'no-card' | 'declined' | 'error'; message?: string };
 
 // Single flag gate. OFF by default — flip in Vercel ONLY after Valor's
@@ -51,7 +56,9 @@ export async function chargeBalanceOnFile(input: ChargeBalanceInput): Promise<Ch
   //   body: appid/appkey/epi (process.env.VALOR_APP_ID/APP_KEY/EPI), txn_type 'sale',
   //   amount (2dp string of input.amountUsd), token=input.vaultToken,
   //   invoicenumber=input.orderRef, surchargeIndicator '0', tax_amount as needed.
-  //   Parse error_no 'S00' => { ok:true, txnId, approvalCode, receiptUrl, raw };
+  //   Parse error_no 'S00' => { ok:true, chargedUsd, txnId, approvalCode, receiptUrl, raw }
+  //   where chargedUsd is the CAPTURED amount parsed from the response (NOT the
+  //   requested amount) so the caller can reject a partial authorization;
   //   else declined. Mirror createHostedPageSale's defensive parsing in valor.ts.
   //   Do NOT enable until the 3 confirmations in VALOR-AUTOCHARGE-FOR-JASON.md pass.
   return {
