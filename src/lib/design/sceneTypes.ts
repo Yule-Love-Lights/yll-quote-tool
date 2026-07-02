@@ -97,6 +97,12 @@ export type ItemBase = {
   // (which is "is it in the quote at all"): `recommended` pre-selects the item
   // on the customer portal and shows a "Recommended" label. Default false.
   recommended?: boolean;
+  // Which photo of the design this item is drawn on (#13 multi-image). Matches
+  // a `DesignExtraPhoto.id`; absent/null = the BASE photo, so every item that
+  // predates multi-image renders exactly where it always did. Additive +
+  // optional — core geometry stays byte-identical. RELAY: reaches the design
+  // tool's scene types together with the #13 editor-core changes (PR2a).
+  photoId?: string | null;
 };
 
 export type StrandItem = ItemBase & MiniBilling & {

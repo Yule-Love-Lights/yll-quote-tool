@@ -63,6 +63,19 @@ export type DesignSatelliteLines = {
   gingerbreadFootage?: number;
 };
 
+// One EXTRA street photo on a design (#13 multi-image). The base photo stays
+// photo_path/photo_w/photo_h; extras are additional angles staff draw on
+// (scene items reference them via `photoId`). Stored under the design's own
+// storage prefix (`{designId}/extra-<id>.<ext>`) so deleteDesign's
+// prefix-removal + the retention purge cover them with no changes.
+export type DesignExtraPhoto = {
+  id: string;
+  path: string;
+  w: number;
+  h: number;
+  title?: string | null;
+};
+
 export type DesignRow = {
   id: string;
   quote_id: string | null;
@@ -80,6 +93,8 @@ export type DesignRow = {
   satellite_h?: number | null;
   satellite_feet_per_pixel?: number | null;
   satellite_lines?: DesignSatelliteLines | null;
+  // Extra street photos (#13). Nullable — pre-migration rows have null.
+  extra_photos?: DesignExtraPhoto[] | null;
 };
 
 // What the GET route hands the editor: the row plus a freshly-signed,
@@ -99,6 +114,9 @@ export type DesignWithPhoto = {
   satelliteW: number | null;
   satelliteH: number | null;
   satelliteLines: DesignSatelliteLines | null;
+  // Extra street photos (#13), each with a freshly-signed URL. Empty array for
+  // designs without extras (incl. every pre-migration design).
+  extraPhotos: { id: string; url: string | null; w: number; h: number; title: string | null }[];
 };
 
 const BUCKET = 'designs';
@@ -220,9 +238,11 @@ export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | 
   if (!row) return null;
   // Sign the base photo and the satellite image in parallel (both private-bucket
   // paths; signDesignPhoto returns null for a missing path or on any failure).
-  const [photoUrl, satelliteUrl] = await Promise.all([
+  const extras = row.extra_photos ?? [];
+  const [photoUrl, satelliteUrl, ...extraUrls] = await Promise.all([
     signDesignPhoto(row.photo_path),
     signDesignPhoto(row.satellite_path ?? null),
+    ...extras.map(p => signDesignPhoto(p.path)),
   ]);
   return {
     id: row.id,
@@ -235,6 +255,13 @@ export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | 
     satelliteW: row.satellite_w ?? null,
     satelliteH: row.satellite_h ?? null,
     satelliteLines: row.satellite_lines ?? null,
+    extraPhotos: extras.map((p, i) => ({
+      id: p.id,
+      url: extraUrls[i] ?? null,
+      w: p.w,
+      h: p.h,
+      title: p.title ?? null,
+    })),
   };
 }
 
@@ -600,4 +627,135 @@ export async function uploadDesignPhoto(
   if (rowErr) throw new Error(`uploadDesignPhoto (row): ${rowErr.message}`);
 
   return { path, width, height };
+}
+
+// ─── Extra street photos (#13 multi-image) ──────────────────────────────────
+// Additional angles of the same house on the ONE design. Scene items reference
+// an extra via `photoId` (absent = the base photo). Extras are manual-only (no
+// AI analyze) and carry no measurement — footage stays a base-photo/satellite
+// concern.
+
+// Read the current extras array (null-safe).
+async function getExtraPhotos(sb: NonNullable<ReturnType<typeof getSb>>, id: string): Promise<DesignExtraPhoto[]> {
+  const { data, error } = await sb.from('designs').select('extra_photos').eq('id', id).maybeSingle();
+  if (error) throw new Error(`extra_photos read: ${error.message}`);
+  if (!data) throw new Error('Design not found');
+  return ((data as { extra_photos?: DesignExtraPhoto[] | null }).extra_photos ?? []);
+}
+
+// Decode + store one extra photo and append it to the design's extra_photos.
+// Returns the stored entry (id is a fresh UUID — it's what scene items'
+// `photoId` will reference).
+export async function addDesignExtraPhoto(
+  id: string,
+  base64: string,
+  contentType: string,
+  title?: string | null,
+): Promise<DesignExtraPhoto> {
+  const sb = getSb();
+  if (!sb) throw new Error('Supabase service role not configured');
+
+  const comma = base64.indexOf(',');
+  const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
+  const rawBuf = Buffer.from(raw, 'base64');
+  // Audit fix (#22): bound the decoded size before sharp() runs.
+  if (rawBuf.length > MAX_IMAGE_BYTES) throw new Error('Image too large (max 10MB)');
+  const { buf, contentType: storedType, ext } = await normalizeImage(rawBuf, contentType);
+
+  const meta = await sharp(buf).metadata();
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+
+  const photoId = crypto.randomUUID();
+  const path = `${id}/extra-${photoId}.${ext}`;
+  const { error: upErr } = await sb.storage.from(BUCKET).upload(path, buf, {
+    contentType: storedType,
+    upsert: true,
+  });
+  if (upErr) throw new Error(`addDesignExtraPhoto: ${upErr.message}`);
+
+  const entry: DesignExtraPhoto = { id: photoId, path, w: width, h: height, title: title?.trim() || null };
+  const extras = await getExtraPhotos(sb, id);
+  const { error: rowErr } = await sb
+    .from('designs')
+    .update({ extra_photos: [...extras, entry] })
+    .eq('id', id);
+  if (rowErr) throw new Error(`addDesignExtraPhoto (row): ${rowErr.message}`);
+
+  return entry;
+}
+
+// Remove one extra photo: its storage object, its array entry, AND every scene
+// item drawn on it (an item tagged to a deleted photo would otherwise be
+// invisible everywhere, forever). PR2b's linked twins refine delete semantics;
+// here any item with the matching photoId dies with its photo.
+export async function removeDesignExtraPhoto(id: string, photoId: string): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+
+  let extras: DesignExtraPhoto[];
+  try {
+    extras = await getExtraPhotos(sb, id);
+  } catch (err) {
+    console.error('removeDesignExtraPhoto:', err);
+    return false;
+  }
+  const entry = extras.find(p => p.id === photoId);
+  if (!entry) return false;
+
+  // Storage first (non-fatal on failure — the object is unreachable once the
+  // entry is gone; deleteDesign's prefix-removal is the backstop).
+  try {
+    const { error: rmErr } = await sb.storage.from(BUCKET).remove([entry.path]);
+    if (rmErr) console.error('removeDesignExtraPhoto: storage remove failed:', rmErr);
+  } catch (err) {
+    console.error('removeDesignExtraPhoto: storage remove threw:', err);
+  }
+
+  const { error: rowErr } = await sb
+    .from('designs')
+    .update({ extra_photos: extras.filter(p => p.id !== photoId) })
+    .eq('id', id);
+  if (rowErr) {
+    console.error('removeDesignExtraPhoto (row):', rowErr);
+    return false;
+  }
+
+  // Prune scene items drawn on the removed photo.
+  try {
+    const row = await getDesign(id);
+    const scene = row?.scene;
+    if (scene && Array.isArray(scene.items) && scene.items.some(it => it.photoId === photoId)) {
+      await updateDesignScene(id, { ...scene, items: scene.items.filter(it => it.photoId !== photoId) });
+    }
+  } catch (err) {
+    console.error('removeDesignExtraPhoto: scene prune failed:', err);
+  }
+
+  return true;
+}
+
+// Rename an extra photo (null/empty clears the title → "Photo N" in UIs).
+export async function updateDesignExtraPhotoTitle(
+  id: string,
+  photoId: string,
+  title: string | null,
+): Promise<boolean> {
+  const sb = getSb();
+  if (!sb) return false;
+  let extras: DesignExtraPhoto[];
+  try {
+    extras = await getExtraPhotos(sb, id);
+  } catch (err) {
+    console.error('updateDesignExtraPhotoTitle:', err);
+    return false;
+  }
+  if (!extras.some(p => p.id === photoId)) return false;
+  const next = extras.map(p => (p.id === photoId ? { ...p, title: title?.trim() || null } : p));
+  const { error } = await sb.from('designs').update({ extra_photos: next }).eq('id', id);
+  if (error) {
+    console.error('updateDesignExtraPhotoTitle (row):', error);
+    return false;
+  }
+  return true;
 }

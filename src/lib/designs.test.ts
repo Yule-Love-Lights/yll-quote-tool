@@ -37,6 +37,11 @@ import {
   deleteDesign,
   deleteDesignsForQuote,
   createDesign,
+  addDesignExtraPhoto,
+  removeDesignExtraPhoto,
+  updateDesignExtraPhotoTitle,
+  getDesignWithPhoto,
+  type DesignExtraPhoto,
 } from './designs';
 
 // ─── design upload size cap (audit #22) ─────────────────────────────────────
@@ -63,6 +68,175 @@ describe('design upload size cap (audit #22)', () => {
       uploadDesignSatellite('11111111-1111-1111-1111-111111111111', oversizedBase64, 'image/jpeg', null),
     ).rejects.toThrow(/too large/i);
     expect(sharpMock).not.toHaveBeenCalled();
+  });
+
+  it('addDesignExtraPhoto rejects a >10MB image before sharp runs', async () => {
+    await expect(
+      addDesignExtraPhoto('11111111-1111-1111-1111-111111111111', oversizedBase64, 'image/jpeg'),
+    ).rejects.toThrow(/too large/i);
+    expect(sharpMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─── extra street photos (#13 multi-image) ──────────────────────────────────
+// A design's extras: stored under the design's own storage prefix, tracked in
+// the extra_photos jsonb array, referenced by scene items via `photoId`.
+
+// Fake Supabase for the extras suite: a designs row whose extra_photos/scene
+// evolve through .update() calls, plus storage upload/remove recorders.
+function makeExtrasSb(row: {
+  extra_photos?: DesignExtraPhoto[] | null;
+  scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
+  photo_path?: string | null;
+}) {
+  const state = {
+    row: {
+      id: ID,
+      quote_id: null as string | null,
+      photo_path: row.photo_path ?? null,
+      photo_w: null,
+      photo_h: null,
+      scene: row.scene ?? { yardsticks: [], items: [] },
+      extra_photos: row.extra_photos ?? null,
+    } as Record<string, unknown>,
+    uploadedPaths: [] as string[],
+    removedPaths: [] as string[][],
+    signedPaths: [] as string[],
+  };
+
+  const storage = {
+    from: () => ({
+      upload: async (path: string) => {
+        state.uploadedPaths.push(path);
+        return { data: { path }, error: null };
+      },
+      remove: async (paths: string[]) => {
+        state.removedPaths.push(paths);
+        return { data: null, error: null };
+      },
+      createSignedUrl: async (path: string) => {
+        state.signedPaths.push(path);
+        return { data: { signedUrl: `signed:${path}` }, error: null };
+      },
+    }),
+  };
+
+  function tableBuilder() {
+    let selectCols = '*';
+    let updatePayload: Record<string, unknown> | null = null;
+    const b: Record<string, unknown> = {};
+    Object.assign(b, {
+      select: (cols?: string) => {
+        selectCols = cols ?? '*';
+        return b;
+      },
+      update: (payload: Record<string, unknown>) => {
+        updatePayload = payload;
+        return b;
+      },
+      eq: () => b,
+      maybeSingle: async () => {
+        if (selectCols === 'extra_photos') {
+          return { data: { extra_photos: state.row.extra_photos }, error: null };
+        }
+        return { data: { ...state.row }, error: null };
+      },
+      then: (resolve: (v: unknown) => void) => {
+        if (updatePayload) Object.assign(state.row, updatePayload);
+        resolve({ error: null });
+      },
+    });
+    return b;
+  }
+
+  return { client: { storage, from: () => tableBuilder() }, state };
+}
+
+const PHOTO_A = 'aaaa1111-2222-4333-8444-555566667777';
+const PHOTO_B = 'bbbb1111-2222-4333-8444-555566667777';
+
+describe('extra street photos (#13)', () => {
+  beforeEach(() => {
+    sharpMock.mockClear();
+    sbRef.current = null;
+  });
+
+  it('addDesignExtraPhoto stores under the design prefix and appends the entry', async () => {
+    const { client, state } = makeExtrasSb({ extra_photos: null });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const entry = await addDesignExtraPhoto(ID, tiny, 'image/jpeg', '  Left side  ');
+
+    expect(state.uploadedPaths).toHaveLength(1);
+    expect(state.uploadedPaths[0]).toBe(`${ID}/extra-${entry.id}.jpg`);
+    expect(entry.title).toBe('Left side');
+    const stored = state.row.extra_photos as DesignExtraPhoto[];
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe(entry.id);
+  });
+
+  it('removeDesignExtraPhoto removes the object, the entry, and the photo\'s scene items', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [
+        { id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null },
+        { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 10, h: 10, title: 'Back' },
+      ],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'i1', kind: 'wreath', photoId: PHOTO_A },
+          { id: 'i2', kind: 'wreath', photoId: PHOTO_B },
+          { id: 'i3', kind: 'wreath' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+
+    expect(state.removedPaths).toEqual([[`${ID}/extra-${PHOTO_A}.jpg`]]);
+    expect((state.row.extra_photos as DesignExtraPhoto[]).map(p => p.id)).toEqual([PHOTO_B]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i2', 'i3']);
+  });
+
+  it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
+    const { client, state } = makeExtrasSb({ extra_photos: [] });
+    sbRef.current = client;
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(false);
+    expect(state.removedPaths).toHaveLength(0);
+  });
+
+  it('updateDesignExtraPhotoTitle renames and clears (empty → null)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: 'Old' }],
+    });
+    sbRef.current = client;
+
+    expect(await updateDesignExtraPhotoTitle(ID, PHOTO_A, 'New name')).toBe(true);
+    expect((state.row.extra_photos as DesignExtraPhoto[])[0].title).toBe('New name');
+
+    expect(await updateDesignExtraPhotoTitle(ID, PHOTO_A, '   ')).toBe(true);
+    expect((state.row.extra_photos as DesignExtraPhoto[])[0].title).toBeNull();
+
+    expect(await updateDesignExtraPhotoTitle(ID, PHOTO_B, 'x')).toBe(false);
+  });
+
+  it('getDesignWithPhoto returns [] extras for pre-migration rows and signed entries when present', async () => {
+    const bare = makeExtrasSb({ extra_photos: null });
+    sbRef.current = bare.client;
+    const withoutExtras = await getDesignWithPhoto(ID);
+    expect(withoutExtras?.extraPhotos).toEqual([]);
+
+    const populated = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+    });
+    sbRef.current = populated.client;
+    const withExtras = await getDesignWithPhoto(ID);
+    expect(withExtras?.extraPhotos).toEqual([
+      { id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' },
+    ]);
   });
 });
 
