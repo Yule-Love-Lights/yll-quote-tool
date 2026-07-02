@@ -123,6 +123,10 @@ export function projectMaterials(
 
   for (const item of items) {
     if (!isIncluded(item)) continue;
+    // #13 linked twins: a render-only depiction of an item on another photo —
+    // the CANONICAL item pulls materials; twins never do (same pattern as the
+    // groupId member skips below).
+    if (item.linkedToId) continue;
 
     if (isWreath(item)) {
       const size = item.quoteSize ?? DEFAULT_WREATH_SIZE;

@@ -166,6 +166,61 @@ export async function renderEditor(
     return item;
   };
 
+  // ── #13 linked twins — "Place on this photo" ─────────────────────────────
+  // Staff re-draw the whole display on every photo; a TWIN is a render-only
+  // depiction of a canonical item from another photo (bills once, toggles/
+  // recolors everywhere). Billable per-unit kinds only; mini GROUPS are
+  // excluded (stamp members individually).
+  const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
+  const isStampableCanonical = (i: SceneItem): boolean =>
+    !i.linkedToId &&
+    (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) || isMiniArea(i) ||
+      (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")));
+  const stampCandidates = (): SceneItem[] =>
+    scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
+  const photoLabelOf = (i: { photoId?: string | null }): string => {
+    const pid = i.photoId ?? null;
+    if (!pid) return "Photo 1";
+    const extras = design.extraPhotos ?? [];
+    const idx = extras.findIndex((p) => p.id === pid);
+    return extras[idx]?.title || `Photo ${idx + 2}`;
+  };
+  const stampLabel = (i: SceneItem): string =>
+    isWreath(i) ? `${i.sizeIn}" wreath`
+      : isBow(i) ? `${i.sizeIn}" bow`
+        : isGarland(i) ? "garland run"
+          : isSpritzer(i) ? `${i.sizeIn}" spritzer`
+            : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
+              : isStrand(i) ? `${i.surface ?? "mini"} wrap`
+                : "item";
+  // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
+  // the TRUE canonical (chains through if the source was somehow a twin).
+  function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
+    const twin = JSON.parse(JSON.stringify(src)) as SceneItem;
+    twin.id = cryptoId();
+    twin.linkedToId = src.linkedToId ?? src.id;
+    twin.yardstickId = null;
+    delete (twin as { recommended?: boolean }).recommended;
+    if (activePhotoId) twin.photoId = activePhotoId;
+    else delete (twin as { photoId?: string | null }).photoId;
+    if ("points" in twin && Array.isArray(twin.points) && twin.points.length >= 2) {
+      const pts = twin.points;
+      const n = pts.length / 2;
+      let cx = 0, cy = 0;
+      for (let k = 0; k + 1 < pts.length; k += 2) { cx += pts[k]; cy += pts[k + 1]; }
+      cx /= n; cy /= n;
+      const dx = p.x - cx, dy = p.y - cy;
+      twin.points = pts.map((v, k) => (k % 2 === 0 ? v + dx : v + dy));
+    } else if (isMiniArea(twin) && twin.shape === "box") {
+      twin.x = p.x - (twin.width ?? 0) / 2;
+      twin.y = p.y - (twin.height ?? 0) / 2;
+    } else if ("x" in twin && "y" in twin) {
+      (twin as { x: number; y: number }).x = p.x;
+      (twin as { x: number; y: number }).y = p.y;
+    }
+    return twin;
+  }
+
   root.innerHTML = `
     <div class="editor${opts.embedded ? " embedded" : ""}">
       <div class="topbar">
@@ -273,6 +328,9 @@ export async function renderEditor(
   let creatingYardstick = false;
   let pendingYsFeet = 0;
   let ysDragStart: { x: number; y: number } | null = null;
+  // #13 linked twins: the armed "Place on this photo" stamp source (one-shot,
+  // creatingYardstick pattern) — the next stage click places a linked twin.
+  let stampSourceId: string | null = null;
 
   // Strand drag state (for "strand" mode)
   let dragPts: number[] | null = null;
@@ -1216,7 +1274,15 @@ export async function renderEditor(
 
   function deleteSelected() {
     if (selectedIds.size === 0) return;
-    scene = { ...scene, items: scene.items.filter((s) => !selectedIds.has(s.id)) };
+    // #13 linked twins: deleting a CANONICAL removes its render-only twins on
+    // every photo (they'd dangle otherwise); deleting a twin removes just that
+    // depiction — the canonical (and the billing) is untouched.
+    scene = {
+      ...scene,
+      items: scene.items.filter(
+        (s) => !selectedIds.has(s.id) && !(s.linkedToId && selectedIds.has(s.linkedToId)),
+      ),
+    };
     selectedIds.clear();
     // Discrete keyboard action — not a multi-node Transformer gesture — so the
     // redraw stays SYNCHRONOUS here. finishBake()'s deferred coalescing is only
@@ -1379,6 +1445,7 @@ export async function renderEditor(
     }
     if (selectedIds.size > 0) {
       renderSelectedSidebar(sb);
+      appendBillingLinkSection(sb); // #13 linked twins — "bills as" fallback
       renderTotal();
       return;
     }
@@ -1393,6 +1460,17 @@ export async function renderEditor(
           <button data-cat="poles" class="${tool.category === "poles" ? "active" : ""}">Poles</button>
         </div>
       </section>
+      ${(() => {
+        // #13 linked twins: re-place items from OTHER photos onto this one.
+        const cands = stampCandidates();
+        if (cands.length === 0) return "";
+        return `
+      <section>
+        <h3>Re-place from other photos</h3>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Click one, then click the photo — a linked copy shows here but bills once (via its original).</div>
+        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:block;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}">📌 ${stampLabel(i)} — ${photoLabelOf(i)}</button>`).join("")}
+      </section>`;
+      })()}
       ${tool.category === "poles" ? `
       <section>
         <h3>Base Type</h3>
@@ -1697,6 +1775,16 @@ export async function renderEditor(
       `}
       `}
     `;
+
+    // #13: arm the stamp — the next canvas click places the linked twin.
+    sb.querySelectorAll(".stamp-row").forEach((el) =>
+      el.addEventListener("click", () => {
+        stampSourceId = (el as HTMLElement).dataset.id ?? null;
+        clearSelection();
+        stage.container().style.cursor = "copy";
+        renderSidebar();
+      }),
+    );
 
     sb.querySelectorAll("#categories button").forEach((b) =>
       b.addEventListener("click", () => {
@@ -2140,6 +2228,58 @@ export async function renderEditor(
   // ============================================================
   // Sidebar — edit panel for the currently selected strand(s)
   // ============================================================
+  // #13 linked twins — the draw-first-link-later fallback: a single selected
+  // billable per-unit item gets a "Billing link" section (own line item vs
+  // "same as" a same-kind item on another photo). Appended AFTER the kind
+  // panel so every per-kind sidebar gets it from one insertion point.
+  function appendBillingLinkSection(sb: HTMLElement) {
+    if (selectedIds.size !== 1) return;
+    const item = scene.items.find((i) => selectedIds.has(i.id));
+    if (!item) return;
+    if (!isStampableCanonical(item) && !item.linkedToId) return;
+    const candidates = scene.items.filter(
+      (c) =>
+        c.id !== item.id &&
+        !c.linkedToId &&
+        c.kind === item.kind &&
+        (c.photoId ?? null) !== (item.photoId ?? null),
+    );
+    if (candidates.length === 0 && !item.linkedToId) return;
+    const orphanLink = item.linkedToId && !candidates.some((c) => c.id === item.linkedToId);
+    sb.insertAdjacentHTML(
+      "beforeend",
+      `<section>
+        <h3>Billing link</h3>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">${
+          item.linkedToId
+            ? "A linked copy — shows on this photo, bills once via its original."
+            : "Link this drawing to an item on another photo so it bills once."
+        }</div>
+        <select id="sel-billing-link" class="yardstick-select">
+          <option value="">Own line item</option>
+          ${candidates
+            .map(
+              (c) =>
+                `<option value="${c.id}" ${item.linkedToId === c.id ? "selected" : ""}>Same as: ${stampLabel(c)} — ${photoLabelOf(c)}</option>`,
+            )
+            .join("")}
+          ${orphanLink ? `<option value="${item.linkedToId}" selected>Same as: (linked item)</option>` : ""}
+        </select>
+      </section>`,
+    );
+    const sel = sb.querySelector("#sel-billing-link") as HTMLSelectElement | null;
+    sel?.addEventListener("change", () => {
+      const v = sel.value || null;
+      scene = {
+        ...scene,
+        items: scene.items.map((i) => (i.id === item.id ? { ...i, linkedToId: v } : i)),
+      };
+      scheduleSave();
+      commit();
+      redrawScene();
+    });
+  }
+
   function renderSelectedSidebar(sb: HTMLElement) {
     const selectedItems = scene.items.filter((i) => selectedIds.has(i.id));
     if (selectedItems.length === 0) {
@@ -4435,6 +4575,11 @@ export async function renderEditor(
       creatingYardstick = false;
       stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
     }
+    // #13: disarm a pending stamp (Escape / tool change).
+    if (stampSourceId) {
+      stampSourceId = null;
+      stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
+    }
     if (marqueeStart) {
       marqueeStart = null;
       marqueePreview?.destroy();
@@ -4540,6 +4685,25 @@ export async function renderEditor(
 
     // Click on either Transformer (anchor handles) — suppress draw.
     if (e.target.findAncestor("Transformer", true)) return;
+
+    // #13: an armed "Place on this photo" stamp consumes this click — place a
+    // linked twin of the source at the click point, select it, disarm.
+    if (stampSourceId) {
+      const p = imagePoint();
+      if (!p || !inPhoto(p)) return;
+      const src = scene.items.find((i) => i.id === stampSourceId);
+      stampSourceId = null;
+      stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
+      if (src) {
+        const twin = makeTwinAt(src, p);
+        scene = { ...scene, items: [...scene.items, twin] };
+        selectedIds = new Set([twin.id]);
+        scheduleSave();
+        commit();
+        redrawScene();
+      }
+      return;
+    }
 
     // Select-tool mode: drag a marquee rectangle, filtered by current bulb type.
     if (toolMode === "select") {

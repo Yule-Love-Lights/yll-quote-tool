@@ -114,7 +114,7 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
     bow: frozenCountForCat.bow === queue.bow.length,
   };
 
-  return lineItems.map((li) => {
+  const linked = lineItems.map((li) => {
     // Roofline tiers (synthesized by the adapter with stable ids). Roofline
     // keeps its OWN recommend mechanism (PortalRoofline) — never the per-item
     // `recommended` flag — so we only attach scene links here.
@@ -159,6 +159,26 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
       }
     }
     return li; // unmatched → no scene link
+  });
+
+  // #13 linked twins: a twin is a render-only depiction of a canonical item on
+  // another photo. The portal's toggle/recolor must reach EVERY depiction, so
+  // each line's sceneItemIds expand with the twins of the ids already linked
+  // (covers per-unit lines and the tag-linked roofline/WW/stake lines alike).
+  const twinsByCanonical = new Map<string, string[]>();
+  for (const i of items) {
+    if (i.linkedToId) {
+      const arr = twinsByCanonical.get(i.linkedToId) ?? [];
+      arr.push(i.id);
+      twinsByCanonical.set(i.linkedToId, arr);
+    }
+  }
+  if (twinsByCanonical.size === 0) return linked;
+  return linked.map((li) => {
+    const ids = li.sceneItemIds;
+    if (!ids || ids.length === 0) return li;
+    const twins = ids.flatMap((id) => twinsByCanonical.get(id) ?? []);
+    return twins.length > 0 ? { ...li, sceneItemIds: [...ids, ...twins] } : li;
   });
 }
 
