@@ -361,6 +361,41 @@ export function amendmentEmailHtml(input: {
   ].join('');
 }
 
+// ── Balance pay-link (ledger #83) ───────────────────────────────────────────
+// Staff-initiated: after a job is complete, the operator sends the customer a
+// link to pay their remaining 50% balance on Valor's hosted page
+// (/portal/[quoteId]/pay-balance). Distinct from the deposit send — no stage
+// move, no booking; just a reach-out with the balance amount + the pay link.
+export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
+
+export function balanceLinkSmsBody(firstName: string, balanceUsd: number, payUrl: string, phone: string): string {
+  return `Hi ${firstName}! 🎄 Your Yule Love Lights install is wrapping up. Your remaining balance of ${usdExact(balanceUsd)} can be paid securely here: ${payUrl}  Questions? Call or text ${phone}.`;
+}
+
+export function balanceLinkEmailHtml(input: {
+  firstName: string;
+  balanceUsd: number;
+  payUrl: string;
+  phone: string;
+}): string {
+  const name = escapeHtml(input.firstName);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>Your holiday lighting install is wrapping up — thank you! Here's your remaining balance:</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance</td><td style="padding:2px 0;"><strong>${usdExact(
+      input.balanceUsd,
+    )}</strong></td></tr>`,
+    `</table>`,
+    `<p><a href="${escapeHtml(
+      input.payUrl,
+    )}" style="display:inline-block;padding:10px 18px;background:#1f6f43;color:#fff;text-decoration:none;border-radius:6px;">Pay your balance →</a></p>`,
+    `<p style="font-size:13px;color:#666;">Or paste this link into your browser: ${escapeHtml(input.payUrl)}</p>`,
+    `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
+    `<p>— Yule Love Lights</p>`,
+  ].join('');
+}
+
 export const RECEIPT_EMAIL_SUBJECT = 'Your deposit is confirmed — you’re booked! 🎄';
 
 // Customer SMS confirming the deposit posted. Whole-dollar amount; points them
