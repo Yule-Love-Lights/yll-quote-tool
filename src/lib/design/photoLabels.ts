@@ -14,18 +14,22 @@ export function extraPhotoLabels(extras: PhotoLabelSource[] | null | undefined):
   return m;
 }
 
-// The photo tag for a priced line: its first scene item that sits on an EXTRA
-// photo decides the tag (mini groups span members — any extra-photo member
-// tags the line). All-base (or unlinked) lines return null = no tag.
+// The photo tag for a priced line: its first CANONICAL scene item that sits on
+// an EXTRA photo decides the tag (mini groups span members — any extra-photo
+// member tags the line). Render-only linked TWINS never decide the tag —
+// attachSceneLinks expands a line's sceneItemIds with twins for portal
+// toggling, and a photo-1 canonical with a twin on photo 2 is still a photo-1
+// item. All-base (or unlinked) lines return null = no tag.
 export function photoLabelForLine(
   sceneItemIds: string[] | undefined | null,
-  sceneItems: Array<{ id: string; photoId?: string | null }>,
+  sceneItems: Array<{ id: string; photoId?: string | null; linkedToId?: string | null }>,
   labels: Map<string, string>,
 ): string | null {
   if (!sceneItemIds || sceneItemIds.length === 0) return null;
   for (const id of sceneItemIds) {
     const item = sceneItems.find((it) => it.id === id);
-    const photoId = item?.photoId ?? null;
+    if (!item || item.linkedToId) continue; // twins never decide the tag
+    const photoId = item.photoId ?? null;
     if (photoId) return labels.get(photoId) ?? null;
   }
   return null;
