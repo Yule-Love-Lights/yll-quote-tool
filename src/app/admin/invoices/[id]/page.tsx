@@ -115,8 +115,14 @@ export default function InvoiceDetailPage() {
       }
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Could not send');
+      // A per-channel failure still 200s with messageError set — surface it so the
+      // operator doesn't think a silently-failed channel was delivered.
       setBalanceMsg(
-        body.smsSent || body.emailSent ? 'Balance link sent to the customer ✓' : 'Sent (no channel delivered)',
+        body.messageError
+          ? `Partly sent — text ${body.smsSent ? 'ok' : 'failed'}, email ${body.emailSent ? 'ok' : 'failed'}: ${body.messageError}`
+          : body.smsSent || body.emailSent
+            ? 'Balance link sent to the customer ✓'
+            : 'Sent (no channel delivered)',
       );
     } catch (err) {
       setBalanceMsg(err instanceof Error ? err.message : 'Could not send the balance link');

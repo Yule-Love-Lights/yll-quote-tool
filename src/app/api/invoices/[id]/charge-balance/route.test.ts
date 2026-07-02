@@ -21,7 +21,7 @@ const {
   markPaidMock: vi.fn(async (): Promise<unknown> => ({ id: 'inv-1', status: 'paid', balance: 0, job_id: 'job-1' })),
   getJobMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'requires_invoicing' })),
   setJobStatusMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'done' })),
-  chargeMock: vi.fn(async (): Promise<unknown> => ({ ok: true, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} })),
+  chargeMock: vi.fn(async (): Promise<unknown> => ({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} })),
   isAutoChargeEnabledMock: vi.fn(() => true),
 }));
 
@@ -67,7 +67,7 @@ beforeEach(() => {
   markPaidMock.mockResolvedValue({ id: ID, status: 'paid', balance: 0, job_id: 'job-1' });
   getJobMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
   setJobStatusMock.mockResolvedValue({ id: 'job-1', status: 'done' });
-  chargeMock.mockResolvedValue({ ok: true, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+  chargeMock.mockResolvedValue({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
   sbRef.current = makeSb(QUOTE);
 });
 
@@ -137,6 +137,24 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     );
     expect(markPaidMock).toHaveBeenCalledWith(ID);
     expect(setJobStatusMock).toHaveBeenCalledWith('job-1', 'done');
+  });
+
+  it('402s (partial-capture) and does NOT settle when the card captured less than the balance', async () => {
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 300, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('partial-capture');
+    expect(markPaidMock).not.toHaveBeenCalled();
+  });
+
+  it('402s (partial-capture) and does NOT settle when the seam reports no captured amount', async () => {
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: null, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('partial-capture');
+    expect(markPaidMock).not.toHaveBeenCalled();
   });
 
   it('402s and does NOT settle when the charge is declined', async () => {

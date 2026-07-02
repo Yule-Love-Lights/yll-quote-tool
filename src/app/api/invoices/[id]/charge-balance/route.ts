@@ -22,6 +22,11 @@
 // the amount, amend the order (which re-prices the balance) — partial/arbitrary
 // charges are not modelled on the invoice.
 //
+// PARTIAL-AUTH guard: a card-on-file sale can capture LESS than requested. The
+// route refuses to settle unless result.chargedUsd (the amount Valor ACTUALLY
+// captured) covers the balance — so the real wiring MUST populate chargedUsd or
+// this route will (safely) never settle. Mirrors the balance webhook's guard.
+//
 // Response: { ok, charged, invoice } | { ok:false, reason, error }
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -130,7 +135,26 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     );
   }
 
-  // Charged. Settle the invoice atomically (mirrors the Valor balance webhook):
+  // Short-capture guard (mirrors the balance webhook, webhook/route.ts): a partial
+  // authorization captures LESS than the balance. The invoice must NOT settle as
+  // paid-in-full, or we'd silently under-bill. Refuse to settle when the captured
+  // amount is missing or short; leave the invoice awaiting_payment + a loud log.
+  if (result.chargedUsd == null || result.chargedUsd + 0.01 < invoice.balance) {
+    console.error(
+      `[api/invoices/:id/charge-balance] partial/unknown capture for invoice ${id}: charged=${result.chargedUsd} expected>=${invoice.balance} txn=${result.txnId}`,
+    );
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: 'partial-capture',
+        error: 'Card was approved for less than the balance — the invoice was NOT settled. Reconcile in Valor.',
+        txnId: result.txnId,
+      },
+      { status: 402 },
+    );
+  }
+
+  // Charged the full balance. Settle the invoice atomically (mirrors the webhook):
   // markInvoicePaidManually claims .neq('status','paid') so a retry can't double-settle.
   let paid;
   try {

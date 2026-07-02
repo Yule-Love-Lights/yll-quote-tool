@@ -20,8 +20,8 @@ const {
   getJobByQuoteMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1' })),
   getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => ({ id: 'inv-1', status: 'awaiting_payment', balance: 2500 })),
   isHighLevelConfiguredMock: vi.fn(() => true),
-  sendSmsMock: vi.fn(async (_i: { contactId: string; message: string; fromNumber?: string }) => ({ ok: true })),
-  sendEmailMock: vi.fn(async (_i: { contactId: string; subject: string; html: string; emailFrom?: string }) => ({ ok: true })),
+  sendSmsMock: vi.fn(async () => ({ ok: true })),
+  sendEmailMock: vi.fn(async () => ({ ok: true })),
   rateLimitMock: vi.fn((): unknown => null),
 }));
 
@@ -136,7 +136,9 @@ describe('POST /api/quotes/[id]/send-balance', () => {
         message: expect.stringContaining(`/portal/${ID}/pay-balance`),
       }),
     );
-    expect(sendSmsMock.mock.calls[0]?.[0]?.message).toContain('$2,500.00');
+    expect(sendSmsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('$2,500.00') }),
+    );
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
   });
 
