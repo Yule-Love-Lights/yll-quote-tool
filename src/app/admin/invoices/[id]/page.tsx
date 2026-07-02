@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { BalanceChargeButton } from '@/components/admin/BalanceChargeButton';
+import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail } from '@/lib/invoices';
 
 // Operator BILLING detail for one invoice (ledger #83): the money breakdown
@@ -208,6 +209,37 @@ export default function InvoiceDetailPage() {
                   </div>
                 )}
               </dl>
+
+              {(() => {
+                const recon = reconcileInvoice(inv);
+                const flagLabels: Record<string, string> = {
+                  'overpaid': 'Overpaid — issue a refund in Valor',
+                  'short-deposit': 'Deposit below 40% of total — verify with customer',
+                  'balance-outstanding': 'Balance outstanding',
+                  'inconsistent': 'Data error: invoice marked paid but balance > 0 — contact support',
+                };
+                return recon.flags.length > 0 ? (
+                  <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-red-700 mb-1">
+                      Reconciliation issues
+                    </p>
+                    <ul className="text-sm text-red-700 space-y-0.5 list-disc list-inside">
+                      {recon.flags.map((f) => (
+                        <li key={f}>{flagLabels[f] ?? f}</li>
+                      ))}
+                    </ul>
+                    <p className="mt-1.5 text-xs text-red-600">
+                      {money(recon.quoted)} quoted · {money(recon.depositApplied)} deposit received · {money(recon.balanceDue)} balance due
+                      {recon.creditNote > 0 ? ` · ${money(recon.creditNote)} credit` : ''}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-gray-400">
+                    {money(recon.quoted)} quoted · {money(recon.depositApplied)} deposit received · {money(recon.balanceDue)} balance due
+                    {recon.paid ? ' · paid' : ''}
+                  </p>
+                );
+              })()}
 
               <div className="mt-3">
                 <button
