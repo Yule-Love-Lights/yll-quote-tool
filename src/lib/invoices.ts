@@ -127,6 +127,53 @@ export function computeInvoiceTotals(
   return { subtotal, discount, fees, tax, total, deposit_applied, balance, credit_note };
 }
 
+// ─── Money reconciliation ────────────────────────────────────────────────────
+
+export type InvoiceReconciliation = {
+  /** The invoiced total (= quoted amount). */
+  quoted: number;
+  /** The deposit actually applied (from the stored deposit_applied column). */
+  depositApplied: number;
+  /** The balance still due (= invoice.balance). */
+  balanceDue: number;
+  /** Overpayment surfaced as a credit note (> 0 means a Valor refund is needed). */
+  creditNote: number;
+  /** True when the invoice status is 'paid'. */
+  paid: boolean;
+  /**
+   * Actionable flags for the operator — zero or more of:
+   *   'overpaid'            — credit_note > 0; a Valor refund is required.
+   *   'short-deposit'       — deposit > 0 but < 40% of quoted (fat-finger / partial-auth).
+   *   'balance-outstanding' — not paid and balance > 0 (informational).
+   *   'inconsistent'        — paid status but balance > 0 (data integrity error).
+   */
+  flags: string[];
+};
+
+/**
+ * Derive a money-reconciliation summary from a stored InvoiceRow. PURE — no IO.
+ *
+ * Flags are additive: any combination can fire simultaneously.
+ * The short-deposit threshold is 40% (not 50%) to tolerate minor rounding and
+ * round-dollar booking deposits, while still catching clearly low values.
+ */
+export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
+  const quoted = inv.total;
+  const depositApplied = inv.deposit_applied;
+  const balanceDue = inv.balance;
+  const creditNote = inv.credit_note;
+  const paid = inv.status === 'paid';
+
+  const flags: string[] = [];
+
+  if (creditNote > 0) flags.push('overpaid');
+  if (depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
+  if (!paid && balanceDue > 0) flags.push('balance-outstanding');
+  if (paid && balanceDue > 0) flags.push('inconsistent');
+
+  return { quoted, depositApplied, balanceDue, creditNote, paid, flags };
+}
+
 // ─── DB helpers ─────────────────────────────────────────────────────────────
 
 function sb() {

@@ -17,8 +17,10 @@ import {
   getInvoiceDetail,
   listInvoicesForAdmin,
   markInvoicePaidManually,
+  reconcileInvoice,
   setInvoiceStatus,
   setInvoiceTaxOverride,
+  type InvoiceRow,
 } from './invoices';
 
 // ─── In-memory Supabase fake ────────────────────────────────────────────────
@@ -561,5 +563,138 @@ describe('markInvoicePaidManually', () => {
     const fake = makeFakeSupabase({ invoices: [] });
     sbRef.current = fake.client;
     expect(await markInvoicePaidManually('nope')).toBeNull();
+  });
+});
+
+// ─── Pure: reconcileInvoice ─────────────────────────────────────────────────
+// Money-reconciliation at a glance for a non-developer operator: Quoted /
+// Deposit received / Balance due + actionable flags (#83 Jobber verify).
+
+function makeInvoiceRow(overrides: Partial<InvoiceRow> = {}): InvoiceRow {
+  return {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: 'cust-1',
+    subtotal: 4000,
+    discount: 0,
+    tax: 0,
+    total: 4000,
+    deposit_applied: 2000,
+    balance: 2000,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'awaiting_payment',
+    valor_balance_txn_id: null,
+    valor_receipt_url: null,
+    created_at: '2026-01-01T00:00:00Z',
+    paid_at: null,
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('reconcileInvoice — core fields', () => {
+  it('maps total → quoted, deposit_applied → depositApplied, balance → balanceDue', () => {
+    const r = reconcileInvoice(makeInvoiceRow());
+    expect(r.quoted).toBe(4000);
+    expect(r.depositApplied).toBe(2000);
+    expect(r.balanceDue).toBe(2000);
+    expect(r.creditNote).toBe(0);
+  });
+
+  it('paid = true when status is "paid"', () => {
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'paid', balance: 0, paid_at: '2026-01-02T00:00:00Z' }));
+    expect(r.paid).toBe(true);
+  });
+
+  it('paid = false for draft, awaiting_payment, cancelled', () => {
+    expect(reconcileInvoice(makeInvoiceRow({ status: 'awaiting_payment' })).paid).toBe(false);
+    expect(reconcileInvoice(makeInvoiceRow({ status: 'draft' })).paid).toBe(false);
+    expect(reconcileInvoice(makeInvoiceRow({ status: 'cancelled' })).paid).toBe(false);
+  });
+});
+
+describe('reconcileInvoice — flags', () => {
+  it('no flags on a clean invoice (deposit ≥ 40% of total, no balance issue)', () => {
+    // deposit = $2000 on $4000 (50%) — above threshold, awaiting_payment has balance-outstanding
+    // but let's use status=paid with balance=0 to get truly clean
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'paid', balance: 0, deposit_applied: 2000, credit_note: 0 }));
+    expect(r.flags).toEqual([]);
+  });
+
+  it('no flags when deposit is zero and invoice is draft (no deposit taken yet)', () => {
+    // deposit_applied = 0 → NOT a short-deposit (deposit was never attempted)
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'draft', deposit_applied: 0, balance: 4000, credit_note: 0 }));
+    // balance-outstanding fires because !paid && balance > 0
+    expect(r.flags).toContain('balance-outstanding');
+    expect(r.flags).not.toContain('short-deposit');
+  });
+
+  it('overpaid: credit_note > 0 → "overpaid" flag', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 3000, deposit_applied: 4000, balance: 0, credit_note: 1000 }),
+    );
+    expect(r.flags).toContain('overpaid');
+  });
+
+  it('short-deposit: deposit > 0 and deposit < 40% of quoted → "short-deposit" flag', () => {
+    // $500 on $4000 = 12.5% → under 40%
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 500, balance: 3500, credit_note: 0 }),
+    );
+    expect(r.flags).toContain('short-deposit');
+  });
+
+  it('short-deposit: NOT flagged when deposit is exactly 40% of quoted', () => {
+    // $1600 on $4000 = 40.0% — at threshold exactly, not under it
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 1600, balance: 2400, credit_note: 0 }),
+    );
+    expect(r.flags).not.toContain('short-deposit');
+  });
+
+  it('short-deposit: NOT flagged when deposit is 0 (no deposit taken yet)', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 0, balance: 4000, credit_note: 0 }),
+    );
+    expect(r.flags).not.toContain('short-deposit');
+  });
+
+  it('balance-outstanding: !paid && balanceDue > 0 → "balance-outstanding" flag', () => {
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'awaiting_payment', balance: 2000 }));
+    expect(r.flags).toContain('balance-outstanding');
+  });
+
+  it('balance-outstanding: NOT flagged when invoice is paid', () => {
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'paid', balance: 0, credit_note: 0 }));
+    expect(r.flags).not.toContain('balance-outstanding');
+  });
+
+  it('balance-outstanding: NOT flagged when balance is 0 (deposit covered it, not yet marked paid)', () => {
+    const r = reconcileInvoice(makeInvoiceRow({ status: 'draft', balance: 0, credit_note: 0 }));
+    expect(r.flags).not.toContain('balance-outstanding');
+  });
+
+  it('inconsistent: paid && balanceDue > 0 → "inconsistent" flag (data integrity error)', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({ status: 'paid', balance: 500, credit_note: 0, paid_at: '2026-01-02T00:00:00Z' }),
+    );
+    expect(r.flags).toContain('inconsistent');
+  });
+
+  it('multiple flags: short-deposit + balance-outstanding can both fire', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({
+        total: 4000,
+        deposit_applied: 300,
+        balance: 3700,
+        credit_note: 0,
+        status: 'awaiting_payment',
+      }),
+    );
+    expect(r.flags).toContain('short-deposit');
+    expect(r.flags).toContain('balance-outstanding');
   });
 });
