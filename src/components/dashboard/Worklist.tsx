@@ -3,9 +3,9 @@ import { WorklistRow } from './WorklistRow';
 
 export function Worklist({ items }: { items: WorklistItem[] }) {
   return (
-    <section aria-label="Needs your attention" className="mb-8">
+    <section aria-label="Drafts & unsent" className="mb-8">
       <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--op-text)' }}>
-        Needs your attention
+        Drafts &amp; unsent
       </h2>
       <div
         className="rounded-lg border overflow-hidden"
