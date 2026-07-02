@@ -53,9 +53,11 @@ export default async function DashboardPage() {
       <div className="max-w-6xl mx-auto w-full">
         <DashboardHeader />
         <KpiStrip kpis={kpis} />
-        <NeedsActionCard items={needsActionItems} />
-        <WorkflowBoard board={workflowBoard} />
+        {/* Early-stage worklist (drafts / unsent) above the late-stage
+            Needs-Action money queue (overdue follow-ups / deposits / balances). */}
         <Worklist items={worklist} />
+        <WorkflowBoard board={workflowBoard} />
+        <NeedsActionCard items={needsActionItems} />
         <ServiceSections holiday={holiday} permanent={permanent} event={event} />
         {analytics && <ResponseAnalytics data={analytics} />}
       </div>
