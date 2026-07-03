@@ -27,6 +27,7 @@ const FALLBACK: AppSettings = {
   portal: { hideEarlyInstallDiscounts: false },
   swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
   eventRates: DEFAULT_EVENT_RATES,
+  eventEnabled: false,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentEnabled: false,
 };

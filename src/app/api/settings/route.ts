@@ -48,7 +48,7 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentEnabled } =
+  const { colors, defaults, render, portal, swatches, eventRates, eventEnabled, permanentRates, permanentEnabled } =
     body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -57,6 +57,7 @@ export async function PUT(req: NextRequest) {
     portal === undefined &&
     swatches === undefined &&
     eventRates === undefined &&
+    eventEnabled === undefined &&
     permanentRates === undefined &&
     permanentEnabled === undefined
   ) {
@@ -96,6 +97,9 @@ export async function PUT(req: NextRequest) {
   if (eventRates !== undefined && !isPlainObject(eventRates)) {
     return NextResponse.json({ error: 'eventRates must be an object' }, { status: 400 });
   }
+  if (eventEnabled !== undefined && typeof eventEnabled !== 'boolean') {
+    return NextResponse.json({ error: 'eventEnabled must be a boolean' }, { status: 400 });
+  }
   if (permanentRates !== undefined && Object.keys(sanitizePermanentRates(permanentRates)).length === 0) {
     return NextResponse.json(
       { error: 'permanentRates must have at least one valid numeric field (>= 0)' },
@@ -113,6 +117,7 @@ export async function PUT(req: NextRequest) {
       portal: portal as never,
       swatches: swatches as never,
       eventRates: eventRates as never,
+      eventEnabled: eventEnabled as never,
       permanentRates: permanentRates as never,
       permanentEnabled: permanentEnabled as never,
     });
