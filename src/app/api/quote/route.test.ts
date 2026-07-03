@@ -7,15 +7,29 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { save, update, operatorRef } = vi.hoisted(() => ({
+const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   save: vi.fn(async () => ({ id: 'new-id' })),
   update: vi.fn(async () => ({ id: 'existing-id' })),
+  // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
+  // gate). rawRef.current is the row the mock returns; null = row not found,
+  // undefined default = a plain draft (no lifecycle timestamps → not booked).
+  getRaw: vi.fn(async () => rawRef.current),
+  rawRef: {
+    current: null as {
+      quote_sent_at: string | null;
+      customer_approved_at: string | null;
+      deposit_paid_at: string | null;
+      viewed_at?: string | null;
+      status?: string | null;
+    } | null,
+  },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
 }));
 
 vi.mock('@/lib/quotes', () => ({
   saveQuote: save,
   updateQuote: update,
+  getQuoteRaw: getRaw,
 }));
 
 // No design linked in these tests → isValidDesignId false, getDesign untouched.
@@ -62,6 +76,15 @@ const REAL_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 beforeEach(() => {
   vi.clearAllMocks();
   operatorRef.current = null;
+  // Default the update-branch row to a plain draft (no lifecycle timestamps) so
+  // the existing UUID→update tests still re-price; booked/terminal cases set it.
+  rawRef.current = {
+    quote_sent_at: null,
+    customer_approved_at: null,
+    deposit_paid_at: null,
+    viewed_at: null,
+    status: null,
+  };
 });
 
 describe('POST /api/quote — validation hardening', () => {
@@ -224,5 +247,96 @@ describe('POST /api/quote — Test Quote flag (#93)', () => {
     const res = await POST(makeReq({ inputs: validInputs(), isTest: 'yes' }));
     expect(res.status).toBe(400);
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quote — curtain minilight validation (W1-002)', () => {
+  // The projection emits {type:'curtain'} mini inputs (#100); a design-linked
+  // quote persists them, so on reopen the route must accept a curtain-typed
+  // minilight instead of 400ing 'Invalid miniLightItems element'.
+  it('accepts a curtain-typed minilight element (no longer 400)', async () => {
+    const inputs = validInputs();
+    inputs.miniLightItems = [{ type: 'curtain', wrapStyle: 'canopy', stringCount: 1 }];
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('still 400s a minilight with an unknown type', async () => {
+    const inputs = validInputs();
+    inputs.miniLightItems = [{ type: 'not-a-type', wrapStyle: 'canopy', stringCount: 1 }];
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quote — booked-quote re-price gate (W1-003)', () => {
+  // A booked (deposit-paid) or terminal quote must NOT be silently re-priced in
+  // place — that path skips the amendment trail + invoice re-sync + re-consent.
+  // The route rejects it with 409 and points at the amend flow; draft/sent/etc.
+  // still re-price fine.
+  it('rejects re-pricing a booked (deposit-paid) quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: '2026-01-03T00:00:00Z',
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'booked',
+    };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.code).toBeTruthy();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects re-pricing a cancelled (terminal) quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'cancelled',
+    };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('still re-prices a draft quote in place', async () => {
+    // rawRef defaults to a plain draft in beforeEach.
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('still re-prices a sent quote in place', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+    };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('still re-prices an approved-but-unbooked quote in place', async () => {
+    // Approved (signed) but no deposit yet — staff can still legitimately re-price
+    // before booking; only a paid deposit or a terminal state locks it.
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+    };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 });
