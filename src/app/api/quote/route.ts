@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { calculateQuote, QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { saveQuote, updateQuote, Customer } from '@/lib/quotes';
+import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES } from '@/lib/pricing/pricingEngine';
+import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
@@ -35,13 +36,31 @@ const MAX_OVERRIDE_REASON_LEN = 500;
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
 // instead of an opaque downstream 500.
-const VALID_MINILIGHT_TYPES = new Set(['tree', 'bush', 'column', 'railing']);
+// W1-002: derive the valid set from the engine's canonical MINI_LIGHT_TYPES so
+// this can never drift narrow of the MiniLightItem['type'] union again (the old
+// hand-written Set was missing 'curtain', 400ing any design-linked quote with a
+// curtain group on re-price).
+const VALID_MINILIGHT_TYPES: ReadonlySet<string> = new Set(MINI_LIGHT_TYPES);
 const VALID_MINILIGHT_WRAP_STYLES = new Set(['canopy', 'trunk']);
 const VALID_SPRITZER_SIZES = new Set(['16', '24', '32']);
 const VALID_WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '60noble', '72noble']);
 const VALID_GARLAND_LENGTHS = new Set(['4.5ft', '9ft']);
 const VALID_GARLAND_TYPES = new Set(['noble']);
 const VALID_DECOR_TIERS = new Set(['bow', 'fullDecor']);
+
+// W1-003: statuses whose totals are LOCKED against an in-place re-price. A booked
+// (deposit-paid) order's totals can only change through the amend flow
+// (/api/quotes/[id]/amend), which appends the amendment trail, re-syncs the
+// invoice, and re-triggers customer consent; a terminal quote is closed. A plain
+// what-if Calculate on such a quote must NOT silently rewrite result/total, so we
+// 409 and point staff at the amend flow. (deriveStatus returns 'booked' whenever
+// deposit_paid_at is set — the same booked signal the amend route itself uses.)
+const REPRICE_LOCKED_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
+  'booked',
+  'declined',
+  'cancelled',
+  'lost',
+]);
 
 function isNonNegNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
@@ -241,6 +260,23 @@ export async function POST(req: NextRequest) {
     // builder's "recommend roofline" toggle, #17) instead of inserting a new
     // row; otherwise save a fresh quote.
     const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
+    // W1-003: a booked (deposit-paid) or terminal quote must NOT be re-priced in
+    // place — that silently rewrites result/total with no amendment trail, no
+    // invoice re-sync, and no re-consent. Changing a booked order goes through the
+    // amend flow instead. Load the row's lifecycle signals and 409 when locked.
+    if (isUpdate) {
+      const existing = await getQuoteRaw(quoteId as string);
+      if (existing && REPRICE_LOCKED_STATUSES.has(deriveStatus(existing))) {
+        return NextResponse.json(
+          {
+            error:
+              'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
+            code: 'quote-locked',
+          },
+          { status: 409 },
+        );
+      }
+    }
     // Actor audit trail (#90): stamp the creating operator on a NEW quote only
     // (created_by is create-attribution; a re-price must not rewrite it). null
     // while the auth gate is dormant (no session).
