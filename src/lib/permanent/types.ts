@@ -97,3 +97,26 @@ export const DEFAULT_PERMANENT_RATES: PermanentRates = {
   minimumJobAmount: 2500,
   maintenancePrice: 0,
 };
+
+/**
+ * A blank permanent block for a fresh/hydrating quote form. A FACTORY (not a
+ * shared const) so each form gets its own `gaps` array — no cross-form mutation.
+ */
+export function makeDefaultPermanentFields(): PermanentQuoteFields {
+  return {
+    frontFootage: 0,
+    leftFootage: 0,
+    rightFootage: 0,
+    backFootage: 0,
+    gaps: [],
+    controllerToFirstLightFt: 0,
+    frontCorners: 0,
+    leftCorners: 0,
+    rightCorners: 0,
+    backCorners: 0,
+    trackStyle: 'single',
+    trackColor: '9003',
+    blackHousing: false,
+    maintenanceAddOn: false,
+  };
+}
