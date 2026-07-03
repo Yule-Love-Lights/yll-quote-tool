@@ -48,7 +48,10 @@ export async function POST(req: NextRequest) {
   if (file.size > MAX_BYTES) {
     return NextResponse.json({ error: 'File too large (max 10MB)' }, { status: 400 });
   }
-  if (!isAllowedImageType(file.type) && !/\.(png|jpe?g|webp|gif|svg)$/i.test(file.name)) {
+  // #110 W2-024: svg dropped from the fallback — the lib (isAllowedImageType/
+  // extFor) deliberately rejects SVG (stored-XSS risk in the public bucket),
+  // so letting it pass here just deferred the rejection into a 500.
+  if (!isAllowedImageType(file.type) && !/\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
     return NextResponse.json({ error: 'Unsupported image type' }, { status: 400 });
   }
   try {

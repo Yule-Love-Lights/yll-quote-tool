@@ -14,7 +14,12 @@ import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
-const PHOTO_ID_RE = /^(base|[0-9a-f-]{36})$/i;
+// #110 W2-023: tightened to the strict dashed-UUID pattern used elsewhere
+// (src/lib/portal/loader.ts, src/lib/dashboard/inbox/validate.ts) instead of
+// the loose /^(base|[0-9a-f-]{36})$/i fragment, which accepted malformed ids
+// like 36 dashes. lib/designs.ts's isValidDesignId is owned by a sibling
+// audit-wave agent and not imported here — kept local to this route.
+const PHOTO_ID_RE = /^(base|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 type Params = { params: Promise<{ id: string; photoId: string }> };
 

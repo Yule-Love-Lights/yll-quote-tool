@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { uploadDesignPhoto, signDesignPhoto, isValidDesignId } from '@/lib/designs';
+import { uploadDesignPhoto, signDesignPhoto, isValidDesignId, getDesign } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
@@ -36,6 +36,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const photoMediaType = typeof body.photoMediaType === 'string' ? body.photoMediaType : 'image/jpeg';
   if (!photoBase64) {
     return NextResponse.json({ error: 'photoBase64 is required' }, { status: 400 });
+  }
+
+  // #110 W2-008: check existence before uploading — an update by id that
+  // matches zero rows is not a Supabase error, so without this a stale/wrong
+  // design id would still upload the blob and return 200, orphaning it.
+  const row = await getDesign(id);
+  if (!row) {
+    return NextResponse.json({ error: 'Design not found' }, { status: 404 });
   }
 
   try {

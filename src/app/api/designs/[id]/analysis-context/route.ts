@@ -15,9 +15,8 @@
 // from what's stored here — no client state needed at capture time.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
-  getDesign,
   setDesignAnalysis,
   uploadDesignSatellite,
   isValidDesignId,
@@ -27,6 +26,24 @@ import { requireOperator } from '@/lib/auth/supabaseServer';
 export const runtime = 'nodejs';
 
 const MAX_IMAGE_BASE64_CHARS = 14 * 1024 * 1024; // ~10MB binary, base64-inflated
+// #110 W2-022: bound the persisted analysis jsonb the same way satelliteBase64
+// is bounded — an unbounded operator-supplied object would bloat the row and
+// every downstream select('*') off designs.
+const MAX_ANALYSIS_JSON_CHARS = 400 * 1024; // ~400KB serialized
+
+// #110 W2-021: existence check narrowed to select('id') — the route only needs
+// to know the row exists, not the full scene/seed_analysis/extra_photos jsonb
+// that getDesign's select('*') would pull.
+async function designRowExists(id: string): Promise<boolean> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return false;
+  const { data, error } = await sb.from('designs').select('id').eq('id', id).maybeSingle();
+  if (error) {
+    console.error('Supabase designRowExists error:', error);
+    return false;
+  }
+  return data != null;
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
@@ -62,9 +79,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (hasSatellite && (satelliteBase64 as string).length > MAX_IMAGE_BASE64_CHARS) {
     return NextResponse.json({ error: 'Satellite image too large — max 10MB' }, { status: 400 });
   }
+  if (hasAnalysis && JSON.stringify(analysis).length > MAX_ANALYSIS_JSON_CHARS) {
+    return NextResponse.json({ error: 'Analysis payload too large — max ~400KB' }, { status: 400 });
+  }
 
-  const row = await getDesign(id);
-  if (!row) return NextResponse.json({ error: 'Design not found' }, { status: 404 });
+  const exists = await designRowExists(id);
+  if (!exists) return NextResponse.json({ error: 'Design not found' }, { status: 404 });
 
   try {
     if (hasAnalysis) {
