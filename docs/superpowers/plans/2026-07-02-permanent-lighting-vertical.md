@@ -66,6 +66,25 @@ Permanent lighting (Glow365) is YLL's second service line: Omni/Ascend RGB puck 
 - **Zero holiday regression:** every branch point defaults to holiday behavior when `service_type !== 'permanent'`. Full gates (tsc · lint · vitest) per PR; adversarial review on money-adjacent PRs (pricing, BOM, approve-snapshot).
 - New pure modules over threading branches through the 800-line holiday engine.
 
+## Execution policy — model routing & production guardrails (Naldo, 2026-07-02)
+
+**1. Work auto-routes to the right model tier (silent, automatic):**
+
+| Tier | Model | Does |
+|---|---|---|
+| DOWN | **Haiku 4.5** | reads: recon, file location, doc lookups, log scans |
+| DOWN | **Sonnet 5** | builds: routine implementation, tests, UI components, docs |
+| ME-SEAT (default) | **Opus 4.8** | plans, judges, reviews: phase orchestration, adversarial review passes, PR review, disposition of findings |
+| UP | **Fable 5** | top-tier — **always asks first**, never silent |
+
+**2. Only 2 interruptions ever:** "use the expensive model?" and "ship to production?". Everything else proceeds without stopping.
+
+**3. Top-tier (Fable 5) = design, danger, or money ONLY** — architecture calls, production debugging, security review, migrations. **Never routine coding. ~20% of the work, max.** In this plan that means Fable is ask-first-eligible for exactly: the P1 money-math adversarial verdict, the P6 approve/amend money-path review, the P8 prod catalog migration, and any live production debugging. All other work runs on the DOWN/ME-SEAT tiers automatically.
+
+**4. Every production change is guarded:** `branch → PR → automated checks (tsc · lint · vitest) → merge → deploy → verify`. **The AI never merges itself** — before any merge it shows Naldo a **plain-English summary derived from the actual code diff** (not from intent) and waits for an explicit "go". (Extends the existing AGENTS.md human-merge rule; Jason-area PRs also carry his review flag.) Post-merge, the deploy is verified in-browser, not assumed.
+
+**5. Model fallback:** if a tier's model is down/unavailable, work **drops exactly one tier** (Fable → Opus → Sonnet → Haiku) and **says so** in the output. For anything risky (money math, prod migrations, approve/amend paths, security), it does NOT silently substitute — it **stops and asks** first.
+
 ---
 
 # Phases (8 PR-sized, each independently shippable + gated)
