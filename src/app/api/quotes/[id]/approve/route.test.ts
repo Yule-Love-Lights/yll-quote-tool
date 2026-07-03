@@ -82,6 +82,20 @@ const RESULT = {
   },
 };
 
+// A PERMANENT QuoteResult (#88): front $4000 + back $2100 (stable ids). Whole
+// quote $6100 clears the $2,500 gate, so a back-only ($2100) selection is below
+// it — proving the gate uses the frozen snapshot minimum, not the holiday $1,000.
+const PERM_RESULT = {
+  ...RESULT,
+  lineItems: [
+    { label: 'Permanent Lighting - Front - 100 ft ($40/ft)', amount: 4000, id: 'permanent-front' },
+    { label: 'Permanent Lighting - Back - 60 ft ($35/ft)', amount: 2100, id: 'permanent-back' },
+  ],
+  rooflineChoice: 'none',
+  rooflineOptions: { santas: null, gingerbread: null },
+  permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
+};
+
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function baseQuote(overrides: Record<string, unknown> = {}) {
@@ -502,5 +516,53 @@ describe('POST /api/quotes/[id]/approve — TOCTOU + notify marker', () => {
 
     delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
     hl.sendEmail.mockResolvedValue({});
+  });
+});
+
+describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
+  it('forces holiday fees OFF even if the body toggles rush/takedown/early-install', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({
+        ...validBody,
+        selectedItemIds: ['permanent-front'], // $4000
+        rushSelected: true,
+        takedownSelected: true,
+        installTiming: 'september',
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number };
+      serverRecomputed: boolean;
+    };
+    // $4000 + 8.75% tax = $4350 — NO rush ($150) / takedown ($150) / early-install discount.
+    expect(snap.serverRecomputed).toBe(true);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(4350, 2);
+  });
+
+  it('gates on the snapshot minimum ($2,500): a $2,100 back-only selection is rejected', async () => {
+    const { client } = makeSb(baseQuote({ result: PERM_RESULT, service_type: 'permanent' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-back'] }), // $2100 < $2500
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('below-minimum');
+  });
+
+  it('approves a permanent selection at or above $2,500', async () => {
+    const { client } = makeSb(baseQuote({ result: PERM_RESULT, service_type: 'permanent' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'] }), // $4000 >= $2500
+      { params },
+    );
+    expect(res.status).toBe(200);
   });
 });
