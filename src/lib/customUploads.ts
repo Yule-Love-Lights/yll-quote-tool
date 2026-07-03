@@ -108,7 +108,15 @@ export async function deleteCustomUpload(id: string): Promise<void> {
     .select('path')
     .eq('id', id)
     .single();
-  if (error || !data) return; // already gone — treat as success
+  if (error) {
+    // W2-028: .single() also errors on a real/transient DB failure, not just
+    // "no rows" — only PGRST116 (PostgREST's no-rows-found code) means
+    // already-gone. Any other error must surface, not be silently swallowed
+    // as success.
+    if (error.code === 'PGRST116') return;
+    throw new Error(`lookup failed: ${error.message}`);
+  }
+  if (!data) return; // already gone — treat as success
   await sb.storage.from(BUCKET).remove([data.path]).catch(() => {});
   const { error: delErr } = await sb.from('custom_uploads').delete().eq('id', id);
   if (delErr) throw new Error(`delete failed: ${delErr.message}`);

@@ -170,4 +170,25 @@ describe('cloneDesignToNewQuote', () => {
     // Satellite still copied fine.
     expect(clone.satellite_path).toBe(`${res!.id}/satellite.png`);
   });
+
+  // W2-032: cloneDesignToNewQuote must stamp created_by like createDesign/
+  // saveQuote do on every other design-creation path — otherwise a rebooked
+  // clone lands with a NULL creator, a gap in the #90 audit trail.
+  it('stamps created_by on the clone when given', async () => {
+    const fake = makeFake({ source: SOURCE, objects: [] });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote', 'op-1');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+    expect(clone.created_by).toBe('op-1');
+  });
+
+  it('writes created_by null when no actor is given', async () => {
+    const fake = makeFake({ source: SOURCE, objects: [] });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+    expect(clone.created_by).toBeNull();
+  });
 });
