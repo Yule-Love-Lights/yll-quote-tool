@@ -151,6 +151,46 @@ export function computeInitialSelection(
   return { packageId: initialPackageId, selectedItemIds: initial?.includedItemIds ?? [] };
 }
 
+// Pure reducer for toggleItem (extracted for test coverage — audit W4-011).
+// Mirrors the Set logic inside SelectionProvider's toggleItem exactly: toggling
+// OFF an already-selected item is a plain delete; toggling ON a roofline-group
+// item first removes every sibling in the group so Santa's and Gingerbread can
+// never both be selected (the single most money-sensitive selection rule — a
+// double roofline would double-count in the subtotal/approve total).
+export function nextSelectedItemIds(
+  prev: Set<string>,
+  itemId: string,
+  rooflineGroup: Set<string>,
+): Set<string> {
+  const next = new Set(prev);
+  if (next.has(itemId)) {
+    next.delete(itemId);
+  } else {
+    if (rooflineGroup.has(itemId)) {
+      for (const sibling of rooflineGroup) next.delete(sibling);
+    }
+    next.add(itemId);
+  }
+  return next;
+}
+
+// Pure reducer for selectPackage (extracted for test coverage — audit W4-011).
+// Mirrors SelectionProvider's selectPackage exactly: picking A/B/C replaces the
+// selection with that tier's bundle; picking D ("Our Recommendation") loads the
+// staff-recommended set when non-empty, otherwise keeps whatever's currently
+// selected (the empty "Build Your Own" card is a no-op on the item set).
+export function nextPackageSelectedItemIds(
+  pkg: Pick<PortalPackage, 'id' | 'includedItemIds'>,
+  currentSelectedItemIds: Set<string>,
+): Set<string> {
+  if (pkg.id === 'D') {
+    return pkg.includedItemIds.length > 0
+      ? new Set(pkg.includedItemIds)
+      : new Set(currentSelectedItemIds);
+  }
+  return new Set(pkg.includedItemIds);
+}
+
 export function useSelection(): SelectionContextValue {
   const ctx = useContext(SelectionContext);
   if (!ctx) throw new Error('useSelection must be inside <SelectionProvider>');
@@ -302,36 +342,13 @@ export function SelectionProvider({
       const pkg = packagesById.get(id);
       if (!pkg) return;
       setPackageId(id);
-      if (id === 'D') {
-        // "Our Recommendation": load the staff-recommended set when present.
-        // When D is the empty "Build Your Own" card (no recommendation), keep
-        // whatever the customer currently has selected.
-        if (pkg.includedItemIds.length > 0) {
-          setSelectedItemIds(new Set(pkg.includedItemIds));
-        }
-        return;
-      }
-      setSelectedItemIds(new Set(pkg.includedItemIds));
+      setSelectedItemIds((prev) => nextPackageSelectedItemIds(pkg, prev));
     },
     [packagesById],
   );
 
   const toggleItem = useCallback((itemId: string) => {
-    setSelectedItemIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(itemId)) {
-        next.delete(itemId);
-      } else {
-        // Roofline is mutually exclusive: picking Santa's OR Gingerbread
-        // removes the other (you can never have both). Removing one is just a
-        // normal toggle-off, so this only fires when ADDING.
-        if (rooflineGroup.has(itemId)) {
-          for (const sibling of rooflineGroup) next.delete(sibling);
-        }
-        next.add(itemId);
-      }
-      return next;
-    });
+    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup));
     // Any manual item toggle flips selection to Custom.
     setPackageId('D');
   }, [rooflineGroup]);
