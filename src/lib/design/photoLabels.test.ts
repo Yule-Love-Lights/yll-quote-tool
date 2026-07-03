@@ -42,4 +42,18 @@ describe('photoLabelForLine (#13)', () => {
     expect(photoLabelForLine([], items, labels)).toBeNull();
     expect(photoLabelForLine(['nope'], items, labels)).toBeNull();
   });
+
+  it('twins never decide the tag — the canonical\'s photo does (#13 twin-expansion bug)', () => {
+    const twinItems = [
+      { id: 'canon-base' }, // canonical on photo 1
+      { id: 'twin-extra', photoId: A, linkedToId: 'canon-base' }, // its re-placed depiction
+      { id: 'canon-extra', photoId: A }, // fresh billable drawn on the extra
+      { id: 'twin-base', linkedToId: 'canon-extra' }, // that one's depiction on photo 1
+    ];
+    // attachSceneLinks expands lines with twin ids — a photo-1 canonical with a
+    // Left-side twin must stay UNTAGGED (the Jason CP2 repro)…
+    expect(photoLabelForLine(['canon-base', 'twin-extra'], twinItems, labels)).toBeNull();
+    // …while a canonical living ON the extra still tags, twins ignored.
+    expect(photoLabelForLine(['canon-extra', 'twin-base'], twinItems, labels)).toBe('Left side');
+  });
 });

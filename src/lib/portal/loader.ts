@@ -80,6 +80,9 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
             satelliteW: design.satelliteW,
             satelliteH: design.satelliteH,
             satelliteLines: design.satelliteLines,
+            // #13 multi-image: extra photos (signed URLs) for the hero strip,
+            // reprise arrows, and the all-photos gallery.
+            extraPhotos: design.extraPhotos,
           };
           // Link line items ⇄ scene items so the portal can hide a drawn item
           // when its line item is toggled off (#27 D). Additive — same ids, just

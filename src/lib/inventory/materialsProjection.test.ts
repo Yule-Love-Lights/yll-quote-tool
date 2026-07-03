@@ -272,3 +272,14 @@ describe('aggregateMaterials', () => {
     expect(aggregateMaterials(lines)).toEqual([]);
   });
 });
+
+// ─── #13 linked twins — twins never pull materials ───────────────────────────
+describe('projectMaterials — #13 linked twins', () => {
+  it('skips twins; the canonical pulls materials once', () => {
+    const canonical = W('w-canon', '30noble', 'bow');
+    const twin = { ...W('w-twin', '30noble', 'bow'), linkedToId: 'w-canon' } as SceneItem;
+    const withTwin = projectMaterials(scene([canonical, twin]), B);
+    const alone = projectMaterials(scene([canonical]), B);
+    expect(withTwin).toEqual(alone);
+  });
+});

@@ -201,6 +201,25 @@ describe('extra street photos (#13)', () => {
     expect(items.map(i => i.id)).toEqual(['i2', 'i3']);
   });
 
+  it('removeDesignExtraPhoto also prunes twins of a pruned canonical (#13)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'canon', kind: 'wreath', photoId: PHOTO_A }, // canonical dies with its photo
+          { id: 'twin-of-canon', kind: 'wreath', linkedToId: 'canon' }, // base-photo twin → dangling → pruned
+          { id: 'unrelated', kind: 'wreath' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['unrelated']);
+  });
+
   it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
     const { client, state } = makeExtrasSb({ extra_photos: [] });
     sbRef.current = client;
@@ -325,6 +344,18 @@ describe('deleteDesign (audit fix: customer-photo-retention-deletion)', () => {
     expect(calls.listedPrefixes).toEqual([ID]);
     expect(calls.removedPaths).toEqual([[`${ID}/photo.jpg`, `${ID}/satellite.png`]]);
     expect(calls.deletedIds).toEqual([ID]);
+  });
+
+  it('extra-photo objects under the prefix ride the same erasure (#13 retention)', async () => {
+    const { client, calls } = makeSb({
+      objects: [{ name: 'photo.jpg' }, { name: 'satellite.png' }, { name: `extra-${PHOTO_A}.jpg` }],
+    });
+    sbRef.current = client;
+
+    expect(await deleteDesign(ID)).toBe(true);
+    expect(calls.removedPaths).toEqual([
+      [`${ID}/photo.jpg`, `${ID}/satellite.png`, `${ID}/extra-${PHOTO_A}.jpg`],
+    ]);
   });
 
   it('still deletes the row when there are no bucket objects', async () => {

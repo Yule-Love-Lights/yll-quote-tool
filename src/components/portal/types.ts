@@ -186,6 +186,10 @@ export type PortalDesign = {
   satelliteW?: number | null;
   satelliteH?: number | null;
   satelliteLines?: PortalSatelliteLines | null;
+  // Extra street photos (#13 multi-image): more angles of the same house, each
+  // with its own drawn items (scene items reference them via photoId). Absent/
+  // empty = single-photo design → every multi-photo surface hides.
+  extraPhotos?: { id: string; url: string | null; w: number; h: number; title: string | null }[];
 };
 
 export type PortalQuote = {

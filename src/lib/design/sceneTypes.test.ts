@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isItemOnPhoto } from './sceneTypes';
+import { isItemOnPhoto, isLinkedTwin } from './sceneTypes';
 
 // #13 multi-image: the one predicate both the editor's per-photo filtering and
 // the portal's per-photo rendering hang off. null/absent photoId = the BASE
@@ -20,5 +20,13 @@ describe('isItemOnPhoto (#13)', () => {
     expect(isItemOnPhoto({ photoId: P1 }, P1)).toBe(true);
     expect(isItemOnPhoto({ photoId: P1 }, null)).toBe(false);
     expect(isItemOnPhoto({ photoId: P1 }, 'other-id')).toBe(false);
+  });
+});
+
+describe('isLinkedTwin (#13)', () => {
+  it('true only when linkedToId is set', () => {
+    expect(isLinkedTwin({ linkedToId: 'abc' })).toBe(true);
+    expect(isLinkedTwin({})).toBe(false);
+    expect(isLinkedTwin({ linkedToId: null })).toBe(false);
   });
 });

@@ -34,6 +34,8 @@ function targets(items: SceneItem[]): Target[] {
   const out: Target[] = [];
   for (const item of items ?? []) {
     if (item.included === false) continue;
+    // #13 linked twins mirror their canonical's colors — flag only the canonical.
+    if (item.linkedToId) continue;
     if (isSpritzer(item)) {
       out.push({ id: item.id, type: 'spritzer', noun: 'spritzer', nounPlural: 'spritzers', colors: item.colorPattern ?? [], size: item.quoteSize ?? DEFAULT_SPRITZER_SIZE });
     } else if (isStrand(item)) {

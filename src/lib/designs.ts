@@ -726,12 +726,20 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     return false;
   }
 
-  // Prune scene items drawn on the removed photo.
+  // Prune scene items drawn on the removed photo — plus any linked twins of a
+  // pruned CANONICAL (#13): a twin on another photo depicting an item that just
+  // died with this photo would otherwise dangle (render-only, unlinked forever).
   try {
     const row = await getDesign(id);
     const scene = row?.scene;
     if (scene && Array.isArray(scene.items) && scene.items.some(it => it.photoId === photoId)) {
-      await updateDesignScene(id, { ...scene, items: scene.items.filter(it => it.photoId !== photoId) });
+      const prunedIds = new Set(scene.items.filter(it => it.photoId === photoId).map(it => it.id));
+      await updateDesignScene(id, {
+        ...scene,
+        items: scene.items.filter(
+          it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
+        ),
+      });
     }
   } catch (err) {
     console.error('removeDesignExtraPhoto: scene prune failed:', err);

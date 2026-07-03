@@ -53,3 +53,12 @@ describe('detectUnfulfillable', () => {
     expect(u.message).toContain('offered:');
   });
 });
+
+// ─── #13 linked twins — only the canonical is flagged ────────────────────────
+describe('detectUnfulfillable — #13 linked twins', () => {
+  it('skips twins (they mirror the canonical\'s colors)', () => {
+    const canonical = sp('s-canon', ['orange']);
+    const twin = { ...sp('s-twin', ['orange']), linkedToId: 's-canon' } as SceneItem;
+    expect(ids([canonical, twin])).toEqual(['s-canon']);
+  });
+});

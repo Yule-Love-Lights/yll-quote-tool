@@ -8,6 +8,7 @@ import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
+import { getDesignByQuote } from '@/lib/designs';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -56,6 +57,18 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
   const job = await getJobByQuote(id);
   const invoice = job ? await getInvoiceByJob(job.id) : null;
+  // #13 PR5: small photo thumbnails (base + extras) so staff can see at a
+  // glance which angles a quote's design covers. Best-effort — a design
+  // lookup failure never blocks the detail page.
+  const design = await getDesignByQuote(id).catch(() => null);
+  const photoThumbs = design
+    ? [
+        { key: 'base', url: design.photoUrl, title: design.photoTitle || 'Photo 1' },
+        ...design.extraPhotos
+          .filter((p) => p.url)
+          .map((p, i) => ({ key: p.id, url: p.url, title: p.title || `Photo ${i + 2}` })),
+      ].filter((p) => p.url)
+    : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
 
@@ -101,6 +114,24 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             {[quote.customer_phone, quote.customer_email].filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
+
+        {/* Design photos (#13 PR5) — read-only thumbnails, base + extras. */}
+        {photoThumbs.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+              Design photos ({photoThumbs.length})
+            </h2>
+            <div className="flex gap-2 flex-wrap">
+              {photoThumbs.map((p) => (
+                <figure key={p.key} className="m-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={p.url!} alt={p.title} className="w-24 h-16 object-cover rounded border border-gray-200" />
+                  <figcaption className="text-[10px] text-gray-500 mt-0.5 max-w-24 truncate">{p.title}</figcaption>
+                </figure>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Timeline */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
