@@ -21,6 +21,7 @@ import type {
 } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
+import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -87,6 +88,9 @@ export type QuoteRowForPortal = {
   // Test Quote (ledger #93): drives the portal's "Simulate deposit paid" path.
   // Optional for back-compat with older callers/tests.
   is_test?: boolean | null;
+  // Permanent Lighting (#88 P5): which package-derivation + minimum-gate path
+  // the portal uses. Optional/back-compat — undefined/null reads as holiday.
+  service_type?: import('@/lib/serviceType').ServiceType | null;
 };
 
 // Scarcity context comes from environment variables (per design B3).
@@ -158,6 +162,24 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
   return items
     .filter((raw) => raw && typeof raw.label === 'string' && typeof raw.amount === 'number')
     .map((raw) => {
+      // Permanent Lighting (#88 P5): the pricing engine stamps stable
+      // 'permanent-*' ids on these rows — key off the id directly (never a
+      // label regex) instead of running them through the holiday parser.
+      // The stable id becomes the portal id itself so packages/selection can
+      // key on it without a separate lookup.
+      if (typeof raw.id === 'string' && raw.id.startsWith('permanent-')) {
+        const isAddon = raw.id === 'permanent-maintenance';
+        const m = raw.label.match(/(\d+)\s*ft/i);
+        const item: PortalLineItem = {
+          id: raw.id,
+          kind: isAddon ? 'permanent-addon' : 'permanent',
+          label: raw.label,
+          detail: isAddon ? '' : m ? `${m[1]} ft` : '',
+          price: raw.amount,
+          stableId: raw.id,
+        };
+        return item;
+      }
       const { kind, detail } = parseLineItem(raw.label);
       const idx = counts[kind] ?? 0;
       counts[kind] = idx + 1;
@@ -373,7 +395,13 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // Tier composition (Jason S12) needs BOTH roofline options so Tier 1 can be
   // Santa's and Tier 2 Gingerbread regardless of which staff recommended;
   // derivePackages guarantees no single tier ever selects both.
-  const packages = derivePackages(lineItems, row.result, roofline);
+  //
+  // Permanent Lighting (#88 P5): surface-based packages (front/sides/back/
+  // whole-home) instead of the holiday roofline/spritzer tier ladder.
+  const isPermanent = row.service_type === 'permanent';
+  const packages = isPermanent
+    ? derivePackagesPermanent(lineItems, row.result)
+    : derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
@@ -410,12 +438,21 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
     charges: { ...chargesFromResult(row.result), manualDiscount },
-    // The $1,000 approval gate threshold. 0 when EITHER (a) staff checked
-    // "waive the $1,000 minimum" on this quote (#59 — inputs.waiveMinimum), or
-    // (b) the quote's items already total under $1,000 (the existing auto-waive
-    // in minimumOrderSubtotal()). Enforced on the portal, not in pricing. Uses
-    // tierLineItems so a two-roofline quote isn't double-counted.
-    minimumOrderSubtotal: row.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems),
+    // The approval gate threshold: $1,000 for holiday, or the permanent
+    // quote's FROZEN rate-snapshot minimumJobAmount (#88 — never live
+    // app_settings, the rate-drift guard; falls back to the canonical $2,500
+    // default if a permanent result somehow lacks a snapshot). 0 when EITHER
+    // (a) staff checked "waive the minimum" on this quote (#59 —
+    // inputs.waiveMinimum), or (b) the quote's items already total under the
+    // minimum (the existing auto-waive in minimumOrderSubtotal()). Enforced on
+    // the portal, not in pricing. Uses tierLineItems so a two-roofline quote
+    // isn't double-counted.
+    minimumOrderSubtotal: row.inputs?.waiveMinimum
+      ? 0
+      : minimumOrderSubtotal(
+          tierLineItems,
+          isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+        ),
     // Seeds the portal's install-timing (#40): the customer's APPROVED choice on a
     // booked quote, else the staff-set default so an active quote opens with the
     // Sep/Oct discount pre-selected (the customer can still change it).
@@ -433,6 +470,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.
     isTest: row.is_test ?? false,
+    // The quote's service line (#88 Permanent Lighting vertical). Undefined
+    // for legacy rows without the column.
+    serviceType: row.service_type ?? undefined,
     // Bug fix (B3): derive the current status from the row (explicit persisted
     // status wins for branch/terminal states; timestamps are the fallback for
     // legacy rows) and thread it into PortalQuote so the portal can gate the

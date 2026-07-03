@@ -348,6 +348,12 @@ describe('minimumOrderSubtotal — the portal approval gate threshold (#18)', ()
   it('is waived (0) for an empty quote', () => {
     expect(minimumOrderSubtotal([])).toBe(0);
   });
+
+  it('gates at an explicit minimum when passed (#88 permanent rate-snapshot minimum)', () => {
+    const lineItems = [item('permanent-front', 2000), item('permanent-back', 600)]; // sum 2600
+    expect(minimumOrderSubtotal(lineItems, 2500)).toBe(2500);
+    expect(minimumOrderSubtotal([item('permanent-front', 1000)], 2500)).toBe(0); // 1000 < 2500
+  });
 });
 
 describe('orderMinimumStatus — the $1,000 gate counts rush + takedown, not just items (#47)', () => {
