@@ -80,16 +80,134 @@ describe('design upload size cap (audit #22)', () => {
   });
 });
 
+// ─── W2-014: replacing the base photo/satellite with a DIFFERENT extension
+// must not orphan the old blob (upsert only overwrites the SAME storage key,
+// so photo.png survives untouched when the replacement lands at photo.jpg). ─
+
+// Fake Supabase for the extension-change suite: a designs row with an existing
+// photo_path/satellite_path, plus storage upload/remove recorders.
+function makeReplaceSb(row: { photo_path?: string | null; satellite_path?: string | null }) {
+  const state = {
+    row: { id: ID, photo_path: row.photo_path ?? null, satellite_path: row.satellite_path ?? null } as Record<string, unknown>,
+    uploadedPaths: [] as string[],
+    removedPaths: [] as string[][],
+  };
+  const storage = {
+    from: () => ({
+      upload: async (path: string) => {
+        state.uploadedPaths.push(path);
+        return { data: { path }, error: null };
+      },
+      remove: async (paths: string[]) => {
+        state.removedPaths.push(paths);
+        return { data: null, error: null };
+      },
+    }),
+  };
+  function tableBuilder() {
+    let selectCols = '*';
+    let updatePayload: Record<string, unknown> | null = null;
+    const b: Record<string, unknown> = {};
+    Object.assign(b, {
+      select: (cols?: string) => {
+        selectCols = cols ?? '*';
+        return b;
+      },
+      update: (payload: Record<string, unknown>) => {
+        updatePayload = payload;
+        return b;
+      },
+      eq: () => b,
+      maybeSingle: async () => {
+        if (selectCols === 'photo_path') return { data: { photo_path: state.row.photo_path }, error: null };
+        if (selectCols === 'satellite_path') return { data: { satellite_path: state.row.satellite_path }, error: null };
+        return { data: { ...state.row }, error: null };
+      },
+      then: (resolve: (v: unknown) => void) => {
+        if (updatePayload) Object.assign(state.row, updatePayload);
+        resolve({ error: null });
+      },
+    });
+    return b;
+  }
+  return { client: { storage, from: () => tableBuilder() }, state };
+}
+
+describe('uploadDesignPhoto / uploadDesignSatellite orphan cleanup (W2-014)', () => {
+  beforeEach(() => {
+    sharpMock.mockClear();
+    sbRef.current = null;
+  });
+
+  it('removes the old photo blob when the replacement has a DIFFERENT extension', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: `${ID}/photo.png` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const res = await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(res.path).toBe(`${ID}/photo.jpg`);
+    expect(state.uploadedPaths).toEqual([`${ID}/photo.jpg`]);
+    expect(state.removedPaths).toEqual([[`${ID}/photo.png`]]);
+  });
+
+  it('does NOT remove anything when the replacement keeps the SAME extension (upsert overwrites)', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: `${ID}/photo.jpg` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(state.removedPaths).toEqual([]);
+  });
+
+  it('does NOT remove anything for a first-ever upload (no prior photo_path)', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: null });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(state.removedPaths).toEqual([]);
+  });
+
+  it('removes the old satellite blob when the replacement has a DIFFERENT extension', async () => {
+    const { client, state } = makeReplaceSb({ satellite_path: `${ID}/satellite.png` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const res = await uploadDesignSatellite(ID, tiny, 'image/jpeg', null);
+
+    expect(res.path).toBe(`${ID}/satellite.jpg`);
+    expect(state.removedPaths).toEqual([[`${ID}/satellite.png`]]);
+  });
+
+  it('does NOT remove the satellite blob on a same-extension replacement', async () => {
+    const { client, state } = makeReplaceSb({ satellite_path: `${ID}/satellite.jpg` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignSatellite(ID, tiny, 'image/jpeg', null);
+
+    expect(state.removedPaths).toEqual([]);
+  });
+});
+
 // ─── extra street photos (#13 multi-image) ──────────────────────────────────
 // A design's extras: stored under the design's own storage prefix, tracked in
 // the extra_photos jsonb array, referenced by scene items via `photoId`.
 
 // Fake Supabase for the extras suite: a designs row whose extra_photos/scene
 // evolve through .update() calls, plus storage upload/remove recorders.
+// `onSceneRefetch` (W2-016) fires on the SECOND `select('scene')` read (the
+// prune's fresh re-read, right before its write) — simulating a CONCURRENT
+// autosave that already committed to the row by the time the prune re-reads,
+// so the test can assert the prune's write doesn't clobber it.
 function makeExtrasSb(row: {
   extra_photos?: DesignExtraPhoto[] | null;
   scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
   photo_path?: string | null;
+  onSceneRefetch?: (state: { row: Record<string, unknown> }) => void;
 }) {
   const state = {
     row: {
@@ -100,10 +218,13 @@ function makeExtrasSb(row: {
       photo_h: null,
       scene: row.scene ?? { yardsticks: [], items: [] },
       extra_photos: row.extra_photos ?? null,
+      updated_at: 'v0',
     } as Record<string, unknown>,
     uploadedPaths: [] as string[],
     removedPaths: [] as string[][],
     signedPaths: [] as string[],
+    selectCalls: [] as string[],
+    sceneOnlyReads: 0,
   };
 
   const storage = {
@@ -123,29 +244,74 @@ function makeExtrasSb(row: {
     }),
   };
 
+  let updateCounter = 0;
+
   function tableBuilder() {
     let selectCols = '*';
     let updatePayload: Record<string, unknown> | null = null;
+    let selectAfterUpdate = false;
+    const eqFilters: Array<[string, unknown]> = [];
     const b: Record<string, unknown> = {};
     Object.assign(b, {
       select: (cols?: string) => {
-        selectCols = cols ?? '*';
+        if (updatePayload) {
+          // .update(...).select(cols) — post-write row-match projection
+          // (updateExtraPhotosAtomic's optimistic-concurrency guard).
+          selectAfterUpdate = true;
+        } else {
+          selectCols = cols ?? '*';
+          state.selectCalls.push(selectCols);
+        }
         return b;
       },
       update: (payload: Record<string, unknown>) => {
         updatePayload = payload;
         return b;
       },
-      eq: () => b,
+      eq: (col: string, val: unknown) => {
+        eqFilters.push([col, val]);
+        return b;
+      },
       maybeSingle: async () => {
         if (selectCols === 'extra_photos') {
           return { data: { extra_photos: state.row.extra_photos }, error: null };
         }
+        if (selectCols === 'extra_photos, updated_at') {
+          return { data: { extra_photos: state.row.extra_photos, updated_at: state.row.updated_at }, error: null };
+        }
+        if (selectCols === 'extra_photos, scene') {
+          return { data: { extra_photos: state.row.extra_photos, scene: state.row.scene }, error: null };
+        }
+        if (selectCols === 'scene') {
+          state.sceneOnlyReads += 1;
+          // The prune's FRESH re-read — inject the concurrent autosave's
+          // effect right here, as if it committed between the top-of-function
+          // read (select('extra_photos, scene')) and this dedicated re-read.
+          if (row.onSceneRefetch) row.onSceneRefetch(state);
+          return { data: { scene: state.row.scene }, error: null };
+        }
         return { data: { ...state.row }, error: null };
       },
       then: (resolve: (v: unknown) => void) => {
-        if (updatePayload) Object.assign(state.row, updatePayload);
-        resolve({ error: null });
+        if (updatePayload) {
+          // Optimistic-concurrency guard: an .eq('updated_at', snapshot) that
+          // no longer matches the CURRENT row means another writer won the
+          // race — the update matches zero rows (mirrors real Postgres).
+          const preconditionOk = eqFilters
+            .filter(([col]) => col === 'updated_at')
+            .every(([, val]) => val === state.row.updated_at);
+          if (preconditionOk) {
+            Object.assign(state.row, updatePayload);
+            state.row.updated_at = `v${++updateCounter}`;
+          }
+          if (selectAfterUpdate) {
+            resolve({ data: preconditionOk ? [{ id: state.row.id }] : [], error: null });
+          } else {
+            resolve({ error: null });
+          }
+        } else {
+          resolve({ data: undefined, error: null });
+        }
       },
     });
     return b;
@@ -220,6 +386,43 @@ describe('extra street photos (#13)', () => {
     expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items.map(i => i.id)).toEqual(['unrelated']);
+  });
+
+  // W2-016: a CONCURRENT scene autosave landing between the prune's read and
+  // its write must not be clobbered by a stale-snapshot prune. Simulate the
+  // race via onSceneUpdate: right before the prune's scene-only update fires,
+  // inject a concurrent autosave that adds a brand-new item. The fix must
+  // re-read the scene fresh immediately before writing, so the autosaved item
+  // survives the prune (the OLD code used the initial-read snapshot and would
+  // silently drop it).
+  it('does not clobber a concurrent scene autosave with a stale prune (W2-016)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'i1', kind: 'wreath', photoId: PHOTO_A },
+          { id: 'i2', kind: 'wreath' },
+        ],
+      },
+      onSceneRefetch: (s) => {
+        // A concurrent autosave lands between the prune's initial read and its
+        // fresh re-read: staff adds a brand-new billable item on the base photo.
+        const row = s.row as { scene: { yardsticks: unknown[]; items: Array<Record<string, unknown>> } };
+        row.scene = {
+          ...row.scene,
+          items: [...row.scene.items, { id: 'autosaved', kind: 'tree' }],
+        };
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    // i1 pruned (drawn on the removed photo); i2 kept; the concurrent
+    // autosave's new item MUST survive, not be clobbered by a stale prune.
+    expect(items.map(i => i.id).sort()).toEqual(['autosaved', 'i2']);
   });
 
   it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
