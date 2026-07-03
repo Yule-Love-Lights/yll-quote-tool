@@ -41,13 +41,32 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 // Build a chainable Supabase mock.
 // maybeSingle() → the quote row
-// .update().eq().is().select() terminates with .then() → the updateRows
+// .update().eq().is().or().select() terminates with .then() → the updateRows
+//
+// W1-018: the guarded write carries a status filter
+// `.or('status.in.(draft,sent,viewed),status.is.null')`. The mock evaluates that
+// filter against the row's LIVE status (which may differ from the READ status, to
+// simulate a concurrent decline landing between the fast-path read and this write).
+// When the filter excludes the live status, the write matches 0 rows regardless of
+// `updateRows`.
+const APPROVABLE_FROM = new Set(['draft', 'sent', 'viewed']);
 function makeSb(
   quote: Record<string, unknown> | null,
   updateRows: Array<{ id: string }> | null = [{ id: ID }],
+  // The row's status AT WRITE TIME (defaults to the read status). Set it different
+  // from quote.status to simulate a concurrent transition winning the race.
+  liveStatus?: string | null,
+  // The row returned by the POST-WRITE re-read used to disambiguate a 0-rows
+  // result (W1-018). Defaults to the initial quote. Pass a row with
+  // customer_approved_at set to simulate a concurrent approve winning.
+  freshRow?: Record<string, unknown> | null,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   let pendingIsUpdate = false;
+  let sawUpdate = false;
+  let statusFilterPasses: boolean | null = null;
+  const effectiveStatus =
+    liveStatus !== undefined ? liveStatus : quote ? ((quote.status as string | null) ?? null) : null;
 
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -55,16 +74,29 @@ function makeSb(
     select: () => builder,
     update: (payload: Record<string, unknown>) => {
       pendingIsUpdate = true;
+      sawUpdate = true;
       updatePayloads.push(payload);
       return builder;
     },
     eq: () => builder,
     is: () => builder,
-    maybeSingle: async () => ({ data: quote, error: null }),
+    or: (filter: string) => {
+      if (filter.includes('status')) {
+        const inApprovable = effectiveStatus !== null && APPROVABLE_FROM.has(effectiveStatus);
+        const isNull = filter.includes('status.is.null') && effectiveStatus === null;
+        statusFilterPasses = inApprovable || isNull;
+      }
+      return builder;
+    },
+    // The initial read (before any update) returns `quote`; the post-write
+    // disambiguation re-read returns `freshRow` (defaults to `quote`).
+    maybeSingle: async () => ({ data: sawUpdate ? (freshRow ?? quote) : quote, error: null }),
     then: (resolve: (v: unknown) => void) => {
       const isUpd = pendingIsUpdate;
       pendingIsUpdate = false;
-      resolve(isUpd ? { data: updateRows, error: null } : { data: quote, error: null });
+      const excluded = isUpd && statusFilterPasses === false;
+      statusFilterPasses = null;
+      resolve(isUpd ? { data: excluded ? [] : updateRows, error: null } : { data: quote, error: null });
     },
   });
   return { client: builder, updatePayloads };
@@ -179,8 +211,15 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     expect(updatePayloads).toHaveLength(0);
   });
 
-  it('handles a race (update returns 0 rows) as idempotent alreadyApproved', async () => {
-    const { client } = makeSb(BASE_SENT_QUOTE, []); // [] = race loser
+  it('handles a race (update returns 0 rows, concurrent approve) as idempotent alreadyApproved', async () => {
+    // [] = race loser; the post-write re-read shows customer_approved_at now set,
+    // i.e. a concurrent APPROVE won → idempotent alreadyApproved (200), not a 409.
+    const { client } = makeSb(
+      BASE_SENT_QUOTE,
+      [],
+      undefined,
+      { ...BASE_SENT_QUOTE, customer_approved_at: '2026-07-01T02:00:00Z' },
+    );
     sbRef.current = client;
 
     const res = await POST(makeReq(), ctx());
@@ -188,6 +227,32 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
 
     expect(res.status).toBe(200);
     expect(json.alreadyApproved).toBe(true);
+  });
+
+  // W1-018: a concurrent customer DECLINE (or request-changes) that lands between
+  // the fast-path read and the guarded write must NOT be overwritten to 'approved'.
+  // The read sees 'viewed' (passes canTransition), but the row's live status is now
+  // 'declined' (a terminal state, customer_approved_at untouched by decline). The
+  // status-guarded write must match 0 rows → 409/alreadyMoved, NOT resurrect the
+  // declined quote to approved.
+  it('does NOT overwrite a concurrently-declined quote (status-guarded write)', async () => {
+    // Read status 'viewed' → canTransition passes; live status 'declined' → the
+    // guarded write is excluded → 0 rows.
+    const { client, updatePayloads } = makeSb(
+      { ...BASE_SENT_QUOTE, status: 'viewed', viewed_at: '2026-07-01T01:00:00Z' },
+      [{ id: ID }],
+      'declined',
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+
+    // The write was attempted but matched 0 rows → conflict, not a false success.
+    expect(updatePayloads).toHaveLength(1);
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('already-moved');
+    expect(json.approved).toBeUndefined();
   });
 
   it('records staffApproved.by as null when getOperator returns null (dormant gate)', async () => {

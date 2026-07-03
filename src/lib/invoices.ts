@@ -489,6 +489,14 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
  * (src/lib/invoiceStatus.ts). Throws on an illegal transition (a programmer/UI
  * error). Stamps `paid_at` when reaching `paid`. Returns null if Supabase isn't
  * configured or the invoice doesn't exist.
+ *
+ * W1-023: the read-then-canTransition check is advisory only — the UPDATE carries
+ * `.eq('status', current.status)` so it is a compare-and-swap. A concurrent
+ * transition that moved the row between our read and this write (e.g. an
+ * order-cancel flipping the invoice to cancelled while a complete is settling it)
+ * matches 0 rows; we treat that as a lost race (re-read once — return the fresh row
+ * if someone else already applied the same target, else null) rather than writing
+ * the requested status over the winner's.
  */
 export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<InvoiceRow | null> {
   const db = sb();
@@ -508,9 +516,17 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
     .from('invoices')
     .update(patch)
     .eq('id', id)
+    .eq('status', current.status)
     .select(INVOICE_SELECT)
     .single();
   if (error) {
+    // 0 rows OR a real error. Lost-race disambiguation (W1-023): re-read once. If
+    // the row already reached the target (a concurrent request applied the same
+    // transition), return it as an idempotent success; otherwise the race was
+    // divergent (or the row is gone) → null, matching the existing "couldn't apply"
+    // contract the callers already handle.
+    const fresh = await getInvoice(id);
+    if (fresh && fresh.status === to) return fresh;
     console.error('setInvoiceStatus error:', error);
     return null;
   }
@@ -519,11 +535,18 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
 
 /**
  * Manually mark an invoice paid — an operator recording an offline/external
- * payment (cash / check / paid in the Valor terminal). Atomic claim
- * (.neq('status','paid')) mirroring the Valor balance webhook: status='paid',
- * balance=0, paid_at=now. Idempotent (a paid invoice is a no-op). Throws on a
- * cancelled invoice. Does NOT touch the job — closing the job is the caller's
- * concern (the close route / collect-then-close flow).
+ * payment (cash / check / paid in the Valor terminal). Atomic claim mirroring
+ * the Valor balance webhook: status='paid', balance=0, paid_at=now. Idempotent
+ * (a paid invoice is a no-op). Throws on a cancelled invoice. Does NOT touch the
+ * job — closing the job is the caller's concern (the close route / collect-then-
+ * close flow).
+ *
+ * W1-022: the claim excludes BOTH 'paid' AND 'cancelled'. The cancelled pre-check
+ * above is read-then-write, so a concurrent order-cancel that flips the invoice to
+ * cancelled between that read and this UPDATE would otherwise be resurrected to
+ * paid (a bare `.neq('status','paid')` claim still matches a cancelled row).
+ * Excluding cancelled in the write itself closes that TOCTOU — the same terminal-
+ * status guard the balance webhook gets from `.in('status',['draft','awaiting_payment'])`.
  */
 export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | null> {
   const db = sb();
@@ -540,6 +563,7 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
     .update({ status: 'paid', balance: 0, paid_at: paidAt })
     .eq('id', id)
     .neq('status', 'paid')
+    .neq('status', 'cancelled')
     .select(INVOICE_SELECT);
   if (error) {
     console.error('markInvoicePaidManually error:', error);

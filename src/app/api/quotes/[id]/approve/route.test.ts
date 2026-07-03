@@ -105,13 +105,25 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
 }
 
 // Fake Supabase builder. read = from().select().eq().single(); the guarded
-// approval update = from().update().eq().is().not().select() (returns rows); the
-// notify-marker update = from().update().eq() (awaited via then). `updateRows`
-// controls what the guarded update returns (the TOCTOU race winner).
+// approval update = from().update().eq().is().<terminal-status filter>.select()
+// (returns rows); the notify-marker update = from().update().eq() (awaited via
+// then). `updateRows` controls what the guarded update returns (the TOCTOU race
+// winner).
+//
+// W1-014: the mock models the terminal-status filter's Postgres NULL semantics so
+// a NULL-status row correctly reproduces the three-valued-logic bug —
+// `.not('status','in',(…))` EXCLUDES a NULL-status row (NOT (NULL IN (…)) = NULL =
+// not-matched), whereas the fixed `.or('status.not.in.(…),status.is.null')`
+// admits it. When the filter excludes the row, the guarded update matches 0 rows
+// regardless of `updateRows`.
+const TERMINAL_SET = new Set(['declined', 'cancelled', 'lost']);
 function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: string }> | null = [{ id: ID }]) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
+  // null = no terminal-status filter seen yet; true/false = does the row pass it.
+  let terminalFilterPasses: boolean | null = null;
+  const status = quote ? (quote.status as string | null | undefined) ?? null : null;
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
@@ -122,12 +134,32 @@ function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: s
     },
     eq: () => builder,
     is: () => builder,
-    not: () => builder,
+    // Buggy form: `.not('status','in','("declined","cancelled","lost")')`.
+    // Postgres: NOT (status IN (…)) is NULL (→ excluded) when status IS NULL.
+    not: (col: string, op: string) => {
+      if (col === 'status' && op === 'in') {
+        terminalFilterPasses = status === null ? false : !TERMINAL_SET.has(status);
+      }
+      return builder;
+    },
+    // Fixed form: `.or('status.not.in.(…),status.is.null')` — admits NULL.
+    or: (filter: string) => {
+      if (filter.includes('status')) {
+        const notInTerminal = status !== null && !TERMINAL_SET.has(status);
+        const isNull = filter.includes('status.is.null') && status === null;
+        terminalFilterPasses = notInTerminal || isNull;
+      }
+      return builder;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     // The guarded approval update terminates in .select('id') → resolves rows.
     then: (resolve: (v: unknown) => void) => {
-      const res = isUpdate ? { data: updateRows, error: null } : { data: quote, error: null };
+      const excluded = isUpdate && terminalFilterPasses === false;
+      const res = isUpdate
+        ? { data: excluded ? [] : updateRows, error: null }
+        : { data: quote, error: null };
       isUpdate = false;
+      terminalFilterPasses = null;
       resolve(res);
     },
   });
@@ -359,6 +391,26 @@ describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
     const res = await POST(makeReq(validBody), { params });
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
+  });
+
+  // W1-014: a legacy/NULL-status row must be approvable. The buggy
+  // `.not('status','in',(…))` filter EXCLUDES a NULL-status row (Postgres
+  // three-valued logic: NOT (NULL IN (…)) = NULL → not-matched), so the guarded
+  // update matched 0 rows and the customer got a false 409 while nothing was
+  // recorded. The fix uses the OR-with-null idiom (mirroring the decline route),
+  // so the NULL-status row is admitted and the approval is written.
+  it('approves a legacy NULL-status quote (does not false-409 on NULL status)', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ status: null, deposit_paid_at: null, quote_sent_at: '2026-06-25T00:00:00Z' }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    // The guarded approval write actually landed (snapshot + approval stamp).
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(true);
   });
 
   it('allows a changes_requested quote to approve', async () => {

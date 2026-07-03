@@ -131,6 +131,19 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(json.code).toBe('not-booked');
   });
 
+  // W1-011: a booked order that was later CANCELLED (cancel leaves deposit_paid_at
+  // intact but sets status='cancelled') must NOT be amendable — amending a dead
+  // order records a trail entry and can text the customer a new balance. Reject 409.
+  it('409s when the order is cancelled (terminal status) even though the deposit is paid', async () => {
+    const sb = makeSb({ ...BOOKED_QUOTE, status: 'cancelled' });
+    sbRef.current = sb.client;
+    const res = await POST(req({ reason: 'add a wreath' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-amendable');
+    expect(sb.updates.quotes).toHaveLength(0); // never wrote a trail entry
+  });
+
   it('409s with no-change when the total is unchanged (re-price in the builder first)', async () => {
     // result.total === the snapshot agreed total → delta 0.
     const unchanged = { ...BOOKED_QUOTE, result: { total: 5000 } };

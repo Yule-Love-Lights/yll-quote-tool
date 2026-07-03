@@ -111,6 +111,7 @@ function makeSb(quote: Quote, claimRows: Array<{ id: string }>) {
     neq: () => builder,
     is: () => builder,
     in: () => builder,
+    or: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     maybeSingle: async () => ({ data: quote, error: null }),
     then: (resolve: (v: unknown) => void) => {
@@ -332,6 +333,44 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
     expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
+  });
+});
+
+describe('Valor webhook — dead-quote guard (W1-007)', () => {
+  it('does NOT book a CANCELLED quote even on an approved deposit txn (loud log, no side effects)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A cancelled order still holding a live pay link (deposit_paid_at NULL) — only
+    // the status gate stops the resurrection to 'booked'.
+    const { client, updatePayloads } = makeSb({ ...QUOTE, status: 'cancelled' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200); // ack so Valor stops retrying
+    expect(json.booked).toBe(false);
+    expect(json.ignored).toBe('quote-cancelled');
+    // NEVER wrote deposit_paid_at / status='booked', and fired no side effects.
+    expect(updatePayloads).toHaveLength(0);
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(notifyTelegram).not.toHaveBeenCalled();
+    // Loud error log — real money may have moved, staff must reconcile.
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('NOT booking a dead order'));
+    err.mockRestore();
+  });
+
+  it('still books a normal approved quote (status="approved") — guard is transparent', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE, status: 'approved' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(updatePayloads[0].status).toBe('booked');
   });
 });
 

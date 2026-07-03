@@ -302,6 +302,47 @@ describe('setJobStatus', () => {
     sbRef.current = client;
     expect(await setJobStatus('missing', 'scheduled')).toBeNull();
   });
+
+  // W1-023: optimistic lock — the UPDATE carries `.eq('status', current.status)`,
+  // so a concurrent transition that moved the row out from under our read matches
+  // 0 rows. We must NOT write the requested status over the winner's; a divergent
+  // race returns null (lost race), not a bogus success.
+  it('does NOT write over a concurrently-changed status (compare-and-swap)', async () => {
+    // Read sees requires_invoicing (a legal → done), but the row has since been
+    // cancelled by a concurrent request. The status guard must match 0 rows.
+    const staleRead = { id: 'job-1', status: 'requires_invoicing' };
+    const liveRow = { id: 'job-1', status: 'cancelled' };
+    let statusGuard: unknown = undefined;
+    let updatePatch: Record<string, unknown> = {};
+    const builder: Record<string, unknown> = {
+      from: () => builder,
+      select: () => builder,
+      update: (patch: Record<string, unknown>) => {
+        updatePatch = patch;
+        return builder;
+      },
+      eq: (col: string, val: unknown) => {
+        if (col === 'status') statusGuard = val;
+        return builder;
+      },
+      // getJob pre-check → the STALE snapshot.
+      maybeSingle: async () => ({ data: staleRead, error: null }),
+      // The guarded write uses .select(JOB_SELECT).single(). Honor the status
+      // guard against the LIVE row: mismatch → PGRST116-style no-rows error.
+      single: async () => {
+        if (statusGuard !== undefined && statusGuard !== liveRow.status) {
+          return { data: null, error: { message: 'no rows' } };
+        }
+        return { data: { ...liveRow, ...updatePatch }, error: null };
+      },
+    };
+    sbRef.current = builder;
+    // Read (requires_invoicing) allows the transition to done; the compare-and-swap
+    // against the LIVE (cancelled) row fails → 0 rows → null, never a false 'done'.
+    const result = await setJobStatus('job-1', 'done');
+    expect(statusGuard).toBe('requires_invoicing'); // guarded on the read status
+    expect(result).toBeNull();
+  });
 });
 
 describe('listJobsForAdmin', () => {

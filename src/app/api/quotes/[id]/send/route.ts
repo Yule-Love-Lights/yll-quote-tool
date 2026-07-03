@@ -172,7 +172,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     status: (quote.status as import('@/lib/quoteStatus').QuoteStatus | null) ?? null,
   });
   const isResend = currentStatus === 'changes_requested';
-  const isGhlRetry = !!quote.quote_sent_at && retryGhl && quote.ghl_stage_synced_at == null;
+  // Bug fix (W1-017): the ?retryGhl reconcile must also check the CURRENT status.
+  // ghl_stage_synced_at only tracks the SEND-stage sync, so if the original send's
+  // card move failed it stays NULL forever — keeping the retry affordance live even
+  // after the customer approves and pays. Running the retry then re-issues the
+  // "Bid Sent" stage move (HIGHLEVEL_STAGE_QUOTE_SENT) and yanks a PAID job's card
+  // backwards, losing the booked deal in the pipeline. Only a quote still at
+  // 'sent'/'viewed' is retry-eligible; an approved/booked/terminal quote falls
+  // through to the alreadySent short-circuit and never touches GHL.
+  const isGhlRetry =
+    !!quote.quote_sent_at &&
+    retryGhl &&
+    quote.ghl_stage_synced_at == null &&
+    (currentStatus === 'sent' || currentStatus === 'viewed');
   if (quote.quote_sent_at && !isGhlRetry && !isResend) {
     return NextResponse.json({
       ok: true,

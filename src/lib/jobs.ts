@@ -330,6 +330,13 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
  * (src/lib/jobStatus.ts). Throws on an illegal transition (a programmer/UI
  * error, not a user one). Stamps `completed_at` when reaching `done`. Returns
  * null if Supabase isn't configured or the job doesn't exist.
+ *
+ * W1-023: the read-then-canTransition check is advisory only — the UPDATE carries
+ * `.eq('status', current.status)` so it is a compare-and-swap, not an unconditional
+ * write. A concurrent transition that moved the row between our read and this write
+ * (e.g. a cancel landing while a close is in flight) matches 0 rows; we treat that
+ * as a lost race (re-read once — return the fresh row if someone else already
+ * applied the same target, else null) rather than clobbering the winner's state.
  */
 export async function setJobStatus(id: string, to: JobStatus): Promise<JobRow | null> {
   const db = sb();
@@ -345,8 +352,21 @@ export async function setJobStatus(id: string, to: JobStatus): Promise<JobRow | 
   const patch: Record<string, unknown> = { status: to };
   if (to === 'done') patch.completed_at = new Date().toISOString();
 
-  const { data, error } = await db.from('jobs').update(patch).eq('id', id).select(JOB_SELECT).single();
+  const { data, error } = await db
+    .from('jobs')
+    .update(patch)
+    .eq('id', id)
+    .eq('status', current.status)
+    .select(JOB_SELECT)
+    .single();
   if (error) {
+    // 0 rows OR a real error. Lost-race disambiguation (W1-023): re-read once. If
+    // the row already reached the target (a concurrent request applied the same
+    // transition), return it as an idempotent success; otherwise the race was
+    // divergent (or the row is gone) → null, the same "couldn't apply" the callers
+    // already handle.
+    const fresh = await getJob(id);
+    if (fresh && fresh.status === to) return fresh;
     console.error('setJobStatus error:', error);
     return null;
   }
