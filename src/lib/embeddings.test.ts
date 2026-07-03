@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import sharp from 'sharp';
 import { embedImage, isEmbeddingConfigured, EMBEDDING_DIMENSIONS } from './embeddings';
 
 const KEY = 'pa-test-key';
@@ -75,5 +76,23 @@ describe('embedImage', () => {
   it('returns null when fetch throws', async () => {
     fetchMock.mockRejectedValue(new Error('network down'));
     expect(await embedImage('AAAA', 'image/jpeg')).toBeNull();
+  });
+
+  // W5-021 (#110 wave 5, cost): embedding is a similarity signal, not pixel-
+  // perfect detection — downscale the same way analyzePhoto does for vision
+  // calls, so a full-resolution photo doesn't inflate every embed request.
+  it('downscales a large image before sending to Voyage', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(okEnvelope), { status: 200 }));
+    const big = (await sharp({
+      create: { width: 2400, height: 1200, channels: 3, background: { r: 10, g: 20, b: 30 } },
+    }).jpeg().toBuffer()).toString('base64');
+
+    await embedImage(big, 'image/jpeg', 'document');
+
+    const sentUri: string = JSON.parse(fetchMock.mock.calls[0][1].body).inputs[0].content[0].image_base64;
+    const sentBase64 = sentUri.slice(sentUri.indexOf(',') + 1);
+    expect(sentBase64.length).toBeLessThan(big.length);
+    const meta = await sharp(Buffer.from(sentBase64, 'base64')).metadata();
+    expect(meta.width).toBeLessThanOrEqual(1568);
   });
 });

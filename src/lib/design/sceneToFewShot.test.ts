@@ -118,6 +118,52 @@ describe('sceneToFewShotPieces', () => {
     expect(d.box).toEqual([0.47, 0.44, 0.06, 0.12]);
   });
 
+  it('sizes wreath/spritzer boxes axis-aware for a height-axis yardstick (#110 W5-001)', () => {
+    // A vertical (height-axis) yardstick: 10 ft tall reference drawn 20px wide
+    // × 200px tall. True ppf must come from HEIGHT: 200/10 = 20 px/ft (same
+    // ppf as the width-axis test above) — NOT width/realFeet (20/10 = 2 px/ft,
+    // ~10x too small), which is the bug this test guards against.
+    const wreath: WreathItem = {
+      id: 'w1', yardstickId: null, kind: 'wreath', x: 500, y: 250, sizeIn: 36,
+      withLights: true, quoteSize: '30noble', tier: 'fullDecor', included: true,
+    };
+    const out = sceneToFewShotPieces(
+      scene([wreath], [{ id: 'ys', realFeet: 10, x: 0, y: 0, width: 20, height: 200, axis: 'height' }]),
+      W, H,
+    );
+    expect(out.wreathDetections).toHaveLength(1);
+    // Same 60px centered box as the width-axis equivalent test (20 px/ft × 3ft).
+    expect(out.wreathDetections[0].box).toEqual([0.47, 0.44, 0.06, 0.12]);
+  });
+
+  it('emits a railing detection via memberIds fallback when groupId has diverged (#110 W5-006)', () => {
+    // The strands' groupId no longer matches the group's own id (corrupt
+    // scene / deleted-and-recreated members), but the group's memberIds still
+    // names them — the railing must still emit, not silently vanish.
+    const out = sceneToFewShotPieces(
+      scene([
+        miniStrand('rm1', 'railing', [100, 200, 300, 200], { groupId: 'stale-group-id' }),
+        miniStrand('rm2', 'railing', [300, 200, 500, 200], { groupId: 'stale-group-id' }),
+        { id: 'rg', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 4, memberIds: ['rm1', 'rm2'] },
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(1);
+    expect(out.miniLightDetections[0]).toMatchObject({ type: 'railing', stringCount: 4 });
+    expect(out.miniLightDetections[0].box[0]).toBeCloseTo(0.1, 5);
+    expect(out.miniLightDetections[0].box[2]).toBeCloseTo(0.4, 5);
+  });
+
+  it('still drops a railing group when NEITHER groupId NOR memberIds resolves any strand', () => {
+    const out = sceneToFewShotPieces(
+      scene([
+        { id: 'rg', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 4, memberIds: ['missing-1', 'missing-2'] },
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(0);
+  });
+
   it('falls back to an 8%-of-width box when there is no yardstick, and defaults quote sizes', () => {
     const spritzer: SpritzerItem = {
       id: 's1', yardstickId: null, kind: 'spritzer', x: 500, y: 250, sizeIn: 24,

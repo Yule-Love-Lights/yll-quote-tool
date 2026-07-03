@@ -56,7 +56,9 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
         .select(
           // Bug fix (B3): added status, decline_reason, quote_sent_at, viewed_at
           // so the portal can gate the approve+pay UI for terminal/branch quotes.
-          'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test',
+          // #88 P5: added service_type so the adapter can route permanent quotes
+          // to their own package derivation + rate-snapshot minimum gate.
+          'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type',
         )
         .eq('id', id)
         .maybeSingle<QuoteRowForPortal>(),

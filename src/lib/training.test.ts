@@ -70,6 +70,69 @@ describe('saveTrainingHouse', () => {
   it('returns null when Supabase is unconfigured', async () => {
     expect(await saveTrainingHouse(PAYLOAD)).toBeNull();
   });
+
+  // W5-028: aiFailureNotes is injected raw into a synthetic assistant message
+  // the analyzer imitates as ground truth — cap length + strip control chars
+  // so an oversized/control-char-laden write can't poison the corpus text.
+  it('caps + strips control characters from aiFailureNotes/notes/houseStyle/address before insert', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+    let inserted: Record<string, unknown> | undefined;
+    service.client.from = ((t: string) => {
+      const builder: Record<string, unknown> = {};
+      for (const m of ['select', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
+        builder[m] = () => builder;
+      }
+      builder.insert = (row: Record<string, unknown>) => {
+        inserted = row;
+        return builder;
+      };
+      builder.single = async () => ({ data: { id: 'new-id' }, error: null });
+      void t;
+      return builder;
+    }) as typeof service.client.from;
+
+    const longNote = 'x'.repeat(5000);
+    await saveTrainingHouse({
+      ...PAYLOAD,
+      aiFailureNotes: `bad\x00data\x07${longNote}`,
+      notes: `note\x01here${longNote}`,
+      houseStyle: `style\x02${longNote}`,
+      address: `addr\x03${longNote}`,
+    });
+
+    expect(inserted).toBeDefined();
+    for (const key of ['ai_failure_notes', 'notes', 'house_style', 'address'] as const) {
+      const v = inserted![key] as string;
+      expect(v.length).toBeLessThanOrEqual(2000);
+      expect(v).not.toMatch(/[\x00-\x1f]/);
+    }
+  });
+
+  it('leaves short, clean text fields untouched', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+    let inserted: Record<string, unknown> | undefined;
+    service.client.from = ((t: string) => {
+      const builder: Record<string, unknown> = {};
+      for (const m of ['select', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
+        builder[m] = () => builder;
+      }
+      builder.insert = (row: Record<string, unknown>) => {
+        inserted = row;
+        return builder;
+      };
+      builder.single = async () => ({ data: { id: 'new-id' }, error: null });
+      void t;
+      return builder;
+    }) as typeof service.client.from;
+
+    await saveTrainingHouse({ ...PAYLOAD, notes: 'clean note', houseStyle: 'Colonial', address: '1 Main St' });
+
+    expect(inserted!.notes).toBe('clean note');
+    expect(inserted!.house_style).toBe('Colonial');
+    expect(inserted!.address).toBe('1 Main St');
+  });
 });
 
 describe('getTrainingFewShot', () => {
