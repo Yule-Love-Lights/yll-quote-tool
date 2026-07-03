@@ -18,9 +18,11 @@
 --
 -- Known gaps as of 2026-07-03 (audit #110 wave 2) — do not assume this file
 -- is complete beyond these fixes:
---   - Missing the entire `designs` table (extra_photos, photo_title,
---     photo_path/_w/_h, satellite_*, etc. — W2-018). A fresh bootstrap from
---     this file alone will 500 on every design read/write.
+--   - (W2-018 fixed) The `designs` table was entirely missing; it's now
+--     present below with its full current column set (extra_photos,
+--     photo_title, photo_path/_w/_h, satellite_*, seed_analysis, created_by).
+--     Still verify against migrations/ before trusting it blindly — this is a
+--     hand-maintained snapshot, not a mechanically-generated one.
 --   - Missing 8+ newer tables entirely: app_settings, custom_uploads,
 --     inventory_catalog, inventory_on_hand, quote_view_events, jobs (present
 --     here but may itself drift), invoices, training_examples.
@@ -91,6 +93,81 @@ create index if not exists quotes_is_test_idx on quotes (is_test);
 alter table quotes enable row level security;
 
 create index if not exists quotes_created_at_idx on quotes (created_at desc);
+
+-- ─────────────────────────────────────────────────────────────
+-- designs — design-tool integration (Path B), task #27 Phase 1. Added by this
+-- audit fix (W2-018) — this table was entirely missing from db/schema.sql, so
+-- a fresh bootstrap from this file alone would 500 on every design read/write.
+-- Canonical fresh-install mirror of migrations/2026-06-05-designs.sql +
+-- 2026-06-12-training-examples.sql (designs half) + 2026-06-28-add-created-by.sql
+-- (designs half) + 2026-07-02-designs-extra-photos.sql + 2026-07-02-designs-
+-- photo-title.sql. One editable on-photo light design (the `scene` jsonb is the
+-- design tool's Scene shape: yardsticks + items + brightness). A design is an
+-- INDEPENDENT record with its own id and an OPTIONAL link to a quote, so it can
+-- exist before a quote is saved (the builder creates it when the Street View
+-- photo is pulled) and even with no quote at all. The quote link is set when
+-- the operator clicks "Calculate Quote".
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists designs (
+  id uuid primary key default gen_random_uuid(),
+  quote_id uuid references quotes(id) on delete set null,
+  photo_path text,                                          -- Storage path: {designId}/photo.<ext>
+  photo_w integer,
+  photo_h integer,
+  scene jsonb not null default '{"yardsticks":[],"items":[]}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- Analysis provenance + satellite context (#8 Stage A): the AI's raw
+  -- analysis from the last analyze, the satellite image it measured against
+  -- (path in the designs bucket + dims + deterministic feet-per-pixel), and
+  -- the staff's final satellite measurement polylines.
+  seed_analysis jsonb,
+  satellite_path text,
+  satellite_w integer,
+  satellite_h integer,
+  satellite_feet_per_pixel numeric,
+  satellite_lines jsonb,
+  -- Actor audit trail (#81/#90) — the operator's Supabase Auth user id.
+  created_by uuid references auth.users(id) on delete set null,
+  -- #13 multi-image quoting: extra street photos on a design. One design
+  -- still owns ONE base photo (photo_path); extras live in a JSONB array of
+  -- { id, path, w, h, title? } whose storage objects sit under the same
+  -- `{designId}/` prefix (extra-<id>.<ext>).
+  extra_photos jsonb,
+  -- #13: a staff title for the BASE photo (renameable "Photo 1" tab, like the
+  -- extras' own titles). Nullable — null renders as "Photo 1".
+  photo_title text
+);
+
+-- RLS ENABLED, no policies (#90 defense in depth) — see
+-- migrations/2026-06-28-enable-rls-all-tables.sql (the authoritative enable).
+alter table designs enable row level security;
+
+-- At most ONE design per quote (linked designs); unlimited UNLINKED designs
+-- (quote_id NULL — Postgres treats NULLs as distinct in the partial index).
+create unique index if not exists designs_quote_id_uniq
+  on designs (quote_id) where quote_id is not null;
+create index if not exists designs_created_at_idx on designs (created_at desc);
+
+create or replace function designs_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists designs_updated_at_trigger on designs;
+create trigger designs_updated_at_trigger
+  before update on designs
+  for each row execute function designs_set_updated_at();
+
+-- Storage bucket for design artifacts (base house photo + custom-item images).
+-- Private; reads go through service-role signed URLs (same pattern as renders).
+insert into storage.buckets (id, name, public)
+values ('designs', 'designs', false)
+on conflict (id) do nothing;
 
 -- ─────────────────────────────────────────────────────────────
 -- SHARED jobs table — #83 billing fields + #82 fulfillment_stage.

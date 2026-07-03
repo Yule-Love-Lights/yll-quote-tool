@@ -15,6 +15,53 @@ import { DepositCheckout } from './DepositCheckout';
 import { SignaturePad, type CapturedSignature } from './SignaturePad';
 import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
 import { isPortalActionable } from '@/lib/quoteStatus';
+import type { InstallTiming, PackageId } from '../types';
+
+// Pure gate for the Approve action (extracted for test coverage — audit
+// W4-031). Mirrors the `disabled` prop on the Approve button AND the early
+// return at the top of onApprove exactly: submitting in flight or the
+// selection is still under the order minimum.
+export function canSubmitApproval(submitting: boolean, meetsMinimum: boolean): boolean {
+  return !submitting && meetsMinimum;
+}
+
+// Pure payload builder for the /approve POST body (extracted for test
+// coverage — audit W4-031). Mirrors onApprove's fetch body exactly — every
+// field maps 1:1 from the live SelectionContext fields + the captured
+// signature. Kept as a plain function (no fetch/router/state) so the
+// field-mapping is unit-testable without React/DOM.
+export function buildApprovePayload(
+  selection: {
+    packageId: PackageId;
+    selectedItemIds: Set<string>;
+    activeName: string;
+    currentTotal: number;
+    currentDeposit: number;
+    rushSelected: boolean;
+    takedownSelected: boolean;
+    colorSchemeId: string;
+    customPattern: string[];
+    installTiming: InstallTiming;
+    breakdown: { discount: number };
+  },
+  sig: CapturedSignature,
+) {
+  return {
+    packageId: selection.packageId,
+    selectedItemIds: Array.from(selection.selectedItemIds),
+    activeName: selection.activeName,
+    currentTotal: selection.currentTotal,
+    currentDeposit: selection.currentDeposit,
+    rushSelected: selection.rushSelected,
+    takedownSelected: selection.takedownSelected,
+    colorSchemeId: selection.colorSchemeId,
+    customPattern: selection.customPattern,
+    installTiming: selection.installTiming,
+    installDiscountUsd: selection.breakdown.discount,
+    // #83 Slice B — the e-signature captured in the "Confirm & sign" step.
+    signature: { name: sig.name, kind: sig.kind, value: sig.value },
+  };
+}
 
 export type StickyBottomBarProps = {
   quoteId: string;
@@ -131,28 +178,31 @@ export function StickyBottomBar({
   // today's behavior: navigate to the celebration page (the approve route having
   // texted/emailed the customer about collecting the deposit).
   const onApprove = async (sig: CapturedSignature) => {
-    if (submitting || !meetsMinimum) return;
+    if (!canSubmitApproval(submitting, meetsMinimum)) return;
     setSubmitting(true);
     setErrorMsg(null);
     try {
       const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          packageId,
-          selectedItemIds: Array.from(selectedItemIds),
-          activeName,
-          currentTotal,
-          currentDeposit,
-          rushSelected,
-          takedownSelected,
-          colorSchemeId,
-          customPattern,
-          installTiming,
-          installDiscountUsd: breakdown.discount,
-          // #83 Slice B — the e-signature captured in the "Confirm & sign" step.
-          signature: { name: sig.name, kind: sig.kind, value: sig.value },
-        }),
+        body: JSON.stringify(
+          buildApprovePayload(
+            {
+              packageId,
+              selectedItemIds,
+              activeName,
+              currentTotal,
+              currentDeposit,
+              rushSelected,
+              takedownSelected,
+              colorSchemeId,
+              customPattern,
+              installTiming,
+              breakdown,
+            },
+            sig,
+          ),
+        ),
       });
       // 409 = already approved. With checkout ON, open the deposit checkout
       // anyway (/pay routes onward if the deposit is already paid); with it OFF,
