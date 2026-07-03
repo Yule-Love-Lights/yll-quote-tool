@@ -1,6 +1,8 @@
 // Yule Love Lights — Pricing Engine
 // Pure TypeScript: takes a house description, returns a price.
 
+import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
+
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
 // ─────────────────────────────────────────────────────────
@@ -250,6 +252,11 @@ export interface QuoteInputs {
   // customLineItem.recommended); the adapter surfaces it to the portal.
   winterWonderlandRecommended?: boolean;
   stakeLightingRecommended?: boolean;
+  // Permanent Lighting vertical (#88). Present ONLY when the quote's service_type
+  // is 'permanent'; the holiday engine (calculateQuote) never reads it. The
+  // permanent engine (calculatePermanentQuote in lib/permanent/pricing.ts) prices
+  // off this block. Optional/additive — holiday quotes are unaffected.
+  permanent?: PermanentQuoteFields;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -317,6 +324,11 @@ export interface QuoteResult {
   // results saved before #107 read back without it — consumers fall back to the
   // selected figures (`fullYule?.total ?? total`).
   fullYule?: FullYuleTotals;
+  // Permanent Lighting (#88): the FULL rate table this result was priced with,
+  // frozen at calc time. Approve + amend re-price from THIS snapshot, never live
+  // app_settings, so a Settings rate change can't re-price an outstanding quote
+  // (the rate-drift guard). Present only on permanent quotes.
+  permanentRatesSnapshot?: PermanentRates;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -632,7 +644,7 @@ function calculateBows(inputs: QuoteInputs): LineItem[] {
 // Pass staff-entered custom items straight through as line items — no price-book
 // lookup, the amount IS the price. Defensive: skip entries without a non-empty
 // label or a finite, non-negative amount (a malformed entry never breaks a quote).
-function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
+export function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
   if (!Array.isArray(inputs.customLineItems)) return [];
   return inputs.customLineItems
     .filter(
@@ -672,7 +684,7 @@ function overrideAmount(
 }
 
 // Replace each line's billed amount with its override (by stable id), if any.
-function applyLineOverrides(
+export function applyLineOverrides(
   lines: LineItem[],
   overrides: QuoteInputs['lineItemPriceOverrides'],
 ): LineItem[] {
@@ -805,7 +817,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
 // subtotal (#107) run through ONE formula — the two computations can't drift apart
 // in maintenance. (Each still rounds on its own input, so the outputs aren't a
 // linear function of each other — that's expected.)
-function computeTotalsTail(
+export function computeTotalsTail(
   subtotalBeforeDiscount: number,
   inputs: QuoteInputs,
 ): Omit<FullYuleTotals, 'subtotalBeforeDiscount'> {
