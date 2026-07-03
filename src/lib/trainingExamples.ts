@@ -134,10 +134,10 @@ export async function captureTrainingExample(opts: {
     gingerbreadFootage: asFootage(inputs.gingerbreadFootage),
     gingerbreadDifficulty: asDifficulty(inputs.gingerbreadDifficulty),
     ...(typeof inputs.winterWonderlandFootage === 'number'
-      ? { winterWonderlandFootage: inputs.winterWonderlandFootage }
+      ? { winterWonderlandFootage: asFootage(inputs.winterWonderlandFootage) }
       : {}),
     ...(typeof inputs.stakeLightingFootage === 'number'
-      ? { stakeLightingFootage: inputs.stakeLightingFootage }
+      ? { stakeLightingFootage: asFootage(inputs.stakeLightingFootage) }
       : {}),
   };
 
