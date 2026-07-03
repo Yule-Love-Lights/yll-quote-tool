@@ -51,6 +51,25 @@ Default habits to keep sessions cheap (S16 task #94):
 
 **Skills placement.** Repo-shared skills live in `.claude/skills/` (git-synced to both devs); per-machine / global skills in `~/.claude/skills/`. Choose **repo** for team skills, **global** for personal. Don't keep the same skill in both (drift) — the **`llm-council` canonical copy is the repo one**.
 
+# Model routing & production guardrails (STANDING POLICY — applies to ALL plans/builds, both devs; Naldo 2026-07-02)
+
+**1. Work auto-routes to the right model tier (silent, automatic — the dev is not asked):**
+
+| Tier | Model | Does |
+|---|---|---|
+| DOWN | **Haiku 4.5** | reads: recon, file location, doc lookups, log scans |
+| DOWN | **Sonnet 5** | builds: routine implementation, tests, UI components, docs |
+| SEAT (default) | **Opus 4.8** | plans, judges, reviews: orchestration, adversarial review passes, PR review, finding dispositions |
+| UP | **Fable 5** | top-tier — **always asks first**, never used silently |
+
+**2. Only 2 interruptions ever:** *"use the expensive model?"* and *"ship to production?"*. Everything else proceeds without stopping the dev.
+
+**3. Top-tier (Fable 5) = design, danger, or money ONLY** — architecture calls, production debugging, security review, migrations, money-math verdicts. **Never routine coding. ~20% of the work, max.**
+
+**4. Every production change is guarded:** `branch → PR → automated checks (tsc · lint · vitest) → merge → deploy → verify`. **The AI never merges itself** — before any merge it shows the dev a **plain-English summary derived from the ACTUAL code diff** (not from intent) and waits for an explicit "go". (Strengthens the human-merge rule below; Jason-area PRs still carry his review flag.) Post-merge, the deploy is **verified in-browser**, never assumed.
+
+**5. Model fallback:** if a tier's model is down/unavailable, drop **exactly one tier** (Fable → Opus → Sonnet → Haiku) and **say so** in the output. For anything risky (money math, prod migrations, approve/amend paths, security), do NOT silently substitute — **stop and ask** first.
+
 # Multi-dev collaboration (Jason + Naldo)
 
 Two devs work in this repo on **different machines**. **Naldo owns the dashboard** (the `/` homepage, task #58); **Jason owns everything else** (portal, quote builder, pricing engine, design editor, training, settings). Both **PR into `master` — never commit to `master` directly** — and run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) green before committing. New-machine setup → `docs/context/ONBOARDING_NALDO.md`.

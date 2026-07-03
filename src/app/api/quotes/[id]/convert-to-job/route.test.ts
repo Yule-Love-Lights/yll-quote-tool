@@ -233,6 +233,26 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     expect(updatePayloads[0].deposit_amount_usd).toBe(800);
   });
 
+  // W1-043: the clamp must use the AGREED selection total, not the full
+  // quote.total, so a diverged order can't over-record a deposit above what the
+  // customer actually approved.
+  it('clamps to the AGREED selection total when the approval snapshot diverges from quote.total', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...BASE_QUOTE,
+      total: 1000, // full quote
+      result: { total: 1000 },
+      approval_snapshot: { customerSelection: { currentTotalUsd: 600 } }, // customer approved $600
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 800 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // Clamped to the agreed $600, NOT the full-quote $1000.
+    expect(json.depositUsd).toBe(600);
+    expect(updatePayloads[0].deposit_amount_usd).toBe(600);
+  });
+
   it('records depositUsd as-is (unclamped) when quote.total is null (malformed/edge row)', async () => {
     const { client, updatePayloads } = makeSb({ ...BASE_QUOTE, total: null });
     sbRef.current = client;

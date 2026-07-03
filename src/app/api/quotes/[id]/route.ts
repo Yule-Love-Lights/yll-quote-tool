@@ -6,7 +6,7 @@
 //   DELETE /api/quotes/[id]   — operator-only (session perimeter, ledger #81).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { deleteQuote } from '@/lib/quotes';
 import {
   loadPortalQuote,
@@ -16,6 +16,16 @@ import {
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
+
+// W1-016: a per-row delete of a BOOKED (deposit-paid) or customer-approved quote
+// cascades away its job, invoice, approval snapshot (signature + amendment trail),
+// and Valor txn linkage (the FK CASCADE on jobs.quote_id / invoices.quote_id). One
+// mis-click on the admin list can irreversibly erase booked revenue whose only
+// remaining record lives in the Valor dashboard. Mirror the bulk-wipe's confirm-
+// token second factor (src/app/api/quotes/route.ts g29): require this exact header
+// to delete a real (non-test) money-bearing quote. Draft / test rows keep the
+// frictionless one-click delete.
+const DELETE_BOOKED_CONFIRM = 'DELETE BOOKED QUOTE';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -48,6 +58,29 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     );
   }
   const { id } = await params;
+
+  // W1-016: load the money-bearing flags first and require the confirm-token
+  // second factor before erasing a real booked/approved quote (and its cascaded
+  // job + invoice + snapshot). Narrow select — no need for the heavy inputs/result
+  // jsonb here. A missing row falls through to deleteQuote (a no-op delete).
+  const sb = getSupabaseServiceClient()!;
+  const { data: row } = await sb
+    .from('quotes')
+    .select('deposit_paid_at, customer_approved_at, is_test')
+    .eq('id', id)
+    .maybeSingle<{ deposit_paid_at: string | null; customer_approved_at: string | null; is_test: boolean }>();
+  const isProtected = !!row && !row.is_test && (!!row.deposit_paid_at || !!row.customer_approved_at);
+  if (isProtected && req.headers.get('x-confirm-delete-booked') !== DELETE_BOOKED_CONFIRM) {
+    return NextResponse.json(
+      {
+        error:
+          `This quote is ${row!.deposit_paid_at ? 'booked (deposit paid)' : 'customer-approved'} — deleting it also erases its job, invoice, and payment record. To confirm, send header x-confirm-delete-booked: ${DELETE_BOOKED_CONFIRM}`,
+        code: 'confirm-required',
+      },
+      { status: 428 }, // Precondition Required
+    );
+  }
+
   try {
     await deleteQuote(id);
     return NextResponse.json({ deleted: true });

@@ -7,9 +7,12 @@
 // Re-opening a BOOKED order rewrites the "freeze snapshot / read-only after
 // approval" assumption, so this is handled carefully + server-side:
 //   • Only a booked (deposit-paid) order can be amended — it has a deposit to apply.
-//   • The new total is the quote's CURRENT server-priced result.total (re-priced by
-//     editing the order in the builder + Calculate — Jason's existing #31 flow);
-//     we NEVER trust a client-supplied total (audit lesson).
+//   • The new total is derived on the AGREED (selection) basis (W1-004): the agreed
+//     total + the CHANGE in the full quote since approval (current result.total −
+//     the full total frozen at approval), re-priced by editing the order in the
+//     builder + Calculate — Jason's #31 flow. Measuring the change (not the raw
+//     full result.total) is what stops a selection-diverged order from recording a
+//     phantom increase. We NEVER trust a client-supplied total (audit lesson).
 //   • The amendment entry from computeAmendment() is APPENDED to
 //     approval_snapshot.amendments[] — the original signed snapshot is preserved
 //     (the signature attests to the original agreement).
@@ -26,9 +29,10 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
 import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { getJobByQuote } from '@/lib/jobs';
-import type { QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import {
   AMENDMENT_EMAIL_SUBJECT,
@@ -50,6 +54,9 @@ type QuoteRow = {
   approval_snapshot: {
     customerSelection?: { currentTotalUsd?: number };
     amendments?: AmendmentTrailEntry[];
+    // W1-004: the full quote total frozen at approval time — the basis the amend
+    // delta measures the builder re-price against (see amendedAgreedTotal).
+    pricing?: { total?: number | null } | null;
   } | null;
   // For the optional, staff-initiated customer notice + test-safety (#93).
   customer_name: string | null;
@@ -104,17 +111,47 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // W1-011: gate on the LIFECYCLE status too, not just deposit_paid_at. Cancelling
+  // a booked order sets status='cancelled' but leaves deposit_paid_at intact, so a
+  // cancelled (or otherwise terminal) order would still pass the check above.
+  // Amending a dead order records a trail entry and can text the customer a new
+  // balance — reject it. deriveStatus returns the persisted terminal status for a
+  // cancelled/declined/lost row; a live booked order (deposit_paid_at set) derives
+  // 'booked'. The select carries `status` + `deposit_paid_at`, which is all
+  // deriveStatus needs to resolve those states; the unselected timestamps are null.
+  const lifecycleStatus = deriveStatus({
+    quote_sent_at: null,
+    customer_approved_at: null,
+    deposit_paid_at: quote.deposit_paid_at,
+    status: quote.status,
+  });
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+    return NextResponse.json(
+      { error: `Cannot amend a ${lifecycleStatus} order`, code: 'not-amendable' },
+      { status: 409 },
+    );
+  }
+
   const snap = quote.approval_snapshot ?? {};
   const amendments = Array.isArray(snap.amendments) ? snap.amendments : [];
-  const last = amendments[amendments.length - 1];
   // Prior agreed total: the last amendment's new_total, else the original agreed
-  // total in the snapshot, else the current result (a never-amended fresh book).
-  const previousTotal =
-    last?.new_total ?? snap.customerSelection?.currentTotalUsd ?? quote.result?.total ?? 0;
+  // SELECTION total in the snapshot, else the current result (a never-amended
+  // fresh book). resolveAgreedTotal encodes that exact precedence.
+  const previousTotal = resolveAgreedTotal(snap, quote.result);
   const depositPaid = quote.deposit_amount_usd ?? 0;
-  // The NEW total = the quote's current server-priced result (re-priced in the
-  // builder). Never a client value.
-  const newTotal = quote.result?.total ?? previousTotal;
+  // W1-004 — the amend delta semantic: BOTH totals must be on the same (agreed
+  // SELECTION) basis. The builder re-prices the WHOLE quote, so the current
+  // result.total is FULL-scope, while previousTotal is a selection subset;
+  // subtracting one basis from the other invents a phantom increase equal to the
+  // original divergence on any order where the customer deselected items / picked
+  // a cheaper tier at approval. Instead we measure ONLY what staff changed —
+  // result.total − the full total frozen at approval (snapshot.pricing.total) —
+  // and apply that shift to the agreed total. No builder edit → shift 0 → the
+  // amend correctly reads no-change (never a phantom +delta). Legacy rows with no
+  // frozen full total fall back to the current full basis (pre-fix behavior, safe
+  // for the non-diverged path). The NEW total is server-derived — never a client
+  // value.
+  const newTotal = amendedAgreedTotal(snap, quote.result, previousTotal);
 
   // Linked job → invoice (exists only once the job is completed): the prior balance
   // + the row to re-sync.
@@ -204,9 +241,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const invoiceForSync = freshInvoice ?? invoice;
 
     if (invoiceForSync.status !== 'cancelled') {
-      const totals = computeInvoiceTotals(quote.result, depositPaid, {
-        taxOverridden: invoiceForSync.tax_overridden,
-      });
+      // W1-004: re-sync to the AGREED new total (on the selection basis), not the
+      // full quote.result.total — the breakdown lines stay from result for display,
+      // the load-bearing total/balance use newTotal (same as the amendment trail).
+      const totals = computeInvoiceTotals(
+        { ...quote.result, total: newTotal },
+        depositPaid,
+        { taxOverridden: invoiceForSync.tax_overridden },
+      );
       // Reconcile the invoice STATUS to the new balance (review MEDIUM): an
       // amended-UP already-paid invoice reopens to awaiting_payment (more is owed);
       // an amended-DOWN invoice that the deposit now covers settles to paid. A

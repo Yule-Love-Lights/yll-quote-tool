@@ -92,8 +92,17 @@ type LineIdentity = {
   sceneItemIds?: string[];
 };
 
+// Canonical mini-light surface types. The runtime list is the single source of
+// truth: the MiniLightItem['type'] union is DERIVED from it, so a validator that
+// reads MINI_LIGHT_TYPES can never drift narrow of the type again (the W1-002 /
+// #R18-006 'stale narrow duplicate' lesson — 'curtain' was in the type union but
+// missing from the route's hand-written Set). 'curtain' bills at the railing rate
+// (#100); see NO_WRAP_STYLE_TYPES below.
+export const MINI_LIGHT_TYPES = ['tree', 'bush', 'column', 'railing', 'curtain'] as const;
+export type MiniLightType = (typeof MINI_LIGHT_TYPES)[number];
+
 export type MiniLightItem = LineIdentity & {
-  type: 'tree' | 'bush' | 'column' | 'railing' | 'curtain';
+  type: MiniLightType;
   wrapStyle: 'canopy' | 'trunk';
   stringCount: number;
 };

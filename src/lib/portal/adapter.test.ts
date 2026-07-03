@@ -142,6 +142,92 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     // The single roofline stays a normal line item, with its footage label intact.
     expect(portal.lineItems.some((li) => li.kind === 'roofline')).toBe(true);
   });
+
+  // ── #110 W1-005: drop the billed roofline by IDENTITY, not label ──────────
+  // A staff-typed CUSTOM line item whose freeform label contains "Roofline"/
+  // "Gingerbread" must NOT be mistaken for the engine's billed roofline and
+  // deleted from the portal, tiers, and gate. The billed roofline now carries a
+  // stable id ('roofline-santas'/'roofline-gingerbread', #104) — filter on that.
+
+  it('keeps a custom item labeled "Gingerbread house display" (W1-005) while still splitting the billed roofline', () => {
+    const inputs = emptyInputs({
+      santasFootage: 100, // front 100×10 = 1000 (Santa's)
+      gingerbreadFootage: 40, // ridge/sides 40×10 = 400 → Gingerbread 1400
+      rooflineChoice: 'santas',
+      customLineItems: [{ label: 'Gingerbread house display', amount: 250, quantity: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+
+    // The custom row survives verbatim (its label matches /Gingerbread/i but it
+    // is NOT the billed roofline — it carries no billed-roofline stable id).
+    const custom = portal.lineItems.find((li) => li.label === 'Gingerbread house display');
+    expect(custom).toBeDefined();
+    expect(custom!.price).toBe(250);
+
+    // The billed roofline is still correctly split into the two toggle options,
+    // and the engine's single footage-bearing roofline line is gone.
+    expect(portal.lineItems.some((li) => li.id === 'roofline-santas')).toBe(true);
+    expect(portal.lineItems.some((li) => li.id === 'roofline-gingerbread')).toBe(true);
+    expect(portal.lineItems.some((li) => /ft \(/i.test(li.label))).toBe(false);
+    expect(portal.roofline).toEqual({
+      itemIds: ['roofline-santas', 'roofline-gingerbread'],
+      recommendedItemId: 'roofline-santas',
+    });
+  });
+
+  it('includes the roofline-worded custom item in the tier + $1,000 gate math (W1-005)', () => {
+    // A sub-$1,000 selection where the custom item is what tips it over the gate:
+    // Santa's 50×8 (easy) = 400; a $700 custom item → 1100 total for tier A.
+    const inputs = emptyInputs({
+      santasFootage: 50,
+      santasDifficulty: 'easy',
+      rooflineChoice: 'santas',
+      customLineItems: [{ label: 'Extra roofline strip, back of house', amount: 700, quantity: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+
+    // The custom item is present …
+    const custom = portal.lineItems.find(
+      (li) => li.label === 'Extra roofline strip, back of house',
+    );
+    expect(custom).toBeDefined();
+    expect(custom!.price).toBe(700);
+
+    // … bundled into the package tiers (not silently dropped) …
+    const tierA = portal.packages.find((p) => p.id === 'A')!;
+    expect(tierA.includedItemIds).toContain(custom!.id);
+
+    // … and it lifts the selection past the $1,000 minimum-order gate.
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+  });
+
+  it('legacy pre-#104 result (billed roofline has NO stable id) still drops the billed roofline via the label fallback', () => {
+    // Simulate a pre-#104 saved result: strip the stable ids off the engine's
+    // line items so the billed roofline carries only its footage label. The
+    // label fallback must still recognize + drop it.
+    const inputs = emptyInputs({ santasFootage: 100, gingerbreadFootage: 40, rooflineChoice: 'santas' });
+    const fresh = calculateQuote(inputs);
+    const legacy = {
+      ...fresh,
+      lineItems: fresh.lineItems.map((li) => {
+        const copy = { ...li };
+        delete (copy as { id?: string }).id;
+        return copy;
+      }),
+    } as unknown as QuoteResult;
+    const portal = portalFrom(legacy, inputs)!;
+
+    // Options still synthesized; the footage-bearing billed roofline is gone.
+    expect(portal.lineItems.some((li) => li.id === 'roofline-santas')).toBe(true);
+    expect(portal.lineItems.some((li) => li.id === 'roofline-gingerbread')).toBe(true);
+    expect(portal.lineItems.some((li) => /ft \(/i.test(li.label))).toBe(false);
+    expect(portal.roofline).toEqual({
+      itemIds: ['roofline-santas', 'roofline-gingerbread'],
+      recommendedItemId: 'roofline-santas',
+    });
+  });
 });
 
 // ── Per-item `recommended` flag on portal line items (#12) ─────────────────

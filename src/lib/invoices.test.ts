@@ -333,6 +333,58 @@ describe('createInvoiceFromJob', () => {
     expect(await createInvoiceFromJob('j1')).toBeNull();
     expect(fake.tables.invoices).toHaveLength(0);
   });
+
+  // W1-001: the customer approves a SELECTION (approval_snapshot.currentTotalUsd)
+  // that can diverge from the FULL quote.result.total — the invoice must bill the
+  // AGREED selection total, not the full-quote total (over/under-billing bug).
+  it('bills the AGREED selection total, not result.total, when the snapshot diverges', async () => {
+    // Full quote priced $5,437.50; the customer picked a cheaper tier + deselected
+    // an item → approved $3,697.50 selection, paid a $1,848.75 (50%) deposit.
+    const diverged = {
+      id: 'q1',
+      result: { subtotalBeforeDiscount: 5000, discountAmount: 0, taxAmount: 437.5, total: 5437.5 },
+      approval_snapshot: { customerSelection: { currentTotalUsd: 3697.5, selectedItemIds: ['mini-0'] } },
+      deposit_amount_usd: 1848.75,
+      deposit_paid_at: '2025-01-01T00:00:00Z',
+    };
+    const fake = makeFakeSupabase({ jobs: [{ id: 'j1', quote_id: 'q1', customer_id: 'c1' }], quotes: [diverged] });
+    sbRef.current = fake.client;
+
+    const inv = await createInvoiceFromJob('j1');
+    expect(inv!.total).toBe(3697.5); // the agreed selection total — NOT 5437.5
+    expect(inv!.deposit_applied).toBe(1848.75);
+    expect(inv!.balance).toBe(1848.75); // 3697.5 − 1848.75, not the inflated 3588.75
+  });
+
+  // W1-001: an amendment's new_total supersedes the snapshot selection total.
+  it('bills the latest amendment new_total when the trail has one', async () => {
+    const amended = {
+      id: 'q1',
+      result: { total: 5437.5 },
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 3697.5 },
+        amendments: [{ new_total: 4100 }],
+      },
+      deposit_amount_usd: 1848.75,
+      deposit_paid_at: '2025-01-01T00:00:00Z',
+    };
+    const fake = makeFakeSupabase({ jobs: [{ id: 'j1', quote_id: 'q1', customer_id: 'c1' }], quotes: [amended] });
+    sbRef.current = fake.client;
+
+    const inv = await createInvoiceFromJob('j1');
+    expect(inv!.total).toBe(4100); // amendment new_total wins
+    expect(inv!.balance).toBe(2251.25); // 4100 − 1848.75
+  });
+
+  // W1-001: a legacy row with NO approval_snapshot must keep pricing off
+  // result.total (the pre-fix behavior — the fallback rung).
+  it('keeps the legacy result.total path when there is no approval_snapshot', async () => {
+    const fake = makeFakeSupabase({ jobs: [{ id: 'j1', quote_id: 'q1', customer_id: 'c1' }], quotes: [quote] });
+    sbRef.current = fake.client;
+    const inv = await createInvoiceFromJob('j1');
+    expect(inv!.total).toBe(4893.75); // result.total, unchanged
+    expect(inv!.balance).toBe(2446.87);
+  });
 });
 
 // ─── DB: setInvoiceStatus ───────────────────────────────────────────────────
@@ -350,6 +402,42 @@ describe('setInvoiceStatus', () => {
     const fake = makeFakeSupabase({ invoices: [{ id: 'i1', status: 'paid', paid_at: 'x' }] });
     sbRef.current = fake.client;
     await expect(setInvoiceStatus('i1', 'draft')).rejects.toThrow(/illegal transition/);
+  });
+
+  // W1-023: optimistic lock — the UPDATE carries `.eq('status', current.status)`.
+  // A concurrent transition (e.g. an order-cancel flipping the invoice to cancelled)
+  // that lands between the read and this write matches 0 rows; we must NOT write the
+  // requested status over the winner's. A divergent race returns null (lost race).
+  it('does NOT write over a concurrently-changed status (compare-and-swap)', async () => {
+    const staleRead = { id: 'i1', status: 'awaiting_payment', paid_at: null };
+    const liveRow = { id: 'i1', status: 'cancelled', paid_at: null };
+    let statusGuard: unknown = undefined;
+    let updatePatch: Record<string, unknown> = {};
+    const builder: Record<string, unknown> = {
+      from: () => builder,
+      select: () => builder,
+      update: (patch: Record<string, unknown>) => {
+        updatePatch = patch;
+        return builder;
+      },
+      eq: (col: string, val: unknown) => {
+        if (col === 'status') statusGuard = val;
+        return builder;
+      },
+      maybeSingle: async () => ({ data: staleRead, error: null }),
+      single: async () => {
+        if (statusGuard !== undefined && statusGuard !== liveRow.status) {
+          return { data: null, error: { message: 'no rows' } };
+        }
+        return { data: { ...liveRow, ...updatePatch }, error: null };
+      },
+    };
+    sbRef.current = builder;
+    // awaiting_payment → paid is legal by the transition table; the compare-and-swap
+    // against the LIVE (cancelled) row fails → 0 rows → null, never a false 'paid'.
+    const result = await setInvoiceStatus('i1', 'paid');
+    expect(statusGuard).toBe('awaiting_payment'); // guarded on the read status
+    expect(result).toBeNull();
   });
 });
 
@@ -486,6 +574,29 @@ describe('setInvoiceTaxOverride', () => {
     expect(inv!.tax).toBe(0);
     expect(inv!.status).toBe('awaiting_payment');
   });
+
+  // W1-001: the re-price must use the AGREED total (snapshot selection), not the
+  // full quote.result.total — otherwise toggling the override silently re-bills
+  // the whole quote for a diverged selection.
+  it('re-prices from the AGREED selection total when the snapshot diverges', async () => {
+    const divergedQuote = {
+      id: 'q1',
+      result: { subtotalBeforeDiscount: 4500, discountAmount: 0, taxAmount: 393.75, total: 4893.75 },
+      approval_snapshot: { customerSelection: { currentTotalUsd: 3000 } },
+    };
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 1500, subtotal: 4500, discount: 0, tax: 393.75, total: 3000, balance: 1500, credit_note: 0, status: 'draft', tax_overridden: false },
+      ],
+      quotes: [divergedQuote],
+    });
+    sbRef.current = fake.client;
+    const inv = await setInvoiceTaxOverride('i1', true);
+    // Agreed total 3000, minus the full tax line 393.75 → 2606.25. NOT 4500.
+    expect(inv!.total).toBe(2606.25);
+    expect(inv!.tax).toBe(0);
+    expect(inv!.balance).toBe(1106.25); // 2606.25 − 1500
+  });
 });
 
 describe('getInvoiceDetail', () => {
@@ -557,6 +668,50 @@ describe('markInvoicePaidManually', () => {
     });
     sbRef.current = fake.client;
     await expect(markInvoicePaidManually('i1')).rejects.toThrow(/cancelled/);
+  });
+
+  // W1-022: TOCTOU — the pre-check read saw awaiting_payment (throw skipped) but
+  // the row has since been cancelled by a concurrent order-cancel. The atomic
+  // claim must NOT resurrect the cancelled invoice to paid. Simulated with a
+  // builder whose getInvoice read returns the STALE awaiting_payment snapshot
+  // while the guarded write matches against the LIVE (cancelled) row → 0 rows.
+  it('does NOT resurrect a concurrently-cancelled invoice to paid (atomic guard)', async () => {
+    const staleRead = { id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null };
+    const liveRow = { id: 'i1', status: 'cancelled', balance: 500, paid_at: null };
+    let sawUpdate = false;
+    let updatePatch: Record<string, unknown> = {};
+    const statusNeqPreds: Array<(s: string) => boolean> = [];
+    const builder: Record<string, unknown> = {
+      from: () => builder,
+      select: () => builder,
+      update: (patch: Record<string, unknown>) => {
+        sawUpdate = true;
+        updatePatch = patch;
+        return builder;
+      },
+      eq: () => builder,
+      neq: (col: string, val: unknown) => {
+        if (col === 'status') statusNeqPreds.push((s) => s !== val);
+        return builder;
+      },
+      // getInvoice pre-check reads the STALE snapshot.
+      maybeSingle: async () => ({ data: staleRead, error: null }),
+      // The claim uses .select(...) without .single() → resolves via then() to an
+      // array. Honor the collected .neq('status',…) guards against the LIVE row;
+      // a matched row returns the row WITH the update patch applied (as the real
+      // DB does), so a buggy guard would surface status:'paid'.
+      then: (resolve: (v: unknown) => void) => {
+        const matched = statusNeqPreds.every((p) => p(liveRow.status as string))
+          ? [{ ...liveRow, ...updatePatch }]
+          : [];
+        resolve({ data: matched, error: null });
+      },
+    };
+    sbRef.current = builder;
+    const result = await markInvoicePaidManually('i1');
+    expect(sawUpdate).toBe(true);
+    // 0 rows through the guard → the invoice was never written to 'paid'.
+    expect(result?.status).not.toBe('paid');
   });
 
   it('returns null when the invoice does not exist', async () => {

@@ -28,6 +28,7 @@ import { canTransition, type InvoiceStatus } from './invoiceStatus';
 // place now (was copy-pasted here / amend.ts / balanceCollection.ts). Aliased to
 // `round2` so the call sites are byte-identical.
 import { roundMoneyGuarded as round2 } from './money';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
 
 export type InvoiceRow = {
   id: string;
@@ -368,6 +369,9 @@ type QuoteForInvoice = {
   result: (InvoicePricingInput & { depositAmount?: number }) | null;
   deposit_amount_usd: number | null;
   deposit_paid_at: string | null;
+  // W1-001: the approved SELECTION total (+ any amendment) — the AGREED figure to
+  // bill, which can diverge from result.total. Null on legacy/never-approved rows.
+  approval_snapshot: AgreedTotalSnapshot;
 };
 
 /**
@@ -408,7 +412,7 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
 
   const { data: quote, error: qErr } = await db
     .from('quotes')
-    .select('id, result, deposit_amount_usd, deposit_paid_at')
+    .select('id, result, deposit_amount_usd, deposit_paid_at, approval_snapshot')
     .eq('id', job.quote_id)
     .maybeSingle<QuoteForInvoice>();
   if (qErr) {
@@ -420,22 +424,26 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
     return null;
   }
 
-  // INTENTIONAL: price off the LIVE quote.result, not the job's booking-time
-  // line_items snapshot. The invoice is created at install-complete — AFTER any
-  // Phase 4 amend — so the live result carries the FINAL agreed total (amend
-  // writes the new total back to quote.result). The job.line_items snapshot is a
-  // booking-time fulfillment reference, NOT the invoice's pricing source; using
-  // it would ignore amendments and bill the pre-amend total. (Pre-existing
-  // caveat: updateQuote can re-price a booked quote with no booked-state guard —
-  // that guard belongs with the amend route in Jason's quote area, #81.)
+  // W1-001: bill the AGREED total the customer actually consented to, NOT the
+  // full quote.result.total. The customer approves a SELECTION on the portal
+  // (deselecting items, picking a cheaper roofline tier, toggling rush/takedown),
+  // so the agreed figure lives in approval_snapshot.customerSelection.currentTotalUsd
+  // (later superseded by an amendment's new_total) — resolveAgreedTotal walks that
+  // precedence, falling back to result.total only for a legacy/never-approved row.
+  // The breakdown lines (subtotal/discount/fees/tax) stay from result for display
+  // continuity; the load-bearing figures (total/balance/credit_note) use the agreed
+  // total. The job.line_items snapshot is a booking-time fulfillment reference, NOT
+  // a pricing source.
   const result = quote.result ?? { total: 0 };
+  const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, result);
+  const pricing: InvoicePricingInput = { ...result, total: agreedTotal };
   // The deposit ACTUALLY applied: the durable charged amount when the deposit was
   // confirmed paid; the computed 50% only as a legacy fallback; 0 if never paid.
   const depositPaid = quote.deposit_paid_at
     ? quote.deposit_amount_usd ?? result.depositAmount ?? 0
     : 0;
 
-  const totals = computeInvoiceTotals(result, depositPaid, { taxOverridden: false });
+  const totals = computeInvoiceTotals(pricing, depositPaid, { taxOverridden: false });
 
   // Best-effort display number — a failed allocation (sequence missing
   // pre-migration) must NOT block the invoice; the column is nullable.
@@ -485,6 +493,14 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
  * (src/lib/invoiceStatus.ts). Throws on an illegal transition (a programmer/UI
  * error). Stamps `paid_at` when reaching `paid`. Returns null if Supabase isn't
  * configured or the invoice doesn't exist.
+ *
+ * W1-023: the read-then-canTransition check is advisory only — the UPDATE carries
+ * `.eq('status', current.status)` so it is a compare-and-swap. A concurrent
+ * transition that moved the row between our read and this write (e.g. an
+ * order-cancel flipping the invoice to cancelled while a complete is settling it)
+ * matches 0 rows; we treat that as a lost race (re-read once — return the fresh row
+ * if someone else already applied the same target, else null) rather than writing
+ * the requested status over the winner's.
  */
 export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<InvoiceRow | null> {
   const db = sb();
@@ -504,9 +520,17 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
     .from('invoices')
     .update(patch)
     .eq('id', id)
+    .eq('status', current.status)
     .select(INVOICE_SELECT)
     .single();
   if (error) {
+    // 0 rows OR a real error. Lost-race disambiguation (W1-023): re-read once. If
+    // the row already reached the target (a concurrent request applied the same
+    // transition), return it as an idempotent success; otherwise the race was
+    // divergent (or the row is gone) → null, matching the existing "couldn't apply"
+    // contract the callers already handle.
+    const fresh = await getInvoice(id);
+    if (fresh && fresh.status === to) return fresh;
     console.error('setInvoiceStatus error:', error);
     return null;
   }
@@ -515,11 +539,18 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
 
 /**
  * Manually mark an invoice paid — an operator recording an offline/external
- * payment (cash / check / paid in the Valor terminal). Atomic claim
- * (.neq('status','paid')) mirroring the Valor balance webhook: status='paid',
- * balance=0, paid_at=now. Idempotent (a paid invoice is a no-op). Throws on a
- * cancelled invoice. Does NOT touch the job — closing the job is the caller's
- * concern (the close route / collect-then-close flow).
+ * payment (cash / check / paid in the Valor terminal). Atomic claim mirroring
+ * the Valor balance webhook: status='paid', balance=0, paid_at=now. Idempotent
+ * (a paid invoice is a no-op). Throws on a cancelled invoice. Does NOT touch the
+ * job — closing the job is the caller's concern (the close route / collect-then-
+ * close flow).
+ *
+ * W1-022: the claim excludes BOTH 'paid' AND 'cancelled'. The cancelled pre-check
+ * above is read-then-write, so a concurrent order-cancel that flips the invoice to
+ * cancelled between that read and this UPDATE would otherwise be resurrected to
+ * paid (a bare `.neq('status','paid')` claim still matches a cancelled row).
+ * Excluding cancelled in the write itself closes that TOCTOU — the same terminal-
+ * status guard the balance webhook gets from `.in('status',['draft','awaiting_payment'])`.
  */
 export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | null> {
   const db = sb();
@@ -536,6 +567,7 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
     .update({ status: 'paid', balance: 0, paid_at: paidAt })
     .eq('id', id)
     .neq('status', 'paid')
+    .neq('status', 'cancelled')
     .select(INVOICE_SELECT);
   if (error) {
     console.error('markInvoicePaidManually error:', error);
@@ -577,8 +609,11 @@ export async function setInvoiceTaxOverride(
     );
   }
 
-  // Re-price from the source quote.result (full, un-overridden breakdown). Fall
-  // back to the invoice's own stored figures if the quote/result is gone.
+  // Re-price from the source quote.result (full, un-overridden breakdown) but with
+  // the AGREED total (W1-001) — same source createInvoiceFromJob bills from, so
+  // toggling the override can't silently re-bill the full quote.result.total for a
+  // diverged selection. Fall back to the invoice's own stored figures if the
+  // quote/result is gone.
   let pricing: InvoicePricingInput = {
     subtotalBeforeDiscount: invoice.subtotal,
     discountAmount: invoice.discount,
@@ -588,10 +623,12 @@ export async function setInvoiceTaxOverride(
   if (invoice.quote_id) {
     const { data: quote } = await db
       .from('quotes')
-      .select('result')
+      .select('result, approval_snapshot')
       .eq('id', invoice.quote_id)
-      .maybeSingle<{ result: InvoicePricingInput | null }>();
-    if (quote?.result) pricing = quote.result;
+      .maybeSingle<{ result: InvoicePricingInput | null; approval_snapshot: AgreedTotalSnapshot }>();
+    if (quote?.result) {
+      pricing = { ...quote.result, total: resolveAgreedTotal(quote.approval_snapshot, quote.result) };
+    }
   }
 
   const totals = computeInvoiceTotals(pricing, invoice.deposit_applied, { taxOverridden: overridden });

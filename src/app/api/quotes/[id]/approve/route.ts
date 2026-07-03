@@ -536,6 +536,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // can't be raced past. A row whose status just moved to 'declined',
   // 'cancelled', or 'lost' will no longer match and we get 0 updated rows →
   // safe 409 for the concurrent caller.
+  //
+  // Bug fix (W1-014): use the OR-with-null idiom instead of a bare `.not('status',
+  // 'in', …)`. In Postgres `NOT (status IN (…))` evaluates to NULL — not TRUE —
+  // when status IS NULL, so a bare `.not` filter SILENTLY EXCLUDES legacy/NULL-
+  // status rows, matching 0 rows and returning a false 409 with nothing recorded
+  // (the deriveStatus fast path already admits NULL rows, so the two disagreed).
+  // `.or('status.not.in.(…),status.is.null')` explicitly admits the NULL-status
+  // row while still excluding the terminal states — the same idiom the decline
+  // route uses (decline/route.ts) to guard its own NULL-status rows.
   const { data: updatedRows, error: snapshotErr } = await sb
     .from('quotes')
     .update({
@@ -548,7 +557,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     .eq('id', id)
     .is('customer_approved_at', null)
-    .not('status', 'in', '("declined","cancelled","lost")')
+    .or('status.not.in.("declined","cancelled","lost"),status.is.null')
     .select('id');
 
   if (snapshotErr) {

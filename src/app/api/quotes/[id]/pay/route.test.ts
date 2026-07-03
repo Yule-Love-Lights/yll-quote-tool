@@ -234,4 +234,22 @@ describe('POST /api/quotes/[id]/pay', () => {
     const res = await POST(makeReq(), { params });
     expect(res.status).toBe(404);
   });
+
+  // W1-007: a dead (cancelled) quote must not be able to mint a hosted page —
+  // otherwise a customer holding a live pay link could pay against a cancelled
+  // order and the webhook would resurrect it to 'booked'. The quote here still has
+  // customer_approved_at + a snapshot deposit (cancel doesn't clear them), so only
+  // the status gate stops it.
+  it('409s (not-payable) when the quote has been cancelled', async () => {
+    const { client, updatePayloads } = makeSb({ ...APPROVED_QUOTE, status: 'cancelled' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-payable');
+    expect(valor.createHostedPageSale).not.toHaveBeenCalled();
+    // never stamped an order ref for a dead quote
+    expect(updatePayloads).toHaveLength(0);
+  });
 });
