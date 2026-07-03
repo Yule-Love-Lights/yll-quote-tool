@@ -32,6 +32,16 @@ export const FEW_SHOT_LIMIT = 8;
 // EXAMPLES and don't count toward FEW_SHOT_LIMIT.
 const REFERENCE_PER_TYPE = 2;
 
+// W5-008 (#110 wave 5): FEW_SHOT_LIMIT caps the number of EXAMPLES (up to 8),
+// but each training-house example can carry up to 4 photos — worst case that's
+// 32 few-shot images, plus up to 6 reference images (REFERENCE_PER_TYPE × 3
+// asset types), plus the house photo (+ satellite) itself: ~40 images / ~64K
+// vision tokens with no TOTAL ceiling. Cap the sum of few-shot example PHOTOS
+// (references are already small and fixed) so a worst-case call can't balloon
+// past a sane image budget, while keeping the most relevant examples — the
+// ones `selectFewShot` weights most (closest match, ordered LAST).
+export const TOTAL_FEW_SHOT_IMAGE_CAP = 24;
+
 // A training-house DB row → the analyzer's few-shot shape. Up to 4 photos
 // (front_install first, then alt angles), confirmed measurements + detections.
 function trainingHouseToExample(h: StoredTrainingHouse): FewShotExample {
@@ -78,6 +88,27 @@ export function selectFewShot(sources: FewShotSources, limit: number): FewShotEx
   return [...training, ...[...design].reverse()];
 }
 
+// W5-008 (#110 wave 5): PURE cap on TOTAL few-shot photo count (not example
+// count — FEW_SHOT_LIMIT already caps that). `examples` is ordered least-
+// weighted-first / most-relevant-LAST (selectFewShot's contract), so drop
+// whole examples from the FRONT until the remaining photo sum fits the
+// budget. Never drops the single most-relevant (last) example even if it
+// alone exceeds the cap — a truncated few-shot set beats an empty one.
+export function capFewShotImages(
+  examples: FewShotExample[],
+  imageCap: number,
+): FewShotExample[] {
+  const total = examples.reduce((sum, e) => sum + e.photos.length, 0);
+  if (total <= imageCap) return examples;
+  let running = total;
+  let dropFrom = 0;
+  while (dropFrom < examples.length - 1 && running > imageCap) {
+    running -= examples[dropFrom].photos.length;
+    dropFrom++;
+  }
+  return examples.slice(dropFrom);
+}
+
 export type AssembledFewShot = {
   examples: FewShotExample[];
   references: StoredReferenceAsset[];
@@ -99,6 +130,14 @@ export async function assembleFewShot(
   houseStyleHint: string | undefined,
   queryImage: { base64: string; mediaType: string } | undefined,
 ): Promise<AssembledFewShot> {
+  // W5-022 (#110 wave 5, perf): references + the corpus-bias note depend on
+  // NEITHER the query embedding nor the design/training selection below —
+  // start them immediately instead of waiting on the embed→similarity chain
+  // to finish first. (getTrainingFewShot can't join this Promise.all — W5-009
+  // below needs `design.length` to decide whether to call it at all.)
+  const referencesPromise = getReferenceAssetsForAnalysis(REFERENCE_PER_TYPE);
+  const biasNotePromise = getCorpusBiasNote();
+
   // 1. Embed the query house (null when no image / Voyage unconfigured / fails).
   const queryVec = queryImage
     ? await embedImage(queryImage.base64, queryImage.mediaType, 'query')
@@ -119,11 +158,17 @@ export async function assembleFewShot(
     ? similarDesign
     : projectDesign(await getRecentTrainingExamples(FEW_SHOT_LIMIT));
 
-  // 3. Other sources + the corpus-wide bias note (#8 Stage C / C2) in parallel.
+  // 3. Training houses (unless skipped) + the already-in-flight sources above.
+  // W5-009 (#110 wave 5): selectFewShot fills design first, then pads with
+  // training only for the slots design didn't fill (Math.max(0, limit -
+  // design.length)) — so once design already fills every slot, the training
+  // fetch's result is guaranteed to be sliced to 0 and discarded. Skip the
+  // fetch entirely in that case.
+  const designFillsAllSlots = design.length >= FEW_SHOT_LIMIT;
   const [trainingHouses, references, biasNote] = await Promise.all([
-    getTrainingFewShot(FEW_SHOT_LIMIT, houseStyleHint),
-    getReferenceAssetsForAnalysis(REFERENCE_PER_TYPE),
-    getCorpusBiasNote(),
+    designFillsAllSlots ? Promise.resolve([]) : getTrainingFewShot(FEW_SHOT_LIMIT, houseStyleHint),
+    referencesPromise,
+    biasNotePromise,
   ]);
 
   // 4. Map the remaining sources to the few-shot shape.
@@ -131,8 +176,10 @@ export async function assembleFewShot(
     .filter(h => h.photos?.length && h.santas_footage != null && h.gingerbread_footage != null)
     .map(trainingHouseToExample);
 
-  // 5. Select + order.
-  const examples = selectFewShot({ design, training }, FEW_SHOT_LIMIT);
+  // 5. Select + order, then cap the TOTAL photo count (W5-008) — selectFewShot
+  // already orders least-relevant-first, so the cap trims from the front.
+  const selected = selectFewShot({ design, training }, FEW_SHOT_LIMIT);
+  const examples = capFewShotImages(selected, TOTAL_FEW_SHOT_IMAGE_CAP);
   const ranking: 'similarity' | 'recency' = usedSimilarity ? 'similarity' : 'recency';
 
   // Audit fix (Finding #57): the recency fallback is silent — indistinguishable
