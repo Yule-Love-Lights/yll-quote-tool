@@ -12,6 +12,7 @@ import type {
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -76,6 +77,10 @@ export type QuoteFormData = {
   // lines (no scene item to hold the flag). Toggled on the breakdown; ride inputs.
   winterWonderlandRecommended: boolean;
   stakeLightingRecommended: boolean;
+  // Permanent Lighting (#88). Populated by PermanentSection when serviceType is
+  // 'permanent'; only sent to the engine (via buildQuoteInputs) for permanent
+  // quotes. Always present in the form so the picker can switch to it cleanly.
+  permanent: PermanentQuoteFields;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -109,6 +114,7 @@ export const initialFormData: QuoteFormData = {
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
+  permanent: makeDefaultPermanentFields(),
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -180,6 +186,9 @@ export function buildQuoteInputs(
     // #12: WW/Stake recommend flags — only sent when set (legacy-clean).
     ...(form.winterWonderlandRecommended ? { winterWonderlandRecommended: true } : {}),
     ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
+    // #88 Permanent: send the permanent block ONLY for permanent quotes, so a
+    // holiday quote's inputs jsonb stays clean and the holiday engine never sees it.
+    ...(form.serviceType === 'permanent' ? { permanent: form.permanent } : {}),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -280,5 +289,11 @@ export function inputsToFormData(
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
     winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
     stakeLightingRecommended: i.stakeLightingRecommended ?? false,
+    // #88 Permanent: hydrate the stored block, or a fresh blank one (a factory so
+    // the gaps array isn't shared). Merged over the defaults so a partially-saved
+    // block (older permanent quote) fills any missing field.
+    permanent: i.permanent
+      ? { ...makeDefaultPermanentFields(), ...i.permanent }
+      : makeDefaultPermanentFields(),
   };
 }
