@@ -115,6 +115,31 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
         state.filters.push((r) => r[col] === val);
         return builder;
       },
+      in(col: string, vals: unknown[]) {
+        state.filters.push((r) => vals.includes(r[col]));
+        return builder;
+      },
+      // Minimal PostgREST .or() DSL parser: `col.eq.val` and
+      // `col.in.(v1,v2,...)` conditions joined by commas, ORed together.
+      or(condsStr: string) {
+        const conds = condsStr.split(/,(?![^(]*\))/); // split on commas NOT inside (...)
+        const predicates = conds.map((cond) => {
+          const eqMatch = cond.match(/^([a-z_]+)\.eq\.(.+)$/);
+          if (eqMatch) {
+            const [, col, val] = eqMatch;
+            return (r: Row) => r[col] === val;
+          }
+          const inMatch = cond.match(/^([a-z_]+)\.in\.\((.*)\)$/);
+          if (inMatch) {
+            const [, col, valsStr] = inMatch;
+            const vals = valsStr.split(',');
+            return (r: Row) => vals.includes(r[col] as string);
+          }
+          throw new Error(`unsupported .or() condition in fake: ${cond}`);
+        });
+        state.filters.push((r) => predicates.some((p) => p(r)));
+        return builder;
+      },
       is(col: string, val: unknown) {
         state.filters.push((r) =>
           val === null ? r[col] === null || r[col] === undefined : r[col] === val,
@@ -281,6 +306,86 @@ describe('findOrCreateCustomer', () => {
 
     expect(res).toBeNull(); // retry re-select finds nothing → null, not a throw
     expect(fake.tables.customers).toHaveLength(0);
+  });
+
+  // W2-009: match_key precedence (hl > email > phone > name) used to split ONE
+  // real customer into TWO rows when their history mixes an HL-linked quote
+  // with an email/phone-only quote (the #306 backfill's exact input). The fix:
+  // before creating a NEW row on a not-yet-seen PRIMARY key (e.g. hl:hl9),
+  // also check the identity's SECONDARY keys (email/phone/name) for an
+  // existing customer — merge into it instead of creating a second row.
+  describe('W2-009 — cross-key merge (same person, mixed identity)', () => {
+    it('merges an HL-linked quote into an existing email-keyed customer (no second row)', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      // Quote A: email only (no HL id yet).
+      const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
+      // Quote B: same person, now HL-linked — same email, PLUS an hl_contact_id.
+      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
+
+      expect(b?.id).toBe(a?.id); // same customer, not a second row
+      expect(fake.tables.customers).toHaveLength(1);
+      // The existing row is upgraded to the higher-precedence key + backfilled
+      // so a FUTURE hl-only lookup also resolves here.
+      const row = fake.tables.customers[0];
+      expect(row.match_key).toBe('hl:hl9');
+      expect(row.hl_contact_id).toBe('hl9');
+      expect(row.email).toBe('jane@x.com');
+    });
+
+    it('a subsequent hl-only lookup resolves to the merged customer', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      const a = await findOrCreateCustomer({ email: 'jane@x.com' });
+      await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
+      // A THIRD quote arrives with the HL id but no email (e.g. a later GHL
+      // webhook-only payload) — must resolve to the SAME customer, not create
+      // a third row.
+      const c = await findOrCreateCustomer({ hl_contact_id: 'hl9' });
+
+      expect(c?.id).toBe(a?.id);
+      expect(fake.tables.customers).toHaveLength(1);
+    });
+
+    it('merges via phone when email differs but phone matches', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      const a = await findOrCreateCustomer({ phone: '(555) 123-4567', name: 'Jane' });
+      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', phone: '555-123-4567' });
+
+      expect(b?.id).toBe(a?.id);
+      expect(fake.tables.customers).toHaveLength(1);
+      expect(fake.tables.customers[0].match_key).toBe('hl:hl9');
+    });
+
+    it('does NOT merge distinct people (no shared secondary identity)', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      const a = await findOrCreateCustomer({ email: 'jane@x.com' });
+      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'someone-else@x.com' });
+
+      expect(fake.tables.customers).toHaveLength(2);
+      expect(b?.id).not.toBe(a?.id);
+    });
+
+    it('never downgrades an existing higher-precedence match_key', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      // Quote A already HL-linked.
+      const a = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
+      // Quote B arrives email-only for the same person — must resolve to the
+      // SAME hl-keyed row, and must NOT downgrade its match_key to email:….
+      const b = await findOrCreateCustomer({ email: 'jane@x.com' });
+
+      expect(b?.id).toBe(a?.id);
+      expect(fake.tables.customers).toHaveLength(1);
+      expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // unchanged
+    });
   });
 });
 
