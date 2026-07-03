@@ -39,8 +39,6 @@ export type TrainingHousePayload = {
   spritzers: Spritzer[];
   wreaths: Wreath[];
   garland: GarlandItem[];
-  scaleAnchor?: string | null;
-  didntInstall?: string | null;
   aiFailureNotes?: string | null;
   costMaterials?: number | null;
   costLaborHours?: number | null;
@@ -82,10 +80,28 @@ export type StoredTrainingHouse = {
   revenue: number | null;
 };
 
-export type TrainingListItem = Omit<StoredTrainingHouse, 'photos'> & {
+// W5-029: the list card (training/page.tsx) only ever reads this subset —
+// keep it column-projected in listTrainingHouses rather than SELECT * so a
+// list render doesn't pull every row's full base64 photos + unused detection
+// arrays just to build a thumbnail grid.
+export type TrainingListItem = Pick<
+  StoredTrainingHouse,
+  'id' | 'address' | 'year_completed' | 'house_style' | 'santas_footage' | 'gingerbread_footage'
+  | 'mini_light_detections' | 'wreaths'
+> & {
   thumbnail: TrainingPhoto | null;
   photoCount: number;
 };
+
+// W5-028: address/houseStyle/notes/aiFailureNotes are stored uncapped and
+// aiFailureNotes is injected raw into a synthetic assistant message the
+// analyzer imitates as ground truth. Strip control characters and cap length
+// so a huge or control-char-laden write can't poison the corpus text.
+const MAX_TEXT_LEN = 2000;
+function sanitizeCorpusText(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  return v.replace(/[\x00-\x1f]/g, ' ').trim().slice(0, MAX_TEXT_LEN) || null;
+}
 
 export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<{ id: string } | null> {
   // Service client first so reads/writes bypass RLS (enabled on training_houses,
@@ -96,10 +112,10 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
   const { data, error } = await supabase
     .from('training_houses')
     .insert({
-      address: payload.address ?? null,
+      address: sanitizeCorpusText(payload.address),
       year_completed: payload.yearCompleted ?? null,
-      house_style: payload.houseStyle ?? null,
-      notes: payload.notes ?? null,
+      house_style: sanitizeCorpusText(payload.houseStyle),
+      notes: sanitizeCorpusText(payload.notes),
       photos: payload.photos,
       santas_footage: payload.santasFootage ?? null,
       santas_difficulty: payload.santasDifficulty ?? null,
@@ -120,9 +136,9 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
       spritzers: payload.spritzers,
       wreaths: payload.wreaths,
       garland: payload.garland,
-      scale_anchor: payload.scaleAnchor ?? null,
-      didnt_install: payload.didntInstall ?? null,
-      ai_failure_notes: payload.aiFailureNotes ?? null,
+      scale_anchor: null,
+      didnt_install: null,
+      ai_failure_notes: sanitizeCorpusText(payload.aiFailureNotes),
       cost_materials: payload.costMaterials ?? null,
       cost_labor_hours: payload.costLaborHours ?? null,
       revenue: payload.revenue ?? null,
@@ -137,8 +153,14 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
   return { id: data.id };
 }
 
-// Listing view — excludes full-size photos from payload (only first one as thumbnail).
-// Prevents transferring MB of base64 when the page just needs a preview grid.
+// Listing view — column-projected to only what the list card renders (W5-029):
+// still needs `photos` to derive the thumbnail (Supabase can't slice a jsonb
+// array server-side), but skips every other unused big column (lines,
+// detections, spritzers/garland, notes, cost/revenue) that select('*') was
+// pulling for every row just to build a preview grid.
+const LIST_COLUMNS =
+  'id, address, year_completed, house_style, photos, santas_footage, gingerbread_footage, mini_light_detections, wreaths';
+
 export async function listTrainingHouses(limit = 100): Promise<TrainingListItem[]> {
   // Service client first so reads/writes bypass RLS (enabled on training_houses,
   // #90 — the table holds address + house-photo PII); anon fallback for dev.
@@ -146,14 +168,15 @@ export async function listTrainingHouses(limit = 100): Promise<TrainingListItem[
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('training_houses')
-    .select('*')
+    .select(LIST_COLUMNS)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
     console.error('listTrainingHouses error:', error);
     return [];
   }
-  return ((data ?? []) as StoredTrainingHouse[]).map(h => {
+  type ListRow = Pick<StoredTrainingHouse, 'id' | 'address' | 'year_completed' | 'house_style' | 'photos' | 'santas_footage' | 'gingerbread_footage' | 'mini_light_detections' | 'wreaths'>;
+  return ((data ?? []) as unknown as ListRow[]).map(h => {
     const photos = h.photos ?? [];
     const front = photos.find(p => p.tag === 'front_install') ?? photos[0] ?? null;
     const { photos: _photos, ...rest } = h;

@@ -118,8 +118,8 @@ export default function TrainingListPage() {
                   {h.photoCount > 1 && <span>· {h.photoCount} photos</span>}
                 </div>
                 <div className="text-xs text-gray-700 grid grid-cols-2 gap-1 mt-1">
-                  <span>Gutter: <strong>{h.santas_footage ?? '—'}ft</strong></span>
-                  <span>Ridge: <strong>{h.gingerbread_footage ?? '—'}ft</strong></span>
+                  <span>Front: <strong>{h.santas_footage ?? '—'}ft</strong></span>
+                  <span>Ridge+Sides: <strong>{h.gingerbread_footage ?? '—'}ft</strong></span>
                   <span>Bushes/Trees: <strong>{h.mini_light_detections.length}</strong></span>
                   <span>Wreaths: <strong>{h.wreaths.reduce((s, w) => s + w.quantity, 0)}</strong></span>
                 </div>

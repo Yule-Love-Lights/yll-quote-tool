@@ -5,12 +5,29 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
+// W5-030: captureTrainingExample's dependencies (quote lookup, design lookup,
+// photo download, embedding) are mocked whole-module so the footage
+// sanitization branch can be exercised without a real Supabase/storage/Voyage
+// round-trip.
+const { quoteRef, designRef } = vi.hoisted(() => ({
+  quoteRef: { current: null as unknown },
+  designRef: { current: null as unknown },
+}));
+vi.mock('./quotes', () => ({ getQuoteRaw: async () => quoteRef.current }));
+vi.mock('./designs', () => ({
+  getDesign: async () => designRef.current,
+  downloadDesignImageBase64: async (path: string | null) =>
+    path ? { base64: 'AAAA', mediaType: 'image/jpeg' } : null,
+}));
+vi.mock('./embeddings', () => ({ embedImage: async () => null }));
+
 import {
   exampleToFewShot,
   getCorpusBiasNote,
   updateTrainingExample,
   deleteTrainingExample,
   invalidateBiasNoteCache,
+  captureTrainingExample,
   type TrainingExampleRow,
 } from './trainingExamples';
 import { editableItems, applyItemCorrections } from './design/sceneCorrections';
@@ -178,6 +195,98 @@ describe('applyItemCorrections (#52)', () => {
     const before = JSON.parse(JSON.stringify(MIXED));
     applyItemCorrections(MIXED, { 'bush-1': { stringCount: 7 }, 'sp-1': { quoteSize: '32' } });
     expect(MIXED).toEqual(before);
+  });
+});
+
+// ─── W5-030: winterWonderland/stakeLighting footage sanitization ───────────
+// santasFootage/gingerbreadFootage are routed through asFootage() (NaN/negative
+// → 0); winterWonderlandFootage/stakeLightingFootage were only typeof-checked,
+// so a NaN or negative value passed straight into the captured example.
+
+function makeCaptureSb() {
+  let upsertedRow: Record<string, unknown> | null = null;
+  const builder: Record<string, unknown> = {};
+  builder.select = () => builder;
+  builder.eq = () => builder;
+  builder.maybeSingle = async () => ({ data: { id: 'design-1' }, error: null });
+  builder.upsert = (row: Record<string, unknown>) => {
+    upsertedRow = row;
+    return builder;
+  };
+  builder.single = async () => ({ data: { id: 'ex-1' }, error: null });
+  const client = { from: () => builder };
+  return { client, getUpsertedRow: () => upsertedRow };
+}
+
+const SIMPLE_SCENE: Scene = {
+  yardsticks: [],
+  items: [
+    { id: 'i1', yardstickId: null, kind: 'strand', bulbType: 'c9', spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 10, 0], surface: 'santas-roofline' },
+  ],
+};
+
+describe('captureTrainingExample footage sanitization (W5-030)', () => {
+  beforeEach(() => {
+    quoteRef.current = null;
+    designRef.current = null;
+    sbRef.current = null;
+  });
+
+  it('clamps a NaN/negative winterWonderlandFootage and stakeLightingFootage to 0, like santas/gingerbread', async () => {
+    quoteRef.current = {
+      id: 'q1',
+      customer_address: '1 Main',
+      inputs: {
+        santasFootage: NaN,
+        gingerbreadFootage: -5,
+        winterWonderlandFootage: NaN,
+        stakeLightingFootage: -10,
+      },
+    };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    const res = await captureTrainingExample({ quoteId: 'q1', source: 'manual' });
+
+    expect(res).toEqual({ id: 'ex-1' });
+    const row = getUpsertedRow()!;
+    const finalInputs = row.final_inputs as Record<string, unknown>;
+    expect(finalInputs.santasFootage).toBe(0);
+    expect(finalInputs.gingerbreadFootage).toBe(0);
+    expect(finalInputs.winterWonderlandFootage).toBe(0);
+    expect(finalInputs.stakeLightingFootage).toBe(0);
+  });
+
+  it('passes through a valid winterWonderlandFootage/stakeLightingFootage unchanged', async () => {
+    quoteRef.current = {
+      id: 'q1',
+      customer_address: '1 Main',
+      inputs: { winterWonderlandFootage: 25, stakeLightingFootage: 12 },
+    };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual' });
+
+    const finalInputs = getUpsertedRow()!.final_inputs as Record<string, unknown>;
+    expect(finalInputs.winterWonderlandFootage).toBe(25);
+    expect(finalInputs.stakeLightingFootage).toBe(12);
   });
 });
 
