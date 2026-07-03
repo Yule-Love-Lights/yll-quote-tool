@@ -79,13 +79,22 @@ function makeSb(quote: Row | null, fresh: Row | null = quote) {
   return { client: b, updates };
 }
 
+// A NON-diverged booking (agreed selection === the full quote at approval): the
+// customer approved the whole $5,000 quote, and staff have since re-priced it up
+// to $5,600 in the builder → the +$600 amendment delta is REAL. The frozen
+// pricing.total ($5,000) is the approval-time full total the delta measures
+// against (W1-004).
 const BOOKED_QUOTE = {
   id: ID,
   status: 'booked',
   deposit_amount_usd: 2500,
   deposit_paid_at: '2026-01-01T00:00:00Z',
   result: { subtotalBeforeDiscount: 5600, discountAmount: 0, taxAmount: 0, total: 5600 },
-  approval_snapshot: { customerSelection: { currentTotalUsd: 5000 }, amendments: [] },
+  approval_snapshot: {
+    customerSelection: { currentTotalUsd: 5000 },
+    pricing: { total: 5000 },
+    amendments: [],
+  },
   customer_name: 'Alice Smith',
   highlevel_contact_id: 'hl-1',
   is_test: false,
@@ -181,6 +190,69 @@ describe('POST /api/quotes/[id]/amend', () => {
     const res = await POST(req({ reason: 'added an extra wreath' }), ctx());
     expect(res.status).toBe(200);
     expect(sb.updates.invoices[0]).toMatchObject({ balance: 3100, status: 'awaiting_payment' });
+  });
+
+  // ── W1-004: the amend delta must not fabricate a phantom increase on a
+  // selection-DIVERGED booking (customer deselected items at approval).
+  //
+  // A DIVERGED booking: the customer approved a $5,000 SELECTION of a $5,600 full
+  // quote (pricing.total frozen at approval). The amend delta is measured on the
+  // agreed basis as the CHANGE in the full quote (result.total − pricing.total),
+  // NOT (result.total − agreedTotal) — which would invent a +$600 increase.
+
+  const DIVERGED_QUOTE = {
+    ...BOOKED_QUOTE,
+    approval_snapshot: {
+      customerSelection: { currentTotalUsd: 5000 },
+      pricing: { total: 5600 }, // full quote at approval time
+      amendments: [],
+    },
+  };
+
+  it('does NOT fabricate a phantom increase when the builder was never re-priced (diverged selection → no-change)', async () => {
+    // No builder edit: result.total is still the frozen full total (5600). The
+    // OLD code computed 5600 − 5000 = +600 (phantom); the fix reads delta 0.
+    const noEdit = { ...DIVERGED_QUOTE, result: { total: 5600 } };
+    const sb = makeSb(noEdit);
+    sbRef.current = sb.client;
+    const res = await POST(req({ reason: 'billing note only' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('no-change'); // NOT a +$600 amendment
+    expect(sb.updates.quotes).toHaveLength(0);
+  });
+
+  it('amends UP on a diverged selection: delta is the full-quote change on the agreed basis', async () => {
+    // Staff re-priced the full quote 5600 → 5900 (+$300 of real work).
+    const amendUp = { ...DIVERGED_QUOTE, result: { total: 5900 } };
+    const sb = makeSb(amendUp);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // previous = agreed 5000; new = 5000 + (5900 − 5600) = 5300; delta +300 (NOT +900).
+    expect(json.amendment).toMatchObject({ previous_total: 5000, new_total: 5300, delta: 300 });
+    // Invoice re-synced to the AGREED new total, not the full 5900: balance 5300 − 2500.
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5300, balance: 2800 });
+  });
+
+  it('amends DOWN on a diverged selection: delta is negative on the agreed basis', async () => {
+    // Staff removed work: full quote 5600 → 5300 (−$300).
+    const amendDown = { ...DIVERGED_QUOTE, result: { total: 5300 } };
+    const sb = makeSb(amendDown);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    const res = await POST(req({ reason: 'removed a section' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // previous = agreed 5000; new = 5000 + (5300 − 5600) = 4700; delta −300.
+    expect(json.amendment).toMatchObject({ previous_total: 5000, new_total: 4700, delta: -300 });
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 4700, balance: 2200 });
   });
 
   it('409s (concurrent-amend) when the trail grew between read and write', async () => {

@@ -24,6 +24,7 @@
 import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
 import { allocateNumber } from './displayId';
 import { canTransition, type InvoiceStatus } from './invoiceStatus';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
 
 export type InvoiceRow = {
   id: string;
@@ -372,6 +373,9 @@ type QuoteForInvoice = {
   result: (InvoicePricingInput & { depositAmount?: number }) | null;
   deposit_amount_usd: number | null;
   deposit_paid_at: string | null;
+  // W1-001: the approved SELECTION total (+ any amendment) — the AGREED figure to
+  // bill, which can diverge from result.total. Null on legacy/never-approved rows.
+  approval_snapshot: AgreedTotalSnapshot;
 };
 
 /**
@@ -412,7 +416,7 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
 
   const { data: quote, error: qErr } = await db
     .from('quotes')
-    .select('id, result, deposit_amount_usd, deposit_paid_at')
+    .select('id, result, deposit_amount_usd, deposit_paid_at, approval_snapshot')
     .eq('id', job.quote_id)
     .maybeSingle<QuoteForInvoice>();
   if (qErr) {
@@ -424,22 +428,26 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
     return null;
   }
 
-  // INTENTIONAL: price off the LIVE quote.result, not the job's booking-time
-  // line_items snapshot. The invoice is created at install-complete — AFTER any
-  // Phase 4 amend — so the live result carries the FINAL agreed total (amend
-  // writes the new total back to quote.result). The job.line_items snapshot is a
-  // booking-time fulfillment reference, NOT the invoice's pricing source; using
-  // it would ignore amendments and bill the pre-amend total. (Pre-existing
-  // caveat: updateQuote can re-price a booked quote with no booked-state guard —
-  // that guard belongs with the amend route in Jason's quote area, #81.)
+  // W1-001: bill the AGREED total the customer actually consented to, NOT the
+  // full quote.result.total. The customer approves a SELECTION on the portal
+  // (deselecting items, picking a cheaper roofline tier, toggling rush/takedown),
+  // so the agreed figure lives in approval_snapshot.customerSelection.currentTotalUsd
+  // (later superseded by an amendment's new_total) — resolveAgreedTotal walks that
+  // precedence, falling back to result.total only for a legacy/never-approved row.
+  // The breakdown lines (subtotal/discount/fees/tax) stay from result for display
+  // continuity; the load-bearing figures (total/balance/credit_note) use the agreed
+  // total. The job.line_items snapshot is a booking-time fulfillment reference, NOT
+  // a pricing source.
   const result = quote.result ?? { total: 0 };
+  const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, result);
+  const pricing: InvoicePricingInput = { ...result, total: agreedTotal };
   // The deposit ACTUALLY applied: the durable charged amount when the deposit was
   // confirmed paid; the computed 50% only as a legacy fallback; 0 if never paid.
   const depositPaid = quote.deposit_paid_at
     ? quote.deposit_amount_usd ?? result.depositAmount ?? 0
     : 0;
 
-  const totals = computeInvoiceTotals(result, depositPaid, { taxOverridden: false });
+  const totals = computeInvoiceTotals(pricing, depositPaid, { taxOverridden: false });
 
   // Best-effort display number — a failed allocation (sequence missing
   // pre-migration) must NOT block the invoice; the column is nullable.
@@ -581,8 +589,11 @@ export async function setInvoiceTaxOverride(
     );
   }
 
-  // Re-price from the source quote.result (full, un-overridden breakdown). Fall
-  // back to the invoice's own stored figures if the quote/result is gone.
+  // Re-price from the source quote.result (full, un-overridden breakdown) but with
+  // the AGREED total (W1-001) — same source createInvoiceFromJob bills from, so
+  // toggling the override can't silently re-bill the full quote.result.total for a
+  // diverged selection. Fall back to the invoice's own stored figures if the
+  // quote/result is gone.
   let pricing: InvoicePricingInput = {
     subtotalBeforeDiscount: invoice.subtotal,
     discountAmount: invoice.discount,
@@ -592,10 +603,12 @@ export async function setInvoiceTaxOverride(
   if (invoice.quote_id) {
     const { data: quote } = await db
       .from('quotes')
-      .select('result')
+      .select('result, approval_snapshot')
       .eq('id', invoice.quote_id)
-      .maybeSingle<{ result: InvoicePricingInput | null }>();
-    if (quote?.result) pricing = quote.result;
+      .maybeSingle<{ result: InvoicePricingInput | null; approval_snapshot: AgreedTotalSnapshot }>();
+    if (quote?.result) {
+      pricing = { ...quote.result, total: resolveAgreedTotal(quote.approval_snapshot, quote.result) };
+    }
   }
 
   const totals = computeInvoiceTotals(pricing, invoice.deposit_applied, { taxOverridden: overridden });
