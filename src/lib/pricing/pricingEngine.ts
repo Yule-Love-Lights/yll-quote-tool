@@ -811,9 +811,18 @@ function computeTotalsTail(
 ): Omit<FullYuleTotals, 'subtotalBeforeDiscount'> {
   let discountAmount = 0;
   if (inputs.discount) {
+    // Clamp the discount amount at 0 (mirrors the units()/overrideAmount guards):
+    // a non-finite or NEGATIVE amount (e.g. a fat-fingered '-50') would otherwise
+    // INFLATE the total — the portal + approve recompute ignore a negative discount,
+    // so the stored/emailed/CRM figure would silently diverge from what the customer
+    // sees and approves.
+    const amount =
+      Number.isFinite(inputs.discount.amount) && inputs.discount.amount > 0
+        ? inputs.discount.amount
+        : 0;
     discountAmount = inputs.discount.type === 'percentage'
-      ? Math.round(subtotalBeforeDiscount * inputs.discount.amount)
-      : inputs.discount.amount;
+      ? Math.round(subtotalBeforeDiscount * amount)
+      : amount;
   }
 
   const postDiscount = subtotalBeforeDiscount - discountAmount;

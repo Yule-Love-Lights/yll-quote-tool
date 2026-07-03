@@ -18,15 +18,15 @@
 // Keeping the routing pure + tested means the decision logic is settled and
 // reviewable now; only the execution waits on the decision + auth.
 
+// #110 W1-064: shared EPSILON-nudged + finite-guarded round-to-cents (was copy-
+// pasted here / invoices.ts / amend.ts). Aliased to `round2` so call sites are
+// byte-identical.
+import { roundMoneyGuarded as round2 } from './money';
+
 export type BalanceCollectionPlan =
   | { method: 'none'; amountUsd: 0; reason: 'no_balance' | 'overpaid' }
   | { method: 'auto_charge'; amountUsd: number }
   | { method: 'pay_link'; amountUsd: number };
-
-function round2(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
 
 /**
  * Decide how to collect an invoice's balance. PURE.

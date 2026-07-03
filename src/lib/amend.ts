@@ -26,16 +26,11 @@
 import type { QuoteStatus } from './quoteStatus';
 import { priceSelection } from './portal/derivePackages';
 import type { SelectionCharges, SelectionPrice } from '@/components/portal/types';
-
-// Round to cents — money never carries float dust into the trail or the balance.
-// EPSILON-nudged + finite-guarded, matching src/lib/invoices.ts round2 so the two
-// money modules of this feature round a balance identically (a half-cent boundary
-// can't diverge between an amend and the invoice it feeds). computeAmendment also
-// hard-validates finiteness upstream, so the guard is belt-and-suspenders.
-function round2(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
+// #110 W1-064: shared EPSILON-nudged + finite-guarded round-to-cents (was copy-
+// pasted here / invoices.ts / balanceCollection.ts). Aliased to `round2` so the
+// call sites are byte-identical, and so the amend and the invoice it feeds still
+// round a balance identically (a half-cent boundary can't diverge).
+import { roundMoneyGuarded as round2 } from './money';
 
 // Sub-cent deltas are treated as no change: float arithmetic on re-priced
 // selections can leave a fraction-of-a-cent difference that is NOT a real price

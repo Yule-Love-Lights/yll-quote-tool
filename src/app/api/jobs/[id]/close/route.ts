@@ -1,17 +1,19 @@
 // POST /api/jobs/[id]/close  (operator-only)
 //
-// Finalize a job: settle the linked invoice (if present + unpaid) with an
-// offline/manual payment, then advance the job to `done` through the LEGAL
-// jobStatus transitions. The invoice settlement reuses markInvoicePaidManually
-// (atomic .neq('status','paid') claim — idempotent, no double-settle).
+// Finalize a job: settle the linked invoice (if unpaid) with an offline/manual
+// payment, then advance the job to `done` through the LEGAL jobStatus transitions.
+// The invoice settlement reuses markInvoicePaidManually (atomic .neq('status','paid')
+// claim — idempotent, no double-settle).
 //
 // Transition ladder (only through legal steps):
 //   to_schedule | scheduled → installed → requires_invoicing → done
 //
 // A job already `done` is an idempotent no-op (200 { alreadyDone:true }).
-// A cancelled job is rejected (400). A close race (setJobStatus throws because a
-// concurrent request already advanced past a step) re-reads: if already `done`,
-// returns success; otherwise 409.
+// A cancelled job is rejected (400). A job with NO invoice is rejected (409
+// no-invoice) — close = finalize + settle, so it must be invoiced first (via
+// Complete); closing an un-invoiced job would forfeit the untracked balance.
+// A close race (setJobStatus throws because a concurrent request already
+// advanced past a step) re-reads: if already `done`, returns success; else 409.
 //
 // Response: { ok, closed:true } | { ok, alreadyDone:true } | { error, code? }
 
@@ -44,9 +46,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   if (job.status === 'done') return NextResponse.json({ ok: true, alreadyDone: true });
 
-  // Settle the linked invoice if present + unpaid (close = finalize).
+  // Close = finalize + SETTLE, so an invoice must already exist. Closing a job
+  // that was never invoiced would advance it straight to `done` with the entire
+  // remaining balance untracked (no invoice row to reconcile), silently forfeiting
+  // it. Refuse and point the operator at the complete→invoice step rather than
+  // auto-creating here (surgical fix — keep this route settle-only).
   const invoice = await getInvoiceByJob(id);
-  if (invoice && invoice.status !== 'paid' && invoice.status !== 'cancelled') {
+  if (!invoice) {
+    return NextResponse.json(
+      {
+        error: 'This job has no invoice yet — run "Complete" to create the invoice before closing.',
+        code: 'no-invoice',
+      },
+      { status: 409 },
+    );
+  }
+  // Settle the linked invoice if unpaid (close = finalize).
+  if (invoice.status !== 'paid' && invoice.status !== 'cancelled') {
     try {
       await markInvoicePaidManually(invoice.id);
     } catch (err) {

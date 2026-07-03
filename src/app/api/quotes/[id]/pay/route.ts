@@ -132,21 +132,49 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Stable reference echoed back by Valor's webhook (as the invoicenumber) so it
   // can find this quote. Reuse an existing one (re-opened checkout) to keep the
   // mapping stable.
-  const orderRef = quote.valor_order_ref ?? `q${randomBytes(8).toString('hex')}`;
+  let orderRef = quote.valor_order_ref ?? `q${randomBytes(8).toString('hex')}`;
 
-  // Record the reference + the amount we're about to ask Valor to charge, before
-  // we send the customer to the hosted page — so the webhook can verify the
-  // confirmed amount against what we intended.
-  const { error: stampErr } = await sb
-    .from('quotes')
-    .update({ valor_order_ref: orderRef, deposit_amount_usd: depositUsd })
-    .eq('id', id);
-  if (stampErr) {
-    console.error('[api/quotes/:id/pay] order-ref stamp failed:', stampErr);
-    return NextResponse.json(
-      { error: `Failed to start checkout: ${stampErr.message}` },
-      { status: 500 },
-    );
+  // W1-015 — GUARDED first-time stamp. An unguarded read-then-write let two
+  // concurrent first opens (same portal link on two tabs/devices) both mint a
+  // ref and overwrite each other → the customer pays on a hosted page carrying a
+  // ref the webhook can't map (charged but never booked), and it could also clobber
+  // a webhook-recorded ACTUAL deposit with the intended amount. So we stamp the
+  // ref + intended amount ONLY when the ref is still null AND unpaid; if the row
+  // already carries a ref we reuse it untouched (no re-stamp).
+  if (!quote.valor_order_ref) {
+    const { data: claimed, error: stampErr } = await sb
+      .from('quotes')
+      .update({ valor_order_ref: orderRef, deposit_amount_usd: depositUsd })
+      .eq('id', id)
+      .is('valor_order_ref', null)
+      .is('deposit_paid_at', null)
+      .select('id');
+    if (stampErr) {
+      console.error('[api/quotes/:id/pay] order-ref stamp failed:', stampErr);
+      return NextResponse.json(
+        { error: `Failed to start checkout: ${stampErr.message}` },
+        { status: 500 },
+      );
+    }
+    // Lost the race (0 rows) — a concurrent open won, or the deposit just got
+    // paid. Re-read and reuse the winner's ref so the hosted page maps back;
+    // 409 if it's now paid.
+    if (!claimed || claimed.length === 0) {
+      const { data: fresh } = await sb
+        .from('quotes')
+        .select('valor_order_ref, deposit_paid_at')
+        .eq('id', id)
+        .single<{ valor_order_ref: string | null; deposit_paid_at: string | null }>();
+      if (fresh?.deposit_paid_at) {
+        return NextResponse.json(
+          { error: 'Deposit already paid', code: 'already-paid', paidAt: fresh.deposit_paid_at },
+          { status: 409 },
+        );
+      }
+      if (fresh?.valor_order_ref) {
+        orderRef = fresh.valor_order_ref;
+      }
+    }
   }
 
   // Where Valor returns the customer after they pay (or fail/cancel). The

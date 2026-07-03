@@ -750,6 +750,26 @@ describe('calculateQuote — money-integrity guards', () => {
     expect(r.total).toBeGreaterThan(0);
   });
 
+  it('treats a NEGATIVE flat discount as 0 (never INFLATES the subtotal/total)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      discount: { type: 'flat', amount: -50 },         // typo path — must not add $50
+    }));
+    expect(r.discountAmount).toBe(0);
+    expect(r.subtotalAfterDiscount).toBe(1000);        // NOT 1050
+    expect(r.total).toBe(1087.5);                       // 1000 + 8.75% tax, uninflated
+  });
+
+  it('treats a NEGATIVE percentage discount as 0 (never inflates)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // 1000
+      discount: { type: 'percentage', amount: -0.1 },  // -10% — must not add 10%
+    }));
+    expect(r.discountAmount).toBe(0);
+    expect(r.subtotalAfterDiscount).toBe(1000);
+    expect(r.total).toBe(1087.5);
+  });
+
   it('coerces a non-finite mini-light stringCount to $0 (finite total, no NaN)', () => {
     const r = calculateQuote(emptyInputs({
       santasFootage: 100, santasDifficulty: 'medium', // 1000

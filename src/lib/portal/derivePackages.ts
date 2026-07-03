@@ -26,6 +26,9 @@
 
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+// #110 W1-064: shared plain round-to-cents (was copy-pasted here / approve route).
+// Aliased to `round2` so call sites are byte-identical.
+import { roundMoney as round2 } from '@/lib/money';
 import type {
   InstallTiming,
   PackageId,
@@ -53,10 +56,6 @@ function effectiveTaxRate(_result: QuoteResult): number {
   // No per-quote tax rate exists today; if one ever lands (exemptions/local
   // rates) persist it explicitly on QuoteResult and read it here.
   return BUSINESS_RULES.taxRate;
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
 
 // Per-quote fee CONFIG pulled from the pricing result: the canonical rush +

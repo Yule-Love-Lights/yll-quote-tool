@@ -104,15 +104,39 @@ describe('POST /api/jobs/[id]/close', () => {
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'done');
   });
 
-  it('advances from to_schedule through all legal steps to done', async () => {
+  it('advances from to_schedule through all legal steps to done (when an invoice exists)', async () => {
     getJob.mockResolvedValueOnce({ id: ID, status: 'to_schedule' as const });
-    getInvoiceByJob.mockResolvedValueOnce(null);
+    getInvoiceByJob.mockResolvedValueOnce(PAID_INVOICE);
 
     const res = await POST(req, ctx());
     expect(res.status).toBe(200);
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'installed');
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'requires_invoicing');
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'done');
+  });
+
+  it('409s no-invoice: refuses to close a to_schedule job with NO invoice (would forfeit the balance)', async () => {
+    getJob.mockResolvedValueOnce({ id: ID, status: 'to_schedule' as const });
+    getInvoiceByJob.mockResolvedValueOnce(null);
+
+    const res = await POST(req, ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('no-invoice');
+    // Must not advance the job or silently finalize without an invoice.
+    expect(setJobStatus).not.toHaveBeenCalled();
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
+  it('409s no-invoice: refuses to close a requires_invoicing job with NO invoice', async () => {
+    getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValueOnce(null);
+
+    const res = await POST(req, ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('no-invoice');
+    expect(setJobStatus).not.toHaveBeenCalled();
   });
 
   it('409s when markInvoicePaidManually throws (cancelled invoice)', async () => {

@@ -261,82 +261,86 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ? quote.total
         : undefined;
 
-  if (quote.is_test) {
-    // Test Quote (#93): simulate the send — never move a real GHL pipeline card.
-    // stageUpdated stays false; the sync-outcome write below marks it "synced"
-    // so the quote doesn't show as stuck / retryable in the admin UI.
-    stageError = undefined;
-  } else if (!isHighLevelConfigured()) {
-    stageError = 'HighLevel not configured';
-  } else if (!stageSent || !pipelineId) {
-    stageError = 'HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID not set';
-  } else {
-    // 1. If a card is already linked, advance it to Bid Sent + refresh its
-    //    title/value. If it was deleted in GHL, drop the stale id and fall
-    //    through to find-or-create below.
-    if (opportunityId) {
-      try {
-        await updateOpportunity(opportunityId, { pipelineStageId: stageSent, name: cardName, monetaryValue });
-        stageUpdated = true;
-      } catch (err) {
-        if (isMissingOpportunity(err)) {
-          opportunityId = null;
-        } else {
-          console.warn('[api/quotes/:id/send] HL opportunity update failed:', err);
-          stageError = hlErrorMessage(err);
-        }
-      }
-    }
-    // 2. No usable linked card → reuse the contact's existing card if they have
-    //    one (GHL allows only one open card per contact per pipeline), else
-    //    create a fresh card. Either path ends at Bid Sent with our title/value.
-    if (!stageUpdated && !stageError) {
-      if (!quote.highlevel_contact_id) {
-        stageError = 'No HighLevel contact linked to this quote';
-      } else {
+  // W1-050: the GHL stage-move chain (+ its durable sync-state write) and the two
+  // customer messages (SMS, email) are mutually independent — the operator's Send
+  // click waited on them one after another. Run them concurrently below via
+  // Promise.allSettled. The stage chain KEEPS its internal order (update-linked →
+  // find-or-create → relink → persist sync outcome); the messages keep their own
+  // shape. Each task still logs its own failure non-fatally exactly as today.
+  const ghlStageChain = async () => {
+    if (quote.is_test) {
+      // Test Quote (#93): simulate the send — never move a real GHL pipeline card.
+      // stageUpdated stays false; the sync-outcome write below marks it "synced"
+      // so the quote doesn't show as stuck / retryable in the admin UI.
+      stageError = undefined;
+    } else if (!isHighLevelConfigured()) {
+      stageError = 'HighLevel not configured';
+    } else if (!stageSent || !pipelineId) {
+      stageError = 'HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID not set';
+    } else {
+      // 1. If a card is already linked, advance it to Bid Sent + refresh its
+      //    title/value. If it was deleted in GHL, drop the stale id and fall
+      //    through to find-or-create below.
+      if (opportunityId) {
         try {
-          const existing = await findOpportunityForContact(quote.highlevel_contact_id, pipelineId);
-          if (existing) {
-            await updateOpportunity(existing.id, { pipelineStageId: stageSent, name: cardName, monetaryValue });
-            opportunityId = existing.id;
-          } else {
-            const created = await createOpportunity({
-              contactId: quote.highlevel_contact_id,
-              pipelineId,
-              pipelineStageId: stageSent,
-              name: cardName,
-              monetaryValue,
-              source: 'Quote Tool',
-            });
-            opportunityId = created.id;
-            opportunityCreated = true;
-          }
+          await updateOpportunity(opportunityId, { pipelineStageId: stageSent, name: cardName, monetaryValue });
           stageUpdated = true;
-          // Persist the resolved card id so future send/approve calls find it.
-          const { error: linkErr } = await sb
-            .from('quotes')
-            .update({ highlevel_opportunity_id: opportunityId })
-            .eq('id', id);
-          if (linkErr) {
-            console.warn('[api/quotes/:id/send] failed to relink opportunity id:', linkErr.message);
-          }
         } catch (err) {
-          console.warn('[api/quotes/:id/send] find-or-create opportunity failed:', err);
-          stageError = hlErrorMessage(err);
+          if (isMissingOpportunity(err)) {
+            opportunityId = null;
+          } else {
+            console.warn('[api/quotes/:id/send] HL opportunity update failed:', err);
+            stageError = hlErrorMessage(err);
+          }
+        }
+      }
+      // 2. No usable linked card → reuse the contact's existing card if they have
+      //    one (GHL allows only one open card per contact per pipeline), else
+      //    create a fresh card. Either path ends at Bid Sent with our title/value.
+      if (!stageUpdated && !stageError) {
+        if (!quote.highlevel_contact_id) {
+          stageError = 'No HighLevel contact linked to this quote';
+        } else {
+          try {
+            const existing = await findOpportunityForContact(quote.highlevel_contact_id, pipelineId);
+            if (existing) {
+              await updateOpportunity(existing.id, { pipelineStageId: stageSent, name: cardName, monetaryValue });
+              opportunityId = existing.id;
+            } else {
+              const created = await createOpportunity({
+                contactId: quote.highlevel_contact_id,
+                pipelineId,
+                pipelineStageId: stageSent,
+                name: cardName,
+                monetaryValue,
+                source: 'Quote Tool',
+              });
+              opportunityId = created.id;
+              opportunityCreated = true;
+            }
+            stageUpdated = true;
+            // Persist the resolved card id so future send/approve calls find it.
+            const { error: linkErr } = await sb
+              .from('quotes')
+              .update({ highlevel_opportunity_id: opportunityId })
+              .eq('id', id);
+            if (linkErr) {
+              console.warn('[api/quotes/:id/send] failed to relink opportunity id:', linkErr.message);
+            }
+          } catch (err) {
+            console.warn('[api/quotes/:id/send] find-or-create opportunity failed:', err);
+            stageError = hlErrorMessage(err);
+          }
         }
       }
     }
-  }
 
-  // Audit fix (send-route-ghl-sync-state, finding #32): persist the stage-sync
-  // OUTCOME durably so a card that never advanced is discoverable + retryable,
-  // instead of leaving the only trace in a console line. On success clear the
-  // error and stamp ghl_stage_synced_at; on failure record the reason and leave
-  // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
-  // itself best-effort — its failure only logs, never undoes the send.
-  {
-    // Test Quote (#93): mark the sync done (no real card moved, but the quote
-    // shouldn't look stuck). Otherwise the real success/failure outcome.
+    // Audit fix (send-route-ghl-sync-state, finding #32): persist the stage-sync
+    // OUTCOME durably so a card that never advanced is discoverable + retryable,
+    // instead of leaving the only trace in a console line. On success clear the
+    // error and stamp ghl_stage_synced_at; on failure record the reason and leave
+    // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
+    // itself best-effort — its failure only logs, never undoes the send.
     const syncPayload = quote.is_test || stageUpdated
       ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
       : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
@@ -344,7 +348,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (syncErr) {
       console.warn('[api/quotes/:id/send] failed to persist GHL sync state:', syncErr.message);
     }
-  }
+  };
 
   // Deliver the portal link to the customer via GHL — SMS + Email — so it lands
   // in the Conversations tab (#37). Non-fatal: a messaging failure doesn't undo
@@ -354,42 +358,53 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // not re-text/re-email them.
   let smsSent = false;
   let emailSent = false;
-  let messageError: string | undefined;
+  let smsError: string | undefined;
+  let emailError: string | undefined;
   // Test Quote (#93): never text/email a real customer for a simulated send.
-  if (!isGhlRetry && !quote.is_test && isHighLevelConfigured() && quote.highlevel_contact_id) {
-    const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
-    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-    const portalUrl = `${baseUrl}/portal/${id}`;
-    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
-    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
-    if (doSms) {
-      try {
-        await sendSms({
-          contactId: quote.highlevel_contact_id,
-          message: quoteSmsBody(firstName, portalUrl),
-          fromNumber,
-        });
-        smsSent = true;
-      } catch (err) {
-        console.warn('[api/quotes/:id/send] SMS send failed:', err);
-        messageError = hlErrorMessage(err);
-      }
+  const canMessage =
+    !isGhlRetry && !quote.is_test && isHighLevelConfigured() && !!quote.highlevel_contact_id;
+  const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+  const portalUrl = `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/portal/${id}`;
+  const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+  const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+
+  const customerSms = async () => {
+    if (!canMessage || !doSms || !quote.highlevel_contact_id) return;
+    try {
+      await sendSms({
+        contactId: quote.highlevel_contact_id,
+        message: quoteSmsBody(firstName, portalUrl),
+        fromNumber,
+      });
+      smsSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/send] SMS send failed:', err);
+      smsError = hlErrorMessage(err);
     }
-    if (doEmail) {
-      try {
-        await sendEmail({
-          contactId: quote.highlevel_contact_id,
-          subject: QUOTE_EMAIL_SUBJECT,
-          html: quoteEmailHtml(firstName, portalUrl),
-          emailFrom,
-        });
-        emailSent = true;
-      } catch (err) {
-        console.warn('[api/quotes/:id/send] Email send failed:', err);
-        messageError = (messageError ? `${messageError}; ` : '') + hlErrorMessage(err);
-      }
+  };
+
+  const customerEmail = async () => {
+    if (!canMessage || !doEmail || !quote.highlevel_contact_id) return;
+    try {
+      await sendEmail({
+        contactId: quote.highlevel_contact_id,
+        subject: QUOTE_EMAIL_SUBJECT,
+        html: quoteEmailHtml(firstName, portalUrl),
+        emailFrom,
+      });
+      emailSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/send] Email send failed:', err);
+      emailError = hlErrorMessage(err);
     }
-  }
+  };
+
+  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail()]);
+
+  // Join the two message errors deterministically (SMS first, then email),
+  // preserving the original "a; b" concatenation shape.
+  const messageError =
+    [smsError, emailError].filter(Boolean).join('; ') || undefined;
 
   return NextResponse.json({
     ok: true,
