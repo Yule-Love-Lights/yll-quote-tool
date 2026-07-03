@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { friendlyPortalError } from '../friendlyError';
+import { useModalFocus } from '../useModalFocus';
 
 type Props = {
   quoteId: string;
@@ -105,8 +106,14 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
     setAttempt((a) => a + 1);
   };
 
+  // a11y fix (W4-015): move focus into the dialog on open, trap Tab within
+  // it, and restore focus to the trigger ("Complete deposit"/"Approve") on
+  // close.
+  const dialogRef = useModalFocus<HTMLDivElement>();
+
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"

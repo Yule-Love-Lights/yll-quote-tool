@@ -11,6 +11,7 @@
 // Dark portal theme, mobile-first, 44px tap targets, 16px+ inputs.
 
 import { useState } from 'react';
+import { useModalFocus } from '../useModalFocus';
 
 export type ResponseIntent = 'decline' | 'request-changes';
 
@@ -112,8 +113,16 @@ export function QuoteResponseModal({ quoteId, intent, onClose }: Props) {
     }
   };
 
+  // a11y fix (W4-015): move focus into the dialog on open, trap Tab within
+  // it, and restore focus to the trigger (Decline/Request-changes button) on
+  // close. The dialog container stays mounted across the `done` swap
+  // (confirmation vs. the form share one outer node), so the Tab-trap keeps
+  // working for both, though the one-time initial-focus only runs on mount.
+  const dialogRef = useModalFocus<HTMLDivElement>();
+
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"

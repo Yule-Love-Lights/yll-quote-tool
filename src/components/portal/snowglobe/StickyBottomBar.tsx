@@ -10,9 +10,11 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
+import { useModalFocus } from '../useModalFocus';
 import { DepositCheckout } from './DepositCheckout';
 import { SignaturePad, type CapturedSignature } from './SignaturePad';
 import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
+import { isPortalActionable } from '@/lib/quoteStatus';
 
 export type StickyBottomBarProps = {
   quoteId: string;
@@ -32,6 +34,14 @@ export type StickyBottomBarProps = {
    *  paid" (→ /simulate-deposit, no Valor) and the deposit flow is available
    *  regardless of whether the real Valor checkout is enabled. */
   isTest?: boolean;
+  /** Bug fix (audit W4-013) — the quote's live lifecycle status
+   *  (deriveStatus), passed down so the "Complete deposit" bar can be
+   *  suppressed once staff cancel/decline an approved-but-unpaid quote. The
+   *  page-level dead-quote gate skips itself once `approved` is true (so a
+   *  booked-then-cancelled quote still shows its confirmation), so this is
+   *  the only place left to catch "approved, unpaid, then killed". Undefined
+   *  is treated as actionable (fail-open — matches isPortalActionable). */
+  quoteStatus?: string | null;
 };
 
 export function StickyBottomBar({
@@ -41,6 +51,7 @@ export function StickyBottomBar({
   checkoutEnabled = false,
   approvedDepositUsd,
   isTest = false,
+  quoteStatus,
 }: StickyBottomBarProps) {
   const {
     activeName,
@@ -187,7 +198,14 @@ export function StickyBottomBar({
   // #38 — approved but the deposit isn't paid yet (online checkout on). Show a
   // "complete your deposit" bar that re-opens the hosted checkout. The selection
   // is already frozen, so we go straight to the checkout (no re-approve).
-  const pendingPayment = approved && !booked && depositFlow;
+  // Bug fix (audit W4-013): also require the quote's LIVE status to still be
+  // actionable. Without this, an approved-but-unpaid quote that staff then
+  // cancel/decline still rendered this actionable "Complete deposit" button —
+  // clicking it hit the /pay 409 guard, whose handler treats every 409 as
+  // "already paid" and routes the customer to the booked celebration page for
+  // a dead order. isPortalActionable(undefined) is true (fail-open), so this
+  // is a no-op for quotes that don't pass quoteStatus down.
+  const pendingPayment = approved && !booked && depositFlow && isPortalActionable(quoteStatus);
   if (pendingPayment) {
     return (
       <>
@@ -214,6 +232,23 @@ export function StickyBottomBar({
           </button>
         </div>
       </>
+    );
+  }
+
+  // Bug fix (audit W4-013): approved, never paid, and now cancelled/declined —
+  // the case pendingPayment above just excluded. Show a plain non-actionable
+  // notice instead of falling through to the full interactive Approve/Decline
+  // bar below (which would let the customer "approve" a quote staff already
+  // killed). Booked (deposit already paid) quotes are unaffected — money
+  // already moved, so cancellation afterward still shows the booked bar.
+  const deadApproval = approved && !booked && depositFlow && !isPortalActionable(quoteStatus);
+  if (deadApproval) {
+    return (
+      <div className="portal-snow-sticky" role="region" aria-label="Quote no longer available">
+        <span className="text-[13px] md:text-[14px] text-[#A89F87]">
+          This quote is no longer available. Questions? Just reach out.
+        </span>
+      </div>
     );
   }
 
@@ -389,8 +424,12 @@ function SignModal({
   total: number;
   deposit: number;
 }) {
+  // a11y fix (W4-015): move focus into the dialog on open, trap Tab within
+  // it, and restore focus to the Approve button (the trigger) on close.
+  const dialogRef = useModalFocus<HTMLDivElement>();
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"

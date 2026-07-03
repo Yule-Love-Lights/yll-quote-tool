@@ -132,7 +132,22 @@ export function SignaturePad({ onChange }: Props) {
       <div className="mt-3 flex items-center gap-3 text-[12px]">
         <button
           type="button"
-          onClick={() => setMode(mode === 'typed' ? 'drawn' : 'typed')}
+          onClick={() => {
+            setMode(mode === 'typed' ? 'drawn' : 'typed');
+            // Bug fix (audit W4-003): the canvas only exists while
+            // mode === 'drawn' (it's conditionally rendered below), so
+            // toggling drawn -> typed -> drawn unmounts and remounts a BLANK
+            // canvas. hasDrawn/hasDrawnRef were previously reset only by
+            // clearCanvas(), so they stayed true across the round-trip and
+            // the emit effect above would read the fresh BLANK canvas and
+            // emit it as a valid "drawn" signature — which could get frozen
+            // into approval_snapshot on Approve without the customer ever
+            // re-drawing anything. Reset both on every mode change so a
+            // re-entered draw mode requires a real stroke before it can be
+            // submitted again.
+            hasDrawnRef.current = false;
+            setHasDrawn(false);
+          }}
           className="text-[#FFD07A] underline cursor-pointer min-h-[44px] inline-flex items-center"
         >
           {mode === 'typed' ? 'Or draw your signature instead' : 'Type my name instead'}
