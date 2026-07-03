@@ -66,11 +66,11 @@ function AddOnToggle({
             <span className={`font-display text-[17px] md:text-[18px] font-semibold ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
               {title}
             </span>
-            <span className={`font-display text-[16px] font-semibold tabular-nums ${selected ? 'text-[#E8B862]' : 'text-[#7B7361]'}`}>
+            <span className={`font-display text-[16px] font-semibold tabular-nums ${selected ? 'text-[#E8B862]' : 'text-[#A89F87]'}`}>
               +{formatUsd(amount)}
             </span>
           </span>
-          <span className={`block text-[13px] mt-1 leading-[1.5] ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
+          <span className="block text-[13px] mt-1 leading-[1.5] text-[#A89F87]">
             {blurb}
           </span>
         </span>
@@ -130,11 +130,11 @@ function DiscountToggle({
             <span className={`font-display text-[17px] md:text-[18px] font-semibold ${selected ? 'text-[#F4ECD8]' : 'text-[#A89F87]'}`}>
               {title}
             </span>
-            <span className={`font-display text-[16px] font-semibold ${selected ? 'text-[#86C9A0]' : 'text-[#7B7361]'}`}>
+            <span className={`font-display text-[16px] font-semibold ${selected ? 'text-[#86C9A0]' : 'text-[#A89F87]'}`}>
               −{percentLabel}
             </span>
           </span>
-          <span className={`block text-[13px] mt-1 leading-[1.5] ${selected ? 'text-[#A89F87]' : 'text-[#7B7361]'}`}>
+          <span className="block text-[13px] mt-1 leading-[1.5] text-[#A89F87]">
             {blurb}
           </span>
         </span>
@@ -215,7 +215,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
               ? "This is your booked quote — here's everything included, line by line."
               : "Toggle anything off to remove it and we'll update your total automatically."}
           </p>
-          <p className="mt-3 text-[13px] text-[#7B7361]">Prices shown are before tax.</p>
+          <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
         </div>
 
         <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${locked ? 'pointer-events-none' : ''}`}>
@@ -229,21 +229,25 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
                   aria-pressed={selected}
                   onClick={() => toggleItem(item.id)}
                   className={[
-                    'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,opacity] duration-300 text-left',
+                    'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color] duration-300 text-left',
                     'border',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
                     selected
                       ? 'bg-[#1F2A23] border-[#3C4F43]'
-                      : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100',
+                      : 'bg-[#18221C]/70 border-[#243029] hover:border-[#3C4F43]',
                   ].join(' ')}
                 >
+                  {/* Deselected cue lives on this decorative icon badge only (not
+                      the text below it) — audit fix W4-010: a blanket opacity-60
+                      on the whole button dropped the label/price/status text
+                      under WCAG AA. */}
                   <span
                     aria-hidden
                     className={[
-                      'shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-[background-color,box-shadow] duration-300',
+                      'shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-[background-color,box-shadow,opacity] duration-300',
                       selected
                         ? 'bg-[#E8B862] shadow-[0_0_14px_rgba(232,184,98,0.45)]'
-                        : 'bg-[#243029]',
+                        : 'bg-[#243029] opacity-60',
                     ].join(' ')}
                   >
                     <Icon className={selected ? 'w-5 h-5 text-[#0B140F]' : 'w-5 h-5 text-[#7B7361]'} aria-hidden />
@@ -270,7 +274,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
                     </span>
                     <span
                       className="block text-[11px] font-semibold tracking-[0.14em] uppercase mt-1"
-                      style={{ color: selected ? '#E8B862' : '#7B7361' }}
+                      style={{ color: selected ? '#E8B862' : '#A89F87' }}
                     >
                       {selected ? 'Included' : 'Off'}
                     </span>

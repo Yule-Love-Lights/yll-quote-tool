@@ -272,7 +272,9 @@ export default async function PortalApprovedPage({
       <footer className="w-full bg-[#060B0F] border-t border-[#1F2A23]">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-12 text-center">
           <p className="text-[12px] leading-[1.65] text-[#7B7361] max-w-[65ch] mx-auto">
-            No payment is due right now — we&apos;ll reach out to collect your deposit and confirm your install date.
+            {isPaid
+              ? 'Your deposit is paid and your spot is locked in — the remaining balance is collected after your install is complete.'
+              : "No payment is due right now — we'll reach out to collect your deposit and confirm your install date."}
           </p>
         </div>
       </footer>

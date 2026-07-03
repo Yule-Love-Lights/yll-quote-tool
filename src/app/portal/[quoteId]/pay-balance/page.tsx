@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useParams } from 'next/navigation';
+import { friendlyPortalError } from '@/components/portal/friendlyError';
 
 // Customer-facing remaining-balance checkout (ledger #83 pay-link). Minimal page:
 // the operator sends the customer this link; clicking "Pay balance" starts a Valor
@@ -24,8 +25,10 @@ export default function PayBalancePage() {
       if (!res.ok || !body.redirectUrl) throw new Error('unavailable');
       window.location.href = body.redirectUrl as string;
     } catch {
-      // Generic, customer-appropriate message — never surface raw backend errors.
-      setError('We couldn’t start your payment right now. Please try again, or contact us for help.');
+      // Consistency fix (audit W4-018): route through the shared friendly-error
+      // helper (never surface raw backend errors) so wording/phone can't drift
+      // from the rest of the portal's error copy.
+      setError(friendlyPortalError('start your payment'));
       setBusy(false);
     }
   };

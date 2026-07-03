@@ -45,6 +45,25 @@ export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryPr
     [design],
   );
 
+  // Perf fix (audit W4-001): memoize the per-photo scenes on [design.scene,
+  // photos] — mirroring DesignReprise's activeScene memo — so a toggle/recolor
+  // (which only changes hiddenSceneItemIds/colorOverride, read separately by
+  // DesignCanvas) doesn't produce a fresh `scene` object identity every render.
+  // DesignCanvas's mount effect keys on `scene` identity (DesignCanvas.tsx), so
+  // an unstable scene tore down and remounted every tile's Konva stage on every
+  // toggle; a stable identity lets its in-place setHidden/setColorOverride
+  // effects handle the update instead.
+  const scenesByPhotoId = useMemo(
+    () =>
+      new Map(
+        photos.map((p) => [
+          p.id ?? 'base',
+          { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, p.id)) },
+        ]),
+      ),
+    [design.scene, photos],
+  );
+
   // Lazy-mount (DesignReprise pattern): IO is the real trigger; the timer is a
   // safety net only. setState deferred (repo rule: set-state-in-effect).
   useEffect(() => {
@@ -85,7 +104,7 @@ export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryPr
       </p>
       <div ref={wrapRef} className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
         {photos.map((p) => {
-          const scene = { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, p.id)) };
+          const scene = scenesByPhotoId.get(p.id ?? 'base')!;
           const aspectRatio = p.w && p.h ? `${p.w} / ${p.h}` : '8 / 5';
           return (
             <figure key={p.id ?? 'base'} className="m-0">

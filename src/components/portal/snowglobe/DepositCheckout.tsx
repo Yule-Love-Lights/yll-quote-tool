@@ -30,6 +30,12 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Guard against double-run (React strict-mode runs effects twice).
   const startedRef = useRef(false);
+  // Bug fix (audit W4-002): retry() used to reset startedRef and call
+  // router.refresh(), but router.refresh() doesn't remount this component or
+  // change any effect dependency, so the POST effect below never re-ran and
+  // "Try again" was a dead button. `attempt` is in the effect's deps, so
+  // retry() bumping it is what actually re-runs the checkout POST.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -90,13 +96,13 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [quoteId, router, isTest]);
+  }, [quoteId, router, isTest, attempt]);
 
   const retry = () => {
     startedRef.current = false;
     setErrorMsg(null);
     setPhase('starting');
-    router.refresh();
+    setAttempt((a) => a + 1);
   };
 
   return (
@@ -165,7 +171,7 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
           </div>
         )}
 
-        <p className="mt-4 text-[11px] text-[#6E6553] text-center">
+        <p className="mt-4 text-[11px] text-[#A89F87] text-center">
           {isTest
             ? '🧪 Test mode — this records a simulated deposit. No card is charged.'
             : '🔒 Secured by Valor PayTech. Your card details are entered on Valor’s secure page — they never touch our servers.'}

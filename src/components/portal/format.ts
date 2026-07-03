@@ -23,11 +23,6 @@ export function sumSelectedItems(
   return total;
 }
 
-// Deposit is always 50% per business rules.
-export function depositFor(total: number): number {
-  return Math.round(total * 50) / 100;
-}
-
 // Customer-facing quote reference. Real DB IDs are UUIDs ("a1b2c3d4-e5f6-...")
 // which are ugly on screen and unmemorable on a phone call. We render a
 // short, distinguishable prefix instead — "YLL-A1B2C3D4". Stable per quote;

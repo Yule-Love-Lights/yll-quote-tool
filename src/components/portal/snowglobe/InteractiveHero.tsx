@@ -29,6 +29,7 @@ import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
+import { extraPhotoLabels } from '@/lib/design/photoLabels';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -77,6 +78,15 @@ export function InteractiveHero({
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const extraPhotos = useMemo(
     () => (design?.extraPhotos ?? []).filter((p) => p.url),
+    [design?.extraPhotos],
+  );
+  // Consistency fix (audit W4-029): number extras by their index in the
+  // UNFILTERED extraPhotos array (the canonical numbering, matching
+  // photoLabels.extraPhotoLabels), not by their index in the url-filtered
+  // `extraPhotos` above — filtering first shifts every later photo's number
+  // down by one whenever an earlier extra's signed URL breaks.
+  const extraPhotoLabelById = useMemo(
+    () => extraPhotoLabels(design?.extraPhotos ?? []),
     [design?.extraPhotos],
   );
   const activeExtra = activePhotoId ? extraPhotos.find((p) => p.id === activePhotoId) ?? null : null;
@@ -275,7 +285,7 @@ export function InteractiveHero({
               {design && extraPhotos.length > 0 && (
                 <div className="flex gap-2 overflow-x-auto pb-1 mt-4" role="tablist" aria-label="Photos of your home">
                   {[{ id: null as string | null, url: design.photoUrl, title: 'Photo 1' },
-                    ...extraPhotos.map((p, i) => ({ id: p.id as string | null, url: p.url, title: p.title || `Photo ${i + 2}` }))].map((p) => {
+                    ...extraPhotos.map((p) => ({ id: p.id as string | null, url: p.url, title: extraPhotoLabelById.get(p.id) ?? 'Photo' }))].map((p) => {
                     const active = p.id === activePhotoId;
                     return (
                       <button
