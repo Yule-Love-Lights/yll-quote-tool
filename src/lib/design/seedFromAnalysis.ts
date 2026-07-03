@@ -43,6 +43,7 @@ import {
   seedLinesHaveContent,
   type RooflineSeedLines,
 } from './seedRoofline';
+import { firstYardstickPpf } from './yardstickPpf';
 
 export type NormalizedBox = [number, number, number, number]; // x, y, w, h — 0–1 of the photo
 
@@ -257,22 +258,6 @@ export function derivePxPerFoot(seed: AnalysisSeed, w: number, h: number): numbe
     if (ppf >= MIN_PPF && ppf <= MAX_PPF) return ppf;
   }
   return null;
-}
-
-// Pixels-per-foot from the scene's FIRST yardstick — the one seeded items bind
-// to (yardstickId:null = "the first yardstick"). Axis-aware, mirroring
-// editor-core/yardstick-scale.ts: a "height"-axis yardstick (downspout, column,
-// garage-door height) measures its HEIGHT, everything else its width. Returns
-// null when there's no yardstick or the derived ppf is implausible (same bounds
-// as derivePxPerFoot), so a garland with no real scale stays at the deliberate
-// 1-section default rather than being mis-estimated.
-function firstYardstickPpf(scene: Scene): number | null {
-  const ys = Array.isArray(scene?.yardsticks) ? scene.yardsticks[0] : undefined;
-  if (!ys || !Number.isFinite(ys.realFeet) || ys.realFeet <= 0) return null;
-  const measured = ys.axis === 'height' ? ys.height : ys.width;
-  if (!Number.isFinite(measured) || measured <= 0) return null;
-  const ppf = measured / ys.realFeet;
-  return ppf >= MIN_PPF && ppf <= MAX_PPF ? ppf : null;
 }
 
 // The scale used to size garland runs (#90): the AI's roofline calibration when
