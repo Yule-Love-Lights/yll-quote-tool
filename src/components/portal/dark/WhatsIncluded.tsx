@@ -156,6 +156,10 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   railing: Fence,
   curtain: Lightbulb,
   'stake-lighting': Lightbulb,
+  // Permanent Lighting (#88 P5): per-surface line items reuse the house icon;
+  // the maintenance add-on reuses the generic bulb icon.
+  permanent: Home,
+  'permanent-addon': Lightbulb,
 };
 
 export type WhatsIncludedProps = {
