@@ -98,28 +98,39 @@ export function trackSections(ft: number): number {
 const CAP = { 350: Math.floor(300 * 0.85), 600: Math.floor(510 * 0.85) }; // 255, 433
 
 /**
- * Cover `lights` with the cheapest transformer set at ≤85% load. 600W is cheaper
- * per puck so it carries the bulk; a 350W tops a small remainder. The FIRST unit
- * is a KIT (bundles the one system WiFi hub + a booster + adapter); the rest are
- * bare power supplies (one hub per system — Naldo 2026-07-03).
+ * Cover `lights` with the CHEAPEST transformer set at ≤85% load. 600W is cheaper
+ * per puck for bulk, but two 350W (255 each → 510) can undercut a 600W+350W set
+ * in the 256–510-light window, so we enumerate `(n600, n350)` combinations that
+ * cover the load and pick the lowest total cost rather than greedily grabbing
+ * 600s. The FIRST unit is a KIT (bundles the one system WiFi hub + a booster +
+ * adapter); the rest are bare power supplies (one hub per system — Naldo
+ * 2026-07-03). The KIT is placed on a 600W when the set has one, else a 350W.
  */
 export function sizeTransformers(lights: number): TransformerUnit[] {
   if (!Number.isFinite(lights) || lights <= 0) return [];
-  const units: TransformerUnit[] = [];
-  let rem = Math.ceil(lights);
-  while (rem > 0) {
-    if (rem <= CAP[350]) {
-      units.push({ watts: 350, kit: false, lights: rem });
-      rem = 0;
-    } else if (rem <= CAP[600]) {
-      units.push({ watts: 600, kit: false, lights: rem });
-      rem = 0;
-    } else {
-      units.push({ watts: 600, kit: false, lights: CAP[600] });
-      rem -= CAP[600];
-    }
+  const L = Math.ceil(lights);
+  const kitPremium = { 350: C.kit350 - C.xfmr350, 600: C.kit600 - C.xfmr600 };
+  let best: { n600: number; n350: number; cost: number } | null = null;
+  const maxN600 = Math.ceil(L / CAP[600]);
+  for (let n600 = 0; n600 <= maxN600; n600++) {
+    const covered = CAP[600] * n600;
+    const n350 = covered >= L ? 0 : Math.ceil((L - covered) / CAP[350]);
+    if (n600 + n350 === 0) continue;
+    // Every unit bare, then upgrade exactly one to a KIT (prefer a 600 if present).
+    let cost = n600 * C.xfmr600 + n350 * C.xfmr350;
+    cost += n600 > 0 ? kitPremium[600] : kitPremium[350];
+    if (best === null || cost < best.cost) best = { n600, n350, cost };
   }
-  units[0].kit = true;
+  const { n600, n350 } = best!;
+  const order: (350 | 600)[] = [...Array(n600).fill(600 as const), ...Array(n350).fill(350 as const)];
+  const units: TransformerUnit[] = [];
+  let rem = L;
+  order.forEach((watts, i) => {
+    const last = i === order.length - 1;
+    const lightsForUnit = last ? rem : Math.min(CAP[watts], rem);
+    units.push({ watts, kit: i === 0, lights: lightsForUnit });
+    rem -= lightsForUnit;
+  });
   return units;
 }
 

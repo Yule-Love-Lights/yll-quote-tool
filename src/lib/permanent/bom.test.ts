@@ -56,13 +56,18 @@ describe('permanent BOM — unit formulas', () => {
     expect(sizeTransformers(0)).toEqual([]);
     expect(sizeTransformers(188)).toEqual([{ watts: 350, kit: true, lights: 188 }]);
     expect(sizeTransformers(255)).toEqual([{ watts: 350, kit: true, lights: 255 }]);
-    expect(sizeTransformers(300)).toEqual([{ watts: 600, kit: true, lights: 300 }]); // 300>255 → 600
-    // 500 > 433 → one 600 (433) + a 350 for the 67 remainder
-    expect(sizeTransformers(500)).toEqual([
-      { watts: 600, kit: true, lights: 433 },
-      { watts: 350, kit: false, lights: 67 },
+    expect(sizeTransformers(300)).toEqual([{ watts: 600, kit: true, lights: 300 }]); // 300>255 → one 600 ($433.75) beats 2×350
+    // Min-cost, NOT greedy: 434/500 are just over one 600's 85% cap, but two 350s
+    // (255+rest, $597.38) undercut a 600+350 set ($685.69).
+    expect(sizeTransformers(434)).toEqual([
+      { watts: 350, kit: true, lights: 255 },
+      { watts: 350, kit: false, lights: 179 },
     ]);
-    // 1050 (Andrew's 350-corner job) → 600+600+350
+    expect(sizeTransformers(500)).toEqual([
+      { watts: 350, kit: true, lights: 255 },
+      { watts: 350, kit: false, lights: 245 },
+    ]);
+    // 1050 (Andrew's 350-corner job) → 600+600+350 is cheapest here
     expect(sizeTransformers(1050)).toEqual([
       { watts: 600, kit: true, lights: 433 },
       { watts: 600, kit: false, lights: 433 },
