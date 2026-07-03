@@ -239,6 +239,47 @@ function calculateCustomLineItems(inputs: EventQuoteInputs): LineItem[] {
     });
 }
 
+// #104 per-quote line-item TOTAL overrides (keyed by stable id). PRESENCE-keyed —
+// a $0 override is a valid "free item" (NOT the $0-guardrail case, which is a
+// misconfigured RATE table). Mirrors the holiday engine's override helpers so the
+// portal click-to-edit-price + free-item features work identically on events, and
+// the invoice/amend per-line adjustments (service-agnostic) flow through.
+function overrideAmount(
+  id: string | undefined,
+  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+): number | undefined {
+  if (!id || !overrides || !Object.prototype.hasOwnProperty.call(overrides, id)) return undefined;
+  const a = overrides[id]?.amount;
+  return typeof a === 'number' && Number.isFinite(a) && a >= 0 ? a : undefined;
+}
+
+function applyLineOverrides(
+  lines: LineItem[],
+  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+): LineItem[] {
+  if (!overrides) return lines;
+  return lines.map(li => {
+    const a = overrideAmount(li.id, overrides);
+    return a === undefined ? li : { ...li, amount: a };
+  });
+}
+
+function applyRooflineOverrides(
+  options: QuoteResult['rooflineOptions'],
+  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+): QuoteResult['rooflineOptions'] {
+  if (!overrides) return options;
+  const santasAmt = overrideAmount('roofline-santas', overrides);
+  const gingerAmt = overrideAmount('roofline-gingerbread', overrides);
+  return {
+    santas: options.santas && santasAmt !== undefined ? { ...options.santas, amount: santasAmt } : options.santas,
+    gingerbread:
+      options.gingerbread && gingerAmt !== undefined
+        ? { ...options.gingerbread, amount: gingerAmt }
+        : options.gingerbread,
+  };
+}
+
 /**
  * Price an event quote. Pure; deterministic. Throws only when the rate table is
  * misconfigured (the $0 guardrail). Emits a complete QuoteResult so the shared
@@ -251,17 +292,28 @@ export function calculateEventQuote(
 ): QuoteResult {
   assertEventRates(rates);
 
-  const rooflineOptions = eventRooflineOptions(inputs, rates);
+  // #104: per-quote line-item price overrides apply to the roofline options + the
+  // rest items, so the billed subtotal / tax / total / deposit all reflect the
+  // overridden amounts consistently (mirrors the holiday engine).
+  const overrides = inputs.lineItemPriceOverrides;
+  const rooflineOptions = applyRooflineOverrides(eventRooflineOptions(inputs, rates), overrides);
   const rooflineChoice = resolveRooflineChoice(inputs, rooflineOptions);
+
+  const restItems = applyLineOverrides(
+    [
+      ...calculateMiniLights(inputs, rates),
+      ...calculateSpritzers(inputs, rates),
+      ...calculateBistro(inputs, rates),
+      ...calculateBarrelBoxes(inputs, rates),
+      ...calculateCustomLineItems(inputs),
+      // allow-list: wreaths / garland / bows are intentionally NOT priced.
+    ],
+    overrides,
+  );
 
   const lineItems: LineItem[] = [
     ...rooflineLineItem(inputs, rooflineChoice, rooflineOptions),
-    ...calculateMiniLights(inputs, rates),
-    ...calculateSpritzers(inputs, rates),
-    ...calculateBistro(inputs, rates),
-    ...calculateBarrelBoxes(inputs, rates),
-    ...calculateCustomLineItems(inputs),
-    // NOTE (allow-list): wreaths / garland / bows are intentionally NOT priced.
+    ...restItems,
   ];
 
   const subtotalBeforeDiscount = lineItems.reduce((sum, li) => sum + li.amount, 0);

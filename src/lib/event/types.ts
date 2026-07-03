@@ -36,16 +36,18 @@ export type EventRates = {
 };
 
 /**
- * PLACEHOLDER event rates — clearly lower than the seasonal holiday rates to
- * reflect a ~1-4 week rental. Naldo supplies the real numbers (they live in
- * Settings; this default is only a fallback so tests + a dev build run).
+ * Default event rates (Naldo, S22). Real numbers — still Settings-adjustable
+ * (app_settings.eventRates overrides this default; see EventRatesSettings).
+ * Roofline is cheaper than the seasonal holiday rate (temporary install); minis
+ * match Christmas; spritzers are event-specific; bistro is the temporary rate
+ * (the long-term permanent-bistro rate is a separate future section, #112).
  */
 export const DEFAULT_EVENT_RATES: EventRates = {
-  roofline: { easy: 5, medium: 6, hard: 7 }, // placeholder (holiday: 8/10/12)
-  mini: { canopy: 25, trunk: 30 }, // placeholder (holiday: 35/45)
-  spritzer: { '16': 50, '24': 55, '32': 60 }, // placeholder (holiday: 85/95/105)
-  bistroPerFt: 10, // Naldo: ~$10/ft temporary bistro
-  barrelBoxPrice: 150, // Naldo: $150 barrel/box support (may change)
+  roofline: { easy: 7, medium: 8, hard: 9 }, // Naldo (holiday: 8/10/12)
+  mini: { canopy: 35, trunk: 45 }, // same as Christmas (Naldo)
+  spritzer: { '16': 65, '24': 75, '32': 85 }, // Naldo (holiday: 85/95/105)
+  bistroPerFt: 12, // Naldo: $12/ft temporary bistro
+  barrelBoxPrice: 150, // Naldo: $150 per support (may change)
 };
 
 /**
