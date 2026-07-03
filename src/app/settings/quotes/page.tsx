@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
+import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +38,9 @@ export default async function QuotesSettingsPage() {
           </p>
         </div>
         <QuotesSettings />
+        <div className="mt-6">
+          <PermanentRatesSettings />
+        </div>
       </main>
     </OperatorShell>
   );
