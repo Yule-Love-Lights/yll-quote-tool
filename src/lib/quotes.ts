@@ -83,8 +83,15 @@ export async function deleteAllQuotes(): Promise<number> {
   // are intentionally left (they belong to no quote and aren't dropped by a
   // quote wipe — out of scope for this fix, see decisionsForReviewer).
   const { data: linked } = await sb.from('designs').select('id').not('quote_id', 'is', null);
-  for (const row of (linked ?? []) as Array<{ id: string }>) {
-    await deleteDesign(row.id as string);
+  // W2-034: designs are mutually independent (each's cleanup is its own row +
+  // storage-prefix delete), so nothing forces strictly-serial one-at-a-time
+  // deletion. Bounded-concurrency chunks (mirrors customers.ts
+  // backfillCustomersFromQuotes) instead of an unbounded Promise.all fan-out.
+  const DELETE_CHUNK_SIZE = 8;
+  const linkedIds = (linked ?? []).map((row) => row.id as string);
+  for (let i = 0; i < linkedIds.length; i += DELETE_CHUNK_SIZE) {
+    const chunk = linkedIds.slice(i, i + DELETE_CHUNK_SIZE);
+    await Promise.all(chunk.map((id) => deleteDesign(id)));
   }
   // Supabase requires a filter on bulk deletes — use an always-true UUID
   // comparison. Returns count of deleted rows.
@@ -108,8 +115,13 @@ export async function deleteTestQuotes(): Promise<number> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) throw new Error('Supabase not configured');
   const { data: testRows } = await sb.from('quotes').select('id').eq('is_test', true);
-  for (const row of (testRows ?? []) as Array<{ id: string }>) {
-    await deleteDesignsForQuote(row.id as string);
+  // W2-034: same bounded-concurrency chunking as deleteAllQuotes above — each
+  // test quote's design cleanup is independent of the others.
+  const DELETE_CHUNK_SIZE = 8;
+  const testIds = (testRows ?? []).map((row) => row.id as string);
+  for (let i = 0; i < testIds.length; i += DELETE_CHUNK_SIZE) {
+    const chunk = testIds.slice(i, i + DELETE_CHUNK_SIZE);
+    await Promise.all(chunk.map((id) => deleteDesignsForQuote(id)));
   }
   const { error, count } = await sb
     .from('quotes')
