@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzePhoto, ANALYZER_UNAVAILABLE_MESSAGE } from '@/lib/photoAnalysis';
 import { isClaudeConfigured } from '@/lib/claude';
-import { assembleFewShot } from '@/lib/fewShot';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -58,31 +57,13 @@ export async function POST(req: NextRequest) {
   // already have this image, and a Claude outage must not block them.
   // Unified few-shot (#8 Stage B): similarity-ranked by the incoming house photo
   // when Voyage + embeddings are available, else recency.
-  let result: Awaited<ReturnType<typeof analyzePhoto>> | null = null;
-  let analysisError: string | undefined;
-  let fewShotCount = 0;
-  let fewShotBreakdown: { ranking?: 'similarity' | 'recency' } | undefined;
-  try {
-    const { examples, references, biasNote, breakdown } = await assembleFewShot(
-      houseStyleHint,
-      { base64, mediaType },
-    );
-    result = await analyzePhoto(base64, mediaType, examples, {
-      references,
-      houseStyleHint,
-      corpusBiasNote: biasNote,
-      mode,
-    });
-    fewShotCount = examples.length;
-    fewShotBreakdown = breakdown;
-  } catch (err) {
-    console.error('analyze-photo: AI analysis failed — returning photo for manual design:', err);
-    analysisError = ANALYZER_UNAVAILABLE_MESSAGE;
-  }
+  // #110 W5-014: shared with analyze-address/route.ts via runAnalyzeWithFewShot.
+  const { result, analysisUnavailable, analysisError, fewShotCount, fewShotBreakdown } =
+    await runAnalyzeWithFewShot(base64, mediaType, houseStyleHint, { mode }, '[api/analyze-photo]');
 
   return NextResponse.json({
     result,
-    analysisUnavailable: result === null,
+    analysisUnavailable,
     analysisError,
     photoBase64: base64,
     photoMediaType: mediaType,
