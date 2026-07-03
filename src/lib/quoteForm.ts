@@ -13,6 +13,7 @@ import type {
 } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import type { EventInputFields } from './event/types';
+import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -86,6 +87,10 @@ export type QuoteFormData = {
     eventDate: string;
     takedownDate: string;
   };
+  // Permanent Lighting (#88). Populated by PermanentSection when serviceType is
+  // 'permanent'; only sent to the engine (via buildQuoteInputs) for permanent
+  // quotes. Always present in the form so the picker can switch to it cleanly.
+  permanent: PermanentQuoteFields;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -120,6 +125,7 @@ export const initialFormData: QuoteFormData = {
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
+  permanent: makeDefaultPermanentFields(),
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -207,6 +213,9 @@ export function buildQuoteInputs(
     ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
     // Event Lighting (#96) — event-only inputs (barrels + dates), event quotes only.
     ...buildEventInputs(form),
+    // #88 Permanent: send the permanent block ONLY for permanent quotes, so a
+    // holiday quote's inputs jsonb stays clean and the holiday engine never sees it.
+    ...(form.serviceType === 'permanent' ? { permanent: form.permanent } : {}),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -315,5 +324,11 @@ export function inputsToFormData(
       eventDate: i.event?.eventDate ?? '',
       takedownDate: i.event?.takedownDate ?? '',
     },
+    // #88 Permanent: hydrate the stored block, or a fresh blank one (a factory so
+    // the gaps array isn't shared). Merged over the defaults so a partially-saved
+    // block (older permanent quote) fills any missing field.
+    permanent: i.permanent
+      ? { ...makeDefaultPermanentFields(), ...i.permanent }
+      : makeDefaultPermanentFields(),
   };
 }

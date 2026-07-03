@@ -16,6 +16,11 @@
   **basis-consistent**, so today it renders **0 / hidden** (there's no real bundle-discount
   feature). Decide: do you want packages to actually show savings (i.e. build bundle
   discounts), or is 0/hidden correct? (`lib/portal/derivePackages.ts`.)
+- [ ] **W5 image downscaling — DECISION contingent on the device-check in §2** — the analyzer
+  now downscales images to **1568px** before the Claude Vision call (that's what makes it
+  cheaper). It's the one W5 change that alters what Claude *sees*. If the §2 detection-quality
+  check shows it hurts detection on large/detailed house photos, decide: keep it · raise the
+  ceiling · or revert. (`lib/fewShot.ts` `downscaleImageForVision`.)
 - [ ] **Auto-charge (#83)** — the standing Valor card-on-file/MIT decision (unchanged, still
   yours). Blocks nothing new; flagged for completeness. Spec: `docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md`.
   - [ ] **W1-012 rider** — amend computes `requiresReconsent` but **nothing enforces it**;
@@ -34,6 +39,13 @@
   button. Needs a quote in that exact state to see.
 - [ ] **W4-002 (fixed, needs confirm)** — the "Try again" button after a **real checkout
   network failure** now actually retries (verified by review; needs a live failure to trigger).
+- [ ] **W5 downscale detection quality (fixed, needs confirm — feeds the §1 decision)** —
+  analyze a **real large house photo** and eyeball that the 1568px downscaling doesn't
+  visibly hurt detection vs full-res. The pipeline is live-verified to RUN (valid analysis
+  returned); this is the quality question automation can't answer.
+- [ ] **W5 prompt-cache savings (fixed, needs confirm)** — confirm `cache_read_input_tokens
+  > 0` on a **repeat analyze within 5 min** (the ~90% input-token savings actually landing) —
+  visible in Anthropic usage/logs, not surfaced to the client.
 - [ ] **Railing AI (carry-over from S18 #108)** — run the analyzer on a **real porch/deck-
   railing photo**; the pipeline shipped but live detection is still unconfirmed.
 - [ ] **#13 "Every angle" gallery (🧪 trial)** — final **keep/drop verdict** once it's been

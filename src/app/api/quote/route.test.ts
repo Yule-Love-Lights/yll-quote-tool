@@ -209,6 +209,57 @@ describe('POST /api/quote — event dispatch (#96 Phase B)', () => {
   });
 });
 
+describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
+  // Mutate one field of an otherwise-valid permanent block and expect a 400.
+  const badPerm = (patch: Record<string, unknown>) => {
+    const inputs = permInputs(100);
+    inputs.permanent = { ...(inputs.permanent as Record<string, unknown>), ...patch };
+    return makeReq({ serviceType: 'permanent', inputs });
+  };
+
+  it('rejects an invalid trackColor with 400', async () => {
+    const res = await POST(badPerm({ trackColor: '0000' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid trackStyle with 400', async () => {
+    const res = await POST(badPerm({ trackStyle: 'diagonal' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a negative footage with 400', async () => {
+    const res = await POST(badPerm({ leftFootage: -5 }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-boolean blackHousing with 400', async () => {
+    const res = await POST(badPerm({ blackHousing: 'yes' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an out-of-range custom rate with 400', async () => {
+    const res = await POST(badPerm({ frontCustomRate: 99999 }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a malformed gaps element (no lengthFt) with 400', async () => {
+    const res = await POST(badPerm({ gaps: [{ splitter: true }] }));
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a well-formed permanent block with optional custom rate + gaps', async () => {
+    const inputs = permInputs(120);
+    inputs.permanent = {
+      ...(inputs.permanent as Record<string, unknown>),
+      frontCustomRate: 45,
+      gaps: [{ lengthFt: 12, splitter: true, source: 'manual' }],
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/quote — validation hardening', () => {
   it('routes a non-UUID quoteId to insert, not update', async () => {
     // 36 dashes used to slip past the old loose /^[0-9a-f-]{36}$/i regex.

@@ -31,6 +31,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
+import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -2508,6 +2509,15 @@ export default function QuoteBuilder({
             </div>
           ) : null}
 
+          {/* Permanent Lighting (#88): its own footage/corners/gaps/track section,
+              replacing the holiday item sections. Holiday item sections are hidden
+              for permanent so the operator can't enter Christmas footage on it. */}
+          {form.serviceType === 'permanent' && (
+            <PermanentSection form={form} setForm={setForm} designId={designId} />
+          )}
+
+          {form.serviceType !== 'permanent' && (
+          <>
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Santa's — Front Gutterline (C9 Bulbs)">
@@ -2655,6 +2665,8 @@ export default function QuoteBuilder({
               )}
             </Section>
           </div>
+          </>
+          )}
 
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
@@ -2691,7 +2703,11 @@ export default function QuoteBuilder({
             </button>
           </Section>
 
-          {/* ── Options ── */}
+          {/* ── Options ── holiday-only. Permanent forces takedown/rush/install off
+              in pricing and uses the $2,500 gate (not the $1,000 waive here), so the
+              whole section is hidden for it. Per-quote discount for permanent is a
+              fast-follow (custom $/ft + custom line items cover v1 price flexibility). */}
+          {form.serviceType !== 'permanent' && (
           <Section title="Options">
 
             {/* Takedown */}
@@ -2811,6 +2827,7 @@ export default function QuoteBuilder({
               </label>
             </div>
           </Section>
+          )}
 
           {/* Calculate */}
           <button

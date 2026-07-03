@@ -12,6 +12,9 @@ import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
+// Permanent Lighting (#88): the enum track fields on the permanent block.
+const PERM_TRACK_STYLES = new Set(['single', 'parapet']);
+const PERM_TRACK_COLORS = new Set(['9003', '9004', '9012', '8019']);
 
 // Audit fix (quote-route-validation): strict canonical UUID match. The old
 // loose /^[0-9a-f-]{36}$/i accepted 36 dashes or 36 hex chars, mis-routing
@@ -236,6 +239,55 @@ export async function POST(req: NextRequest) {
   }
   if (typeof q.rushFee !== 'boolean') {
     return NextResponse.json({ error: 'rushFee must be a boolean' }, { status: 400 });
+  }
+
+  // Permanent Lighting (#88): validate the optional permanent block at the
+  // boundary so a malformed footage/track value is a clean 400, not an opaque
+  // downstream NaN. Validated whenever present (independent of serviceType) —
+  // the pricing engine also sanitizes, but a typed 400 beats a bad result.
+  if (q.permanent !== undefined) {
+    if (!isObj(q.permanent)) {
+      return NextResponse.json({ error: 'permanent must be an object if provided' }, { status: 400 });
+    }
+    const pf = q.permanent;
+    const permNumFields = [
+      'frontFootage', 'leftFootage', 'rightFootage', 'backFootage',
+      'frontCorners', 'leftCorners', 'rightCorners', 'backCorners', 'controllerToFirstLightFt',
+    ] as const;
+    for (const f of permNumFields) {
+      if (!isNonNegNumber(pf[f])) {
+        return NextResponse.json({ error: `permanent.${f} must be a non-negative number` }, { status: 400 });
+      }
+    }
+    if (!PERM_TRACK_STYLES.has(pf.trackStyle as string)) {
+      return NextResponse.json({ error: "permanent.trackStyle must be 'single' or 'parapet'" }, { status: 400 });
+    }
+    if (!PERM_TRACK_COLORS.has(pf.trackColor as string)) {
+      return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
+    }
+    if (typeof pf.blackHousing !== 'boolean' || typeof pf.maintenanceAddOn !== 'boolean') {
+      return NextResponse.json({ error: 'permanent.blackHousing and permanent.maintenanceAddOn must be booleans' }, { status: 400 });
+    }
+    for (const f of ['frontCustomRate', 'sidesCustomRate', 'backCustomRate'] as const) {
+      const v = pf[f];
+      if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_CUSTOM_RATE)) {
+        return NextResponse.json(
+          { error: `permanent.${f} must be a number between 0 and ${MAX_CUSTOM_RATE} if provided` },
+          { status: 400 },
+        );
+      }
+    }
+    if (!Array.isArray(pf.gaps)) {
+      return NextResponse.json({ error: 'permanent.gaps must be an array' }, { status: 400 });
+    }
+    if (pf.gaps.length > MAX_ARRAY_LEN) {
+      return NextResponse.json({ error: `permanent.gaps exceeds the ${MAX_ARRAY_LEN}-item limit` }, { status: 400 });
+    }
+    for (const g of pf.gaps as unknown[]) {
+      if (!isObj(g) || !isNonNegNumber(g.lengthFt)) {
+        return NextResponse.json({ error: 'Invalid permanent.gaps element (lengthFt must be a non-negative number)' }, { status: 400 });
+      }
+    }
   }
 
   try {
