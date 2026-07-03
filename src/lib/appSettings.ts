@@ -19,6 +19,7 @@ import {
 // Event Lighting rate table (service_type 'event') — Settings-adjustable, the
 // #101 pattern. sanitizeEventRates always yields a complete valid table.
 import { sanitizeEventRates, DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
+import { DEFAULT_PERMANENT_RATES, type PermanentRates } from './permanent/types';
 
 // Customer-facing portal settings (Settings → Customer Portal).
 export type PortalSettings = {
@@ -47,6 +48,11 @@ export type AppSettings = {
   // Event Lighting rates (adjustable in Settings → Quotes). The event pricing
   // engine reads these; DEFAULT_EVENT_RATES underneath so a missing key is safe.
   eventRates: EventRates;
+  // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
+  // rate table (Settings → Quotes), and the feature flag that gates the Permanent
+  // option in the builder's service-type picker (default OFF until the portal ships).
+  permanentRates: PermanentRates;
+  permanentEnabled: boolean;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -65,7 +71,25 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   portal: DEFAULT_PORTAL_SETTINGS,
   swatches: DEFAULT_SWATCH_SETTINGS,
   eventRates: DEFAULT_EVENT_RATES,
+  permanentRates: DEFAULT_PERMANENT_RATES,
+  permanentEnabled: false,
 };
+
+// Sanitize a permanent-rates object to its known numeric fields. Each field must
+// be a finite number ≥ 0 (a $0 maintenance price is valid = feature hidden);
+// unknown/invalid fields are dropped, the caller merges over defaults.
+export function sanitizePermanentRates(v: unknown): Partial<PermanentRates> {
+  if (!v || typeof v !== 'object') return {};
+  const r = v as Record<string, unknown>;
+  const out: Partial<PermanentRates> = {};
+  const ok = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+  if (ok(r.frontPerFt)) out.frontPerFt = r.frontPerFt;
+  if (ok(r.sidesPerFt)) out.sidesPerFt = r.sidesPerFt;
+  if (ok(r.backPerFt)) out.backPerFt = r.backPerFt;
+  if (ok(r.minimumJobAmount)) out.minimumJobAmount = r.minimumJobAmount;
+  if (ok(r.maintenancePrice)) out.maintenancePrice = r.maintenancePrice;
+  return out;
+}
 
 // ── Validators (also used by the API route on write) ────────────────────────
 
@@ -245,6 +269,8 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
     },
     eventRates: sanitizeEventRates(map.get('eventRates')),
+    permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
+    permanentEnabled: map.get('permanentEnabled') === true,
   };
 }
 
@@ -273,6 +299,8 @@ export async function putAppSettings(patch: {
   portal?: Partial<PortalSettings>;
   swatches?: Partial<SwatchSettings>;
   eventRates?: EventRates;
+  permanentRates?: Partial<PermanentRates>;
+  permanentEnabled?: boolean;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -324,6 +352,18 @@ export async function putAppSettings(patch: {
     const value = sanitizeEventRates({ ...current.eventRates, ...patch.eventRates });
     rows.push({ key: 'eventRates', value });
     map.set('eventRates', value);
+  }
+
+  if (patch.permanentRates !== undefined) {
+    // Merge over current stored rates so a partial write (e.g. only frontPerFt)
+    // keeps the other fields.
+    const value = { ...current.permanentRates, ...sanitizePermanentRates(patch.permanentRates) };
+    rows.push({ key: 'permanentRates', value });
+    map.set('permanentRates', value);
+  }
+  if (patch.permanentEnabled !== undefined && typeof patch.permanentEnabled === 'boolean') {
+    rows.push({ key: 'permanentEnabled', value: patch.permanentEnabled });
+    map.set('permanentEnabled', patch.permanentEnabled);
   }
 
   if (rows.length > 0) {

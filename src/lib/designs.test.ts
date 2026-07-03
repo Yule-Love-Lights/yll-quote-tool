@@ -80,16 +80,134 @@ describe('design upload size cap (audit #22)', () => {
   });
 });
 
+// ─── W2-014: replacing the base photo/satellite with a DIFFERENT extension
+// must not orphan the old blob (upsert only overwrites the SAME storage key,
+// so photo.png survives untouched when the replacement lands at photo.jpg). ─
+
+// Fake Supabase for the extension-change suite: a designs row with an existing
+// photo_path/satellite_path, plus storage upload/remove recorders.
+function makeReplaceSb(row: { photo_path?: string | null; satellite_path?: string | null }) {
+  const state = {
+    row: { id: ID, photo_path: row.photo_path ?? null, satellite_path: row.satellite_path ?? null } as Record<string, unknown>,
+    uploadedPaths: [] as string[],
+    removedPaths: [] as string[][],
+  };
+  const storage = {
+    from: () => ({
+      upload: async (path: string) => {
+        state.uploadedPaths.push(path);
+        return { data: { path }, error: null };
+      },
+      remove: async (paths: string[]) => {
+        state.removedPaths.push(paths);
+        return { data: null, error: null };
+      },
+    }),
+  };
+  function tableBuilder() {
+    let selectCols = '*';
+    let updatePayload: Record<string, unknown> | null = null;
+    const b: Record<string, unknown> = {};
+    Object.assign(b, {
+      select: (cols?: string) => {
+        selectCols = cols ?? '*';
+        return b;
+      },
+      update: (payload: Record<string, unknown>) => {
+        updatePayload = payload;
+        return b;
+      },
+      eq: () => b,
+      maybeSingle: async () => {
+        if (selectCols === 'photo_path') return { data: { photo_path: state.row.photo_path }, error: null };
+        if (selectCols === 'satellite_path') return { data: { satellite_path: state.row.satellite_path }, error: null };
+        return { data: { ...state.row }, error: null };
+      },
+      then: (resolve: (v: unknown) => void) => {
+        if (updatePayload) Object.assign(state.row, updatePayload);
+        resolve({ error: null });
+      },
+    });
+    return b;
+  }
+  return { client: { storage, from: () => tableBuilder() }, state };
+}
+
+describe('uploadDesignPhoto / uploadDesignSatellite orphan cleanup (W2-014)', () => {
+  beforeEach(() => {
+    sharpMock.mockClear();
+    sbRef.current = null;
+  });
+
+  it('removes the old photo blob when the replacement has a DIFFERENT extension', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: `${ID}/photo.png` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const res = await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(res.path).toBe(`${ID}/photo.jpg`);
+    expect(state.uploadedPaths).toEqual([`${ID}/photo.jpg`]);
+    expect(state.removedPaths).toEqual([[`${ID}/photo.png`]]);
+  });
+
+  it('does NOT remove anything when the replacement keeps the SAME extension (upsert overwrites)', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: `${ID}/photo.jpg` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(state.removedPaths).toEqual([]);
+  });
+
+  it('does NOT remove anything for a first-ever upload (no prior photo_path)', async () => {
+    const { client, state } = makeReplaceSb({ photo_path: null });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignPhoto(ID, tiny, 'image/jpeg');
+
+    expect(state.removedPaths).toEqual([]);
+  });
+
+  it('removes the old satellite blob when the replacement has a DIFFERENT extension', async () => {
+    const { client, state } = makeReplaceSb({ satellite_path: `${ID}/satellite.png` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const res = await uploadDesignSatellite(ID, tiny, 'image/jpeg', null);
+
+    expect(res.path).toBe(`${ID}/satellite.jpg`);
+    expect(state.removedPaths).toEqual([[`${ID}/satellite.png`]]);
+  });
+
+  it('does NOT remove the satellite blob on a same-extension replacement', async () => {
+    const { client, state } = makeReplaceSb({ satellite_path: `${ID}/satellite.jpg` });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    await uploadDesignSatellite(ID, tiny, 'image/jpeg', null);
+
+    expect(state.removedPaths).toEqual([]);
+  });
+});
+
 // ─── extra street photos (#13 multi-image) ──────────────────────────────────
 // A design's extras: stored under the design's own storage prefix, tracked in
 // the extra_photos jsonb array, referenced by scene items via `photoId`.
 
 // Fake Supabase for the extras suite: a designs row whose extra_photos/scene
 // evolve through .update() calls, plus storage upload/remove recorders.
+// `onSceneRefetch` (W2-016) fires on the SECOND `select('scene')` read (the
+// prune's fresh re-read, right before its write) — simulating a CONCURRENT
+// autosave that already committed to the row by the time the prune re-reads,
+// so the test can assert the prune's write doesn't clobber it.
 function makeExtrasSb(row: {
   extra_photos?: DesignExtraPhoto[] | null;
   scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
   photo_path?: string | null;
+  onSceneRefetch?: (state: { row: Record<string, unknown> }) => void;
 }) {
   const state = {
     row: {
@@ -100,10 +218,13 @@ function makeExtrasSb(row: {
       photo_h: null,
       scene: row.scene ?? { yardsticks: [], items: [] },
       extra_photos: row.extra_photos ?? null,
+      updated_at: 'v0',
     } as Record<string, unknown>,
     uploadedPaths: [] as string[],
     removedPaths: [] as string[][],
     signedPaths: [] as string[],
+    selectCalls: [] as string[],
+    sceneOnlyReads: 0,
   };
 
   const storage = {
@@ -123,29 +244,74 @@ function makeExtrasSb(row: {
     }),
   };
 
+  let updateCounter = 0;
+
   function tableBuilder() {
     let selectCols = '*';
     let updatePayload: Record<string, unknown> | null = null;
+    let selectAfterUpdate = false;
+    const eqFilters: Array<[string, unknown]> = [];
     const b: Record<string, unknown> = {};
     Object.assign(b, {
       select: (cols?: string) => {
-        selectCols = cols ?? '*';
+        if (updatePayload) {
+          // .update(...).select(cols) — post-write row-match projection
+          // (updateExtraPhotosAtomic's optimistic-concurrency guard).
+          selectAfterUpdate = true;
+        } else {
+          selectCols = cols ?? '*';
+          state.selectCalls.push(selectCols);
+        }
         return b;
       },
       update: (payload: Record<string, unknown>) => {
         updatePayload = payload;
         return b;
       },
-      eq: () => b,
+      eq: (col: string, val: unknown) => {
+        eqFilters.push([col, val]);
+        return b;
+      },
       maybeSingle: async () => {
         if (selectCols === 'extra_photos') {
           return { data: { extra_photos: state.row.extra_photos }, error: null };
         }
+        if (selectCols === 'extra_photos, updated_at') {
+          return { data: { extra_photos: state.row.extra_photos, updated_at: state.row.updated_at }, error: null };
+        }
+        if (selectCols === 'extra_photos, scene') {
+          return { data: { extra_photos: state.row.extra_photos, scene: state.row.scene }, error: null };
+        }
+        if (selectCols === 'scene') {
+          state.sceneOnlyReads += 1;
+          // The prune's FRESH re-read — inject the concurrent autosave's
+          // effect right here, as if it committed between the top-of-function
+          // read (select('extra_photos, scene')) and this dedicated re-read.
+          if (row.onSceneRefetch) row.onSceneRefetch(state);
+          return { data: { scene: state.row.scene }, error: null };
+        }
         return { data: { ...state.row }, error: null };
       },
       then: (resolve: (v: unknown) => void) => {
-        if (updatePayload) Object.assign(state.row, updatePayload);
-        resolve({ error: null });
+        if (updatePayload) {
+          // Optimistic-concurrency guard: an .eq('updated_at', snapshot) that
+          // no longer matches the CURRENT row means another writer won the
+          // race — the update matches zero rows (mirrors real Postgres).
+          const preconditionOk = eqFilters
+            .filter(([col]) => col === 'updated_at')
+            .every(([, val]) => val === state.row.updated_at);
+          if (preconditionOk) {
+            Object.assign(state.row, updatePayload);
+            state.row.updated_at = `v${++updateCounter}`;
+          }
+          if (selectAfterUpdate) {
+            resolve({ data: preconditionOk ? [{ id: state.row.id }] : [], error: null });
+          } else {
+            resolve({ error: null });
+          }
+        } else {
+          resolve({ data: undefined, error: null });
+        }
       },
     });
     return b;
@@ -222,6 +388,43 @@ describe('extra street photos (#13)', () => {
     expect(items.map(i => i.id)).toEqual(['unrelated']);
   });
 
+  // W2-016: a CONCURRENT scene autosave landing between the prune's read and
+  // its write must not be clobbered by a stale-snapshot prune. Simulate the
+  // race via onSceneUpdate: right before the prune's scene-only update fires,
+  // inject a concurrent autosave that adds a brand-new item. The fix must
+  // re-read the scene fresh immediately before writing, so the autosaved item
+  // survives the prune (the OLD code used the initial-read snapshot and would
+  // silently drop it).
+  it('does not clobber a concurrent scene autosave with a stale prune (W2-016)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'i1', kind: 'wreath', photoId: PHOTO_A },
+          { id: 'i2', kind: 'wreath' },
+        ],
+      },
+      onSceneRefetch: (s) => {
+        // A concurrent autosave lands between the prune's initial read and its
+        // fresh re-read: staff adds a brand-new billable item on the base photo.
+        const row = s.row as { scene: { yardsticks: unknown[]; items: Array<Record<string, unknown>> } };
+        row.scene = {
+          ...row.scene,
+          items: [...row.scene.items, { id: 'autosaved', kind: 'tree' }],
+        };
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    // i1 pruned (drawn on the removed photo); i2 kept; the concurrent
+    // autosave's new item MUST survive, not be clobbered by a stale prune.
+    expect(items.map(i => i.id).sort()).toEqual(['autosaved', 'i2']);
+  });
+
   it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
     const { client, state } = makeExtrasSb({ extra_photos: [] });
     sbRef.current = client;
@@ -261,11 +464,92 @@ describe('extra street photos (#13)', () => {
   });
 });
 
+// W4-033: getDesignWithPhoto (the editor GET / portal-adjacent load) must
+// select ONLY the columns toDesignWithPhoto reads — never seed_analysis (the
+// raw AI-analysis jsonb the portal/editor never render) or a raw select('*').
+// The fake below returns EXACTLY the narrowed row (no seed_analysis field at
+// all), proving the full DesignWithPhoto shape is covered without it.
+describe('getDesignWithPhoto column narrowing (W4-033)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('selects only the columns toDesignWithPhoto needs, and the result is fully populated', async () => {
+    let selectedCols = '';
+    const narrowRow = {
+      id: ID,
+      quote_id: 'quote-1',
+      scene: { yardsticks: [], items: [] },
+      photo_path: `${ID}/photo.jpg`,
+      photo_w: 800,
+      photo_h: 600,
+      satellite_path: `${ID}/satellite.jpg`,
+      satellite_w: 400,
+      satellite_h: 400,
+      satellite_lines: { santas: [], gingerbread: [], c9: [] },
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+      photo_title: 'Front',
+      // Deliberately NO seed_analysis / satellite_feet_per_pixel / created_at /
+      // updated_at — a real narrowed select() from Supabase wouldn't return
+      // them either, so their absence here proves toDesignWithPhoto doesn't
+      // need them.
+    };
+    const client = {
+      storage: {
+        from: () => ({
+          createSignedUrl: async (path: string) => ({ data: { signedUrl: `signed:${path}` }, error: null }),
+        }),
+      },
+      from: (table: string) => {
+        expect(table).toBe('designs');
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          select: (cols: string) => {
+            selectedCols = cols;
+            return b;
+          },
+          eq: (col: string, val: string) => {
+            expect(col).toBe('id');
+            expect(val).toBe(ID);
+            return b;
+          },
+          maybeSingle: async () => ({ data: narrowRow, error: null }),
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    const result = await getDesignWithPhoto(ID);
+
+    expect(selectedCols).not.toBe('*');
+    expect(selectedCols).not.toMatch(/seed_analysis/);
+    expect(selectedCols).not.toMatch(/satellite_feet_per_pixel/);
+    // The full DesignWithPhoto shape is still populated from the narrowed row.
+    expect(result).toEqual({
+      id: ID,
+      quoteId: 'quote-1',
+      scene: { yardsticks: [], items: [] },
+      photoUrl: `signed:${ID}/photo.jpg`,
+      photoW: 800,
+      photoH: 600,
+      satelliteUrl: `signed:${ID}/satellite.jpg`,
+      satelliteW: 400,
+      satelliteH: 400,
+      satelliteLines: { santas: [], gingerbread: [], c9: [] },
+      extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+      photoTitle: 'Front',
+    });
+  });
+});
+
 // W2-031: getDesignByQuote used to select('id') by quote_id, then re-select
 // the FULL row by id via getDesignWithPhoto — two sequential queries for one
-// row. It must now do a single select('*') by quote_id.
-describe('getDesignByQuote (W2-031)', () => {
-  it('resolves the design in a single query (not two)', async () => {
+// row. It must now do a single query by quote_id.
+// W4-033: that single query is narrowed to the columns toDesignWithPhoto
+// actually reads (never select('*'), never seed_analysis).
+describe('getDesignByQuote (W2-031 / W4-033)', () => {
+  it('resolves the design in a single, narrowed query (not two, not select(*))', async () => {
     let queryCount = 0;
     const row = {
       id: ID,
@@ -284,7 +568,8 @@ describe('getDesignByQuote (W2-031)', () => {
         Object.assign(b, {
           select: (cols: string) => {
             queryCount += 1;
-            expect(cols).toBe('*'); // never the old select('id')
+            expect(cols).not.toBe('*'); // never the old select('id') NOR a raw select('*')
+            expect(cols).not.toMatch(/seed_analysis/); // portal load never pulls the raw AI jsonb
             return b;
           },
           eq: (col: string, val: string) => {
@@ -493,6 +778,22 @@ describe('deleteDesignsForQuote', () => {
     sbRef.current = null;
     expect(await deleteDesignsForQuote('quote-1')).toBe(0);
   });
+
+  // W2-034: the per-design delete loop runs in bounded-concurrency chunks
+  // (not a one-at-a-time await) — assert correctness holds across a chunk
+  // boundary (10 designs > the 8-per-chunk size).
+  it('deletes every design across a chunk boundary (10 designs, chunk size 8)', async () => {
+    const designRows = Array.from({ length: 10 }, (_, i) => ({
+      id: `aaaaaaaa-bbbb-4ccc-8ddd-${String(i).padStart(12, '0')}`,
+    }));
+    const { client, calls } = makeSb({ designRows, objects: [] });
+    sbRef.current = client;
+
+    const n = await deleteDesignsForQuote('quote-1');
+
+    expect(n).toBe(10);
+    expect(calls.deletedIds.sort()).toEqual(designRows.map((r) => r.id).sort());
+  });
 });
 
 // ─── createDesign actor audit trail (#90) ───────────────────────────────────
@@ -533,6 +834,83 @@ describe('createDesign created_by (#90)', () => {
     await createDesign({});
 
     expect(sb.inserts[0]).toMatchObject({ created_by: null });
+  });
+});
+
+// ─── createDesign seedFailed (W2-030) ───────────────────────────────────────
+// The create-row → upload-photo → seed-scene sequence is deliberately
+// best-effort (a failed seed doesn't fail the whole design create), but the
+// failure used to be swallowed entirely — the caller had no way to tell a
+// fully-seeded design from a partial/orphaned one. seedFailed surfaces it.
+
+// A fake whose storage.upload() throws — simulates uploadDesignPhoto failing
+// mid-seed (after the row already exists).
+function makeSeedFailureSb() {
+  const builder: Record<string, unknown> = {
+    insert: () => builder,
+    select: () => builder,
+    single: async () => ({ data: { id: 'd1' }, error: null }),
+    update: () => builder,
+    eq: () => builder,
+    maybeSingle: async () => ({ data: { photo_path: null }, error: null }),
+  };
+  const storage = {
+    from: () => ({
+      upload: async () => {
+        throw new Error('storage upload failed');
+      },
+    }),
+  };
+  return { client: { storage, from: () => builder } };
+}
+
+describe('createDesign seedFailed (W2-030)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('reports seedFailed=true when the photo/seed step throws, but still returns the created id', async () => {
+    sbRef.current = makeSeedFailureSb().client;
+
+    const res = await createDesign({ photoBase64: Buffer.from('img').toString('base64') });
+
+    expect(res).not.toBeNull();
+    expect(res?.id).toBe('d1'); // the row still exists — best-effort intent preserved
+    expect(res?.seedFailed).toBe(true);
+  });
+
+  it('reports seedFailed=false when there is no photo to seed (nothing attempted)', async () => {
+    const sb = makeInsertSb();
+    sbRef.current = sb.client;
+
+    const res = await createDesign({});
+
+    expect(res?.seedFailed).toBe(false);
+  });
+
+  it('reports seedFailed=false on a successful photo seed', async () => {
+    const inserts: Record<string, unknown>[] = [];
+    const builder: Record<string, unknown> = {
+      insert: (row: Record<string, unknown>) => {
+        inserts.push(row);
+        return builder;
+      },
+      select: () => builder,
+      single: async () => ({ data: { id: 'd1' }, error: null }),
+      update: () => builder,
+      eq: () => builder,
+      maybeSingle: async () => ({ data: { photo_path: null }, error: null }),
+    };
+    const storage = {
+      from: () => ({
+        upload: async () => ({ data: { path: 'd1/photo.jpg' }, error: null }),
+      }),
+    };
+    sbRef.current = { storage, from: () => builder };
+
+    const res = await createDesign({ photoBase64: Buffer.from('img').toString('base64') });
+
+    expect(res?.seedFailed).toBe(false);
   });
 });
 

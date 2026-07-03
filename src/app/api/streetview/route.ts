@@ -12,6 +12,33 @@ export const maxDuration = 30;
 // pano (sparse coverage) we retry at double before declaring the edge.
 const STEP_M = 15;
 
+// #110 W5-016/W5-017: shared fetch + success-JSON + error handling for both the
+// plain angle re-fetch and the "move along the street" step — was duplicated
+// near-verbatim in POST() and moveAlongStreet(). Logs server-side and returns a
+// generic error (mirrors analyze-address's treatment) instead of the raw
+// upstream err.message, which could leak Google internals.
+async function fetchStreetViewResponse(
+  lat: number,
+  lng: number,
+  opts: { heading?: number; pitch?: number; fov?: number },
+  extraBody?: Record<string, unknown>,
+): Promise<NextResponse> {
+  try {
+    const img = await fetchStreetView(lat, lng, opts);
+    return NextResponse.json({
+      photoBase64: img.base64,
+      photoMediaType: img.mediaType,
+      heading: opts.heading,
+      pitch: opts.pitch,
+      fov: opts.fov,
+      ...extraBody,
+    });
+  } catch (err) {
+    console.error('[api/streetview] fetch failed', err);
+    return NextResponse.json({ error: 'Street View fetch failed' }, { status: 500 });
+  }
+}
+
 // Re-fetch Street View at a different heading/pitch/fov so the user can rotate
 // around obstacles (trees, trucks, scaffolding) blocking the default view.
 // Does NOT re-run Claude analysis — cheap image-only fetch.
@@ -51,19 +78,7 @@ export async function POST(req: NextRequest) {
   if (typeof lat !== 'number' || typeof lng !== 'number') {
     return NextResponse.json({ error: 'lat and lng are required' }, { status: 400 });
   }
-  try {
-    const img = await fetchStreetView(lat, lng, { heading, pitch, fov });
-    return NextResponse.json({
-      photoBase64: img.base64,
-      photoMediaType: img.mediaType,
-      heading,
-      pitch,
-      fov,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Street View fetch failed';
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return fetchStreetViewResponse(lat, lng, { heading, pitch, fov });
 }
 
 // Step the camera one panorama along the road and re-aim at the house (#15). The
@@ -109,21 +124,10 @@ async function moveAlongStreet(body: {
     return NextResponse.json({ reachedEnd: true });
   }
   const heading = bearingBetween(target.lat, target.lng, houseLat, houseLng);
-  try {
-    const img = await fetchStreetView(target.lat, target.lng, { heading, pitch, fov });
-    return NextResponse.json({
-      photoBase64: img.base64,
-      photoMediaType: img.mediaType,
-      camLat: target.lat,
-      camLng: target.lng,
-      panoId: target.panoId,
-      heading,
-      pitch,
-      fov,
-      reachedEnd: false,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Street View fetch failed';
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return fetchStreetViewResponse(target.lat, target.lng, { heading, pitch, fov }, {
+    camLat: target.lat,
+    camLng: target.lng,
+    panoId: target.panoId,
+    reachedEnd: false,
+  });
 }

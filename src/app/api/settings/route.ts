@@ -11,6 +11,7 @@ import {
   sanitizeRender,
   sanitizePortal,
   sanitizeSwatches,
+  sanitizePermanentRates,
   isPlainObject,
 } from '@/lib/appSettings';
 import { requireOperator } from '@/lib/auth/supabaseServer';
@@ -47,14 +48,17 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates } = body as Record<string, unknown>;
+  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentEnabled } =
+    body as Record<string, unknown>;
   if (
     colors === undefined &&
     defaults === undefined &&
     render === undefined &&
     portal === undefined &&
     swatches === undefined &&
-    eventRates === undefined
+    eventRates === undefined &&
+    permanentRates === undefined &&
+    permanentEnabled === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -92,6 +96,15 @@ export async function PUT(req: NextRequest) {
   if (eventRates !== undefined && !isPlainObject(eventRates)) {
     return NextResponse.json({ error: 'eventRates must be an object' }, { status: 400 });
   }
+  if (permanentRates !== undefined && Object.keys(sanitizePermanentRates(permanentRates)).length === 0) {
+    return NextResponse.json(
+      { error: 'permanentRates must have at least one valid numeric field (>= 0)' },
+      { status: 400 },
+    );
+  }
+  if (permanentEnabled !== undefined && typeof permanentEnabled !== 'boolean') {
+    return NextResponse.json({ error: 'permanentEnabled must be a boolean' }, { status: 400 });
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
@@ -100,6 +113,8 @@ export async function PUT(req: NextRequest) {
       portal: portal as never,
       swatches: swatches as never,
       eventRates: eventRates as never,
+      permanentRates: permanentRates as never,
+      permanentEnabled: permanentEnabled as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

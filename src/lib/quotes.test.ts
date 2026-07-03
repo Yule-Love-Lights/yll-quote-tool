@@ -36,7 +36,7 @@ const { attachQuoteToCustomerMock } = vi.hoisted(() => ({
 }));
 vi.mock('./customers', () => ({ attachQuoteToCustomer: attachQuoteToCustomerMock }));
 
-import { saveQuote, updateQuote, deleteTestQuotes } from './quotes';
+import { saveQuote, updateQuote, deleteTestQuotes, deleteAllQuotes } from './quotes';
 
 // ── Fake A (#90): records which CLIENT a write goes through (service vs anon),
 // so a test can assert the RLS-safe path. ───────────────────────────────────
@@ -261,6 +261,59 @@ describe('deleteTestQuotes — ledger #93 cleanup', () => {
     expect(await deleteTestQuotes()).toBe(0);
     expect(deleteDesignsForQuote).not.toHaveBeenCalled();
     expect(fake.tables.quotes).toHaveLength(1);
+  });
+});
+
+// ── W2-034: deleteAllQuotes' design cleanup runs in bounded-concurrency
+// chunks instead of a one-at-a-time await loop. Correctness matters more than
+// the exact chunk size here — assert every linked design is still deleted
+// (including across a chunk boundary) and the row-delete count still comes
+// from the quotes table, not the design loop. ──────────────────────────────
+
+function makeDeleteAllSb(opts: { linkedDesignIds: string[]; quoteDeleteCount: number }) {
+  const calls: string[] = [];
+  const builder: Record<string, unknown> = {};
+  const ret = () => builder;
+  for (const m of ['select', 'eq', 'not', 'is']) builder[m] = ret;
+  builder.delete = () => builder;
+  builder.then = (resolve: (v: unknown) => void) => {
+    resolve({
+      data: opts.linkedDesignIds.map((id) => ({ id })),
+      error: null,
+      count: opts.quoteDeleteCount,
+    });
+  };
+  const client = {
+    from: (table: string) => {
+      calls.push(table);
+      return builder;
+    },
+  };
+  return { client, calls };
+}
+
+describe('deleteAllQuotes — chunked design cleanup (W2-034)', () => {
+  it('deletes every linked design (across a chunk boundary) and returns the quote-delete count', async () => {
+    // 10 ids so the 8-per-chunk loop spans two chunks (8 + 2).
+    const linkedDesignIds = Array.from({ length: 10 }, (_, i) => `design-${i}`);
+    const { client } = makeDeleteAllSb({ linkedDesignIds, quoteDeleteCount: 4 });
+    serviceRef.current = client;
+
+    const count = await deleteAllQuotes();
+
+    expect(count).toBe(4);
+    expect(deleteDesign).toHaveBeenCalledTimes(10);
+    for (const id of linkedDesignIds) {
+      expect(deleteDesign).toHaveBeenCalledWith(id);
+    }
+  });
+
+  it('does nothing design-wise when no designs are linked to a quote', async () => {
+    const { client } = makeDeleteAllSb({ linkedDesignIds: [], quoteDeleteCount: 0 });
+    serviceRef.current = client;
+
+    expect(await deleteAllQuotes()).toBe(0);
+    expect(deleteDesign).not.toHaveBeenCalled();
   });
 });
 

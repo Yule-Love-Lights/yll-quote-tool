@@ -7,6 +7,7 @@ import {
   normalizeSchemes,
   normalizeBuildable,
   sanitizeSwatches,
+  sanitizePermanentRates,
 } from './appSettings';
 
 // A representative palette id set (mirrors the built-in DEFAULT_COLORS ids used
@@ -77,6 +78,37 @@ describe('sanitizePortal', () => {
     expect(sanitizePortal({ other: true })).toEqual({});
     expect(sanitizePortal(null)).toEqual({});
     expect(sanitizePortal('x')).toEqual({});
+  });
+});
+
+describe('sanitizePermanentRates (#88)', () => {
+  it('keeps valid finite numbers >= 0 (incl. 0 for maintenance)', () => {
+    expect(
+      sanitizePermanentRates({
+        frontPerFt: 40,
+        sidesPerFt: 35,
+        backPerFt: 35,
+        minimumJobAmount: 2500,
+        maintenancePrice: 0,
+      }),
+    ).toEqual({
+      frontPerFt: 40,
+      sidesPerFt: 35,
+      backPerFt: 35,
+      minimumJobAmount: 2500,
+      maintenancePrice: 0,
+    });
+  });
+  it('accepts a partial patch (only the fields present)', () => {
+    expect(sanitizePermanentRates({ frontPerFt: 45 })).toEqual({ frontPerFt: 45 });
+  });
+  it('drops negative / NaN / non-number / unknown fields', () => {
+    expect(sanitizePermanentRates({ frontPerFt: -5 })).toEqual({});
+    expect(sanitizePermanentRates({ sidesPerFt: NaN })).toEqual({});
+    expect(sanitizePermanentRates({ backPerFt: '35' })).toEqual({});
+    expect(sanitizePermanentRates({ bogus: 10 })).toEqual({});
+    expect(sanitizePermanentRates(null)).toEqual({});
+    expect(sanitizePermanentRates('x')).toEqual({});
   });
 });
 

@@ -16,7 +16,7 @@
 // detection boxing its member strands. CURTAINS are still skipped — kept editable
 // for the future but out of the analyzer's detection vocabulary (#52).
 
-import type { Scene, SceneItem, Yardstick } from './sceneTypes';
+import type { Scene, SceneItem } from './sceneTypes';
 import { isStrand, isMiniArea, isMiniGroup, isWreath, isSpritzer, isGarland } from './sceneTypes';
 import type {
   LineSegment,
@@ -25,6 +25,7 @@ import type {
   SpritzerDetection,
   GarlandDetection,
 } from '@/lib/photoAnalysis';
+import { firstYardstickPpf } from './yardstickPpf';
 
 export type SceneFewShotPieces = {
   santasLines: LineSegment[];
@@ -55,18 +56,6 @@ function clamp01(n: number): number {
 
 function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
-}
-
-// Pixels-per-foot from the scene's FIRST yardstick (the editor's "first
-// yardstick is the default" convention). Null when there's none or it's
-// degenerate.
-function scenePxPerFoot(scene: Scene): number | null {
-  const ys: Yardstick[] = Array.isArray(scene?.yardsticks) ? scene.yardsticks : [];
-  const first = ys[0];
-  if (!first) return null;
-  if (!Number.isFinite(first.width) || !Number.isFinite(first.realFeet)) return null;
-  if (first.width <= 0 || first.realFeet <= 0) return null;
-  return first.width / first.realFeet;
 }
 
 // Flat photo-pixel points [x0,y0,x1,y1,…] → normalized [[x,y],…].
@@ -144,7 +133,7 @@ export function sceneToFewShotPieces(
     return { ...EMPTY };
   }
   const items: SceneItem[] = Array.isArray(scene?.items) ? scene.items : [];
-  const ppf = scenePxPerFoot(scene);
+  const ppf = firstYardstickPpf(scene);
   const fallbackSidePx = photoW * FALLBACK_BOX_FRACTION;
   // Visual sizeIn is inches; sizeIn/12 ft × ppf ≈ the item's on-photo pixels.
   const sidePxFor = (sizeIn: number) =>
@@ -200,9 +189,20 @@ export function sceneToFewShotPieces(
       // holds the billed count. Emit ONE detection boxing all member strands.
       // Curtains stay OUT (editable but not analyzer-taught, #52).
       if (item.surface === 'railing') {
+        // Primary lookup: strands whose groupId points back at this group.
         const memberPoints: number[] = [];
         for (const other of items) {
           if (isStrand(other) && other.groupId === item.id) memberPoints.push(...other.points);
+        }
+        // Fallback (#110 W5-006): groupId/memberIds can diverge (members
+        // deleted but the group kept, or a corrupt scene) — a billed railing
+        // must not silently vanish from the training example. Re-resolve by
+        // the group's own memberIds id list, which the group already carries.
+        if (memberPoints.length === 0 && item.memberIds?.length) {
+          const memberIdSet = new Set(item.memberIds);
+          for (const other of items) {
+            if (isStrand(other) && memberIdSet.has(other.id)) memberPoints.push(...other.points);
+          }
         }
         const box = pointsBoundingBox(memberPoints, photoW, photoH);
         if (box) {

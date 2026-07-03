@@ -126,3 +126,64 @@ export async function fetchSatellite(lat: number, lng: number, opts?: { size?: s
   const buf = Buffer.from(await res.arrayBuffer());
   return { base64: buf.toString('base64'), mediaType: 'image/png' };
 }
+
+// #110 W5-013 (cost): analyze-address re-fetches geocode + Street View +
+// satellite on EVERY call, even for a repeat of the same address (common
+// during staff testing / a retry after an analyzer outage). Cache the full
+// imagery bundle by a normalized address key, in-memory, for a short TTL —
+// suitable for the single-process Vercel-serverless runtime this project runs
+// in (mirrors the rate-limiter's in-memory Map convention), not a strong
+// cross-region cache.
+export const __ADDRESS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export type AddressImagery = {
+  geo: GeocodeResult;
+  streetView: FetchedImage;
+  satellite: FetchedImage;
+  satelliteFeetPerPixel: number;
+};
+
+type ImageryCacheEntry = { value: AddressImagery; expiresAt: number };
+const imageryCache = new Map<string, ImageryCacheEntry>();
+
+function normalizeAddressKey(address: string): string {
+  return address.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Test-only: reset the cache between test cases. Not part of the runtime API. */
+export function __clearImageryCache(): void {
+  imageryCache.clear();
+}
+
+// Thrown by the route as a 404 — kept distinct from a generic fetch failure so
+// the caller can map it to the right status code even when served from cache.
+export class NoStreetViewError extends Error {}
+
+export async function getCachedAddressImagery(address: string): Promise<AddressImagery> {
+  const key = normalizeAddressKey(address);
+  const now = Date.now();
+  const cached = imageryCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const geo = await geocodeAddress(address);
+
+  const svExists = await hasStreetView(geo.lat, geo.lng);
+  if (!svExists) {
+    throw new NoStreetViewError(`No Street View imagery available at ${geo.formattedAddress}`);
+  }
+
+  const [streetView, satellite] = await Promise.all([
+    fetchStreetView(geo.lat, geo.lng),
+    fetchSatellite(geo.lat, geo.lng),
+  ]);
+
+  // Same feet-per-pixel derivation as before: Google Static Maps at zoom=20 —
+  // meters_per_pixel = 156543.03392 * cos(lat) / 2^zoom, converted to feet.
+  const SAT_ZOOM = 20;
+  const metersPerPixel = (156543.03392 * Math.cos((geo.lat * Math.PI) / 180)) / Math.pow(2, SAT_ZOOM);
+  const satelliteFeetPerPixel = metersPerPixel * 3.28084;
+
+  const value: AddressImagery = { geo, streetView, satellite, satelliteFeetPerPixel };
+  imageryCache.set(key, { value, expiresAt: now + __ADDRESS_CACHE_TTL_MS });
+  return value;
+}

@@ -8,6 +8,7 @@ import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
+import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +42,10 @@ export default async function QuotesSettingsPage() {
 
         <hr className="my-8 border-gray-200" />
         <EventRatesSettings />
+
+        <div className="mt-6">
+          <PermanentRatesSettings />
+        </div>
       </main>
     </OperatorShell>
   );

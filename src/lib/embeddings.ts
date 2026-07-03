@@ -13,6 +13,8 @@
 // capture; the system simply behaves like "newest-N" until the key is present
 // and examples are embedded, then upgrades itself to similarity retrieval.
 
+import { downscaleImageForVision } from './photoAnalysis';
+
 const VOYAGE_URL = 'https://api.voyageai.com/v1/multimodalembeddings';
 const VOYAGE_MODEL = 'voyage-multimodal-3.5';
 
@@ -38,10 +40,15 @@ export async function embedImage(
   const key = process.env.VOYAGE_API_KEY;
   if (!key) return null;
 
-  // Voyage wants a data URI; accept either raw base64 or a full data: string.
-  const dataUri = base64.startsWith('data:') ? base64 : `data:${mediaType};base64,${base64}`;
-
   try {
+    // W5-021 (#110 wave 5, cost): embedding is a similarity signal, not a
+    // pixel-perfect detection task — a full-resolution photo doesn't improve
+    // "which past house looks like this one" retrieval, but it does inflate
+    // every embed request's payload/cost. Downscale the same way analyzePhoto
+    // does for vision calls before sending to Voyage.
+    const { base64: downscaled, mediaType: downscaledType } = await downscaleImageForVision(base64, mediaType);
+    // Voyage wants a data URI; accept either raw base64 or a full data: string.
+    const dataUri = downscaled.startsWith('data:') ? downscaled : `data:${downscaledType};base64,${downscaled}`;
     const res = await fetch(VOYAGE_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },

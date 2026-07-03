@@ -29,6 +29,25 @@ type Props = {
   renderSettings?: RenderSettings;
 };
 
+// #110 W4-006 — module-level cache so every DesignCanvas instance on a page
+// (hero + reprise + N-photo gallery) shares ONE /api/inventory/offered-colors
+// request instead of firing one each. Mirrors the fetchAppSettings() pattern
+// in lib/clientSettings.ts. Colors are page-static (from app_settings), so a
+// plain in-flight/resolved promise cache (no invalidation) is correct here —
+// unlike clientSettings, nothing on this page ever writes offered colors.
+let offeredColorsCache: Promise<OfferedColorLists | null> | null = null;
+function fetchOfferedColors(): Promise<OfferedColorLists | null> {
+  if (!offeredColorsCache) {
+    offeredColorsCache = fetch('/api/inventory/offered-colors')
+      .then((r) => (r.ok ? (r.json() as Promise<OfferedColorLists>) : null))
+      .catch((e) => {
+        console.warn('[DesignCanvas] offered-colors fetch failed', e);
+        return null;
+      });
+  }
+  return offeredColorsCache;
+}
+
 // Read-only React wrapper that mounts the live design render (Konva) into a
 // host div, client-side only (dynamic import keeps Konva out of SSR). Used by
 // the portal hero to show the customer's actual design. View-only — no editing.
@@ -46,10 +65,7 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   const [offeredColors, setOfferedColors] = useState<OfferedColorLists | null>(null);
   useEffect(() => {
     let alive = true;
-    fetch('/api/inventory/offered-colors')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (alive) setOfferedColors(d as OfferedColorLists | null); })
-      .catch((e) => { console.warn('[DesignCanvas] offered-colors fetch failed', e); });
+    fetchOfferedColors().then((d) => { if (alive) setOfferedColors(d); });
     return () => { alive = false; };
   }, []);
   // Resolve the customer's whole-house choice to PER-ITEM render colors — each light

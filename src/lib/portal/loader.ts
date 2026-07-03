@@ -44,15 +44,29 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
   // exceptions in Server Components.
   try {
     const sb = getSupabaseServiceClient()!;
-    const { data, error } = await sb
-      .from('quotes')
-      .select(
-        // Bug fix (B3): added status, decline_reason, quote_sent_at, viewed_at
-        // so the portal can gate the approve+pay UI for terminal/branch quotes.
-        'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test',
-      )
-      .eq('id', id)
-      .maybeSingle<QuoteRowForPortal>();
+    // W4-016: getDesignByQuote only needs the URL id (already known), so kick
+    // it off in parallel with the quote row fetch instead of after it — same
+    // best-effort contract, just started earlier. Its own try/catch below still
+    // isolates a design-lookup failure from the quote fetch/parse path; a
+    // rejection here is caught at the Promise.all and re-thrown into that same
+    // catch so the behavior (never blocks the quote) is unchanged.
+    const [{ data, error }, designResult] = await Promise.all([
+      sb
+        .from('quotes')
+        .select(
+          // Bug fix (B3): added status, decline_reason, quote_sent_at, viewed_at
+          // so the portal can gate the approve+pay UI for terminal/branch quotes.
+          // #88 P5: added service_type so the adapter can route permanent quotes
+          // to their own package derivation + rate-snapshot minimum gate.
+          'id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type',
+        )
+        .eq('id', id)
+        .maybeSingle<QuoteRowForPortal>(),
+      getDesignByQuote(id).then(
+        (design) => ({ ok: true as const, design }),
+        (err) => ({ ok: false as const, err }),
+      ),
+    ]);
 
     if (error) {
       console.error('[loadPortalQuote] DB error:', error);
@@ -66,7 +80,8 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     // Phase 2). Best-effort: a design lookup failure never blocks the quote.
     if (portal) {
       try {
-        const design = await getDesignByQuote(id);
+        if (!designResult.ok) throw designResult.err;
+        const design = designResult.design;
         if (design) {
           portal.design = {
             scene: design.scene,

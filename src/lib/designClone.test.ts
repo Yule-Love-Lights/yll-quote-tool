@@ -115,6 +115,26 @@ const SOURCE = {
   seed_analysis: { foo: 'bar' },
 };
 
+// W2-001/012/013: a source with extra_photos (#13 multi-image) — the field the
+// clone used to drop entirely, orphaning scene items that reference an extra
+// via photoId.
+const SOURCE_WITH_EXTRAS = {
+  ...SOURCE,
+  photo_title: 'Front of house',
+  extra_photos: [
+    { id: 'extra-1', path: 'src-design/extra-extra-1.jpg', w: 640, h: 480, title: 'Side yard' },
+    { id: 'extra-2', path: 'src-design/extra-extra-2.png', w: 500, h: 500, title: null },
+  ],
+  scene: {
+    yardsticks: [],
+    items: [
+      { id: 'x' }, // base photo item (no photoId)
+      { id: 'y', photoId: 'extra-1' }, // drawn on the first extra
+    ],
+    brightness: 20,
+  },
+};
+
 describe('cloneDesignToNewQuote', () => {
   it('clones scene + measurement context and copies photo + satellite to the new prefix', async () => {
     const fake = makeFake({
@@ -190,5 +210,83 @@ describe('cloneDesignToNewQuote', () => {
     const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
     const clone = fake.designs.find((d) => d.id === res!.id)!;
     expect(clone.created_by).toBeNull();
+  });
+
+  // W2-001/012/013: extra_photos (+ photo_title) must carry over, remapped to
+  // the new design's storage prefix — otherwise a rebooked multi-photo design
+  // loses every secondary street photo and orphans their photoId-tagged scene
+  // items (the scene copies verbatim, but the photos it references vanish).
+  it('carries extra_photos + photo_title, remapped to the new prefix', async () => {
+    const fake = makeFake({
+      source: SOURCE_WITH_EXTRAS,
+      objects: [
+        { name: 'photo.jpg' },
+        { name: 'satellite.png' },
+        { name: 'extra-extra-1.jpg' },
+        { name: 'extra-extra-2.png' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const newId = res!.id;
+    const clone = fake.designs.find((d) => d.id === newId)!;
+
+    // Base photo + satellite still copy as before.
+    expect(clone.photo_path).toBe(`${newId}/photo.jpg`);
+    expect(clone.photo_title).toBe('Front of house');
+
+    // The extra-* blobs are copied to the new prefix...
+    expect(fake.copies).toEqual(
+      expect.arrayContaining([
+        ['src-design/extra-extra-1.jpg', `${newId}/extra-extra-1.jpg`],
+        ['src-design/extra-extra-2.png', `${newId}/extra-extra-2.png`],
+      ]),
+    );
+
+    // ...and extra_photos on the clone points at the COPIED paths, keeping the
+    // SAME id (scene items' photoId references the extra's id, not its path)
+    // and title.
+    expect(clone.extra_photos).toEqual([
+      { id: 'extra-1', path: `${newId}/extra-extra-1.jpg`, w: 640, h: 480, title: 'Side yard' },
+      { id: 'extra-2', path: `${newId}/extra-extra-2.png`, w: 500, h: 500, title: null },
+    ]);
+
+    // The scene (copied verbatim) still references extra-1 by the SAME id, so
+    // the item is reachable on the cloned design's extra photo tab.
+    const cloneScene = clone.scene as { items: Array<{ id: string; photoId?: string }> };
+    expect(cloneScene.items.find((it) => it.id === 'y')?.photoId).toBe('extra-1');
+  });
+
+  it('drops only the extras whose blob copy failed (never a dangling/mismatched entry)', async () => {
+    const fake = makeFake({
+      source: SOURCE_WITH_EXTRAS,
+      objects: [
+        { name: 'photo.jpg' },
+        { name: 'satellite.png' },
+        { name: 'extra-extra-1.jpg' },
+        { name: 'extra-extra-2.png' },
+      ],
+      copyFailFor: (from) => from.endsWith('extra-extra-2.png'),
+    });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+
+    // Only the successfully-copied extra survives on the clone.
+    expect(clone.extra_photos).toEqual([
+      { id: 'extra-1', path: `${res!.id}/extra-extra-1.jpg`, w: 640, h: 480, title: 'Side yard' },
+    ]);
+  });
+
+  it('carries an empty extra_photos array (and null photo_title) when the source has none', async () => {
+    const fake = makeFake({ source: SOURCE, objects: [{ name: 'photo.jpg' }] });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+    expect(clone.extra_photos).toEqual([]);
+    expect(clone.photo_title).toBeNull();
   });
 });

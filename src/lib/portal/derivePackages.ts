@@ -134,12 +134,18 @@ export function priceSelection(
 }
 
 // The pre-tax subtotal the customer's selection must reach before they can
-// approve on the portal ($1,000) — OR 0 (waived) when the whole quote's items
-// sum below the minimum, i.e. staff intentionally sent a sub-$1,000 quote and
-// gating would make it un-approvable. (#18 — minimum is a gate, not a floor.)
-export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
+// approve on the portal ($1,000 for holiday, or the passed `minimum`) — OR 0
+// (waived) when the whole quote's items sum below the minimum, i.e. staff
+// intentionally sent a sub-minimum quote and gating would make it
+// un-approvable. (#18 — minimum is a gate, not a floor.) `minimum` defaults to
+// the holiday BUSINESS_RULES amount so every existing caller is byte-identical;
+// #88 permanent quotes pass the frozen rate-snapshot's minimumJobAmount instead.
+export function minimumOrderSubtotal(
+  lineItems: PortalLineItem[],
+  minimum: number = BUSINESS_RULES.minimumQuoteAmount,
+): number {
   const sum = lineItems.reduce((s, li) => s + li.price, 0);
-  return sum >= BUSINESS_RULES.minimumQuoteAmount ? BUSINESS_RULES.minimumQuoteAmount : 0;
+  return sum >= minimum ? minimum : 0;
 }
 
 // Evaluate the portal approval gate for a priced selection (#18 gate, #47, #40).
@@ -280,11 +286,15 @@ export function derivePackages(
   const c = totalsFor(idsForTierC, lineItems, charges);
 
   // Tier 3 "à la carte" reference — what the bundle WOULD cost individually.
+  // Bug fix (audit W4-034): this must be priced through the SAME priceSelection
+  // pipeline (fees + tax) as the bundle `total` above — comparing the raw
+  // pre-tax/pre-fee item subtotal against the tax-inclusive bundle total mixed
+  // two different bases and could show a wrong (or negative) "you save $X".
   // Same as the bundle until bundle discounts land (then the portal shows "you
   // save $X" when aLaCarteTotal > total).
   const tierCPrice = new Map(lineItems.map((li) => [li.id, li.price]));
   const tierCSubtotal = idsForTierC.reduce((s, id) => s + (tierCPrice.get(id) ?? 0), 0);
-  const aLaCarteTotal = tierCSubtotal > 0 ? tierCSubtotal : undefined;
+  const aLaCarteTotal = tierCSubtotal > 0 ? priceSelection(tierCSubtotal, charges).total : undefined;
 
   // Tier 2 only exists when there's a distinct Gingerbread roofline to upgrade
   // to. On a Santa's-only (or roofline-less) quote it would byte-duplicate Tier 1
