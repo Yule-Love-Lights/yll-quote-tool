@@ -21,6 +21,8 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       deposit_paid_at: string | null;
       viewed_at?: string | null;
       status?: string | null;
+      service_type?: string | null;
+      result?: { permanentRatesSnapshot?: unknown } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -43,6 +45,15 @@ vi.mock('@/lib/designs', () => ({
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: async () => null,
   getOperator: async () => operatorRef.current,
+}));
+
+// Permanent pricing reads live rates from app_settings on a NEW quote; mock so
+// the permanent path never touches Supabase. Front $40 / sides+back $35.
+vi.mock('@/lib/appSettings', () => ({
+  getAppSettings: async () => ({
+    permanentRates: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
+    permanentEnabled: true,
+  }),
 }));
 
 import { POST } from './route';
@@ -84,7 +95,74 @@ beforeEach(() => {
     deposit_paid_at: null,
     viewed_at: null,
     status: null,
+    service_type: null,
+    result: null,
   };
+});
+
+// A valid permanent inputs block (holiday fields present + zeroed, per QuoteInputs).
+function permInputs(front = 100): Record<string, unknown> {
+  return {
+    ...validInputs(),
+    permanent: {
+      frontFootage: front,
+      leftFootage: 0,
+      rightFootage: 0,
+      backFootage: 0,
+      gaps: [],
+      controllerToFirstLightFt: 0,
+      frontCorners: 0,
+      leftCorners: 0,
+      rightCorners: 0,
+      backCorners: 0,
+      trackStyle: 'single',
+      trackColor: '9003',
+      blackHousing: false,
+      maintenanceAddOn: false,
+    },
+  };
+}
+
+type Line = { id?: string; amount: number };
+const savedResult = () => save.mock.calls[0]?.[2] as { lineItems: Line[]; permanentRatesSnapshot?: unknown };
+const updatedResult = () => update.mock.calls[0]?.[2] as { lineItems: Line[]; permanentRatesSnapshot?: unknown };
+const frontAmt = (r: { lineItems: Line[] }) => r.lineItems.find((l) => l.id === 'permanent-front')?.amount;
+
+describe('POST /api/quote — permanent dispatch (#88 P4a)', () => {
+  it('a NEW permanent quote is priced by the permanent engine at live rates + saved as permanent', async () => {
+    const res = await POST(makeReq({ serviceType: 'permanent', inputs: permInputs(100) }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(frontAmt(savedResult())).toBe(4000); // 100 * $40
+    expect(savedResult().permanentRatesSnapshot).toBeTruthy(); // rates frozen
+    expect(save.mock.calls[0]?.[3]).toBe('permanent'); // serviceType arg
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('a holiday quote is untouched — no permanent line, no snapshot (regression)', async () => {
+    await POST(makeReq({ serviceType: 'holiday', inputs: permInputs(100) }));
+    expect(frontAmt(savedResult())).toBeUndefined();
+    expect(savedResult().permanentRatesSnapshot).toBeUndefined();
+    expect(save.mock.calls[0]?.[3]).toBe('holiday');
+  });
+
+  it('H2: an UPDATE that OMITS serviceType prices by the STORED type (permanent), not the holiday engine', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(makeReq({ quoteId: REAL_UUID, inputs: permInputs(100) })); // no serviceType in body
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(frontAmt(updatedResult())).toBe(4000); // permanent engine ran
+    expect(update.mock.calls[0]?.[4]).toBe('permanent'); // stored type written back
+  });
+
+  it('H1: an UPDATE of an existing permanent quote prices from the FROZEN snapshot, not live settings', async () => {
+    rawRef.current!.service_type = 'permanent';
+    rawRef.current!.result = {
+      permanentRatesSnapshot: { frontPerFt: 99, sidesPerFt: 99, backPerFt: 99, minimumJobAmount: 2500, maintenancePrice: 0 },
+    };
+    await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'permanent', inputs: permInputs(100) }));
+    expect(frontAmt(updatedResult())).toBe(9900); // 100 * $99 (snapshot) — NOT 100 * $40 (live)
+  });
 });
 
 describe('POST /api/quote — validation hardening', () => {
