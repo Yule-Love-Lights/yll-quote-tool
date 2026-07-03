@@ -47,13 +47,14 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches } = body as Record<string, unknown>;
+  const { colors, defaults, render, portal, swatches, eventRates } = body as Record<string, unknown>;
   if (
     colors === undefined &&
     defaults === undefined &&
     render === undefined &&
     portal === undefined &&
-    swatches === undefined
+    swatches === undefined &&
+    eventRates === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -86,6 +87,11 @@ export async function PUT(req: NextRequest) {
       );
     }
   }
+  // Event rates (adjustable event pricing): must be an object; putAppSettings
+  // sanitizes each field (invalid → default) so it always stores a valid table.
+  if (eventRates !== undefined && !isPlainObject(eventRates)) {
+    return NextResponse.json({ error: 'eventRates must be an object' }, { status: 400 });
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
@@ -93,6 +99,7 @@ export async function PUT(req: NextRequest) {
       render: render as never,
       portal: portal as never,
       swatches: swatches as never,
+      eventRates: eventRates as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

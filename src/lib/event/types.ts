@@ -74,3 +74,41 @@ export type EventQuoteInputs = QuoteInputs & {
   /** Count of barrel/box temporary supports ($150 each). */
   barrelBoxes?: number;
 };
+
+function positiveOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+/**
+ * Coerce an unknown (a stored app_settings value) into a COMPLETE, valid
+ * EventRates — every field that isn't a positive finite number falls back to
+ * DEFAULT_EVENT_RATES. Always returns a full object (never partial), so a
+ * Settings-sourced rate table can never trip the engine's $0 guardrail. Used by
+ * appSettings (read-merge + write-sanitize) so staff can adjust event rates
+ * without a deploy (the #101 pattern).
+ */
+export function sanitizeEventRates(v: unknown): EventRates {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  const roofline = (o.roofline && typeof o.roofline === 'object' ? o.roofline : {}) as Record<string, unknown>;
+  const mini = (o.mini && typeof o.mini === 'object' ? o.mini : {}) as Record<string, unknown>;
+  const spritzer = (o.spritzer && typeof o.spritzer === 'object' ? o.spritzer : {}) as Record<string, unknown>;
+  const D = DEFAULT_EVENT_RATES;
+  return {
+    roofline: {
+      easy: positiveOr(roofline.easy, D.roofline.easy),
+      medium: positiveOr(roofline.medium, D.roofline.medium),
+      hard: positiveOr(roofline.hard, D.roofline.hard),
+    },
+    mini: {
+      canopy: positiveOr(mini.canopy, D.mini.canopy),
+      trunk: positiveOr(mini.trunk, D.mini.trunk),
+    },
+    spritzer: {
+      '16': positiveOr(spritzer['16'], D.spritzer['16']),
+      '24': positiveOr(spritzer['24'], D.spritzer['24']),
+      '32': positiveOr(spritzer['32'], D.spritzer['32']),
+    },
+    bistroPerFt: positiveOr(o.bistroPerFt, D.bistroPerFt),
+    barrelBoxPrice: positiveOr(o.barrelBoxPrice, D.barrelBoxPrice),
+  };
+}
