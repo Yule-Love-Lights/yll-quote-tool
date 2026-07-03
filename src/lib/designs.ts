@@ -178,7 +178,7 @@ export async function createDesign(opts: {
   seedAnalysis?: AnalysisSeed | null;
   /** Actor audit trail (#90): the operator's Supabase user id, or null. */
   createdBy?: string | null;
-}): Promise<{ id: string; garlandSectionsUnestimated: number } | null> {
+}): Promise<{ id: string; garlandSectionsUnestimated: number; seedFailed: boolean } | null> {
   const sb = getSb();
   if (!sb) return null;
 
@@ -199,6 +199,13 @@ export async function createDesign(opts: {
 
   // Seed the base photo if one was supplied with the create call.
   let garlandSectionsUnestimated = 0;
+  // W2-030: the create-row → upload-photo → seed-scene sequence is deliberately
+  // best-effort (a failed seed doesn't fail the whole design — see the catch
+  // below), but swallowing the error entirely hid a real partial state: the row
+  // exists, the photo may or may not have uploaded, and the scene may still be
+  // empty. Surface it via `seedFailed` so the caller (the builder) can tell
+  // staff to re-upload / re-sync instead of silently shipping a blank canvas.
+  let seedFailed = false;
   if (opts.photoBase64) {
     try {
       const photo = await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
@@ -221,10 +228,13 @@ export async function createDesign(opts: {
     } catch (err) {
       // A failed photo/roofline seed isn't fatal — the design still exists and
       // the operator can upload a photo / sync the roofline from the builder.
+      // It's still a real partial state, so it's reported via seedFailed
+      // rather than swallowed outright.
       console.error('createDesign: photo/roofline seed failed:', err);
+      seedFailed = true;
     }
   }
-  return { id, garlandSectionsUnestimated };
+  return { id, garlandSectionsUnestimated, seedFailed };
 }
 
 export async function getDesign(id: string): Promise<DesignRow | null> {
@@ -238,11 +248,38 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
   return (data as DesignRow | null) ?? null;
 }
 
+// W4-033: the exact columns toDesignWithPhoto reads — used by getDesignWithPhoto
+// (the editor GET) and getDesignByQuote (the portal/quote-page load, hit on
+// EVERY portal open). Deliberately excludes seed_analysis (the full raw AI
+// jsonb), satellite_feet_per_pixel, created_at, updated_at — none of which
+// toDesignWithPhoto or DesignWithPhoto ever touch. getDesign's own select('*')
+// stays as-is: it's shared by staff/training paths that DO need seed_analysis
+// (trainingExamples.ts captureTrainingExample, the seed-roofline/seed-analysis
+// routes) and narrowing it would regress those.
+const DESIGN_WITH_PHOTO_COLUMNS =
+  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_lines, extra_photos, photo_title';
+
+type DesignWithPhotoRow = Pick<
+  DesignRow,
+  | 'id'
+  | 'quote_id'
+  | 'scene'
+  | 'photo_path'
+  | 'photo_w'
+  | 'photo_h'
+  | 'satellite_path'
+  | 'satellite_w'
+  | 'satellite_h'
+  | 'satellite_lines'
+  | 'extra_photos'
+  | 'photo_title'
+>;
+
 // Attach a signed URL for the base photo (+ satellite + extras) to an
 // already-loaded row — the shape the editor mounts from. Factored out of
 // getDesignWithPhoto so callers that already have the row (getDesignByQuote,
-// W2-031) don't need a second select('*') by id.
-async function toDesignWithPhoto(row: DesignRow): Promise<DesignWithPhoto> {
+// W2-031) don't need a second select by id.
+async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPhoto> {
   // Sign the base photo and the satellite image in parallel (both private-bucket
   // paths; signDesignPhoto returns null for a missing path or on any failure).
   const extras = row.extra_photos ?? [];
@@ -274,22 +311,37 @@ async function toDesignWithPhoto(row: DesignRow): Promise<DesignWithPhoto> {
 }
 
 // Load a design and attach a signed URL for its base photo — the shape the
-// editor mounts from.
+// editor mounts from. W4-033: its own narrowed select (DESIGN_WITH_PHOTO_COLUMNS)
+// instead of routing through getDesign's select('*') — this is the read hit on
+// every editor open / portal render, and it never needs seed_analysis.
 export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | null> {
-  const row = await getDesign(id);
-  if (!row) return null;
-  return toDesignWithPhoto(row);
+  const sb = getSb();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('designs')
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    console.error('Supabase getDesignWithPhoto error:', error);
+    return null;
+  }
+  if (!data) return null;
+  return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
 // The design linked to a given quote, if any (used when re-opening a quote
-// that already has a design). W2-031: one select('*') by quote_id instead of
-// select('id') followed by getDesignWithPhoto's own select('*') by id.
+// that already has a design, incl. every portal open — loadPortalQuote calls
+// this on the customer-facing path). W2-031: one query by quote_id instead of
+// select('id') followed by getDesignWithPhoto's own second query by id.
+// W4-033: narrowed to DESIGN_WITH_PHOTO_COLUMNS — the portal never needs the
+// raw seed_analysis jsonb this used to pull on every open.
 export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto | null> {
   const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
     .from('designs')
-    .select('*')
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
     .eq('quote_id', quoteId)
     .maybeSingle();
   if (error) {
@@ -297,7 +349,7 @@ export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto
     return null;
   }
   if (!data) return null;
-  return toDesignWithPhoto(data as DesignRow);
+  return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
 // Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
@@ -329,12 +381,21 @@ export async function linkDesignToQuote(id: string, quoteId: string): Promise<bo
 // Clone the design linked to `sourceQuoteId` into a fresh, INDEPENDENT design
 // linked to `newQuoteId` (ledger #83 Phase 5 "rebook last season"). Copies the
 // scene jsonb + the satellite measurement context, and server-side-copies the
-// base photo + satellite image to the new design's `{newId}/` storage prefix so
-// the clone owns its OWN bucket objects (sharing paths would let deleting one
-// quote erase the other's photos via deleteDesign). Returns the new design id,
-// or null when the source has no design / Supabase isn't configured. Storage
-// copy is best-effort: a failed copy leaves the artifact NULL (staff re-pull the
-// photo) rather than dangerously sharing the source path.
+// base photo + satellite image (+ every extra street photo, #13 multi-image)
+// to the new design's `{newId}/` storage prefix so the clone owns its OWN
+// bucket objects (sharing paths would let deleting one quote erase the
+// other's photos via deleteDesign). Returns the new design id, or null when
+// the source has no design / Supabase isn't configured. Storage copy is
+// best-effort: a failed copy leaves the artifact NULL (base/satellite) or
+// drops just that entry (extras) — staff re-pull the photo — rather than
+// dangerously sharing the source path.
+//
+// W2-001/013: extra_photos MUST carry over. The scene jsonb is copied
+// verbatim and its items reference extras via photoId (sceneTypes.ts
+// `photoId`, matched by an extra's `id` — NOT its storage path), so as long
+// as each surviving extra keeps its original `id` and gets a remapped `path`
+// under the new prefix, the scene's photoId references stay valid on the
+// clone with no scene rewrite needed.
 export async function cloneDesignToNewQuote(
   sourceQuoteId: string,
   newQuoteId: string,
@@ -369,8 +430,11 @@ export async function cloneDesignToNewQuote(
   const newId = created.id as string;
 
   // Server-side copy every object under the source prefix to the new prefix.
+  // Track each extra's NEW path by its old path so we can rebuild extra_photos
+  // below without guessing filenames back from the id.
   let photoPath: string | null = null;
   let satellitePath: string | null = null;
+  const copiedExtraPathByOld = new Map<string, string>();
   try {
     const { data: objects, error: listErr } = await sb.storage.from(BUCKET).list(src.id);
     if (listErr) {
@@ -386,11 +450,22 @@ export async function cloneDesignToNewQuote(
         }
         if (o.name.startsWith('photo.')) photoPath = to;
         if (o.name.startsWith('satellite.')) satellitePath = to;
+        copiedExtraPathByOld.set(from, to);
       }
     }
   } catch (err) {
     console.error('cloneDesignToNewQuote (storage) threw:', err);
   }
+
+  // Rebuild extra_photos from the source array, remapping each entry's path
+  // from the src.id prefix to the newId prefix. Keep ONLY entries whose blob
+  // copy actually succeeded (mirrors the null-on-failed-copy discipline used
+  // for photo_path/satellite_path above) — a dropped extra never leaves a
+  // dangling/mismatched row entry pointing at an uncopied object.
+  const extraPhotos: DesignExtraPhoto[] = (src.extra_photos ?? []).flatMap((p) => {
+    const newPath = copiedExtraPathByOld.get(p.path);
+    return newPath ? [{ ...p, path: newPath }] : [];
+  });
 
   // Point the new row at the COPIED artifacts (null when a copy failed — never
   // the source path) + carry the jsonb measurement context (satellite lines +
@@ -401,12 +476,14 @@ export async function cloneDesignToNewQuote(
       photo_path: photoPath,
       photo_w: photoPath ? src.photo_w : null,
       photo_h: photoPath ? src.photo_h : null,
+      photo_title: src.photo_title ?? null,
       satellite_path: satellitePath,
       satellite_w: satellitePath ? src.satellite_w ?? null : null,
       satellite_h: satellitePath ? src.satellite_h ?? null : null,
       satellite_feet_per_pixel: satellitePath ? src.satellite_feet_per_pixel ?? null : null,
       satellite_lines: src.satellite_lines ?? null,
       seed_analysis: src.seed_analysis ?? null,
+      extra_photos: extraPhotos,
     })
     .eq('id', newId);
   if (updErr) {
@@ -477,6 +554,19 @@ export async function uploadDesignSatellite(
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
 
+  // W2-014: read the CURRENT satellite_path before overwriting — upsert only
+  // replaces the identical storage key, so a replacement with a different
+  // extension (e.g. satellite.png → satellite.jpg) would otherwise leave the
+  // old blob dangling under the design's prefix until the whole design is
+  // deleted.
+  const { data: prevRow, error: prevErr } = await sb
+    .from('designs')
+    .select('satellite_path')
+    .eq('id', id)
+    .maybeSingle();
+  if (prevErr) console.error('uploadDesignSatellite (prev read):', prevErr);
+  const prevPath = (prevRow as { satellite_path?: string | null } | null)?.satellite_path ?? null;
+
   const path = `${id}/satellite.${ext}`;
   const { error: upErr } = await sb.storage.from(BUCKET).upload(path, buf, {
     contentType: storedType,
@@ -498,6 +588,13 @@ export async function uploadDesignSatellite(
     })
     .eq('id', id);
   if (rowErr) throw new Error(`uploadDesignSatellite (row): ${rowErr.message}`);
+
+  // Clean up the orphaned old blob (best-effort, non-fatal) when the
+  // extension changed — upsert already handled the same-extension case.
+  if (prevPath && prevPath !== path) {
+    const { error: rmErr } = await sb.storage.from(BUCKET).remove([prevPath]);
+    if (rmErr) console.error('uploadDesignSatellite (old blob remove):', rmErr);
+  }
 
   return { path, width, height };
 }
@@ -604,9 +701,16 @@ export async function deleteDesignsForQuote(quoteId: string): Promise<number> {
     return 0;
   }
   const ids = (data ?? []).map((r) => r.id as string);
+  // W2-034: designs are mutually independent (each's cleanup is its own row +
+  // storage-prefix delete), so nothing forces strictly-serial one-at-a-time
+  // deletion. Bounded-concurrency chunks (mirrors customers.ts
+  // backfillCustomersFromQuotes) instead of an unbounded Promise.all fan-out.
+  const DELETE_CHUNK_SIZE = 8;
   let deleted = 0;
-  for (const id of ids) {
-    if (await deleteDesign(id)) deleted++;
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + DELETE_CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((id) => deleteDesign(id)));
+    deleted += results.filter(Boolean).length;
   }
   return deleted;
 }
@@ -633,6 +737,16 @@ export async function uploadDesignPhoto(
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
 
+  // W2-014: read the CURRENT photo_path before overwriting — see the matching
+  // comment in uploadDesignSatellite for why this is needed.
+  const { data: prevRow, error: prevErr } = await sb
+    .from('designs')
+    .select('photo_path')
+    .eq('id', id)
+    .maybeSingle();
+  if (prevErr) console.error('uploadDesignPhoto (prev read):', prevErr);
+  const prevPath = (prevRow as { photo_path?: string | null } | null)?.photo_path ?? null;
+
   const path = `${id}/photo.${ext}`;
   const { error: upErr } = await sb.storage.from(BUCKET).upload(path, buf, {
     contentType: storedType,
@@ -645,6 +759,13 @@ export async function uploadDesignPhoto(
     .update({ photo_path: path, photo_w: width, photo_h: height })
     .eq('id', id);
   if (rowErr) throw new Error(`uploadDesignPhoto (row): ${rowErr.message}`);
+
+  // Clean up the orphaned old blob (best-effort, non-fatal) when the
+  // extension changed — upsert already handled the same-extension case.
+  if (prevPath && prevPath !== path) {
+    const { error: rmErr } = await sb.storage.from(BUCKET).remove([prevPath]);
+    if (rmErr) console.error('uploadDesignPhoto (old blob remove):', rmErr);
+  }
 
   return { path, width, height };
 }
@@ -661,6 +782,49 @@ async function getExtraPhotos(sb: NonNullable<ReturnType<typeof getSb>>, id: str
   if (error) throw new Error(`extra_photos read: ${error.message}`);
   if (!data) throw new Error('Design not found');
   return ((data as { extra_photos?: DesignExtraPhoto[] | null }).extra_photos ?? []);
+}
+
+// W2-015: extra_photos is a read-modify-write on a jsonb array with no atomic
+// append primitive available from supabase-js (a real Postgres RPC would be
+// the fully-atomic fix, but that needs a migration — out of scope here). This
+// closes the race with an optimistic-concurrency guard instead: read
+// extra_photos + updated_at together, compute the new array, then write it
+// back CONDITIONED on updated_at still matching the snapshot (the designs
+// table bumps updated_at via a trigger on every write, so any interleaving
+// writer — another addDesignExtraPhoto, a title rename, a removal — changes
+// it). If the guarded update matches zero rows, another writer won the race;
+// retry from a fresh read (bounded) instead of silently losing the change.
+const MAX_EXTRA_PHOTOS_RETRIES = 5;
+
+async function updateExtraPhotosAtomic(
+  sb: NonNullable<ReturnType<typeof getSb>>,
+  id: string,
+  compute: (current: DesignExtraPhoto[]) => DesignExtraPhoto[],
+): Promise<DesignExtraPhoto[]> {
+  for (let attempt = 0; attempt < MAX_EXTRA_PHOTOS_RETRIES; attempt++) {
+    const { data, error } = await sb
+      .from('designs')
+      .select('extra_photos, updated_at')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw new Error(`extra_photos read: ${error.message}`);
+    if (!data) throw new Error('Design not found');
+    const row = data as { extra_photos?: DesignExtraPhoto[] | null; updated_at?: string };
+    const current = row.extra_photos ?? [];
+    const next = compute(current);
+
+    const { data: updated, error: updErr } = await sb
+      .from('designs')
+      .update({ extra_photos: next })
+      .eq('id', id)
+      .eq('updated_at', row.updated_at)
+      .select('id');
+    if (updErr) throw new Error(`extra_photos write: ${updErr.message}`);
+    // A non-empty result means our updated_at precondition matched — we won.
+    // An empty result means another writer updated the row first; retry.
+    if (Array.isArray(updated) && updated.length > 0) return next;
+  }
+  throw new Error('extra_photos write: too many concurrent-update retries');
 }
 
 // Decode + store one extra photo and append it to the design's extra_photos.
@@ -695,12 +859,8 @@ export async function addDesignExtraPhoto(
   if (upErr) throw new Error(`addDesignExtraPhoto: ${upErr.message}`);
 
   const entry: DesignExtraPhoto = { id: photoId, path, w: width, h: height, title: title?.trim() || null };
-  const extras = await getExtraPhotos(sb, id);
-  const { error: rowErr } = await sb
-    .from('designs')
-    .update({ extra_photos: [...extras, entry] })
-    .eq('id', id);
-  if (rowErr) throw new Error(`addDesignExtraPhoto (row): ${rowErr.message}`);
+  // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic.
+  await updateExtraPhotosAtomic(sb, id, (current) => [...current, entry]);
 
   return entry;
 }
@@ -752,12 +912,27 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // Prune scene items drawn on the removed photo — plus any linked twins of a
   // pruned CANONICAL (#13): a twin on another photo depicting an item that just
   // died with this photo would otherwise dangle (render-only, unlinked forever).
+  //
+  // W2-016: re-read the scene FRESH right here, immediately before the prune
+  // write, instead of reusing the snapshot from the top of this function. The
+  // editor autosaves the scene independently (updateDesignScene) — using the
+  // stale initial-read snapshot would clobber a concurrent autosave that lands
+  // in the gap between this function's start and its prune write. A fresh
+  // read-then-write still has a (much smaller) window, matching the same
+  // last-write-wins risk the rest of the scene-autosave path already accepts.
   try {
-    if (scene && Array.isArray(scene.items) && scene.items.some(it => it.photoId === photoId)) {
-      const prunedIds = new Set(scene.items.filter(it => it.photoId === photoId).map(it => it.id));
+    const { data: freshData, error: freshErr } = await sb
+      .from('designs')
+      .select('scene')
+      .eq('id', id)
+      .maybeSingle();
+    if (freshErr) throw new Error(`scene re-read: ${freshErr.message}`);
+    const freshScene = (freshData as { scene?: DesignScene | null } | null)?.scene ?? scene;
+    if (freshScene && Array.isArray(freshScene.items) && freshScene.items.some(it => it.photoId === photoId)) {
+      const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
       await updateDesignScene(id, {
-        ...scene,
-        items: scene.items.filter(
+        ...freshScene,
+        items: freshScene.items.filter(
           it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
         ),
       });

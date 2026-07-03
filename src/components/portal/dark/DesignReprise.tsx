@@ -11,13 +11,15 @@
 // — it only renders once the card scrolls near the viewport (Intersection
 // Observer), avoiding a second always-on Konva stage on initial page load.
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
+import { useLazyMountOnVisible } from '../useLazyMountOnVisible';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
+import { portalPhotos } from '@/lib/portal/photos';
 
 // Konva is client-only — keep it out of SSR (same pattern the hero uses).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -49,17 +51,9 @@ export function DesignReprise({
   // canvas updates the moment the customer toggles an item or a color above.
   const { hiddenSceneItemIds, colorOverride } = useSelection();
 
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [mounted, setMounted] = useState(false);
   // #13 multi-image: on-image ‹ › arrows step through the photos (no thumbnail
   // strip here — too bulky for this card; Jason's call). Index 0 = base photo.
-  const photos = useMemo(
-    () => [
-      { id: null as string | null, url: design.photoUrl, w: design.photoW, h: design.photoH },
-      ...(design.extraPhotos ?? []).filter((p) => p.url).map((p) => ({ id: p.id as string | null, url: p.url, w: p.w as number | null, h: p.h as number | null })),
-    ],
-    [design],
-  );
+  const photos = useMemo(() => portalPhotos(design), [design]);
   const [photoIdx, setPhotoIdx] = useState(0);
   const active = photos[Math.min(photoIdx, photos.length - 1)];
   const activeScene = useMemo(
@@ -68,44 +62,13 @@ export function DesignReprise({
   );
   const step = (d: 1 | -1) => setPhotoIdx((i) => (i + d + photos.length) % photos.length);
 
-  // Lazy-mount the Konva canvas. IntersectionObserver is the REAL trigger — it
-  // fires as the customer scrolls the card toward the viewport, so the second
-  // Konva stage stays off the device until they're actually near it (the phone-
-  // perf win; a customer who never scrolls down never pays for it). The 15s
-  // timer is ONLY a last-resort safety net so the card can't stay blank if IO
-  // never fires (broken webview / no IO support) — it's well past the hero-
-  // viewing window, so it doesn't reintroduce a second stage during initial
-  // browsing. setState is deferred via queueMicrotask (project rule:
-  // react-hooks/set-state-in-effect is an error).
-  useEffect(() => {
-    if (mounted) return;
-    const el = wrapRef.current;
-    if (!el) return;
-    let cancelled = false;
-    const reveal = () => {
-      if (cancelled) return;
-      cancelled = true;
-      queueMicrotask(() => setMounted(true));
-    };
-
-    let io: IntersectionObserver | null = null;
-    if (typeof IntersectionObserver !== 'undefined') {
-      io = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((e) => e.isIntersecting)) reveal();
-        },
-        { rootMargin: '200px' },
-      );
-      io.observe(el);
-    }
-    const safety = window.setTimeout(reveal, 15000);
-
-    return () => {
-      cancelled = true;
-      io?.disconnect();
-      window.clearTimeout(safety);
-    };
-  }, [mounted]);
+  // Lazy-mount the Konva canvas (audit W4-023 — shared with PhotoGallery).
+  // IntersectionObserver is the REAL trigger — it fires as the customer
+  // scrolls the card toward the viewport, so the second Konva stage stays off
+  // the device until they're actually near it (the phone-perf win; a
+  // customer who never scrolls down never pays for it). The 15s timer inside
+  // the hook is only a last-resort safety net.
+  const [wrapRef, mounted] = useLazyMountOnVisible<HTMLDivElement>();
 
   // "Click here to change colors" — jump the customer up to the LightColorPicker
   // band (#10/#48, id="light-color") and move focus there for keyboard/SR users.

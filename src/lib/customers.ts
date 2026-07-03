@@ -80,6 +80,49 @@ export function customerMatchKey(c: CustomerIdentity): string | null {
   return null;
 }
 
+// W2-009: every match key this identity COULD resolve under, in the SAME
+// precedence order as customerMatchKey, but WITHOUT short-circuiting after
+// the first hit. A quote's identity often carries more than one field (e.g.
+// an HL-linked quote still has the customer's email) — customerMatchKey only
+// returns the winning (highest-precedence) key, so a same-person history that
+// mixes an HL-linked quote with an email/phone-only quote hashes to TWO
+// different keys and used to create TWO customer rows (the #306 backfill's
+// exact input). findOrCreateCustomer uses this to also check for an existing
+// customer under any of this identity's OTHER keys before creating a new row.
+export function secondaryMatchKeys(c: CustomerIdentity): string[] {
+  const keys: string[] = [];
+  const email = norm(c.email);
+  if (email) keys.push(`email:${email.toLowerCase()}`);
+  const phone = normalizePhone(c.phone);
+  if (phone) keys.push(`phone:${phone}`);
+  const name = norm(c.name);
+  if (name) keys.push(`name:${name.toLowerCase()}`);
+  return keys;
+}
+
+// Precedence rank of a match_key's PREFIX (lower = higher precedence), same
+// order as customerMatchKey (hl > email > phone > name). Used by the W2-009
+// merge to decide whether an incoming identity's key should REPLACE an
+// existing customer's stored match_key (only when it out-ranks it) — an
+// existing higher-precedence key is never downgraded.
+function keyPrecedenceRank(matchKey: string | null | undefined): number {
+  if (!matchKey) return 99;
+  const prefix = matchKey.slice(0, matchKey.indexOf(':'));
+  const order = ['hl', 'email', 'phone', 'name'];
+  const i = order.indexOf(prefix);
+  return i === -1 ? 99 : i;
+}
+
+// A value is safe to interpolate into a PostgREST .or() filter string only if
+// it can't contain a comma/paren/dot that would inject extra filter clauses.
+// Mirrors the guard in lib/dashboard/inbox/store.ts (same PostgREST .or()
+// injection concern). hl_contact_id is alphanumeric-ish; email/phone/name are
+// free text, so those go through a dedicated allowlist instead of this one.
+const SAFE_OR_VALUE_RE = /^[A-Za-z0-9_@.+-]+$/;
+function safeOrValue(v: string): boolean {
+  return SAFE_OR_VALUE_RE.test(v) && !v.includes(',') && !v.includes('(') && !v.includes(')');
+}
+
 // Phone → digits only (drops formatting: spaces, dashes, parens, +). Null when
 // there are no digits.
 export function normalizePhone(v: string | null | undefined): string | null {
@@ -113,6 +156,18 @@ function svc() {
 // Find-or-create the stable customer for an identity. Idempotent + race-safe via
 // UNIQUE(match_key). Returns null when the identity has no stable key, or on a
 // hard DB error.
+//
+// W2-009: match_key precedence alone (hl > email > phone > name) splits ONE
+// real customer into TWO rows when their quote history mixes an HL-linked
+// quote with an email/phone-only quote — each hashes to a DIFFERENT key.
+// Before creating a brand-new row, also check the identity's SECONDARY keys
+// (secondaryMatchKeys) for an existing customer to merge into. On a
+// secondary-key hit we PREFER LINKING to that existing customer over creating
+// a second one (the safest de-dup: never lose history to a fresh row) and, if
+// our key out-ranks the existing row's stored key (e.g. we now know the HL id
+// a previously email-only row didn't), upgrade match_key + backfill the newly
+// -known fields so a future lookup on EITHER identity resolves here. An
+// existing higher-or-equal-precedence key is never downgraded.
 export async function findOrCreateCustomer(
   identity: CustomerIdentity,
 ): Promise<{ id: string } | null> {
@@ -123,6 +178,50 @@ export async function findOrCreateCustomer(
 
   const existing = await sb.from('customers').select('id').eq('match_key', key).maybeSingle();
   if (existing.data) return { id: existing.data.id as string };
+
+  // W2-009 secondary-identity search, BOTH directions:
+  //  (a) an existing row's match_key equals one of THIS identity's lower-
+  //      precedence keys (e.g. we're hl-linked now, an email-only row exists), or
+  //  (b) an existing row's raw hl_contact_id/email/phone column equals one of
+  //      THIS identity's populated fields, however that row itself was keyed
+  //      (e.g. an hl-linked row already exists and we're an email-only quote
+  //      for the same person).
+  // Only alphanumeric-ish/email/phone-shaped values are interpolated into the
+  // .or() filter (safeOrValue) — same PostgREST-injection guard used by
+  // lib/dashboard/inbox/store.ts's findCandidates.
+  const secondaryKeys = secondaryMatchKeys(identity).filter((k) => k !== key);
+  const orConds: string[] = [];
+  if (secondaryKeys.length) orConds.push(`match_key.in.(${secondaryKeys.join(',')})`);
+  const hl = norm(identity.hl_contact_id);
+  if (hl && safeOrValue(hl)) orConds.push(`hl_contact_id.eq.${hl}`);
+  const email = norm(identity.email);
+  if (email && safeOrValue(email)) orConds.push(`email.eq.${email}`);
+  const phoneRaw = norm(identity.phone);
+  if (phoneRaw && safeOrValue(phoneRaw)) orConds.push(`phone.eq.${phoneRaw}`);
+
+  if (orConds.length) {
+    const { data: candidates } = await sb.from('customers').select('*').or(orConds.join(','));
+    const merge = (candidates as CustomerRow[] | null)?.[0];
+    if (merge) {
+      // Never DOWNGRADE an existing higher-(or-equal-)precedence match_key —
+      // only adopt `key` on the merged row when it out-ranks what's stored.
+      const mergeKeyRank = keyPrecedenceRank(merge.match_key);
+      const ourKeyRank = keyPrecedenceRank(key);
+      const nextMatchKey = ourKeyRank < mergeKeyRank ? key : merge.match_key;
+      const { error: updErr } = await sb
+        .from('customers')
+        .update({
+          match_key: nextMatchKey,
+          hl_contact_id: norm(identity.hl_contact_id) ?? merge.hl_contact_id,
+          name: norm(identity.name) ?? merge.name,
+          email: norm(identity.email) ?? merge.email,
+          phone: norm(identity.phone) ?? merge.phone,
+        })
+        .eq('id', merge.id);
+      if (updErr) console.error('findOrCreateCustomer merge-upgrade error:', updErr);
+      return { id: merge.id };
+    }
+  }
 
   const ins = await sb
     .from('customers')

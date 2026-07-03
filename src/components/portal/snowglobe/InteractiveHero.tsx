@@ -29,7 +29,7 @@ import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
-import { extraPhotoLabels } from '@/lib/design/photoLabels';
+import { portalPhotos } from '@/lib/portal/photos';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -76,19 +76,11 @@ export function InteractiveHero({
   // thumbnail strip below the stage swaps it; each photo renders ITS OWN items
   // (photoId-filtered scene) lit live, with the shared selection/color state.
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
-  const extraPhotos = useMemo(
-    () => (design?.extraPhotos ?? []).filter((p) => p.url),
-    [design?.extraPhotos],
-  );
-  // Consistency fix (audit W4-029): number extras by their index in the
-  // UNFILTERED extraPhotos array (the canonical numbering, matching
-  // photoLabels.extraPhotoLabels), not by their index in the url-filtered
-  // `extraPhotos` above — filtering first shifts every later photo's number
-  // down by one whenever an earlier extra's signed URL breaks.
-  const extraPhotoLabelById = useMemo(
-    () => extraPhotoLabels(design?.extraPhotos ?? []),
-    [design?.extraPhotos],
-  );
+  // Shared helper (audit W4-019 — the [base, ...extraPhotos] + url-filter
+  // construction used to be hand-built here too). Canonical numbering
+  // (W4-029) comes from portalPhotos itself now via extraPhotoLabels.
+  const photos = useMemo(() => (design ? portalPhotos(design) : []), [design]);
+  const extraPhotos = useMemo(() => photos.filter((p) => p.id !== null), [photos]);
   const activeExtra = activePhotoId ? extraPhotos.find((p) => p.id === activePhotoId) ?? null : null;
   const activeUrl = activeExtra ? activeExtra.url : design?.photoUrl ?? null;
   const activeW = activeExtra ? activeExtra.w : design?.photoW ?? null;
@@ -284,8 +276,7 @@ export function InteractiveHero({
                   with its own items. Hidden for single-photo designs. */}
               {design && extraPhotos.length > 0 && (
                 <div className="flex gap-2 overflow-x-auto pb-1 mt-4" role="tablist" aria-label="Photos of your home">
-                  {[{ id: null as string | null, url: design.photoUrl, title: 'Photo 1' },
-                    ...extraPhotos.map((p) => ({ id: p.id as string | null, url: p.url, title: extraPhotoLabelById.get(p.id) ?? 'Photo' }))].map((p) => {
+                  {photos.map((p) => {
                     const active = p.id === activePhotoId;
                     return (
                       <button
@@ -300,8 +291,25 @@ export function InteractiveHero({
                         title={p.title}
                       >
                         {p.url ? (
+                          // Perf fix (audit W4-030): these are full-resolution
+                          // signed photo URLs with no resize proxy available, so
+                          // this can't be downsized server-side without new infra
+                          // (next/image's remotePatterns don't cover the Supabase
+                          // storage host). Explicit width/height HTML attributes
+                          // (not just the CSS box) + native lazy-loading keep the
+                          // layout cost fixed and defer the fetch for any chip
+                          // scrolled out of the strip, instead of eagerly
+                          // downloading every extra photo at full size on mount.
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={p.url} alt={p.title} className="w-[76px] h-[50px] object-cover block" />
+                          <img
+                            src={p.url}
+                            alt={p.title}
+                            width={76}
+                            height={50}
+                            loading="lazy"
+                            decoding="async"
+                            className="w-[76px] h-[50px] object-cover block"
+                          />
                         ) : (
                           <span className="w-[76px] h-[50px] block bg-[#101a14]" />
                         )}

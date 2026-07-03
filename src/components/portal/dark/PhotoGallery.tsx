@@ -8,19 +8,23 @@
 // (~2 visible per screen — deliberately NOT skipped on mobile; Jason's call).
 // Renders nothing for single-photo designs.
 //
-// Perf: one Konva stage per photo is real weight — the whole section is
-// LAZY-MOUNTED via IntersectionObserver (same pattern as DesignReprise), so
-// customers who never scroll here never pay for it. Each tile reads the SAME
-// SelectionContext hide/recolor state, so toggles and color picks update every
-// angle in lockstep.
+// Perf: one Konva stage per photo is real weight. The section itself is
+// LAZY-MOUNTED via useLazyMountOnVisible so customers who never scroll here
+// never pay for it — and once visible, EACH TILE gets its OWN lazy-mount
+// (audit W4-024) so N photos don't all spin up their Konva stage in the same
+// tick (that spiked main-thread work on a single shared observer firing).
+// Each tile reads the SAME SelectionContext hide/recolor state, so toggles
+// and color picks update every angle in lockstep.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
+import { useLazyMountOnVisible } from '../useLazyMountOnVisible';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
-import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
+import { isItemOnPhoto, type BulbColor, type Scene } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
+import { portalPhotos, type PortalGalleryPhoto } from '@/lib/portal/photos';
 
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -32,18 +36,8 @@ export type PhotoGalleryProps = {
 
 export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryProps) {
   const { hiddenSceneItemIds, colorOverride } = useSelection();
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [mounted, setMounted] = useState(false);
 
-  const photos = useMemo(
-    () => [
-      { id: null as string | null, url: design.photoUrl, w: design.photoW, h: design.photoH, title: 'Photo 1' },
-      ...(design.extraPhotos ?? [])
-        .filter((p) => p.url)
-        .map((p, i) => ({ id: p.id as string | null, url: p.url, w: p.w as number | null, h: p.h as number | null, title: p.title || `Photo ${i + 2}` })),
-    ],
-    [design],
-  );
+  const photos = useMemo(() => portalPhotos(design), [design]);
 
   // Perf fix (audit W4-001): memoize the per-photo scenes on [design.scene,
   // photos] — mirroring DesignReprise's activeScene memo — so a toggle/recolor
@@ -64,35 +58,9 @@ export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryPr
     [design.scene, photos],
   );
 
-  // Lazy-mount (DesignReprise pattern): IO is the real trigger; the timer is a
-  // safety net only. setState deferred (repo rule: set-state-in-effect).
-  useEffect(() => {
-    if (mounted) return;
-    const el = wrapRef.current;
-    if (!el) return;
-    let cancelled = false;
-    const reveal = () => {
-      if (cancelled) return;
-      cancelled = true;
-      queueMicrotask(() => setMounted(true));
-    };
-    let io: IntersectionObserver | null = null;
-    if (typeof IntersectionObserver !== 'undefined') {
-      io = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((e) => e.isIntersecting)) reveal();
-        },
-        { rootMargin: '200px' },
-      );
-      io.observe(el);
-    }
-    const safety = window.setTimeout(reveal, 15000);
-    return () => {
-      cancelled = true;
-      io?.disconnect();
-      window.clearTimeout(safety);
-    };
-  }, [mounted]);
+  // Section-level lazy-mount (audit W4-023, shared hook): customers who never
+  // scroll here never pay for ANY tile's Konva stage.
+  const [wrapRef, sectionVisible] = useLazyMountOnVisible<HTMLDivElement>();
 
   // Single-photo design → no section at all (today's portal).
   if (photos.length <= 1) return null;
@@ -103,36 +71,68 @@ export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryPr
         Every angle, lit up
       </p>
       <div ref={wrapRef} className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-        {photos.map((p) => {
-          const scene = scenesByPhotoId.get(p.id ?? 'base')!;
-          const aspectRatio = p.w && p.h ? `${p.w} / ${p.h}` : '8 / 5';
-          return (
-            <figure key={p.id ?? 'base'} className="m-0">
-              <div
-                aria-hidden="true"
-                className="relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] w-full"
-                style={{ aspectRatio }}
-              >
-                {mounted && (
-                  <DesignCanvas
-                    scene={scene}
-                    photoUrl={p.url}
-                    photoW={p.w}
-                    photoH={p.h}
-                    hiddenIds={hiddenSceneItemIds}
-                    colorOverride={colorOverride}
-                    palette={palette}
-                    renderSettings={renderSettings}
-                    className="absolute inset-0"
-                  />
-                )}
-                <LogoWatermark />
-              </div>
-              <figcaption className="mt-2 text-[12px] text-[#9fb8a8]">{p.title}</figcaption>
-            </figure>
-          );
-        })}
+        {sectionVisible &&
+          photos.map((p) => (
+            <GalleryTile
+              key={p.id ?? 'base'}
+              photo={p}
+              scene={scenesByPhotoId.get(p.id ?? 'base')!}
+              hiddenSceneItemIds={hiddenSceneItemIds}
+              colorOverride={colorOverride}
+              palette={palette}
+              renderSettings={renderSettings}
+            />
+          ))}
       </div>
     </section>
+  );
+}
+
+// One gallery tile — its OWN IntersectionObserver (audit W4-024) so N tiles
+// don't all mount their Konva stage in the same tick just because the shared
+// section-level observer fired. `sceneItemIds`/`colorOverride` come from the
+// parent's single SelectionContext read (no per-tile subscription needed).
+function GalleryTile({
+  photo,
+  scene,
+  hiddenSceneItemIds,
+  colorOverride,
+  palette,
+  renderSettings,
+}: {
+  photo: PortalGalleryPhoto;
+  scene: Scene;
+  hiddenSceneItemIds: Set<string>;
+  colorOverride: string[] | null;
+  palette?: BulbColor[];
+  renderSettings?: RenderSettings;
+}) {
+  const [tileRef, mounted] = useLazyMountOnVisible<HTMLDivElement>();
+  const aspectRatio = photo.w && photo.h ? `${photo.w} / ${photo.h}` : '8 / 5';
+  return (
+    <figure className="m-0">
+      <div
+        ref={tileRef}
+        aria-hidden="true"
+        className="relative overflow-hidden rounded-2xl border border-[#243029] bg-[#18221C] w-full"
+        style={{ aspectRatio }}
+      >
+        {mounted && (
+          <DesignCanvas
+            scene={scene}
+            photoUrl={photo.url}
+            photoW={photo.w}
+            photoH={photo.h}
+            hiddenIds={hiddenSceneItemIds}
+            colorOverride={colorOverride}
+            palette={palette}
+            renderSettings={renderSettings}
+            className="absolute inset-0"
+          />
+        )}
+        <LogoWatermark />
+      </div>
+      <figcaption className="mt-2 text-[12px] text-[#9fb8a8]">{photo.title}</figcaption>
+    </figure>
   );
 }

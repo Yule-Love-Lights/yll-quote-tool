@@ -353,6 +353,7 @@ export default async function PortalPage({
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
           isTest={quote.isTest}
+          quoteStatus={quote.quoteStatus}
         />
       </SelectionProvider>
     </main>

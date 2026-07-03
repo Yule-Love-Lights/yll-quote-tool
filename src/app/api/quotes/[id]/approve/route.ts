@@ -423,8 +423,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : 0
       : installDiscountRate(installTiming);
     const discountFlat = hasManual && d!.type === 'flat' ? d!.amount : 0;
+    // Bug fix (audit W4-017): mirror the SAME hasManual guard used for discountRate
+    // above. A manual staff discount wins over the early-install pick (one discount
+    // per quote), so when hasManual is true the install discount was NEVER applied
+    // to the price — stamping a non-zero installDiscountUsd here would freeze a
+    // dollar figure into the snapshot that doesn't match what was actually billed.
     snapshotInstallDiscountUsd =
-      installTiming === 'none' ? 0 : round2(serverSubtotal * installDiscountRate(installTiming));
+      hasManual || installTiming === 'none'
+        ? 0
+        : round2(serverSubtotal * installDiscountRate(installTiming));
 
     const config = chargesFromResult(quote.result);
     const breakdown = priceSelection(
