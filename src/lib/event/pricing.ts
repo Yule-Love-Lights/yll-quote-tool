@@ -353,6 +353,8 @@ export function calculateEventQuote(
     balanceDue,
     rooflineChoice,
     rooflineOptions,
-    // fullYule intentionally omitted — the "Full Yule" ceiling is a holiday concept.
+    // The rate table this result was priced with — frozen for the approve/amend
+    // rate-drift guard (mirrors permanentRatesSnapshot). fullYule omitted (holiday).
+    eventRatesSnapshot: rates,
   };
 }

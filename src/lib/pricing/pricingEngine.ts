@@ -2,6 +2,7 @@
 // Pure TypeScript: takes a house description, returns a price.
 
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
+import type { EventRates } from '@/lib/event/types';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -329,6 +330,10 @@ export interface QuoteResult {
   // app_settings, so a Settings rate change can't re-price an outstanding quote
   // (the rate-drift guard). Present only on permanent quotes.
   permanentRatesSnapshot?: PermanentRates;
+  // Event Lighting (#96): the event rate table frozen at calc time — the same
+  // rate-drift guard as permanent (approve/amend re-price from this, not live
+  // settings). Present only on event quotes.
+  eventRatesSnapshot?: EventRates;
 }
 
 // ─────────────────────────────────────────────────────────

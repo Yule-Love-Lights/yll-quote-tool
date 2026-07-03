@@ -24,7 +24,7 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       viewed_at?: string | null;
       status?: string | null;
       service_type?: string | null;
-      result?: { permanentRatesSnapshot?: unknown } | null;
+      result?: { permanentRatesSnapshot?: unknown; eventRatesSnapshot?: unknown } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -55,6 +55,15 @@ vi.mock('@/lib/appSettings', () => ({
   getAppSettings: async () => ({
     permanentRates: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
     permanentEnabled: true,
+    // Distinct event rates (roofline easy = $5) so a test can prove the route
+    // reads settings.eventRates, not the engine's compiled default (easy = $7).
+    eventRates: {
+      roofline: { easy: 5, medium: 5, hard: 5 },
+      mini: { canopy: 20, trunk: 20 },
+      spritzer: { '16': 40, '24': 40, '32': 40 },
+      bistroPerFt: 8,
+      barrelBoxPrice: 100,
+    },
   }),
 }));
 
@@ -164,6 +173,39 @@ describe('POST /api/quote — permanent dispatch (#88 P4a)', () => {
     };
     await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'permanent', inputs: permInputs(100) }));
     expect(frontAmt(updatedResult())).toBe(9900); // 100 * $99 (snapshot) — NOT 100 * $40 (live)
+  });
+});
+
+const eventRooflineAmt = (r: { lineItems: Line[] }) =>
+  r.lineItems.find((l) => l.id === 'roofline-santas')?.amount;
+
+describe('POST /api/quote — event dispatch (#96 Phase B)', () => {
+  it('a NEW event quote is priced by the event engine at live event rates + saved as event, snapshot frozen', async () => {
+    const inputs = { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(eventRooflineAmt(savedResult())).toBe(500); // 100 * $5 (settings event rate, not $7 default or $8 holiday)
+    expect((savedResult() as { eventRatesSnapshot?: unknown }).eventRatesSnapshot).toBeTruthy();
+    expect(save.mock.calls[0]?.[3]).toBe('event'); // saved as event
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('H1: an UPDATE of an existing event quote prices from the FROZEN snapshot, not live settings', async () => {
+    rawRef.current!.service_type = 'event';
+    rawRef.current!.result = {
+      eventRatesSnapshot: {
+        roofline: { easy: 3, medium: 3, hard: 3 },
+        mini: { canopy: 20, trunk: 20 },
+        spritzer: { '16': 40, '24': 40, '32': 40 },
+        bistroPerFt: 8,
+        barrelBoxPrice: 100,
+      },
+    };
+    const inputs = { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' };
+    await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs }));
+    expect(eventRooflineAmt(updatedResult())).toBe(300); // 100 * $3 (snapshot) — NOT $5 (live)
+    expect(update.mock.calls[0]?.[4]).toBe('event'); // stored type written back
   });
 });
 

@@ -42,6 +42,11 @@ describe('calculateEventQuote — structure', () => {
     expect(r.minimumApplied).toBe(false);
     expect(r.fullYule).toBeUndefined();
   });
+
+  it('freezes the rate table into eventRatesSnapshot (approve-time rate-drift guard)', () => {
+    const r = calculateEventQuote(baseInputs({ santasFootage: 100 }), R);
+    expect(r.eventRatesSnapshot).toEqual(R);
+  });
 });
 
 describe('calculateEventQuote — roofline at EVENT rates', () => {
