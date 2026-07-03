@@ -280,11 +280,15 @@ export function derivePackages(
   const c = totalsFor(idsForTierC, lineItems, charges);
 
   // Tier 3 "à la carte" reference — what the bundle WOULD cost individually.
+  // Bug fix (audit W4-034): this must be priced through the SAME priceSelection
+  // pipeline (fees + tax) as the bundle `total` above — comparing the raw
+  // pre-tax/pre-fee item subtotal against the tax-inclusive bundle total mixed
+  // two different bases and could show a wrong (or negative) "you save $X".
   // Same as the bundle until bundle discounts land (then the portal shows "you
   // save $X" when aLaCarteTotal > total).
   const tierCPrice = new Map(lineItems.map((li) => [li.id, li.price]));
   const tierCSubtotal = idsForTierC.reduce((s, id) => s + (tierCPrice.get(id) ?? 0), 0);
-  const aLaCarteTotal = tierCSubtotal > 0 ? tierCSubtotal : undefined;
+  const aLaCarteTotal = tierCSubtotal > 0 ? priceSelection(tierCSubtotal, charges).total : undefined;
 
   // Tier 2 only exists when there's a distinct Gingerbread roofline to upgrade
   // to. On a Santa's-only (or roofline-less) quote it would byte-duplicate Tier 1

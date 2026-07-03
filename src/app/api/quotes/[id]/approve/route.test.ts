@@ -245,6 +245,46 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(res.status).toBe(400);
   });
 
+  it('zeroes the snapshot installDiscountUsd when a staff manual discount wins (W4-017)', async () => {
+    // Manual discount present (inputs.discount) AND the customer also sent an
+    // early-install installTiming. Manual wins on price (discountRate/discountFlat
+    // come from `d`, not installDiscountRate) — so the snapshot's installDiscountUsd
+    // must be 0, matching what was actually billed, not a phantom early-install amount.
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ inputs: { discount: { type: 'percentage', amount: 0.1 } } }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, installTiming: 'october' }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installDiscountUsd: number };
+    };
+    expect(snap.customerSelection.installDiscountUsd).toBe(0);
+  });
+
+  it('still records the early-install discount when there is no manual discount', async () => {
+    // Sanity check for the fix above: no manual discount → installTiming alone
+    // still produces a non-zero snapshot amount (existing behavior unchanged).
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, installTiming: 'october' }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installDiscountUsd: number };
+    };
+    expect(snap.customerSelection.installDiscountUsd).toBeGreaterThan(0);
+  });
+
   it('records approvedWhileUnsent=true when the quote was never sent', async () => {
     const { client, updatePayloads } = makeSb(baseQuote({ quote_sent_at: null }));
     sbRef.current = client;
