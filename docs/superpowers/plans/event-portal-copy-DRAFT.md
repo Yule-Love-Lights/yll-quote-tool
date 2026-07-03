@@ -5,8 +5,10 @@
 > feeling, not the trade term** (a bride doesn't know "C9 / spritzer / bistro") —
 > council/Outsider note. **DRAFT — Naldo edits + approves before Phase-2 build.**
 >
-> Two things need your decision (marked ⚑ below): the primary call-to-action
-> (self-serve deposit vs. consult-first) and the venue visual.
+> Both open decisions are RESOLVED (Naldo, S22): primary CTA = self-serve deposit
+> (option A); venue visual = reuse the SAME design/photo hero as the holiday portal
+> (the operator uploads the venue image and designs on it — the design tool already
+> supports uploaded images). See the resolved notes at the bottom.
 
 ---
 
@@ -59,8 +61,7 @@
 ## What happens next (timeline)
 - **Heading:** From approval to your big night
 - **Steps:**
-  1. **Reserve your date** — {⚑ see CTA decision}: lock in your design with a 50%
-     deposit.
+  1. **Reserve your date** — lock in your design with a 50% deposit.
   2. **Confirm the details** — we lock your install, event, and takedown dates and
      walk your venue if it helps.
   3. **We install** — our team sets everything up before your event and tests every
@@ -97,21 +98,21 @@
 - Final pricing may adjust after a site visit. Your install, event, and takedown
   dates are confirmed with you before your event. *(+ standard terms.)*
 
-## ⚑ DECISION 1 — the primary call-to-action (sticky bottom bar)
-A wedding is a high-stakes, fixed-date, emotional purchase (Outsider: "50% deposit
-+ Approve is too fast"). Two options:
-- **(A) Self-serve deposit** — primary button **"Reserve your date — 50% deposit"**
-  (same as holiday). Fastest to book.
-- **(B) Consult-first** — primary button **"Request a call / hold my date"**, with
-  instant deposit as a secondary link. Warmer for big events; slower to close.
-- *Recommendation: **B** for events, but your call.*
+## Sticky bottom bar (CTA)
+- **Primary button:** **Reserve your date — 50% deposit**
+- **Booked state:** **You're booked!** — *See you on {event date}.*
 
-## ⚑ DECISION 2 — the venue visual
-The holiday portal shows a render of the customer's **house**. That's wrong for a
-field / barn / tent reception (Outsider: "signals this tool was built for something
-else"). Options: (A) keep the house render only when the event IS at a house;
-(B) for off-site venues, show styled reference photos of similar setups or a simple
-labeled layout instead of a fake house. *Not copy — a build note; flagging for your call.*
+## ✅ DECISION 1 — RESOLVED: self-serve deposit (option A)
+Primary CTA = **"Reserve your date — 50% deposit"**, same self-serve flow as the
+holiday portal. (Naldo chose A over the consult-first variant.)
+
+## ✅ DECISION 2 — RESOLVED: reuse the SAME design/photo hero
+The event portal uses the **exact same design/photo hero as the holiday portal**
+(`InteractiveHero` — no new component). The design tool already accepts an
+**uploaded image**, so the operator uploads the actual venue photo (backyard,
+barn, tent, wherever the event is) and designs the lighting on it — just like the
+existing upload-image design flow. No special venue handling, no fake house; the
+event hero inherits the holiday hero as-is. (Naldo confirmed.)
 
 ## Vocabulary fixes carried into the copy
 - "Barrels / boxes" → **"Freestanding light poles & bases"** (already in the pricing
