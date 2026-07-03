@@ -22,6 +22,7 @@ import { randomBytes } from 'crypto';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { createHostedPageSale, isValorConfigured, ValorError } from '@/lib/integrations/valor';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { deriveStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -35,6 +36,9 @@ type QuoteRow = {
   deposit_paid_at: string | null;
   valor_order_ref: string | null;
   approval_snapshot: { customerSelection?: { currentDepositUsd?: number } } | null;
+  // Explicit lifecycle status (ledger #83) — used to refuse a dead (cancelled /
+  // declined / lost) quote before it can mint a hosted page (W1-007).
+  status: import('@/lib/quoteStatus').QuoteStatus | null;
   // Test Quote (ledger #93): a simulated quote must never reach real Valor.
   is_test: boolean;
 };
@@ -65,7 +69,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot, is_test',
+      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot, status, is_test',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -91,6 +95,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (quote.deposit_paid_at) {
     return NextResponse.json(
       { error: 'Deposit already paid', code: 'already-paid', paidAt: quote.deposit_paid_at },
+      { status: 409 },
+    );
+  }
+
+  // W1-007: a dead quote (cancelled / declined / lost) must not be able to mint a
+  // hosted page — otherwise a customer holding a live pay link could pay against a
+  // cancelled order and the webhook would resurrect it to 'booked'. Gate here so a
+  // terminal quote can't even start checkout (the webhook adds the matching guard
+  // on the booking write). deriveStatus returns the persisted terminal status; a
+  // live approved-unbooked quote derives 'approved'.
+  const lifecycleStatus = deriveStatus({
+    quote_sent_at: null,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    status: quote.status,
+  });
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+    return NextResponse.json(
+      { error: `This quote is ${lifecycleStatus} and can no longer be paid`, code: 'not-payable' },
       { status: 409 },
     );
   }

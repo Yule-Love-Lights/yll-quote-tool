@@ -32,7 +32,7 @@ import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from 
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { getJobByQuote } from '@/lib/jobs';
-import type { QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import {
   AMENDMENT_EMAIL_SUBJECT,
@@ -107,6 +107,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!quote.deposit_paid_at) {
     return NextResponse.json(
       { error: 'Only a booked order (deposit paid) can be amended', code: 'not-booked' },
+      { status: 409 },
+    );
+  }
+
+  // W1-011: gate on the LIFECYCLE status too, not just deposit_paid_at. Cancelling
+  // a booked order sets status='cancelled' but leaves deposit_paid_at intact, so a
+  // cancelled (or otherwise terminal) order would still pass the check above.
+  // Amending a dead order records a trail entry and can text the customer a new
+  // balance — reject it. deriveStatus returns the persisted terminal status for a
+  // cancelled/declined/lost row; a live booked order (deposit_paid_at set) derives
+  // 'booked'. The select carries `status` + `deposit_paid_at`, which is all
+  // deriveStatus needs to resolve those states; the unselected timestamps are null.
+  const lifecycleStatus = deriveStatus({
+    quote_sent_at: null,
+    customer_approved_at: null,
+    deposit_paid_at: quote.deposit_paid_at,
+    status: quote.status,
+  });
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+    return NextResponse.json(
+      { error: `Cannot amend a ${lifecycleStatus} order`, code: 'not-amendable' },
       { status: 409 },
     );
   }

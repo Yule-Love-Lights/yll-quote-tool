@@ -117,6 +117,17 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // concurrency guard. If a concurrent request (customer or another operator)
   // already wrote customer_approved_at, this returns 0 rows and we return
   // alreadyApproved. This ensures the approval is recorded at most once.
+  //
+  // Bug fix (W1-018): the customer approve route's B2 guard also excludes the
+  // branch/terminal statuses in the atomic write, precisely because the fast-path
+  // canTransition check is a TOCTOU. staff-approve guarded only on
+  // customer_approved_at, so a concurrent customer DECLINE (or request-changes)
+  // that lands between the read and this write — which leaves customer_approved_at
+  // untouched — was silently overwritten to 'approved', resurrecting a terminal
+  // quote. Add the approvable-from status guard (the exact set canTransition allows
+  // to 'approved' pre-booking: draft/sent/viewed, plus NULL for legacy rows) so a
+  // row that just moved to declined/cancelled/lost/changes_requested no longer
+  // matches. The OR-with-null idiom mirrors the decline + approve routes.
   const { data: claimed, error } = await sb
     .from('quotes')
     .update({
@@ -126,6 +137,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     })
     .eq('id', id)
     .is('customer_approved_at', null)
+    .or('status.in.(draft,sent,viewed),status.is.null')
     .select('id');
 
   if (error) {
@@ -133,9 +145,25 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Failed to approve the quote' }, { status: 500 });
   }
 
-  // Race loser: another request won the approval. Treat as idempotent no-op.
+  // Zero rows updated → a concurrent request moved the quote out from under us.
+  // Disambiguate the two causes so the response is truthful (W1-018):
+  //   • customer_approved_at now set → a concurrent APPROVE won → idempotent 200.
+  //   • otherwise the status moved (decline / request-changes / cancel) → the row
+  //     is no longer approvable → 409 already-moved. Never report a resurrected
+  //     terminal quote as "approved".
   if (!claimed || claimed.length === 0) {
-    return NextResponse.json({ ok: true, alreadyApproved: true });
+    const { data: fresh } = await sb
+      .from('quotes')
+      .select('customer_approved_at')
+      .eq('id', id)
+      .maybeSingle<{ customer_approved_at: string | null }>();
+    if (fresh?.customer_approved_at) {
+      return NextResponse.json({ ok: true, alreadyApproved: true });
+    }
+    return NextResponse.json(
+      { error: 'The quote moved to a non-approvable status', code: 'already-moved' },
+      { status: 409 },
+    );
   }
 
   // Staff approval recorded. We intentionally do NOT send any GHL/customer

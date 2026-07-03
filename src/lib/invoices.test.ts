@@ -403,6 +403,42 @@ describe('setInvoiceStatus', () => {
     sbRef.current = fake.client;
     await expect(setInvoiceStatus('i1', 'draft')).rejects.toThrow(/illegal transition/);
   });
+
+  // W1-023: optimistic lock — the UPDATE carries `.eq('status', current.status)`.
+  // A concurrent transition (e.g. an order-cancel flipping the invoice to cancelled)
+  // that lands between the read and this write matches 0 rows; we must NOT write the
+  // requested status over the winner's. A divergent race returns null (lost race).
+  it('does NOT write over a concurrently-changed status (compare-and-swap)', async () => {
+    const staleRead = { id: 'i1', status: 'awaiting_payment', paid_at: null };
+    const liveRow = { id: 'i1', status: 'cancelled', paid_at: null };
+    let statusGuard: unknown = undefined;
+    let updatePatch: Record<string, unknown> = {};
+    const builder: Record<string, unknown> = {
+      from: () => builder,
+      select: () => builder,
+      update: (patch: Record<string, unknown>) => {
+        updatePatch = patch;
+        return builder;
+      },
+      eq: (col: string, val: unknown) => {
+        if (col === 'status') statusGuard = val;
+        return builder;
+      },
+      maybeSingle: async () => ({ data: staleRead, error: null }),
+      single: async () => {
+        if (statusGuard !== undefined && statusGuard !== liveRow.status) {
+          return { data: null, error: { message: 'no rows' } };
+        }
+        return { data: { ...liveRow, ...updatePatch }, error: null };
+      },
+    };
+    sbRef.current = builder;
+    // awaiting_payment → paid is legal by the transition table; the compare-and-swap
+    // against the LIVE (cancelled) row fails → 0 rows → null, never a false 'paid'.
+    const result = await setInvoiceStatus('i1', 'paid');
+    expect(statusGuard).toBe('awaiting_payment'); // guarded on the read status
+    expect(result).toBeNull();
+  });
 });
 
 // ─── reads / unconfigured ───────────────────────────────────────────────────
@@ -632,6 +668,50 @@ describe('markInvoicePaidManually', () => {
     });
     sbRef.current = fake.client;
     await expect(markInvoicePaidManually('i1')).rejects.toThrow(/cancelled/);
+  });
+
+  // W1-022: TOCTOU — the pre-check read saw awaiting_payment (throw skipped) but
+  // the row has since been cancelled by a concurrent order-cancel. The atomic
+  // claim must NOT resurrect the cancelled invoice to paid. Simulated with a
+  // builder whose getInvoice read returns the STALE awaiting_payment snapshot
+  // while the guarded write matches against the LIVE (cancelled) row → 0 rows.
+  it('does NOT resurrect a concurrently-cancelled invoice to paid (atomic guard)', async () => {
+    const staleRead = { id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null };
+    const liveRow = { id: 'i1', status: 'cancelled', balance: 500, paid_at: null };
+    let sawUpdate = false;
+    let updatePatch: Record<string, unknown> = {};
+    const statusNeqPreds: Array<(s: string) => boolean> = [];
+    const builder: Record<string, unknown> = {
+      from: () => builder,
+      select: () => builder,
+      update: (patch: Record<string, unknown>) => {
+        sawUpdate = true;
+        updatePatch = patch;
+        return builder;
+      },
+      eq: () => builder,
+      neq: (col: string, val: unknown) => {
+        if (col === 'status') statusNeqPreds.push((s) => s !== val);
+        return builder;
+      },
+      // getInvoice pre-check reads the STALE snapshot.
+      maybeSingle: async () => ({ data: staleRead, error: null }),
+      // The claim uses .select(...) without .single() → resolves via then() to an
+      // array. Honor the collected .neq('status',…) guards against the LIVE row;
+      // a matched row returns the row WITH the update patch applied (as the real
+      // DB does), so a buggy guard would surface status:'paid'.
+      then: (resolve: (v: unknown) => void) => {
+        const matched = statusNeqPreds.every((p) => p(liveRow.status as string))
+          ? [{ ...liveRow, ...updatePatch }]
+          : [];
+        resolve({ data: matched, error: null });
+      },
+    };
+    sbRef.current = builder;
+    const result = await markInvoicePaidManually('i1');
+    expect(sawUpdate).toBe(true);
+    // 0 rows through the guard → the invoice was never written to 'paid'.
+    expect(result?.status).not.toBe('paid');
   });
 
   it('returns null when the invoice does not exist', async () => {

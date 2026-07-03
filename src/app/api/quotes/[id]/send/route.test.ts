@@ -254,6 +254,34 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
   });
+
+  // W1-017: a ?retryGhl reconcile must check the CURRENT status. A quote that was
+  // sent-then-approved-then-booked (its GHL stage-sync never landed, so
+  // ghl_stage_synced_at is still NULL and the retry affordance stays live) must NOT
+  // have its card yanked back to "Bid Sent". Only a still-sent/viewed quote is
+  // eligible; a booked quote short-circuits as alreadySent and never touches GHL.
+  it('?retryGhl does NOT yank a since-BOOKED quote back to Bid Sent', async () => {
+    const bookedButUnsynced = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      customer_approved_at: '2026-06-27T00:00:00Z',
+      deposit_paid_at: '2026-06-28T00:00:00Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: null, // original send-stage sync never landed
+      status: 'booked',
+    };
+    const { client, updatePayloads } = makeSb(bookedButUnsynced);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(true), { params });
+    const json = await res.json();
+
+    // The booked quote is not retry-eligible → short-circuit, no GHL yank-back.
+    expect(json.alreadySent).toBe(true);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    // never re-stamped the sync or the sent timestamp
+    expect(updatePayloads.some((p) => 'ghl_stage_synced_at' in p)).toBe(false);
+    expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
+  });
 });
 
 describe('POST /api/quotes/[id]/send — channel split', () => {
