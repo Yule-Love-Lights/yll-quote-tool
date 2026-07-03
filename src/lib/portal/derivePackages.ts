@@ -134,12 +134,18 @@ export function priceSelection(
 }
 
 // The pre-tax subtotal the customer's selection must reach before they can
-// approve on the portal ($1,000) — OR 0 (waived) when the whole quote's items
-// sum below the minimum, i.e. staff intentionally sent a sub-$1,000 quote and
-// gating would make it un-approvable. (#18 — minimum is a gate, not a floor.)
-export function minimumOrderSubtotal(lineItems: PortalLineItem[]): number {
+// approve on the portal ($1,000 for holiday, or the passed `minimum`) — OR 0
+// (waived) when the whole quote's items sum below the minimum, i.e. staff
+// intentionally sent a sub-minimum quote and gating would make it
+// un-approvable. (#18 — minimum is a gate, not a floor.) `minimum` defaults to
+// the holiday BUSINESS_RULES amount so every existing caller is byte-identical;
+// #88 permanent quotes pass the frozen rate-snapshot's minimumJobAmount instead.
+export function minimumOrderSubtotal(
+  lineItems: PortalLineItem[],
+  minimum: number = BUSINESS_RULES.minimumQuoteAmount,
+): number {
   const sum = lineItems.reduce((s, li) => s + li.price, 0);
-  return sum >= BUSINESS_RULES.minimumQuoteAmount ? BUSINESS_RULES.minimumQuoteAmount : 0;
+  return sum >= minimum ? minimum : 0;
 }
 
 // Evaluate the portal approval gate for a priced selection (#18 gate, #47, #40).

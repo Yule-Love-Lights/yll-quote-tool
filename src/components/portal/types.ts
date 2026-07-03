@@ -31,7 +31,9 @@ export type PortalLineItemKind =
   | 'bow'
   | 'railing'
   | 'curtain'
-  | 'stake-lighting';
+  | 'stake-lighting'
+  | 'permanent'
+  | 'permanent-addon';
 
 export type PortalLineItem = {
   id: string;
@@ -247,6 +249,9 @@ export type PortalQuote = {
   // Test Quote (ledger #93): true ⇒ the deposit button simulates payment
   // (→ /simulate-deposit) instead of a real Valor charge. Default false.
   isTest?: boolean;
+  // The quote's service line (#88 Permanent Lighting vertical). Additive/
+  // optional — undefined for legacy rows (they behave as 'holiday' throughout).
+  serviceType?: import('@/lib/serviceType').ServiceType;
 };
 
 export type PortalSelection = {
