@@ -31,6 +31,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { createJobFromQuote } from '@/lib/jobs';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
 
 export const runtime = 'nodejs';
 
@@ -42,6 +43,9 @@ type QuoteForBooking = {
   deposit_paid_at: string | null;
   total: number | null;
   is_test: boolean;
+  // W1-043: the approved SELECTION total (+ any amendment) — the AGREED figure to
+  // clamp the deposit against, which can diverge from the full quote.total.
+  approval_snapshot: AgreedTotalSnapshot;
   // Set by /api/quotes/[id]/pay when a customer Valor hosted-page checkout is
   // initiated, BEFORE deposit_paid_at is stamped by the webhook. A non-null
   // value with deposit_paid_at still null means a card payment is in flight.
@@ -77,7 +81,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, customer_approved_at, deposit_paid_at, total, is_test, valor_order_ref')
+    .select('id, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref')
     .eq('id', id)
     .maybeSingle<QuoteForBooking>();
 
@@ -124,11 +128,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Clamp the deposit so we can't record more than the quote total. A null
-  // total (a malformed / edge row — an approved quote virtually always has a
-  // total) is intentionally left unclamped: with no total to clamp against, we
-  // record the operator-entered amount as-is rather than silently zeroing it.
-  const clamped = typeof quote.total === 'number' ? Math.min(depositUsd, quote.total) : depositUsd;
+  // Clamp the deposit so we can't record more than the AGREED total (W1-043) — the
+  // customer approves a SELECTION that can be cheaper than the full quote.total, so
+  // clamp against approval_snapshot.customerSelection.currentTotalUsd (+ any
+  // amendment) when present, falling back to quote.total. A null total on a legacy
+  // row with no snapshot is intentionally left unclamped: with nothing to clamp
+  // against, record the operator-entered amount as-is rather than silently zeroing
+  // it. (quote.total mirrors result.total — updateQuote writes total: result.total.)
+  const agreedTotal =
+    quote.approval_snapshot || typeof quote.total === 'number'
+      ? resolveAgreedTotal(quote.approval_snapshot, { total: quote.total })
+      : null;
+  const clamped = agreedTotal !== null ? Math.min(depositUsd, agreedTotal) : depositUsd;
   const bookedAt = new Date().toISOString();
 
   // Atomic booking write: .is('deposit_paid_at', null) is the concurrency guard.
