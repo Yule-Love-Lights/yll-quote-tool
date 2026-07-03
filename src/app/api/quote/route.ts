@@ -4,7 +4,9 @@ import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
-import { asServiceType, DEFAULT_SERVICE_TYPE } from '@/lib/serviceType';
+import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { calculatePermanentQuote } from '@/lib/permanent/pricing';
+import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
@@ -237,67 +239,87 @@ export async function POST(req: NextRequest) {
 
   try {
     let quoteInputs = inputs as QuoteInputs;
+    // A valid quoteId means re-price that existing quote in place (the builder's
+    // "recommend roofline" toggle, #17) instead of inserting a new row. Load the
+    // stored row ONCE — reused for the reprice-lock check, the effective service
+    // type, and the frozen permanent rate snapshot.
+    const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
+    const existing = isUpdate ? await getQuoteRaw(quoteId as string) : null;
+
+    // W1-003: a booked (deposit-paid) or terminal quote must NOT be re-priced in
+    // place — that silently rewrites result/total with no amendment trail, no
+    // invoice re-sync, and no re-consent. Changing a booked order goes through the
+    // amend flow instead. 409 when locked.
+    if (isUpdate && existing && REPRICE_LOCKED_STATUSES.has(deriveStatus(existing))) {
+      return NextResponse.json(
+        {
+          error:
+            'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
+          code: 'quote-locked',
+        },
+        { status: 409 },
+      );
+    }
+
+    // The service type that drives PRICING: the request's when provided (a
+    // deliberate pick/switch), else the STORED row's on an update, else the
+    // default. This is the H2 guard — a permanent-inputs body that omits
+    // serviceType must NOT fall through to the holiday engine; it resolves to the
+    // stored 'permanent'. The same value is written back so stored ↔ result stay
+    // consistent.
+    const effectiveServiceType: ServiceType =
+      serviceType ?? (existing ? asServiceType(existing.service_type) : null) ?? DEFAULT_SERVICE_TYPE;
+    const isPermanent = effectiveServiceType === 'permanent';
+
     // If a design is linked AND its scene has projectable per-unit items, the
-    // DESIGN is the master list for those items (#27): replace the per-unit
-    // inputs with the projection before pricing + saving. Roofline + custom
-    // items + fees pass through. No design (or an empty/roofline-only design) =
-    // the form's manual per-unit entry still drives the quote (decision 2a).
-    if (isValidDesignId(designId)) {
+    // DESIGN is the master list for those items (#27). Holiday only — projectScene
+    // ignores permanent strands, so this is a no-op for permanent; skip explicitly.
+    if (!isPermanent && isValidDesignId(designId)) {
       const design = await getDesign(designId);
       if (design?.scene) {
         quoteInputs = applyProjectionToInputs(quoteInputs, design.scene);
       }
     }
-    const result = calculateQuote(quoteInputs);
+
+    // Permanent rate table for pricing (H1 — the rate-drift guard): a re-price of
+    // an EXISTING permanent quote prices from its FROZEN snapshot so a Settings
+    // rate change can't re-price an outstanding quote; a NEW permanent quote reads
+    // live settings. Falls back to live settings for a legacy row with no snapshot.
+    const permRates = isPermanent
+      ? existing?.result?.permanentRatesSnapshot ?? (await getAppSettings()).permanentRates
+      : undefined;
+    const price = (i: QuoteInputs) =>
+      isPermanent ? calculatePermanentQuote(i, permRates) : calculateQuote(i);
+
+    const result = price(quoteInputs);
     // #104: a baseline result with the per-quote price overrides STRIPPED, so the
     // builder breakdown can show "custom · was $X" per overridden line. Display-only
     // (never saved; the persisted `result` keeps the overrides).
     const baseline = quoteInputs.lineItemPriceOverrides
-      ? calculateQuote({ ...quoteInputs, lineItemPriceOverrides: undefined })
+      ? price({ ...quoteInputs, lineItemPriceOverrides: undefined })
       : result;
     const safeCustomer = (customer ?? {}) as Customer;
-    // A valid quoteId means re-price that existing quote in place (the
-    // builder's "recommend roofline" toggle, #17) instead of inserting a new
-    // row; otherwise save a fresh quote.
-    const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
-    // W1-003: a booked (deposit-paid) or terminal quote must NOT be re-priced in
-    // place — that silently rewrites result/total with no amendment trail, no
-    // invoice re-sync, and no re-consent. Changing a booked order goes through the
-    // amend flow instead. Load the row's lifecycle signals and 409 when locked.
-    if (isUpdate) {
-      const existing = await getQuoteRaw(quoteId as string);
-      if (existing && REPRICE_LOCKED_STATUSES.has(deriveStatus(existing))) {
-        return NextResponse.json(
-          {
-            error:
-              'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
-            code: 'quote-locked',
-          },
-          { status: 409 },
-        );
-      }
-    }
+
     // Actor audit trail (#90): stamp the creating operator on a NEW quote only
     // (created_by is create-attribution; a re-price must not rewrite it). null
     // while the auth gate is dormant (no session).
     const operator = await getOperator();
-    // On update, only touch the customer columns when the request actually
-    // carried a customer object — omitting it must not reset the stored
-    // name/address to the Anonymous sentinels.
+    // On update, only touch the customer columns when the request actually carried
+    // a customer object — omitting it must not reset the stored name/address.
     const saved = isUpdate
       ? await updateQuote(
           quoteId as string,
           quoteInputs,
           result,
           customer ? safeCustomer : undefined,
-          // undefined → leave the stored service_type untouched on update.
-          serviceType ?? undefined,
+          // Keep the stored service_type consistent with what we priced (H2).
+          effectiveServiceType,
         )
       : await saveQuote(
           safeCustomer,
           quoteInputs,
           result,
-          serviceType ?? DEFAULT_SERVICE_TYPE,
+          effectiveServiceType,
           isTest,
           operator?.id ?? null,
         );
