@@ -133,7 +133,12 @@ export type PermanentQuoteFields = {
   backFootage: number;
   /** Jumps between runs (the estimator's extension rows): controller→first run and
    *  run→run gaps. BOM-only — retail pricing ignores them. */
-  gaps: Array<{ lengthFt: number; splitter?: boolean }>;
+  gaps: Array<{
+    lengthFt: number;        // the value used for the BOM (operator's final)
+    splitter?: boolean;      // line branches two directions here
+    detectedFt?: number;     // what the design auto-detected (front only); undefined for manual rows
+    source?: 'auto' | 'edited' | 'manual';  // training signal: 'edited' = operator corrected the auto value
+  }>;
   controllerToFirstLightFt: number;
   frontCorners: number;   // auto-counted from design vertices (peak = 3: bases + apex) + adjustable
   leftCorners: number;    // manual
@@ -187,7 +192,12 @@ export type PermanentBomInput = {
   // the estimator's run/extension rows. Every jump (controller→first run, run→run, house→garage,
   // skipped sections) consumes an EXTENSION sized to the gap, a BOOSTER when >50 ft, and a
   // SPLITTER where the line branches two directions from one point.
-  gaps: Array<{ lengthFt: number; splitter?: boolean }>;
+  gaps: Array<{
+    lengthFt: number;        // the value used for the BOM (operator's final)
+    splitter?: boolean;      // line branches two directions here
+    detectedFt?: number;     // what the design auto-detected (front only); undefined for manual rows
+    source?: 'auto' | 'edited' | 'manual';  // training signal: 'edited' = operator corrected the auto value
+  }>;
 };
 export type PermanentBom = {
   lines: BomLine[];
@@ -262,7 +272,7 @@ Constants table `APL_DEFAULT_COSTS` (every SKU/price from the Domain-math sectio
   export function projectPermanentDesign(scene: Scene): PermanentDesignProjection;
   ```
   Strands with `bulbType==='permanent'` grouped by `sideOfHouse`; footage = `polylineLengthPx / pxPerFoot(yardstick)` (mirror `strandFeet`, materialsProjection.ts:94 — lib-level, no editor-core). Corners = **every polyline vertex incl. endpoints** (peak = 3: two bases + apex — Naldo-confirmed). **Front gaps auto-detected (Naldo 2026-07-02): the gap = distance from strand N's last point to strand N+1's first point (draw order), ≥ a small threshold (e.g. >0.5 ft) so touching runs don't count.** A gap over the extension range or a suspiciously long jump is flagged for the operator to confirm/split. Deterministic geometry — NOT the trained inference (that's Deferred, and only for the un-drawn sides/back).
-- Create `src/components/quote/PermanentSection.tsx` — 4 footage fields (front auto-fills from design; L/R/back auto-fill from satellite; manual override chips; the `unassigned` bucket from `projectPermanentDesign` is SHOWN with a "tag these strands" hint, never silently dropped — rev #10), 4 corner fields (front auto + adjustable), `controllerToFirstLightFt` input, a **Gaps/jumps repeater** — **FRONT gaps are AUTO-DETECTED from the design** (`projectPermanentDesign.frontGapCandidates` pre-fills editable rows: the tool knows where the drawn lights break); the operator only **manually adds what the design can't show** — sides/back jumps (no design there), the controller→first-light run, and house→garage / skipped-section jumps. Each row = length ft + a "branches here" splitter checkbox → drives extensions/boosters/splitters in the BOM. Gaps live in `PermanentQuoteFields.gaps` so they persist in `inputs` and survive amends. Track style/color, black-housing + maintenance toggles (maintenance hidden while settings price = 0), custom $/ft per group (#102 'custom' dropdown pattern). Note: gaps/runs affect the **BOM only** — retail pricing needs only per-side footage.
+- Create `src/components/quote/PermanentSection.tsx` — 4 footage fields (front auto-fills from design; L/R/back auto-fill from satellite; manual override chips; the `unassigned` bucket from `projectPermanentDesign` is SHOWN with a "tag these strands" hint, never silently dropped — rev #10), 4 corner fields (front auto + adjustable), `controllerToFirstLightFt` input, a **Gaps/jumps repeater** — **FRONT gaps are AUTO-DETECTED from the design** (`projectPermanentDesign.frontGapCandidates` pre-fills the rows: the tool knows where the drawn lights break) but **every auto row is FULLY EDITABLE** — the operator can correct the measured length, mark "branches here", delete a false gap, or add one the geometry missed (auto-detect is a starting point, never locked). The operator also **manually adds what the design can't show** — sides/back jumps (no design there), the controller→first-light run, and house→garage / skipped-section jumps. Each row = length ft + a "branches here" splitter checkbox → drives extensions/boosters/splitters in the BOM. Gaps live in `PermanentQuoteFields.gaps` so they persist in `inputs` and survive amends. **Training capture:** each front gap stores BOTH the auto-detected value and the operator's final value (`{ detectedFt, lengthFt, source: 'auto'|'edited'|'manual' }`), so the detected-vs-corrected delta becomes the training signal that sharpens detection over time (see Deferred). Track style/color, black-housing + maintenance toggles (maintenance hidden while settings price = 0), custom $/ft per group (#102 'custom' dropdown pattern). Note: gaps/runs affect the **BOM only** — retail pricing needs only per-side footage.
 - **Feature flag (rev #7):** the Permanent option in the builder's service-type picker is gated on `appSettings.permanentEnabled` (default **false**) — flipped in Settings only after P6 is live, so an intermediate deploy can never send a permanent quote through the holiday portal.
 - Modify `src/components/quote/QuoteBuilder.tsx` — wire the serviceType picker: `'permanent'` → render `PermanentSection`, hide all Christmas sections + takedown/rush/early-install (keep customer, custom line items, discount, design tab, satellite tab). Add satellite line sets `satellitePermLeftLines/RightLines/BackLines` (same `LineSegment[]` machinery at :560-563 + round-to-5 fpp effect at :595) writing `leftFootage`/`rightFootage`/`backFootage`.
 
@@ -369,7 +379,10 @@ P1 (pricing) ──► P3 (settings) ──► P4 (builder+route) ──► P6 (
 
 ## Deferred / future (NOT in the P1–P8 build)
 
-- **Trained gap inference for the UN-DRAWN sides/back — Naldo 2026-07-02.** v1 already auto-detects **FRONT** gaps from the design geometry (P4 `frontGapCandidates` — deterministic, it's in the build). What stays deferred is *predicting* gaps for the sides/back, which are never drawn (satellite footage only, no strand geometry). The future upgrade learns typical side/back run-breaks + controller/garage-jump patterns from real jobs — mechanism mirrors the #8 photo-analysis loop: every quote's confirmed `gaps` + house context become a training example (captured free once P4 ships), later a suggestion pass pre-fills likely side/back jumps, the operator confirms/corrects, accuracy climbs with volume. Always a suggestion — never auto-orders unseen. Sequenced AFTER P1–P8 is live and has generated real gap data. (Also deferred: recurring maintenance billing = #85; the Event vertical = #96.)
+- **Trained gap detection — Naldo 2026-07-02.** v1 auto-detects **FRONT** gaps from the design geometry (P4 `frontGapCandidates`, deterministic) and every row is operator-editable, storing `detectedFt` vs the final `lengthFt` + `source` (P4 training capture). Two future upgrades feed off that captured data (both mirror the #8 photo-analysis loop, both always suggestions the operator confirms — never auto-order unseen):
+  1. **Sharpen FRONT detection** — where operators consistently correct or delete auto rows, tune the pairing/threshold logic (which strand-endpoint pairs are a real break vs one continuous run, the >0.5 ft cutoff) and surface systematic yardstick-scale errors. The raw distance is exact geometry; *"is this a real gap"* is the judgment that learns from `source:'edited'` deltas.
+  2. **Predict the UN-DRAWN sides/back** — sides/back are never drawn (satellite footage only), so their jumps + the controller/garage runs are learned from typical patterns across real jobs and pre-filled for the operator to confirm.
+  Sequenced AFTER P1–P8 is live and has generated real gap data. (Also deferred: recurring maintenance billing = #85; the Event vertical = #96.)
 
 ## Verification (end-to-end, after Wave 3)
 
