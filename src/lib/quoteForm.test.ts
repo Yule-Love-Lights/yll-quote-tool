@@ -42,6 +42,7 @@ const fullForm: QuoteFormData = {
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
+  event: { barrelBoxes: 3, installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
 };
 
 describe('buildQuoteInputs', () => {
@@ -285,5 +286,42 @@ describe('inputsToFormData', () => {
     const real = inputsToFormData({ name: 'Ann O.', address: '4 Oak Ln' }, {});
     expect(real.customer.name).toBe('Ann O.');
     expect(real.customer.address).toBe('4 Oak Ln');
+  });
+});
+
+describe('event inputs (#96)', () => {
+  it('builds inputs.event for an event quote', () => {
+    expect(buildQuoteInputs(fullForm).event).toEqual({
+      barrelBoxes: 3,
+      installDate: '2026-07-11',
+      eventDate: '2026-07-18',
+      takedownDate: '2026-07-31',
+    });
+  });
+
+  it('does NOT emit inputs.event for a holiday quote', () => {
+    expect('event' in buildQuoteInputs({ ...fullForm, serviceType: 'holiday' })).toBe(false);
+  });
+
+  it('omits the event block entirely when every event field is empty', () => {
+    const inputs = buildQuoteInputs({
+      ...fullForm,
+      event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
+    });
+    expect('event' in inputs).toBe(false);
+  });
+
+  it('round-trips the event block through inputsToFormData', () => {
+    const restored = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm), 'event');
+    expect(restored.event).toEqual(fullForm.event);
+  });
+
+  it('a legacy/non-event row hydrates a blank event block', () => {
+    expect(inputsToFormData(null, {}).event).toEqual({
+      barrelBoxes: 0,
+      installDate: '',
+      eventDate: '',
+      takedownDate: '',
+    });
   });
 });

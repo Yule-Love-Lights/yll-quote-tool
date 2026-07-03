@@ -12,6 +12,7 @@ import type {
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import type { EventInputFields } from './event/types';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -76,6 +77,15 @@ export type QuoteFormData = {
   // lines (no scene item to hold the flag). Toggled on the breakdown; ride inputs.
   winterWonderlandRecommended: boolean;
   stakeLightingRecommended: boolean;
+  // Event Lighting (#96) — event-only inputs, edited only when serviceType==='event'.
+  // Barrel/box supports + the 3 staff-entered dates; maps to inputs.event. Bistro
+  // footage is design-driven (projected from the drawn scene), not typed here.
+  event: {
+    barrelBoxes: number;
+    installDate: string;
+    eventDate: string;
+    takedownDate: string;
+  };
 };
 
 export const initialFormData: QuoteFormData = {
@@ -109,6 +119,7 @@ export const initialFormData: QuoteFormData = {
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
+  event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -133,6 +144,20 @@ function toWireRate(choice: DifficultyChoice, customRate: number, fallback: Roof
 // Form → engine inputs. `rooflineChoiceOverride` lets the breakdown's staff-pick
 // radios re-quote with a specific choice without waiting on the async form-state
 // update (#17 Phase 1b).
+// Event Lighting (#96): the event-only inputs block, only for event quotes and
+// only the fields staff set. Bistro footage is NOT here — it's design-driven and
+// merged in by applyProjectionToInputs (route side) from the drawn scene.
+function buildEventInputs(form: QuoteFormData): { event?: EventInputFields } {
+  if (form.serviceType !== 'event') return {};
+  const e: EventInputFields = {
+    ...(form.event.barrelBoxes > 0 ? { barrelBoxes: form.event.barrelBoxes } : {}),
+    ...(form.event.installDate ? { installDate: form.event.installDate } : {}),
+    ...(form.event.eventDate ? { eventDate: form.event.eventDate } : {}),
+    ...(form.event.takedownDate ? { takedownDate: form.event.takedownDate } : {}),
+  };
+  return Object.keys(e).length > 0 ? { event: e } : {};
+}
+
 export function buildQuoteInputs(
   form: QuoteFormData,
   rooflineChoiceOverride?: RooflineChoice,
@@ -180,6 +205,8 @@ export function buildQuoteInputs(
     // #12: WW/Stake recommend flags — only sent when set (legacy-clean).
     ...(form.winterWonderlandRecommended ? { winterWonderlandRecommended: true } : {}),
     ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
+    // Event Lighting (#96) — event-only inputs (barrels + dates), event quotes only.
+    ...buildEventInputs(form),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -280,5 +307,13 @@ export function inputsToFormData(
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
     winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
     stakeLightingRecommended: i.stakeLightingRecommended ?? false,
+    // Event Lighting (#96) — hydrate the event block (barrels + dates); bistro is
+    // design-driven, not a form field. Legacy/non-event rows → blanks.
+    event: {
+      barrelBoxes: i.event?.barrelBoxes ?? 0,
+      installDate: i.event?.installDate ?? '',
+      eventDate: i.event?.eventDate ?? '',
+      takedownDate: i.event?.takedownDate ?? '',
+    },
   };
 }
