@@ -120,7 +120,7 @@ export function GoogleReviews({ rating, totalReviews, reviews, reviewsUrl }: Goo
                   aria-selected={i === idx}
                   aria-label={`Review ${i + 1} of ${count}`}
                   onClick={() => setIdx(i)}
-                  className="group grid place-items-center w-6 h-6 -mx-0.5 rounded-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F]"
+                  className="group grid place-items-center w-11 h-11 rounded-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F]"
                 >
                   <span
                     aria-hidden

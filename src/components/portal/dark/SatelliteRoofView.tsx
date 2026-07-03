@@ -1,3 +1,5 @@
+'use client';
+
 // #51 — Satellite roof view. A top-down satellite photo of the customer's home
 // with the traced roofline lines overlaid (red = front roofline, blue = ridge &
 // sides, green = C9), so they see exactly where their roof lights will run.
@@ -16,7 +18,7 @@
 // drawable traced lines — i.e. manual-upload / pre-migration / never-"Calculated"
 // quotes.
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { PortalDesign } from '../types';
 import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
 
@@ -37,7 +39,13 @@ export function SatelliteRoofView({
 }) {
   const { satelliteUrl, satelliteLines, satelliteW, satelliteH } = design;
   const groups = selectDrawableLineGroups(satelliteLines);
-  if (!satelliteUrl || groups.length === 0) return null;
+  // a11y/consistency fix (W4-026): a broken/expired satellite URL used to fall
+  // through to the browser's broken-image icon inside "Where the lights go"
+  // (the hero already guards its images the same way). Hide the whole section
+  // on error rather than showing a partial/broken card — there's no useful
+  // fallback poster for a satellite trace.
+  const [failed, setFailed] = useState(false);
+  if (!satelliteUrl || groups.length === 0 || failed) return null;
 
   // Numeric aspect (w/h) for the #51 row: card width = row-height × this. Square
   // satellite pulls → 1. The img fills the matched-aspect card, so the overlay
@@ -70,6 +78,7 @@ export function SatelliteRoofView({
           className={`block select-none ${inRow ? 'w-full h-auto lg:h-full lg:w-full' : 'w-full h-auto'}`}
           draggable={false}
           loading="lazy"
+          onError={() => setFailed(true)}
         />
         {/* Decorative overlay — the legend below conveys the meaning in text.
             preserveAspectRatio="none" maps the normalized 0–1 line coords onto

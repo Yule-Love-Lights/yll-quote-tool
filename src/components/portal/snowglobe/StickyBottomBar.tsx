@@ -49,6 +49,7 @@ export function StickyBottomBar({
     currentSubtotal,
     meetsMinimum,
     amountToMinimum,
+    minimumOrderSubtotal,
     rushSelected,
     takedownSelected,
     packageId,
@@ -290,12 +291,21 @@ export function StickyBottomBar({
         </p>
       )}
       {/* Minimum-order gate nudge — shown until the selection reaches the
-       * $1,000 order minimum (the Approve button stays disabled until then). */}
+       * order minimum (the Approve button stays disabled until then).
+       * a11y fix (W4-014): role="status"/aria-live so screen-reader users are
+       * told why Approve is disabled (a disabled button can't be focused, so
+       * this is the only way they'd otherwise learn it); id + the Approve
+       * button's aria-describedby ties the two together. */}
       {!errorMsg && !meetsMinimum && (
-        <p className="absolute -top-11 left-0 right-0 mx-auto max-w-fit text-[12px] text-[#F4ECD8] bg-[#0D1519] border border-[#FFB744]/40 rounded-md px-3 py-1.5 shadow-lg whitespace-nowrap">
+        <p
+          id="approve-minimum-nudge"
+          role="status"
+          aria-live="polite"
+          className="absolute -top-11 left-0 right-0 mx-auto max-w-fit text-[12px] text-[#F4ECD8] bg-[#0D1519] border border-[#FFB744]/40 rounded-md px-3 py-1.5 shadow-lg whitespace-nowrap"
+        >
           {currentSubtotal <= 0
             ? 'Select at least one item to continue'
-            : `Add ${formatUsd(amountToMinimum)} more to reach the $1,000 minimum`}
+            : `Add ${formatUsd(amountToMinimum)} more to reach the ${formatUsd(minimumOrderSubtotal)} minimum`}
         </p>
       )}
       <div className="flex items-baseline gap-2 min-w-0">
@@ -343,6 +353,7 @@ export function StickyBottomBar({
             }}
             disabled={submitting || !meetsMinimum}
             aria-label="Approve quote"
+            aria-describedby={!errorMsg && !meetsMinimum ? 'approve-minimum-nudge' : undefined}
             className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Approve

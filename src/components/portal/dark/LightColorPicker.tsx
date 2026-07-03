@@ -181,14 +181,21 @@ export function LightColorPicker() {
                     type="button"
                     onClick={() => removeAt(i)}
                     aria-label={`Position ${i + 1}: ${colorLabel(id)} — tap to remove`}
-                    className="group relative w-7 h-7 rounded-full ring-1 ring-white/40 cursor-pointer hover:ring-white/80 transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862]"
-                    style={{ background: colorOf(id).hex }}
+                    // a11y fix (W4-021): min-w/h-[44px] gives the button a
+                    // comfortable tap area; the visible chip stays 28px (w-7 h-7)
+                    // centered inside via flex, so the small-dot look is unchanged.
+                    className="group relative inline-flex items-center justify-center min-w-[44px] min-h-[44px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] rounded-full"
                   >
+                    <span
+                      aria-hidden
+                      className="w-7 h-7 rounded-full ring-1 ring-white/40 group-hover:ring-white/80 transition-shadow"
+                      style={{ background: colorOf(id).hex }}
+                    />
                     {/* × delete cue — visible on hover (desktop) and always shown
                         on touch devices, which have no hover state. */}
                     <span
                       aria-hidden
-                      className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#0D1519] text-[#F4ECD8] text-[9px] leading-[14px] text-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                      className="absolute top-1 right-1 w-3.5 h-3.5 rounded-full bg-[#0D1519] text-[#F4ECD8] text-[9px] leading-[14px] text-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
                     >
                       ×
                     </span>
@@ -215,9 +222,17 @@ export function LightColorPicker() {
                   disabled={atMax}
                   aria-label={`Add ${colorLabel(id)}`}
                   title={colorLabel(id)}
-                  className="w-8 h-8 rounded-full ring-1 ring-white/40 cursor-pointer hover:scale-110 transition-transform disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862]"
-                  style={{ background: colorOf(id).hex }}
-                />
+                  // a11y fix (W4-021): min-w/h-[44px] gives the button a
+                  // comfortable tap area; the visible swatch stays 32px (w-8 h-8)
+                  // centered inside via flex, so the small-dot look is unchanged.
+                  className="group inline-flex items-center justify-center min-w-[44px] min-h-[44px] cursor-pointer disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] rounded-full"
+                >
+                  <span
+                    aria-hidden
+                    className="w-8 h-8 rounded-full ring-1 ring-white/40 transition-transform group-hover:scale-110 group-disabled:opacity-40"
+                    style={{ background: colorOf(id).hex }}
+                  />
+                </button>
               ))}
             </div>
             {atMax && (

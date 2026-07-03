@@ -106,7 +106,17 @@ export default async function PortalPage({
   params: Promise<Params>;
 }) {
   const { quoteId } = await params;
-  const quote = await resolveQuote(quoteId);
+  // Perf fix (audit W4-005): these three loads are independent of each other
+  // (reviews/settings don't depend on the quote), so run them concurrently
+  // instead of stacking their round-trips. resolveQuote's notFound() call
+  // still propagates normally through Promise.all (it isn't wrapped in a
+  // try/catch here), matching the pre-existing "notFound() must not be
+  // swallowed" contract documented on resolveQuote itself.
+  const [quote, liveReviews, appSettings] = await Promise.all([
+    resolveQuote(quoteId),
+    fetchGoogleReviews(),
+    getAppSettings(),
+  ]);
   const team = resolveTeam();
 
   // Audit fix (empty-quote-portal-guard): a quote row with no line items
@@ -181,8 +191,8 @@ export default async function PortalPage({
 
   // #22 — live Google reviews (rating + featured 5-star testimonials). Null when
   // GOOGLE_PLACE_ID isn't set, the Places API call fails, or Google returns no
-  // usable reviews → the section keeps its mock block below.
-  const liveReviews = await fetchGoogleReviews();
+  // usable reviews → the section keeps its mock block below. (Fetched above,
+  // in parallel with the quote + app settings — audit W4-005.)
   // #43 — once the customer has approved, the portal reads as BOOKED rather than
   // re-shoppable: a banner up top + the sticky bar's Approve CTA becomes a
   // "View confirmation" link (the approval snapshot drives /approved).
@@ -203,7 +213,7 @@ export default async function PortalPage({
   const isBooked = checkoutEnabled || quote.isTest ? isPaid : isApproved;
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
-  const appSettings = await getAppSettings();
+  // (Fetched above, in parallel with the quote + reviews — audit W4-005.)
   // Fallback default package — escalates past B to a tier that clears the
   // $1,000 minimum so a no-recommendation quote opens approvable (#12).
   const initialPackageId = pickInitialPackageId(

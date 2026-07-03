@@ -13,7 +13,7 @@ function PressWordmark({ name, dimmed = false }: { name: string; dimmed?: boolea
   return (
     <span
       className={`font-display italic text-[17px] sm:text-[19px] leading-none whitespace-nowrap ${
-        dimmed ? 'text-[#A89F87]/60' : 'text-[#E0D7C1]/90'
+        dimmed ? 'text-[#A89F87]' : 'text-[#E0D7C1]/90'
       }`}
     >
       {name}
