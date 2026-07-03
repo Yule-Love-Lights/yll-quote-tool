@@ -464,11 +464,92 @@ describe('extra street photos (#13)', () => {
   });
 });
 
+// W4-033: getDesignWithPhoto (the editor GET / portal-adjacent load) must
+// select ONLY the columns toDesignWithPhoto reads — never seed_analysis (the
+// raw AI-analysis jsonb the portal/editor never render) or a raw select('*').
+// The fake below returns EXACTLY the narrowed row (no seed_analysis field at
+// all), proving the full DesignWithPhoto shape is covered without it.
+describe('getDesignWithPhoto column narrowing (W4-033)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('selects only the columns toDesignWithPhoto needs, and the result is fully populated', async () => {
+    let selectedCols = '';
+    const narrowRow = {
+      id: ID,
+      quote_id: 'quote-1',
+      scene: { yardsticks: [], items: [] },
+      photo_path: `${ID}/photo.jpg`,
+      photo_w: 800,
+      photo_h: 600,
+      satellite_path: `${ID}/satellite.jpg`,
+      satellite_w: 400,
+      satellite_h: 400,
+      satellite_lines: { santas: [], gingerbread: [], c9: [] },
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+      photo_title: 'Front',
+      // Deliberately NO seed_analysis / satellite_feet_per_pixel / created_at /
+      // updated_at — a real narrowed select() from Supabase wouldn't return
+      // them either, so their absence here proves toDesignWithPhoto doesn't
+      // need them.
+    };
+    const client = {
+      storage: {
+        from: () => ({
+          createSignedUrl: async (path: string) => ({ data: { signedUrl: `signed:${path}` }, error: null }),
+        }),
+      },
+      from: (table: string) => {
+        expect(table).toBe('designs');
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          select: (cols: string) => {
+            selectedCols = cols;
+            return b;
+          },
+          eq: (col: string, val: string) => {
+            expect(col).toBe('id');
+            expect(val).toBe(ID);
+            return b;
+          },
+          maybeSingle: async () => ({ data: narrowRow, error: null }),
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    const result = await getDesignWithPhoto(ID);
+
+    expect(selectedCols).not.toBe('*');
+    expect(selectedCols).not.toMatch(/seed_analysis/);
+    expect(selectedCols).not.toMatch(/satellite_feet_per_pixel/);
+    // The full DesignWithPhoto shape is still populated from the narrowed row.
+    expect(result).toEqual({
+      id: ID,
+      quoteId: 'quote-1',
+      scene: { yardsticks: [], items: [] },
+      photoUrl: `signed:${ID}/photo.jpg`,
+      photoW: 800,
+      photoH: 600,
+      satelliteUrl: `signed:${ID}/satellite.jpg`,
+      satelliteW: 400,
+      satelliteH: 400,
+      satelliteLines: { santas: [], gingerbread: [], c9: [] },
+      extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+      photoTitle: 'Front',
+    });
+  });
+});
+
 // W2-031: getDesignByQuote used to select('id') by quote_id, then re-select
 // the FULL row by id via getDesignWithPhoto — two sequential queries for one
-// row. It must now do a single select('*') by quote_id.
-describe('getDesignByQuote (W2-031)', () => {
-  it('resolves the design in a single query (not two)', async () => {
+// row. It must now do a single query by quote_id.
+// W4-033: that single query is narrowed to the columns toDesignWithPhoto
+// actually reads (never select('*'), never seed_analysis).
+describe('getDesignByQuote (W2-031 / W4-033)', () => {
+  it('resolves the design in a single, narrowed query (not two, not select(*))', async () => {
     let queryCount = 0;
     const row = {
       id: ID,
@@ -487,7 +568,8 @@ describe('getDesignByQuote (W2-031)', () => {
         Object.assign(b, {
           select: (cols: string) => {
             queryCount += 1;
-            expect(cols).toBe('*'); // never the old select('id')
+            expect(cols).not.toBe('*'); // never the old select('id') NOR a raw select('*')
+            expect(cols).not.toMatch(/seed_analysis/); // portal load never pulls the raw AI jsonb
             return b;
           },
           eq: (col: string, val: string) => {
@@ -696,6 +778,22 @@ describe('deleteDesignsForQuote', () => {
     sbRef.current = null;
     expect(await deleteDesignsForQuote('quote-1')).toBe(0);
   });
+
+  // W2-034: the per-design delete loop runs in bounded-concurrency chunks
+  // (not a one-at-a-time await) — assert correctness holds across a chunk
+  // boundary (10 designs > the 8-per-chunk size).
+  it('deletes every design across a chunk boundary (10 designs, chunk size 8)', async () => {
+    const designRows = Array.from({ length: 10 }, (_, i) => ({
+      id: `aaaaaaaa-bbbb-4ccc-8ddd-${String(i).padStart(12, '0')}`,
+    }));
+    const { client, calls } = makeSb({ designRows, objects: [] });
+    sbRef.current = client;
+
+    const n = await deleteDesignsForQuote('quote-1');
+
+    expect(n).toBe(10);
+    expect(calls.deletedIds.sort()).toEqual(designRows.map((r) => r.id).sort());
+  });
 });
 
 // ─── createDesign actor audit trail (#90) ───────────────────────────────────
@@ -736,6 +834,83 @@ describe('createDesign created_by (#90)', () => {
     await createDesign({});
 
     expect(sb.inserts[0]).toMatchObject({ created_by: null });
+  });
+});
+
+// ─── createDesign seedFailed (W2-030) ───────────────────────────────────────
+// The create-row → upload-photo → seed-scene sequence is deliberately
+// best-effort (a failed seed doesn't fail the whole design create), but the
+// failure used to be swallowed entirely — the caller had no way to tell a
+// fully-seeded design from a partial/orphaned one. seedFailed surfaces it.
+
+// A fake whose storage.upload() throws — simulates uploadDesignPhoto failing
+// mid-seed (after the row already exists).
+function makeSeedFailureSb() {
+  const builder: Record<string, unknown> = {
+    insert: () => builder,
+    select: () => builder,
+    single: async () => ({ data: { id: 'd1' }, error: null }),
+    update: () => builder,
+    eq: () => builder,
+    maybeSingle: async () => ({ data: { photo_path: null }, error: null }),
+  };
+  const storage = {
+    from: () => ({
+      upload: async () => {
+        throw new Error('storage upload failed');
+      },
+    }),
+  };
+  return { client: { storage, from: () => builder } };
+}
+
+describe('createDesign seedFailed (W2-030)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('reports seedFailed=true when the photo/seed step throws, but still returns the created id', async () => {
+    sbRef.current = makeSeedFailureSb().client;
+
+    const res = await createDesign({ photoBase64: Buffer.from('img').toString('base64') });
+
+    expect(res).not.toBeNull();
+    expect(res?.id).toBe('d1'); // the row still exists — best-effort intent preserved
+    expect(res?.seedFailed).toBe(true);
+  });
+
+  it('reports seedFailed=false when there is no photo to seed (nothing attempted)', async () => {
+    const sb = makeInsertSb();
+    sbRef.current = sb.client;
+
+    const res = await createDesign({});
+
+    expect(res?.seedFailed).toBe(false);
+  });
+
+  it('reports seedFailed=false on a successful photo seed', async () => {
+    const inserts: Record<string, unknown>[] = [];
+    const builder: Record<string, unknown> = {
+      insert: (row: Record<string, unknown>) => {
+        inserts.push(row);
+        return builder;
+      },
+      select: () => builder,
+      single: async () => ({ data: { id: 'd1' }, error: null }),
+      update: () => builder,
+      eq: () => builder,
+      maybeSingle: async () => ({ data: { photo_path: null }, error: null }),
+    };
+    const storage = {
+      from: () => ({
+        upload: async () => ({ data: { path: 'd1/photo.jpg' }, error: null }),
+      }),
+    };
+    sbRef.current = { storage, from: () => builder };
+
+    const res = await createDesign({ photoBase64: Buffer.from('img').toString('base64') });
+
+    expect(res?.seedFailed).toBe(false);
   });
 });
 

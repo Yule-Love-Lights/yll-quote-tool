@@ -186,6 +186,7 @@ export async function captureTrainingExample(opts: {
     console.error('captureTrainingExample upsert error:', error);
     return { error: 'Failed to save the training example' };
   }
+  invalidateBiasNoteCache();
   return { id: data.id as string };
 }
 
@@ -235,12 +236,26 @@ export async function getSimilarTrainingExamples(
 // aggregates them (see seedFinalStats). Returns null until there are enough
 // seeded pairs to claim a tendency.
 //
-// NOTE: this pulls final_scene per row to recompute the corrected detection
-// counts. Fine at this scale — pre-launch / small library, and Jason wipes the
-// data before launch — and the cap bounds it. If the corpus ever grows large,
-// precompute/cache this summary instead of recomputing per analyze call.
+// W2-035: this pulls final_scene per row and re-projects every scene via
+// sceneToFewShotPieces — corpus-wide, not query-specific, yet it was recomputed
+// on EVERY analyze call. Memoized below with a short TTL + invalidated on any
+// training_examples write in this module, so a burst of analyzes reuses one
+// computation instead of re-querying/re-projecting the whole corpus each time.
 const BIAS_SAMPLE_CAP = 200;
-export async function getCorpusBiasNote(): Promise<string | null> {
+const BIAS_NOTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let biasNoteCache: { note: string | null; expiresAt: number } | null = null;
+
+// Drop the memoized note so the next getCorpusBiasNote() call recomputes from
+// fresh rows. Called after every write to training_examples (capture/update/
+// correct/delete) so the note never lags a real corpus change by more than
+// one write; the TTL above is just the belt-and-suspenders fallback. Also
+// exported test-only (mirrors rateLimit.ts's __bucketSize) so each test can
+// start from a clean cache instead of leaking state across test files.
+export function invalidateBiasNoteCache(): void {
+  biasNoteCache = null;
+}
+
+async function computeCorpusBiasNote(): Promise<string | null> {
   const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
@@ -275,6 +290,14 @@ export async function getCorpusBiasNote(): Promise<string | null> {
     });
   }
   return formatBiasNote(computeBiasSummary(pairs));
+}
+
+export async function getCorpusBiasNote(): Promise<string | null> {
+  const now = Date.now();
+  if (biasNoteCache && biasNoteCache.expiresAt > now) return biasNoteCache.note;
+  const note = await computeCorpusBiasNote();
+  biasNoteCache = { note, expiresAt: now + BIAS_NOTE_TTL_MS };
+  return note;
 }
 
 export async function listTrainingExamples(limit = 200): Promise<TrainingExampleListItem[]> {
@@ -340,6 +363,7 @@ export async function updateTrainingExample(
     console.error('updateTrainingExample error:', error);
     return false;
   }
+  invalidateBiasNoteCache();
   return true;
 }
 
@@ -389,6 +413,7 @@ export async function correctTrainingExample(
     console.error('correctTrainingExample error:', error);
     return false;
   }
+  invalidateBiasNoteCache();
   return true;
 }
 
@@ -400,6 +425,7 @@ export async function deleteTrainingExample(id: string): Promise<boolean> {
     console.error('deleteTrainingExample error:', error);
     return false;
   }
+  invalidateBiasNoteCache();
   return true;
 }
 

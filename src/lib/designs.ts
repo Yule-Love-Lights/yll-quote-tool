@@ -178,7 +178,7 @@ export async function createDesign(opts: {
   seedAnalysis?: AnalysisSeed | null;
   /** Actor audit trail (#90): the operator's Supabase user id, or null. */
   createdBy?: string | null;
-}): Promise<{ id: string; garlandSectionsUnestimated: number } | null> {
+}): Promise<{ id: string; garlandSectionsUnestimated: number; seedFailed: boolean } | null> {
   const sb = getSb();
   if (!sb) return null;
 
@@ -199,6 +199,13 @@ export async function createDesign(opts: {
 
   // Seed the base photo if one was supplied with the create call.
   let garlandSectionsUnestimated = 0;
+  // W2-030: the create-row → upload-photo → seed-scene sequence is deliberately
+  // best-effort (a failed seed doesn't fail the whole design — see the catch
+  // below), but swallowing the error entirely hid a real partial state: the row
+  // exists, the photo may or may not have uploaded, and the scene may still be
+  // empty. Surface it via `seedFailed` so the caller (the builder) can tell
+  // staff to re-upload / re-sync instead of silently shipping a blank canvas.
+  let seedFailed = false;
   if (opts.photoBase64) {
     try {
       const photo = await uploadDesignPhoto(id, opts.photoBase64, opts.photoMediaType ?? 'image/jpeg');
@@ -221,10 +228,13 @@ export async function createDesign(opts: {
     } catch (err) {
       // A failed photo/roofline seed isn't fatal — the design still exists and
       // the operator can upload a photo / sync the roofline from the builder.
+      // It's still a real partial state, so it's reported via seedFailed
+      // rather than swallowed outright.
       console.error('createDesign: photo/roofline seed failed:', err);
+      seedFailed = true;
     }
   }
-  return { id, garlandSectionsUnestimated };
+  return { id, garlandSectionsUnestimated, seedFailed };
 }
 
 export async function getDesign(id: string): Promise<DesignRow | null> {
@@ -238,11 +248,38 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
   return (data as DesignRow | null) ?? null;
 }
 
+// W4-033: the exact columns toDesignWithPhoto reads — used by getDesignWithPhoto
+// (the editor GET) and getDesignByQuote (the portal/quote-page load, hit on
+// EVERY portal open). Deliberately excludes seed_analysis (the full raw AI
+// jsonb), satellite_feet_per_pixel, created_at, updated_at — none of which
+// toDesignWithPhoto or DesignWithPhoto ever touch. getDesign's own select('*')
+// stays as-is: it's shared by staff/training paths that DO need seed_analysis
+// (trainingExamples.ts captureTrainingExample, the seed-roofline/seed-analysis
+// routes) and narrowing it would regress those.
+const DESIGN_WITH_PHOTO_COLUMNS =
+  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_lines, extra_photos, photo_title';
+
+type DesignWithPhotoRow = Pick<
+  DesignRow,
+  | 'id'
+  | 'quote_id'
+  | 'scene'
+  | 'photo_path'
+  | 'photo_w'
+  | 'photo_h'
+  | 'satellite_path'
+  | 'satellite_w'
+  | 'satellite_h'
+  | 'satellite_lines'
+  | 'extra_photos'
+  | 'photo_title'
+>;
+
 // Attach a signed URL for the base photo (+ satellite + extras) to an
 // already-loaded row — the shape the editor mounts from. Factored out of
 // getDesignWithPhoto so callers that already have the row (getDesignByQuote,
-// W2-031) don't need a second select('*') by id.
-async function toDesignWithPhoto(row: DesignRow): Promise<DesignWithPhoto> {
+// W2-031) don't need a second select by id.
+async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPhoto> {
   // Sign the base photo and the satellite image in parallel (both private-bucket
   // paths; signDesignPhoto returns null for a missing path or on any failure).
   const extras = row.extra_photos ?? [];
@@ -274,22 +311,37 @@ async function toDesignWithPhoto(row: DesignRow): Promise<DesignWithPhoto> {
 }
 
 // Load a design and attach a signed URL for its base photo — the shape the
-// editor mounts from.
+// editor mounts from. W4-033: its own narrowed select (DESIGN_WITH_PHOTO_COLUMNS)
+// instead of routing through getDesign's select('*') — this is the read hit on
+// every editor open / portal render, and it never needs seed_analysis.
 export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | null> {
-  const row = await getDesign(id);
-  if (!row) return null;
-  return toDesignWithPhoto(row);
+  const sb = getSb();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('designs')
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    console.error('Supabase getDesignWithPhoto error:', error);
+    return null;
+  }
+  if (!data) return null;
+  return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
 // The design linked to a given quote, if any (used when re-opening a quote
-// that already has a design). W2-031: one select('*') by quote_id instead of
-// select('id') followed by getDesignWithPhoto's own select('*') by id.
+// that already has a design, incl. every portal open — loadPortalQuote calls
+// this on the customer-facing path). W2-031: one query by quote_id instead of
+// select('id') followed by getDesignWithPhoto's own second query by id.
+// W4-033: narrowed to DESIGN_WITH_PHOTO_COLUMNS — the portal never needs the
+// raw seed_analysis jsonb this used to pull on every open.
 export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto | null> {
   const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
     .from('designs')
-    .select('*')
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
     .eq('quote_id', quoteId)
     .maybeSingle();
   if (error) {
@@ -297,7 +349,7 @@ export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto
     return null;
   }
   if (!data) return null;
-  return toDesignWithPhoto(data as DesignRow);
+  return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
 // Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
@@ -649,9 +701,16 @@ export async function deleteDesignsForQuote(quoteId: string): Promise<number> {
     return 0;
   }
   const ids = (data ?? []).map((r) => r.id as string);
+  // W2-034: designs are mutually independent (each's cleanup is its own row +
+  // storage-prefix delete), so nothing forces strictly-serial one-at-a-time
+  // deletion. Bounded-concurrency chunks (mirrors customers.ts
+  // backfillCustomersFromQuotes) instead of an unbounded Promise.all fan-out.
+  const DELETE_CHUNK_SIZE = 8;
   let deleted = 0;
-  for (const id of ids) {
-    if (await deleteDesign(id)) deleted++;
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + DELETE_CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((id) => deleteDesign(id)));
+    deleted += results.filter(Boolean).length;
   }
   return deleted;
 }

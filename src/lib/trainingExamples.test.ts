@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { exampleToFewShot, type TrainingExampleRow } from './trainingExamples';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// W2-035: getCorpusBiasNote is memoized (module-level cache). Mock supabase so
+// a fake `training_examples` select can be counted across calls.
+const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
+vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
+
+import {
+  exampleToFewShot,
+  getCorpusBiasNote,
+  updateTrainingExample,
+  deleteTrainingExample,
+  invalidateBiasNoteCache,
+  type TrainingExampleRow,
+} from './trainingExamples';
 import { editableItems, applyItemCorrections } from './design/sceneCorrections';
 import type { Scene } from './design/sceneTypes';
 
@@ -165,5 +178,71 @@ describe('applyItemCorrections (#52)', () => {
     const before = JSON.parse(JSON.stringify(MIXED));
     applyItemCorrections(MIXED, { 'bush-1': { stringCount: 7 }, 'sp-1': { quoteSize: '32' } });
     expect(MIXED).toEqual(before);
+  });
+});
+
+// ─── W2-035: getCorpusBiasNote memoization ──────────────────────────────────
+// The bias note is corpus-wide, not query-specific, so a burst of analyze
+// calls must reuse ONE computed value instead of re-querying + re-projecting
+// the whole corpus per call — and a write to training_examples must bust the
+// cache so the next read reflects it.
+
+function makeTrainingExamplesSb() {
+  let selectCount = 0;
+  const builder: Record<string, unknown> = {};
+  const ret = () => builder;
+  for (const m of ['eq', 'not', 'order', 'limit']) builder[m] = ret;
+  builder.select = () => {
+    selectCount += 1;
+    return builder;
+  };
+  builder.update = () => builder;
+  builder.delete = () => builder;
+  // Both the bias-note read (awaited directly, no .single()) and the
+  // update/delete writes resolve via `then`.
+  builder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+  return { client: { from: () => builder }, getSelectCount: () => selectCount };
+}
+
+describe('getCorpusBiasNote memoization (W2-035)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+    invalidateBiasNoteCache();
+  });
+
+  it('reuses the memoized note across back-to-back calls (one query, not two)', async () => {
+    const { client, getSelectCount } = makeTrainingExamplesSb();
+    sbRef.current = client;
+
+    await getCorpusBiasNote();
+    await getCorpusBiasNote();
+
+    expect(getSelectCount()).toBe(1);
+  });
+
+  it('re-queries after updateTrainingExample invalidates the cache', async () => {
+    const { client, getSelectCount } = makeTrainingExamplesSb();
+    sbRef.current = client;
+
+    await getCorpusBiasNote();
+    expect(getSelectCount()).toBe(1);
+
+    await updateTrainingExample('ex-1', { excluded: true });
+    await getCorpusBiasNote();
+
+    expect(getSelectCount()).toBe(2);
+  });
+
+  it('re-queries after deleteTrainingExample invalidates the cache', async () => {
+    const { client, getSelectCount } = makeTrainingExamplesSb();
+    sbRef.current = client;
+
+    await getCorpusBiasNote();
+    expect(getSelectCount()).toBe(1);
+
+    await deleteTrainingExample('ex-1');
+    await getCorpusBiasNote();
+
+    expect(getSelectCount()).toBe(2);
   });
 });
