@@ -4,7 +4,7 @@
 
 **Goal:** Build the Permanent Lighting (Omni/Ascend RGB puck-on-track) service vertical in the quote tool — quote builder sections, pricing, auto-BOM ("the plan"), design/portal variant, and full #82 inventory integration — mirroring the Christmas framework without regressing it.
 
-**Architecture:** New pure modules per concern (`permanentPricing.ts`, `permanentBom.ts`, `derivePackagesPermanent.ts`) branched on the existing `quotes.service_type`, with adjustable rates in `app_settings` (the #101 pattern). Front footage comes from the design (bulbType=`permanent` strands + `sideOfHouse` tags — both already exist), sides/back from satellite measurement; every consumer defaults to holiday behavior when `service_type !== 'permanent'`.
+**Architecture:** New pure modules per concern (`permanentPricing.ts`, `permanentBom.ts`, `derivePackagesPermanent.ts`) branched on the existing `quotes.service_type`, with adjustable rates in `app_settings` (the #101 pattern). Front footage comes from the design (bulbType=`permanent` strands + `sideOfHouse` tags — both already exist), sides/back from satellite measurement. **`permanent` is the ONLY new branch; every other `service_type` (`holiday`, `event`) keeps its CURRENT behavior unchanged** — the code that runs today for non-permanent quotes is untouched (today that path is holiday-shaped, and Event rides it too; this vertical adds no Event logic and removes none).
 
 **Tech Stack:** Next.js 16 / React / Supabase (existing stack) · Konva design editor (existing `permanent` bulb renderer) · vitest TDD.
 
@@ -21,6 +21,7 @@ Permanent lighting (Glow365) is YLL's second service line: Omni/Ascend RGB puck 
 | Topic | Decision |
 |---|---|
 | Retail rates | **$40/ft front · $35/ft sides+back · $2,500 job minimum — ALL adjustable** in Settings (app_settings, #101 pattern) |
+| Materials ≠ price | **The customer pays $/ft flat. Extensions / splitters / power boxes / boosters / transformers NEVER get added to the customer's quote** — they're absorbed into the per-ft rate. They ARE computed on the BOM/cost side (P2/P7) purely for ordering + the margin-vs-retail figure the operator sees. (Confirmed Naldo 2026-07-02; matches the Greg/Melissa example sheets — price was $/ft, materials were the cost column.) |
 | Packages | **A = Front · B = Sides (left+right as ONE) · C = Back.** Any combination; each priced by its own footage. NOT the Christmas cumulative ladder |
 | Front footage | From the drawn design (Street View photo, `bulbType='permanent'` strands, `sideOfHouse='front'`) |
 | Sides/back footage | Measured off the **satellite view** (reuse the satellite measuring the builder already has); manual override allowed |
@@ -63,7 +64,7 @@ Permanent lighting (Glow365) is YLL's second service line: Omni/Ascend RGB puck 
 ## Constraints
 
 - **Multi-dev:** portal/quote/pricing/design/editor-core/settings = **Jason's area** — every PR flagged for his review; Naldo gives merge-go. **Avoid `editor-core/**` edits** (byte-identical relay burden with the separate design-tool repo); prefer lib-level + quote-binding-panel-level seams. Flag any unavoidable editor-core touch.
-- **Zero holiday regression:** every branch point defaults to holiday behavior when `service_type !== 'permanent'`. Full gates (tsc · lint · vitest) per PR; adversarial review on money-adjacent PRs (pricing, BOM, approve-snapshot).
+- **Zero regression to existing service types:** the `permanent` branch is the only new code path; `holiday` and `event` quotes fall through to today's exact behavior (unchanged). Full gates (tsc · lint · vitest) per PR; adversarial review on money-adjacent PRs (pricing, BOM, approve-snapshot).
 - New pure modules over threading branches through the 800-line holiday engine.
 
 ## Execution policy — model routing & production guardrails (Naldo, 2026-07-02)
