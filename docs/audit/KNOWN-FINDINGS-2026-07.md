@@ -183,3 +183,23 @@ Adversarial-review + device-round findings with recorded dispositions (Jason's s
 | #R19-007 | LOW | training_houses schema | House Style / Scale Anchor / Didn't Install DB columns kept nullable after UI removal (#53) | ACCEPTED | S19 (legacy rows) |
 
 **S17–S19 counts (18):** FIXED 8 · ACCEPTED 6 · DEFERRED 3 · OPEN 1.
+
+---
+
+## Wave 1 dispositions (#110 money core, 2026-07-04)
+
+> Full findings + evidence in `AUDIT-2026-07.md` (Wave 1). Recorded here so later waves
+> touching money-core files don't re-report. 79 findings: 1 CRIT / 4 HIGH / 19 MED / 55 LOW.
+
+**FIXED — merged to master `1e65602` (PRs #329/#330/#331/#334/#336):**
+W1-001 (CRIT, invoices.ts — bill agreed selection total) · W1-002/003 (quote route: canonical minilight types, booked re-price 409) · W1-004 (amend delta on agreed basis) · W1-005 (adapter filter by stable id) · W1-007/011/014/016/017/018/022/023 (status-guard/race) · W1-009/015/021/024 (close-invoice guard, pay-stamp race, valor timeout, discount clamp) · W1-027/050 (parallel notifications) · W1-043 (convert-to-job clamp) · W1-063 (dead Passage.js deleted) · W1-064 (shared round2). **= 23 fix-nows.**
+
+**FIX-LATER — ledger backlog (#110 W1 tail), NOT yet fixed:**
+W1-006 · W1-008 · W1-010 · W1-012 (recorded in VALOR-AUTOCHARGE doc) · W1-013 · W1-019 · W1-020 · W1-068.
+
+**ACCEPTED (LOW hygiene/docs-drift, not fixed) + known-open carried:** the remaining ~49 LOWs
+(consistency nits, docs-drift incl. W1-040 which resolved ledger UNKNOWN #80-094 as intentional)
+— see the Wave 1 LOW table in `AUDIT-2026-07.md`. Known-open re-confirmed: W1-073 (= #80-076
+autoRoofline tie), W1-074 (multi-spritzer single line).
+
+**REFUTED (11):** dropped in adversarial verify — not real; not carried.
