@@ -1,0 +1,214 @@
+import { describe, it, expect } from 'vitest';
+import { calculateEventQuote } from './pricing';
+import { DEFAULT_EVENT_RATES, type EventQuoteInputs, type EventRates } from './types';
+import { calculateQuote } from '@/lib/pricing/pricingEngine';
+
+function baseInputs(overrides: Partial<EventQuoteInputs> = {}): EventQuoteInputs {
+  return {
+    santasFootage: 0,
+    santasDifficulty: 'easy',
+    gingerbreadFootage: 0,
+    gingerbreadDifficulty: 'easy',
+    winterWonderlandFootage: 0,
+    winterWonderlandDifficulty: 'easy',
+    stakeLightingFootage: 0,
+    stakeLightingDifficulty: 'easy',
+    miniLightItems: [],
+    spritzers: [],
+    wreaths: [],
+    garland: [],
+    takedown: 'included',
+    rushFee: false,
+    ...overrides,
+  };
+}
+
+const R = DEFAULT_EVENT_RATES;
+
+describe('calculateEventQuote — structure', () => {
+  it('empty quote → zero totals, complete QuoteResult shape', () => {
+    const r = calculateEventQuote(baseInputs(), R);
+    expect(r.lineItems).toEqual([]);
+    expect(r.subtotalBeforeDiscount).toBe(0);
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBe(0);
+    expect(r.balanceDue).toBe(0);
+    expect(r.rooflineChoice).toBe('none');
+    expect(r.rooflineOptions).toEqual({ santas: null, gingerbread: null });
+    // Event has no such fees — always 0.
+    expect(r.rushFeeAmount).toBe(0);
+    expect(r.takedownAmount).toBe(0);
+    expect(r.earlyInstallDiscountAmount).toBe(0);
+    expect(r.minimumApplied).toBe(false);
+    expect(r.fullYule).toBeUndefined();
+  });
+});
+
+describe('calculateEventQuote — roofline at EVENT rates', () => {
+  it('santas front roofline priced at the event rate, not the holiday rate', () => {
+    const r = calculateEventQuote(baseInputs({ santasFootage: 100, santasDifficulty: 'easy' }), R);
+    // event easy = 5/ft (holiday would be 8/ft = 800)
+    expect(r.rooflineOptions.santas).toEqual({ footage: 100, amount: 500 });
+    expect(r.rooflineChoice).toBe('santas');
+    const line = r.lineItems.find(l => l.id === 'roofline-santas');
+    expect(line?.amount).toBe(500);
+    expect(r.subtotalBeforeDiscount).toBe(500);
+  });
+
+  it('gingerbread = front + ridge/sides, inferred when ridge footage present', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        gingerbreadFootage: 50,
+        gingerbreadDifficulty: 'medium',
+      }),
+      R,
+    );
+    // 100*5 + 50*6 = 500 + 300 = 800
+    expect(r.rooflineOptions.gingerbread).toEqual({ footage: 150, amount: 800 });
+    expect(r.rooflineOptions.santas).toEqual({ footage: 100, amount: 500 });
+    expect(r.rooflineChoice).toBe('gingerbread');
+    expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')?.amount).toBe(800);
+  });
+
+  it('explicit rooflineChoice=santas bills santas even when gingerbread footage exists', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        gingerbreadFootage: 50,
+        gingerbreadDifficulty: 'medium',
+        rooflineChoice: 'santas',
+      }),
+      R,
+    );
+    expect(r.rooflineChoice).toBe('santas');
+    expect(r.lineItems.find(l => l.id === 'roofline-santas')?.amount).toBe(500);
+    expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')).toBeUndefined();
+    expect(r.subtotalBeforeDiscount).toBe(500);
+  });
+});
+
+describe('calculateEventQuote — minis / curtain / spritzers at event rates', () => {
+  it('bush uses wrap rate; curtain + column + railing use canopy rate', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        miniLightItems: [
+          { type: 'bush', wrapStyle: 'canopy', stringCount: 3 }, // 3*25 = 75
+          { type: 'tree', wrapStyle: 'trunk', stringCount: 4 }, // 4*30 = 120
+          { type: 'curtain', wrapStyle: 'canopy', stringCount: 2 }, // canopy 2*25 = 50
+          { type: 'railing', wrapStyle: 'trunk', stringCount: 1 }, // canopy (no wrap) 1*25 = 25
+        ],
+      }),
+      R,
+    );
+    expect(r.subtotalBeforeDiscount).toBe(75 + 120 + 50 + 25);
+    expect(r.lineItems.some(l => /Curtain/.test(l.label))).toBe(true);
+  });
+
+  it('spritzers priced at event rates', () => {
+    const r = calculateEventQuote(baseInputs({ spritzers: [{ size: '24', quantity: 2 }] }), R);
+    expect(r.subtotalBeforeDiscount).toBe(110); // 2 * 55
+  });
+});
+
+describe('calculateEventQuote — bistro + barrel/box supports', () => {
+  it('temporary bistro priced per foot', () => {
+    const r = calculateEventQuote(baseInputs({ bistro: [{ footage: 50 }] }), R);
+    expect(r.subtotalBeforeDiscount).toBe(500); // 50 * 10
+    expect(r.lineItems.some(l => /Bistro/i.test(l.label))).toBe(true);
+  });
+
+  it('barrel/box supports billed flat per unit', () => {
+    const r = calculateEventQuote(baseInputs({ barrelBoxes: 2 }), R);
+    expect(r.subtotalBeforeDiscount).toBe(300); // 2 * 150
+  });
+});
+
+describe('calculateEventQuote — accessories EXCLUDED (allow-list)', () => {
+  it('wreaths, garland, and bows never appear on an event quote', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        wreaths: [{ size: '24noble', tier: 'bow', quantity: 1 }],
+        garland: [{ length: '9ft', type: 'noble', tier: 'bow', quantity: 1 }],
+        bows: [{ quantity: 2 }],
+      }),
+      R,
+    );
+    // only the roofline is billed; accessories are dropped entirely
+    expect(r.subtotalBeforeDiscount).toBe(500);
+    expect(r.lineItems.every(l => !/Wreath|Garland|Bow/i.test(l.label))).toBe(true);
+  });
+});
+
+describe('calculateEventQuote — custom line items pass through', () => {
+  it('a staff-typed custom line is billed as entered', () => {
+    const r = calculateEventQuote(
+      baseInputs({ customLineItems: [{ label: 'Delivery', amount: 75 }] }),
+      R,
+    );
+    expect(r.subtotalBeforeDiscount).toBe(75);
+    expect(r.lineItems.find(l => l.label === 'Delivery')?.amount).toBe(75);
+  });
+});
+
+describe('calculateEventQuote — totals math (no rush/takedown/early-install)', () => {
+  it('tax 8.75% + 50% deposit, mirroring the holiday rounding', () => {
+    const r = calculateEventQuote(baseInputs({ santasFootage: 100, santasDifficulty: 'easy' }), R);
+    // subtotal 500 → tax 43.75 → total 543.75 → deposit 271.88 → balance 271.87
+    expect(r.taxableAmount).toBe(500);
+    expect(r.taxAmount).toBeCloseTo(43.75, 2);
+    expect(r.total).toBeCloseTo(543.75, 2);
+    expect(r.depositAmount).toBeCloseTo(271.88, 2);
+    expect(r.balanceDue).toBeCloseTo(271.87, 2);
+  });
+
+  it('percentage discount comes off the subtotal before tax', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        discount: { type: 'percentage', amount: 0.1 },
+      }),
+      R,
+    );
+    expect(r.discountAmount).toBe(50); // 10% of 500
+    expect(r.subtotalAfterDiscount).toBe(450);
+    expect(r.taxAmount).toBeCloseTo(39.38, 2);
+    expect(r.total).toBeCloseTo(489.38, 2);
+  });
+});
+
+describe('calculateEventQuote — $0 guardrail', () => {
+  it('throws when an event rate is zero/missing (never silently bill $0)', () => {
+    const badBistro: EventRates = { ...R, bistroPerFt: 0 };
+    expect(() => calculateEventQuote(baseInputs({ bistro: [{ footage: 50 }] }), badBistro)).toThrow();
+
+    const badRoofline: EventRates = { ...R, roofline: { easy: 0, medium: 6, hard: 7 } };
+    expect(() => calculateEventQuote(baseInputs({ santasFootage: 100 }), badRoofline)).toThrow();
+  });
+
+  it('negative / non-finite rates also throw', () => {
+    expect(() => calculateEventQuote(baseInputs(), { ...R, barrelBoxPrice: -5 })).toThrow();
+    expect(() =>
+      calculateEventQuote(baseInputs(), { ...R, mini: { canopy: NaN, trunk: 30 } }),
+    ).toThrow();
+  });
+});
+
+describe('holiday engine is untouched (both-mode regression)', () => {
+  it('calculateQuote still prices a wreath while calculateEventQuote excludes it', () => {
+    const inputs = baseInputs({ wreaths: [{ size: '24noble', tier: 'bow', quantity: 1 }] });
+    const holiday = calculateQuote(inputs);
+    // holiday wreath = $200 (BUSINESS_RULES.wreathPrices['24noble'].bow)
+    expect(holiday.lineItems.some(l => /Wreath/.test(l.label))).toBe(true);
+    expect(holiday.subtotalBeforeDiscount).toBe(200);
+
+    const event = calculateEventQuote(inputs, R);
+    expect(event.lineItems.some(l => /Wreath/.test(l.label))).toBe(false);
+    expect(event.subtotalBeforeDiscount).toBe(0);
+  });
+});
