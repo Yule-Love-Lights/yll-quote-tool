@@ -35,6 +35,10 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
     quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
   };
   let counter = 0;
+  // W2-010: lets a test force the NEXT insert on a given table to fail with a
+  // unique-violation (23505), simulating a concurrent-create race — the retry
+  // re-select is the code path this recovers via.
+  const forceInsertErrorOnce: Partial<Record<string, { code: string; message: string }>> = {};
 
   function from(table: string) {
     const rows = tables[table] ?? (tables[table] = []);
@@ -62,6 +66,19 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
       if (state.limitN != null) out = out.slice(0, state.limitN);
       return out;
     };
+    // Mirrors the REAL unique indexes (2026-06-27-customers-properties.sql):
+    // UNIQUE(match_key) on customers, UNIQUE(customer_id, address_key) on
+    // properties. A concurrent insert that collides on these gets a genuine
+    // 23505 from Postgres — model that here so a same-key race in a
+    // Promise.all chunk (W2-011) exercises the SAME recovery path a real DB
+    // would force, instead of silently duplicating rows in-memory.
+    const violatesUnique = (row: Row): boolean => {
+      if (table === 'customers') return rows.some((r) => r.match_key === row.match_key);
+      if (table === 'properties') {
+        return rows.some((r) => r.customer_id === row.customer_id && r.address_key === row.address_key);
+      }
+      return false;
+    };
     const doInsert = () => {
       const row = { id: `${table}-${++counter}`, ...state.insertRow };
       rows.push(row);
@@ -71,6 +88,12 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
       const matched = rows.filter((r) => state.filters.every((f) => f(r)));
       for (const r of matched) Object.assign(r, state.updateRow);
       return matched;
+    };
+    // Consumes the forced error (once) so only the NEXT insert on this table fails.
+    const takeForcedInsertError = () => {
+      const err = forceInsertErrorOnce[table];
+      if (err) delete forceInsertErrorOnce[table];
+      return err ?? null;
     };
 
     const builder = {
@@ -117,7 +140,14 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
-        if (state.op === 'insert') return { data: doInsert(), error: null };
+        if (state.op === 'insert') {
+          const forced = takeForcedInsertError();
+          if (forced) return { data: null, error: forced };
+          if (state.insertRow && violatesUnique(state.insertRow)) {
+            return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
+          }
+          return { data: doInsert(), error: null };
+        }
         const out = match();
         return { data: out[0] ?? null, error: out[0] ? null : { message: 'no rows' } };
       },
@@ -130,7 +160,13 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
     return builder;
   }
 
-  return { client: { from }, tables };
+  return {
+    client: { from },
+    tables,
+    forceInsertErrorOnce: (table: string, err: { code: string; message: string }) => {
+      forceInsertErrorOnce[table] = err;
+    },
+  };
 }
 
 beforeEach(() => {
@@ -218,6 +254,34 @@ describe('findOrCreateCustomer', () => {
     expect(r).toBeNull();
     expect(fake.tables.customers).toHaveLength(0);
   });
+
+  // W2-010: the 23505 unique-violation race-recovery branch was never
+  // exercised by any test. Simulate a concurrent create — the insert loses the
+  // race (another writer already created the same match_key), and the
+  // re-select must recover the WINNER's existing row (not null, no dup row).
+  it('recovers the existing row on a 23505 unique-violation race (concurrent create)', async () => {
+    const fake = makeFakeSupabase({
+      customers: [{ id: 'winner-1', match_key: 'email:jane@x.com', name: 'Jane', email: 'jane@x.com' }],
+    });
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('customers', { code: '23505', message: 'duplicate key value violates unique constraint' });
+
+    const res = await findOrCreateCustomer({ email: 'jane@x.com' });
+
+    expect(res?.id).toBe('winner-1'); // recovered the winner's row, not a dup
+    expect(fake.tables.customers).toHaveLength(1); // no duplicate row created
+  });
+
+  it('returns null on a genuine hard insert error (not a recoverable race)', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('customers', { code: '500', message: 'connection reset' });
+
+    const res = await findOrCreateCustomer({ email: 'new@x.com' });
+
+    expect(res).toBeNull(); // retry re-select finds nothing → null, not a throw
+    expect(fake.tables.customers).toHaveLength(0);
+  });
 });
 
 describe('findOrCreateProperty', () => {
@@ -237,6 +301,32 @@ describe('findOrCreateProperty', () => {
     await findOrCreateProperty('cust-1', '123 Main St');
     await findOrCreateProperty('cust-1', '9 Rental Rd');
     expect(fake.tables.properties).toHaveLength(2);
+  });
+
+  // W2-010: same race-recovery coverage as findOrCreateCustomer, for the
+  // identical branch in findOrCreateProperty (UNIQUE(customer_id, address_key)).
+  it('recovers the existing row on a 23505 unique-violation race (concurrent create)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'winner-1', customer_id: 'cust-1', address_key: '123 main st' }],
+    });
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('properties', { code: '23505', message: 'duplicate key value violates unique constraint' });
+
+    const res = await findOrCreateProperty('cust-1', '123 Main St.');
+
+    expect(res?.id).toBe('winner-1');
+    expect(fake.tables.properties).toHaveLength(1);
+  });
+
+  it('returns null on a genuine hard insert error (not a recoverable race)', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('properties', { code: '500', message: 'connection reset' });
+
+    const res = await findOrCreateProperty('cust-1', '9 New Rd');
+
+    expect(res).toBeNull();
+    expect(fake.tables.properties).toHaveLength(0);
   });
 });
 
@@ -300,6 +390,30 @@ describe('backfillCustomersFromQuotes', () => {
     const q3 = fake.tables.quotes.find((q) => q.id === 'q3')!;
     expect(q1.property_id).toBe(q3.property_id);
     expect(fake.tables.quotes.find((q) => q.id === 'q5')!.customer_id).toBeNull();
+  });
+
+  // W2-011: backfill now processes quotes in bounded-concurrency chunks
+  // instead of strictly one-at-a-time. Cross a chunk boundary (>8 rows) with
+  // repeated identities to prove dedup still holds across chunks, not just
+  // within one.
+  it('dedups correctly across a chunk boundary (bounded concurrency, W2-011)', async () => {
+    const quotes = Array.from({ length: 20 }, (_, i) => ({
+      id: `q${i}`,
+      created_at: `2025-01-${String(i + 1).padStart(2, '0')}`,
+      customer_email: 'jane@x.com', // same customer for all 20
+      customer_address: '1 Home St',
+      customer_id: null,
+    }));
+    const fake = makeFakeSupabase({ quotes });
+    sbRef.current = fake.client;
+
+    const summary = await backfillCustomersFromQuotes();
+
+    expect(summary.scanned).toBe(20);
+    expect(summary.linked).toBe(20);
+    expect(fake.tables.customers).toHaveLength(1); // still ONE customer, no dup races
+    expect(fake.tables.properties).toHaveLength(1);
+    expect(fake.tables.quotes.every((q) => q.customer_id === fake.tables.customers[0].id)).toBe(true);
   });
 
   it('is idempotent — a re-run only scans the still-unlinked quotes', async () => {

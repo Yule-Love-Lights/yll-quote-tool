@@ -168,6 +168,16 @@ describe('buildRebookInsert', () => {
     expect(row.customer_address).toBe('(no address)');
     expect(row.total).toBe(0);
   });
+
+  it('carries is_test through from the source (W2-002)', () => {
+    expect(buildRebookInsert({ ...src, is_test: true }).is_test).toBe(true);
+    expect(buildRebookInsert({ ...src, is_test: false }).is_test).toBe(false);
+  });
+
+  it('defaults is_test to false when the source omits it', () => {
+    const row = buildRebookInsert(src);
+    expect(row.is_test).toBe(false);
+  });
 });
 
 // ─── DB: rebookLastSeason ───────────────────────────────────────────────────
@@ -243,5 +253,31 @@ describe('rebookLastSeason', () => {
     const res = await rebookLastSeason('c1');
     expect(res?.quoteId).toBeTruthy();
     expect(res?.designId).toBeNull();
+  });
+
+  // W2-002: rebooking a TEST quote must produce a TEST clone — otherwise test
+  // data silently becomes real dashboard/jobs/invoices/PO data.
+  it('carries is_test through: rebook of an is_test=true source yields an is_test=true clone', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_test: true },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_test).toBe(true);
+  });
+
+  it('carries is_test=false through for a real source', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_test: false },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_test).toBe(false);
   });
 });

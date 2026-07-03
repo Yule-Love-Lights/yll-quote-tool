@@ -41,6 +41,8 @@ import {
   removeDesignExtraPhoto,
   updateDesignExtraPhotoTitle,
   getDesignWithPhoto,
+  getDesignByQuote,
+  isValidDesignId,
   type DesignExtraPhoto,
 } from './designs';
 
@@ -259,6 +261,69 @@ describe('extra street photos (#13)', () => {
   });
 });
 
+// W2-031: getDesignByQuote used to select('id') by quote_id, then re-select
+// the FULL row by id via getDesignWithPhoto — two sequential queries for one
+// row. It must now do a single select('*') by quote_id.
+describe('getDesignByQuote (W2-031)', () => {
+  it('resolves the design in a single query (not two)', async () => {
+    let queryCount = 0;
+    const row = {
+      id: ID,
+      quote_id: 'quote-1',
+      photo_path: null,
+      photo_w: null,
+      photo_h: null,
+      scene: { yardsticks: [], items: [] },
+      extra_photos: null,
+    };
+    const client = {
+      storage: { from: () => ({ createSignedUrl: async () => ({ data: null, error: { message: 'n/a' } }) }) },
+      from: (table: string) => {
+        expect(table).toBe('designs');
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          select: (cols: string) => {
+            queryCount += 1;
+            expect(cols).toBe('*'); // never the old select('id')
+            return b;
+          },
+          eq: (col: string, val: string) => {
+            expect(col).toBe('quote_id');
+            expect(val).toBe('quote-1');
+            return b;
+          },
+          maybeSingle: async () => ({ data: row, error: null }),
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    const result = await getDesignByQuote('quote-1');
+
+    expect(queryCount).toBe(1);
+    expect(result?.id).toBe(ID);
+    expect(result?.quoteId).toBe('quote-1');
+  });
+
+  it('returns null when no design is linked to the quote', async () => {
+    const client = {
+      from: () => {
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          select: () => b,
+          eq: () => b,
+          maybeSingle: async () => ({ data: null, error: null }),
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    expect(await getDesignByQuote('quote-none')).toBeNull();
+  });
+});
+
 // ─── design erasure (audit fix: customer-photo-retention-deletion) ──────────
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -468,5 +533,30 @@ describe('createDesign created_by (#90)', () => {
     await createDesign({});
 
     expect(sb.inserts[0]).toMatchObject({ created_by: null });
+  });
+});
+
+// W2-029: isValidDesignId's regex must be a real UUID shape, not just "36
+// chars of hex/dash" — the old /^[0-9a-f-]{36}$/i accepted malformed ids like
+// 36 dashes, or hex in the wrong grouping.
+describe('isValidDesignId (W2-029)', () => {
+  it('accepts a well-formed UUID', () => {
+    expect(isValidDesignId('123e4567-e89b-12d3-a456-426614174000')).toBe(true);
+  });
+
+  it('rejects 36 dashes (old regex accepted this)', () => {
+    expect(isValidDesignId('-'.repeat(36))).toBe(false);
+  });
+
+  it('rejects hex in the wrong grouping (right length, wrong shape)', () => {
+    // 36 chars, all valid hex/dash chars, but not 8-4-4-4-12 grouping.
+    expect(isValidDesignId('123456789-abc-def0-1234-56789abcdef0')).toBe(false);
+  });
+
+  it('rejects non-string and empty input', () => {
+    expect(isValidDesignId(null)).toBe(false);
+    expect(isValidDesignId(undefined)).toBe(false);
+    expect(isValidDesignId('')).toBe(false);
+    expect(isValidDesignId(12345)).toBe(false);
   });
 });

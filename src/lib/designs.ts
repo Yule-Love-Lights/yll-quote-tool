@@ -132,7 +132,10 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
 // MAX_BYTES enforced by /api/uploads.
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 
-const UUID_RE = /^[0-9a-f-]{36}$/i;
+// W2-029: a real UUID shape (8-4-4-4-12 hex groups), not just "36 chars of hex
+// or dash" — the old regex accepted malformed ids like 36 dashes. Matches the
+// strict pattern already used elsewhere (portal/loader.ts, dashboard/inbox/validate.ts).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function isValidDesignId(id: unknown): id is string {
   return typeof id === 'string' && UUID_RE.test(id);
 }
@@ -235,11 +238,11 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
   return (data as DesignRow | null) ?? null;
 }
 
-// Load a design and attach a signed URL for its base photo — the shape the
-// editor mounts from.
-export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | null> {
-  const row = await getDesign(id);
-  if (!row) return null;
+// Attach a signed URL for the base photo (+ satellite + extras) to an
+// already-loaded row — the shape the editor mounts from. Factored out of
+// getDesignWithPhoto so callers that already have the row (getDesignByQuote,
+// W2-031) don't need a second select('*') by id.
+async function toDesignWithPhoto(row: DesignRow): Promise<DesignWithPhoto> {
   // Sign the base photo and the satellite image in parallel (both private-bucket
   // paths; signDesignPhoto returns null for a missing path or on any failure).
   const extras = row.extra_photos ?? [];
@@ -270,14 +273,23 @@ export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | 
   };
 }
 
+// Load a design and attach a signed URL for its base photo — the shape the
+// editor mounts from.
+export async function getDesignWithPhoto(id: string): Promise<DesignWithPhoto | null> {
+  const row = await getDesign(id);
+  if (!row) return null;
+  return toDesignWithPhoto(row);
+}
+
 // The design linked to a given quote, if any (used when re-opening a quote
-// that already has a design).
+// that already has a design). W2-031: one select('*') by quote_id instead of
+// select('id') followed by getDesignWithPhoto's own select('*') by id.
 export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto | null> {
   const sb = getSb();
   if (!sb) return null;
   const { data, error } = await sb
     .from('designs')
-    .select('id')
+    .select('*')
     .eq('quote_id', quoteId)
     .maybeSingle();
   if (error) {
@@ -285,7 +297,7 @@ export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto
     return null;
   }
   if (!data) return null;
-  return getDesignWithPhoto(data.id as string);
+  return toDesignWithPhoto(data as DesignRow);
 }
 
 // Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
@@ -326,6 +338,9 @@ export async function linkDesignToQuote(id: string, quoteId: string): Promise<bo
 export async function cloneDesignToNewQuote(
   sourceQuoteId: string,
   newQuoteId: string,
+  // Actor audit trail (#90): the operator's Supabase user id, or null. W2-032:
+  // carried like createDesign/saveQuote stamp on every other creation path.
+  createdBy: string | null = null,
 ): Promise<{ id: string } | null> {
   const sb = getSb();
   if (!sb) return null;
@@ -344,7 +359,7 @@ export async function cloneDesignToNewQuote(
 
   const { data: created, error: insErr } = await sb
     .from('designs')
-    .insert({ quote_id: newQuoteId, scene: src.scene ?? newDesignScene() })
+    .insert({ quote_id: newQuoteId, scene: src.scene ?? newDesignScene(), created_by: createdBy ?? null })
     .select('id')
     .single();
   if (insErr || !created) {
@@ -698,9 +713,17 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   const sb = getSb();
   if (!sb) return false;
 
+  // W2-033: read extra_photos AND scene in the one row fetch (previously a
+  // second getDesign('*') re-read the row just for the scene, below).
   let extras: DesignExtraPhoto[];
+  let scene: DesignScene | undefined;
   try {
-    extras = await getExtraPhotos(sb, id);
+    const { data, error } = await sb.from('designs').select('extra_photos, scene').eq('id', id).maybeSingle();
+    if (error) throw new Error(`extra_photos read: ${error.message}`);
+    if (!data) throw new Error('Design not found');
+    const row = data as { extra_photos?: DesignExtraPhoto[] | null; scene?: DesignScene | null };
+    extras = row.extra_photos ?? [];
+    scene = row.scene ?? undefined;
   } catch (err) {
     console.error('removeDesignExtraPhoto:', err);
     return false;
@@ -730,8 +753,6 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // pruned CANONICAL (#13): a twin on another photo depicting an item that just
   // died with this photo would otherwise dangle (render-only, unlinked forever).
   try {
-    const row = await getDesign(id);
-    const scene = row?.scene;
     if (scene && Array.isArray(scene.items) && scene.items.some(it => it.photoId === photoId)) {
       const prunedIds = new Set(scene.items.filter(it => it.photoId === photoId).map(it => it.id));
       await updateDesignScene(id, {

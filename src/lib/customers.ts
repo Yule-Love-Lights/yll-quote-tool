@@ -190,6 +190,15 @@ export async function findOrCreateProperty(
 // Link ONE quote to a stable customer + property (find-or-create both, then set
 // quotes.customer_id/property_id). Idempotent: re-running resolves to the same
 // customer/property. Returns null when the quote has no identity (left unlinked).
+//
+// W2-027: the three writes (customer, property, quote-link) are non-atomic —
+// true atomicity needs a DB function, out of scope here. The load-bearing
+// write (the quote-link update, the one that makes the customer/property
+// actually reachable) is already LAST, so a failure can only ever leave an
+// orphaned customer+property (safe: re-running this function finds them via
+// find-or-create and retries the link) rather than a quote pointing at
+// nothing. The one gap was silent diagnostics on that partial-failure case —
+// logged below so it's visible in ops, not just "returns null".
 export async function attachQuoteToCustomer(
   q: QuoteIdentityRow,
 ): Promise<{ customerId: string; propertyId: string } | null> {
@@ -211,7 +220,10 @@ export async function attachQuoteToCustomer(
     .update({ customer_id: customer.id, property_id: property.id })
     .eq('id', q.id);
   if (error) {
-    console.error('attachQuoteToCustomer link error:', error);
+    console.error(
+      `attachQuoteToCustomer link error (quote ${q.id} — customer ${customer.id} + property ${property.id} now orphaned, no quote points at them; safe to retry):`,
+      error,
+    );
     return null;
   }
   return { customerId: customer.id, propertyId: property.id };
@@ -246,12 +258,24 @@ export async function backfillCustomersFromQuotes(
   }
 
   const rows = (data ?? []) as QuoteIdentityRow[];
+  // W2-011: quotes are mutually independent (each links its own customer/
+  // property), so nothing forces strictly-serial processing. Process in
+  // bounded-concurrency chunks instead of one-at-a-time — the find-or-create
+  // UNIQUE-index race-recovery (customers.ts findOrCreateCustomer/
+  // findOrCreateProperty) already makes concurrent same-key creates safe, so
+  // overlapping quotes for the same customer within a chunk still dedup
+  // correctly. Keeps a large first-run backfill well under a function timeout
+  // without the unbounded fan-out of a single Promise.all(rows.map(...)).
+  const CHUNK_SIZE = 8;
   let linked = 0;
   let skipped = 0;
-  for (const q of rows) {
-    const res = await attachQuoteToCustomer(q);
-    if (res) linked++;
-    else skipped++;
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.all(chunk.map((q) => attachQuoteToCustomer(q)));
+    for (const res of results) {
+      if (res) linked++;
+      else skipped++;
+    }
   }
   return { scanned: rows.length, linked, skipped };
 }

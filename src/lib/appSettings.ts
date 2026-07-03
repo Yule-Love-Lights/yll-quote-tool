@@ -211,17 +211,10 @@ function withMissingBuiltins(colors: BulbColor[]): BulbColor[] {
   return missing.length > 0 ? [...colors, ...missing] : colors;
 }
 
-// Read all settings, merging stored values over the factory defaults so a
-// missing key or unconfigured field never breaks a render.
-export async function getAppSettings(): Promise<AppSettings> {
-  const sb = getSupabaseServiceClient();
-  if (!sb) return DEFAULT_APP_SETTINGS;
-  const { data, error } = await sb.from('app_settings').select('key, value');
-  if (error) {
-    console.error('[appSettings] read failed:', error.message);
-    return DEFAULT_APP_SETTINGS;
-  }
-  const map = new Map<string, unknown>((data ?? []).map((r) => [r.key as string, r.value]));
+// Shape the raw key→value rows into the merged AppSettings (factory defaults
+// underneath, stored values on top) — shared by getAppSettings and
+// putAppSettings so both build the SAME snapshot from ONE row set (W2-025).
+function settingsFromMap(map: Map<string, unknown>): AppSettings {
   const colors = withMissingBuiltins(normalizeColors(map.get('colors')) ?? DEFAULT_COLORS);
   // Schemes/buildable are validated against the LIVE palette so a stored scheme
   // referencing a since-removed color is cleaned, keeping swatches consistent.
@@ -247,7 +240,24 @@ export async function getAppSettings(): Promise<AppSettings> {
   };
 }
 
+// Read all settings, merging stored values over the factory defaults so a
+// missing key or unconfigured field never breaks a render.
+export async function getAppSettings(): Promise<AppSettings> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return DEFAULT_APP_SETTINGS;
+  const { data, error } = await sb.from('app_settings').select('key, value');
+  if (error) {
+    console.error('[appSettings] read failed:', error.message);
+    return DEFAULT_APP_SETTINGS;
+  }
+  const map = new Map<string, unknown>((data ?? []).map((r) => [r.key as string, r.value]));
+  return settingsFromMap(map);
+}
+
 // Upsert the provided keys (each independently). Pass only what's changing.
+// W2-025: reads current settings ONCE (not once per patched key + a final
+// read), applies every patch against that one snapshot, upserts, then returns
+// the merged result directly — no re-read after the write.
 export async function putAppSettings(patch: {
   colors?: BulbColor[];
   defaults?: ToolDefaults;
@@ -258,33 +268,45 @@ export async function putAppSettings(patch: {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
 
+  const { data, error: readError } = await sb.from('app_settings').select('key, value');
+  if (readError) {
+    console.error('[appSettings] read failed:', readError.message);
+    return DEFAULT_APP_SETTINGS;
+  }
+  const map = new Map<string, unknown>((data ?? []).map((r) => [r.key as string, r.value]));
+  const current = settingsFromMap(map);
+
   const rows: { key: string; value: unknown }[] = [];
   if (patch.colors !== undefined) {
     const clean = normalizeColors(patch.colors);
-    if (clean) rows.push({ key: 'colors', value: clean });
+    if (clean) {
+      rows.push({ key: 'colors', value: clean });
+      map.set('colors', clean);
+    }
   }
   if (patch.defaults !== undefined && isPlainObject(patch.defaults)) {
     rows.push({ key: 'defaults', value: patch.defaults });
+    map.set('defaults', patch.defaults);
   }
   if (patch.render !== undefined) {
     // Merge over current stored render so a partial write keeps other fields.
-    const cur = (await getAppSettings()).render;
-    rows.push({ key: 'render', value: { ...cur, ...sanitizeRender(patch.render) } });
+    const value = { ...current.render, ...sanitizeRender(patch.render) };
+    rows.push({ key: 'render', value });
+    map.set('render', value);
   }
   if (patch.portal !== undefined) {
     // Merge over current stored portal so a partial write keeps other fields.
-    const cur = (await getAppSettings()).portal;
-    rows.push({ key: 'portal', value: { ...cur, ...sanitizePortal(patch.portal) } });
+    const value = { ...current.portal, ...sanitizePortal(patch.portal) };
+    rows.push({ key: 'portal', value });
+    map.set('portal', value);
   }
   if (patch.swatches !== undefined) {
     // Validate against the live palette + merge over current so a partial write
     // (e.g. only buildableColorIds) keeps the other field.
-    const current = await getAppSettings();
     const validColorIds = new Set(current.colors.map((c) => c.id));
-    rows.push({
-      key: 'swatches',
-      value: { ...current.swatches, ...sanitizeSwatches(patch.swatches, validColorIds) },
-    });
+    const value = { ...current.swatches, ...sanitizeSwatches(patch.swatches, validColorIds) };
+    rows.push({ key: 'swatches', value });
+    map.set('swatches', value);
   }
 
   if (rows.length > 0) {
@@ -294,5 +316,5 @@ export async function putAppSettings(patch: {
       throw new Error(error.message);
     }
   }
-  return getAppSettings();
+  return settingsFromMap(map);
 }

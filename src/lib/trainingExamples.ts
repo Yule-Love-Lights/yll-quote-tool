@@ -280,17 +280,17 @@ export async function getCorpusBiasNote(): Promise<string | null> {
 export async function listTrainingExamples(limit = 200): Promise<TrainingExampleListItem[]> {
   const sb = getSb();
   if (!sb) return [];
-  // The list must stay LIGHT — never select the big base64 / full-analysis
+  // The list must stay LIGHT — never RETURN the big base64 / full-analysis
   // columns just to render badges. satellite_media_type is written together
   // with satellite_base64 (both from downloadDesignImageBase64), so it's an
-  // exact, tiny proxy for "has satellite". For "has analysis" we select a
-  // boolean-ish proxy: original_analysis is jsonb, but PostgREST can't compute
-  // `is not null` in select — so we fetch the (small) media types only and
-  // derive has_analysis from a dedicated cheap query below.
+  // exact, tiny proxy for "has satellite". original_analysis IS selected
+  // (W2-036: one query instead of a second full-table query just for this
+  // boolean) but is stripped from every returned item right below — has_analysis
+  // is derived from it and the jsonb payload itself never leaves this function.
   const { data, error } = await sb
     .from('training_examples')
     .select(
-      'id, created_at, quote_id, design_id, source, excluded, notes, address, street_media_type, street_w, street_h, satellite_media_type, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, final_inputs',
+      'id, created_at, quote_id, design_id, source, excluded, notes, address, street_media_type, street_w, street_h, satellite_media_type, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, final_inputs, original_analysis',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -298,22 +298,15 @@ export async function listTrainingExamples(limit = 200): Promise<TrainingExample
     console.error('listTrainingExamples error:', error);
     return [];
   }
-  // Cheap id-set of rows that actually carry an AI analysis (no payload pulled).
-  const withAnalysis = new Set<string>();
-  const { data: idRows } = await sb
-    .from('training_examples')
-    .select('id')
-    .not('original_analysis', 'is', null)
-    .limit(limit);
-  for (const r of (idRows ?? []) as { id: string }[]) withAnalysis.add(r.id);
 
   type Raw = Omit<TrainingExampleListItem, 'has_satellite' | 'has_analysis'> & {
     satellite_media_type: string | null;
+    original_analysis: Record<string, unknown> | null;
   };
-  return ((data ?? []) as Raw[]).map((r) => ({
+  return ((data ?? []) as Raw[]).map(({ original_analysis, ...r }) => ({
     ...r,
     has_satellite: r.satellite_media_type != null,
-    has_analysis: withAnalysis.has(r.id),
+    has_analysis: original_analysis != null,
   }) as TrainingExampleListItem);
 }
 

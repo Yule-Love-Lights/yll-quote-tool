@@ -25,6 +25,7 @@ export type RebookSource = {
   result: { total?: number } | null;
   customer_id?: string | null;
   property_id?: string | null;
+  is_test?: boolean | null;
 };
 
 // PURE — the column set a rebooked quote INSERTs. Copies the customer + the
@@ -49,13 +50,18 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
     property_id: src.property_id ?? null,
+    // W2-002: carry the source's test flag so a rebooked TEST quote stays a
+    // TEST quote — otherwise it defaults to false (real) and pollutes the
+    // dashboard/jobs/invoices/PO surfaces that trust is_test as the isolation
+    // boundary (#93).
+    is_test: src.is_test ?? false,
   };
 }
 
 // The columns the source-quote lookup selects (kept in one place so the query +
 // the RebookSource shape stay in sync).
 const SOURCE_COLUMNS =
-  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id';
+  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test';
 
 // Clone a customer's last APPROVED quote (+ its design) into a fresh draft.
 // `propertyId` optionally scopes the source to one property (a customer with a

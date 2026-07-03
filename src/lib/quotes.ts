@@ -142,7 +142,10 @@ export async function saveQuote(
   serviceType: ServiceType = DEFAULT_SERVICE_TYPE,
   // Test Quote (ledger #93): true ⇒ this row is fully-simulated test data. Set
   // once here at insert; updateQuote never touches it (is_test is immutable, so
-  // the derived job/invoice can trust the quote link).
+  // the derived job/invoice can trust the quote link). The one other legitimate
+  // write site is rebook.ts's buildRebookInsert, which carries src.is_test
+  // through on a rebooked clone's insert (W2-002) — same immutable-at-insert
+  // invariant, just a second call site.
   isTest = false,
   // Actor audit trail (#90): the operator's Supabase user id, or null when the
   // auth gate is dormant (no session). Stamped once, on create.
