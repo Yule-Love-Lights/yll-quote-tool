@@ -1,3 +1,40 @@
+-- =====================================================================
+-- ⚠️ NON-CANONICAL REFERENCE SNAPSHOT — DO NOT TRUST FOR PROD SHAPE ⚠️
+--
+-- This file is NOT the source of truth. The dated files in migrations/*.sql
+-- (45+ of them, applied by hand via the Supabase SQL Editor) are what's
+-- actually running on prod. This file is a convenience bootstrap dump that
+-- has drifted from them and is known to still be wrong in places (audit
+-- #110 wave 2, docs/audit/AUDIT-2026-07.md, findings W2-003/004/005/019).
+--
+-- migrations/FULL-SCHEMA.sql is a second, ALSO-STALE reference dump (it
+-- self-documents its own gaps — missing app_settings, custom_uploads,
+-- inventory_catalog, inventory_on_hand, customers, properties, jobs,
+-- invoices, and a large chunk of the quotes column set). Neither file is
+-- kept in sync with migrations/ mechanically; both are hand-maintained and
+-- lag behind. Full regeneration of both from the migration history is
+-- tracked as a separate follow-up (audit finding W2-007) — this pass only
+-- fixes the four most actively-misleading drifts below, not a full sync.
+--
+-- Known gaps as of 2026-07-03 (audit #110 wave 2) — do not assume this file
+-- is complete beyond these fixes:
+--   - Missing the entire `designs` table (extra_photos, photo_title,
+--     photo_path/_w/_h, satellite_*, etc. — W2-018). A fresh bootstrap from
+--     this file alone will 500 on every design read/write.
+--   - Missing 8+ newer tables entirely: app_settings, custom_uploads,
+--     inventory_catalog, inventory_on_hand, quote_view_events, jobs (present
+--     here but may itself drift), invoices, training_examples.
+--   - quotes is missing later columns added by migrations after this file's
+--     last refresh (e.g. valor_* payment fields, ghl_stage_synced_at,
+--     approval_notify_* — see migrations/ for the full, current list).
+--
+-- If you need the REAL current shape of a table: read the dated migration
+-- files in migrations/, newest-first, for that table name. If you're
+-- provisioning a fresh DB: prefer migrations/FULL-SCHEMA.sql (also stale,
+-- but more complete) and then replay any migrations dated after its last
+-- refresh, rather than trusting this file alone.
+-- =====================================================================
+
 create table if not exists quotes (
   id uuid primary key default gen_random_uuid(),
   created_at timestamp with time zone default now(),
@@ -8,15 +45,13 @@ create table if not exists quotes (
   inputs jsonb not null,
   result jsonb not null,
   total numeric(10, 2) not null,
-  -- Audit fix (g29-route): actor attribution, RESERVED for the operator-auth
-  -- work (ledger #81). ⚠️ NOT written by any code yet — the data layer
-  -- (src/lib/quotes.ts saveQuote/updateQuote) does NOT set it, and there is NO
-  -- standalone migrations/*.sql applying it to already-provisioned DBs, so PROD
-  -- does NOT have this column. Do NOT INSERT/UPDATE created_by until #81 ships
-  -- BOTH the writing code AND a migrations/2026-xx-quotes-add-created-by.sql
-  -- together — writing it before the migration would 500 every saveQuote /
-  -- updateQuote on prod. Free-text so it can hold an operator id/email later.
-  created_by text,
+  -- Actor attribution (ledger #81/#90). Written by src/lib/quotes.ts
+  -- saveQuote (and designs.ts createDesign for the designs table). Applied to
+  -- provisioned DBs by migrations/2026-06-28-add-created-by.sql — this is the
+  -- operator's Supabase Auth user id, nullable (pre-auth-gate rows, or an
+  -- unauthenticated request, get NULL). ON DELETE SET NULL so removing an
+  -- operator account doesn't delete their quotes.
+  created_by uuid references auth.users(id) on delete set null,
 
   -- ── Jobber-flow status spine (ledger #83 Phase 1) ──────────────────────────
   -- Explicit lifecycle status + portal decline reason + sequential display
@@ -32,7 +67,7 @@ create table if not exists quotes (
 
 -- Backfill for existing installs (pre-dates the audit column).
 alter table quotes
-  add column if not exists created_by text;
+  add column if not exists created_by uuid references auth.users(id) on delete set null;
 
 -- Jobber-flow status spine backfill (ledger #83 Phase 1) — see
 -- migrations/2026-06-27-quote-status.sql for the authoritative migration
@@ -50,7 +85,10 @@ alter table quotes
   add column if not exists is_test boolean not null default false;
 create index if not exists quotes_is_test_idx on quotes (is_test);
 
-alter table quotes disable row level security;
+-- RLS ENABLED, no policies (#90 defense in depth) — every app path uses the
+-- service-role client (bypasses RLS); anon/authenticated get nothing. See
+-- migrations/2026-06-28-enable-rls-all-tables.sql (the authoritative enable).
+alter table quotes enable row level security;
 
 create index if not exists quotes_created_at_idx on quotes (created_at desc);
 
@@ -86,7 +124,8 @@ create table if not exists jobs (
   updated_at    timestamptz not null default now()
 );
 
-alter table jobs disable row level security;
+-- RLS ENABLED, no policies (#90) — see migrations/2026-06-28-enable-rls-all-tables.sql.
+alter table jobs enable row level security;
 
 create unique index if not exists jobs_quote_id_key on jobs (quote_id) where quote_id is not null;
 create index if not exists jobs_created_at_idx on jobs (created_at desc);
@@ -124,7 +163,8 @@ create table if not exists invoices (
   updated_at      timestamptz not null default now()
 );
 
-alter table invoices disable row level security;
+-- RLS ENABLED, no policies (#90) — see migrations/2026-06-28-enable-rls-all-tables.sql.
+alter table invoices enable row level security;
 
 create unique index if not exists invoices_job_id_key on invoices (job_id) where job_id is not null;
 create index if not exists invoices_created_at_idx on invoices (created_at desc);
@@ -168,8 +208,9 @@ create table if not exists properties (
 alter table quotes add column if not exists customer_id uuid references customers(id) on delete set null;
 alter table quotes add column if not exists property_id uuid references properties(id) on delete set null;
 
-alter table customers disable row level security;
-alter table properties disable row level security;
+-- RLS ENABLED, no policies (#90) — see migrations/2026-06-28-enable-rls-all-tables.sql.
+alter table customers enable row level security;
+alter table properties enable row level security;
 
 create index if not exists customers_hl_contact_id_idx on customers (hl_contact_id) where hl_contact_id is not null;
 create index if not exists customers_email_idx on customers (email) where email is not null;
@@ -177,33 +218,12 @@ create index if not exists properties_customer_id_idx on properties (customer_id
 create index if not exists quotes_customer_id_idx on quotes (customer_id) where customer_id is not null;
 
 -- ─────────────────────────────────────────────────────────────
--- Photo corrections — user-edited measurements feed back as
--- few-shot examples to improve future Claude Vision analyses.
+-- Photo corrections — REMOVED (S13, migrations/2026-06-25-drop-photo-corrections.sql).
+-- The "corrections" system is fully retired, superseded by the
+-- training_examples few-shot library (#8 Stage A). Table dropped; nothing in
+-- the app reads/writes it. Left as a tombstone comment (not re-created) so a
+-- fresh bootstrap from this file matches prod. Do NOT re-add this table.
 -- ─────────────────────────────────────────────────────────────
-
-create table if not exists photo_corrections (
-  id uuid primary key default gen_random_uuid(),
-  created_at timestamp with time zone default now(),
-  photo_base64 text not null,
-  photo_media_type text not null,
-  original_analysis jsonb not null,
-  corrected_santas_footage numeric(10, 2) not null,
-  corrected_santas_difficulty text not null,
-  corrected_santas_lines jsonb not null,
-  corrected_gingerbread_footage numeric(10, 2) not null,
-  corrected_gingerbread_difficulty text not null,
-  corrected_gingerbread_lines jsonb not null,
-  corrected_mini_light_detections jsonb not null default '[]'::jsonb,
-  notes text
-);
-
--- Backfill for existing installs
-alter table photo_corrections
-  add column if not exists corrected_mini_light_detections jsonb not null default '[]'::jsonb;
-
-alter table photo_corrections disable row level security;
-
-create index if not exists photo_corrections_created_at_idx on photo_corrections (created_at desc);
 
 -- ─────────────────────────────────────────────────────────────
 -- Training houses — historical jobs with known final measurements.
@@ -234,8 +254,19 @@ create table if not exists training_houses (
   gingerbread_difficulty text,
   gingerbread_lines jsonb default '[]'::jsonb,
 
+  -- Garland + C9 custom-run detections (migrations/2026-04-22-add-correction-fields.sql;
+  -- mirrors the same columns on photo_corrections before that table was dropped).
+  garland_detections jsonb,
+  c9_lines jsonb,
+
   winter_wonderland_footage numeric(10, 2),
   winter_wonderland_difficulty text,
+
+  -- Stake Lighting — independent staked ground runs (migrations/2026-06-26-add-stake-lighting-training.sql),
+  -- parallel of the winter_wonderland_* columns above.
+  stake_lighting_footage numeric(10, 2),
+  stake_lighting_difficulty text,   -- 'easy' | 'medium' | 'hard' (enum enforced in app code)
+  stake_lines jsonb,
 
   -- Mini lights (bushes / trees / columns)
   mini_light_detections jsonb not null default '[]'::jsonb,
@@ -246,7 +277,18 @@ create table if not exists training_houses (
   garland jsonb not null default '[]'::jsonb
 );
 
-alter table training_houses disable row level security;
+-- Backfill for existing installs (garland/C9 detections + Stake Lighting —
+-- see migrations/2026-04-22-add-correction-fields.sql and
+-- migrations/2026-06-26-add-stake-lighting-training.sql).
+alter table training_houses
+  add column if not exists garland_detections jsonb,
+  add column if not exists c9_lines jsonb,
+  add column if not exists stake_lighting_footage numeric(10, 2),
+  add column if not exists stake_lighting_difficulty text,
+  add column if not exists stake_lines jsonb;
+
+-- RLS ENABLED, no policies (#90) — see migrations/2026-06-28-enable-rls-all-tables.sql.
+alter table training_houses enable row level security;
 
 create index if not exists training_houses_created_at_idx on training_houses (created_at desc);
 create index if not exists training_houses_address_idx on training_houses (address);
