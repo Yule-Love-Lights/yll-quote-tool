@@ -24,6 +24,29 @@
 --   re-enabling is a harmless no-op and keeps this list exhaustive so a fresh
 --   rebuild is secure-by-default.
 --
+-- ⚠️ REBUILD-ORDERING NOTE (audit #110 wave 2, finding W2-006): several of the
+--   OLDER create-table migrations for the 14 tables listed below (customers-
+--   properties.sql, invoices.sql, jobs.sql, inventory-catalog.sql,
+--   inventory-on-hand.sql, app-settings.sql, custom-uploads.sql) END with
+--   their own `DISABLE ROW LEVEL SECURITY` statement and are individually
+--   labeled "idempotent; safe to re-run." A FRESH, full in-order rebuild of
+--   migrations/*.sql is SAFE — this migration is committed after all of them
+--   (2026-06-28, 19:28:18 -0400; every older create-table file predates it,
+--   and this file's own comment above documents training_houses/
+--   reference_assets already being on), so a straight top-to-bottom replay
+--   ends with every table here RLS-ENABLED. Prefer migrations/FULL-SCHEMA.sql
+--   for a fresh rebuild — it's the reconciled end-state and isn't exposed to
+--   file-ordering mistakes at all.
+--   The REAL footgun this migration doesn't protect against: re-running any
+--   ONE of those older create-table files BY ITSELF after this one (e.g.
+--   re-pasting inventory-catalog.sql to re-import the Thunder CSV, exactly as
+--   its own header instructs) silently flips that single table back to
+--   RLS-DISABLED, because each file was written to be individually
+--   re-runnable and its own DISABLE line runs unconditionally. If you must
+--   re-run one of those files standalone, re-run this ENABLE migration
+--   immediately after, or (better) drop the trailing DISABLE line from that
+--   file the next time it's touched.
+--
 -- Roll-forward only. Idempotent — safe to re-run.
 BEGIN;
 
