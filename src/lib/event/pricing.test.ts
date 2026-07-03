@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { calculateEventQuote } from './pricing';
-import { DEFAULT_EVENT_RATES, type EventQuoteInputs, type EventRates } from './types';
-import { calculateQuote } from '@/lib/pricing/pricingEngine';
+import { DEFAULT_EVENT_RATES, type EventRates } from './types';
+import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 
-function baseInputs(overrides: Partial<EventQuoteInputs> = {}): EventQuoteInputs {
+function baseInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
   return {
     santasFootage: 0,
     santasDifficulty: 'easy',
@@ -120,13 +120,13 @@ describe('calculateEventQuote — minis / curtain / spritzers at event rates', (
 
 describe('calculateEventQuote — bistro + barrel/box supports', () => {
   it('temporary bistro priced per foot', () => {
-    const r = calculateEventQuote(baseInputs({ bistro: [{ footage: 50 }] }), R);
+    const r = calculateEventQuote(baseInputs({ event: { bistro: [{ footage: 50 }] } }), R);
     expect(r.subtotalBeforeDiscount).toBe(600); // 50 * 12
     expect(r.lineItems.some(l => /Bistro/i.test(l.label))).toBe(true);
   });
 
   it('barrel/box supports billed flat per unit', () => {
-    const r = calculateEventQuote(baseInputs({ barrelBoxes: 2 }), R);
+    const r = calculateEventQuote(baseInputs({ event: { barrelBoxes: 2 } }), R);
     expect(r.subtotalBeforeDiscount).toBe(300); // 2 * 150
   });
 });
@@ -232,7 +232,7 @@ describe('calculateEventQuote — #104 per-line price overrides', () => {
 describe('calculateEventQuote — $0 guardrail', () => {
   it('throws when an event rate is zero/missing (never silently bill $0)', () => {
     const badBistro: EventRates = { ...R, bistroPerFt: 0 };
-    expect(() => calculateEventQuote(baseInputs({ bistro: [{ footage: 50 }] }), badBistro)).toThrow();
+    expect(() => calculateEventQuote(baseInputs({ event: { bistro: [{ footage: 50 }] } }), badBistro)).toThrow();
 
     const badRoofline: EventRates = { ...R, roofline: { easy: 0, medium: 6, hard: 7 } };
     expect(() => calculateEventQuote(baseInputs({ santasFootage: 100 }), badRoofline)).toThrow();

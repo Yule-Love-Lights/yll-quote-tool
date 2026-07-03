@@ -2,7 +2,7 @@
 // Pure TypeScript: takes a house description, returns a price.
 
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
-import type { EventRates } from '@/lib/event/types';
+import type { EventRates, EventInputFields } from '@/lib/event/types';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -258,6 +258,10 @@ export interface QuoteInputs {
   // permanent engine (calculatePermanentQuote in lib/permanent/pricing.ts) prices
   // off this block. Optional/additive — holiday quotes are unaffected.
   permanent?: PermanentQuoteFields;
+  // Event Lighting vertical (#96). Present ONLY when service_type is 'event'.
+  // The event engine (calculateEventQuote in lib/event/pricing.ts) reads bistro +
+  // barrel/box supports; the dates are portal metadata. Holiday/permanent ignore it.
+  event?: EventInputFields;
 }
 
 // ─────────────────────────────────────────────────────────

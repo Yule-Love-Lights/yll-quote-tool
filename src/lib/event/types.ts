@@ -11,7 +11,7 @@
 // the builder, the portal) is Phase B, added after the Permanent build converts
 // those seams. See ~/.claude/plans/sorry-this-is-plan-crystalline-clarke.md.
 
-import type { QuoteInputs, RooflineDifficulty } from '@/lib/pricing/pricingEngine';
+import type { RooflineDifficulty } from '@/lib/pricing/pricingEngine';
 
 /**
  * Event rate table — INDEPENDENT of the holiday BUSINESS_RULES rates (event
@@ -62,17 +62,22 @@ export type BistroLine = {
 };
 
 /**
- * Event quote inputs = the holiday QuoteInputs shape (events reuse C9 roofline /
- * mini / spritzer / curtain items) PLUS event-only extras. Accessories
- * (wreaths/garland/bows) may be present on the object but are IGNORED by
- * calculateEventQuote (allow-list, not deny-list). rush/takedown/early-install
- * are also ignored (events have no such fees).
+ * Event-only inputs — carried on `QuoteInputs.event` (present ONLY when the
+ * quote's service_type is 'event'), mirroring `QuoteInputs.permanent`. The event
+ * engine reads bistro + barrel/box supports for pricing; the three dates are
+ * staff-entered metadata shown on the portal (NOT priced). Everything else an
+ * event quote needs (C9 roofline / mini / spritzer / curtain) reuses the shared
+ * QuoteInputs fields; accessories present there are ignored (allow-list).
  */
-export type EventQuoteInputs = QuoteInputs & {
+export type EventInputFields = {
   /** Temporary bistro runs (café string lights). */
   bistro?: BistroLine[];
   /** Count of barrel/box temporary supports ($150 each). */
   barrelBoxes?: number;
+  /** Staff-entered event dates (ISO yyyy-mm-dd) — shown on the portal, NOT priced. */
+  installDate?: string;
+  eventDate?: string;
+  takedownDate?: string;
 };
 
 function positiveOr(v: unknown, fallback: number): number {

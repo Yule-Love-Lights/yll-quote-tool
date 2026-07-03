@@ -17,11 +17,12 @@ import {
   BUSINESS_RULES,
   type LineItem,
   type MiniLightType,
+  type QuoteInputs,
   type QuoteResult,
   type RooflineChoice,
   type RooflineDifficulty,
 } from '@/lib/pricing/pricingEngine';
-import type { EventQuoteInputs, EventRates } from './types';
+import type { EventRates } from './types';
 import { DEFAULT_EVENT_RATES } from './types';
 
 // A footage/quantity must be finite + positive before it is multiplied by a rate;
@@ -85,7 +86,7 @@ function rooflineCost(
 
 // Both mutually-exclusive roofline options at EVENT rates (mirrors the holiday
 // rooflineOptionsFor). Santas = front only; Gingerbread = front + ridge/sides.
-function eventRooflineOptions(inputs: EventQuoteInputs, rates: EventRates): QuoteResult['rooflineOptions'] {
+function eventRooflineOptions(inputs: QuoteInputs, rates: EventRates): QuoteResult['rooflineOptions'] {
   const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty, rates, inputs.santasCustomRate);
   const ridgeSidesCost = rooflineCost(
     inputs.gingerbreadFootage,
@@ -105,7 +106,7 @@ function eventRooflineOptions(inputs: EventQuoteInputs, rates: EventRates): Quot
 // footage, else Santa's, else none). Events don't use the holiday $1,000-minimum
 // auto-targeting — that's a seasonal-pricing behavior.
 function resolveRooflineChoice(
-  inputs: EventQuoteInputs,
+  inputs: QuoteInputs,
   options: QuoteResult['rooflineOptions'],
 ): RooflineChoice {
   if (inputs.rooflineChoice) return inputs.rooflineChoice;
@@ -115,7 +116,7 @@ function resolveRooflineChoice(
 }
 
 function rooflineLineItem(
-  inputs: EventQuoteInputs,
+  inputs: QuoteInputs,
   choice: RooflineChoice,
   options: QuoteResult['rooflineOptions'],
 ): LineItem[] {
@@ -159,7 +160,7 @@ function withIdentity(item: { id?: string; sceneItemIds?: string[] }): Pick<Line
   };
 }
 
-function calculateMiniLights(inputs: EventQuoteInputs, rates: EventRates): LineItem[] {
+function calculateMiniLights(inputs: QuoteInputs, rates: EventRates): LineItem[] {
   return inputs.miniLightItems.map(item => {
     const count = units(item.stringCount);
     const strings = count === 1 ? '1 string' : `${count} strings`;
@@ -179,7 +180,7 @@ function calculateMiniLights(inputs: EventQuoteInputs, rates: EventRates): LineI
   });
 }
 
-function calculateSpritzers(inputs: EventQuoteInputs, rates: EventRates): LineItem[] {
+function calculateSpritzers(inputs: QuoteInputs, rates: EventRates): LineItem[] {
   return inputs.spritzers.map(item => {
     const qty = units(item.quantity);
     const amount = qty * rates.spritzer[item.size];
@@ -190,9 +191,10 @@ function calculateSpritzers(inputs: EventQuoteInputs, rates: EventRates): LineIt
 
 // Temporary bistro — priced per linear foot. Label avoids the roofline/wonderland/
 // gingerbread/ridge keywords so the portal lineItemKind parser doesn't misfile it.
-function calculateBistro(inputs: EventQuoteInputs, rates: EventRates): LineItem[] {
-  if (!Array.isArray(inputs.bistro)) return [];
-  return inputs.bistro
+function calculateBistro(inputs: QuoteInputs, rates: EventRates): LineItem[] {
+  const bistro = inputs.event?.bistro;
+  if (!Array.isArray(bistro)) return [];
+  return bistro
     .filter(b => b && Number.isFinite(b.footage) && b.footage > 0)
     .map(b => ({
       label: `Bistro Lighting – ${b.footage}ft`,
@@ -203,8 +205,8 @@ function calculateBistro(inputs: EventQuoteInputs, rates: EventRates): LineItem[
 
 // Barrel/box temporary supports — flat per unit. Customer-facing label per the
 // council ("barrels/boxes" means nothing to a customer).
-function calculateBarrelBoxes(inputs: EventQuoteInputs, rates: EventRates): LineItem[] {
-  const n = inputs.barrelBoxes;
+function calculateBarrelBoxes(inputs: QuoteInputs, rates: EventRates): LineItem[] {
+  const n = inputs.event?.barrelBoxes;
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 1) return [];
   const qty = Math.floor(n);
   return [
@@ -217,7 +219,7 @@ function calculateBarrelBoxes(inputs: EventQuoteInputs, rates: EventRates): Line
 
 // Custom / manual line items — passed straight through (mirrors the holiday
 // calculateCustomLineItems: the amount IS the price, malformed entries skipped).
-function calculateCustomLineItems(inputs: EventQuoteInputs): LineItem[] {
+function calculateCustomLineItems(inputs: QuoteInputs): LineItem[] {
   if (!Array.isArray(inputs.customLineItems)) return [];
   return inputs.customLineItems
     .filter(
@@ -246,7 +248,7 @@ function calculateCustomLineItems(inputs: EventQuoteInputs): LineItem[] {
 // the invoice/amend per-line adjustments (service-agnostic) flow through.
 function overrideAmount(
   id: string | undefined,
-  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
 ): number | undefined {
   if (!id || !overrides || !Object.prototype.hasOwnProperty.call(overrides, id)) return undefined;
   const a = overrides[id]?.amount;
@@ -255,7 +257,7 @@ function overrideAmount(
 
 function applyLineOverrides(
   lines: LineItem[],
-  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
 ): LineItem[] {
   if (!overrides) return lines;
   return lines.map(li => {
@@ -266,7 +268,7 @@ function applyLineOverrides(
 
 function applyRooflineOverrides(
   options: QuoteResult['rooflineOptions'],
-  overrides: EventQuoteInputs['lineItemPriceOverrides'],
+  overrides: QuoteInputs['lineItemPriceOverrides'],
 ): QuoteResult['rooflineOptions'] {
   if (!overrides) return options;
   const santasAmt = overrideAmount('roofline-santas', overrides);
@@ -287,7 +289,7 @@ function applyRooflineOverrides(
  * with rush/takedown/early-install/fullYule inert (events have none).
  */
 export function calculateEventQuote(
-  inputs: EventQuoteInputs,
+  inputs: QuoteInputs,
   rates: EventRates = DEFAULT_EVENT_RATES,
 ): QuoteResult {
   assertEventRates(rates);
