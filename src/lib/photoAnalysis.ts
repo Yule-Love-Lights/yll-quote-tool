@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { getClaudeClient } from './claude';
 import type { StoredReferenceAsset } from './referenceAssets';
 
@@ -85,7 +86,11 @@ export type PhotoAnalysisResult = {
 // text response. Uses a brace-balance scan instead of a greedy regex so a
 // trailing "```" or extra prose doesn't corrupt the parse. Throws with a
 // helpful snippet on failure so callers can see what Claude actually sent.
-function extractJson(text: string): unknown {
+// W5-024 (#110 wave 5, test-gap): exported so it's directly unit-testable —
+// previously only exercised indirectly through analyzePhoto (which needs a
+// live Claude client), so its fence-stripping / balance-scan / error-message
+// paths had zero coverage.
+export function extractJson(text: string): unknown {
   let s = text.trim();
   // Strip ```json ... ``` or ``` ... ``` fences if present
   const fenceMatch = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```\s*$/);
@@ -198,6 +203,51 @@ export function normalizeBoxArray<T extends { box: [number, number, number, numb
       box: (d.box ?? [0, 0, 0, 0]).map(v => v * scale) as [number, number, number, number],
     }))
     .filter(d => d.box[0] >= 0 && d.box[0] <= 1 && d.box[1] >= 0 && d.box[1] <= 1);
+}
+
+// W5-026 (#110 wave 5, the #80-066 remaining half): analyzePhoto coerced the
+// roofline scalars/boxes but passed each detection's ENUM fields through
+// verbatim — a hallucinated off-enum mini type/wrapStyle/wreath size/tier/
+// spritzer size/garland length would flow straight into the training-capture
+// write. Mirror the known-value Sets already enforced downstream in
+// seedFromAnalysis.ts (duplicated here rather than imported — that module is
+// owned by a separate #110 track and these Sets aren't exported) and DROP any
+// detection with an off-enum field, same "hallucination → discard" policy as
+// normalizeLines/normalizeBoxArray above. stringCount is clamped instead of
+// dropped (a shape, not an identity, so a wild count just gets bounded).
+const MINI_TYPES = new Set(['tree', 'bush', 'column', 'railing']);
+const WRAP_STYLES = new Set(['canopy', 'trunk']);
+const WREATH_SIZES = new Set(['24noble', '30noble', '36noble', '48noble', '60noble', '72noble']);
+const SPRITZER_SIZES = new Set(['16', '24', '32']);
+const GARLAND_LENGTHS = new Set(['4.5ft', '9ft']);
+const TIERS = new Set(['bow', 'fullDecor']);
+// Mirrors seedFromAnalysis.ts's REASONABLE_MAX_STRINGS — a stringCount drives
+// price once it reaches the design, so cap it here too rather than trusting
+// the seed step to always be the only backstop.
+const REASONABLE_MAX_STRINGS = 50;
+
+function clampStringCount(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(Math.max(1, Math.round(n)), REASONABLE_MAX_STRINGS);
+}
+
+export function validateMiniLightDetections(dets: MiniLightDetection[]): MiniLightDetection[] {
+  return dets
+    .filter(d => MINI_TYPES.has(d.type) && WRAP_STYLES.has(d.wrapStyle))
+    .map(d => ({ ...d, stringCount: clampStringCount(d.stringCount) }));
+}
+
+export function validateWreathDetections(dets: WreathDetection[]): WreathDetection[] {
+  return dets.filter(d => WREATH_SIZES.has(d.size) && TIERS.has(d.tier));
+}
+
+export function validateSpritzerDetections(dets: SpritzerDetection[]): SpritzerDetection[] {
+  return dets.filter(d => SPRITZER_SIZES.has(d.size));
+}
+
+export function validateGarlandDetections(dets: GarlandDetection[]): GarlandDetection[] {
+  return dets.filter(d => GARLAND_LENGTHS.has(d.length) && TIERS.has(d.tier));
 }
 
 const ROOFLINE_TRACING_RULES = `PACKAGES — there are TWO mutually-exclusive roofline options. Every roof-edge run you trace goes into EXACTLY ONE of them, decided by which way its roof plane faces:
@@ -452,6 +502,44 @@ export function baseSystemPromptFor(mode: 'design' | 'completed'): string {
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
+// W5-007 (#110 wave 5): Claude Vision's effective max resolution is ~1568px on
+// the long edge — anything larger is downscaled server-side before the model
+// sees it anyway, so sending it at full size only pays extra upload + image
+// tokens for zero detection benefit. Shrink to that ceiling (never upscale) so
+// few-shot house photos and reference images are as cheap as they can be
+// without losing any real fidelity. Re-encodes to JPEG (quality 85) since the
+// analyzer only reads these for detection, not for storage.
+const MAX_VISION_EDGE_PX = 1568;
+
+export async function downscaleImageForVision(
+  base64: string,
+  mediaType: string,
+): Promise<{ base64: string; mediaType: ImageMediaType }> {
+  try {
+    const comma = base64.indexOf(',');
+    const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
+    const buf = Buffer.from(raw, 'base64');
+    const meta = await sharp(buf).metadata();
+    const longEdge = Math.max(meta.width ?? 0, meta.height ?? 0);
+    // Already small enough (or dimensions unreadable) — leave the bytes as-is.
+    if (longEdge <= MAX_VISION_EDGE_PX) {
+      return { base64: raw, mediaType: mediaType as ImageMediaType };
+    }
+    const resized = await sharp(buf)
+      .resize({ width: MAX_VISION_EDGE_PX, height: MAX_VISION_EDGE_PX, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    return { base64: resized.toString('base64'), mediaType: 'image/jpeg' };
+  } catch {
+    // Any decode failure — fall back to the original bytes rather than
+    // dropping the image; detection quality with the original is strictly
+    // better than no image at all.
+    const comma = base64.indexOf(',');
+    const raw = base64.startsWith('data:') && comma >= 0 ? base64.slice(comma + 1) : base64;
+    return { base64: raw, mediaType: mediaType as ImageMediaType };
+  }
+}
+
 export type TrainingExamplePhoto = {
   base64: string;
   mediaType: string;
@@ -488,7 +576,7 @@ type FewShotExample = {
   source: 'training' | 'design';
 };
 
-function buildFewShotMessages(examples: FewShotExample[]) {
+async function buildFewShotMessages(examples: FewShotExample[]) {
   type Block =
     | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
     | { type: 'text'; text: string };
@@ -510,8 +598,10 @@ function buildFewShotMessages(examples: FewShotExample[]) {
       text: `${label} ${photosNote}`,
     });
     for (const p of ex.photos) {
-      const mt = p.mediaType as ImageMediaType;
-      userContent.push({ type: 'image', source: { type: 'base64', media_type: mt, data: p.base64 } });
+      // W5-007 (#110 wave 5): downscale to Claude Vision's effective max before
+      // sending — lossless for detection, much cheaper than the original photo.
+      const { base64, mediaType: mt } = await downscaleImageForVision(p.base64, p.mediaType);
+      userContent.push({ type: 'image', source: { type: 'base64', media_type: mt, data: base64 } });
       if (p.tag) userContent.push({ type: 'text', text: `^ tag: ${p.tag}${p.caption ? ` — ${p.caption}` : ''}` });
     }
     // #8 Stage C (C1): teach from the seed→final correction, not just the answer.
@@ -555,11 +645,11 @@ function buildFewShotMessages(examples: FewShotExample[]) {
   return messages;
 }
 
-function buildReferenceMessages(references: StoredReferenceAsset[]) {
+async function buildReferenceMessages(references: StoredReferenceAsset[]) {
   if (references.length === 0) return [];
   type Block =
-    | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
-    | { type: 'text'; text: string };
+    | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string }; cache_control?: { type: 'ephemeral' } }
+    | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
   const userContent: Block[] = [
     {
       type: 'text',
@@ -567,12 +657,14 @@ function buildReferenceMessages(references: StoredReferenceAsset[]) {
     },
   ];
   for (const r of references) {
+    // W5-007/W5-010 (#110 wave 5): downscale, same as few-shot house photos.
+    const { base64, mediaType: mt } = await downscaleImageForVision(r.base64, r.media_type);
     userContent.push({
       type: 'image',
       source: {
         type: 'base64',
-        media_type: r.media_type as ImageMediaType,
-        data: r.base64,
+        media_type: mt,
+        data: base64,
       },
     });
     const tier = r.tier ? ` · ${r.tier}` : '';
@@ -582,10 +674,17 @@ function buildReferenceMessages(references: StoredReferenceAsset[]) {
       text: `^ ${r.asset_type} · ${r.size}${tier}${cap}`,
     });
   }
-  userContent.push({
-    type: 'text',
+  const lastText = {
+    type: 'text' as const,
     text: 'Acknowledge that you have these product references loaded, then wait for the house photo.',
-  });
+    // W5-010 (#110 wave 5): the reference library is IDENTICAL across every
+    // analyze call (it only changes when staff edit it in Settings), so mark
+    // this turn cacheable — the breakpoint here covers every reference image
+    // + label above it too (a cache_control breakpoint caches everything back
+    // to the previous breakpoint / start of the block).
+    cache_control: { type: 'ephemeral' as const },
+  };
+  userContent.push(lastText);
   return [
     { role: 'user' as const, content: userContent },
     {
@@ -644,8 +743,8 @@ export async function analyzePhoto(
 
   const { satellite, references = [], houseStyleHint, corpusBiasNote, mode = 'design' } = options;
 
-  const refMessages = buildReferenceMessages(references);
-  const fewShotMessages = buildFewShotMessages(fewShotExamples);
+  const refMessages = await buildReferenceMessages(references);
+  const fewShotMessages = await buildFewShotMessages(fewShotExamples);
   const trainingCount = fewShotExamples.filter(e => e.source === 'training').length;
   const designCount = fewShotExamples.filter(e => e.source === 'design').length;
   const refsNote = references.length > 0
@@ -679,7 +778,17 @@ export async function analyzePhoto(
   const satelliteSelfCheck = satellite
     ? `\n\nSATELLITE ORIENTATION SELF-CHECK (do this BEFORE finalizing the satellite polylines): the top-down view makes it easy to mislabel which edge is the front. (1) Find the road in the satellite image and CONFIRM it against the street-view image — the front roof edge is the one whose plane faces that road. (2) satelliteSantasLines (red) MUST be that road-facing FRONT edge; satelliteGingerbreadLines (blue) are its ridge PLUS the two SIDE edges. (3) Cross-check the result against the street view: if your red/blue assignment would put "front" on an edge the street view clearly shows is a side or the ridge, they are FLIPPED — swap them. A flipped front/side is the single most common satellite error, so verify orientation before answering.`
     : '';
-  const systemPrompt = baseSystemPromptFor(mode) + refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
+  // W5-012 (#110 wave 5): split the system prompt into a STATIC prefix (the
+  // base prompt — ~3,400 tokens of ROOFLINE_TRACING_RULES + OUTPUT_JSON_SCHEMA
+  // + mode-specific instructions, byte-identical across every call for a given
+  // mode) and a DYNAMIC suffix (per-request notes: reference/example counts,
+  // satellite hints, the user's style-hint text, corpus bias). Marking the
+  // static block cacheable means only the dynamic suffix + images are billed
+  // at full price on every call after the first; the CONTENT of both pieces,
+  // concatenated, is byte-identical to the old single-string prompt — only
+  // the wrapping into blocks + the cache_control marker (below) are new.
+  const staticSystemPrompt = baseSystemPromptFor(mode);
+  const dynamicSystemSuffix = refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
 
   const content: Array<{ type: 'image'; source: { type: 'base64'; media_type: typeof validMediaTypes[number]; data: string } } | { type: 'text'; text: string }> = [
     {
@@ -710,14 +819,37 @@ export async function analyzePhoto(
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 2048,
-    system: systemPrompt,
+    // W5-011 (#110 wave 5): 2048 was too tight for a large/commercial house —
+    // a truncated response makes extractJson throw, silently dropping the
+    // whole seed. Only actual output tokens are billed, so raising the
+    // ceiling costs nothing on the common case and just removes the failure
+    // mode on the rare big one.
+    max_tokens: 8192,
+    system: [
+      // W5-012 (#110 wave 5): the static base prompt (ROOFLINE_TRACING_RULES +
+      // OUTPUT_JSON_SCHEMA + mode instructions) is byte-identical across every
+      // call for a given mode — cache it so it's billed once per TTL window
+      // instead of on every analyze call.
+      { type: 'text', text: staticSystemPrompt, cache_control: { type: 'ephemeral' } },
+      // Per-request notes (reference/example counts, satellite hints, style
+      // hint, corpus bias) vary every call — left uncached, unchanged content.
+      // Omitted entirely when empty (a blank/whitespace-only text block is a
+      // 400 from the API) rather than sending a dangling empty block.
+      ...(dynamicSystemSuffix.trim() ? [{ type: 'text' as const, text: dynamicSystemSuffix }] : []),
+    ],
     messages: [
       ...refMessages,
       ...fewShotMessages,
       { role: 'user', content },
     ],
   });
+
+  // W5-011 (#110 wave 5): a large/commercial house can still hit the (much
+  // higher) ceiling — log so it's visible instead of silently truncating into
+  // a parse failure below.
+  if (response.stop_reason === 'max_tokens') {
+    console.warn(`[analyzePhoto] response truncated at max_tokens (mode=${mode}) — JSON may be incomplete`);
+  }
 
   const textBlock = response.content.find(b => b.type === 'text');
   if (!textBlock || textBlock.type !== 'text') {
@@ -741,9 +873,12 @@ export async function analyzePhoto(
     satelliteSantasFootage: coerceFootage(parsed.satelliteSantasFootage),
     satelliteGingerbreadFootage: coerceFootage(parsed.satelliteGingerbreadFootage),
     preferredSource: parsed.preferredSource === 'satellite' ? 'satellite' : 'street',
-    miniLightDetections: normalizeBoxArray(parsed.miniLightDetections),
-    wreathDetections: normalizeBoxArray(parsed.wreathDetections),
-    spritzerDetections: normalizeBoxArray(parsed.spritzerDetections),
-    garlandDetections: normalizeBoxArray(parsed.garlandDetections),
+    // W5-026: enum-validate AFTER box-normalization — a detection with a
+    // hallucinated box gets dropped by normalizeBoxArray first; one with a
+    // hallucinated type/size/tier gets dropped here.
+    miniLightDetections: validateMiniLightDetections(normalizeBoxArray(parsed.miniLightDetections)),
+    wreathDetections: validateWreathDetections(normalizeBoxArray(parsed.wreathDetections)),
+    spritzerDetections: validateSpritzerDetections(normalizeBoxArray(parsed.spritzerDetections)),
+    garlandDetections: validateGarlandDetections(normalizeBoxArray(parsed.garlandDetections)),
   };
 }
