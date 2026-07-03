@@ -24,6 +24,10 @@
 import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
 import { allocateNumber } from './displayId';
 import { canTransition, type InvoiceStatus } from './invoiceStatus';
+// #110 W1-064: the EPSILON-nudged + finite-guarded round-to-cents lives in one
+// place now (was copy-pasted here / amend.ts / balanceCollection.ts). Aliased to
+// `round2` so the call sites are byte-identical.
+import { roundMoneyGuarded as round2 } from './money';
 
 export type InvoiceRow = {
   id: string;
@@ -53,14 +57,6 @@ const INVOICE_SELECT =
   'valor_receipt_url, created_at, paid_at, updated_at';
 
 // ─── Pure totals math ───────────────────────────────────────────────────────
-
-// Round to cents — money never carries float dust into a stored balance (mirrors
-// Phase 4's amend rounding). Non-finite coerces to 0 so a malformed legacy result
-// can't write NaN.
-function round2(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
 
 // The subset of a priced QuoteResult the invoice needs. Accepting a subset (not
 // the full QuoteResult) keeps the math testable + decoupled; the real

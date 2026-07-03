@@ -210,3 +210,22 @@ codebase for when you wire step 4 (re-add a button then).
    training); a stopgap if pay-link drop-off is a problem.
 5. **Scrap auto-charge**, keep two hosted-page links (deposit + balance) — lowest
    risk, fully compliant.
+
+## #110 W1-012 (2026-07-04) — re-consent is a HARD BLOCKER on auto-charge
+
+`amend` computes `requiresReconsent` but **NO collection surface enforces or records
+re-consent** — this must be closed **before `VALOR_AUTO_CHARGE_ENABLED` ever flips
+on** (staff could amend an order UP, then MIT-charge the saved card for a total the
+customer never saw). The amend route returns `requiresReconsent` and its header
+promises "the customer re-approves the new total before any balance is charged", but
+nothing persists a consent-pending/granted state, the portal has no re-approve
+surface for a booked quote, and none of `charge-balance` / `pay-balance` / `mark-paid`
+checks the amendments trail before collecting `invoice.balance` (which the amend just
+re-synced upward). It's latent today only because the live path is the pay-link
+(paying ≈ consent); the moment the auto-charge stub is wired + flag-flipped,
+`charge-balance` would charge the un-consented amended balance with zero guard.
+**Fix before enabling:** persist a `reconsent_pending` marker on amend (delta ≥ 1¢)
+and have `charge-balance` refuse to auto-charge while it's set (pay-link/mark-paid may
+stay allowed — customer/operator action implies consent), OR explicitly document
+re-consent as an operator-judgment process and remove the unenforced promise from the
+route header. Full finding: `docs/audit/AUDIT-2026-07.md`.

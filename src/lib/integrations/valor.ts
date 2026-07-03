@@ -1,21 +1,23 @@
 // ValorPayTech payment client. Wraps the subset of Valor's API the quote tool
-// uses for the customer deposit flow (#38):
-//   1. getClientToken()        — server-side: mint a short-lived client token
-//                                for an embedded Passage.js checkout (one deposit).
+// uses for the customer deposit flow (#38) — the HOSTED-PAGE surface:
+//   1. createHostedPageSale()   — ask Valor for a hosted payment page (ePage)
+//                                and redirect the customer there; the card is
+//                                collected on Valor's own page (SAQ-A).
 //   2. verifyWebhookSignature() — verify Valor's signed payment-confirmation
 //                                webhook (HMAC-SHA256) before we trust it.
 //   3. parseWebhookEvent()      — normalize the webhook payload into the fields
 //                                we act on (txn id, response code, vault token…).
+// (The earlier Passage.js embedded-token path — getClientToken — was removed
+//  once the flow moved to the hosted page; see git history if it's ever revived.)
 //
 // Auth model (Valor): APP ID + APP Key + EPI identify the merchant + device.
 //   - APP ID  — account-level merchant identifier.
 //   - APP Key — secret tied to a specific EPI/device.
 //   - EPI     — 10-digit endpoint id (starts with 2). One per device.
-// These are SECRETS — never log them, never ship them to the browser. The only
-// thing the browser ever sees is the short-lived clientToken this module returns.
+// These are SECRETS — never log them, never ship them to the browser.
 //
-// PCI scope: card data is collected by Passage.js IN THE BROWSER and sent
-// straight to Valor — it never touches our server. That keeps us at SAQ-A.
+// PCI scope: card data is collected on Valor's HOSTED page and sent straight to
+// Valor — it never touches our server. That keeps us at SAQ-A.
 //
 // ┌─ INTEGRATION CONTRACT — confirm against valorapi.readme.io at live test ───┐
 // │ Valor's docs host bot-blocks automated fetches, so the exact wire shapes  │
@@ -24,8 +26,7 @@
 // │ marked `CONFIRM:`. We parse responses defensively (accept several casings)│
 // │ so a first-run tweak is a one-line change, mirroring how highlevel.ts     │
 // │ handles its unconfirmed conversations-API shape.                          │
-// │  • GetClientToken: POST {base}/clienttoken  body {app_id,app_key,epi,...} │
-// │  • Sale + vault: performed client-side by Passage.js using the token.     │
+// │  • Hosted Page Sale: POST {host}/?pagesale= body {appid,appkey,epi,...}.  │
 // │  • Webhook headers: Valor-Signature + Valor-Timestamp; HMAC-SHA256.       │
 // │  • Webhook signing base (Valor Webhook User Guide): the JSON payload      │
 // │    stringified + concatenated with the UTC timestamp. We try that base    │
@@ -36,17 +37,9 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
-// NB: the Passage.js browser library URL lives in the client component
-// (DepositCheckout.tsx), NOT here — this module imports Node's `crypto`, so we
-// keep it server-only and never let the client bundle import from it.
-
-// Staging vs production base URL. isDemo (default true) keeps us on staging
-// until Naldo explicitly flips VALOR_IS_DEMO=false in prod. CONFIRM the prod
-// host — staging is the documented securelink-staging:4430.
-const STAGING_BASE = 'https://securelink-staging.valorpaytech.com:4430';
-// Live gateway is on port 4430 too (NOT 443) — a bare https://securelink…/ hits
-// the Apache front and 404s. Confirmed via the live test (#38 S14).
-const PROD_BASE = 'https://securelink.valorpaytech.com:4430';
+// NB: card data is collected on Valor's HOSTED page (SAQ-A) — it never touches
+// our server. This module imports Node's `crypto` (webhook HMAC), so it stays
+// server-only and the client bundle must never import from it.
 
 export class ValorError extends Error {
   constructor(message: string, public status?: number, public body?: string) {
@@ -55,141 +48,11 @@ export class ValorError extends Error {
   }
 }
 
-type ValorConfig = {
-  appId: string;
-  appKey: string;
-  epi: string;
-  baseUrl: string;
-  isDemo: boolean;
-};
-
 // True only when the three credentials exist. The webhook secret is checked
 // separately in the webhook route (it can be configured independently — Naldo
 // enables webhooks with Valor support after the keys are minted).
 export function isValorConfigured(): boolean {
   return !!(process.env.VALOR_APP_ID && process.env.VALOR_APP_KEY && process.env.VALOR_EPI);
-}
-
-function requireConfig(): ValorConfig {
-  const appId = process.env.VALOR_APP_ID;
-  const appKey = process.env.VALOR_APP_KEY;
-  const epi = process.env.VALOR_EPI;
-  if (!appId || !appKey || !epi) {
-    throw new ValorError(
-      'Valor not configured. Set VALOR_APP_ID, VALOR_APP_KEY and VALOR_EPI in .env.local',
-    );
-  }
-  // Demo unless explicitly turned off — fail safe toward staging so we never
-  // accidentally hit production with a misconfigured deploy.
-  const isDemo = process.env.VALOR_IS_DEMO !== 'false';
-  const baseUrl = (process.env.VALOR_BASE_URL || (isDemo ? STAGING_BASE : PROD_BASE)).replace(
-    /\/+$/,
-    '',
-  );
-  return { appId, appKey, epi, baseUrl, isDemo };
-}
-
-// Valor expects monetary amounts as a fixed 2-decimal string of dollars
-// (e.g. 1234.50). CONFIRM units (dollars vs cents) at live test — isolated here.
-function formatAmount(usd: number): string {
-  return (Math.round(usd * 100) / 100).toFixed(2);
-}
-
-// ─── GetClientToken ─────────────────────────────────────────────────────────
-// Mint a short-lived token authorizing ONE embedded checkout for a specific
-// deposit amount. The browser passes this token to Passage.js; the card data
-// then flows browser → Valor directly. We also embed our quote reference
-// (orderRef) so Valor echoes it back in the confirmation webhook — the same
-// "round-trip our id" trick the home.works signed webhook uses to map back to
-// a quote.
-//
-// saveCard=true asks Valor to vault the card at payment time (tokenize + create
-// the customer/payment profile) so staff can MANUALLY charge the remaining 50%
-// balance in the Valor portal after install. We never auto-charge.
-export type ClientTokenInput = {
-  amountUsd: number; // the 50% deposit, computed server-side from the quote
-  orderRef: string; // our reference echoed back by the webhook (we use it to find the quote)
-  saveCard?: boolean; // vault the card for later manual balance charge (default true)
-  customerEmail?: string | null;
-  customerName?: string | null;
-};
-
-export type ClientTokenResult = {
-  clientToken: string;
-  raw: unknown; // full response, for logging/debug (never contains our app key)
-};
-
-export async function getClientToken(input: ClientTokenInput): Promise<ClientTokenResult> {
-  const cfg = requireConfig();
-
-  // Valor's GetClientToken is a FORM-ENCODED POST to the gateway ROOT (not a
-  // JSON POST to /clienttoken — that 404s on the Apache front). Confirmed param
-  // names: appid/appkey/epi/txn_type (no underscores). We pass amount so the
-  // charge is server-set, and order_id so our reference round-trips to the
-  // confirmation webhook. (save_card/email/name ride along; harmless if ignored.)
-  const form = new URLSearchParams();
-  form.set('appid', cfg.appId);
-  form.set('appkey', cfg.appKey);
-  form.set('epi', cfg.epi);
-  form.set('txn_type', 'sale');
-  form.set('amount', formatAmount(input.amountUsd));
-  form.set('order_id', input.orderRef);
-  if (input.saveCard !== false) form.set('save_card', '1');
-  if (input.customerEmail) form.set('email', input.customerEmail);
-  if (input.customerName) form.set('name', input.customerName);
-
-  let res: Response;
-  try {
-    res = await fetch(`${cfg.baseUrl}/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: form.toString(),
-    });
-  } catch (err) {
-    throw new ValorError(
-      `Valor GetClientToken request failed: ${err instanceof Error ? err.message : 'network error'}`,
-    );
-  }
-
-  const text = await res.text().catch(() => '');
-  if (!res.ok) {
-    // NB: `text` is Valor's response body, which does NOT echo our app key —
-    // safe to surface. We still never log the request body.
-    throw new ValorError(
-      `Valor GetClientToken → ${res.status}: ${text.slice(0, 400)}`,
-      res.status,
-      text.slice(0, 2000),
-    );
-  }
-
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    throw new ValorError(`Valor GetClientToken returned non-JSON: ${text.slice(0, 200)}`);
-  }
-
-  const clientToken = extractClientToken(json);
-  if (!clientToken) {
-    throw new ValorError(
-      `Valor GetClientToken response missing a client token: ${text.slice(0, 300)}`,
-    );
-  }
-  return { clientToken, raw: json };
-}
-
-// Defensive extraction — Valor may nest the token or vary the key casing.
-// CONFIRM the real key at live test and this can be simplified.
-function extractClientToken(json: unknown): string | null {
-  if (!json || typeof json !== 'object') return null;
-  const o = json as Record<string, unknown>;
-  const data = (o.data && typeof o.data === 'object' ? (o.data as Record<string, unknown>) : o) ?? o;
-  const candidate =
-    data.clientToken ?? data.client_token ?? data.token ?? o.clientToken ?? o.client_token;
-  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
 // ─── Hosted Page Sale (ePage) ───────────────────────────────────────────────
@@ -201,11 +64,17 @@ function extractClientToken(json: unknown): string | null {
 //
 // Endpoint (confirmed from the Hosted Page Sale docs): POST a JSON body to
 //   {host}/?pagesale=         on the DEFAULT https port (:443) — NOT :4430.
-// Body uses appid/appkey (no underscores) like GetClientToken. epage MUST be 1.
-// invoicenumber carries OUR order ref so the webhook can map back to the quote.
+// Body uses appid/appkey (no underscores). epage MUST be 1. invoicenumber carries
+// OUR order ref so the webhook can map back to the quote.
 // Response: { error_no:"S00", url:"<hosted page>", uid:"…" }.
 const PAGESALE_STAGING_BASE = 'https://securelink-staging.valorpaytech.com';
 const PAGESALE_PROD_BASE = 'https://securelink.valorpaytech.com';
+
+// Hard ceiling on the outbound Valor call (mirrors googleMaps.ts #80-018). This
+// fetch is awaited inline in the customer-facing /pay + /pay-balance routes, so a
+// hung Valor gateway would otherwise pin the customer's Pay click and bill
+// serverless duration until the platform kills the function.
+const HOSTED_PAGE_TIMEOUT_MS = 10_000;
 
 export type HostedPageInput = {
   amountUsd: number; // the 50% deposit, computed server-side from the snapshot
@@ -260,17 +129,29 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     ...(input.customerEmail ? { email: input.customerEmail } : {}),
   };
 
+  // Hard timeout via AbortController (mirrors googleMaps.ts). On timeout we throw
+  // a clear ValorError — the message never carries the request body, so the
+  // appid/appkey secrets can't leak into logs. The existing catch in /pay +
+  // /pay-balance maps a ValorError to a friendly 502, so a hung gateway fails fast.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOSTED_PAGE_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(`${base}/?pagesale=`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
   } catch (err) {
+    if (controller.signal.aborted) {
+      throw new ValorError(`Valor Hosted Page request timed out after ${HOSTED_PAGE_TIMEOUT_MS}ms`);
+    }
     throw new ValorError(
       `Valor Hosted Page request failed: ${err instanceof Error ? err.message : 'network error'}`,
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   const text = await res.text().catch(() => '');

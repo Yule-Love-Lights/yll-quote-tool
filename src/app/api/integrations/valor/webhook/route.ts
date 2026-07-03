@@ -327,45 +327,14 @@ export async function POST(req: NextRequest) {
     console.error('[api/integrations/valor/webhook] job auto-create failed:', err);
   }
 
-  // #82 follow-up — proactive prep ping to the inventory Telegram group with the
-  // job's full projected materials list (the same work-order projection staff get
-  // by email). Best-effort + dormancy-aware (notifyTelegram no-ops unless the bot
-  // is enabled): a ping failure must never break the webhook or the booking.
-  try {
-    if (job) {
-      const wo = await getJobWorkOrder(job.id);
-      if (wo) {
-        await notifyTelegram(
-          prepJobMessage({
-            customerName: wo.job.customerName,
-            jobNumber: wo.job.jobNumber,
-            materials: wo.materials.materials,
-            unbound: wo.materials.unbound,
-            baseUrl: (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, ''),
-          }),
-        );
-      }
-    }
-  } catch (err) {
-    console.error('[api/integrations/valor/webhook] prep ping failed:', err);
-  }
-
-  // #82 Phase 3 — event-driven auto-PO. Naldo's rule: the scheduled cron sends
-  // every 3 days; this also fires whenever a deposit-paid event leaves us with
-  // ≥5 active jobs queued for materials ("more than 4 installs"). Honors all the
-  // same gates as the cron (PO_AUTO_SEND_ENABLED + supplier config + dedup).
-  // Fully best-effort — the booking is already recorded and a PO send failure
-  // must not block the webhook response.
-  try {
-    const r = await triggerAutoPOIfBusy({ minJobCount: 5 });
-    if (r.ok && r.fired) {
-      console.info(`[api/integrations/valor/webhook] auto-PO fired (${r.items} SKUs across ${r.jobCount} jobs)`);
-    }
-  } catch (err) {
-    console.error('[api/integrations/valor/webhook] auto-PO trigger failed:', err);
-  }
-
-  // ── Best-effort side effects (payment is already recorded) ────────────────
+  // ── Best-effort post-booking side effects (payment is already recorded) ────
+  // W1-027: these external calls (Telegram prep ping, auto-PO trigger, HL stage
+  // move, customer receipt SMS + email, internal alert email) are mutually
+  // INDEPENDENT — the booking claim + createJobFromQuote already ran above and
+  // are the only ordered steps. Running them sequentially added up to seconds of
+  // webhook latency (which risks Valor retrying). Fire them concurrently with
+  // Promise.allSettled: each still logs its own failure individually and stays
+  // non-fatal exactly as before — the payment is recorded regardless.
   const depositUsd =
     event.amountUsd ??
     quote.deposit_amount_usd ??
@@ -377,29 +346,66 @@ export async function POST(req: NextRequest) {
     quote.result?.total ??
     quote.total ??
     depositUsd * 2;
+  const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
 
-  // 1. HighLevel: move the opportunity card → ⏰Approved AND reset its value to
-  //    what the customer ACTUALLY approved (#107 — the card carried the "Full
-  //    Yule" ceiling pre-approval; `totalUsd` above is the approved-selection
-  //    total from the snapshot). Falls back to the SIGNED stage var (same stage
-  //    id per the ledger) if the dedicated APPROVED var isn't set.
+  // Result flags mutated by the parallel tasks below (each writes only its own).
   let stageUpdated = false;
   let stageError: string | undefined;
-  const approvedStage =
-    process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED || process.env.HIGHLEVEL_STAGE_QUOTE_SIGNED;
-  if (!quote.highlevel_opportunity_id) {
-    stageError = 'No HighLevel opportunity linked to this quote';
-  } else if (!isHighLevelConfigured()) {
-    stageError = 'HighLevel not configured';
-  } else if (!approvedStage) {
-    stageError = 'HIGHLEVEL_STAGE_QUOTE_APPROVED env var not set';
-  } else {
+  let customerSmsSent = false;
+  let customerEmailSent = false;
+  let internalEmailSent = false;
+
+  // #82 follow-up — proactive prep ping to the inventory Telegram group with the
+  // job's full projected materials list. Best-effort + dormancy-aware (notifyTelegram
+  // no-ops unless the bot is enabled).
+  const prepPing = async () => {
+    if (!job) return;
+    const wo = await getJobWorkOrder(job.id);
+    if (wo) {
+      await notifyTelegram(
+        prepJobMessage({
+          customerName: wo.job.customerName,
+          jobNumber: wo.job.jobNumber,
+          materials: wo.materials.materials,
+          unbound: wo.materials.unbound,
+          baseUrl,
+        }),
+      );
+    }
+  };
+
+  // #82 Phase 3 — event-driven auto-PO. Fires whenever a deposit-paid event leaves
+  // us with ≥5 active jobs queued for materials ("more than 4 installs"). Honors
+  // all the same gates as the cron (PO_AUTO_SEND_ENABLED + supplier config + dedup).
+  const autoPO = async () => {
+    const r = await triggerAutoPOIfBusy({ minJobCount: 5 });
+    if (r.ok && r.fired) {
+      console.info(`[api/integrations/valor/webhook] auto-PO fired (${r.items} SKUs across ${r.jobCount} jobs)`);
+    }
+  };
+
+  // HighLevel: move the opportunity card → ⏰Approved AND reset its value to what
+  // the customer ACTUALLY approved (#107). Falls back to the SIGNED stage var
+  // (same stage id per the ledger) if the dedicated APPROVED var isn't set.
+  const hlStageMove = async () => {
+    const approvedStage =
+      process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED || process.env.HIGHLEVEL_STAGE_QUOTE_SIGNED;
+    if (!quote.highlevel_opportunity_id) {
+      stageError = 'No HighLevel opportunity linked to this quote';
+      return;
+    }
+    if (!isHighLevelConfigured()) {
+      stageError = 'HighLevel not configured';
+      return;
+    }
+    if (!approvedStage) {
+      stageError = 'HIGHLEVEL_STAGE_QUOTE_APPROVED env var not set';
+      return;
+    }
     try {
       await updateOpportunity(quote.highlevel_opportunity_id, {
         pipelineStageId: approvedStage,
-        // Guard 0/missing so a degenerate total never BLANKS a live card:
-        // updateOpportunity omits `undefined` but would push a literal `0`.
-        // Mirrors the attach route's `> 0` guard.
+        // Guard 0/missing so a degenerate total never BLANKS a live card.
         monetaryValue: totalUsd > 0 ? totalUsd : undefined,
       });
       stageUpdated = true;
@@ -407,74 +413,94 @@ export async function POST(req: NextRequest) {
       console.warn('[api/integrations/valor/webhook] HL stage move failed:', hlErrorMessage(err));
       stageError = hlErrorMessage(err);
     }
+  };
+
+  // Customer receipt SMS + email and the internal "deposit received" alert, via GHL.
+  const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+  const confirmationUrl = `${baseUrl}/portal/${quote.id}/approved`;
+  const adminUrl = `${baseUrl}/quote/${quote.id}`;
+  const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+  const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+  const hlReady = isHighLevelConfigured();
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+
+  const customerSms = async () => {
+    if (!hlReady || !quote.highlevel_contact_id) return;
+    try {
+      await sendSms({
+        contactId: quote.highlevel_contact_id,
+        message: receiptSmsBody(firstName, depositUsd, phone),
+        fromNumber,
+      });
+      customerSmsSent = true;
+    } catch (err) {
+      console.warn('[api/integrations/valor/webhook] receipt SMS failed:', hlErrorMessage(err));
+    }
+  };
+
+  const customerEmail = async () => {
+    if (!hlReady || !quote.highlevel_contact_id) return;
+    try {
+      await sendEmail({
+        contactId: quote.highlevel_contact_id,
+        subject: RECEIPT_EMAIL_SUBJECT,
+        html: receiptEmailHtml({
+          firstName,
+          depositUsd,
+          totalUsd,
+          receiptUrl: event.receiptUrl,
+          confirmationUrl,
+          phone,
+        }),
+        emailFrom,
+      });
+      customerEmailSent = true;
+    } catch (err) {
+      console.warn('[api/integrations/valor/webhook] receipt email failed:', hlErrorMessage(err));
+    }
+  };
+
+  const internalEmail = async () => {
+    if (!hlReady || !internalContactId) return;
+    try {
+      await sendEmail({
+        contactId: internalContactId,
+        subject: internalPaidEmailSubject(quote.customer_name),
+        html: internalPaidEmailHtml({
+          customerName: quote.customer_name,
+          depositUsd,
+          totalUsd,
+          txnId: event.txnId,
+          approvalCode: event.approvalCode,
+          receiptUrl: event.receiptUrl,
+          adminUrl,
+        }),
+        emailFrom,
+      });
+      internalEmailSent = true;
+    } catch (err) {
+      console.warn('[api/integrations/valor/webhook] internal email failed:', hlErrorMessage(err));
+    }
+  };
+
+  // Run the independent side effects concurrently. Each already swallows + logs
+  // its own error; allSettled is belt-and-suspenders so one unexpected throw can
+  // never reject the batch or the webhook.
+  const settled = await Promise.allSettled([
+    prepPing(),
+    autoPO(),
+    hlStageMove(),
+    customerSms(),
+    customerEmail(),
+    internalEmail(),
+  ]);
+  const [prepR, autoPOR] = settled;
+  if (prepR.status === 'rejected') {
+    console.error('[api/integrations/valor/webhook] prep ping failed:', prepR.reason);
   }
-
-  // 2. Customer receipt + 3. internal "deposit received" alert, via GHL.
-  let customerSmsSent = false;
-  let customerEmailSent = false;
-  let internalEmailSent = false;
-  if (isHighLevelConfigured()) {
-    const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
-    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-    const confirmationUrl = `${baseUrl}/portal/${quote.id}/approved`;
-    const adminUrl = `${baseUrl}/quote/${quote.id}`;
-    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
-    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
-    const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
-
-    if (quote.highlevel_contact_id) {
-      try {
-        await sendSms({
-          contactId: quote.highlevel_contact_id,
-          message: receiptSmsBody(firstName, depositUsd, phone),
-          fromNumber,
-        });
-        customerSmsSent = true;
-      } catch (err) {
-        console.warn('[api/integrations/valor/webhook] receipt SMS failed:', hlErrorMessage(err));
-      }
-      try {
-        await sendEmail({
-          contactId: quote.highlevel_contact_id,
-          subject: RECEIPT_EMAIL_SUBJECT,
-          html: receiptEmailHtml({
-            firstName,
-            depositUsd,
-            totalUsd,
-            receiptUrl: event.receiptUrl,
-            confirmationUrl,
-            phone,
-          }),
-          emailFrom,
-        });
-        customerEmailSent = true;
-      } catch (err) {
-        console.warn('[api/integrations/valor/webhook] receipt email failed:', hlErrorMessage(err));
-      }
-    }
-
-    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
-    if (internalContactId) {
-      try {
-        await sendEmail({
-          contactId: internalContactId,
-          subject: internalPaidEmailSubject(quote.customer_name),
-          html: internalPaidEmailHtml({
-            customerName: quote.customer_name,
-            depositUsd,
-            totalUsd,
-            txnId: event.txnId,
-            approvalCode: event.approvalCode,
-            receiptUrl: event.receiptUrl,
-            adminUrl,
-          }),
-          emailFrom,
-        });
-        internalEmailSent = true;
-      } catch (err) {
-        console.warn('[api/integrations/valor/webhook] internal email failed:', hlErrorMessage(err));
-      }
-    }
+  if (autoPOR.status === 'rejected') {
+    console.error('[api/integrations/valor/webhook] auto-PO trigger failed:', autoPOR.reason);
   }
 
   return NextResponse.json({

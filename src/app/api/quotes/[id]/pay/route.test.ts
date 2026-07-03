@@ -31,13 +31,25 @@ vi.mock('@/lib/integrations/valor', () => ({
 
 import { POST } from './route';
 
-// Fake Supabase builder: read = from().select().eq().single(); the order-ref
-// stamp = from().update().eq() (awaited). Thenable resolves the stamp.
+// Fake Supabase builder: read = from().select().eq().single(); the guarded
+// order-ref stamp = from().update().eq().is().is().select() (awaited, resolves
+// { data: rows }). `stampRows` is what the guarded stamp's .select() returns
+// (default = one row = we won the claim). `rereadQuote`, when set, is returned
+// by the SECOND read (the race re-read) — otherwise the re-read returns `quote`.
 type Quote = Record<string, unknown> | null;
-function makeSb(quote: Quote, stampError: { message: string } | null = null) {
+function makeSb(
+  quote: Quote,
+  opts: {
+    stampError?: { message: string } | null;
+    stampRows?: Array<{ id: string }> | null;
+    rereadQuote?: Quote;
+  } = {},
+) {
+  const { stampError = null, stampRows, rereadQuote } = opts;
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
+  let reads = 0;
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
@@ -47,9 +59,16 @@ function makeSb(quote: Quote, stampError: { message: string } | null = null) {
       return builder;
     },
     eq: () => builder,
-    single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
+    is: () => builder,
+    single: async () => {
+      reads += 1;
+      const row = reads >= 2 && rereadQuote !== undefined ? rereadQuote : quote;
+      return { data: row, error: row ? null : { message: 'no row' } };
+    },
     then: (resolve: (v: unknown) => void) => {
-      const res = isUpdate ? { error: stampError } : { data: quote, error: null };
+      const res = isUpdate
+        ? { data: stampRows === undefined ? [{ id: String(ID) }] : stampRows, error: stampError }
+        : { data: quote, error: null };
       isUpdate = false;
       resolve(res);
     },
@@ -110,12 +129,65 @@ describe('POST /api/quotes/[id]/pay', () => {
   });
 
   it('reuses an existing order ref so the webhook mapping stays stable', async () => {
-    const { client } = makeSb({ ...APPROVED_QUOTE, valor_order_ref: 'qexisting00000000' });
+    const { client, updatePayloads } = makeSb({
+      ...APPROVED_QUOTE,
+      valor_order_ref: 'qexisting00000000',
+    });
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
     const json = await res.json();
     expect(json.orderRef).toBe('qexisting00000000');
+    // Reusing an existing ref must NOT re-stamp — that could clobber a
+    // webhook-recorded actual deposit with the intended amount.
+    expect(updatePayloads.length).toBe(0);
+  });
+
+  it('W1-015: on a lost first-stamp race, reuses the WINNER ref instead of orphaning', async () => {
+    // Our guarded stamp matches 0 rows (a concurrent open won). The re-read shows
+    // the winner's ref + still-unpaid — reuse it so the hosted page carries a ref
+    // the webhook can map (no orphaned charged-but-never-booked payment).
+    const { client } = makeSb(
+      { ...APPROVED_QUOTE }, // first read: no ref yet
+      {
+        stampRows: [], // guarded stamp updated 0 rows (lost the race)
+        rereadQuote: {
+          ...APPROVED_QUOTE,
+          valor_order_ref: 'qwinner0000000000',
+          deposit_paid_at: null,
+        },
+      },
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.orderRef).toBe('qwinner0000000000');
+    expect(valor.createHostedPageSale).toHaveBeenCalledWith(
+      expect.objectContaining({ orderRef: 'qwinner0000000000' }),
+    );
+  });
+
+  it('W1-015: 409s already-paid when the lost-race re-read shows the deposit now paid', async () => {
+    const { client } = makeSb(
+      { ...APPROVED_QUOTE },
+      {
+        stampRows: [], // guarded stamp updated 0 rows
+        rereadQuote: {
+          ...APPROVED_QUOTE,
+          valor_order_ref: 'qwinner0000000000',
+          deposit_paid_at: '2026-06-25T02:00:00Z', // the winner already got paid
+        },
+      },
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('already-paid');
+    expect(valor.createHostedPageSale).not.toHaveBeenCalled();
   });
 
   it('503s when Valor is not configured', async () => {

@@ -77,12 +77,11 @@ import {
   minimumOrderSubtotal,
   orderMinimumStatus,
 } from '@/lib/portal/derivePackages';
+// #110 W1-064: shared plain round-to-cents (was copy-pasted here / derivePackages).
+// Aliased to `round2` so call sites are byte-identical.
+import { roundMoney as round2 } from '@/lib/money';
 
 export const runtime = 'nodejs';
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
