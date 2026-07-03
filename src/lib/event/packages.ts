@@ -1,16 +1,49 @@
-// Event Lighting — portal package derivation (service_type = 'event').
+// Auto-derive portal packages for an EVENT quote (#96 Phase B).
 //
-// Events don't use the holiday A/B/C/D tier ladder. Naldo's model: ONE
-// "what's included" set (every line on the quote, toggleable on the portal)
-// plus a couple soft SUGGESTIONS — popular event add-ons NOT already on the
-// quote that the customer can ask us to add. This is the light, always-a-
-// suggestion-never-auto-add version of the deferred recommendation engine.
+// Events don't use the holiday A/B/C/D tier ladder (or permanent's per-side
+// packages). Naldo's model: ONE "what's included" package — every line on the
+// quote, bundled — with the customer toggling individual items on the portal.
+// derivePackagesEvent returns that single PortalPackage[] so it slots into the
+// portal adapter's package dispatch and reuses the holiday portal (same as
+// permanent). It reuses the shared money plumbing (chargesFromResult +
+// effectiveCharges + priceSelection) so tax/deposit math is identical; events
+// never carry a rush fee or takedown.
 //
-// Isolated Phase-A module: pure fn of the event line items. Consumed by the
-// event portal (Phase B). Suggestion COPY is placeholder/draft — Naldo approves
-// the customer-facing wording before the portal ships.
+// eventSuggestions() is the light "a couple soft add-ons" logic (Naldo's package
+// answer) — a pure fn kept for the future event-portal suggestions UI.
 
+import { chargesFromResult, effectiveCharges, priceSelection } from '@/lib/portal/derivePackages';
+import type { PortalLineItem, PortalPackage } from '@/components/portal/types';
 import type { LineItem, QuoteResult } from '@/lib/pricing/pricingEngine';
+
+/**
+ * The single event package: everything on the quote bundled into one card. The
+ * customer picks the specific pieces via the portal's per-item toggles.
+ */
+export function derivePackagesEvent(
+  lineItems: PortalLineItem[],
+  result: QuoteResult,
+): PortalPackage[] {
+  if (lineItems.length === 0) return [];
+  // Events never carry rush/takedown — force both off (same as permanent). Same
+  // tax source (chargesFromResult) so the money math stays identical to holiday.
+  const charges = effectiveCharges(chargesFromResult(result), false, false);
+  const subtotal = lineItems.reduce((sum, li) => sum + li.price, 0);
+  const p = priceSelection(subtotal, charges);
+  return [
+    {
+      id: 'D',
+      name: 'Your event lighting',
+      tagline: "Everything we'll light for your event.",
+      total: p.total,
+      deposit: p.deposit,
+      recommended: true,
+      includedItemIds: lineItems.map((li) => li.id),
+    },
+  ];
+}
+
+// ── Soft add-on suggestions (deferred portal UI) ────────────────────────────
 
 export type EventAddOnKey = 'roofline' | 'curtain' | 'spritzers' | 'bushWraps' | 'bistro';
 
@@ -22,16 +55,8 @@ export type EventSuggestion = {
   blurb: string;
 };
 
-export type EventPackage = {
-  /** The single package — every line on the quote, included by default and
-   *  toggleable on the portal (customers pick the specific pieces they want). */
-  includedItems: LineItem[];
-  /** A few "add if you'd like" prompts for popular add-ons not already present. */
-  suggestions: EventSuggestion[];
-};
-
-// Draft suggestion copy — leads with the feeling (Outsider/council note: a bride
-// doesn't know "C9"/"spritzer"). Naldo approves final wording in Phase B.
+// Draft suggestion copy — leads with the feeling (council/Outsider). Naldo
+// approves final wording when the suggestions UI is built.
 const SUGGESTION_CATALOG: Record<EventAddOnKey, EventSuggestion> = {
   roofline: {
     key: 'roofline',
@@ -64,21 +89,19 @@ const SUGGESTION_CATALOG: Record<EventAddOnKey, EventSuggestion> = {
 export const MAX_EVENT_SUGGESTIONS = 3;
 
 function hasRoofline(lines: LineItem[]): boolean {
-  return lines.some(l => l.id === 'roofline-santas' || l.id === 'roofline-gingerbread');
+  return lines.some((l) => l.id === 'roofline-santas' || l.id === 'roofline-gingerbread');
 }
 function hasCurtain(lines: LineItem[]): boolean {
-  return lines.some(l => /curtain/i.test(l.label));
+  return lines.some((l) => /curtain/i.test(l.label));
 }
 function hasSpritzers(lines: LineItem[]): boolean {
-  return lines.some(l => /spritzer/i.test(l.label));
+  return lines.some((l) => /spritzer/i.test(l.label));
 }
-// "Wrapped greenery" = bush/tree mini wraps (columns/railings are structural, not
-// what this suggestion is about; curtain is its own category via 'Curtain Lights').
 function hasBushWraps(lines: LineItem[]): boolean {
-  return lines.some(l => /\b(bush|tree)\b/i.test(l.label));
+  return lines.some((l) => /\b(bush|tree)\b/i.test(l.label));
 }
 function hasBistro(lines: LineItem[]): boolean {
-  return lines.some(l => /bistro/i.test(l.label));
+  return lines.some((l) => /bistro/i.test(l.label));
 }
 
 function isPresent(key: EventAddOnKey, lines: LineItem[]): boolean {
@@ -97,25 +120,19 @@ function isPresent(key: EventAddOnKey, lines: LineItem[]): boolean {
 }
 
 /**
- * Derive the event portal package: the single included set + a short, ordered
- * list of suggested add-ons that aren't already on the quote. Pure + deterministic.
+ * A short, context-aware list of popular event add-ons NOT already on the quote.
+ * A backyard bistro with no front roofline leads with the roofline (the arrival
+ * "wow"); otherwise the easy adds in order. Capped at a few. Pure + deterministic.
  */
-export function derivePackagesEvent(result: Pick<QuoteResult, 'lineItems'>): EventPackage {
+export function eventSuggestions(result: Pick<QuoteResult, 'lineItems'>): EventSuggestion[] {
   const lines = result.lineItems;
-
-  // Suggestion priority: a backyard bistro with no front roofline leads with the
-  // roofline (the arrival "wow" Naldo described); otherwise the easy, popular adds
-  // in order. Only categories NOT already on the quote are offered, capped at a few.
   const order: EventAddOnKey[] = [];
   if (hasBistro(lines) && !hasRoofline(lines)) order.push('roofline');
   for (const key of ['curtain', 'spritzers', 'bushWraps', 'roofline', 'bistro'] as EventAddOnKey[]) {
     if (!order.includes(key)) order.push(key);
   }
-
-  const suggestions = order
-    .filter(key => !isPresent(key, lines))
+  return order
+    .filter((key) => !isPresent(key, lines))
     .slice(0, MAX_EVENT_SUGGESTIONS)
-    .map(key => SUGGESTION_CATALOG[key]);
-
-  return { includedItems: lines, suggestions };
+    .map((key) => SUGGESTION_CATALOG[key]);
 }

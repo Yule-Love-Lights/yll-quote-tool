@@ -22,6 +22,7 @@ import type {
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
+import { derivePackagesEvent } from '@/lib/event/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -398,10 +399,15 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   //
   // Permanent Lighting (#88 P5): surface-based packages (front/sides/back/
   // whole-home) instead of the holiday roofline/spritzer tier ladder.
+  // Event Lighting (#96 Phase B): ONE "what's included" package (all line items
+  // bundled) instead of the holiday tier ladder / permanent surface packages.
   const isPermanent = row.service_type === 'permanent';
+  const isEvent = row.service_type === 'event';
   const packages = isPermanent
     ? derivePackagesPermanent(lineItems, row.result)
-    : derivePackages(lineItems, row.result, roofline);
+    : isEvent
+      ? derivePackagesEvent(lineItems, row.result)
+      : derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
