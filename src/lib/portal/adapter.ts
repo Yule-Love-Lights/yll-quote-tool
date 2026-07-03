@@ -189,13 +189,19 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
     });
 }
 
-// The engine's single billed roofline — Santa's ("…Roofline…") or Gingerbread
-// (incl. the legacy "Gingerbread Ridge" wording). NOT Winter Wonderland or Stake
-// Lighting, which are independent and stay line items (WW parses to 'ridge',
-// Stake to its own 'stake-lighting' kind; neither label matches below).
-// Matched by label (not kind) so an unparseable item — which falls back to
-// kind 'roofline' — is never mistaken for the roofline.
-function isBilledRoofline(label: string): boolean {
+// The stable ids the engine now stamps on its single billed roofline row
+// (#104, pricingEngine.ts:428/437) — Santa's or Gingerbread. Same ids the
+// option items below are synthesized with, so identity matching is exact.
+const BILLED_ROOFLINE_IDS = new Set(['roofline-santas', 'roofline-gingerbread']);
+
+// LEGACY label fallback ONLY — matches the engine's single billed roofline by
+// its label wording ("…Roofline…" / "Gingerbread", incl. the old "Gingerbread
+// Ridge"). Used exclusively for pre-#104 results whose billed roofline carries
+// NO stable id; modern results drop it by identity via BILLED_ROOFLINE_IDS.
+// A staff-typed CUSTOM line item can share these words (e.g. "Gingerbread house
+// display" — W1-005), so this must NEVER run against a modern result — see the
+// guard at the call site.
+function isBilledRooflineLabel(label: string): boolean {
   return /Roofline/i.test(label) || /Gingerbread/i.test(label);
 }
 
@@ -244,7 +250,28 @@ export function buildPortalLineItems(result: QuoteResult, inputs: QuoteInputs | 
 
   // Drop the engine's single billed roofline; the option items replace it and
   // lead the list, where the billed roofline sat before.
-  const rest = all.filter((li) => !isBilledRoofline(li.label));
+  //
+  // Drop by IDENTITY, not label (#110 W1-005). The billed roofline now carries
+  // a stable id ('roofline-santas' / 'roofline-gingerbread', #104). Matching the
+  // label regex against every row deleted staff-typed CUSTOM items whose freeform
+  // label happened to contain "Roofline"/"Gingerbread" (e.g. "Gingerbread house
+  // display – $250") — silently dropping them from the portal list, the tiers,
+  // the $1,000 gate, AND the approve route's authoritative recompute (same fn),
+  // so the customer approved+paid a total that excluded them.
+  //
+  // Modern results (the billed roofline has a stable id) → drop by id ONLY; the
+  // label regex never runs, so custom items with those words survive. Legacy
+  // pre-#104 results (billed roofline had no id) fall back to the label regex —
+  // scoped to roofline/ridge kinds so a differently-kinded row is never dropped.
+  const hasStableRoofline = all.some((li) => li.stableId && BILLED_ROOFLINE_IDS.has(li.stableId));
+  const rest = all.filter((li) => {
+    if (li.stableId) return !BILLED_ROOFLINE_IDS.has(li.stableId);
+    // No stable id: an id-carrying modern result already handled its billed
+    // roofline above, so any remaining row here is a custom/manual item — keep
+    // it. Only for a fully-legacy result do we fall back to the label regex.
+    if (hasStableRoofline) return true;
+    return !(isBilledRooflineLabel(li.label) && (li.kind === 'roofline' || li.kind === 'ridge'));
+  });
   return {
     lineItems: [...optionItems, ...rest],
     roofline: { itemIds: optionItems.map((i) => i.id), recommendedItemId: recommended },
