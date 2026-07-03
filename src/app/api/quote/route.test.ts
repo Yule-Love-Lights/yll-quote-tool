@@ -8,8 +8,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
-  save: vi.fn(async () => ({ id: 'new-id' })),
-  update: vi.fn(async () => ({ id: 'existing-id' })),
+  // Typed varargs so `.mock.calls[n]` is an indexable unknown[] (the permanent
+  // dispatch tests read positional args like calls[0][3] = serviceType).
+  save: vi.fn(async (..._args: unknown[]) => ({ id: 'new-id' })),
+  update: vi.fn(async (..._args: unknown[]) => ({ id: 'existing-id' })),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
   // undefined default = a plain draft (no lifecycle timestamps → not booked).
