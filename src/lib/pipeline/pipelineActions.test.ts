@@ -56,9 +56,15 @@ describe('pipelineActions', () => {
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'done' } })).toEqual(['details']);
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'cancelled' } })).toEqual(['details']);
   });
-  it('declined/cancelled/lost → details only', () => {
+  it('declined/cancelled/lost → rebook + details (revive a dead quote, #116)', () => {
     for (const s of ['declined', 'cancelled', 'lost'] as const)
-      expect(kinds({ ...base, quoteStatus: s })).toEqual(['details']);
+      expect(kinds({ ...base, quoteStatus: s })).toEqual(['rebook', 'details']);
+  });
+  it('offers rebook only from the terminal states (declined/cancelled/lost), never from a live one', () => {
+    for (const s of ['declined', 'cancelled', 'lost'] as const)
+      expect(kinds({ ...base, quoteStatus: s })).toContain('rebook');
+    for (const s of ['draft', 'sent', 'viewed', 'changes_requested', 'approved', 'booked'] as const)
+      expect(kinds({ ...base, quoteStatus: s })).not.toContain('rebook');
   });
   it('offers staff-decline only from the states a decline is legal FROM (sent/viewed/changes_requested)', () => {
     // Mirror quoteStatus.ts canTransition(from, "declined") = {sent, viewed, changes_requested}.

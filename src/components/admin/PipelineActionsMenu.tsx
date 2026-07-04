@@ -83,6 +83,20 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       // Navigate to the quote builder (edit page) — no fetch needed.
       window.location.assign(`/quote/${q}`);
       return null;
+    case 'rebook': {
+      // #116: clone a dead quote into a fresh draft, then open the new draft in
+      // the builder. The original terminal quote is left untouched.
+      if (!window.confirm('Rebook this quote into a fresh draft? The original stays unchanged.')) return null;
+      const res = await fetch(`/api/quotes/${q}/rebook`, { method: 'POST' });
+      if (res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { quoteId?: string };
+        if (body.quoteId) {
+          window.location.assign(`/quote/${body.quoteId}`);
+          return null; // navigation handles the "done"
+        }
+      }
+      return res; // let onPick surface any error
+    }
     default:
       return null;
   }
