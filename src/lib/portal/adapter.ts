@@ -214,7 +214,10 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
 // The stable ids the engine now stamps on its single billed roofline row
 // (#104, pricingEngine.ts:428/437) — Santa's or Gingerbread. Same ids the
 // option items below are synthesized with, so identity matching is exact.
-const BILLED_ROOFLINE_IDS = new Set(['roofline-santas', 'roofline-gingerbread']);
+// Exported so any other UI that must drop/skip the billed roofline row (e.g.
+// the staff Quote Breakdown, #110 W3-003) filters by the same stable ids
+// instead of a fragile label match that can drop staff custom line items.
+export const BILLED_ROOFLINE_IDS = new Set(['roofline-santas', 'roofline-gingerbread']);
 
 // LEGACY label fallback ONLY — matches the engine's single billed roofline by
 // its label wording ("…Roofline…" / "Gingerbread", incl. the old "Gingerbread
