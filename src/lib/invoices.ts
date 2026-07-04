@@ -436,7 +436,14 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
   // a pricing source.
   const result = quote.result ?? { total: 0 };
   const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, result);
-  const pricing: InvoicePricingInput = { ...result, total: agreedTotal };
+  // Scale the whole-quote tax to the AGREED (possibly partial) selection so the
+  // invoice's tax line matches what was approved — mirrors setInvoiceTaxOverride so
+  // the two write paths stamp the same tax for a partial selection (exact under the
+  // flat rate: total = taxable × (1+rate), so agreed/fullTotal = taxable ratio).
+  const fullTotal = result.total ?? 0;
+  const scaledTax =
+    fullTotal > 0 ? round2((result.taxAmount ?? 0) * (agreedTotal / fullTotal)) : (result.taxAmount ?? 0);
+  const pricing: InvoicePricingInput = { ...result, taxAmount: scaledTax, total: agreedTotal };
   // The deposit ACTUALLY applied: the durable charged amount when the deposit was
   // confirmed paid; the computed 50% only as a legacy fallback; 0 if never paid.
   const depositPaid = quote.deposit_paid_at

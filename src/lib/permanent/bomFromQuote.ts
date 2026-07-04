@@ -24,7 +24,10 @@ export function permanentBomInputFromFields(p: PermanentQuoteFields): PermanentB
     trackColor: p.trackColor,
     blackHousing: p.blackHousing,
     controllerToFirstLightFt: p.controllerToFirstLightFt,
-    gaps: p.gaps,
+    // Default to [] — inputs.permanent comes from untyped DB JSON, and a stored
+    // block that predates/omits gaps would otherwise be undefined → buildPermanentBom
+    // does `input.gaps.filter(...)`, 500-ing the operator BOM + print pages.
+    gaps: Array.isArray(p.gaps) ? p.gaps : [],
   };
 }
 
