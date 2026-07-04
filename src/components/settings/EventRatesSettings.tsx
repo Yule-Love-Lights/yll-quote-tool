@@ -57,7 +57,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export function EventRatesSettings() {
   const [rates, setRates] = useState<EventRates>(DEFAULT_EVENT_RATES);
-  const [enabled, setEnabled] = useState(false);
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -71,7 +70,6 @@ export function EventRatesSettings() {
         const data = await res.json();
         if (!active) return;
         if (data?.eventRates) setRates(data.eventRates as EventRates);
-        if (typeof data?.eventEnabled === 'boolean') setEnabled(data.eventEnabled);
         setStatus('idle');
       } catch (e) {
         if (active) {
@@ -98,7 +96,7 @@ export function EventRatesSettings() {
       const res = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventRates: rates, eventEnabled: enabled }),
+        body: JSON.stringify({ eventRates: rates }),
       });
       if (!res.ok) {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
@@ -106,7 +104,6 @@ export function EventRatesSettings() {
       }
       const data = await res.json();
       if (data?.eventRates) setRates(data.eventRates as EventRates);
-      if (typeof data?.eventEnabled === 'boolean') setEnabled(data.eventEnabled);
       setStatus('saved');
       setDirty(false);
     } catch (e) {
@@ -128,24 +125,6 @@ export function EventRatesSettings() {
           or zero value resets to the default on save.
         </p>
       </div>
-
-      <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => {
-            setEnabled(e.target.checked);
-            setDirty(true);
-            if (status === 'saved') setStatus('idle');
-          }}
-          className="mt-0.5 h-4 w-4"
-        />
-        <span className="text-sm text-gray-700">
-          <span className="font-semibold">Enable Event quoting</span> — show the Event option in the quote
-          builder. Keep this OFF until the event customer portal is ready (an event quote currently renders
-          the Christmas portal). Staff-only while off.
-        </span>
-      </label>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Section title="C9 rooflines ($/ft)">
