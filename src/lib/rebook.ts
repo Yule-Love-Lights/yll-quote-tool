@@ -36,6 +36,19 @@ export type RebookSource = {
 // status, not a NULL that relies on the deriveStatus fallback) now that the
 // status spine has merged. The new id + created_at come from the DB defaults.
 // service_type is only set when present so the clone can't reset the column to NULL.
+// A rebooked permanent quote must re-price at CURRENT rates when staff click
+// Calculate on the new draft — result.permanentRatesSnapshot is the H1 rate-freeze
+// guard for OUTSTANDING quotes, NOT a brand-new season's draft. Strip it from the
+// carried result so the /api/quote update branch's price source falls through to
+// live app_settings rates (it reads existing?.result?.permanentRatesSnapshot ?? live).
+// No-op for holiday results (no snapshot present).
+function stripPermanentSnapshot(result: RebookSource['result']): RebookSource['result'] {
+  if (!result || typeof result !== 'object') return result;
+  const rest = { ...(result as Record<string, unknown>) };
+  delete rest.permanentRatesSnapshot;
+  return rest as RebookSource['result'];
+}
+
 export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
   return {
     customer_name: src.customer_name ?? 'Anonymous',
@@ -46,7 +59,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
     inputs: src.inputs,
-    result: src.result,
+    result: stripPermanentSnapshot(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
     property_id: src.property_id ?? null,

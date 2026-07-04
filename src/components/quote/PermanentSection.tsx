@@ -68,6 +68,11 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
         detectedFt: c.lengthFt,
         source: 'auto' as const,
       }));
+      // Auto rows are regenerated fresh from geometry; only operator-added 'manual'
+      // rows survive. An 'edited' row (operator ticked a splitter or corrected an
+      // auto gap's length) is reset — count them so we can warn instead of silently
+      // dropping the operator's splitter flags / length corrections.
+      const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
       const gaps = [...autoRows, ...form.permanent.gaps.filter((g) => g.source === 'manual')];
       setForm((f) => ({
         ...f,
@@ -78,10 +83,29 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
           gaps,
         },
       }));
+      // Refresh writes FRONT footage only (left/right/back are satellite-measured
+      // and manually entered, so overwriting them would wipe the operator's numbers).
+      // But warn about design footage refresh does NOT carry through, so a tagged
+      // side run can't be silently dropped → under-billed with no signal.
+      const sideFt = proj.feetBySide.left + proj.feetBySide.right + proj.feetBySide.back;
+      const warnings: string[] = [];
       if (proj.feetBySide.unassigned > 0) {
-        setRefreshWarning(
-          `⚠ ${proj.feetBySide.unassigned} ft of permanent strands aren't tagged front/left/right/back — tag them in the design so they're counted.`
+        warnings.push(
+          `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
         );
+      }
+      if (sideFt > 0) {
+        warnings.push(
+          `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
+        );
+      }
+      if (resetEditedGaps > 0) {
+        warnings.push(
+          `${resetEditedGaps} edited gap ${resetEditedGaps === 1 ? 'row was' : 'rows were'} reset to the auto-detected values — re-apply any splitter flags or length corrections`
+        );
+      }
+      if (warnings.length > 0) {
+        setRefreshWarning(`⚠ ${warnings.join('. ')}.`);
       }
     } catch {
       setRefreshWarning("Couldn't load the design to refresh.");

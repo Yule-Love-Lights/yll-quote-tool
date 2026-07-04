@@ -357,7 +357,7 @@ export function InteractiveHero({
                         track the live selection so they don't out-claim the
                         sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' ? 'Custom' : `Tier ${i + 1}`}
+                      {p.id === 'D' && serviceType !== 'permanent' ? 'Custom' : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
