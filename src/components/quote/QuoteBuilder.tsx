@@ -642,17 +642,22 @@ export default function QuoteBuilder({
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
+      // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
+      // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
+      // rooflines only). Never derive those two fields from a satellite draw on a
+      // non-holiday quote, or footage would silently persist unbilled (finding #1).
+      const isHoliday = f.serviceType === 'holiday';
       const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
       const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
-      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
-      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget;
+      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target || !isHoliday;
+      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget || !isHoliday;
       if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
       return {
         ...f,
         ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
         ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
-        ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
-        ...(stakeTarget != null ? { stakeLightingFootage: stakeTarget } : {}),
+        ...(c9Target != null && isHoliday ? { winterWonderlandFootage: c9Target } : {}),
+        ...(stakeTarget != null && isHoliday ? { stakeLightingFootage: stakeTarget } : {}),
       };
     }));
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
@@ -2382,14 +2387,20 @@ export default function QuoteBuilder({
                           className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
                           + Add Ridge / Side
                         </button>
-                        <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
-                          className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
-                          + Add C9 Run
-                        </button>
-                        <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
-                          className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
-                          + Add Stake Run
-                        </button>
+                        {/* C9 Custom Runs + Stake are holiday-only — the event/permanent
+                            engines don't price winterWonderland/stakeLighting (finding #1). */}
+                        {form.serviceType === 'holiday' && (
+                          <>
+                            <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
+                              className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
+                              + Add C9 Run
+                            </button>
+                            <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
+                              className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                              + Add Stake Run
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -2443,6 +2454,9 @@ export default function QuoteBuilder({
                           <p className="text-xs text-gray-400 ml-6">No segments</p>
                         )}
                       </div>
+                      {/* C9 Custom Runs + Stake summary/edit panels — holiday-only; the
+                          event/permanent engines don't price these fields (finding #1). */}
+                      {form.serviceType === 'holiday' && (<>
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-emerald-500 rounded"></span>
@@ -2537,6 +2551,7 @@ export default function QuoteBuilder({
                           </div>
                         )}
                       </div>
+                      </>)}
                     </div>
                   </>
                 ) : (
