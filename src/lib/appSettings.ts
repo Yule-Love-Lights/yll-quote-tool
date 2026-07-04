@@ -48,9 +48,6 @@ export type AppSettings = {
   // Event Lighting rates (adjustable in Settings → Quotes). The event pricing
   // engine reads these; DEFAULT_EVENT_RATES underneath so a missing key is safe.
   eventRates: EventRates;
-  // Event Lighting feature flag (#96) — gates the Event option in the builder's
-  // service-type picker (default OFF / dark until the event portal ships).
-  eventEnabled: boolean;
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
   // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
@@ -72,7 +69,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   portal: DEFAULT_PORTAL_SETTINGS,
   swatches: DEFAULT_SWATCH_SETTINGS,
   eventRates: DEFAULT_EVENT_RATES,
-  eventEnabled: false,
   permanentRates: DEFAULT_PERMANENT_RATES,
 };
 
@@ -270,7 +266,6 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
     },
     eventRates: sanitizeEventRates(map.get('eventRates')),
-    eventEnabled: map.get('eventEnabled') === true,
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
   };
 }
@@ -300,7 +295,6 @@ export async function putAppSettings(patch: {
   portal?: Partial<PortalSettings>;
   swatches?: Partial<SwatchSettings>;
   eventRates?: EventRates;
-  eventEnabled?: boolean;
   permanentRates?: Partial<PermanentRates>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
@@ -353,10 +347,6 @@ export async function putAppSettings(patch: {
     const value = sanitizeEventRates({ ...current.eventRates, ...patch.eventRates });
     rows.push({ key: 'eventRates', value });
     map.set('eventRates', value);
-  }
-  if (patch.eventEnabled !== undefined && typeof patch.eventEnabled === 'boolean') {
-    rows.push({ key: 'eventEnabled', value: patch.eventEnabled });
-    map.set('eventEnabled', patch.eventEnabled);
   }
 
   if (patch.permanentRates !== undefined) {

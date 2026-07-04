@@ -24,7 +24,6 @@ import {
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
-import { fetchAppSettings } from '@/lib/clientSettings';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -264,16 +263,6 @@ export default function QuoteBuilder({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
-  // #96 dark-launch: the Event service-type option stays hidden until eventEnabled
-  // is flipped on in Settings (the event customer portal isn't built yet — an event
-  // quote would render the Christmas portal). Fetched client-side (memoized); default
-  // hidden. A quote already saved as 'event' keeps its option visible when editing.
-  const [eventEnabled, setEventEnabled] = useState(false);
-  useEffect(() => {
-    fetchAppSettings()
-      .then(s => setEventEnabled(s.eventEnabled === true))
-      .catch(() => {});
-  }, []);
 
   // ─── HighLevel integration state ────────────────────────────────────────
   // `highlevelContact`: the GHL contact picked in the autocomplete. When
@@ -1856,9 +1845,7 @@ export default function QuoteBuilder({
             <div className="mt-4">
               <label className={lbl}>Service type</label>
               <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Service type">
-                {SERVICE_TYPES.filter(
-                  st => st !== 'event' || eventEnabled || form.serviceType === 'event',
-                ).map(st => {
+                {SERVICE_TYPES.map(st => {
                   const selected = form.serviceType === st;
                   return (
                     <button
