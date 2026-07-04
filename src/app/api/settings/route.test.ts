@@ -88,6 +88,41 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
     expect(putSpy).not.toHaveBeenCalled();
   });
 
+  // Permanent warranty copy (#88 P6b-2) — the boundary validation.
+  it('persists a valid warranty patch (200, putAppSettings called)', async () => {
+    const res = await PUT(makeReq({ permanentWarranty: { heading: 'Rock solid.' } }));
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('400s on a version-only warranty patch (no editable field, version is server-managed)', async () => {
+    const res = await PUT(makeReq({ permanentWarranty: { version: 99 } }));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('400s (GAP 5 foot-gun guard) when the heading is blanked', async () => {
+    const res = await PUT(makeReq({ permanentWarranty: { heading: '   ' } }));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('400s (GAP 5) when every bullet is blank', async () => {
+    const res = await PUT(
+      makeReq({ permanentWarranty: { heading: 'ok', bullets: ['', '  ', ''] } }),
+    );
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('allows individual blank bullet slots as long as one is non-blank', async () => {
+    const res = await PUT(
+      makeReq({ permanentWarranty: { heading: 'ok', bullets: ['kept', '', ''] } }),
+    );
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledTimes(1);
+  });
+
   // keep the import referenced so tsc/lint don't flag it
   it('exposes factory defaults', () => {
     expect(DEFAULT_APP_SETTINGS.colors.length).toBeGreaterThan(0);

@@ -565,4 +565,97 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     );
     expect(res.status).toBe(200);
   });
+
+  // GAP 1 (P6b-2 review) — a permanent quote's color choice is validated + frozen
+  // against the FIXED permanent scheme set, never the holiday swatches. A forged/
+  // stale holiday id can't be frozen as a permanent color choice.
+  it('rejects a holiday-only scheme id on a permanent quote → freezes as-designed', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'], colorSchemeId: 'candy-cane' }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const sel = (updatePayloads[0].approval_snapshot as {
+      customerSelection: { colorSchemeId: string; colorIds: string[] | null };
+    }).customerSelection;
+    expect(sel.colorSchemeId).toBe('as-designed'); // holiday id rejected → default
+    expect(sel.colorIds).toBeNull();
+  });
+
+  it('freezes a valid permanent scheme (warm-white) with its resolved colorIds', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'], colorSchemeId: 'warm-white' }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const sel = (updatePayloads[0].approval_snapshot as {
+      customerSelection: { colorSchemeId: string; colorIds: string[] | null };
+    }).customerSelection;
+    expect(sel.colorSchemeId).toBe('warm-white');
+    expect(sel.colorIds).toEqual(['warm-white']);
+  });
+
+  it('drops build-your-own on a permanent quote (custom is holiday-only)', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({
+        ...validBody,
+        selectedItemIds: ['permanent-front'],
+        colorSchemeId: 'custom',
+        customPattern: ['red', 'blue'],
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const sel = (updatePayloads[0].approval_snapshot as {
+      customerSelection: { colorSchemeId: string; customPattern: string[]; colorIds: string[] | null };
+    }).customerSelection;
+    expect(sel.colorSchemeId).toBe('as-designed'); // 'custom' not a permanent id → default
+    expect(sel.customPattern).toEqual([]); // no build-your-own for permanent
+    expect(sel.colorIds).toBeNull();
+  });
+
+  // GAP 2 (P6b-2 review) — the warranty copy + version freeze into the snapshot for
+  // permanent quotes, and is null for non-permanent (no leak onto holiday snapshots).
+  it('freezes the current warranty copy + version into a permanent snapshot', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'] }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const w = (updatePayloads[0].approval_snapshot as {
+      permanentWarranty: { version: number; heading: string; bullets: string[] } | null;
+    }).permanentWarranty;
+    expect(w).not.toBeNull();
+    expect(w!.version).toBe(1); // DEFAULT_PERMANENT_WARRANTY
+    expect(w!.heading).toBe('Built to last a lifetime.');
+    expect(w!.bullets).toHaveLength(6);
+  });
+
+  it('freezes NO warranty (null) on a non-permanent (holiday) approval', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote()); // holiday RESULT, no service_type
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['roofline-santas'] }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as { permanentWarranty: unknown };
+    expect(snap.permanentWarranty).toBeNull();
+  });
 });

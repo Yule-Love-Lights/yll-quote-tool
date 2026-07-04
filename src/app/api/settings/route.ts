@@ -115,6 +115,22 @@ export async function PUT(req: NextRequest) {
         { status: 400 },
       );
     }
+    // Foot-gun guard (P6b-2 review GAP 5): a provided heading can't be blanked and
+    // a provided bullets array can't be ALL-blank — either would ship a heading-less
+    // / bullet-less protection card to a booked customer. (Individual blank bullet
+    // slots are still allowed — they just hide that one bullet.)
+    if (s.heading !== undefined && s.heading === '') {
+      return NextResponse.json(
+        { error: 'permanentWarranty heading cannot be blank' },
+        { status: 400 },
+      );
+    }
+    if (s.bullets !== undefined && s.bullets.every((b) => b === '')) {
+      return NextResponse.json(
+        { error: 'permanentWarranty needs at least one non-blank bullet' },
+        { status: 400 },
+      );
+    }
   }
   try {
     const settings = await putAppSettings({

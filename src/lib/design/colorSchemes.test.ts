@@ -151,4 +151,9 @@ describe('permanent lighting picker (#88 P6b-2)', () => {
     expect(resolveSchemeColorIds('as-designed', PERMANENT_COLOR_SCHEMES)).toBeNull();
     expect(resolveSchemeColorIds('multicolor', PERMANENT_COLOR_SCHEMES)).toEqual(['red', 'green', 'blue', 'yellow', 'pink']);
   });
+
+  it('every permanent scheme id is a subset of DEFAULT_COLOR_SCHEMES (shared render semantics — review GAP 7)', () => {
+    const defIds = new Set(DEFAULT_COLOR_SCHEMES.map((s) => s.id));
+    for (const s of PERMANENT_COLOR_SCHEMES) expect(defIds.has(s.id)).toBe(true);
+  });
 });
