@@ -256,6 +256,10 @@ export type PortalQuote = {
   // (ISO yyyy-mm-dd), shown on the portal's "Your Event Schedule" block. Present
   // only for an event quote that set at least one date; undefined otherwise.
   eventSchedule?: { installDate?: string; eventDate?: string; takedownDate?: string };
+  // Event Lighting (#96): a couple soft "add if you'd like" suggestions for
+  // popular add-ons not already on the quote. Present only for an event quote
+  // with suggestions; undefined otherwise.
+  eventSuggestions?: Array<{ key: string; label: string; blurb: string }>;
 };
 
 export type PortalSelection = {

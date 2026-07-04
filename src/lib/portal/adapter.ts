@@ -22,7 +22,7 @@ import type {
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
-import { derivePackagesEvent } from '@/lib/event/packages';
+import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -433,6 +433,10 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
           ...(ev.takedownDate ? { takedownDate: ev.takedownDate } : {}),
         }
       : undefined;
+  // Event Lighting (#96): the soft "add if you'd like" suggestions — popular
+  // add-ons not already on the quote (event quotes only).
+  const evSuggestions =
+    row.service_type === 'event' && row.result ? eventSuggestions(row.result) : [];
 
   return {
     id: row.id,
@@ -492,6 +496,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // for legacy rows without the column.
     serviceType: row.service_type ?? undefined,
     ...(eventSchedule ? { eventSchedule } : {}),
+    ...(evSuggestions.length > 0 ? { eventSuggestions: evSuggestions } : {}),
     // Bug fix (B3): derive the current status from the row (explicit persisted
     // status wins for branch/terminal states; timestamps are the fallback for
     // legacy rows) and thread it into PortalQuote so the portal can gate the

@@ -379,4 +379,17 @@ describe('event schedule (#96)', () => {
     const row: QuoteRowForPortal = { ...rowWith(calculateQuote(inputs), inputs), service_type: 'event' };
     expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSchedule).toBeUndefined();
   });
+
+  it('surfaces soft add-on suggestions on an event quote (excluding what is already on it)', () => {
+    // santasFootage 100 → a roofline line is present, so roofline is NOT suggested.
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'event' };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.eventSuggestions?.length).toBeGreaterThan(0);
+    expect(portal.eventSuggestions!.map((s) => s.key)).not.toContain('roofline');
+  });
+
+  it('omits eventSuggestions for a non-event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'holiday' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSuggestions).toBeUndefined();
+  });
 });

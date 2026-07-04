@@ -29,6 +29,7 @@ import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { EventSchedule } from '@/components/portal/dark/EventSchedule';
+import { EventSuggestions } from '@/components/portal/dark/EventSuggestions';
 import { PhotoGallery } from '@/components/portal/dark/PhotoGallery';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
@@ -296,6 +297,11 @@ export default async function PortalPage({
             event quotes only, and only when at least one date is set. */}
         {quote.serviceType === 'event' && quote.eventSchedule && (
           <EventSchedule schedule={quote.eventSchedule} />
+        )}
+
+        {/* 3.45 Soft add-on suggestions (#96) — event quotes only, when present. */}
+        {quote.serviceType === 'event' && quote.eventSuggestions && quote.eventSuggestions.length > 0 && (
+          <EventSuggestions suggestions={quote.eventSuggestions} />
         )}
 
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
