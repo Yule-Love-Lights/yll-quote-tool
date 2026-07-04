@@ -221,3 +221,21 @@ W3-017 (renderEditor one-function) · W3-018 (renderSidebar god-fn) · W3-019 (9
 W3-008 server-reorder half (self-heals; in-flight guard deferred in frozen editor.ts) · **#80-102 runQuote/Send flush-swallow** (non-capture half, out of W3 dispositioned scope) · training per-photo calibration (feetPerUnit stays whole-house).
 
 **ACCEPTED (11 LOW → ledger, not fixed):** W3-012 (deleteSelected memberIds prune) · W3-016 (setDifficulty rule untestable) · W3-021 (removePhoto activeIdx) · W3-022 (stake line mislabel, cosmetic) · W3-023 (dead active*Lines aliases) · W3-024 (training detection-box JSX dup) · W3-025 (string-count formula dup) · W3-029 (training test-gap) · W3-026/027/028 (also feed-#29).
+
+---
+
+## Wave 6 dispositions (#110 routes + cross-cutting, 2026-07-04)
+
+> Full findings + evidence in `AUDIT-2026-07.md` (Wave 6). **Disposition-only (Jason held fixes)** — all
+> product findings → fix-later ledger (fix before go-live). 18 findings: 2 HIGH / 7 MED / 9 LOW, **0 refuted**.
+> The #81 auth perimeter itself is sound (no bypass); the security findings are allowlist omissions that fail closed.
+
+**FIX-LATER — recorded, NOT fixed (before Aug–Oct trial / go-live):**
+- **HIGH:** W6-002 (designs/[id]/photos uploads blob before existence check — W2-008 sibling parity) · W6-GAP-1 (operator /api/login has no rate-limit — drop-in `rateLimitResponse`).
+- **Auth allowlist go-live cluster (fix as ONE operatorGate PR before flipping AUTH_GATE_ENABLED):** W6-001 (/api/health) · W6-005 (GET /api/quotes/[id]) · W6-008 (simulate-deposit — **needs Jason's public-vs-operator call first**). All public-by-design, all 401 at go-live.
+- **Observability (silent failures):** W6-003 (valor webhook auto-PO email fail unlogged) · W6-009 (homeworks send DB-stamp fail → dup-send risk) · W6-010 (jobs/[id]/cancel source-quote status-write fail reported as success).
+- **Test-gaps (auth/mutating, charter §6):** W6-004 (login/logout) · W6-006 (middleware perimeter) · W6-011 (designs/[id] GET/PUT) · W6-016 (interested) · W6-017 (hotkeys).
+
+**HAND-TO-NALDO:** W6-007 — 6 event/permanent money engines never audited → money-lens pass in `AUDIT-2026-07-NALDO-HANDOFF.md`. **Manifest generator FIXED this wave** (assigns event/permanent/agreedTotal/money → W1; regenerated, exit 0).
+
+**ACCEPTED (LOW hygiene/docs, not fixed):** W6-012 (eslint/vitest worktree-ignore) · W6-013 (middleware→proxy Next.js 16 deprecation — convention rename, own task) · W6-014 (stale send/route comment) · W6-015 (highlevel/contacts NaN limit parse).

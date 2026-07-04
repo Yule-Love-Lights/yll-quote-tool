@@ -194,3 +194,24 @@ Method: 15 finders (5 sub-areas × correctness/efficiency/quality) → 155 raw �
 | W7-095 | Inventory | perf | `src/lib/inventory/purchaseOrder.ts:91` | buildSupplierPurchaseOrder awaits its 6 queries fully sequentially even though bindings, on-hand, and catalog are independent of the jobs→quotes→designs chain | Promise.all the independent reads: kick off getInventoryBindings/listOnHand/listCatalog alongside the jobs→quotes→designs chain and await them where … |
 | W7-096 | Inventory | perf | `src/lib/inventory/purchaseOrder.ts:201` | triggerAutoPOIfBusy runs the full PO build (6 queries + all scene projections) BEFORE checking the minJobCount threshold, so every below-threshold deposit webhook pays the heavy build for nothing | Check the active-non-test job count first with a cheap head/count query (jobs where stock_decremented_at is null + active statuses) and bail before c… |
 
+
+---
+
+## Wave 6 hand-off — event/permanent money engines (audit-coverage gap, 2026-07-04)
+
+> Surfaced by W6-007: the #110 coverage manifest had drifted — **6 money-domain modules from your
+> #88 permanent-install + event-lighting work (~1007 lines) were never assigned to any audit wave,
+> so no wave money-audited them.** They price real quotes, so they want a money-lens pass before the
+> Aug–Oct trial. The manifest generator is now fixed (assigns them to W1/money) so it stops drifting;
+> **the actual audit is handed to you** (they're your code, your lane). Jason's call, 2026-07-04.
+
+**Files to money-lens** (each has a unit-test sibling, so this is audit-triage, not zero-coverage):
+- `src/lib/event/pricing.ts` · `src/lib/event/packages.ts` · `src/lib/event/rates.ts` · `src/lib/event/types.ts`
+- `src/lib/permanent/pricing.ts` · `src/lib/permanent/bom.ts` · `src/lib/permanent/projectPermanent.ts` · `src/lib/permanent/derivePackagesPermanent.ts` · `src/lib/permanent/types.ts`
+- shared money helpers `src/lib/agreedTotal.ts` · `src/lib/money.ts` (these DID get touched by W1 fixes; a re-confirm is cheap)
+
+**Lens to apply** (same as #110 W1 money-core): does the billed total match the approved selection · rounding
+(use the shared `round2`/`money.ts`, no ad-hoc float math) · deposit/gate math · BOM projection quantity
+correctness (largest-remainder for any multi-way split — cf. W7-093) · no silent 0/NaN price on a missing field ·
+override/discount interaction · idempotency on any money-mutating path. Run it as a small finder→verify pass like
+the other waves; dedupe against W1 (the holiday engine) since these mirror its shape.
