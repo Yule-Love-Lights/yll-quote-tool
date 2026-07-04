@@ -9,6 +9,7 @@ import type { CSSProperties } from 'react';
 import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
+import type { ServiceType } from '@/lib/serviceType';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
@@ -170,9 +171,14 @@ export type WhatsIncludedProps = {
   design?: PortalDesign;
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
+  // Branches Christmas-specific copy by service line (#110). When 'event', the
+  // seasonal takedown/install wording is swapped for date-driven event wording;
+  // otherwise the existing (holiday) copy is unchanged. Absent ⇒ holiday copy.
+  serviceType?: ServiceType;
 };
 
-export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsIncludedProps) {
+export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
+  const isEvent = serviceType === 'event';
   const {
     isItemSelected,
     toggleItem,
@@ -337,8 +343,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
             <AddOnToggle
               selected={takedownSelected}
               onToggle={toggleTakedown}
-              title="Premium takedown"
-              blurb="We take everything down before Jan 9 (standard is Jan 9 – Feb 3)."
+              title={isEvent ? 'Early takedown' : 'Premium takedown'}
+              blurb={
+                isEvent
+                  ? 'We take everything down after your event, on the date we agreed.'
+                  : 'We take everything down before Jan 9 (standard is Jan 9 – Feb 3).'
+              }
               amount={takedownAmount}
             />
           </ul>
@@ -378,8 +388,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
           <p className="mt-3 text-[13px] text-[#A89F87] leading-[1.6] max-w-2xl">
             <span className="text-[#E0D7C1] font-semibold">What early install means:</span> we put up your{' '}
             <span className="text-[#E0D7C1]">roof lights only</span>{' '}in mid–late September or anytime in October —
-            everything else (wreaths, garland, trees, columns, railings, spritzers) still goes up in November. Your
-            lights stay off until you&apos;re ready to turn them on. Pick a month and that&apos;s when we install — the
+            {isEvent
+              ? ' everything else is installed before your event and removed after.'
+              : ' everything else (wreaths, garland, trees, columns, railings, spritzers) still goes up in November.'}{' '}
+            Your lights stay off until you&apos;re ready to turn them on. Pick a month and that&apos;s when we install — the
             discount requires the install to happen that month.
           </p>
         </div>

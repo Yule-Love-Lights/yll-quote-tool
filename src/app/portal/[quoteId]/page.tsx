@@ -45,6 +45,7 @@ import {
   MOCK_GALLERY_ITEMS,
   MOCK_REVIEWS,
   MOCK_FAQ,
+  EVENT_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -268,6 +269,7 @@ export default async function PortalPage({
           design={quote.design}
           palette={appSettings.colors}
           renderSettings={appSettings.render}
+          serviceType={quote.serviceType}
         />
 
         {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
@@ -286,6 +288,7 @@ export default async function PortalPage({
           design={quote.design}
           palette={appSettings.colors}
           renderSettings={appSettings.render}
+          serviceType={quote.serviceType}
         />
 
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
@@ -300,13 +303,13 @@ export default async function PortalPage({
         )}
 
         {/* 4. Risk Reversal */}
-        <RiskReversal />
+        <RiskReversal serviceType={quote.serviceType} />
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
 
         {/* 5. What Happens Next */}
-        <WhatHappensNext />
+        <WhatHappensNext serviceType={quote.serviceType} />
 
         {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
@@ -332,8 +335,8 @@ export default async function PortalPage({
         {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 10. FAQ */}
-        <FAQ items={MOCK_FAQ} />
+        {/* 10. FAQ — event quotes get event-specific Q&A (#96). */}
+        <FAQ items={quote.serviceType === 'event' ? EVENT_FAQ : MOCK_FAQ} />
 
         {/* 11. Personal contact */}
         <PersonalContact
