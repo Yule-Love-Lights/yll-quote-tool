@@ -16,7 +16,6 @@ import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
-import type { ServiceType } from '@/lib/serviceType';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
