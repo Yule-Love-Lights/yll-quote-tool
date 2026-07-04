@@ -28,6 +28,7 @@ export type PipelineAction =
   | { kind: 'close'; label: string }
   | { kind: 'amend'; label: string }
   | { kind: 'cancel'; label: string }
+  | { kind: 'rebook'; label: string }
   | { kind: 'details'; label: string; href: string };
 
 function sendActions(): PipelineAction[] {
@@ -92,7 +93,14 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
       }
       break;
     }
-    // declined / cancelled / lost → details only
+    case 'declined':
+    case 'cancelled':
+    case 'lost':
+      // #116: revive a dead quote — clone it into a fresh, audit-preserving
+      // DRAFT (the original terminal quote stays intact). Rebook-only; re-send
+      // of the same quote is deliberately out of scope (S23 council).
+      a.push({ kind: 'rebook', label: 'Rebook (new draft)' });
+      break;
   }
 
   a.push({ kind: 'details', label: 'Details', href: `/admin/quotes/${r.quoteId}` });

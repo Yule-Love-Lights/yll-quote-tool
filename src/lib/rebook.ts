@@ -134,3 +134,51 @@ export async function rebookLastSeason(
 
   return { quoteId: newQuoteId, designId };
 }
+
+// Clone a SPECIFIC quote (by id, any status) into a fresh draft — the #116
+// "revive a dead quote" path. Unlike rebookLastSeason (which finds a customer's
+// last APPROVED quote), this reopens exactly the quote the operator picked,
+// including a declined / cancelled / lost one, and leaves the original terminal
+// quote INTACT for the audit trail. Reuses buildRebookInsert (strips the
+// lifecycle + the frozen rate snapshots so the draft re-prices at live rates)
+// and cloneDesignToNewQuote. Returns the new quote id + the cloned design id
+// (null when the source had no design), or null when the id doesn't match a
+// quote or Supabase isn't configured.
+export async function rebookFromQuote(
+  quoteId: string,
+): Promise<{ quoteId: string; designId: string | null } | null> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return null;
+
+  const { data, error } = await sb
+    .from('quotes')
+    .select(SOURCE_COLUMNS)
+    .eq('id', quoteId)
+    .maybeSingle();
+  if (error) {
+    console.error('rebookFromQuote (source) error:', error);
+    return null;
+  }
+  if (!data) return null; // no such quote to rebook from
+  const src = data as RebookSource & { id: string };
+
+  const insertRow = buildRebookInsert(src);
+  const ins = await sb.from('quotes').insert(insertRow).select('id').single();
+  if (ins.error || !ins.data) {
+    console.error('rebookFromQuote (insert) error:', ins.error);
+    return null;
+  }
+  const newQuoteId = ins.data.id as string;
+
+  // Clone the design (scene + base photo + satellite). Best-effort, same as
+  // rebookLastSeason: a missing or failed clone still yields a usable draft.
+  let designId: string | null = null;
+  try {
+    const cloned = await cloneDesignToNewQuote(src.id, newQuoteId);
+    designId = cloned?.id ?? null;
+  } catch (err) {
+    console.error('rebookFromQuote (design clone) failed:', err);
+  }
+
+  return { quoteId: newQuoteId, designId };
+}
