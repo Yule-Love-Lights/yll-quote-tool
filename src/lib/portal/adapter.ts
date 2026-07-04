@@ -10,6 +10,7 @@
 // mapping here, not in components. This is the contract.
 
 import type { CustomLineItem, QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { PermanentWarranty } from '@/lib/permanent/types';
 import type {
   PackageId,
   PortalApproval,
@@ -49,6 +50,14 @@ type ApprovalSnapshotJson = {
     // customer approved with. Optional/back-compat: older snapshots predate them.
     takedownSelected?: boolean;
     installTiming?: 'none' | 'september' | 'october';
+  };
+  // #88 P6b-2 — the frozen "Your Protection" warranty copy + version the customer
+  // agreed to (permanent quotes only). Optional/back-compat: older snapshots predate it.
+  permanentWarranty?: {
+    eyebrow?: string;
+    heading?: string;
+    bullets?: string[];
+    version?: number;
   };
 };
 
@@ -308,6 +317,21 @@ export function buildPortalLineItems(result: QuoteResult, inputs: QuoteInputs | 
 // the frontend consumes. Returns undefined when the customer hasn't
 // approved yet (or when the snapshot is malformed beyond rescue) — the
 // approved page treats undefined as "404, not yet booked."
+// #88 P6b-2 — shape the frozen warranty jsonb back into a PortalApproval field.
+// null when the quote has no frozen warranty (non-permanent, or an older snapshot
+// predating the freeze) — the portal then falls back to the LIVE settings copy.
+function frozenWarranty(
+  w: NonNullable<QuoteRowForPortal['approval_snapshot']>['permanentWarranty'],
+): PermanentWarranty | null {
+  if (!w || typeof w.version !== 'number' || !Array.isArray(w.bullets)) return null;
+  return {
+    eyebrow: typeof w.eyebrow === 'string' ? w.eyebrow : '',
+    heading: typeof w.heading === 'string' ? w.heading : '',
+    bullets: w.bullets.filter((b): b is string => typeof b === 'string'),
+    version: w.version,
+  };
+}
+
 function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
   if (!row.customer_approved_at) return undefined;
   const snap = row.approval_snapshot;
@@ -338,6 +362,7 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
         ? sel.installTiming
         : 'none',
     takedownSelected: sel?.takedownSelected === true,
+    permanentWarranty: frozenWarranty(snap?.permanentWarranty),
   };
 }
 

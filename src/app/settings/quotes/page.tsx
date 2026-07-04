@@ -9,6 +9,7 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
 import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
+import { PermanentWarrantySettings } from '@/components/settings/PermanentWarrantySettings';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +46,10 @@ export default async function QuotesSettingsPage() {
 
         <div className="mt-6">
           <PermanentRatesSettings />
+        </div>
+
+        <div className="mt-6">
+          <PermanentWarrantySettings />
         </div>
       </main>
     </OperatorShell>

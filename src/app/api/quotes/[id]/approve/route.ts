@@ -67,6 +67,7 @@ import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { PermanentWarranty } from '@/lib/permanent/types';
 // Audit fix (g1-route): server-side recompute of the approved selection mirrors
 // exactly what the portal's SelectionContext displays, so we never freeze a
 // client-tampered total/deposit/discount into the authoritative snapshot.
@@ -238,6 +239,11 @@ type ApprovalSnapshot = {
   // null when none was captured (older clients / not provided). The signature
   // attests to this exact frozen snapshot.
   signature: SignatureSnapshot | null;
+  // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
+  // customer agreed to, frozen so a later Settings edit can never retro-change a
+  // booked customer's terms. Set only for permanent quotes; null for holiday/event
+  // (they have no such card) and for snapshots written before this field existed.
+  permanentWarranty: PermanentWarranty | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -287,7 +293,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // resolve the customer's light-color choice further BELOW (once service_type is
   // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
   // quote the operator's live swatch list.
-  const { swatches } = await getAppSettings();
+  const { swatches, permanentWarranty } = await getAppSettings();
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -566,6 +572,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
     pricing: quote.result,
     signature,
+    // #88 P6b-2 — freeze the warranty copy + version for permanent quotes only.
+    permanentWarranty: isPermanent ? permanentWarranty : null,
   };
 
   // Audit fix (g1-route, #43): GUARDED conditional update closes the read-then-

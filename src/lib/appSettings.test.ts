@@ -8,6 +8,7 @@ import {
   normalizeBuildable,
   sanitizeSwatches,
   sanitizePermanentRates,
+  sanitizePermanentWarranty,
 } from './appSettings';
 
 // A representative palette id set (mirrors the built-in DEFAULT_COLORS ids used
@@ -109,6 +110,49 @@ describe('sanitizePermanentRates (#88)', () => {
     expect(sanitizePermanentRates({ bogus: 10 })).toEqual({});
     expect(sanitizePermanentRates(null)).toEqual({});
     expect(sanitizePermanentRates('x')).toEqual({});
+  });
+});
+
+describe('sanitizePermanentWarranty (#88 P6b-2)', () => {
+  it('trims strings and preserves bullet SLOT positions (blank slots kept)', () => {
+    const out = sanitizePermanentWarranty({
+      eyebrow: '  Your Protection  ',
+      heading: '  Built to last.  ',
+      bullets: ['first', '   ', 'third'],
+    });
+    expect(out.eyebrow).toBe('Your Protection');
+    expect(out.heading).toBe('Built to last.');
+    // the blank middle slot is preserved (so its fixed icon drops with it, and the
+    // remaining bullets keep their icon pairing) — NOT filtered out.
+    expect(out.bullets).toEqual(['first', '', 'third']);
+  });
+
+  it('caps bullets at 6 slots and coerces a non-string slot to blank', () => {
+    const out = sanitizePermanentWarranty({
+      bullets: ['a', 42 as unknown as string, 'c', 'd', 'e', 'f', 'g'],
+    });
+    expect(out.bullets).toHaveLength(6); // 'g' dropped
+    expect(out.bullets![1]).toBe(''); // the 42 became a blank slot
+  });
+
+  it('accepts a partial patch (only the fields present)', () => {
+    expect(sanitizePermanentWarranty({ heading: 'Just the heading' })).toEqual({
+      heading: 'Just the heading',
+    });
+  });
+
+  it('keeps a valid stored version but drops junk versions', () => {
+    expect(sanitizePermanentWarranty({ version: 4 }).version).toBe(4);
+    expect(sanitizePermanentWarranty({ version: 2.9 }).version).toBe(2); // floored
+    expect(sanitizePermanentWarranty({ version: 0 }).version).toBeUndefined();
+    expect(sanitizePermanentWarranty({ version: -1 }).version).toBeUndefined();
+    expect(sanitizePermanentWarranty({ version: 'x' }).version).toBeUndefined();
+  });
+
+  it('returns {} for non-objects', () => {
+    expect(sanitizePermanentWarranty(null)).toEqual({});
+    expect(sanitizePermanentWarranty('x')).toEqual({});
+    expect(sanitizePermanentWarranty([1, 2])).toEqual({});
   });
 });
 

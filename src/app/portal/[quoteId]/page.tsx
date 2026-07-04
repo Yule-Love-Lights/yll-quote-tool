@@ -328,7 +328,14 @@ export default async function PortalPage({
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
              event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
-        {quote.serviceType === 'permanent' ? <RiskReversalPermanent /> : <RiskReversal serviceType={quote.serviceType} />}
+        {quote.serviceType === 'permanent' ? (
+          // #88 P6b-2 — an APPROVED customer sees the FROZEN copy they agreed to
+          // (from the snapshot); a not-yet-approved customer sees the LIVE settings
+          // copy. So a later Settings edit never changes a booked customer's terms.
+          <RiskReversalPermanent warranty={quote.approval?.permanentWarranty ?? appSettings.permanentWarranty} />
+        ) : (
+          <RiskReversal serviceType={quote.serviceType} />
+        )}
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />

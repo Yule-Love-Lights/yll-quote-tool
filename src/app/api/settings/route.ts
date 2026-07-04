@@ -12,6 +12,7 @@ import {
   sanitizePortal,
   sanitizeSwatches,
   sanitizePermanentRates,
+  sanitizePermanentWarranty,
   isPlainObject,
 } from '@/lib/appSettings';
 import { requireOperator } from '@/lib/auth/supabaseServer';
@@ -48,7 +49,7 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates, permanentRates } =
+  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentWarranty } =
     body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -57,7 +58,8 @@ export async function PUT(req: NextRequest) {
     portal === undefined &&
     swatches === undefined &&
     eventRates === undefined &&
-    permanentRates === undefined
+    permanentRates === undefined &&
+    permanentWarranty === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -101,6 +103,19 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
+  // Warranty copy (#88 P6b-2): must yield at least one recognized field
+  // (eyebrow/heading/bullets) — a `version`-only patch is not an edit (the version
+  // is server-managed), so it's rejected as "nothing recognized" rather than
+  // silently returning 200 with the old copy.
+  if (permanentWarranty !== undefined) {
+    const s = sanitizePermanentWarranty(permanentWarranty);
+    if (s.eyebrow === undefined && s.heading === undefined && s.bullets === undefined) {
+      return NextResponse.json(
+        { error: 'permanentWarranty must have an eyebrow, heading, and/or bullets array' },
+        { status: 400 },
+      );
+    }
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
@@ -110,6 +125,7 @@ export async function PUT(req: NextRequest) {
       swatches: swatches as never,
       eventRates: eventRates as never,
       permanentRates: permanentRates as never,
+      permanentWarranty: permanentWarranty as never,
     });
     return NextResponse.json(settings);
   } catch (err) {
