@@ -255,7 +255,7 @@ export default async function PortalPage({
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
-        initialInstallTiming={quote.installTiming}
+        initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
         schemes={appSettings.swatches.schemes}
         buildableColorIds={appSettings.swatches.buildableColorIds}
