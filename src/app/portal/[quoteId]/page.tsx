@@ -28,6 +28,8 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
+import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
 import { PhotoGallery } from '@/components/portal/dark/PhotoGallery';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
@@ -253,7 +255,7 @@ export default async function PortalPage({
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
-        initialInstallTiming={quote.installTiming}
+        initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
         schemes={appSettings.swatches.schemes}
         buildableColorIds={appSettings.swatches.buildableColorIds}
@@ -273,7 +275,7 @@ export default async function PortalPage({
         {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
             below the packages so the swatches don't overlap the photo on a phone.
             Only when a design is linked (recolor needs a live scene). */}
-        {quote.design && <LightColorPicker />}
+        {quote.design && quote.serviceType !== 'permanent' && <LightColorPicker />}
 
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}
@@ -286,6 +288,7 @@ export default async function PortalPage({
           design={quote.design}
           palette={appSettings.colors}
           renderSettings={appSettings.render}
+          serviceType={quote.serviceType}
         />
 
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
@@ -299,14 +302,14 @@ export default async function PortalPage({
           />
         )}
 
-        {/* 4. Risk Reversal */}
-        <RiskReversal />
+        {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88) */}
+        {quote.serviceType === 'permanent' ? <RiskReversalPermanent /> : <RiskReversal />}
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
 
-        {/* 5. What Happens Next */}
-        <WhatHappensNext />
+        {/* 5. What Happens Next — permanent drops takedown for year-round control (#88) */}
+        {quote.serviceType === 'permanent' ? <WhatHappensNextPermanent /> : <WhatHappensNext />}
 
         {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
