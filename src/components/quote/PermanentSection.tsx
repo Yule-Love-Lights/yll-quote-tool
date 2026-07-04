@@ -68,6 +68,11 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
         detectedFt: c.lengthFt,
         source: 'auto' as const,
       }));
+      // Auto rows are regenerated fresh from geometry; only operator-added 'manual'
+      // rows survive. An 'edited' row (operator ticked a splitter or corrected an
+      // auto gap's length) is reset — count them so we can warn instead of silently
+      // dropping the operator's splitter flags / length corrections.
+      const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
       const gaps = [...autoRows, ...form.permanent.gaps.filter((g) => g.source === 'manual')];
       setForm((f) => ({
         ...f,
@@ -92,6 +97,11 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
       if (sideFt > 0) {
         warnings.push(
           `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
+        );
+      }
+      if (resetEditedGaps > 0) {
+        warnings.push(
+          `${resetEditedGaps} edited gap ${resetEditedGaps === 1 ? 'row was' : 'rows were'} reset to the auto-detected values — re-apply any splitter flags or length corrections`
         );
       }
       if (warnings.length > 0) {

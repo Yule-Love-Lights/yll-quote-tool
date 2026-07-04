@@ -270,6 +270,7 @@ export default async function PortalPage({
           design={quote.design}
           palette={appSettings.colors}
           renderSettings={appSettings.render}
+          isPermanent={quote.serviceType === 'permanent'}
         />
 
         {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band

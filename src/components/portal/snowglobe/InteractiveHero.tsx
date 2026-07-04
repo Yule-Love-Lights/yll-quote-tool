@@ -39,6 +39,9 @@ export type InteractiveHeroProps = {
   alt: string;
   packages: PortalPackage[];
   lineItemCount: number; // total items (for "D" brightness scaling)
+  // Permanent (#88): package 'D' is the real "Whole Home" bundle, not the holiday
+  // "Build Your Own / Custom" slot — so its tab eyebrow reads as a tier, not "Custom".
+  isPermanent?: boolean;
   // Linked design (#27 Phase 2). When present, the hero renders it live
   // instead of the static `afterUrl` image, with a daytime/lit toggle.
   design?: PortalDesign;
@@ -57,6 +60,7 @@ export function InteractiveHero({
   design,
   palette,
   renderSettings,
+  isPermanent = false,
 }: InteractiveHeroProps) {
   const {
     packageId,
@@ -352,7 +356,7 @@ export function InteractiveHero({
                         track the live selection so they don't out-claim the
                         sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' ? 'Custom' : `Tier ${i + 1}`}
+                      {p.id === 'D' && !isPermanent ? 'Custom' : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
