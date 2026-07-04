@@ -1,4 +1,5 @@
 import QuoteBuilder from '@/components/quote/QuoteBuilder';
+import { getAppSettings } from '@/lib/appSettings';
 
 // Blank-slate builder. The editing flavor lives at /quote/[id] (task #31);
 // both render the same QuoteBuilder component. `?test=1` (ledger #93) opens the
@@ -9,5 +10,6 @@ export default async function NewQuotePage({
   searchParams: Promise<{ test?: string }>;
 }) {
   const { test } = await searchParams;
-  return <QuoteBuilder isTest={test === '1'} />;
+  const { eventEnabled } = await getAppSettings();
+  return <QuoteBuilder isTest={test === '1'} eventEnabled={eventEnabled} />;
 }

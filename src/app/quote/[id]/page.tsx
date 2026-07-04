@@ -3,6 +3,7 @@ import QuoteBuilder from '@/components/quote/QuoteBuilder';
 import { getQuoteRaw } from '@/lib/quotes';
 import { getDesignByQuote } from '@/lib/designs';
 import { isValidQuoteId } from '@/lib/portal/loader';
+import { getAppSettings } from '@/lib/appSettings';
 
 // Edit an existing quote (task #31): reopen a saved quote in the builder with
 // its inputs hydrated and its linked design (if any) mounted in the design
@@ -20,9 +21,11 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
   // The design linked to this quote, if one exists. Only the id is needed —
   // the editor loads the scene + photo itself via /api/designs/[id].
   const design = await getDesignByQuote(id);
+  const { eventEnabled } = await getAppSettings();
 
   return (
     <QuoteBuilder
+      eventEnabled={eventEnabled}
       initialQuote={{
         quoteId: quote.id,
         customer: {

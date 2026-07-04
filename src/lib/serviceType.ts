@@ -29,3 +29,18 @@ export function asServiceType(v: unknown): ServiceType | null {
     ? (v as ServiceType)
     : null;
 }
+
+/**
+ * The service-type options the builder picker should show. 'event' (#344 — not
+ * shipped) is hidden until `eventEnabled`, EXCEPT when the quote being edited is
+ * already an event quote, so its button still renders as selected. 'holiday' and
+ * 'permanent' always show (permanent is intentionally not gated — S23).
+ */
+export function visibleServiceTypes(opts: {
+  eventEnabled: boolean;
+  current: ServiceType | null;
+}): ServiceType[] {
+  return SERVICE_TYPES.filter(
+    (st) => st !== 'event' || opts.eventEnabled || opts.current === 'event',
+  );
+}

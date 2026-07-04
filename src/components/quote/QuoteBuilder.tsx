@@ -23,7 +23,7 @@ import {
   inputsToFormData,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
-import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import { type ServiceType, SERVICE_TYPE_LABELS, visibleServiceTypes } from '@/lib/serviceType';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
@@ -237,9 +237,13 @@ export type QuoteBuilderInitial = {
 export default function QuoteBuilder({
   initialQuote,
   isTest: isTestProp,
+  eventEnabled = false,
 }: {
   initialQuote?: QuoteBuilderInitial;
   isTest?: boolean;
+  // Gates the "Event" service-type option (#344 not shipped). Read from
+  // app_settings on the server page; default OFF so Event stays hidden.
+  eventEnabled?: boolean;
 }) {
   const editMode = initialQuote != null;
   // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
@@ -1798,7 +1802,9 @@ export default function QuoteBuilder({
             <div className="mt-4">
               <label className={lbl}>Service type</label>
               <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Service type">
-                {SERVICE_TYPES.map(st => {
+                {/* Event (#344) is gated behind eventEnabled until it ships; an
+                    already-saved event quote still shows its button in edit mode. */}
+                {visibleServiceTypes({ eventEnabled, current: form.serviceType }).map(st => {
                   const selected = form.serviceType === st;
                   return (
                     <button

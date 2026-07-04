@@ -48,7 +48,7 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, permanentRates, permanentEnabled } =
+  const { colors, defaults, render, portal, swatches, permanentRates, permanentEnabled, eventEnabled } =
     body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -57,7 +57,8 @@ export async function PUT(req: NextRequest) {
     portal === undefined &&
     swatches === undefined &&
     permanentRates === undefined &&
-    permanentEnabled === undefined
+    permanentEnabled === undefined &&
+    eventEnabled === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -99,6 +100,9 @@ export async function PUT(req: NextRequest) {
   if (permanentEnabled !== undefined && typeof permanentEnabled !== 'boolean') {
     return NextResponse.json({ error: 'permanentEnabled must be a boolean' }, { status: 400 });
   }
+  if (eventEnabled !== undefined && typeof eventEnabled !== 'boolean') {
+    return NextResponse.json({ error: 'eventEnabled must be a boolean' }, { status: 400 });
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
@@ -108,6 +112,7 @@ export async function PUT(req: NextRequest) {
       swatches: swatches as never,
       permanentRates: permanentRates as never,
       permanentEnabled: permanentEnabled as never,
+      eventEnabled: eventEnabled as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

@@ -47,6 +47,10 @@ export type AppSettings = {
   // option in the builder's service-type picker (default OFF until the portal ships).
   permanentRates: PermanentRates;
   permanentEnabled: boolean;
+  // Gates the "Event" option in the quote builder's service-type picker (default
+  // OFF until the event vertical #344 ships). Mirrors permanentEnabled's plumbing;
+  // no Settings toggle yet — Jason wires that with #344.
+  eventEnabled: boolean;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -66,6 +70,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   swatches: DEFAULT_SWATCH_SETTINGS,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentEnabled: false,
+  eventEnabled: false,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -263,6 +268,7 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     },
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
     permanentEnabled: map.get('permanentEnabled') === true,
+    eventEnabled: map.get('eventEnabled') === true,
   };
 }
 
@@ -292,6 +298,7 @@ export async function putAppSettings(patch: {
   swatches?: Partial<SwatchSettings>;
   permanentRates?: Partial<PermanentRates>;
   permanentEnabled?: boolean;
+  eventEnabled?: boolean;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -347,6 +354,10 @@ export async function putAppSettings(patch: {
   if (patch.permanentEnabled !== undefined && typeof patch.permanentEnabled === 'boolean') {
     rows.push({ key: 'permanentEnabled', value: patch.permanentEnabled });
     map.set('permanentEnabled', patch.permanentEnabled);
+  }
+  if (patch.eventEnabled !== undefined && typeof patch.eventEnabled === 'boolean') {
+    rows.push({ key: 'eventEnabled', value: patch.eventEnabled });
+    map.set('eventEnabled', patch.eventEnabled);
   }
 
   if (rows.length > 0) {
