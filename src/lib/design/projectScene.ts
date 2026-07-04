@@ -40,6 +40,8 @@ import type {
   BowLineInput,
   QuoteInputs,
 } from '@/lib/pricing/pricingEngine';
+import type { BistroLine } from '@/lib/event/types';
+import { pxPerFoot } from '@/components/design/editor-core/yardstick-scale';
 
 export type ProjectedCategory = 'mini' | 'spritzer' | 'wreath' | 'garland' | 'bow';
 
@@ -76,6 +78,9 @@ export type Projection = {
   wreaths: Wreath[];
   garland: PriceGarland[];
   bows: BowLineInput[];
+  // Bistro runs (event, #96) — footage-priced from drawn bulbType='bistro' strands.
+  // Applied to inputs.event.bistro; the holiday/permanent engines ignore it.
+  bistro: BistroLine[];
   // The linkage-carrying view. The arrays above are derived from this (same
   // order), so the Nth entry of a category here lines up with the Nth engine
   // line item for that category.
@@ -115,6 +120,26 @@ function isProjectableItem(item: Scene['items'][number]): boolean {
   return false;
 }
 
+// Bistro run length in FEET (event, #96) — mirrors materialsProjection's
+// strandFeet: pixel polyline length ÷ the run's yardstick px/ft. Kept inline so
+// projectScene stays a pure lib (no Konva). Bistro is footage-priced and keyed on
+// bulbType='bistro' (no mini surface), so drawn bistro flows into the event price.
+function polylineLengthPx(points: number[] | undefined): number {
+  if (!Array.isArray(points)) return 0;
+  let total = 0;
+  for (let i = 0; i < points.length - 2; i += 2) {
+    total += Math.hypot(points[i + 2] - points[i], points[i + 3] - points[i + 1]);
+  }
+  return total;
+}
+function bistroFeet(strand: { points?: number[]; yardstickId?: string | null }, scene: Scene): number {
+  const lengthPx = polylineLengthPx(strand.points);
+  if (!(lengthPx > 0)) return 0;
+  const ys = (scene.yardsticks ?? []).find((y) => y.id === strand.yardstickId) ?? null;
+  const ppf = pxPerFoot(ys);
+  return ppf > 0 ? lengthPx / ppf : 0;
+}
+
 // One priced mini unit, shared across all three authoring paths (strand wrap,
 // area fill, grouped railing) so they price identically (#27 A2).
 function miniInput(type: MiniSurface, billing: MiniBilling): MiniLightItem {
@@ -127,6 +152,7 @@ function miniInput(type: MiniSurface, billing: MiniBilling): MiniLightItem {
 
 export function projectScene(scene: Scene): Projection {
   const items: ProjectedLineItem[] = [];
+  const bistro: BistroLine[] = [];
   const sceneItems = Array.isArray(scene?.items) ? scene.items : [];
 
   for (const item of sceneItems) {
@@ -140,6 +166,13 @@ export function projectScene(scene: Scene): Projection {
       // A grouped strand (a railing member) is priced via its MiniGroupItem —
       // skip it here so the unit isn't double-counted (#27 A2).
       if (item.groupId) continue;
+      // Bistro strands (event, #96) — footage-priced, keyed on bulbType (bistro has
+      // no mini surface). Drawn bistro flows into the event price via inputs.event.
+      if (item.bulbType === 'bistro') {
+        const footage = bistroFeet(item, scene);
+        if (footage > 0) bistro.push({ footage, id: `bistro-${item.id}`, sceneItemIds: [item.id] });
+        continue;
+      }
       // Strands disambiguate by `surface`: bush/tree/column/railing = a mini-light
       // wrap (projected); santas-roofline/gingerbread/winter-wonderland = roofline
       // (measurement-driven, NOT projected); no surface = unmapped.
@@ -240,6 +273,7 @@ export function projectScene(scene: Scene): Projection {
     wreaths: items.filter((i) => i.category === 'wreath').map((i) => i.input as Wreath),
     garland: items.filter((i) => i.category === 'garland').map((i) => i.input as PriceGarland),
     bows: items.filter((i) => i.category === 'bow').map((i) => i.input as BowLineInput),
+    bistro,
     items,
     // Audit fix (Finding #103): scan ALL items (not just included ones) so an
     // all-excluded design is still recognized as design-driven.
@@ -266,7 +300,7 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
   // A design where staff excluded EVERY per-unit item has hasProjectableItems
   // true but items empty — it must fall through and REPLACE the arrays with
   // empties, so the excluded items aren't silently resurrected from stale input.
-  if (p.items.length === 0 && !p.hasProjectableItems) return inputs;
+  if (p.items.length === 0 && !p.hasProjectableItems && p.bistro.length === 0) return inputs;
   // #104: thread each projected line's stable id + scene item ids onto the priced
   // input (same order as p.miniLightItems etc.), so calculateQuote can emit them on
   // the LineItem and the override/scene-link can key by identity, not list position.
@@ -280,5 +314,12 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
     wreaths: forCategory('wreath').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
     garland: forCategory('garland').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
     bows: forCategory('bow').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
+    // Event bistro (#96): drawn bistro runs drive inputs.event.bistro (design is
+    // master, like minis), preserving any operator-typed event fields (barrels,
+    // dates). Only set when there IS bistro or an existing event block, so
+    // holiday/permanent quotes without event data stay clean.
+    ...(p.bistro.length > 0 || inputs.event
+      ? { event: { ...inputs.event, bistro: p.bistro } }
+      : {}),
   };
 }

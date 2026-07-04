@@ -22,6 +22,7 @@ import type {
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
+import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -401,10 +402,15 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   //
   // Permanent Lighting (#88 P5): surface-based packages (front/sides/back/
   // whole-home) instead of the holiday roofline/spritzer tier ladder.
+  // Event Lighting (#96 Phase B): ONE "what's included" package (all line items
+  // bundled) instead of the holiday tier ladder / permanent surface packages.
   const isPermanent = row.service_type === 'permanent';
+  const isEvent = row.service_type === 'event';
   const packages = isPermanent
     ? derivePackagesPermanent(lineItems, row.result)
-    : derivePackages(lineItems, row.result, roofline);
+    : isEvent
+      ? derivePackagesEvent(lineItems, row.result)
+      : derivePackages(lineItems, row.result, roofline);
   const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
@@ -418,6 +424,22 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   const manualDiscount = d
     ? { rate: d.type === 'percentage' ? d.amount : 0, flat: d.type === 'flat' ? d.amount : 0 }
     : { rate: 0, flat: 0 };
+
+  // Event Lighting (#96): surface the staff-entered dates for the portal's
+  // "Your Event Schedule" block — only for an event quote with at least one set.
+  const ev = row.service_type === 'event' ? row.inputs?.event : undefined;
+  const eventSchedule =
+    ev && (ev.installDate || ev.eventDate || ev.takedownDate)
+      ? {
+          ...(ev.installDate ? { installDate: ev.installDate } : {}),
+          ...(ev.eventDate ? { eventDate: ev.eventDate } : {}),
+          ...(ev.takedownDate ? { takedownDate: ev.takedownDate } : {}),
+        }
+      : undefined;
+  // Event Lighting (#96): the soft "add if you'd like" suggestions — popular
+  // add-ons not already on the quote (event quotes only).
+  const evSuggestions =
+    row.service_type === 'event' && row.result ? eventSuggestions(row.result) : [];
 
   return {
     id: row.id,
@@ -476,6 +498,8 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // The quote's service line (#88 Permanent Lighting vertical). Undefined
     // for legacy rows without the column.
     serviceType: row.service_type ?? undefined,
+    ...(eventSchedule ? { eventSchedule } : {}),
+    ...(evSuggestions.length > 0 ? { eventSuggestions: evSuggestions } : {}),
     // Bug fix (B3): derive the current status from the row (explicit persisted
     // status wins for branch/terminal states; timestamps are the fallback for
     // legacy rows) and thread it into PortalQuote so the portal can gate the

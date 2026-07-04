@@ -6,6 +6,7 @@ import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
+import { calculateEventQuote } from '@/lib/event/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
@@ -322,10 +323,12 @@ export async function POST(req: NextRequest) {
     const effectiveServiceType: ServiceType =
       serviceType ?? (existing ? asServiceType(existing.service_type) : null) ?? DEFAULT_SERVICE_TYPE;
     const isPermanent = effectiveServiceType === 'permanent';
+    const isEvent = effectiveServiceType === 'event';
 
     // If a design is linked AND its scene has projectable per-unit items, the
-    // DESIGN is the master list for those items (#27). Holiday only — projectScene
-    // ignores permanent strands, so this is a no-op for permanent; skip explicitly.
+    // DESIGN is the master list for those items (#27). Holiday + event both use
+    // the design (event reuses the C9/mini/spritzer/curtain items); only permanent
+    // (puck strands) is skipped — projectScene ignores permanent strands.
     if (!isPermanent && isValidDesignId(designId)) {
       const design = await getDesign(designId);
       if (design?.scene) {
@@ -340,8 +343,17 @@ export async function POST(req: NextRequest) {
     const permRates = isPermanent
       ? existing?.result?.permanentRatesSnapshot ?? (await getAppSettings()).permanentRates
       : undefined;
+    // Event rate table — the same rate-drift guard: re-price an EXISTING event
+    // quote from its FROZEN snapshot; a NEW event quote reads live settings.
+    const eventRates = isEvent
+      ? existing?.result?.eventRatesSnapshot ?? (await getAppSettings()).eventRates
+      : undefined;
     const price = (i: QuoteInputs) =>
-      isPermanent ? calculatePermanentQuote(i, permRates) : calculateQuote(i);
+      isPermanent
+        ? calculatePermanentQuote(i, permRates)
+        : isEvent
+          ? calculateEventQuote(i, eventRates)
+          : calculateQuote(i);
 
     const result = price(quoteInputs);
     // #104: a baseline result with the per-quote price overrides STRIPPED, so the
