@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { quoteRowToPortalQuote, type QuoteRowForPortal } from './adapter';
+import { quoteRowToPortalQuote, BILLED_ROOFLINE_IDS, type QuoteRowForPortal } from './adapter';
 import { calculateQuote, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PortalPhotos } from './photos';
 
@@ -349,5 +349,16 @@ describe('quoteRowToPortalQuote — quoteStatus + declineReason (Bug 3)', () => 
     const portal = quoteRowToPortalQuote({ row: rowSent, photos: PHOTOS })!;
     // deriveStatus → 'sent' (timestamp-based), not a terminal/branch state
     expect(['declined', 'cancelled', 'lost', 'changes_requested']).not.toContain(portal.quoteStatus);
+  });
+});
+
+describe('BILLED_ROOFLINE_IDS (#110 W3-003)', () => {
+  it('exposes exactly the two stable roofline ids other UIs (e.g. the staff Quote Breakdown) must filter by', () => {
+    // Locks the contract so the staff breakdown's id-based filter and this
+    // adapter's own id-based drop (above) cannot silently drift apart again —
+    // the whole point of switching off the old fragile label-prefix match.
+    expect(BILLED_ROOFLINE_IDS.has('roofline-santas')).toBe(true);
+    expect(BILLED_ROOFLINE_IDS.has('roofline-gingerbread')).toBe(true);
+    expect(BILLED_ROOFLINE_IDS.size).toBe(2);
   });
 });
