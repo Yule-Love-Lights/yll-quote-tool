@@ -12,16 +12,24 @@ import { useState } from 'react';
 export function ReplyComposer({
   itemId,
   source,
+  channel,
   onSent,
 }: {
   itemId: string;
   source: string;
+  /** The item's last-known channel (e.g. 'sms' | 'email' | 'app'), when the
+   *  caller has it — seeds the toggle's initial choice. Optional so callers
+   *  that don't track it (InboxList) keep working unchanged. */
+  channel?: string | null;
   onSent: () => void;
 }) {
   const [draftText, setDraftText] = useState('');
   const [draftBusy, setDraftBusy] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
-  const [replyChannel, setReplyChannel] = useState<'sms' | 'email'>('email');
+  // Seed from the item's known channel; anything other than an explicit 'sms'
+  // (unknown, 'app', 'email', etc.) defaults to email, same as the server's
+  // own default for a quote lead with no chosen channel (see reply.ts).
+  const [replyChannel, setReplyChannel] = useState<'sms' | 'email'>(channel === 'sms' ? 'sms' : 'email');
   const [error, setError] = useState<string | null>(null);
 
   async function generateDraft() {

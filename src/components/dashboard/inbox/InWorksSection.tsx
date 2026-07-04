@@ -40,11 +40,38 @@ export function InWorksSection({
     }
   }
 
-  // Fire a one-shot row action (mark-completed / followed). On success the row
-  // leaves its current group optimistically — there's no in-works refresh
-  // endpoint, so the true state re-syncs on the next full page load. (A "Followed"
-  // handled row moves into "awaiting"; it reappears there on reload.)
-  async function act(item: InWorksItem, group: 'awaiting' | 'handled', path: string) {
+  // Move a row to its TRUE group after a mutation, instead of just deleting it —
+  // there's no in-works refresh endpoint, so this is how local state stays
+  // consistent with the server's actual bucket predicates (store.ts `listInWorks`)
+  // without a full page reload. No-op when the row is already in `to`.
+  function moveGroup(itemId: string, from: 'awaiting' | 'handled', to: 'awaiting' | 'handled') {
+    if (from === to) return;
+    const source = from === 'awaiting' ? awaitingItems : handledItems;
+    const item = source.find((i) => i.id === itemId);
+    if (!item) return;
+    if (from === 'awaiting') {
+      setAwaitingItems((prev) => prev.filter((i) => i.id !== itemId));
+    } else {
+      setHandledItems((prev) => prev.filter((i) => i.id !== itemId));
+    }
+    if (to === 'awaiting') {
+      setAwaitingItems((prev) => [...prev, item]);
+    } else {
+      setHandledItems((prev) => [...prev, item]);
+    }
+  }
+
+  // Fire a one-shot row action (mark-completed / followed). `outcome` is the row's
+  // TRUE resulting group per the server predicates: 'remove' for completed/dismissed
+  // (leaves both groups), or the group it now belongs in otherwise — e.g. a
+  // "Followed" handled row gets followed_up_at stamped, which flips it into
+  // "awaiting" rather than dropping it from the section.
+  async function act(
+    item: InWorksItem,
+    group: 'awaiting' | 'handled',
+    path: string,
+    outcome: 'awaiting' | 'handled' | 'remove',
+  ) {
     setBusyId(item.id);
     setErrorId(null);
     try {
@@ -55,7 +82,11 @@ export function InWorksSection({
       });
       const data = (await res.json()) as { ok?: boolean };
       if (data.ok) {
-        removeFromGroup(item.id, group);
+        if (outcome === 'remove') {
+          removeFromGroup(item.id, group);
+        } else {
+          moveGroup(item.id, group, outcome);
+        }
       } else {
         setErrorId(item.id);
       }
@@ -135,7 +166,7 @@ export function InWorksSection({
               <button
                 type="button"
                 disabled={busyId === item.id}
-                onClick={() => act(item, group, '/api/dashboard/followed')}
+                onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting')}
                 title="I followed up — snooze until they reply"
                 className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                 style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
@@ -146,7 +177,7 @@ export function InWorksSection({
             <button
               type="button"
               disabled={busyId === item.id}
-              onClick={() => act(item, group, '/api/dashboard/completed')}
+              onClick={() => act(item, group, '/api/dashboard/completed', 'remove')}
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
             >
@@ -158,11 +189,14 @@ export function InWorksSection({
           <ReplyComposer
             itemId={item.id}
             source={item.source}
+            channel={item.channel}
             onSent={() => {
               setComposerFor(null);
               // A sent reply stamps the item handled + followed (snoozed awaiting
-              // their reply), so it leaves its current in-works group.
-              removeFromGroup(item.id, group);
+              // their reply) — its true group is always "awaiting" afterward. On an
+              // already-awaiting row this is a no-op (it must NOT disappear); on a
+              // handled row it moves there instead of vanishing.
+              moveGroup(item.id, group, 'awaiting');
             }}
           />
         )}

@@ -259,6 +259,73 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
   });
 });
 
+describe('POST /api/quote — event block validation (#96 audit fixes #9 / #5)', () => {
+  it('rejects an over-cap event.bistro array (length 501) with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { bistro: Array.from({ length: 501 }, () => ({ footage: 10 })) };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed bistro element (non-numeric footage) with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { bistro: [{ footage: 'ten' }] };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a negative event.barrelBoxes with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { barrelBoxes: -1 };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects inverted event dates (eventDate before installDate) with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { installDate: '2026-08-10', eventDate: '2026-08-05', takedownDate: '2026-08-11' };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects inverted event dates (takedownDate before eventDate) with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { eventDate: '2026-08-10', takedownDate: '2026-08-05' };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a malformed date string with 400', async () => {
+    const inputs = validInputs();
+    inputs.event = { installDate: '08/10/2026' };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a well-formed event block with in-order dates + bistro + barrelBoxes', async () => {
+    const inputs = validInputs();
+    inputs.event = {
+      bistro: [{ footage: 20 }],
+      barrelBoxes: 2,
+      installDate: '2026-08-01',
+      eventDate: '2026-08-05',
+      takedownDate: '2026-08-05', // equal dates (single-day event) must be allowed
+    };
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts an event quote with no event block at all (still optional)', async () => {
+    const inputs = validInputs();
+    const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/quote — validation hardening', () => {
   it('routes a non-UUID quoteId to insert, not update', async () => {
     // 36 dashes used to slip past the old loose /^[0-9a-f-]{36}$/i regex.

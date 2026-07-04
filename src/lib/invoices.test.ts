@@ -600,6 +600,59 @@ describe('setInvoiceTaxOverride', () => {
     expect(inv!.tax).toBe(0);
     expect(inv!.balance).toBe(1258.62); // 2758.62 − 1500
   });
+
+  // FIX #7: there is no safe fallback to the invoice's own stored tax/total when
+  // the source quote's priced result can't be read — those stored fields can
+  // already be a mismatched basis (e.g. the amend re-sync writes the quote's
+  // FULL-quote tax against an amended, PARTIAL total). Blindly subtracting that
+  // full tax from the partial total would under-bill, so this must refuse instead.
+  it('refuses the override when the linked quote has no priced result (no under-bill)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        {
+          id: 'i1',
+          quote_id: 'q1',
+          deposit_applied: 1500,
+          subtotal: 4500,
+          discount: 0,
+          tax: 393.75, // the FULL-quote tax
+          total: 3000, // a PARTIAL total — mismatched basis vs. `tax`
+          balance: 1500,
+          credit_note: 0,
+          status: 'draft',
+          tax_overridden: false,
+        },
+      ],
+      quotes: [{ id: 'q1', result: null }], // linked quote exists but its result is gone
+    });
+    sbRef.current = fake.client;
+    await expect(setInvoiceTaxOverride('i1', true)).rejects.toThrow(/priced result is unavailable/i);
+    // Refused — the invoice must be untouched, not silently under-billed.
+    expect(fake.tables.invoices[0]).toMatchObject({ tax: 393.75, total: 3000, tax_overridden: false });
+  });
+
+  it('refuses the override when the invoice has no linked quote at all', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        {
+          id: 'i1',
+          quote_id: null,
+          deposit_applied: 1500,
+          subtotal: 4500,
+          discount: 0,
+          tax: 393.75,
+          total: 3000,
+          balance: 1500,
+          credit_note: 0,
+          status: 'draft',
+          tax_overridden: false,
+        },
+      ],
+      quotes: [],
+    });
+    sbRef.current = fake.client;
+    await expect(setInvoiceTaxOverride('i1', true)).rejects.toThrow(/priced result is unavailable/i);
+  });
 });
 
 describe('getInvoiceDetail', () => {
