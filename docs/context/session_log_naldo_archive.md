@@ -8,7 +8,7 @@ metadata:
 
 # AI Quote Tool — session log (Naldo's thread) — ARCHIVE (S1–S20)
 
-> Older Naldo sessions split out of `session_log_naldo.md` on 2026-07-01 (S19) for token efficiency — this closed the last open item of **#94** (Naldo's log rotation). S16 + S17 rotated in on 2026-07-02 (S21). Newest-on-top, byte-for-byte as originally written.
+> Older Naldo sessions split out of `session_log_naldo.md` on 2026-07-01 (S19) for token efficiency — this closed the last open item of **#94** (Naldo's log rotation). S16 + S17 rotated in on 2026-07-02 (S21); S20 rotated in on 2026-07-04 (S23). Newest-on-top, byte-for-byte as originally written.
 > Active log (preamble + latest ~3: S23/S22/S21): `session_log_naldo.md`.
 
 ### Naldo S20 — #83 Jobber operator workflow COMPLETE + verified: ops-console surfaces re-synced+merged (#251), status-aware Options console (#288/#293), 24-agent audit → 8 trial-blocker fixes (#300), rebook wiring + backfill (#306), 3 council reviews, deposit-amount fix + reconciliation (#309), Needs-Action queue (#310) — ALL LIVE (2026-07-01)
