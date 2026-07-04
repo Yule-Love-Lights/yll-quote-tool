@@ -15,6 +15,7 @@ import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
+import type { ServiceType } from '@/lib/serviceType';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -170,9 +171,12 @@ export type WhatsIncludedProps = {
   design?: PortalDesign;
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
+  // Permanent Lighting (#88): hide the holiday-only rush/takedown + early-install
+  // add-ons for a permanent quote (those fees are forced off in pricing/approve).
+  serviceType?: ServiceType;
 };
 
-export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsIncludedProps) {
+export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
   const {
     isItemSelected,
     toggleItem,
@@ -320,6 +324,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
          * package. Toggling either updates the totals + the approval. */}
+        {serviceType !== 'permanent' && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Optional add-ons
@@ -343,6 +348,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
             />
           </ul>
         </div>
+        )}
 
         {/* Early-install discount (#40) — Sep/Oct roof-light install for a
          * percentage off the order. Mutually exclusive with each other and with
@@ -350,7 +356,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings }: WhatsI
          * per quote — the "Your discount" banner below shows that instead), OR
          * when the global "hide early-install discounts" setting is on (the
          * season has passed — Settings → Customer Portal). */}
-        {!hasManualDiscount && !earlyInstallHidden && (
+        {serviceType !== 'permanent' && !hasManualDiscount && !earlyInstallHidden && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save
