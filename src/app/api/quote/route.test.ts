@@ -54,7 +54,6 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
 vi.mock('@/lib/appSettings', () => ({
   getAppSettings: async () => ({
     permanentRates: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
-    permanentEnabled: true,
     // Distinct event rates (roofline easy = $5) so a test can prove the route
     // reads settings.eventRates, not the engine's compiled default (easy = $7).
     eventRates: {

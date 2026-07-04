@@ -29,7 +29,6 @@ const FALLBACK: AppSettings = {
   eventRates: DEFAULT_EVENT_RATES,
   eventEnabled: false,
   permanentRates: DEFAULT_PERMANENT_RATES,
-  permanentEnabled: false,
 };
 
 let cache: Promise<AppSettings> | null = null;

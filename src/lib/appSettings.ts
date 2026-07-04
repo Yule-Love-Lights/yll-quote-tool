@@ -52,10 +52,8 @@ export type AppSettings = {
   // service-type picker (default OFF / dark until the event portal ships).
   eventEnabled: boolean;
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
-  // rate table (Settings → Quotes), and the feature flag that gates the Permanent
-  // option in the builder's service-type picker (default OFF until the portal ships).
+  // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
-  permanentEnabled: boolean;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -76,7 +74,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   eventRates: DEFAULT_EVENT_RATES,
   eventEnabled: false,
   permanentRates: DEFAULT_PERMANENT_RATES,
-  permanentEnabled: false,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -275,7 +272,6 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     eventRates: sanitizeEventRates(map.get('eventRates')),
     eventEnabled: map.get('eventEnabled') === true,
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
-    permanentEnabled: map.get('permanentEnabled') === true,
   };
 }
 
@@ -306,7 +302,6 @@ export async function putAppSettings(patch: {
   eventRates?: EventRates;
   eventEnabled?: boolean;
   permanentRates?: Partial<PermanentRates>;
-  permanentEnabled?: boolean;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -370,10 +365,6 @@ export async function putAppSettings(patch: {
     const value = { ...current.permanentRates, ...sanitizePermanentRates(patch.permanentRates) };
     rows.push({ key: 'permanentRates', value });
     map.set('permanentRates', value);
-  }
-  if (patch.permanentEnabled !== undefined && typeof patch.permanentEnabled === 'boolean') {
-    rows.push({ key: 'permanentEnabled', value: patch.permanentEnabled });
-    map.set('permanentEnabled', patch.permanentEnabled);
   }
 
   if (rows.length > 0) {
