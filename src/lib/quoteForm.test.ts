@@ -6,6 +6,7 @@ import {
   inputsToFormData,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
+import { makeDefaultPermanentFields } from './permanent/types';
 
 const VALID = ['easy', 'medium', 'hard'];
 
@@ -42,6 +43,7 @@ const fullForm: QuoteFormData = {
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
+  permanent: makeDefaultPermanentFields(),
 };
 
 describe('buildQuoteInputs', () => {
@@ -59,6 +61,43 @@ describe('buildQuoteInputs', () => {
     const restored = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm));
     expect(restored.stakeLightingFootage).toBe(60);
     expect(restored.stakeLightingDifficulty).toBe('hard');
+  });
+
+  it('sends the permanent block ONLY for a permanent quote (#88)', () => {
+    const perm = {
+      ...fullForm,
+      serviceType: 'permanent' as const,
+      permanent: { ...makeDefaultPermanentFields(), frontFootage: 120, leftFootage: 40 },
+    };
+    expect(buildQuoteInputs(perm).permanent).toEqual(perm.permanent);
+    // holiday / event never carry it
+    expect('permanent' in buildQuoteInputs({ ...fullForm, serviceType: 'holiday' })).toBe(false);
+    expect('permanent' in buildQuoteInputs({ ...fullForm, serviceType: 'event' })).toBe(false);
+  });
+
+  it('round-trips the permanent block through inputs → form (#88)', () => {
+    const perm = {
+      ...fullForm,
+      serviceType: 'permanent' as const,
+      permanent: {
+        ...makeDefaultPermanentFields(),
+        frontFootage: 120,
+        rightFootage: 55,
+        frontCorners: 6,
+        trackStyle: 'parapet' as const,
+        trackColor: '9004' as const,
+        blackHousing: true,
+      },
+    };
+    const restored = inputsToFormData(perm.customer, buildQuoteInputs(perm), 'permanent');
+    expect(restored.permanent).toEqual(perm.permanent);
+  });
+
+  it('hydrates a fresh blank permanent block for a holiday quote (factory, fresh gaps)', () => {
+    const a = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm), 'holiday');
+    const b = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm), 'holiday');
+    expect(a.permanent).toEqual(makeDefaultPermanentFields());
+    expect(a.permanent.gaps).not.toBe(b.permanent.gaps); // separate arrays, no sharing
   });
 
   it('omits rooflineChoice when staff has not recommended one', () => {

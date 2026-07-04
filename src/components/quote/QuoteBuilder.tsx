@@ -8,7 +8,7 @@ import type {
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
-import { buildPortalLineItems } from '@/lib/portal/adapter';
+import { buildPortalLineItems, BILLED_ROOFLINE_IDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
 import type { PortalLineItem } from '@/components/portal/types';
@@ -29,6 +29,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
+import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -399,8 +400,17 @@ export default function QuoteBuilder({
     setTrainError(null);
     try {
       // Persist any pending design edit BEFORE the server reads designs.scene.
+      // #110 W3-006 (sibling of #80-102): a flush rejection here would silently
+      // snapshot a stale, pre-edit scene into the training example — warn
+      // instead of proceeding as if it captured the operator's latest edits.
       if (editorFlushRef.current) {
-        try { await editorFlushRef.current(); } catch { /* capture proceeds with last-saved scene */ }
+        try {
+          await editorFlushRef.current();
+        } catch {
+          setTrainStatus('error');
+          setTrainError('Design may not have saved — retry before capturing');
+          return;
+        }
       }
       const res = await fetch('/api/training-examples', {
         method: 'POST',
@@ -591,6 +601,8 @@ export default function QuoteBuilder({
   // value behind. (Manual entry without any lines is still preserved.)
   const hadC9LinesRef = useRef(false);
   const hadStakeLinesRef = useRef(false);
+  const hadSantasLinesRef = useRef(false);
+  const hadGingerbreadLinesRef = useRef(false);
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -605,23 +617,33 @@ export default function QuoteBuilder({
     // deleted (had lines on the previous run, none now), reset footage to 0 —
     // it was derived from those lines. When no lines were ever drawn, leave
     // winterWonderlandFootage alone so the manual input still works. Stake
-    // Lighting mirrors this exactly against its own field.
+    // Lighting mirrors this exactly against its own field. Santa's/Gingerbread
+    // roofline mirror it too (#110 W3-001) — an address-lookup analysis with a
+    // street-traced roofline sets a real AI footage estimate with no satellite
+    // lines drawn; without this guard this effect unconditionally zeroed it.
     const hasC9Lines = satelliteC9Lines.length > 0;
     const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
     hadC9LinesRef.current = hasC9Lines;
     const hasStakeLines = satelliteStakeLines.length > 0;
     const stakeTarget = hasStakeLines ? stakeFt : hadStakeLinesRef.current ? 0 : null;
     hadStakeLinesRef.current = hasStakeLines;
+    const hasSantasLines = satelliteSantasLines.length > 0;
+    const santasTarget = hasSantasLines ? sFt : hadSantasLinesRef.current ? 0 : null;
+    hadSantasLinesRef.current = hasSantasLines;
+    const hasGingerbreadLines = satelliteGingerbreadLines.length > 0;
+    const gingerbreadTarget = hasGingerbreadLines ? gFt : hadGingerbreadLinesRef.current ? 0 : null;
+    hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
-      const sameRoof = f.santasFootage === sFt && f.gingerbreadFootage === gFt;
+      const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
+      const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
       const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
       const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget;
-      if (sameRoof && sameC9 && sameStake) return f;
+      if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
       return {
         ...f,
-        santasFootage: sFt,
-        gingerbreadFootage: gFt,
+        ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
+        ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
         ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
         ...(stakeTarget != null ? { stakeLightingFootage: stakeTarget } : {}),
       };
@@ -1469,7 +1491,13 @@ export default function QuoteBuilder({
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
-      setSavedQuoteId(newQuoteId);
+      // Only overwrite savedQuoteId on a real id (#110 W3-004 / #80-105). A 200
+      // response with quoteId:null means the server-side save/update failed
+      // (e.g. a transient Supabase error on an in-place re-price) — nulling a
+      // previously-valid id here would orphan that row and make the next
+      // Calculate INSERT a duplicate instead of updating it. Mirrors the same
+      // guard already used by recommendRoofline below.
+      if (newQuoteId) setSavedQuoteId(newQuoteId);
       // Persist the staff-confirmed satellite measurement lines onto the
       // design (#8 Stage A) — Calculate is the "measurement finalized"
       // moment. Only when a satellite session is actually active: a reopened
@@ -1518,6 +1546,7 @@ export default function QuoteBuilder({
   // re-render, no scroll) so only the price/breakdown updates (#17 Phase 1b).
   const recommendRoofline = async (choice: RooflineChoice) => {
     if (loading) return;
+    const prevChoice = form.rooflineChoice;
     setForm((f) => ({ ...f, rooflineChoice: choice }));
     setLoading(true);
     setError(null);
@@ -1536,6 +1565,11 @@ export default function QuoteBuilder({
       setBaselineResult(data.baseline ?? data.result); // #104
       if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
     } catch (err) {
+      // #110 W3-005: revert the optimistic rooflineChoice write on failure —
+      // otherwise form.rooflineChoice stays desynced from the billed
+      // result.rooflineChoice, and the next plain Calculate silently re-bills
+      // the never-confirmed choice.
+      setForm((f) => ({ ...f, rooflineChoice: prevChoice }));
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
@@ -1582,14 +1616,27 @@ export default function QuoteBuilder({
   // roofline OPTION rows and drops the billed roofline; the breakdown filters
   // the billed roofline the same way — so dropping the option ids leaves the
   // same rows in the same order).
-  const breakdownLinked: PortalLineItem[] = (() => {
+  // #110 W3-015: memoized so the full scene projection (buildPortalLineItems →
+  // attachSceneLinks/projectScene) only reruns when a field that actually feeds
+  // pricing/labels changes — not on every render (e.g. a satellite-drag
+  // pointermove or a keystroke in an unrelated form input).
+  const breakdownLinked: PortalLineItem[] = useMemo(() => {
     if (!result) return [];
     const inputs = buildQuoteInputs(form);
     const { lineItems, roofline } = buildPortalLineItems(result, inputs);
     const linked = breakdownScene ? attachSceneLinks(lineItems, breakdownScene) : lineItems;
     const optionIds = new Set(roofline?.itemIds ?? []);
     return linked.filter((li) => !optionIds.has(li.id));
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    result,
+    breakdownScene,
+    form.customLineItems,
+    form.lineItemPriceOverrides,
+    form.winterWonderlandRecommended,
+    form.stakeLightingRecommended,
+    form.rooflineChoice,
+  ]);
 
   // #12: the "recommended subtotal" = what the customer's portal opens with when
   // staff have recommended items = the checked per-unit/custom items PLUS the
@@ -2485,6 +2532,15 @@ export default function QuoteBuilder({
             </div>
           ) : null}
 
+          {/* Permanent Lighting (#88): its own footage/corners/gaps/track section,
+              replacing the holiday item sections. Holiday item sections are hidden
+              for permanent so the operator can't enter Christmas footage on it. */}
+          {form.serviceType === 'permanent' && (
+            <PermanentSection form={form} setForm={setForm} designId={designId} />
+          )}
+
+          {form.serviceType !== 'permanent' && (
+          <>
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Santa's — Front Gutterline (C9 Bulbs)">
@@ -2632,6 +2688,8 @@ export default function QuoteBuilder({
               )}
             </Section>
           </div>
+          </>
+          )}
 
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
@@ -2668,7 +2726,11 @@ export default function QuoteBuilder({
             </button>
           </Section>
 
-          {/* ── Options ── */}
+          {/* ── Options ── holiday-only. Permanent forces takedown/rush/install off
+              in pricing and uses the $2,500 gate (not the $1,000 waive here), so the
+              whole section is hidden for it. Per-quote discount for permanent is a
+              fast-follow (custom $/ft + custom line items cover v1 price flexibility). */}
+          {form.serviceType !== 'permanent' && (
           <Section title="Options">
 
             {/* Takedown */}
@@ -2788,6 +2850,7 @@ export default function QuoteBuilder({
               </label>
             </div>
           </Section>
+          )}
 
           {/* Calculate */}
           <button
@@ -2958,9 +3021,13 @@ export default function QuoteBuilder({
                 const RECOMMENDABLE_KINDS = new Set<PortalLineItem['kind']>([
                   'tree', 'bush', 'column', 'railing', 'curtain', 'spritzer', 'wreath', 'garland', 'bow', 'ridge', 'stake-lighting',
                 ]);
-                const rows = result.lineItems.filter(
-                  (item) => !(item.label.startsWith("Santa's Roofline") || item.label.startsWith('Gingerbread')),
-                );
+                // Drop by stable id, not label text (#110 W3-003 — a sibling of the
+                // #110 W1-005 bug fixed in adapter.ts). A label-prefix match also
+                // drops staff-typed CUSTOM items that happen to share those words,
+                // and desyncs this array from breakdownLinked (built by the same
+                // adapter, which already filters by id), corrupting the positional
+                // rows[i] ↔ breakdownLinked[i] pairing below.
+                const rows = result.lineItems.filter((item) => !(item.id && BILLED_ROOFLINE_IDS.has(item.id)));
                 // #104: baseline (overrides-stripped) amount per stable line id, for
                 // the "custom · was $X" chip on an overridden row.
                 const baseById = new Map(

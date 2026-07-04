@@ -1314,6 +1314,18 @@ export async function renderEditor(
         sx += it.x;
         sy += it.y;
         n++;
+      } else if (isMiniArea(it)) {
+        if (it.shape === "polygon" && it.points) {
+          for (let i = 0; i < it.points.length; i += 2) {
+            sx += it.points[i];
+            sy += it.points[i + 1];
+            n++;
+          }
+        } else {
+          sx += it.x ?? 0;
+          sy += it.y ?? 0;
+          n++;
+        }
       }
     }
     return n === 0 ? { x: 0, y: 0 } : { x: sx / n, y: sy / n };
@@ -1337,6 +1349,15 @@ export async function renderEditor(
     if (isWreath(it) || isBow(it) || isSpritzer(it) || isText(it) || isCustom(it) || isPole(it)) {
       return { ...it, x: it.x + dx, y: it.y + dy };
     }
+    if (isMiniArea(it)) {
+      if (it.shape === "polygon" && it.points) {
+        return {
+          ...it,
+          points: it.points.map((v, i) => v + (i % 2 === 0 ? dx : dy)),
+        };
+      }
+      return { ...it, x: (it.x ?? 0) + dx, y: (it.y ?? 0) + dy };
+    }
     return it;
   }
 
@@ -1359,6 +1380,8 @@ export async function renderEditor(
     const newItems: SceneItem[] = clipboard.map((it) => {
       const cloned = JSON.parse(JSON.stringify(it)) as SceneItem;
       cloned.id = cryptoId();
+      cloned.linkedToId = undefined;
+      if ("groupId" in cloned) cloned.groupId = undefined;
       return shiftItem(cloned, dx, dy);
     });
     scene = { ...scene, items: [...scene.items, ...newItems] };
@@ -1376,6 +1399,7 @@ export async function renderEditor(
   let saveTimer: number | null = null;
   let pendingSave = false;
   let retryTimer: number | null = null;
+  let saveSeq = 0;
   const savingEl = root.querySelector("#saving") as HTMLElement;
   async function doSave() {
     // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
@@ -1384,10 +1408,15 @@ export async function renderEditor(
     // still read "Saved". Keep pendingSave true until the write actually lands;
     // on failure surface an honest state + schedule a backoff retry (the PUT
     // writes the whole scene, so a later retry self-heals).
+    // AUDIT FIX (W3-008): a slow PUT overlapping a later scheduleSave()/retry
+    // could let an older response's success/failure side effects land after a
+    // newer one's, reverting the "Saved" state (or a retry timer) to a stale
+    // save. Only the LATEST doSave() call may apply side effects.
+    const seq = ++saveSeq;
     try {
       await api.updateDesign(design.id, { scene, name: design.name });
     } catch {
-      if (destroyed) return;
+      if (destroyed || seq !== saveSeq) return;
       pendingSave = true; // edit not persisted — keep it queued
       savingEl.textContent = "Save failed — retry";
       if (!retryTimer) {
@@ -1397,6 +1426,7 @@ export async function renderEditor(
     }
     // Don't touch the (possibly detached) DOM if we were torn down mid-flight.
     if (destroyed) { pendingSave = false; return; }
+    if (seq !== saveSeq) return;
     pendingSave = false;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     clearUnsavedBanner(); // a successful write clears any stale "unsaved" marker
@@ -2242,6 +2272,7 @@ export async function renderEditor(
         c.id !== item.id &&
         !c.linkedToId &&
         c.kind === item.kind &&
+        (!isStrand(c) || !isStrand(item) || (c.surface ?? "") === (item.surface ?? "")) &&
         (c.photoId ?? null) !== (item.photoId ?? null),
     );
     if (candidates.length === 0 && !item.linkedToId) return;
@@ -2680,6 +2711,8 @@ export async function renderEditor(
       const newStrands = sel.map((s) => ({
         ...s,
         id: cryptoId(),
+        groupId: undefined,
+        linkedToId: undefined,
         points: s.points.map((p) => p + 20),
       }));
       scene = { ...scene, items: [...scene.items, ...newStrands] };
@@ -3931,6 +3964,7 @@ export async function renderEditor(
           y.id === ys.id ? { ...y, axis: otherAxis } : y,
         ),
       };
+      scheduleSave();
       commit();
       requestCanvasRedraw();
       renderSidebar();
@@ -5046,6 +5080,8 @@ export async function renderEditor(
         // (No preventDefault — matches the original Esc behavior.)
         if (tool.drawingStyle === "trace" && tracePts) {
           finishTrace();
+        } else if (stampSourceId) {
+          cancelInProgress();
         } else if (selectedIds.size > 0) {
           clearSelection();
         } else {

@@ -120,6 +120,9 @@ type QuoteRow = {
   // Test Quote (ledger #93, the same task): true ⇒ record the approval snapshot
   // but suppress every customer/staff notification (simulated approval).
   is_test: boolean;
+  // #88 Permanent Lighting: 'permanent' forces holiday fees off in the server
+  // recompute + gates on the frozen rate-snapshot minimum instead of $1,000.
+  service_type: string | null;
 };
 
 type ApproveBody = {
@@ -276,8 +279,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // #4 — the customer's rush / premium-takedown add-on choices. Recorded in
   // the snapshot (the authoritative record of what they approved); the
   // toggle-inclusive amount is already in currentTotal/currentDeposit.
-  const rushSelected = body.rushSelected === true;
-  const takedownSelected = body.takedownSelected === true;
+  const reqRushSelected = body.rushSelected === true;
+  const reqTakedownSelected = body.takedownSelected === true;
   // #10 — the customer's light color/pattern choice. A short scheme id; recorded
   // in the snapshot as the authoritative record of what they approved. Validated
   // against the known scheme set (presets + 'custom'); anything unknown/absent
@@ -305,7 +308,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
-  const installTiming =
+  const reqInstallTiming =
     body.installTiming === 'september' || body.installTiming === 'october'
       ? body.installTiming
       : 'none';
@@ -330,7 +333,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -379,6 +382,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { status: 409 },
     );
   }
+
+  // Permanent Lighting (#88 P6): permanent quotes never carry the holiday rush /
+  // premium-takedown / early-install fees. Force them OFF here so a forged approve
+  // body can't add a holiday fee to a permanent order — the same guarantee
+  // calculatePermanentQuote makes at pricing time. Holiday quotes use the
+  // customer's requested toggles unchanged. These effective values flow into the
+  // recompute AND the frozen approval snapshot below.
+  const isPermanent = quote.service_type === 'permanent';
+  const rushSelected = isPermanent ? false : reqRushSelected;
+  const takedownSelected = isPermanent ? false : reqTakedownSelected;
+  const installTiming: 'none' | 'september' | 'october' = isPermanent ? 'none' : reqInstallTiming;
 
   // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
   // #39/#63/#74/#79) ────────────────────────────────────────────────────────
@@ -457,7 +471,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           (li) => !(roofline.itemIds.includes(li.id) && li.id !== roofline.recommendedItemId),
         )
       : lineItems;
-    const minimum = quote.inputs?.waiveMinimum ? 0 : minimumOrderSubtotal(tierLineItems);
+    // Permanent (#88 H3): gate on the FROZEN rate-snapshot minimum ($2,500 default),
+    // never live settings — the same threshold the portal adapter uses. Holiday
+    // passes undefined → the $1,000 BUSINESS_RULES default.
+    const minimum = quote.inputs?.waiveMinimum
+      ? 0
+      : minimumOrderSubtotal(
+          tierLineItems,
+          isPermanent ? (quote.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+        );
     const { meetsMinimum } = orderMinimumStatus(breakdown, minimum);
     if (!meetsMinimum) {
       return NextResponse.json(
