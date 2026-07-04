@@ -29,6 +29,7 @@ import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
+import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -46,6 +47,9 @@ export type InteractiveHeroProps = {
   // the configured palette + render tunables.
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
+  // #96: the quote's service line — branches the hero headline ("your event"
+  // vs "your home"). Undefined/holiday/permanent keep the default.
+  serviceType?: ServiceType;
 };
 
 export function InteractiveHero({
@@ -57,6 +61,7 @@ export function InteractiveHero({
   design,
   palette,
   renderSettings,
+  serviceType,
 }: InteractiveHeroProps) {
   const {
     packageId,
@@ -243,7 +248,7 @@ export function InteractiveHero({
             className="font-display text-[26px] leading-[1.06] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
           >
-            Here&apos;s your home,{' '}
+            {serviceType === 'event' ? "Here's your event," : "Here's your home,"}{' '}
             <span className="italic text-[#FFD07A]">{firstName}</span>.
           </h1>
         </div>

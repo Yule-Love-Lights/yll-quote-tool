@@ -3,6 +3,7 @@
 // Step circles are gold (the brand's warmth) instead of cream/red.
 
 import { CheckCircle2, MessageSquare, Truck, PackageOpen } from 'lucide-react';
+import type { ServiceType } from '@/lib/serviceType';
 
 type Step = {
   icon: React.ComponentType<{ className?: string }>;
@@ -34,7 +35,37 @@ const STEPS: Step[] = [
   },
 ];
 
-export function WhatHappensNext() {
+const EVENT_STEPS: Step[] = [
+  {
+    icon: CheckCircle2,
+    title: 'Reserve your date',
+    body: 'Lock in your design with a 50% deposit.',
+  },
+  {
+    icon: MessageSquare,
+    title: 'Confirm the details',
+    body: 'We confirm your install, event, and takedown dates and walk your venue if it helps.',
+  },
+  {
+    icon: Truck,
+    title: 'We install',
+    body: 'Our team sets everything up before your event and tests every light.',
+  },
+  {
+    icon: PackageOpen,
+    title: 'Your event shines',
+    body: 'We’re on standby, then take everything down after — clean and complete.',
+  },
+];
+
+const HOLIDAY_HEADING = 'Four steps from quote to Christmas cheer.';
+const EVENT_HEADING = 'From approval to your big night';
+
+export function WhatHappensNext({ serviceType }: { serviceType?: ServiceType }) {
+  const isEvent = serviceType === 'event';
+  const steps = isEvent ? EVENT_STEPS : STEPS;
+  const heading = isEvent ? EVENT_HEADING : HOLIDAY_HEADING;
+
   return (
     <section
       aria-labelledby="portal-dark-next-heading"
@@ -49,7 +80,7 @@ export function WhatHappensNext() {
             id="portal-dark-next-heading"
             className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
           >
-            Four steps from quote to Christmas cheer.
+            {heading}
           </h2>
         </div>
 
@@ -61,7 +92,7 @@ export function WhatHappensNext() {
           />
 
           <ol className="grid grid-cols-1 md:grid-cols-4 gap-10 md:gap-6 relative">
-            {STEPS.map((step, idx) => (
+            {steps.map((step, idx) => (
               <li
                 key={step.title}
                 className="flex md:flex-col items-start md:items-center text-left md:text-center gap-4 md:gap-0"

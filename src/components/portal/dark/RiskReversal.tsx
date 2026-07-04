@@ -4,6 +4,7 @@
 // distinct from the "What's Included" band.
 
 import { Wrench, Lightbulb, Calendar, Home, ShieldCheck } from 'lucide-react';
+import type { ServiceType } from '@/lib/serviceType';
 
 type Guarantee = { icon: React.ComponentType<{ className?: string }>; label: string };
 
@@ -15,7 +16,17 @@ const GUARANTEES: Guarantee[] = [
   { icon: ShieldCheck,   label: '$2M liability insurance — licensed and bonded.' },
 ];
 
-export function RiskReversal() {
+// EVENT service line: same icons/order/skin, event-voiced copy (no seasonal wording).
+const EVENT_GUARANTEES: Guarantee[] = [
+  { icon: Wrench,        label: "Something out? We fix it fast. If a bulb or strand goes dark before your event, we're on it — usually the same day." },
+  { icon: Lightbulb,     label: 'Every bulb, guaranteed lit. We test the whole display before your event, and again the day of.' },
+  { icon: Calendar,      label: 'We handle takedown. Everything comes down on the date we agreed after your event — you never touch a light.' },
+  { icon: Home,          label: 'Careful with your space. Professional install with no damage to your home, venue, or landscaping.' },
+  { icon: ShieldCheck,   label: 'Fully insured. Licensed and insured, so you and your venue are covered.' },
+];
+
+export function RiskReversal({ serviceType }: { serviceType?: ServiceType }) {
+  const guarantees = serviceType === 'event' ? EVENT_GUARANTEES : GUARANTEES;
   return (
     <section
       aria-labelledby="portal-dark-risk-heading"
@@ -35,7 +46,7 @@ export function RiskReversal() {
         </div>
 
         <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
-          {GUARANTEES.map((g) => (
+          {guarantees.map((g) => (
             <li
               key={g.label}
               className="flex items-start gap-4 p-5 md:p-6 rounded-2xl bg-[#18221C] border border-[#243029] shadow-[0_1px_2px_rgba(0,0,0,0.4),0_12px_32px_-8px_rgba(0,0,0,0.55)]"

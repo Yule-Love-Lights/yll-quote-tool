@@ -30,6 +30,8 @@ import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
 import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
+import { EventSchedule } from '@/components/portal/dark/EventSchedule';
+import { EventSuggestions } from '@/components/portal/dark/EventSuggestions';
 import { PhotoGallery } from '@/components/portal/dark/PhotoGallery';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
@@ -47,6 +49,7 @@ import {
   MOCK_GALLERY_ITEMS,
   MOCK_REVIEWS,
   MOCK_FAQ,
+  EVENT_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -270,6 +273,7 @@ export default async function PortalPage({
           design={quote.design}
           palette={appSettings.colors}
           renderSettings={appSettings.render}
+          serviceType={quote.serviceType}
         />
 
         {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
@@ -291,6 +295,17 @@ export default async function PortalPage({
           serviceType={quote.serviceType}
         />
 
+        {/* 3.4 Your Event Schedule (#96) — the 3 staff-entered dates as a timeline;
+            event quotes only, and only when at least one date is set. */}
+        {quote.serviceType === 'event' && quote.eventSchedule && (
+          <EventSchedule schedule={quote.eventSchedule} />
+        )}
+
+        {/* 3.45 Soft add-on suggestions (#96) — event quotes only, when present. */}
+        {quote.serviceType === 'event' && quote.eventSuggestions && quote.eventSuggestions.length > 0 && (
+          <EventSuggestions suggestions={quote.eventSuggestions} />
+        )}
+
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
             between the totals box above and Your Protection below). Renders
             nothing for single-photo designs. */}
@@ -302,14 +317,16 @@ export default async function PortalPage({
           />
         )}
 
-        {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88) */}
-        {quote.serviceType === 'permanent' ? <RiskReversalPermanent /> : <RiskReversal />}
+        {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
+             event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
+        {quote.serviceType === 'permanent' ? <RiskReversalPermanent /> : <RiskReversal serviceType={quote.serviceType} />}
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
 
-        {/* 5. What Happens Next — permanent drops takedown for year-round control (#88) */}
-        {quote.serviceType === 'permanent' ? <WhatHappensNextPermanent /> : <WhatHappensNext />}
+        {/* 5. What Happens Next — permanent drops takedown for year-round control (#88);
+             event/holiday branch their copy inside WhatHappensNext via serviceType (#96) */}
+        {quote.serviceType === 'permanent' ? <WhatHappensNextPermanent /> : <WhatHappensNext serviceType={quote.serviceType} />}
 
         {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
@@ -335,8 +352,8 @@ export default async function PortalPage({
         {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 10. FAQ */}
-        <FAQ items={MOCK_FAQ} />
+        {/* 10. FAQ — event quotes get event-specific Q&A (#96). */}
+        <FAQ items={quote.serviceType === 'event' ? EVENT_FAQ : MOCK_FAQ} />
 
         {/* 11. Personal contact */}
         <PersonalContact
