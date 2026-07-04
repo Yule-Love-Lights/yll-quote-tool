@@ -65,6 +65,24 @@ export const DEFAULT_COLOR_SCHEMES: ColorScheme[] = [
   { id: 'blue-white',  label: 'Frozen',      colorIds: ['blue', 'blue', 'cool-white', 'cool-white'] }, // #92 — renamed from "Blue & White"; id kept so saved quotes don't break
 ];
 
+// ─── Permanent Lighting picker (#88 P6b-2) ──────────────────────────────────
+// Permanent (Omni/Ascend RGB puck) systems are app-controlled and change color
+// year-round, so the portal offers a SMALL curated preview set — "warm white for
+// nightly curb appeal + a few color scenes for the seasons" (Naldo 2026-07-04) —
+// NOT the full holiday swatch list or build-your-own. Every id + colorIds below
+// is a subset of DEFAULT_COLOR_SCHEMES (same render semantics), but the LIST is a
+// FIXED constant, deliberately independent of the operator's holiday swatch
+// curation: a permanent customer's choice must stay valid + freezable even if
+// staff have removed 'warm-white' etc. from the Christmas swatches. 'as-designed'
+// is first (the default the SelectionProvider opens on = the vibrant look drawn),
+// relabeled "Color" for the customer. No 'custom'/build-your-own for permanent.
+export const PERMANENT_COLOR_SCHEMES: ColorScheme[] = [
+  { id: 'as-designed', label: 'Color',      colorIds: null },
+  { id: 'warm-white',  label: 'Warm White', colorIds: ['warm-white'] },
+  { id: 'multicolor',  label: 'Multicolor', colorIds: ['red', 'green', 'blue', 'yellow', 'pink'] },
+  { id: 'champagne',   label: 'Champagne',  colorIds: ['warm-white', 'cool-white'] },
+];
+
 // Resolve a scheme id to its full record within a given scheme list (defaults to
 // the built-ins). Unknown / missing ids fall back to the default ("as designed")
 // so a stale id from an old quote never breaks rendering; a list missing
@@ -142,4 +160,13 @@ export function isKnownColorSchemeId(
   if (typeof id !== 'string') return false;
   if (id === CUSTOM_SCHEME_ID) return true;
   return schemes.some((s) => s.id === id);
+}
+
+// #88 P6b-2 — whether an id is one a PERMANENT customer could legitimately have
+// chosen. Unlike isKnownColorSchemeId this does NOT accept 'custom' (permanent
+// has no build-your-own) and validates ONLY against the fixed permanent set, so a
+// forged/stale holiday scheme id can never be frozen as a permanent color choice.
+const PERMANENT_SCHEME_IDS = new Set(PERMANENT_COLOR_SCHEMES.map((s) => s.id));
+export function isPermanentColorSchemeId(id: unknown): id is string {
+  return typeof id === 'string' && PERMANENT_SCHEME_IDS.has(id);
 }

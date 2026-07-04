@@ -27,6 +27,7 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
+import { PermanentColorToggle } from '@/components/portal/dark/PermanentColorToggle';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
 import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
@@ -57,6 +58,7 @@ import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
+import { PERMANENT_COLOR_SCHEMES } from '@/lib/design/colorSchemes';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
@@ -260,7 +262,11 @@ export default async function PortalPage({
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
-        schemes={appSettings.swatches.schemes}
+        // #88 P6b-2 — permanent quotes preview a FIXED curated set (warm white +
+        // a few scenes), independent of the holiday swatch curation; the choice
+        // still freezes through the same colorSchemeId path. Holiday uses the live
+        // operator swatch list. colorOverride resolves against whichever we pass.
+        schemes={quote.serviceType === 'permanent' ? PERMANENT_COLOR_SCHEMES : appSettings.swatches.schemes}
         buildableColorIds={appSettings.swatches.buildableColorIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
@@ -280,6 +286,9 @@ export default async function PortalPage({
             below the packages so the swatches don't overlap the photo on a phone.
             Only when a design is linked (recolor needs a live scene). */}
         {quote.design && quote.serviceType !== 'permanent' && <LightColorPicker />}
+        {/* 1.5b #88 P6b-2 — permanent warm-white↔color preview toggle (the
+            permanent analog of LightColorPicker; fixed curated scheme set). */}
+        {quote.design && quote.serviceType === 'permanent' && <PermanentColorToggle />}
 
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}

@@ -59,6 +59,8 @@ import {
   CUSTOM_SCHEME_ID,
   DEFAULT_COLOR_SCHEME_ID,
   isKnownColorSchemeId,
+  isPermanentColorSchemeId,
+  PERMANENT_COLOR_SCHEMES,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
 import { getAppSettings } from '@/lib/appSettings';
@@ -281,30 +283,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // toggle-inclusive amount is already in currentTotal/currentDeposit.
   const reqRushSelected = body.rushSelected === true;
   const reqTakedownSelected = body.takedownSelected === true;
-  // #10 — the customer's light color/pattern choice. A short scheme id; recorded
-  // in the snapshot as the authoritative record of what they approved. Validated
-  // against the known scheme set (presets + 'custom'); anything unknown/absent
-  // falls back to 'as-designed' (older clients / no design / junk POST).
-  // #101 — the LIVE operator-configured swatch list + build-your-own palette.
-  // Validate/sanitize + freeze the color choice against exactly what the customer
-  // saw, so a later Settings edit can't retro-change this approved order.
+  // #10 / #88 P6b-2 — load the LIVE operator swatch list now, but validate +
+  // resolve the customer's light-color choice further BELOW (once service_type is
+  // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
+  // quote the operator's live swatch list.
   const { swatches } = await getAppSettings();
-  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, swatches.schemes)
-    ? body.colorSchemeId
-    : DEFAULT_COLOR_SCHEME_ID;
-  // #49 — build-your-own pattern, sanitized (offered palette ids only, capped).
-  // Only meaningful when they chose 'custom'; empty otherwise.
-  const customPattern =
-    requestedSchemeId === CUSTOM_SCHEME_ID
-      ? sanitizeCustomPattern(body.customPattern, swatches.buildableColorIds)
-      : [];
-  // Collapse an empty custom selection back to the default so the frozen snapshot
-  // is self-consistent: 'custom' with zero colors renders identically to
-  // 'as-designed', so we store 'as-designed' rather than a contradictory record.
-  const colorSchemeId =
-    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
-      ? DEFAULT_COLOR_SCHEME_ID
-      : requestedSchemeId;
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -395,6 +378,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const rushSelected = noHolidayFees ? false : reqRushSelected;
   const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
   const installTiming: 'none' | 'september' | 'october' = noHolidayFees ? 'none' : reqInstallTiming;
+
+  // #10 / #88 P6b-2 — resolve + freeze the light-color choice now that we know the
+  // service type. Permanent (RGB pucks) offers a FIXED curated preview set
+  // (PERMANENT_COLOR_SCHEMES) — independent of the operator's holiday swatch
+  // curation and with NO build-your-own — so a permanent customer's choice stays
+  // valid + freezable even if staff removed 'warm-white' from the Christmas
+  // swatches; holiday validates against the live operator swatch list. Either way
+  // the chosen id + its RESOLVED colors are frozen into the snapshot so a later
+  // Settings edit can't retro-change what THIS customer approved (#101 invariant).
+  const activeSchemes = isPermanent ? PERMANENT_COLOR_SCHEMES : swatches.schemes;
+  const requestedSchemeId = isPermanent
+    ? isPermanentColorSchemeId(body.colorSchemeId)
+      ? body.colorSchemeId
+      : DEFAULT_COLOR_SCHEME_ID
+    : isKnownColorSchemeId(body.colorSchemeId, swatches.schemes)
+      ? body.colorSchemeId
+      : DEFAULT_COLOR_SCHEME_ID;
+  // Build-your-own is holiday-only; a permanent quote never carries a custom pattern.
+  const customPattern =
+    !isPermanent && requestedSchemeId === CUSTOM_SCHEME_ID
+      ? sanitizeCustomPattern(body.customPattern, swatches.buildableColorIds)
+      : [];
+  // Collapse an empty custom selection back to the default so the frozen snapshot
+  // is self-consistent: 'custom' with zero colors renders identically to
+  // 'as-designed', so we store 'as-designed' rather than a contradictory record.
+  const colorSchemeId =
+    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
+      ? DEFAULT_COLOR_SCHEME_ID
+      : requestedSchemeId;
 
   // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
   // #39/#63/#74/#79) ────────────────────────────────────────────────────────
@@ -537,9 +549,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       takedownSelected,
       colorSchemeId,
       customPattern,
-      // #101 — freeze the resolved colors (from the live swatch list) so #92
-      // materials always match what the customer saw, even after a Settings edit.
-      colorIds: resolveColorChoice(colorSchemeId, customPattern, swatches.schemes),
+      // #101 — freeze the resolved colors (from the active scheme list — permanent
+      // or holiday) so #92 materials always match what the customer saw, even
+      // after a Settings edit.
+      colorIds: resolveColorChoice(colorSchemeId, customPattern, activeSchemes),
       installTiming,
       installDiscountUsd: snapshotInstallDiscountUsd,
     },

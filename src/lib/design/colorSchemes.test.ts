@@ -9,6 +9,8 @@ import {
   MAX_CUSTOM_PATTERN,
   sanitizeCustomPattern,
   isKnownColorSchemeId,
+  PERMANENT_COLOR_SCHEMES,
+  isPermanentColorSchemeId,
   type ColorScheme,
 } from './colorSchemes';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
@@ -113,5 +115,40 @@ describe('build-your-own custom pattern (#49)', () => {
     expect(isKnownColorSchemeId('red-gold', CUSTOM_LIST)).toBe(true);
     expect(isKnownColorSchemeId(CUSTOM_SCHEME_ID, CUSTOM_LIST)).toBe(true); // 'custom' always allowed
     expect(isKnownColorSchemeId('champagne', CUSTOM_LIST)).toBe(false); // dropped by the operator
+  });
+});
+
+describe('permanent lighting picker (#88 P6b-2)', () => {
+  it('offers warm-white + as-designed + a couple color scenes, all real palette ids', () => {
+    const ids = PERMANENT_COLOR_SCHEMES.map((s) => s.id);
+    expect(ids).toContain('as-designed'); // the default the provider opens on
+    expect(ids).toContain('warm-white');  // the nightly everyday look
+    expect(new Set(ids).size).toBe(ids.length); // unique
+    expect(ids).not.toContain(CUSTOM_SCHEME_ID); // no build-your-own for permanent
+    for (const s of PERMANENT_COLOR_SCHEMES) {
+      if (s.colorIds === null) continue;
+      expect(s.colorIds.length).toBeGreaterThan(0);
+      for (const cid of s.colorIds) expect(PALETTE_IDS.has(cid)).toBe(true);
+    }
+  });
+
+  it('as-designed is first so the vibrant designed look is the default preview', () => {
+    expect(PERMANENT_COLOR_SCHEMES[0]!.id).toBe('as-designed');
+  });
+
+  it('isPermanentColorSchemeId accepts only the fixed permanent set — not custom, not holiday-only schemes', () => {
+    for (const s of PERMANENT_COLOR_SCHEMES) expect(isPermanentColorSchemeId(s.id)).toBe(true);
+    expect(isPermanentColorSchemeId(CUSTOM_SCHEME_ID)).toBe(false); // no custom for permanent
+    expect(isPermanentColorSchemeId('candy-cane')).toBe(false); // a holiday-only scheme
+    expect(isPermanentColorSchemeId('christmas')).toBe(false);
+    expect(isPermanentColorSchemeId('')).toBe(false);
+    expect(isPermanentColorSchemeId(null)).toBe(false);
+    expect(isPermanentColorSchemeId(42)).toBe(false);
+  });
+
+  it('every permanent scheme resolves against its own list (independent of operator swatch curation)', () => {
+    expect(resolveSchemeColorIds('warm-white', PERMANENT_COLOR_SCHEMES)).toEqual(['warm-white']);
+    expect(resolveSchemeColorIds('as-designed', PERMANENT_COLOR_SCHEMES)).toBeNull();
+    expect(resolveSchemeColorIds('multicolor', PERMANENT_COLOR_SCHEMES)).toEqual(['red', 'green', 'blue', 'yellow', 'pink']);
   });
 });
