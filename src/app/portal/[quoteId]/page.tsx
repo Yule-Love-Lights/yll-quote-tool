@@ -28,6 +28,7 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { EventSchedule } from '@/components/portal/dark/EventSchedule';
 import { PhotoGallery } from '@/components/portal/dark/PhotoGallery';
 import { WhatHappensNext } from '@/components/portal/dark/WhatHappensNext';
 import { MeetYourTeam } from '@/components/portal/dark/MeetYourTeam';
@@ -290,6 +291,12 @@ export default async function PortalPage({
           renderSettings={appSettings.render}
           serviceType={quote.serviceType}
         />
+
+        {/* 3.4 Your Event Schedule (#96) — the 3 staff-entered dates as a timeline;
+            event quotes only, and only when at least one date is set. */}
+        {quote.serviceType === 'event' && quote.eventSchedule && (
+          <EventSchedule schedule={quote.eventSchedule} />
+        )}
 
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
             between the totals box above and Your Protection below). Renders

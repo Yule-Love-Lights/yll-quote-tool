@@ -351,3 +351,32 @@ describe('quoteRowToPortalQuote — quoteStatus + declineReason (Bug 3)', () => 
     expect(['declined', 'cancelled', 'lost', 'changes_requested']).not.toContain(portal.quoteStatus);
   });
 });
+
+describe('event schedule (#96)', () => {
+  const evInputs = emptyInputs({
+    santasFootage: 100,
+    event: { installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
+  });
+
+  it('surfaces the staff-entered dates on an event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'event' };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.serviceType).toBe('event');
+    expect(portal.eventSchedule).toEqual({
+      installDate: '2026-07-11',
+      eventDate: '2026-07-18',
+      takedownDate: '2026-07-31',
+    });
+  });
+
+  it('omits eventSchedule for a non-event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'holiday' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSchedule).toBeUndefined();
+  });
+
+  it('omits eventSchedule when the event quote set no dates', () => {
+    const inputs = emptyInputs({ santasFootage: 100, event: { barrelBoxes: 2 } });
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(inputs), inputs), service_type: 'event' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSchedule).toBeUndefined();
+  });
+});

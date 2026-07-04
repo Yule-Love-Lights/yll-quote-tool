@@ -422,6 +422,18 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     ? { rate: d.type === 'percentage' ? d.amount : 0, flat: d.type === 'flat' ? d.amount : 0 }
     : { rate: 0, flat: 0 };
 
+  // Event Lighting (#96): surface the staff-entered dates for the portal's
+  // "Your Event Schedule" block — only for an event quote with at least one set.
+  const ev = row.service_type === 'event' ? row.inputs?.event : undefined;
+  const eventSchedule =
+    ev && (ev.installDate || ev.eventDate || ev.takedownDate)
+      ? {
+          ...(ev.installDate ? { installDate: ev.installDate } : {}),
+          ...(ev.eventDate ? { eventDate: ev.eventDate } : {}),
+          ...(ev.takedownDate ? { takedownDate: ev.takedownDate } : {}),
+        }
+      : undefined;
+
   return {
     id: row.id,
     customer: {
@@ -479,6 +491,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // The quote's service line (#88 Permanent Lighting vertical). Undefined
     // for legacy rows without the column.
     serviceType: row.service_type ?? undefined,
+    ...(eventSchedule ? { eventSchedule } : {}),
     // Bug fix (B3): derive the current status from the row (explicit persisted
     // status wins for branch/terminal states; timestamps are the fallback for
     // legacy rows) and thread it into PortalQuote so the portal can gate the
