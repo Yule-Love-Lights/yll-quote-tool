@@ -326,8 +326,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
-         * package. Toggling either updates the totals + the approval. */}
-        {serviceType !== 'permanent' && (
+         * package. Toggling either updates the totals + the approval.
+         * Event (#96) fix: events never carry rush/takedown (see
+         * src/lib/event/packages.ts:10) — hide the toggles so a customer can't
+         * add a holiday-only fee to a one-off event (derivePackages.ts also
+         * zeroes the charge amounts as defense in depth). */}
+        {serviceType !== 'permanent' && !isEvent && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Optional add-ons
@@ -476,9 +480,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </dl>
           {minimumOrderSubtotal > 0 && !meetsMinimum && (
             <p className="mt-4 border-t border-[#243029] pt-3 text-[13px] text-[#E8B862]">
-              {/* Permanent lighting is year-round — "season minimum" is holiday-only
-                  copy; permanent uses a neutral "minimum" (the $2,500 approval gate). */}
-              {serviceType === 'permanent'
+              {/* "season minimum" is holiday-only copy. Permanent (year-round) and
+                  event (date-driven) are not seasonal → neutral "minimum". Only
+                  holiday/undefined keeps "season minimum". */}
+              {serviceType === 'permanent' || serviceType === 'event'
                 ? currentSubtotal <= 0
                   ? `Our minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
                   : `Our minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`

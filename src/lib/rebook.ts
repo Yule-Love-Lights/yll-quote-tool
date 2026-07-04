@@ -36,16 +36,18 @@ export type RebookSource = {
 // status, not a NULL that relies on the deriveStatus fallback) now that the
 // status spine has merged. The new id + created_at come from the DB defaults.
 // service_type is only set when present so the clone can't reset the column to NULL.
-// A rebooked permanent quote must re-price at CURRENT rates when staff click
-// Calculate on the new draft — result.permanentRatesSnapshot is the H1 rate-freeze
-// guard for OUTSTANDING quotes, NOT a brand-new season's draft. Strip it from the
-// carried result so the /api/quote update branch's price source falls through to
-// live app_settings rates (it reads existing?.result?.permanentRatesSnapshot ?? live).
-// No-op for holiday results (no snapshot present).
-function stripPermanentSnapshot(result: RebookSource['result']): RebookSource['result'] {
+// A rebooked permanent/event quote must re-price at CURRENT rates when staff click
+// Calculate on the new draft — result.permanentRatesSnapshot / result.eventRatesSnapshot
+// are the rate-freeze guard for OUTSTANDING quotes, NOT a brand-new season's draft.
+// Strip BOTH from the carried result so the /api/quote update branch's price source
+// falls through to live app_settings rates (it reads existing?.result?.<vertical>RatesSnapshot
+// ?? live for whichever vertical). rebookLastSeason doesn't filter by service_type, so
+// the source can be either vertical. No-op for holiday results (no snapshot present).
+function stripRatesSnapshots(result: RebookSource['result']): RebookSource['result'] {
   if (!result || typeof result !== 'object') return result;
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
+  delete rest.eventRatesSnapshot;
   return rest as RebookSource['result'];
 }
 
@@ -59,7 +61,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
     inputs: src.inputs,
-    result: stripPermanentSnapshot(src.result),
+    result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
     property_id: src.property_id ?? null,
@@ -128,6 +130,54 @@ export async function rebookLastSeason(
     designId = cloned?.id ?? null;
   } catch (err) {
     console.error('rebookLastSeason (design clone) failed:', err);
+  }
+
+  return { quoteId: newQuoteId, designId };
+}
+
+// Clone a SPECIFIC quote (by id, any status) into a fresh draft — the #116
+// "revive a dead quote" path. Unlike rebookLastSeason (which finds a customer's
+// last APPROVED quote), this reopens exactly the quote the operator picked,
+// including a declined / cancelled / lost one, and leaves the original terminal
+// quote INTACT for the audit trail. Reuses buildRebookInsert (strips the
+// lifecycle + the frozen rate snapshots so the draft re-prices at live rates)
+// and cloneDesignToNewQuote. Returns the new quote id + the cloned design id
+// (null when the source had no design), or null when the id doesn't match a
+// quote or Supabase isn't configured.
+export async function rebookFromQuote(
+  quoteId: string,
+): Promise<{ quoteId: string; designId: string | null } | null> {
+  const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+  if (!sb) return null;
+
+  const { data, error } = await sb
+    .from('quotes')
+    .select(SOURCE_COLUMNS)
+    .eq('id', quoteId)
+    .maybeSingle();
+  if (error) {
+    console.error('rebookFromQuote (source) error:', error);
+    return null;
+  }
+  if (!data) return null; // no such quote to rebook from
+  const src = data as RebookSource & { id: string };
+
+  const insertRow = buildRebookInsert(src);
+  const ins = await sb.from('quotes').insert(insertRow).select('id').single();
+  if (ins.error || !ins.data) {
+    console.error('rebookFromQuote (insert) error:', ins.error);
+    return null;
+  }
+  const newQuoteId = ins.data.id as string;
+
+  // Clone the design (scene + base photo + satellite). Best-effort, same as
+  // rebookLastSeason: a missing or failed clone still yields a usable draft.
+  let designId: string | null = null;
+  try {
+    const cloned = await cloneDesignToNewQuote(src.id, newQuoteId);
+    designId = cloned?.id ?? null;
+  } catch (err) {
+    console.error('rebookFromQuote (design clone) failed:', err);
   }
 
   return { quoteId: newQuoteId, designId };

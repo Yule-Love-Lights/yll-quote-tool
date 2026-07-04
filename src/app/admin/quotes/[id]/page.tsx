@@ -9,6 +9,8 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
+import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -71,6 +73,11 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+
+  // Permanent Lighting (#88 P7): the operator BOM (Ascend/Dauer APL material list
+  // + wholesale cost) for ordering. Null for non-permanent quotes. Materials never
+  // touch the customer price — this is ordering + margin only.
+  const bom = quote.service_type === 'permanent' ? permanentBomFromQuote(quote.inputs) : null;
 
   return (
     <OperatorShell active="quotes">
@@ -202,6 +209,29 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </>
           )}
         </div>
+
+        {/* Permanent BOM (#88 P7) — operator ordering material list + wholesale cost. */}
+        {bom && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Materials — BOM (ordering)
+              </h2>
+              <Link
+                href={`/admin/quotes/${id}/bom/print`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Print order sheet ↗
+              </Link>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              Ascend/Dauer APL list — ordering + margin only. Materials never affect the customer price.
+            </p>
+            <PermanentBomPanel bom={bom} />
+          </div>
+        )}
 
         {/* Linked job */}
         {job && (

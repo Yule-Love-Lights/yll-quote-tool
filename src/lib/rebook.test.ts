@@ -13,7 +13,7 @@ vi.mock('./supabase', () => ({
 }));
 vi.mock('./designs', () => ({ cloneDesignToNewQuote: cloneMock }));
 
-import { buildRebookInsert, rebookLastSeason } from './rebook';
+import { buildRebookInsert, rebookLastSeason, rebookFromQuote } from './rebook';
 
 // ─── In-memory Supabase fake (quotes) ───────────────────────────────────────
 
@@ -155,6 +155,25 @@ describe('buildRebookInsert', () => {
     expect(row).not.toHaveProperty('service_type');
   });
 
+  it('strips BOTH frozen rate snapshots (permanent + event) so the rebooked draft re-prices at live rates', () => {
+    const withSnaps = {
+      ...src,
+      result: {
+        total: 4200,
+        lineItems: [{ id: 'permanent-front', amount: 2000 }],
+        permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
+        eventRatesSnapshot: { rooflinePerFt: 8 },
+      },
+    } as unknown as Parameters<typeof buildRebookInsert>[0];
+    const result = buildRebookInsert(withSnaps).result as Record<string, unknown>;
+    expect(result).not.toHaveProperty('permanentRatesSnapshot');
+    expect(result).not.toHaveProperty('eventRatesSnapshot');
+    // Other priced fields survive the strip; total still derives from the source.
+    expect(result.total).toBe(4200);
+    expect(result.lineItems).toEqual([{ id: 'permanent-front', amount: 2000 }]);
+    expect(buildRebookInsert(withSnaps).total).toBe(4200);
+  });
+
   it('falls back to safe defaults for missing customer fields', () => {
     const row = buildRebookInsert({
       customer_name: null,
@@ -279,5 +298,67 @@ describe('rebookLastSeason', () => {
     const res = await rebookLastSeason('c1');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.is_test).toBe(false);
+  });
+});
+
+// ─── DB: rebookFromQuote (#116 — revive a specific dead quote) ────────────────
+
+describe('rebookFromQuote', () => {
+  it('clones a SPECIFIC (terminal) quote into a fresh draft + clones its design, leaving the source intact', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        // A dead/declined quote — the #116 revive target.
+        { id: 'dead', customer_id: 'c1', status: 'declined', customer_approved_at: null, customer_email: 'j@x.com', inputs: { v: 7 }, result: { total: 70 }, is_test: false },
+        // A different approved quote for the same customer — must NOT be the source.
+        { id: 'other', customer_id: 'c1', status: 'approved', customer_approved_at: '2025-01-01', inputs: { v: 9 }, result: { total: 90 } },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await rebookFromQuote('dead');
+    expect(res).toBeTruthy();
+    // A new row was inserted (2 → 3); the source 'dead' is untouched.
+    expect(fake.tables.quotes).toHaveLength(3);
+    expect(fake.tables.quotes.find((q) => q.id === 'dead')!.status).toBe('declined');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    // Cloned from the SPECIFIED quote (not the approved one), as a fresh draft.
+    expect(created.inputs).toEqual({ v: 7 });
+    expect(created.status).toBe('draft');
+    expect(created.customer_approved_at ?? null).toBeNull();
+    // Design clone wired source→new.
+    expect(cloneMock).toHaveBeenCalledWith('dead', res!.quoteId);
+    expect(res!.designId).toBe('design-clone');
+  });
+
+  it('returns null when no quote matches the id (nothing inserted, no clone)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', inputs: {}, result: { total: 1 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('missing');
+    expect(res).toBeNull();
+    expect(fake.tables.quotes).toHaveLength(1);
+    expect(cloneMock).not.toHaveBeenCalled();
+  });
+
+  it('carries is_test through from the source quote', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'cancelled', inputs: {}, result: { total: 5 }, is_test: true }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_test).toBe(true);
+  });
+
+  it('survives a throwing design clone (best-effort)', async () => {
+    cloneMock.mockRejectedValue(new Error('storage down'));
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'lost', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    expect(res?.quoteId).toBeTruthy();
+    expect(res?.designId).toBeNull();
   });
 });

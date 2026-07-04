@@ -5,7 +5,7 @@
 > `scripts/audit/coverage-manifest.mjs` — re-run it at each wave start; it
 > exits nonzero if any tracked file under the audited surfaces is unassigned.
 >
-> Generated at `c04447c` · **648 files, 100% assigned.**
+> Generated at `e91b678` · **694 files, 100% assigned.**
 >
 > Judgment calls (documented in the generator's rules):
 > - `api/quotes/**` is ALL wave 1 — the quote lifecycle (send/approve/amend/pay/status) IS the money path.
@@ -16,7 +16,7 @@
 > - `lib/design/*` is split by file: projectScene→W1 · sceneTypes→W3 · colorSchemes/photoLabels→W4 · seed*/sceneCorrections/sceneToFewShot→W5.
 > - `app/customers/**` → W7 (Naldo-built dashboard surface; the #80 CRITICAL pages).
 
-## W1 — Money core (100)
+## W1 — Money core (120)
 
 - `src/app/api/integrations/highlevel/attach/route.test.ts`
 - `src/app/api/integrations/highlevel/attach/route.ts`
@@ -61,6 +61,7 @@
 - `src/app/api/quotes/[id]/pay/route.ts`
 - `src/app/api/quotes/[id]/request-changes/route.test.ts`
 - `src/app/api/quotes/[id]/request-changes/route.ts`
+- `src/app/api/quotes/[id]/route.test.ts`
 - `src/app/api/quotes/[id]/route.ts`
 - `src/app/api/quotes/[id]/send-balance/route.test.ts`
 - `src/app/api/quotes/[id]/send-balance/route.ts`
@@ -77,6 +78,8 @@
 - `src/app/api/quotes/[id]/view/route.ts`
 - `src/app/api/quotes/route.test.ts`
 - `src/app/api/quotes/route.ts`
+- `src/lib/agreedTotal.test.ts`
+- `src/lib/agreedTotal.ts`
 - `src/lib/amend.test.ts`
 - `src/lib/amend.ts`
 - `src/lib/balanceCollection.test.ts`
@@ -85,6 +88,12 @@
 - `src/lib/design/projectScene.ts`
 - `src/lib/displayId.test.ts`
 - `src/lib/displayId.ts`
+- `src/lib/event/packages.test.ts`
+- `src/lib/event/packages.ts`
+- `src/lib/event/pricing.test.ts`
+- `src/lib/event/pricing.ts`
+- `src/lib/event/rates.test.ts`
+- `src/lib/event/types.ts`
 - `src/lib/integrations/highlevel.conversations.test.ts`
 - `src/lib/integrations/highlevel.test.ts`
 - `src/lib/integrations/highlevel.ts`
@@ -105,6 +114,17 @@
 - `src/lib/jobStatus.ts`
 - `src/lib/jobs.test.ts`
 - `src/lib/jobs.ts`
+- `src/lib/money.test.ts`
+- `src/lib/money.ts`
+- `src/lib/permanent/bom.test.ts`
+- `src/lib/permanent/bom.ts`
+- `src/lib/permanent/derivePackagesPermanent.test.ts`
+- `src/lib/permanent/derivePackagesPermanent.ts`
+- `src/lib/permanent/pricing.test.ts`
+- `src/lib/permanent/pricing.ts`
+- `src/lib/permanent/projectPermanent.test.ts`
+- `src/lib/permanent/projectPermanent.ts`
+- `src/lib/permanent/types.ts`
 - `src/lib/pipeline/pipelineActions.test.ts`
 - `src/lib/pipeline/pipelineActions.ts`
 - `src/lib/portal/adapter.test.ts`
@@ -119,7 +139,7 @@
 - `src/lib/serviceType.test.ts`
 - `src/lib/serviceType.ts`
 
-## W2 — Data layer (SHARED — Naldo heads-up on fixes) (76)
+## W2 — Data layer (SHARED — Naldo heads-up on fixes) (83)
 
 - `db/schema.sql`
 - `migrations/2026-04-22-add-correction-fields.sql`
@@ -170,8 +190,11 @@
 - `src/app/api/admin/customers/backfill/route.ts`
 - `src/app/api/customers/[customerId]/rebook/route.test.ts`
 - `src/app/api/customers/[customerId]/rebook/route.ts`
+- `src/app/api/designs/[id]/analysis-context/route.test.ts`
 - `src/app/api/designs/[id]/analysis-context/route.ts`
+- `src/app/api/designs/[id]/photo/route.test.ts`
 - `src/app/api/designs/[id]/photo/route.ts`
+- `src/app/api/designs/[id]/photos/[photoId]/route.test.ts`
 - `src/app/api/designs/[id]/photos/[photoId]/route.ts`
 - `src/app/api/designs/[id]/photos/route.ts`
 - `src/app/api/designs/[id]/route.ts`
@@ -180,11 +203,14 @@
 - `src/app/api/designs/route.test.ts`
 - `src/app/api/designs/route.ts`
 - `src/app/api/uploads/[id]/route.ts`
+- `src/app/api/uploads/route.test.ts`
 - `src/app/api/uploads/route.ts`
 - `src/lib/appSettings.test.ts`
 - `src/lib/appSettings.ts`
+- `src/lib/appSettingsPut.test.ts`
 - `src/lib/customUploads.test.ts`
 - `src/lib/customUploads.ts`
+- `src/lib/customUploadsDelete.test.ts`
 - `src/lib/customers.test.ts`
 - `src/lib/customers.ts`
 - `src/lib/designClone.test.ts`
@@ -197,8 +223,9 @@
 - `src/lib/supabase.ts`
 - `src/lib/trainingExamples.test.ts`
 - `src/lib/trainingExamples.ts`
+- `src/lib/trainingExamplesList.test.ts`
 
-## W3 — Dense files / design editor & quote builder (35)
+## W3 — Dense files / design editor & quote builder (37)
 
 - `src/app/quote/[id]/page.tsx`
 - `src/app/quote/new/page.tsx`
@@ -230,13 +257,15 @@
 - `src/components/design/editor-core/yardstick.ts`
 - `src/components/design/renderSettings.test.ts`
 - `src/components/quote/DesignSummary.tsx`
+- `src/components/quote/EventSection.tsx`
+- `src/components/quote/PermanentSection.tsx`
 - `src/components/quote/QuoteBuilder.tsx`
 - `src/lib/design/sceneTypes.test.ts`
 - `src/lib/design/sceneTypes.ts`
 - `src/lib/useImageZoomPan.test.ts`
 - `src/lib/useImageZoomPan.ts`
 
-## W4 — Portal (62)
+## W4 — Portal (70)
 
 - `src/app/portal/[quoteId]/approved/page.tsx`
 - `src/app/portal/[quoteId]/not-found.tsx`
@@ -253,10 +282,11 @@
 - `src/components/portal/dark/ApprovalCelebration.tsx`
 - `src/components/portal/dark/DesignReprise.tsx`
 - `src/components/portal/dark/Disclaimer.tsx`
+- `src/components/portal/dark/EventSchedule.tsx`
+- `src/components/portal/dark/EventSuggestions.tsx`
 - `src/components/portal/dark/FAQ.tsx`
 - `src/components/portal/dark/Gallery.tsx`
 - `src/components/portal/dark/GoogleReviews.tsx`
-- `src/components/portal/dark/Hero.tsx`
 - `src/components/portal/dark/LightColorPicker.tsx`
 - `src/components/portal/dark/MeetYourTeam.tsx`
 - `src/components/portal/dark/PackageCards.tsx`
@@ -265,12 +295,14 @@
 - `src/components/portal/dark/PhotoGallery.tsx`
 - `src/components/portal/dark/ReferralCard.tsx`
 - `src/components/portal/dark/RiskReversal.tsx`
+- `src/components/portal/dark/RiskReversalPermanent.tsx`
 - `src/components/portal/dark/SatelliteRoofView.tsx`
 - `src/components/portal/dark/TrustBar.tsx`
 - `src/components/portal/dark/TrustSection.tsx`
 - `src/components/portal/dark/UrgencyBanner.tsx`
 - `src/components/portal/dark/WalkthroughVideo.tsx`
 - `src/components/portal/dark/WhatHappensNext.tsx`
+- `src/components/portal/dark/WhatHappensNextPermanent.tsx`
 - `src/components/portal/dark/WhatsIncluded.tsx`
 - `src/components/portal/format.ts`
 - `src/components/portal/friendlyError.test.ts`
@@ -281,9 +313,12 @@
 - `src/components/portal/snowglobe/InteractiveHero.tsx`
 - `src/components/portal/snowglobe/QuoteResponseModal.tsx`
 - `src/components/portal/snowglobe/SignaturePad.tsx`
+- `src/components/portal/snowglobe/StickyBottomBar.test.ts`
 - `src/components/portal/snowglobe/StickyBottomBar.tsx`
 - `src/components/portal/snowglobe/WalkthroughVideo.tsx`
 - `src/components/portal/types.ts`
+- `src/components/portal/useLazyMountOnVisible.ts`
+- `src/components/portal/useModalFocus.ts`
 - `src/lib/design/colorSchemes.test.ts`
 - `src/lib/design/colorSchemes.ts`
 - `src/lib/design/photoLabels.test.ts`
@@ -294,20 +329,24 @@
 - `src/lib/portal/derivePackages.ts`
 - `src/lib/portal/lineItemKind.test.ts`
 - `src/lib/portal/lineItemKind.ts`
+- `src/lib/portal/loader.test.ts`
 - `src/lib/portal/loader.ts`
+- `src/lib/portal/photos.test.ts`
 - `src/lib/portal/photos.ts`
 - `src/lib/portal/satelliteLines.test.ts`
 - `src/lib/portal/satelliteLines.ts`
 - `src/lib/portal/sceneLinks.test.ts`
 - `src/lib/portal/sceneLinks.ts`
 
-## W5 — AI / training (43)
+## W5 — AI / training (49)
 
 - `src/app/api/analyze-address/route.test.ts`
 - `src/app/api/analyze-address/route.ts`
+- `src/app/api/analyze-photo/route.test.ts`
 - `src/app/api/analyze-photo/route.ts`
 - `src/app/api/references/[id]/route.test.ts`
 - `src/app/api/references/[id]/route.ts`
+- `src/app/api/references/route.test.ts`
 - `src/app/api/references/route.ts`
 - `src/app/api/streetview/route.test.ts`
 - `src/app/api/streetview/route.ts`
@@ -315,11 +354,13 @@
 - `src/app/api/training-examples/route.ts`
 - `src/app/api/training/[id]/route.test.ts`
 - `src/app/api/training/[id]/route.ts`
+- `src/app/api/training/route.test.ts`
 - `src/app/api/training/route.ts`
 - `src/app/training/examples/page.tsx`
 - `src/app/training/page.tsx`
 - `src/app/training/references/page.tsx`
 - `src/components/training/AnnotatedPhoto.tsx`
+- `src/lib/analyzeWithFewShot.ts`
 - `src/lib/claude.ts`
 - `src/lib/design/sceneCorrections.ts`
 - `src/lib/design/sceneToFewShot.test.ts`
@@ -328,6 +369,8 @@
 - `src/lib/design/seedFromAnalysis.ts`
 - `src/lib/design/seedRoofline.test.ts`
 - `src/lib/design/seedRoofline.ts`
+- `src/lib/design/yardstickPpf.test.ts`
+- `src/lib/design/yardstickPpf.ts`
 - `src/lib/embeddings.test.ts`
 - `src/lib/embeddings.ts`
 - `src/lib/fewShot.test.ts`
@@ -347,7 +390,7 @@
 - `src/lib/training.test.ts`
 - `src/lib/training.ts`
 
-## W6 — API routes + cross-cutting (auth perimeter, config, scripts) (137)
+## W6 — API routes + cross-cutting (auth perimeter, config, scripts) (140)
 
 - `eslint.config.mjs`
 - `next-env.d.ts`
@@ -420,6 +463,7 @@
 - `public/vercel.svg`
 - `public/window.svg`
 - `public/yule-site-logo-2.png`
+- `scripts/audit/coverage-manifest.mjs`
 - `scripts/seed-admin.ts`
 - `scripts/spikes/ghl-conversations.ts`
 - `src/app/admin/quotes/[id]/page.tsx`
@@ -463,6 +507,8 @@
 - `src/components/settings/ChangeMyPassword.tsx`
 - `src/components/settings/CustomLibrary.tsx`
 - `src/components/settings/DefaultsTabPanel.tsx`
+- `src/components/settings/EventRatesSettings.tsx`
+- `src/components/settings/PermanentRatesSettings.tsx`
 - `src/components/settings/PortalSwatchEditor.tsx`
 - `src/components/settings/QuotesSettings.tsx`
 - `src/components/settings/SettingsField.tsx`

@@ -436,7 +436,14 @@ export async function createInvoiceFromJob(jobId: string): Promise<InvoiceRow | 
   // a pricing source.
   const result = quote.result ?? { total: 0 };
   const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, result);
-  const pricing: InvoicePricingInput = { ...result, total: agreedTotal };
+  // Scale the whole-quote tax to the AGREED (possibly partial) selection so the
+  // invoice's tax line matches what was approved — mirrors setInvoiceTaxOverride so
+  // the two write paths stamp the same tax for a partial selection (exact under the
+  // flat rate: total = taxable × (1+rate), so agreed/fullTotal = taxable ratio).
+  const fullTotal = result.total ?? 0;
+  const scaledTax =
+    fullTotal > 0 ? round2((result.taxAmount ?? 0) * (agreedTotal / fullTotal)) : (result.taxAmount ?? 0);
+  const pricing: InvoicePricingInput = { ...result, taxAmount: scaledTax, total: agreedTotal };
   // The deposit ACTUALLY applied: the durable charged amount when the deposit was
   // confirmed paid; the computed 50% only as a legacy fallback; 0 if never paid.
   const depositPaid = quote.deposit_paid_at
@@ -586,6 +593,15 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
  * exemption that clears the balance settles it paid; restoring tax reopens it),
  * mirroring the amend re-sync. Returns null if Supabase isn't configured or the
  * invoice is missing.
+ *
+ * #7 fix: re-pricing REQUIRES the source quote.result — there is no safe fallback
+ * to the invoice's own stored subtotal/tax/total. Those stored fields can already
+ * be a PARTIAL (agreed) breakdown from creation or a later amend, and the stored
+ * `tax` is not guaranteed to be in the same ratio as the stored `total` (e.g. the
+ * amend re-sync can write the quote's full-quote tax against an amended, partial
+ * total). Treating those as the "full, un-overridden" breakdown risks removing
+ * MORE tax than the invoice's own basis justifies — a silent under-bill. So when
+ * the quote or its priced result can't be read, this throws instead of guessing.
  */
 export async function setInvoiceTaxOverride(
   id: string,
@@ -612,14 +628,8 @@ export async function setInvoiceTaxOverride(
   // Re-price from the source quote.result (full, un-overridden breakdown) but with
   // the AGREED total (W1-001) — same source createInvoiceFromJob bills from, so
   // toggling the override can't silently re-bill the full quote.result.total for a
-  // diverged selection. Fall back to the invoice's own stored figures if the
-  // quote/result is gone.
-  let pricing: InvoicePricingInput = {
-    subtotalBeforeDiscount: invoice.subtotal,
-    discountAmount: invoice.discount,
-    taxAmount: invoice.tax,
-    total: invoice.total,
-  };
+  // diverged selection.
+  let pricing: InvoicePricingInput | null = null;
   if (invoice.quote_id) {
     const { data: quote } = await db
       .from('quotes')
@@ -640,6 +650,17 @@ export async function setInvoiceTaxOverride(
           : (quote.result.taxAmount ?? 0);
       pricing = { ...quote.result, taxAmount: scaledTax, total: agreed };
     }
+  }
+
+  // #7 fix: no quote/result means no verified basis to re-price from. Refuse
+  // rather than falling back to the invoice's own stored tax/total — those can
+  // be mismatched (see the docstring above) and silently under-bill the customer.
+  if (!pricing) {
+    throw new Error(
+      `Cannot change the tax override on invoice ${id}: its source quote's priced result is ` +
+        'unavailable, so the pre-tax basis cannot be safely reconstructed. Re-link the quote ' +
+        'or apply the exemption manually.',
+    );
   }
 
   const totals = computeInvoiceTotals(pricing, invoice.deposit_applied, { taxOverridden: overridden });

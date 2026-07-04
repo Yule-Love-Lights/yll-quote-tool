@@ -63,15 +63,27 @@ function effectiveTaxRate(_result: QuoteResult): number {
 // state staff set in the builder (a fee defaults on when the staff quote
 // already includes it), plus the effective tax rate. Shared by the
 // package-card totals here AND the live SelectionContext total (#4/#18).
+//
+// Event Lighting (#96) fix: events never carry rush/takedown (see
+// src/lib/event/packages.ts:10) — the package-derivation call sites already
+// force the toggle off (`effectiveCharges(chargesFromResult(result), false,
+// false)`), but the LIVE portal (SelectionContext) prices from the
+// customer's own toggle state, so a stray/forged toggle could still multiply
+// a nonzero `.amount` in. Zero the amounts here too (defense in depth) so
+// `effectiveCharges` can never add real money for an event regardless of
+// what toggle state reaches it. Detected via `eventRatesSnapshot`'s presence
+// (frozen on the result only for event quotes — see QuoteResult) rather than
+// threading `serviceType` through every caller of this function.
 export function chargesFromResult(result: QuoteResult): PortalCharges {
+  const isEvent = !!result.eventRatesSnapshot;
   return {
     taxRate: effectiveTaxRate(result),
     rush: {
-      amount: BUSINESS_RULES.rushFeeAmount,
+      amount: isEvent ? 0 : BUSINESS_RULES.rushFeeAmount,
       defaultOn: (typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0) > 0,
     },
     takedown: {
-      amount: BUSINESS_RULES.premiumTakedownFee,
+      amount: isEvent ? 0 : BUSINESS_RULES.premiumTakedownFee,
       defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
     },
   };

@@ -35,6 +35,11 @@ const RULES = [
   ['W1', /^src\/lib\/quoteForm\./],
   ['W1', /^src\/lib\/(invoices|invoiceStatus|balanceCollection|amend|jobs|jobStatus|quoteStatus|displayId)\./],
   ['W1', /^src\/lib\/serviceType\./], // canonical quote service-line type — quote-domain spine
+  // Post-wave-0 money engines added by later features (#88 permanent install, event lighting).
+  // Assigned to W1 (money domain) to keep coverage green (W6-007 drift fix); they still need a
+  // dedicated MONEY-LENS AUDIT — HANDED TO NALDO (his #88/event code). See AUDIT-2026-07-NALDO-HANDOFF.md.
+  ['W1', /^src\/lib\/(event|permanent)\//],
+  ['W1', /^src\/lib\/(agreedTotal|money)\./], // shared money helpers (resolveAgreedTotal W1-001, round2)
   ['W1', /^src\/lib\/pipeline\//],
   ['W1', /^src\/lib\/integrations\/(valor|highlevel|quoteMessages)/],
   ['W1', /^src\/lib\/integrations\/types\.ts$/], // shared integration types — one owner (money integrations)
@@ -49,6 +54,7 @@ const RULES = [
   ['W2', /^src\/lib\/(quotes|designs|designClone|supabase\w*|trainingExamples|customers|rebook|customUploads|appSettings)\./],
   ['W2', /^src\/app\/api\/(maintenance|designs|uploads)\//],
   ['W2', /^src\/app\/api\/customers\//], // rebook route pairs with lib/rebook
+  ['W2', /^src\/lib\/(appSettingsPut|customUploadsDelete|trainingExamplesList)\./], // put/list/delete siblings of W2 data modules
   ['W2', /^src\/app\/api\/admin\/customers\//], // #306 backfill — customers data domain
   ['W2', /^db\//],
   ['W2', /^migrations\//],
@@ -71,6 +77,8 @@ const RULES = [
   // ---------- W5 AI / training ----------
   ['W5', /^src\/lib\/(photoAnalysis|fewShot|embeddings|training|claude|googleMaps|geo|seedFinalDiff|seedFinalStats|referenceAssets)\./],
   ['W5', /^src\/lib\/design\/(seedFromAnalysis|sceneCorrections|sceneToFewShot|seedRoofline)\./],
+  ['W5', /^src\/lib\/design\/yardstickPpf\./], // shared axis-aware ppf helper (W5-001)
+  ['W5', /^src\/lib\/analyzeWithFewShot\./], // AI analysis entry
   ['W5', /^src\/app\/training\//], // rest of training pages
   ['W5', /^src\/components\/training\//],
   ['W5', /^src\/app\/api\/(analyze-address|analyze-photo|streetview|training|training-examples|references)\//],
