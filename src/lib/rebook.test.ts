@@ -155,6 +155,25 @@ describe('buildRebookInsert', () => {
     expect(row).not.toHaveProperty('service_type');
   });
 
+  it('strips BOTH frozen rate snapshots (permanent + event) so the rebooked draft re-prices at live rates', () => {
+    const withSnaps = {
+      ...src,
+      result: {
+        total: 4200,
+        lineItems: [{ id: 'permanent-front', amount: 2000 }],
+        permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
+        eventRatesSnapshot: { rooflinePerFt: 8 },
+      },
+    } as unknown as Parameters<typeof buildRebookInsert>[0];
+    const result = buildRebookInsert(withSnaps).result as Record<string, unknown>;
+    expect(result).not.toHaveProperty('permanentRatesSnapshot');
+    expect(result).not.toHaveProperty('eventRatesSnapshot');
+    // Other priced fields survive the strip; total still derives from the source.
+    expect(result.total).toBe(4200);
+    expect(result.lineItems).toEqual([{ id: 'permanent-front', amount: 2000 }]);
+    expect(buildRebookInsert(withSnaps).total).toBe(4200);
+  });
+
   it('falls back to safe defaults for missing customer fields', () => {
     const row = buildRebookInsert({
       customer_name: null,

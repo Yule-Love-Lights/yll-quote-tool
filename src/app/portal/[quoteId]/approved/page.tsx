@@ -53,17 +53,31 @@ export default async function PortalApprovedPage({
   // premium-takedown add-on (premium pulls everything down before Jan 9).
   // Optional-chained so the dev MOCK_QUOTE (no approval) renders the standard
   // windows.
-  // Permanent lighting is year-round: no seasonal install window, no takedown,
-  // track-mounted (not clipped). The holiday copy below is gated on this.
+  // Service line drives the confirmation copy (3-valued — holiday / permanent / event).
+  // Permanent = year-round: no seasonal window, no takedown, track-mounted (not clipped).
+  // Event (#96, live) = date-driven + short-term: it DOES take down (but not on the
+  // holiday season window) and is clip-installed like holiday. Only holiday gets the
+  // seasonal install window + the Jan 9–Feb 3 takedown copy.
   const isPermanent = quote.serviceType === 'permanent';
-  const installWindow = isPermanent
-    ? "We'll confirm your install date"
-    : quote.approval?.installTiming === 'september'
-      ? 'Mid-Late September'
-      : quote.approval?.installTiming === 'october'
-        ? 'October'
-        : 'Mid-November – Early December';
+  const isEvent = quote.serviceType === 'event';
+  const headlineEmoji = isPermanent ? '💡' : isEvent ? '🎉' : '🎄';
+  const installWindow =
+    isPermanent || isEvent
+      ? "We'll confirm your install date"
+      : quote.approval?.installTiming === 'september'
+        ? 'Mid-Late September'
+        : quote.approval?.installTiming === 'october'
+          ? 'October'
+          : 'Mid-November – Early December';
   const takedownWindow = quote.approval?.takedownSelected ? 'Starting Jan 1' : 'Jan 9 – Feb 3';
+  // Summary field: permanent = lifetime warranty (no takedown); event = after the
+  // event (no holiday window); holiday = the seasonal window.
+  const takedownFieldLabel = isPermanent ? 'Warranty' : 'Takedown';
+  const takedownFieldValue = isPermanent
+    ? 'Lifetime materials'
+    : isEvent
+      ? 'After your event'
+      : takedownWindow;
 
   // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
@@ -107,11 +121,17 @@ export default async function PortalApprovedPage({
           title: 'Lifetime materials warranty',
           body: 'Your lights stay up year-round — no takedown. The LED pucks and track carry a lifetime materials warranty (labor billed separately, non-transferable).',
         }
-      : {
-          icon: PackageOpen,
-          title: 'We take everything down',
-          body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
-        },
+      : isEvent
+        ? {
+            icon: PackageOpen,
+            title: 'We take everything down',
+            body: 'After your event, our team returns to remove everything — lights, clips, extensions — all gone. We confirm the takedown timing with you.',
+          }
+        : {
+            icon: PackageOpen,
+            title: 'We take everything down',
+            body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
+          },
   ];
 
   return (
@@ -128,7 +148,7 @@ export default async function PortalApprovedPage({
             className="font-display text-[40px] leading-[1.05] md:text-[68px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em]"
             style={{ textShadow: '0 0 36px rgba(255,183,68,0.22)' }}
           >
-            <span aria-hidden>{isPermanent ? '💡' : '🎄'}</span> You&apos;re {isPaid ? 'booked' : 'approved'}!
+            <span aria-hidden>{headlineEmoji}</span> You&apos;re {isPaid ? 'booked' : 'approved'}!
           </h1>
           <p className="font-display italic text-[20px] md:text-[24px] text-[#E0D7C1] mt-4">
             Here&apos;s what happens next.
@@ -173,10 +193,10 @@ export default async function PortalApprovedPage({
               </div>
               <div>
                 <dt className="text-[11px] font-semibold tracking-[0.22em] uppercase text-[#FFB744]">
-                  {isPermanent ? 'Warranty' : 'Takedown'}
+                  {takedownFieldLabel}
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#F4ECD8] mt-1">
-                  {isPermanent ? 'Lifetime materials' : takedownWindow}
+                  {takedownFieldValue}
                 </dd>
               </div>
             </dl>
