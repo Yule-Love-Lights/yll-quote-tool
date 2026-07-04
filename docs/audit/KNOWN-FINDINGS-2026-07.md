@@ -203,3 +203,21 @@ W1-006 · W1-008 · W1-010 · W1-012 (recorded in VALOR-AUTOCHARGE doc) · W1-01
 autoRoofline tie), W1-074 (multi-spritzer single line).
 
 **REFUTED (11):** dropped in adversarial verify — not real; not carried.
+
+---
+
+## Wave 3 dispositions (#110 dense files, 2026-07-04)
+
+> Full findings + evidence in `AUDIT-2026-07.md` (Wave 3). Recorded so later waves touching
+> `editor.ts` / `QuoteBuilder.tsx` / `training/new` don't re-report. 30 findings: 3 HIGH / 15 MED / 11 LOW, **0 refuted**.
+
+**FIXED — merged to master `3ed2a6f` (PRs #369 editor / #370 QuoteBuilder / #371 training):**
+W3-001 (HIGH, footage null-preserve refs) · W3-002+W3-030 (HIGH, clone strips groupId/linkedToId) · W3-003 (HIGH, breakdown filters by stable id — W1-005 sibling) · W3-004 (**closes #80-105**) · W3-005 (rooflineChoice revert) · W3-006 (**closes #80-102 capture half**) · W3-007 (flip-axis scheduleSave) · W3-008 (doSave saveSeq — UI-race) · W3-009 (isMiniArea centroid/shift) · W3-010 (billing-link surface match) · W3-011 (stamp-disarm) · W3-013 (railing box formula) · W3-014 (per-photo markup) · W3-015 (breakdownLinked useMemo). **= 16 fix-nows.** editor.ts shared hunks relayed to design-tool `main` `8673a68`.
+
+**FEED-#29 (editor restyle spec seed, `docs/audit/EDITOR-29-SPEC-SEED.md`) — NOT fixed (frozen file):**
+W3-017 (renderEditor one-function) · W3-018 (renderSidebar god-fn) · W3-019 (9× renderSelected triad) · W3-020 (mousedown god-fn) · W3-026 (redrawCanvas dispatch) · W3-027 (9× bake* dup) · W3-028 (monolithic ToolState).
+
+**FIX-LATER — ledger backlog (#110 W3 tail), NOT yet fixed:**
+W3-008 server-reorder half (self-heals; in-flight guard deferred in frozen editor.ts) · **#80-102 runQuote/Send flush-swallow** (non-capture half, out of W3 dispositioned scope) · training per-photo calibration (feetPerUnit stays whole-house).
+
+**ACCEPTED (11 LOW → ledger, not fixed):** W3-012 (deleteSelected memberIds prune) · W3-016 (setDifficulty rule untestable) · W3-021 (removePhoto activeIdx) · W3-022 (stake line mislabel, cosmetic) · W3-023 (dead active*Lines aliases) · W3-024 (training detection-box JSX dup) · W3-025 (string-count formula dup) · W3-029 (training test-gap) · W3-026/027/028 (also feed-#29).
