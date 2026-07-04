@@ -21,7 +21,6 @@ const FIELDS: { key: keyof PermanentRates; label: string; hint: string }[] = [
 
 export function PermanentRatesSettings() {
   const [rates, setRates] = useState<PermanentRates>(DEFAULT_PERMANENT_RATES);
-  const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -34,7 +33,6 @@ export function PermanentRatesSettings() {
         const data = await res.json();
         if (!cancelled && res.ok) {
           if (data.permanentRates) setRates(data.permanentRates as PermanentRates);
-          setEnabled(data.permanentEnabled === true);
         }
       } catch {
         /* keep defaults on failure */
@@ -59,7 +57,7 @@ export function PermanentRatesSettings() {
       const res = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ permanentRates: rates, permanentEnabled: enabled }),
+        body: JSON.stringify({ permanentRates: rates }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -70,7 +68,6 @@ export function PermanentRatesSettings() {
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       if (data.permanentRates) setRates(data.permanentRates as PermanentRates);
-      setEnabled(data.permanentEnabled === true);
       setMsg('Saved.');
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Save failed');
@@ -106,23 +103,6 @@ export function PermanentRatesSettings() {
           </label>
         ))}
       </div>
-
-      <label className="mt-4 flex items-start gap-2">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={loading || busy}
-          onChange={(e) => setEnabled(e.target.checked)}
-          className="mt-0.5"
-        />
-        <span className="text-sm text-gray-700">
-          <span className="font-medium">Enable Permanent in the quote builder</span>
-          <span className="block text-xs text-gray-400">
-            Turns on the “Permanent” option in the service-type picker. Leave OFF until the
-            permanent portal is live.
-          </span>
-        </span>
-      </label>
 
       <div className="mt-4 flex items-center gap-3">
         <button

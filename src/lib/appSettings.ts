@@ -43,10 +43,8 @@ export type AppSettings = {
   portal: PortalSettings;
   swatches: SwatchSettings;
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
-  // rate table (Settings → Quotes), and the feature flag that gates the Permanent
-  // option in the builder's service-type picker (default OFF until the portal ships).
+  // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
-  permanentEnabled: boolean;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -65,7 +63,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   portal: DEFAULT_PORTAL_SETTINGS,
   swatches: DEFAULT_SWATCH_SETTINGS,
   permanentRates: DEFAULT_PERMANENT_RATES,
-  permanentEnabled: false,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -262,7 +259,6 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
     },
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
-    permanentEnabled: map.get('permanentEnabled') === true,
   };
 }
 
@@ -291,7 +287,6 @@ export async function putAppSettings(patch: {
   portal?: Partial<PortalSettings>;
   swatches?: Partial<SwatchSettings>;
   permanentRates?: Partial<PermanentRates>;
-  permanentEnabled?: boolean;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -343,10 +338,6 @@ export async function putAppSettings(patch: {
     const value = { ...current.permanentRates, ...sanitizePermanentRates(patch.permanentRates) };
     rows.push({ key: 'permanentRates', value });
     map.set('permanentRates', value);
-  }
-  if (patch.permanentEnabled !== undefined && typeof patch.permanentEnabled === 'boolean') {
-    rows.push({ key: 'permanentEnabled', value: patch.permanentEnabled });
-    map.set('permanentEnabled', patch.permanentEnabled);
   }
 
   if (rows.length > 0) {
