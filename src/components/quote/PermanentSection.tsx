@@ -78,10 +78,24 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
           gaps,
         },
       }));
+      // Refresh writes FRONT footage only (left/right/back are satellite-measured
+      // and manually entered, so overwriting them would wipe the operator's numbers).
+      // But warn about design footage refresh does NOT carry through, so a tagged
+      // side run can't be silently dropped → under-billed with no signal.
+      const sideFt = proj.feetBySide.left + proj.feetBySide.right + proj.feetBySide.back;
+      const warnings: string[] = [];
       if (proj.feetBySide.unassigned > 0) {
-        setRefreshWarning(
-          `⚠ ${proj.feetBySide.unassigned} ft of permanent strands aren't tagged front/left/right/back — tag them in the design so they're counted.`
+        warnings.push(
+          `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
         );
+      }
+      if (sideFt > 0) {
+        warnings.push(
+          `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
+        );
+      }
+      if (warnings.length > 0) {
+        setRefreshWarning(`⚠ ${warnings.join('. ')}.`);
       }
     } catch {
       setRefreshWarning("Couldn't load the design to refresh.");
