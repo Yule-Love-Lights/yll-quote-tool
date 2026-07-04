@@ -290,6 +290,72 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Event Lighting (#96) — audit fixes: validate the optional event block at
+  // the boundary, mirroring the permanent block above. Validated whenever
+  // present (independent of serviceType) — a malformed bistro entry or
+  // inverted date trio should be a clean 400, not a bad downstream result.
+  if (q.event !== undefined) {
+    if (!isObj(q.event)) {
+      return NextResponse.json({ error: 'event must be an object if provided' }, { status: 400 });
+    }
+    const ev = q.event;
+
+    // Fix #9 (unbounded array): cap + validate bistro, mirroring
+    // permanent.gaps above. barrelBoxes is a plain count on the event block
+    // (EventInputFields), not per-bistro-line.
+    if (ev.bistro !== undefined) {
+      if (!Array.isArray(ev.bistro)) {
+        return NextResponse.json({ error: 'event.bistro must be an array if provided' }, { status: 400 });
+      }
+      if (ev.bistro.length > MAX_ARRAY_LEN) {
+        return NextResponse.json({ error: `event.bistro exceeds the ${MAX_ARRAY_LEN}-item limit` }, { status: 400 });
+      }
+      for (const b of ev.bistro as unknown[]) {
+        if (!isObj(b) || !isNonNegNumber(b.footage)) {
+          return NextResponse.json(
+            { error: 'Invalid event.bistro element (footage must be a non-negative number)' },
+            { status: 400 },
+          );
+        }
+      }
+    }
+    if (ev.barrelBoxes !== undefined && !isNonNegNumber(ev.barrelBoxes)) {
+      return NextResponse.json(
+        { error: 'event.barrelBoxes must be a non-negative number if provided' },
+        { status: 400 },
+      );
+    }
+
+    // Fix #5 (server half, inverted dates): the 3 dates are OPTIONAL staff
+    // metadata (EventInputFields — NOT priced, never required here); validate
+    // format + order only when present. ISO yyyy-mm-dd is a fixed-width,
+    // zero-padded string, so plain string comparison IS date-order comparison
+    // — no timezone-sensitive Date math needed for the ordering check.
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const eventDateFields = ['installDate', 'eventDate', 'takedownDate'] as const;
+    for (const f of eventDateFields) {
+      const v = ev[f];
+      if (v !== undefined && (typeof v !== 'string' || !ISO_DATE_RE.test(v) || Number.isNaN(Date.parse(v)))) {
+        return NextResponse.json(
+          { error: `event.${f} must be an ISO yyyy-mm-dd date string if provided` },
+          { status: 400 },
+        );
+      }
+    }
+    const install = ev.installDate as string | undefined;
+    const eventDate = ev.eventDate as string | undefined;
+    const takedown = ev.takedownDate as string | undefined;
+    if (install !== undefined && eventDate !== undefined && install > eventDate) {
+      return NextResponse.json({ error: 'event.installDate must not be after event.eventDate' }, { status: 400 });
+    }
+    if (eventDate !== undefined && takedown !== undefined && eventDate > takedown) {
+      return NextResponse.json({ error: 'event.eventDate must not be after event.takedownDate' }, { status: 400 });
+    }
+    if (install !== undefined && takedown !== undefined && install > takedown) {
+      return NextResponse.json({ error: 'event.installDate must not be after event.takedownDate' }, { status: 400 });
+    }
+  }
+
   try {
     let quoteInputs = inputs as QuoteInputs;
     // A valid quoteId means re-price that existing quote in place (the builder's

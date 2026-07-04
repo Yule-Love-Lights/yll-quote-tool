@@ -526,3 +526,52 @@ describe('bistro projection (event, #96)', () => {
     expect(out.event).toBeUndefined();
   });
 });
+
+// ─── Fix #4 regression (commit 23ee261): the guard's added `p.bistro.length ===
+// 0` clause made a roofline+bistro scene (no projectable per-unit items) fall
+// through to the REPLACE path below, wiping the holiday quote's manual
+// miniLightItems/wreaths/garland/spritzers/bows with empty arrays. Bistro must
+// never be the reason those manual arrays get overwritten. ───────────────────
+describe('applyProjectionToInputs — Fix #4: a detected bistro run must not wipe manual per-unit arrays', () => {
+  it('preserves manual miniLightItems/wreaths/garland for a roofline+bistro scene (no projectable per-unit items)', () => {
+    const s = scene([
+      strand({ bulbType: 'c9', surface: 'santas-roofline' }), // roofline — measurement-driven, not projectable
+      strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] }), // bistro — no per-unit representation
+    ]);
+    // Sanity: this scene truly has no projectable per-unit items.
+    expect(projectScene(s).hasProjectableItems).toBe(false);
+    expect(projectScene(s).items).toEqual([]);
+    expect(projectScene(s).bistro).toHaveLength(1);
+
+    const inputs = baseInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 5 }],
+      wreaths: [{ size: '48noble', tier: 'bow', quantity: 1 }],
+      garland: [{ length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 2 }],
+    });
+    const out = applyProjectionToInputs(inputs, s);
+
+    // The manual arrays must survive UNTOUCHED — a bare bistro detection must
+    // never trigger the REPLACE-with-empties path.
+    expect(out.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 5 }]);
+    expect(out.wreaths).toEqual([{ size: '48noble', tier: 'bow', quantity: 1 }]);
+    expect(out.garland).toEqual([{ length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 2 }]);
+    // ...while the detected bistro run is still attached to the event block.
+    expect(out.event?.bistro).toHaveLength(1);
+    expect(out.event?.bistro?.[0].sceneItemIds).toEqual(['b1']);
+  });
+
+  it('control: a scene WITH a projectable per-unit item still REPLACES it, even alongside a bistro run', () => {
+    const s = scene([
+      strand({ id: 'bush1', surface: 'bush', stringCount: 2 }), // projectable per-unit item
+      strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] }), // bistro alongside it
+    ]);
+    const inputs = baseInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 9 }], // stale manual — must be replaced
+    });
+    const out = applyProjectionToInputs(inputs, s);
+    expect(out.miniLightItems).toEqual([
+      { type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-bush1', sceneItemIds: ['bush1'] },
+    ]);
+    expect(out.event?.bistro).toHaveLength(1);
+  });
+});

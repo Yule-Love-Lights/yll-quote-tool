@@ -300,7 +300,16 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
   // A design where staff excluded EVERY per-unit item has hasProjectableItems
   // true but items empty — it must fall through and REPLACE the arrays with
   // empties, so the excluded items aren't silently resurrected from stale input.
-  if (p.items.length === 0 && !p.hasProjectableItems && p.bistro.length === 0) return inputs;
+  //
+  // Fix #4 (holiday manual items wiped, commit 23ee261): a scene with NO
+  // projectable per-unit items but a drawn bistro run must NOT fall through to
+  // the REPLACE path below — bistro has no per-unit representation to conflict
+  // with, so it must never be the reason manual miniLightItems/spritzers/
+  // wreaths/garland/bows get overwritten with empty arrays. Preserve the manual
+  // arrays here and only layer `event.bistro` on top.
+  if (p.items.length === 0 && !p.hasProjectableItems) {
+    return p.bistro.length > 0 ? { ...inputs, event: { ...inputs.event, bistro: p.bistro } } : inputs;
+  }
   // #104: thread each projected line's stable id + scene item ids onto the priced
   // input (same order as p.miniLightItems etc.), so calculateQuote can emit them on
   // the LineItem and the override/scene-link can key by identity, not list position.

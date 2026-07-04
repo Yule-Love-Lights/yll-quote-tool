@@ -351,6 +351,12 @@ export default function QuoteBuilder({
     [breakdownScene, offeredColors],
   );
   const hasUnfulfillable = unfulfillable.length > 0;
+  // #5 client half — EventSection surfaces an advisory date-order warning
+  // (takedown ≥ event ≥ install) but can't gate Send on its own; it lifts
+  // validity here via onValidityChange so Send can be disabled for event quotes
+  // with inverted dates. Defaults true (no warning) for holiday/permanent, which
+  // never render EventSection and so never call the setter.
+  const [eventDatesValid, setEventDatesValid] = useState(true);
   // The base64 photo the design currently carries (what we last pushed). Lets
   // the eager effect tell "new photo → create/replace" from re-renders, and
   // applyAnalysisResult tell "same photo re-analyzed → seed directly".
@@ -636,17 +642,22 @@ export default function QuoteBuilder({
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
+      // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
+      // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
+      // rooflines only). Never derive those two fields from a satellite draw on a
+      // non-holiday quote, or footage would silently persist unbilled (finding #1).
+      const isHoliday = f.serviceType === 'holiday';
       const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
       const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
-      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target;
-      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget;
+      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target || !isHoliday;
+      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget || !isHoliday;
       if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
       return {
         ...f,
         ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
         ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
-        ...(c9Target != null ? { winterWonderlandFootage: c9Target } : {}),
-        ...(stakeTarget != null ? { stakeLightingFootage: stakeTarget } : {}),
+        ...(c9Target != null && isHoliday ? { winterWonderlandFootage: c9Target } : {}),
+        ...(stakeTarget != null && isHoliday ? { stakeLightingFootage: stakeTarget } : {}),
       };
     }));
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
@@ -1876,6 +1887,7 @@ export default function QuoteBuilder({
               <EventSection
                 value={form.event}
                 onChange={ev => setForm(f => ({ ...f, event: ev }))}
+                onValidityChange={setEventDatesValid}
               />
             </Section>
           )}
@@ -2375,14 +2387,20 @@ export default function QuoteBuilder({
                           className="text-xs font-medium text-blue-700 border border-blue-300 hover:border-blue-500 rounded px-3 py-1.5">
                           + Add Ridge / Side
                         </button>
-                        <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
-                          className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
-                          + Add C9 Run
-                        </button>
-                        <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
-                          className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
-                          + Add Stake Run
-                        </button>
+                        {/* C9 Custom Runs + Stake are holiday-only — the event/permanent
+                            engines don't price winterWonderland/stakeLighting (finding #1). */}
+                        {form.serviceType === 'holiday' && (
+                          <>
+                            <button type="button" onClick={() => { setAddMode('c9'); setPendingPoints([]); }}
+                              className="text-xs font-medium text-emerald-700 border border-emerald-300 hover:border-emerald-500 rounded px-3 py-1.5">
+                              + Add C9 Run
+                            </button>
+                            <button type="button" onClick={() => { setAddMode('stake'); setPendingPoints([]); }}
+                              className="text-xs font-medium text-purple-700 border border-purple-300 hover:border-purple-500 rounded px-3 py-1.5">
+                              + Add Stake Run
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -2436,6 +2454,9 @@ export default function QuoteBuilder({
                           <p className="text-xs text-gray-400 ml-6">No segments</p>
                         )}
                       </div>
+                      {/* C9 Custom Runs + Stake summary/edit panels — holiday-only; the
+                          event/permanent engines don't price these fields (finding #1). */}
+                      {form.serviceType === 'holiday' && (<>
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-emerald-500 rounded"></span>
@@ -2530,6 +2551,7 @@ export default function QuoteBuilder({
                           </div>
                         )}
                       </div>
+                      </>)}
                     </div>
                   </>
                 ) : (
@@ -2625,6 +2647,15 @@ export default function QuoteBuilder({
             </Section>
           </div>
 
+          {/* ── C9s — Custom Runs + Stake Lighting: holiday-only. The event pricing
+              engine (calculateEventQuote/eventRooflineOptions) is an allow-list that
+              prices ONLY santasFootage + gingerbreadFootage — winterWonderlandFootage
+              and stakeLightingFootage have no event rate table, so showing these on
+              an event quote let staff fill them in and never bill for them (silent
+              under-bill). Gate to holiday only; permanent already excludes this whole
+              fragment above. */}
+          {form.serviceType === 'holiday' && (
+          <>
           {/* ── C9s — Custom Runs ── */}
           <div className={`transition-opacity ${form.winterWonderlandFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="C9s — Custom Runs">
@@ -2698,6 +2729,8 @@ export default function QuoteBuilder({
               )}
             </Section>
           </div>
+          </>
+          )}
           </>
           )}
 
@@ -3274,7 +3307,12 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending' || hasUnfulfillable}
+                disabled={sendStatus === 'sending' || hasUnfulfillable || (form.serviceType === 'event' && !eventDatesValid)}
+                title={
+                  form.serviceType === 'event' && !eventDatesValid
+                    ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
+                    : undefined
+                }
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
                 {sendStatus === 'sending' ? 'Sending…'
