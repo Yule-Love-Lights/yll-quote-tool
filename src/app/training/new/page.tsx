@@ -34,6 +34,20 @@ type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake';
 type BoxDragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
 type DetectionKind = 'mini' | 'wreath' | 'spritzer' | 'garland';
 
+// W3-014: one photo's markup — lines/boxes traced or Auto-Analyzed on that
+// specific image. Kept out of TrainingPhoto (the shared lib/API type) since
+// this is page-local working state, not part of the saved photo record.
+type PerPhotoMarkup = {
+  santasLines: LineSegment[];
+  gingerbreadLines: LineSegment[];
+  c9Lines: LineSegment[];
+  stakeLines: LineSegment[];
+  miniLightDetections: MiniLightDetection[];
+  wreathDetections: WreathDetection[];
+  spritzerDetections: SpritzerDetection[];
+  garlandDetections: GarlandDetection[];
+};
+
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500';
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
@@ -129,6 +143,49 @@ export default function NewTrainingHousePage() {
   const [wreathDetections, setWreathDetections] = useState<WreathDetection[]>([]);
   const [spritzerDetections, setSpritzerDetections] = useState<SpritzerDetection[]>([]);
   const [garlandDetections, setGarlandDetections] = useState<GarlandDetection[]>([]);
+
+  // W3-014: the state above (lines + detections) is the WORKING COPY for
+  // whichever photo is active — swapped in/out of this per-photo store on
+  // every activePhotoIdx change (effect below) so a second Auto-Analyze or
+  // manual markup pass on photo 2 can no longer silently overwrite photo 1's
+  // already-confirmed markup. Footage/difficulty stay whole-house (the "Final
+  // Roofline Measurements" panel is an explicit single-house override, and
+  // feetPerUnit calibration was already a single global scale) — only the
+  // per-photo lines/boxes needed scoping. Kept 1:1 indexed with `photos`.
+  const emptyMarkup = (): PerPhotoMarkup => ({
+    santasLines: [], gingerbreadLines: [], c9Lines: [], stakeLines: [],
+    miniLightDetections: [], wreathDetections: [], spritzerDetections: [], garlandDetections: [],
+  });
+  const [photoMarkup, setPhotoMarkup] = useState<PerPhotoMarkup[]>([]);
+  const prevPhotoIdxRef = useRef(0);
+
+  // Persist the outgoing photo's working copy, then load the incoming
+  // photo's — runs only when the active photo actually changes.
+  useEffect(() => {
+    const prevIdx = prevPhotoIdxRef.current;
+    if (prevIdx === activePhotoIdx) return;
+    setPhotoMarkup(store => {
+      const next = [...store];
+      next[prevIdx] = {
+        santasLines, gingerbreadLines, c9Lines, stakeLines,
+        miniLightDetections, wreathDetections, spritzerDetections, garlandDetections,
+      };
+      return next;
+    });
+    const incoming = photoMarkup[activePhotoIdx] ?? emptyMarkup();
+    setSantasLines(incoming.santasLines);
+    setGingerbreadLines(incoming.gingerbreadLines);
+    setC9Lines(incoming.c9Lines);
+    setStakeLines(incoming.stakeLines);
+    setMiniLightDetections(incoming.miniLightDetections);
+    setWreathDetections(incoming.wreathDetections);
+    setSpritzerDetections(incoming.spritzerDetections);
+    setGarlandDetections(incoming.garlandDetections);
+    prevPhotoIdxRef.current = activePhotoIdx;
+    // Only re-run on activePhotoIdx change — reading the live line/detection
+    // state here (to snapshot the outgoing photo) must NOT retrigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePhotoIdx]);
 
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [imgAspect, setImgAspect] = useState<number>(1);
@@ -253,12 +310,40 @@ export default function NewTrainingHousePage() {
       newPhotos.push({ tag, base64, mediaType });
     }
     setPhotos(p => [...p, ...newPhotos]);
+    setPhotoMarkup(m => [...m, ...newPhotos.map(() => emptyMarkup())]);
     e.target.value = '';
   };
 
   const removePhoto = (idx: number) => {
     setPhotos(p => p.filter((_, i) => i !== idx));
-    if (activePhotoIdx >= photos.length - 1) setActivePhotoIdx(0);
+    setPhotoMarkup(m => m.filter((_, i) => i !== idx));
+    if (idx === activePhotoIdx) {
+      // The active photo itself was removed — its working-copy state (still
+      // live in santasLines/etc.) belongs to a slot that no longer exists;
+      // drop it rather than let the swap effect persist it into the wrong
+      // (shifted) index. Point prevPhotoIdxRef past the end so that effect's
+      // "outgoing save" is skipped, and load whatever now sits at this index.
+      const nextIdx = Math.min(idx, photos.length - 2);
+      const safeIdx = Math.max(0, nextIdx);
+      prevPhotoIdxRef.current = safeIdx;
+      const incoming = (safeIdx === idx ? photoMarkup[idx + 1] : photoMarkup[safeIdx]) ?? emptyMarkup();
+      setSantasLines(incoming.santasLines);
+      setGingerbreadLines(incoming.gingerbreadLines);
+      setC9Lines(incoming.c9Lines);
+      setStakeLines(incoming.stakeLines);
+      setMiniLightDetections(incoming.miniLightDetections);
+      setWreathDetections(incoming.wreathDetections);
+      setSpritzerDetections(incoming.spritzerDetections);
+      setGarlandDetections(incoming.garlandDetections);
+      setActivePhotoIdx(safeIdx);
+    } else if (idx < activePhotoIdx) {
+      // A photo before the active one was removed — indices shifted down by
+      // one. Keep pointing at the same photo (now one index earlier) without
+      // running the swap effect's persist/load (nothing to swap; markup
+      // state is untouched, only its index label moves).
+      prevPhotoIdxRef.current = activePhotoIdx - 1;
+      setActivePhotoIdx(activePhotoIdx - 1);
+    }
   };
 
   const updatePhotoTag = (idx: number, tag: PhotoTag) => {
@@ -320,12 +405,16 @@ export default function NewTrainingHousePage() {
       y = Math.max(0, Math.min(1 - h, y));
       const newBox: [number, number, number, number] = [x, y, w, h];
       if (boxDrag.kind === 'mini') {
-        const newStringCount = boxDrag.mode !== 'move' ? calcStringsFromBox(newBox) : undefined;
-        setMiniLightDetections(dets => dets.map((d, i) =>
-          i === boxDrag.idx
-            ? { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) }
-            : d
-        ));
+        setMiniLightDetections(dets => dets.map((d, i) => {
+          if (i !== boxDrag.idx) return d;
+          // Railings are a LINEAR top-rail run, not a cylindrical wrap (mirrors the
+          // Auto-Analyze carve-out below) — resizing the box must not re-apply the
+          // canopy/trunk wrap formula to its stringCount.
+          const newStringCount = boxDrag.mode !== 'move' && d.type !== 'railing'
+            ? calcStringsFromBox(newBox)
+            : undefined;
+          return { ...d, box: newBox, ...(newStringCount !== undefined && { stringCount: newStringCount }) };
+        }));
       } else if (boxDrag.kind === 'wreath') {
         setWreathDetections(dets => dets.map((d, i) => i === boxDrag.idx ? { ...d, box: newBox } : d));
       } else if (boxDrag.kind === 'spritzer') {
@@ -531,9 +620,28 @@ export default function NewTrainingHousePage() {
     setSaving(true);
     setSaveError(null);
     try {
+      // W3-014: flatten every photo's own markup into the single flat set the
+      // API expects — including the active photo's, whose edits are still
+      // live in santasLines/etc. and haven't been persisted into photoMarkup
+      // by the swap effect yet (that only fires on an activePhotoIdx change).
+      const allMarkup = photoMarkup.map((m, i) => i === activePhotoIdx
+        ? {
+            santasLines, gingerbreadLines, c9Lines, stakeLines,
+            miniLightDetections, wreathDetections, spritzerDetections, garlandDetections,
+          }
+        : m);
+      const combinedSantasLines = allMarkup.flatMap(m => m.santasLines);
+      const combinedGingerbreadLines = allMarkup.flatMap(m => m.gingerbreadLines);
+      const combinedC9Lines = allMarkup.flatMap(m => m.c9Lines);
+      const combinedStakeLines = allMarkup.flatMap(m => m.stakeLines);
+      const combinedMiniLightDetections = allMarkup.flatMap(m => m.miniLightDetections);
+      const combinedWreathDetections = allMarkup.flatMap(m => m.wreathDetections);
+      const combinedSpritzerDetections = allMarkup.flatMap(m => m.spritzerDetections);
+      const combinedGarlandDetections = allMarkup.flatMap(m => m.garlandDetections);
+
       // Split columns: garland-mode columns → garland section; rest stay mini-light.
-      const miniLightsToSave = miniLightDetections.filter(d => d.type !== 'column' || d.columnMode !== 'garland');
-      const garlandFromColumns: GarlandItem[] = miniLightDetections
+      const miniLightsToSave = combinedMiniLightDetections.filter(d => d.type !== 'column' || d.columnMode !== 'garland');
+      const garlandFromColumns: GarlandItem[] = combinedMiniLightDetections
         .filter(d => d.type === 'column' && d.columnMode === 'garland')
         .map(d => {
           const heightFt = feetPerUnit
@@ -544,9 +652,9 @@ export default function NewTrainingHousePage() {
         });
 
       // Derive summary arrays from detections (same pattern as quote/new)
-      const spritzersFromDetections: Spritzer[] = spritzerDetections.map(d => ({ size: d.size, quantity: 1 }));
-      const wreathsFromDetections: Wreath[] = wreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 }));
-      const garlandFromDetections: GarlandItem[] = garlandDetections.map(d => {
+      const spritzersFromDetections: Spritzer[] = combinedSpritzerDetections.map(d => ({ size: d.size, quantity: 1 }));
+      const wreathsFromDetections: Wreath[] = combinedWreathDetections.map(d => ({ size: d.size, tier: d.tier, quantity: 1 }));
+      const garlandFromDetections: GarlandItem[] = combinedGarlandDetections.map(d => {
         const unitFt = d.length === '9ft' ? 9 : 4.5;
         const widthFt = feetPerUnit != null ? d.box[2] * feetPerUnit : 0;
         const pieces = feetPerUnit != null ? Math.max(1, Math.ceil(widthFt / unitFt)) : 1;
@@ -563,20 +671,20 @@ export default function NewTrainingHousePage() {
           photos,
           santasFootage: santasFootage || undefined,
           santasDifficulty,
-          santasLines,
+          santasLines: combinedSantasLines,
           gingerbreadFootage: gingerbreadFootage || undefined,
           gingerbreadDifficulty,
-          gingerbreadLines,
+          gingerbreadLines: combinedGingerbreadLines,
           winterWonderlandFootage: wwFootage || undefined,
           winterWonderlandDifficulty: wwDifficulty,
           stakeLightingFootage: stakeFootage || undefined,
           stakeLightingDifficulty: stakeDifficulty,
-          stakeLines,
+          stakeLines: combinedStakeLines,
           miniLightDetections: miniLightsToSave,
-          wreathDetections,
-          spritzerDetections,
-          garlandDetections,
-          c9Lines,
+          wreathDetections: combinedWreathDetections,
+          spritzerDetections: combinedSpritzerDetections,
+          garlandDetections: combinedGarlandDetections,
+          c9Lines: combinedC9Lines,
           spritzers: spritzersFromDetections,
           wreaths: wreathsFromDetections,
           garland: [...garlandFromDetections, ...garlandFromColumns],
