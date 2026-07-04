@@ -627,7 +627,18 @@ export async function setInvoiceTaxOverride(
       .eq('id', invoice.quote_id)
       .maybeSingle<{ result: InvoicePricingInput | null; approval_snapshot: AgreedTotalSnapshot }>();
     if (quote?.result) {
-      pricing = { ...quote.result, total: resolveAgreedTotal(quote.approval_snapshot, quote.result) };
+      const agreed = resolveAgreedTotal(quote.approval_snapshot, quote.result);
+      const fullTotal = quote.result.total ?? 0;
+      // The agreed total may be a PARTIAL selection (e.g. a per-side permanent
+      // package A/B/C, the default for permanent). quote.result.taxAmount is the
+      // WHOLE-quote tax, so a tax exemption would subtract the full-quote tax from a
+      // partial total and UNDER-BILL. Scale the removable tax to the agreed basis so
+      // computeInvoiceTotals removes only the tax embedded in what was approved.
+      const scaledTax =
+        fullTotal > 0
+          ? round2((quote.result.taxAmount ?? 0) * (agreed / fullTotal))
+          : (quote.result.taxAmount ?? 0);
+      pricing = { ...quote.result, taxAmount: scaledTax, total: agreed };
     }
   }
 

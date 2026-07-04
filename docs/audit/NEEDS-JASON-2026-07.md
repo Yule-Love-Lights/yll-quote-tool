@@ -50,6 +50,17 @@
   railing photo**; the pipeline shipped but live detection is still unconfirmed.
 - [ ] **#13 "Every angle" gallery (🧪 trial)** — final **keep/drop verdict** once it's been
   felt with real customer quotes.
+- [ ] **W3-002/030 (fixed, needs confirm)** — in the editor: marquee-select a mix of grouped
+  + ungrouped mini strands (or a linked twin) → **Duplicate / Ctrl+V / Ctrl+D** → confirm the
+  clone now **shows up as a billed line** (before, it stayed on-canvas but was never billed).
+- [ ] **W3-009 (fixed, needs confirm)** — Ctrl+C / Ctrl+V a **scattershot mini-area** → the
+  paste should land offset, **not stacked exactly on the original** (was invisible-double-bill risk).
+- [ ] **W3-001 (fixed, needs confirm)** — pull a **street-preferred address** (tree-cover /
+  ambiguous road so satellite roofline lines come back empty) → the AI's Santa's/Gingerbread
+  **footage should survive**, not snap to 0.
+- [ ] **W3-014 (fixed, needs confirm)** — upload **2+ training photos**, mark up photo 1, then
+  Auto-Analyze photo 2 → photo 1's confirmed markup must **survive** (was silently overwritten);
+  the saved example should carry **both** photos' markup.
 
 ## 3. Reviews / people (not decisions, but don't skip)
 
@@ -83,9 +94,15 @@
   refund record — needs design) · W1-010 (design-projection route tests) · W1-013 (approve-
   branch snapshot tests) · W1-019 (portal-open sequential DB round-trips) · W1-020 (GHL stage-
   config knob drift) · W1-068 (job `line_items` selection filter).
-- [ ] **Unaudited waves:** **W3** (dense files — `editor.ts`/`QuoteBuilder.tsx`), **W5**
-  (AI/training + token-cost lens), **W6** (routes + cross-cutting) — not yet audited; will
-  surface more findings.
+- [ ] **W3 fix-later:** W3-008 server-reorder half (the `saveSeq` token closed the UI-race; a
+  fuller in-flight abort/queue was deferred in the frozen editor.ts — self-heals on next save) ·
+  **#80-102 runQuote/Send flush-swallow** (the non-capture half — W3-006 only closed the
+  training-capture instance; the Calculate/Send flush still swallows silently) · training
+  per-photo **calibration** (`feetPerUnit` stays whole-house; per-photo calibration is a
+  separate change).
+- [ ] **Unaudited waves:** only **W6** (routes + cross-cutting + #81 auth perimeter + scripts/
+  config + observability/dead-code) remains — **W3 done S21**, **W5 done S20**. W6 is heavy →
+  fresh budget.
 
 ---
 _Update this file as items are handled. Pointer lives in the #110 ledger row._

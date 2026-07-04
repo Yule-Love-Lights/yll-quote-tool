@@ -592,10 +592,13 @@ describe('setInvoiceTaxOverride', () => {
     });
     sbRef.current = fake.client;
     const inv = await setInvoiceTaxOverride('i1', true);
-    // Agreed total 3000, minus the full tax line 393.75 → 2606.25. NOT 4500.
-    expect(inv!.total).toBe(2606.25);
+    // W1-001 + partial-selection tax fix: the exemption removes only the tax
+    // EMBEDDED in the agreed $3,000 selection (3000 / 1.0875 → $241.38 tax), not the
+    // full-quote tax of $393.75. So total = 3000 − 241.38 = 2758.62. Subtracting the
+    // full-quote tax (the old behavior) would under-bill to 2606.25. NOT 4500.
+    expect(inv!.total).toBe(2758.62);
     expect(inv!.tax).toBe(0);
-    expect(inv!.balance).toBe(1106.25); // 2606.25 − 1500
+    expect(inv!.balance).toBe(1258.62); // 2758.62 − 1500
   });
 });
 

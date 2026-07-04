@@ -15,6 +15,27 @@ metadata:
 
 ---
 
+### Session 21 — #110 Wave 3 (dense files) audited + FIXED + relayed; S20 wrap #363 merged (2026-07-04)
+
+> **⏹️ S21 CLOSE.** One conversation = S21 (Jason). Resumed the #110 audit epic at **Wave 3 (dense files)**. Merged the S20 wrap docs (#363, `746fbcf`→`cef6ab6`), then ran the full W3 audit → disposition → fix → relay → close loop. Master `cef6ab6` → **`3ed2a6f`**; gates **tsc 0 · eslint 0 · vitest 1973 → 2009** (Naldo's #88 permanent landed ~35 mid-session). Caveman ON. Model policy followed: **Sonnet-build / Opus-review (the seat) / Fable untouched.**
+>
+> **🎯 W3 dense-file audit (30 findings, 3 fix PRs, all LIVE + relayed):**
+> - **AUDIT (workflow, 14 finders → dedupe → adversarial-verify → critic):** editor.ts (5.3kL, bug-lens FULL / refactor COARSE), QuoteBuilder.tsx (3.3kL), training/new (1.5kL). 32 raw → 29 deduped → **0 refuted** (1 adjusted CRIT→HIGH) + 1 critic gap = **30 findings (3 HIGH / 15 MED / 11 LOW)**. Script written-to-file + `node --check` first; all 14 finders returned.
+> - **FIX (3 parallel Sonnet worktree builders → integrate → gate combined → Opus review every diff):**
+>   - **PR #369 [editor.ts]:** W3-002/030 (Duplicate/Ctrl+V/Ctrl+D of a grouped strand OR linked twin kept `groupId`/`linkedToId` → clone drawn but **never billed**; strip both, both sites) · W3-007 (flip-axis never `scheduleSave`d) · W3-008 (doSave `saveSeq` UI-race; server-reorder half deferred, self-heals) · W3-009 (`isMiniArea` in centroidOf/shiftItem) · W3-010 (billing-link surface match) · W3-011 (stamp-disarm). 37 ins / 1 del, byte-relayable.
+>   - **PR #370 [QuoteBuilder + adapter]:** HIGH W3-001 (street-preferred address pulls no longer **zero the AI roofline footage**) · HIGH W3-003 (breakdown filters by stable id not label — **W1-005 sibling**; exported+reused `BILLED_ROOFLINE_IDS` + lock-in test) · W3-004 **closes #80-105** · W3-005 (revert optimistic rooflineChoice) · W3-006 **closes #80-102 capture half** · W3-015 (`breakdownLinked` `useMemo`, deps verified).
+>   - **PR #371 [training/new]:** W3-013 (railing box skips the cylindrical wrap formula) · W3-014 (per-photo `photoMarkup[]` store so a 2nd Auto-Analyze can't clobber another photo's markup; payload byte-identical; removePhoto index math traced all cases).
+> - **RELAY:** editor.ts **shared** hunks pushed byte-identical to design-tool `main` `8673a68` — **only W3-009 + W3-002 groupId-strip** (the file is NOT whole-file identical: `linkedToId` twins, the honest-failure `doSave`, flip-axis, twin billing-link, stamp are **quote-tool-only**, absent there). Design-tool tsc green.
+> - **#29 spec seed:** 7 `feed-#29` refactor findings → `docs/audit/EDITOR-29-SPEC-SEED.md` (renderEditor/renderSidebar god-fns, the 9-way item-type list duplicated across 3 sites, 9× bake* dup, monolithic ToolState). 11 LOW → dedupe ledger.
+>
+> **Did right:** never-stale caught it for real — master moved mid-fix (Naldo merged #88 permanent, touching QuoteBuilder + quoteForm, my exact files); GitHub said CLEAN but I rebuilt the integration tree on the NEW master, verified the **logical** interaction (`inputs.permanent` isn't read by `buildPortalLineItems` → W3-015 memo deps stay complete), re-gated (vitest 2009), then merged. Reviewed every Sonnet diff line-by-line (useMemo deps completeness · removePhoto index math · byte-relay exactness). Per-hunk relay discipline — checked each fix site against the design-tool file (`linkedToId` appears 0× there) instead of a whole-file copy.
+> - **Friction:** the two editor.ts files have diverged more than "byte-identical" implies (vendor adaptations + #13 multi-image are quote-tool-only) — the relay is a per-hunk shared-subset. Remember for future editor work.
+> - **Open for Jason → `NEEDS-JASON-2026-07.md`:** device-checks (W3-002/030 clone billing · W3-009 mini-area paste · W3-001 footage · W3-014 per-photo markup) · fix-later (W3-008 server-reorder half · **#80-102 runQuote/Send flush** non-capture half · training per-photo calibration).
+>
+> **State at close:** master **`3ed2a6f`**; 3 fix PRs + S20-wrap #363 merged; design-tool `8673a68`; gates **tsc 0 · eslint 0 · vitest 2009**. **NEXT (S22): #110 Wave 6 — the LAST wave** (all `src/app/api/**` + non-`/api` routes + the **#81 auth perimeter itself** + scripts/config + observability/dead-code/dependency sweep — heavy, fresh budget), then the W1+W3 fix-later backlog before the Aug–Oct trial. Jason's other lane untouched (#41 · #29 [now has its spec seed] · #14 · #109 · #205). Next free ledger #: **116** (Naldo holds 111–115).
+
+---
+
 ### Session 20 — #110 FULL-TOOL QUALITY AUDIT: planned + W0/W1/W2/W4/W5 audited & FIXED, W7→Naldo handoff (2026-07-03/04)
 
 > **⏹️ S20 CLOSE.** One conversation = S20 (Jason). A single massive audit-and-fix epic (#110): scoped an 8-wave whole-tool quality audit, then audited AND fixed 5 of 8 waves in-session. Master `d2c8027` → **`746fbcf`**; gates **tsc 0 · eslint 0 · vitest 1695 → 1973** throughout. Caveman ON. Model-routing policy adopted mid-session (Naldo's PR #335) and followed: **Sonnet builds · Opus reviews/orchestrates (the seat) · Fable only-if-asked** — the whole fix marathon ran Sonnet-build/Opus-review, Fable untouched.

@@ -476,9 +476,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </dl>
           {minimumOrderSubtotal > 0 && !meetsMinimum && (
             <p className="mt-4 border-t border-[#243029] pt-3 text-[13px] text-[#E8B862]">
-              {currentSubtotal <= 0
-                ? `Our season minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
-                : `Our season minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`}
+              {/* Permanent lighting is year-round — "season minimum" is holiday-only
+                  copy; permanent uses a neutral "minimum" (the $2,500 approval gate). */}
+              {serviceType === 'permanent'
+                ? currentSubtotal <= 0
+                  ? `Our minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
+                  : `Our minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`
+                : currentSubtotal <= 0
+                  ? `Our season minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
+                  : `Our season minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`}
             </p>
           )}
         </div>

@@ -53,8 +53,12 @@ export default async function PortalApprovedPage({
   // premium-takedown add-on (premium pulls everything down before Jan 9).
   // Optional-chained so the dev MOCK_QUOTE (no approval) renders the standard
   // windows.
-  const installWindow =
-    quote.approval?.installTiming === 'september'
+  // Permanent lighting is year-round: no seasonal install window, no takedown,
+  // track-mounted (not clipped). The holiday copy below is gated on this.
+  const isPermanent = quote.serviceType === 'permanent';
+  const installWindow = isPermanent
+    ? "We'll confirm your install date"
+    : quote.approval?.installTiming === 'september'
       ? 'Mid-Late September'
       : quote.approval?.installTiming === 'october'
         ? 'October'
@@ -93,13 +97,21 @@ export default async function PortalApprovedPage({
     {
       icon: Truck,
       title: 'Our team installs',
-      body: '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
+      body: isPermanent
+        ? '2–4 hours on-site. We mount the track to your roofline and set the LED pucks — clean and low-profile. You don\'t need to be home.'
+        : '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
     },
-    {
-      icon: PackageOpen,
-      title: 'We take everything down',
-      body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
-    },
+    isPermanent
+      ? {
+          icon: PackageOpen,
+          title: 'Lifetime materials warranty',
+          body: 'Your lights stay up year-round — no takedown. The LED pucks and track carry a lifetime materials warranty (labor billed separately, non-transferable).',
+        }
+      : {
+          icon: PackageOpen,
+          title: 'We take everything down',
+          body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
+        },
   ];
 
   return (
@@ -116,7 +128,7 @@ export default async function PortalApprovedPage({
             className="font-display text-[40px] leading-[1.05] md:text-[68px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em]"
             style={{ textShadow: '0 0 36px rgba(255,183,68,0.22)' }}
           >
-            <span aria-hidden>🎄</span> You&apos;re {isPaid ? 'booked' : 'approved'}!
+            <span aria-hidden>{isPermanent ? '💡' : '🎄'}</span> You&apos;re {isPaid ? 'booked' : 'approved'}!
           </h1>
           <p className="font-display italic text-[20px] md:text-[24px] text-[#E0D7C1] mt-4">
             Here&apos;s what happens next.
@@ -161,10 +173,10 @@ export default async function PortalApprovedPage({
               </div>
               <div>
                 <dt className="text-[11px] font-semibold tracking-[0.22em] uppercase text-[#FFB744]">
-                  Takedown
+                  {isPermanent ? 'Warranty' : 'Takedown'}
                 </dt>
                 <dd className="font-display text-[18px] md:text-[20px] font-semibold text-[#F4ECD8] mt-1">
-                  {takedownWindow}
+                  {isPermanent ? 'Lifetime materials' : takedownWindow}
                 </dd>
               </div>
             </dl>
