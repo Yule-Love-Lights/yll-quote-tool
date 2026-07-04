@@ -183,6 +183,24 @@ export const MOCK_FAQ = [
     a: 'Yes — up to 7 days before your install date. Text Naldo and we will send an updated line-item sheet for approval.' },
 ];
 
+// Event Lighting (#96) — the FAQ shown on an event quote's portal (draft copy;
+// Naldo can revise). Same { q, a } shape as MOCK_FAQ; the portal page passes this
+// instead of MOCK_FAQ when the quote's service_type is 'event'.
+export const EVENT_FAQ = [
+  { q: 'How far ahead should I book?',
+    a: 'As early as you can — dates fill up fast, especially in wedding season. Reach out and we will hold your date.' },
+  { q: 'Can you light a venue, not just a house?',
+    a: 'Yes — backyards, barns, tents, gardens, and more. Tell us about the space and we will design the lighting to fit it.' },
+  { q: 'What if it rains?',
+    a: 'Our lights and connectors are weather-rated for outdoor use. If severe weather threatens your install, we coordinate the timing with you.' },
+  { q: 'Can I choose the colors?',
+    a: 'Absolutely. Warm white is the most popular for events, but we will match your palette.' },
+  { q: 'How long can the lights stay up?',
+    a: 'As long as your event window needs — we install before your event and take everything down after, on the date we agreed.' },
+  { q: 'Do you bring power and poles?',
+    a: 'Yes — we bring everything, including freestanding poles and bases wherever there is nothing to hang lights from.' },
+];
+
 export const MOCK_TEAM = {
   // "Naldo" is the friendly short form used elsewhere (e.g. the WalkthroughVideo intro).
   // The company bio refers to the founder by his full name, Naldoven.

@@ -9,6 +9,8 @@ import { setPalette, DEFAULT_COLORS } from '@/components/design/editor-core/colo
 import { setRenderSettings, DEFAULT_RENDER_SETTINGS } from '@/components/design/editor-core/renderSettings';
 // colorSchemes is client-safe (no server imports) — used for the swatches fallback.
 import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from './design/colorSchemes';
+// event/types is client-safe (pure types + constants) — the eventRates fallback.
+import { DEFAULT_EVENT_RATES } from './event/types';
 // permanent/types is client-safe (zero imports) — the permanent-rates fallback.
 import { DEFAULT_PERMANENT_RATES } from './permanent/types';
 // Type only — never import a runtime value from appSettings here (it pulls the
@@ -24,6 +26,7 @@ const FALLBACK: AppSettings = {
   // this cache, so these fallback values are type-satisfaction only.
   portal: { hideEarlyInstallDiscounts: false },
   swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+  eventRates: DEFAULT_EVENT_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
 };
 

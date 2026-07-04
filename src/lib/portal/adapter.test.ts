@@ -362,3 +362,45 @@ describe('BILLED_ROOFLINE_IDS (#110 W3-003)', () => {
     expect(BILLED_ROOFLINE_IDS.size).toBe(2);
   });
 });
+
+describe('event schedule (#96)', () => {
+  const evInputs = emptyInputs({
+    santasFootage: 100,
+    event: { installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
+  });
+
+  it('surfaces the staff-entered dates on an event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'event' };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.serviceType).toBe('event');
+    expect(portal.eventSchedule).toEqual({
+      installDate: '2026-07-11',
+      eventDate: '2026-07-18',
+      takedownDate: '2026-07-31',
+    });
+  });
+
+  it('omits eventSchedule for a non-event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'holiday' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSchedule).toBeUndefined();
+  });
+
+  it('omits eventSchedule when the event quote set no dates', () => {
+    const inputs = emptyInputs({ santasFootage: 100, event: { barrelBoxes: 2 } });
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(inputs), inputs), service_type: 'event' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSchedule).toBeUndefined();
+  });
+
+  it('surfaces soft add-on suggestions on an event quote (excluding what is already on it)', () => {
+    // santasFootage 100 → a roofline line is present, so roofline is NOT suggested.
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'event' };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.eventSuggestions?.length).toBeGreaterThan(0);
+    expect(portal.eventSuggestions!.map((s) => s.key)).not.toContain('roofline');
+  });
+
+  it('omits eventSuggestions for a non-event quote', () => {
+    const row: QuoteRowForPortal = { ...rowWith(calculateQuote(evInputs), evInputs), service_type: 'holiday' };
+    expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSuggestions).toBeUndefined();
+  });
+});

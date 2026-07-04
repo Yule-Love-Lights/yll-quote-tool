@@ -497,3 +497,32 @@ describe('projectScene — #13 linked twins', () => {
     expect(p.hasProjectableItems).toBe(false);
   });
 });
+
+describe('bistro projection (event, #96)', () => {
+  it('projects a drawn bistro strand to a footage-priced bistro run (not a mini)', () => {
+    const p = projectScene(scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] })]));
+    expect(p.bistro).toHaveLength(1);
+    expect(p.bistro[0].footage).toBeCloseTo(12, 5); // 600px ÷ 50 px/ft fallback
+    expect(p.bistro[0].sceneItemIds).toEqual(['b1']);
+    expect(p.miniLightItems).toHaveLength(0);
+  });
+
+  it('a zero-length bistro strand contributes nothing', () => {
+    const p = projectScene(scene([strand({ bulbType: 'bistro', points: [0, 0] })]));
+    expect(p.bistro).toHaveLength(0);
+  });
+
+  it('applyProjectionToInputs sets inputs.event.bistro, preserving operator-typed event fields', () => {
+    const inputs = baseInputs({ event: { barrelBoxes: 2, eventDate: '2026-07-18' } });
+    const out = applyProjectionToInputs(inputs, scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] })]));
+    expect(out.event?.bistro).toHaveLength(1);
+    expect(out.event?.bistro?.[0].footage).toBeCloseTo(12, 5);
+    expect(out.event?.barrelBoxes).toBe(2); // preserved
+    expect(out.event?.eventDate).toBe('2026-07-18'); // preserved
+  });
+
+  it('a holiday design with no bistro/event gets no event block', () => {
+    const out = applyProjectionToInputs(baseInputs(), scene([strand({ bulbType: 'c9', surface: 'santas-roofline' })]));
+    expect(out.event).toBeUndefined();
+  });
+});

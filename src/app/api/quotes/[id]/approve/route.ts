@@ -383,16 +383,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Permanent Lighting (#88 P6): permanent quotes never carry the holiday rush /
-  // premium-takedown / early-install fees. Force them OFF here so a forged approve
-  // body can't add a holiday fee to a permanent order — the same guarantee
-  // calculatePermanentQuote makes at pricing time. Holiday quotes use the
-  // customer's requested toggles unchanged. These effective values flow into the
-  // recompute AND the frozen approval snapshot below.
+  // Permanent (#88 P6) + Event (#96 Phase B): neither vertical carries the holiday
+  // rush / premium-takedown / early-install fees. Force them OFF here so a forged
+  // approve body can't add a holiday fee to such an order — the same guarantee
+  // calculatePermanentQuote / calculateEventQuote make at pricing time. Holiday
+  // quotes use the customer's requested toggles unchanged. These effective values
+  // flow into the recompute AND the frozen approval snapshot below.
   const isPermanent = quote.service_type === 'permanent';
-  const rushSelected = isPermanent ? false : reqRushSelected;
-  const takedownSelected = isPermanent ? false : reqTakedownSelected;
-  const installTiming: 'none' | 'september' | 'october' = isPermanent ? 'none' : reqInstallTiming;
+  const isEvent = quote.service_type === 'event';
+  const noHolidayFees = isPermanent || isEvent;
+  const rushSelected = noHolidayFees ? false : reqRushSelected;
+  const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
+  const installTiming: 'none' | 'september' | 'october' = noHolidayFees ? 'none' : reqInstallTiming;
 
   // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
   // #39/#63/#74/#79) ────────────────────────────────────────────────────────

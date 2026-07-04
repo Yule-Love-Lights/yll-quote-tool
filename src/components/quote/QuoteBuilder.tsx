@@ -24,6 +24,7 @@ import {
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import dynamic from 'next/dynamic';
@@ -1869,6 +1870,15 @@ export default function QuoteBuilder({
               </p>
             </div>
           </Section>
+
+          {form.serviceType === 'event' && (
+            <Section title="Event details">
+              <EventSection
+                value={form.event}
+                onChange={ev => setForm(f => ({ ...f, event: ev }))}
+              />
+            </Section>
+          )}
 
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">

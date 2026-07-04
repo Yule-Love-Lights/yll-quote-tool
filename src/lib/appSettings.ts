@@ -16,6 +16,9 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   DEFAULT_COLOR_SCHEME_ID,
 } from './design/colorSchemes';
+// Event Lighting rate table (service_type 'event') — Settings-adjustable, the
+// #101 pattern. sanitizeEventRates always yields a complete valid table.
+import { sanitizeEventRates, DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
 import { DEFAULT_PERMANENT_RATES, type PermanentRates } from './permanent/types';
 
 // Customer-facing portal settings (Settings → Customer Portal).
@@ -42,6 +45,9 @@ export type AppSettings = {
   render: RenderSettings;
   portal: PortalSettings;
   swatches: SwatchSettings;
+  // Event Lighting rates (adjustable in Settings → Quotes). The event pricing
+  // engine reads these; DEFAULT_EVENT_RATES underneath so a missing key is safe.
+  eventRates: EventRates;
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
   // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
@@ -62,6 +68,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   render: DEFAULT_RENDER_SETTINGS,
   portal: DEFAULT_PORTAL_SETTINGS,
   swatches: DEFAULT_SWATCH_SETTINGS,
+  eventRates: DEFAULT_EVENT_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
 };
 
@@ -258,6 +265,7 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       schemes: storedSchemes ?? DEFAULT_SWATCH_SETTINGS.schemes,
       buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
     },
+    eventRates: sanitizeEventRates(map.get('eventRates')),
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
   };
 }
@@ -286,6 +294,7 @@ export async function putAppSettings(patch: {
   render?: Partial<RenderSettings>;
   portal?: Partial<PortalSettings>;
   swatches?: Partial<SwatchSettings>;
+  eventRates?: EventRates;
   permanentRates?: Partial<PermanentRates>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
@@ -330,6 +339,14 @@ export async function putAppSettings(patch: {
     const value = { ...current.swatches, ...sanitizeSwatches(patch.swatches, validColorIds) };
     rows.push({ key: 'swatches', value });
     map.set('swatches', value);
+  }
+  if (patch.eventRates !== undefined) {
+    // Merge over the current stored rates + sanitize, so a partial write keeps
+    // the other fields and any invalid number falls back to the default (never
+    // a $0 rate that would trip the engine guardrail).
+    const value = sanitizeEventRates({ ...current.eventRates, ...patch.eventRates });
+    rows.push({ key: 'eventRates', value });
+    map.set('eventRates', value);
   }
 
   if (patch.permanentRates !== undefined) {

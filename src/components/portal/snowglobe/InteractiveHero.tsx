@@ -29,6 +29,7 @@ import { LogoWatermark } from '../LogoWatermark';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
+import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -39,9 +40,6 @@ export type InteractiveHeroProps = {
   alt: string;
   packages: PortalPackage[];
   lineItemCount: number; // total items (for "D" brightness scaling)
-  // Permanent (#88): package 'D' is the real "Whole Home" bundle, not the holiday
-  // "Build Your Own / Custom" slot — so its tab eyebrow reads as a tier, not "Custom".
-  isPermanent?: boolean;
   // Linked design (#27 Phase 2). When present, the hero renders it live
   // instead of the static `afterUrl` image, with a daytime/lit toggle.
   design?: PortalDesign;
@@ -49,6 +47,9 @@ export type InteractiveHeroProps = {
   // the configured palette + render tunables.
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
+  // #96: the quote's service line — branches the hero headline ("your event"
+  // vs "your home"). Undefined/holiday/permanent keep the default.
+  serviceType?: ServiceType;
 };
 
 export function InteractiveHero({
@@ -60,7 +61,7 @@ export function InteractiveHero({
   design,
   palette,
   renderSettings,
-  isPermanent = false,
+  serviceType,
 }: InteractiveHeroProps) {
   const {
     packageId,
@@ -247,7 +248,7 @@ export function InteractiveHero({
             className="font-display text-[26px] leading-[1.06] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
           >
-            Here&apos;s your home,{' '}
+            {serviceType === 'event' ? "Here's your event," : "Here's your home,"}{' '}
             <span className="italic text-[#FFD07A]">{firstName}</span>.
           </h1>
         </div>
@@ -356,7 +357,7 @@ export function InteractiveHero({
                         track the live selection so they don't out-claim the
                         sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' && !isPermanent ? 'Custom' : `Tier ${i + 1}`}
+                      {p.id === 'D' && serviceType !== 'permanent' ? 'Custom' : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
