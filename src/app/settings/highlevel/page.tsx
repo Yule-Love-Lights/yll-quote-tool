@@ -20,7 +20,7 @@ const ENV_VARS: { name: string; desc: string }[] = [
   { name: 'HIGHLEVEL_PIPELINE_ID', desc: 'Your Holiday Lights sales pipeline' },
   { name: 'HIGHLEVEL_STAGE_QUOTE_CREATED', desc: 'Stage for a brand-new card the tool has to create — use your ENTRY stage (e.g. 📭 Open), never an internal stage like Make Quote' },
   { name: 'HIGHLEVEL_STAGE_QUOTE_SENT', desc: 'Stage: quote sent to the customer ("Bid Sent")' },
-  { name: 'HIGHLEVEL_STAGE_QUOTE_INTERESTED', desc: 'Stage: customer approves on the portal' },
+  { name: 'HIGHLEVEL_STAGE_QUOTE_APPROVED', desc: 'Stage moved to when the deposit is PAID (Valor webhook); falls back to SIGNED' },
   { name: 'HIGHLEVEL_STAGE_QUOTE_SIGNED', desc: 'Stage: contract signed' },
 ];
 

@@ -111,13 +111,14 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       // line items (#12, Jason S12). Runs after attachSceneLinks so design-driven
       // recommended flags are attached; also covers custom-item recommendations
       // the adapter set. No-op (D stays "Build Your Own") when nothing is flagged.
-      // NOT for permanent (#88 P5): permanent repurposes package 'D' as the real
-      // "Whole Home" bundle (front+sides+back). applyOurRecommendation assumes 'D'
-      // is the empty holiday recommendation slot and would clobber it — dropping
-      // the side lighting from the default selection — if staff flagged a custom
-      // line item recommended on a permanent quote. Permanent has no roofline
-      // recommendation concept, so skip it.
-      if (data.service_type !== 'permanent') {
+      // NOT for permanent (#88 P5) OR event (#96): BOTH repurpose package 'D' as a
+      // real bundle (permanent's "Whole Home" front+sides+back; event's single
+      // "Your event lighting"). applyOurRecommendation assumes 'D' is the empty
+      // holiday recommendation slot and would CLOBBER it — dropping items from the
+      // default selection — if any line item is flagged recommended. Neither
+      // vertical has a roofline-recommendation concept, so run this for holiday
+      // only (a null/legacy service_type reads as holiday — the DEFAULT).
+      if (data.service_type !== 'permanent' && data.service_type !== 'event') {
         portal.packages = applyOurRecommendation(
           portal.packages,
           portal.lineItems,

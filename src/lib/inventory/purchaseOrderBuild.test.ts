@@ -5,11 +5,14 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// #110 W7-009: shared so the bindings mock and the pass-through assertion agree.
+const { CLIP_RULES } = vi.hoisted(() => ({ CLIP_RULES: { gutterline: { sku: 'CLIP-1' } } }));
+
 let currentDb: unknown = null;
 let testQuoteIds: string[] = ['T'];
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
-vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: [] })) }));
+vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: [], clipRules: CLIP_RULES })) }));
 vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => [{ sku: 'SKU-A', name: 'Widget' }]) }));
 vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []) }));
 // Every job projects 5 of SKU-A, so the PO size is a direct count of INCLUDED jobs.
@@ -19,6 +22,7 @@ vi.mock('./materialsProjection', () => ({
 }));
 
 import { buildSupplierPurchaseOrder } from './purchaseOrder';
+import { projectMaterials } from './materialsProjection';
 
 // Thenable db fake. Two active jobs (quotes R + T); the is_test lookup returns
 // `testQuoteIds`; designs resolve a (trivial) scene per quote.
@@ -83,5 +87,11 @@ describe('buildSupplierPurchaseOrder — Test Quote exclusion (#93)', () => {
     const po = await buildSupplierPurchaseOrder();
     expect(po.jobCount).toBe(2);
     expect(po.lines).toEqual([{ sku: 'SKU-A', name: 'Widget', needed: 10, onHand: 0, order: 10 }]);
+  });
+
+  it('passes clipRules through to projectMaterials (#110 W7-009 — clips must reach the PO, not be dropped as {})', async () => {
+    await buildSupplierPurchaseOrder();
+    // 3rd positional arg of projectMaterials(scene, bindings, clipRules, colorChoice).
+    expect(vi.mocked(projectMaterials).mock.calls[0][2]).toEqual(CLIP_RULES);
   });
 });

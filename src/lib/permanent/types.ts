@@ -99,6 +99,44 @@ export const DEFAULT_PERMANENT_RATES: PermanentRates = {
 };
 
 /**
+ * Permanent Lighting "Your Protection" card copy (#88 P6b-2). Settings-editable
+ * so staff can reword the guarantees/warranty without a deploy, and VERSIONED so
+ * an approved permanent quote can freeze the exact terms + version the customer
+ * agreed to (a later edit can never retro-change a booked customer's agreement).
+ * `bullets` is a fixed-slot list (each paired with a fixed icon in the portal
+ * component by index); a blank slot is hidden. `version` is server-managed —
+ * putAppSettings bumps it whenever the displayed copy changes; clients never set it.
+ * Lives here (with zero imports) so both the server appSettings and the client
+ * settings cache / portal component share ONE source without a server-bundle leak.
+ */
+export type PermanentWarranty = {
+  eyebrow: string;
+  heading: string;
+  bullets: string[];
+  version: number;
+};
+
+/**
+ * The factory "Your Protection" copy — byte-identical to what RiskReversalPermanent
+ * hard-coded before this became Settings-editable, so an unconfigured business sees
+ * the exact same card. Bullet order is paired with the fixed icons in that component
+ * (Infinity / Smartphone / EyeOff / Home / Palette / ShieldCheck). Starts at version 1.
+ */
+export const DEFAULT_PERMANENT_WARRANTY: PermanentWarranty = {
+  eyebrow: 'Your Protection',
+  heading: 'Built to last a lifetime.',
+  bullets: [
+    'Lifetime materials warranty — we replace any failed puck, track, or controller free, for as long as you own and live in your home. (Service labor billed separately.)',
+    'Control it from your phone — millions of colors, scenes, and schedules, year-round, in the app.',
+    'Invisible by day — a low-profile track color-matched to your trim. You only see it when it’s on.',
+    'Zero roof damage — mounted in aluminum track under the eave, never nailed through your shingles.',
+    'Everyday and every holiday — warm white for nightly curb appeal and security, any color for the seasons.',
+    '$2M liability insurance — licensed and bonded, installed by our own crew.',
+  ],
+  version: 1,
+};
+
+/**
  * A blank permanent block for a fresh/hydrating quote form. A FACTORY (not a
  * shared const) so each form gets its own `gaps` array — no cross-form mutation.
  */

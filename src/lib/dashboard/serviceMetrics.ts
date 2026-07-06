@@ -13,8 +13,9 @@ import { deriveStatus } from '@/lib/quoteStatus';
  * lost). Terminal orders must not count toward booked/inCare/installed counts
  * or revenue even when customer_approved_at or deposit_paid_at is set.
  * Requires `status` to be present on the row (selected by DASHBOARD_QUOTES_SELECT).
+ * Exported so insights.ts (#110 W7-006) reuses the exact same revenue-terminal set.
  */
-function isTerminalStatus(q: DashboardQuote): boolean {
+export function isTerminalStatus(q: DashboardQuote): boolean {
   const s = deriveStatus(q);
   return s === 'cancelled' || s === 'declined' || s === 'lost';
 }

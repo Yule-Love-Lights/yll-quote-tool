@@ -118,3 +118,41 @@ describe('computeInsightStats', () => {
     expect(s.timeToCloseDays).toBeNull();
   });
 });
+
+// B7 class (#110 W7-006): an approved-then-cancelled quote keeps its
+// customer_approved_at but carries status='cancelled'/'declined'/'lost' — it
+// must NOT count as booked revenue or a win. Mirrors the metrics/serviceMetrics/
+// workflowBoard fix that missed insights.ts.
+describe('insights — terminal statuses excluded from booked revenue (#110 W7-006)', () => {
+  it('monthlyRevenue excludes an approved-then-cancelled quote', () => {
+    const out = monthlyRevenue(
+      [
+        makeQuote({ total: 1000, customer_approved_at: '2026-06-10T00:00:00Z' }),
+        makeQuote({ total: 8000, customer_approved_at: '2026-06-11T00:00:00Z', status: 'cancelled' }),
+      ],
+      NOW,
+      12,
+    );
+    expect(out.find(b => b.key === '2026-06')!.revenue).toBe(1000);
+  });
+
+  it('revenueByService excludes cancelled/declined/lost even when approved', () => {
+    const out = revenueByService([
+      makeQuote({ total: 1000, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'holiday' }),
+      makeQuote({ total: 8000, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'holiday', status: 'cancelled' }),
+      makeQuote({ total: 500, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'event', status: 'lost' }),
+    ]);
+    expect(out.find(s => s.service === 'holiday')!.revenue).toBe(1000);
+    expect(out.find(s => s.service === 'event')!.revenue).toBe(0);
+  });
+
+  it('computeInsightStats: a cancelled-after-approval quote is not booked, but still counts as reached (drags closeRatio)', () => {
+    const s = computeInsightStats([
+      makeQuote({ total: 1000, quote_sent_at: '2026-06-01T00:00:00Z', customer_approved_at: '2026-06-02T00:00:00Z' }),
+      makeQuote({ total: 8000, quote_sent_at: '2026-06-01T00:00:00Z', customer_approved_at: '2026-06-02T00:00:00Z', status: 'cancelled' }),
+    ]);
+    expect(s.totalBooked).toBe(1000);
+    expect(s.avgJobValue).toBe(1000); // only the one real win
+    expect(s.closeRatio).toBe(0.5); // 1 won / 2 reached — the cancelled deal drags it down
+  });
+});

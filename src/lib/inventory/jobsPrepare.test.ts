@@ -32,13 +32,14 @@ import { prepareJobMaterials } from './jobs';
 // A db fake whose chains all terminate in .maybeSingle(): the atomic claim
 // (jobs UPDATE → select('id')), the stock_decremented_at read, the design read,
 // and the quote read (which carries is_test).
-function makeDb({ claimWins = true }: { claimWins?: boolean } = {}) {
+function makeDb({ claimWins = true, onClaim }: { claimWins?: boolean; onClaim?: () => void } = {}) {
   return {
     from(table: string) {
       const state = { table, op: 'select' as 'select' | 'update', cols: '' };
       const b = {
         update() {
           state.op = 'update';
+          if (table === 'jobs') onClaim?.();
           return b;
         },
         select(cols?: string) {
@@ -108,6 +109,20 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     currentDb = makeDb({ claimWins: false });
     const res = await prepareJobMaterials('j1');
     expect(res).toEqual({ ok: true, alreadyDone: true });
+    expect(upsertOnHand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT stamp a phantom claim when the materials read fails (#110 W7-008 — read before claim)', async () => {
+    // getJob → null makes getJobWorkOrder return null, simulating a missing job
+    // OR a transient post-claim read failure (its reads swallow errors to empty).
+    jobRow = null;
+    let claimAttempted = false;
+    currentDb = makeDb({ onClaim: () => { claimAttempted = true; } });
+    const res = await prepareJobMaterials('j1');
+    // Returns retryable null WITHOUT ever claiming — so the job is never left
+    // marked prepped with zero stock deducted (the old bug), and a retry works.
+    expect(res).toBeNull();
+    expect(claimAttempted).toBe(false);
     expect(upsertOnHand).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@
 // the quote/pricing domain types INTO these.
 
 import type { Scene } from '@/lib/design/sceneTypes';
+import type { PermanentWarranty } from '@/lib/permanent/types';
 
 export type PackageId = 'A' | 'B' | 'C' | 'D';
 
@@ -109,6 +110,10 @@ export type PortalApproval = {
   selectedItemCount: number; // for a "X items included" line
   installTiming: InstallTiming; // #40 — Sep/Oct early-install choice (or 'none')
   takedownSelected: boolean;    // #4 — premium (before-Jan-9) takedown chosen
+  // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
+  // customer agreed to, frozen at approval. null for non-permanent quotes or
+  // older snapshots; the portal then renders the LIVE settings copy instead.
+  permanentWarranty?: PermanentWarranty | null;
 };
 
 // The customer's early-install timing choice on the portal (#40). Picking

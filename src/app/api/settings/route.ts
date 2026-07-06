@@ -12,6 +12,7 @@ import {
   sanitizePortal,
   sanitizeSwatches,
   sanitizePermanentRates,
+  sanitizePermanentWarranty,
   isPlainObject,
 } from '@/lib/appSettings';
 import { requireOperator } from '@/lib/auth/supabaseServer';
@@ -48,7 +49,7 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates, permanentRates } =
+  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentWarranty, permanentSwatches } =
     body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -57,7 +58,9 @@ export async function PUT(req: NextRequest) {
     portal === undefined &&
     swatches === undefined &&
     eventRates === undefined &&
-    permanentRates === undefined
+    permanentRates === undefined &&
+    permanentWarranty === undefined &&
+    permanentSwatches === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -90,6 +93,16 @@ export async function PUT(req: NextRequest) {
       );
     }
   }
+  // Permanent swatches (#88 P6b-4): same validation as holiday swatches.
+  if (permanentSwatches !== undefined) {
+    const validColorIds = new Set((await getAppSettings()).colors.map((c) => c.id));
+    if (Object.keys(sanitizeSwatches(permanentSwatches, validColorIds)).length === 0) {
+      return NextResponse.json(
+        { error: 'permanentSwatches must have a valid schemes array and/or buildableColorIds array' },
+        { status: 400 },
+      );
+    }
+  }
   // Event rates (adjustable event pricing): must be an object; putAppSettings
   // sanitizes each field (invalid → default) so it always stores a valid table.
   if (eventRates !== undefined && !isPlainObject(eventRates)) {
@@ -101,6 +114,35 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
+  // Warranty copy (#88 P6b-2): must yield at least one recognized field
+  // (eyebrow/heading/bullets) — a `version`-only patch is not an edit (the version
+  // is server-managed), so it's rejected as "nothing recognized" rather than
+  // silently returning 200 with the old copy.
+  if (permanentWarranty !== undefined) {
+    const s = sanitizePermanentWarranty(permanentWarranty);
+    if (s.eyebrow === undefined && s.heading === undefined && s.bullets === undefined) {
+      return NextResponse.json(
+        { error: 'permanentWarranty must have an eyebrow, heading, and/or bullets array' },
+        { status: 400 },
+      );
+    }
+    // Foot-gun guard (P6b-2 review GAP 5): a provided heading can't be blanked and
+    // a provided bullets array can't be ALL-blank — either would ship a heading-less
+    // / bullet-less protection card to a booked customer. (Individual blank bullet
+    // slots are still allowed — they just hide that one bullet.)
+    if (s.heading !== undefined && s.heading === '') {
+      return NextResponse.json(
+        { error: 'permanentWarranty heading cannot be blank' },
+        { status: 400 },
+      );
+    }
+    if (s.bullets !== undefined && s.bullets.every((b) => b === '')) {
+      return NextResponse.json(
+        { error: 'permanentWarranty needs at least one non-blank bullet' },
+        { status: 400 },
+      );
+    }
+  }
   try {
     const settings = await putAppSettings({
       colors: colors as never,
@@ -110,6 +152,8 @@ export async function PUT(req: NextRequest) {
       swatches: swatches as never,
       eventRates: eventRates as never,
       permanentRates: permanentRates as never,
+      permanentWarranty: permanentWarranty as never,
+      permanentSwatches: permanentSwatches as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

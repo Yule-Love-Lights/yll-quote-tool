@@ -65,6 +65,10 @@ export const DEFAULT_COLOR_SCHEMES: ColorScheme[] = [
   { id: 'blue-white',  label: 'Frozen',      colorIds: ['blue', 'blue', 'cool-white', 'cool-white'] }, // #92 — renamed from "Blue & White"; id kept so saved quotes don't break
 ];
 
+// NOTE: the PERMANENT scene set + its picker validation moved to
+// `permanentScenes.ts` (#88 P6b-3) — permanent scenes gained animation `effect`s
+// and are a vertical-specific concept, not part of this holiday/shared module.
+
 // Resolve a scheme id to its full record within a given scheme list (defaults to
 // the built-ins). Unknown / missing ids fall back to the default ("as designed")
 // so a stale id from an old quote never breaks rendering; a list missing

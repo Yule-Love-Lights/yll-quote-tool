@@ -115,3 +115,4 @@ describe('build-your-own custom pattern (#49)', () => {
     expect(isKnownColorSchemeId('champagne', CUSTOM_LIST)).toBe(false); // dropped by the operator
   });
 });
+// The permanent scene set + isPermanentColorSchemeId moved to permanentScenes.test.ts (#88 P6b-3).

@@ -27,6 +27,7 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
+import { PermanentEffectPicker } from '@/components/portal/dark/PermanentEffectPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
 import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
@@ -50,6 +51,7 @@ import {
   MOCK_REVIEWS,
   MOCK_FAQ,
   EVENT_FAQ,
+  PERMANENT_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -258,10 +260,19 @@ export default async function PortalPage({
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
-        initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
+        initialInstallTiming={
+          quote.serviceType === 'permanent' || quote.serviceType === 'event'
+            ? 'none'
+            : quote.installTiming
+        }
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
-        schemes={appSettings.swatches.schemes}
-        buildableColorIds={appSettings.swatches.buildableColorIds}
+        // #88 P6b-4 — permanent quotes use their OWN Settings-editable swatch list +
+        // full build-your-own palette (any color), separate from the holiday
+        // swatches; the color still freezes through the same colorSchemeId/
+        // customPattern path. Effect is a separate pick (PermanentEffectPicker).
+        // colorOverride resolves against whichever list we pass.
+        schemes={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.schemes : appSettings.swatches.schemes}
+        buildableColorIds={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.buildableColorIds : appSettings.swatches.buildableColorIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
@@ -276,10 +287,14 @@ export default async function PortalPage({
           serviceType={quote.serviceType}
         />
 
-        {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
-            below the packages so the swatches don't overlap the photo on a phone.
-            Only when a design is linked (recolor needs a live scene). */}
-        {quote.design && quote.serviceType !== 'permanent' && <LightColorPicker />}
+        {/* 1.5 Light color picker (#48/#57) — the full picker (presets + palette +
+            build-your-own). Permanent (#88 P6b-4) uses the SAME picker over its own
+            swatch list, so a permanent customer gets full color control too. Only
+            when a design is linked (recolor needs a live scene). */}
+        {quote.design && <LightColorPicker />}
+        {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
+            row under the color so any color can play any effect. */}
+        {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
 
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}
@@ -319,7 +334,14 @@ export default async function PortalPage({
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
              event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
-        {quote.serviceType === 'permanent' ? <RiskReversalPermanent /> : <RiskReversal serviceType={quote.serviceType} />}
+        {quote.serviceType === 'permanent' ? (
+          // #88 P6b-2 — an APPROVED customer sees the FROZEN copy they agreed to
+          // (from the snapshot); a not-yet-approved customer sees the LIVE settings
+          // copy. So a later Settings edit never changes a booked customer's terms.
+          <RiskReversalPermanent warranty={quote.approval?.permanentWarranty ?? appSettings.permanentWarranty} />
+        ) : (
+          <RiskReversal serviceType={quote.serviceType} />
+        )}
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
@@ -352,8 +374,17 @@ export default async function PortalPage({
         {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 10. FAQ — event quotes get event-specific Q&A (#96). */}
-        <FAQ items={quote.serviceType === 'event' ? EVENT_FAQ : MOCK_FAQ} />
+        {/* 10. FAQ — per service_type: event (#96) + permanent (#88, ledger #120)
+             each get their own Q&A; holiday keeps MOCK_FAQ. */}
+        <FAQ
+          items={
+            quote.serviceType === 'event'
+              ? EVENT_FAQ
+              : quote.serviceType === 'permanent'
+                ? PERMANENT_FAQ
+                : MOCK_FAQ
+          }
+        />
 
         {/* 11. Personal contact */}
         <PersonalContact

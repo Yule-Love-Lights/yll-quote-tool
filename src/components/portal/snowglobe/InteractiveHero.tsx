@@ -31,6 +31,8 @@ import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
+import { effectSpeedMs } from '@/lib/design/permanentScenes';
+import { colorOf } from '@/components/design/editor-core/colors';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -72,9 +74,33 @@ export function InteractiveHero({
     selectedItemIds,
     hiddenSceneItemIds,
     colorOverride,
+    permanentEffect,
     showDaylight,
     activeName,
   } = useSelection();
+  // #88 P6b-4 — permanent lights animate the live design per the SEPARATELY-chosen
+  // effect (Solid/Chase/Fade), applied to whatever color the customer picked. A
+  // motion effect → {effect,speedMs}; Solid or a non-permanent quote → null (static).
+  // Only the HERO animates (perf); reprise/gallery stay static. A single-color pick
+  // has nothing to move, so the animation controller no-ops it (stays solid).
+  const heroAnimation = useMemo(() => {
+    if (serviceType !== 'permanent') return null;
+    return permanentEffect === 'chase' || permanentEffect === 'cycle'
+      ? { effect: permanentEffect, speedMs: effectSpeedMs(permanentEffect) }
+      : null;
+  }, [serviceType, permanentEffect]);
+  // #88 P6b-3/4 — the facade glow gradient for the active permanent color. Built from
+  // the live palette (colorOverride), tinted via the configured palette hex. null (no
+  // wash) for non-permanent quotes and for "as designed" (colorOverride null) — the
+  // glow only shows for an explicit color. A motion effect sweeps it.
+  const permGlow = useMemo(() => {
+    if (serviceType !== 'permanent' || !design || !colorOverride || colorOverride.length === 0) return null;
+    const hexOf = (id: string) => palette?.find((c) => c.id === id)?.hex ?? colorOf(id).hex;
+    const hexes = colorOverride.map(hexOf);
+    // Repeat the first color at the end so the 200%-wide sweep loops seamlessly.
+    const stops = hexes.length === 1 ? `${hexes[0]}, ${hexes[0]}` : [...hexes, hexes[0]].join(', ');
+    return { gradient: `linear-gradient(90deg, ${stops})`, motion: !!heroAnimation };
+  }, [serviceType, design, colorOverride, palette, heroAnimation]);
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   // #13 multi-image: which photo the hero shows (null = the base photo). The
@@ -178,6 +204,7 @@ export function InteractiveHero({
             photoH={activeH}
             hiddenIds={hiddenSceneItemIds}
             colorOverride={colorOverride}
+            animation={heroAnimation}
             palette={palette}
             renderSettings={renderSettings}
             className="portal-snow-stage-photo absolute inset-0"
@@ -221,6 +248,17 @@ export function InteractiveHero({
         className="portal-snow-stage-bloom"
         data-level={packageId}
       />
+
+      {/* #88 P6b-3 — permanent scene facade glow (over the photo/bloom, screen-blend).
+          Only when a scene color is active; sweeps for a motion scene. */}
+      {permGlow && (
+        <div
+          aria-hidden
+          className="portal-perm-glow"
+          data-motion={permGlow.motion ? 'true' : 'false'}
+          style={{ ['--perm-glow' as string]: permGlow.gradient } as React.CSSProperties}
+        />
+      )}
 
       {/* Brand watermark (#45) — sits over the photo, outside the brightness-
           filtered photo element so it stays consistent across packages. */}
@@ -357,7 +395,7 @@ export function InteractiveHero({
                         track the live selection so they don't out-claim the
                         sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' && serviceType !== 'permanent' ? 'Custom' : `Tier ${i + 1}`}
+                      {p.id === 'D' && serviceType !== 'permanent' && serviceType !== 'event' ? 'Custom' : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended

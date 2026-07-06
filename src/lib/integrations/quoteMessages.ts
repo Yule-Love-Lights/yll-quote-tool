@@ -483,6 +483,72 @@ export function internalPaidEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── Possible double-charge alert (#110 W1-006) ──────────────────────────────
+// A second APPROVED Valor deposit txn arrived for a quote that's already marked
+// paid, with a DIFFERENT txn id than the one on file — two live hosted checkout
+// pages both got paid. Staff must check Valor and refund the extra charge.
+
+export function duplicatePaymentEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `⚠️ Possible double charge: ${who}`;
+}
+
+export function duplicatePaymentEmailHtml(input: {
+  customerName: string | null;
+  amountUsd: number;
+  newTxnId: string | null;
+  existingTxnId: string | null;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>'s deposit was already marked paid, but a SECOND approved Valor charge just came in with a different transaction id — likely two open checkout tabs both got paid.</p>`,
+    `<p><strong>Action needed:</strong> check the Valor portal and refund the duplicate charge (${usdExact(
+      input.amountUsd,
+    )}) manually.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('New (duplicate) txn', escapeHtml(input.newTxnId || '—')),
+    row('Existing txn on file', escapeHtml(input.existingTxnId || '—')),
+    row('Amount', usdExact(input.amountUsd)),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
+// ─── Refund-due alert (#110 W1-008) ──────────────────────────────────────────
+// A booked (deposit-paid) order was cancelled — the deposit must be refunded
+// manually in Valor. Mirrors the "deposit received" staff alert so a cancelled
+// refund obligation is never left to a response the operator might miss.
+
+export function refundDueEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `↩️ Refund owed: ${who}`;
+}
+
+export function refundDueEmailHtml(input: {
+  customerName: string | null;
+  amountUsd: number;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>'s booked order was cancelled after a deposit was already charged.</p>`,
+    `<p><strong>Action needed:</strong> issue the refund (${usdExact(
+      input.amountUsd,
+    )}) manually in the Valor portal.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Deposit to refund', usdExact(input.amountUsd)),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
 // ─── Low-stock alert (#82 stock loop) ────────────────────────────────────────
 // A daily digest emailed to staff/purchasing when SKUs hit their reorder point.
 

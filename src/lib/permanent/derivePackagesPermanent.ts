@@ -21,6 +21,7 @@ import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 const FRONT_ID = 'permanent-front';
 const SIDES_ID = 'permanent-sides';
 const BACK_ID = 'permanent-back';
+const MAINTENANCE_ID = 'permanent-maintenance';
 
 function priceIds(
   ids: string[],
@@ -85,18 +86,29 @@ export function derivePackagesPermanent(
     });
   }
 
-  const presentSideIds = [FRONT_ID, SIDES_ID, BACK_ID].filter((id) =>
-    lineItems.some((li) => li.id === id),
-  );
-  if (presentSideIds.length > 0) {
-    const p = priceIds(presentSideIds, lineItems, charges);
+  // Whole Home (D) = every billable line — the present surfaces PLUS any
+  // custom/manual (#27) line items — EXCEPT the opt-in maintenance add-on.
+  //   • #125-3: custom items carry a non-'permanent-' id, so they sit in NO
+  //     A/B/C surface package. Without them here they default OFF on the portal
+  //     and go silently UNBILLED at approval (the approve route only bills the
+  //     selected ids). Bundling them into D fixes that — mirrors holiday's
+  //     "everything" tier (derivePackages Tier C).
+  //   • #125-2: only emit D when it bundles MORE THAN ONE billable line. A
+  //     single-surface quote with no custom items makes D byte-identical to its
+  //     lone A/B/C package — a redundant tier. (One surface + a custom item is
+  //     two lines, so D still appears and carries the custom line.)
+  const wholeHomeIds = lineItems
+    .map((li) => li.id)
+    .filter((id) => id !== MAINTENANCE_ID);
+  if (wholeHomeIds.length > 1) {
+    const p = priceIds(wholeHomeIds, lineItems, charges);
     packages.push({
       id: 'D',
       name: 'Whole Home',
       tagline: 'Every side we can light.',
       total: p.total,
       deposit: p.deposit,
-      includedItemIds: presentSideIds,
+      includedItemIds: wholeHomeIds,
     });
   }
 
