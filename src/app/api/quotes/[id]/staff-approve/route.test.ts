@@ -29,6 +29,13 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: requireOperatorMock,
   getOperator: getOperatorMock,
 }));
+// #88 P6b-2: a permanent staff-approval reads the warranty copy via getAppSettings
+// to freeze it. Stub it to the factory defaults so this doesn't route an
+// app_settings query through the quote mock.
+vi.mock('@/lib/appSettings', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/appSettings')>('@/lib/appSettings');
+  return { ...actual, getAppSettings: async () => actual.DEFAULT_APP_SETTINGS };
+});
 
 import { POST } from './route';
 
@@ -289,5 +296,32 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     // Should merge, not replace
     expect(snapshot.someOtherField).toBe('value');
     expect(snapshot.staffApproved).toBeTruthy();
+  });
+
+  // GAP 2 (P6b-2 review) — a permanent staff approval still freezes the warranty
+  // copy+version (a booked job records which terms apply, regardless of channel).
+  it('freezes the warranty copy+version on a PERMANENT staff approval', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, service_type: 'permanent' });
+    sbRef.current = client;
+
+    await POST(makeReq(), ctx());
+    const snapshot = updatePayloads[0].approval_snapshot as {
+      staffApproved: unknown;
+      permanentWarranty?: { version: number; bullets: string[] };
+    };
+    expect(snapshot.staffApproved).toBeTruthy();
+    expect(snapshot.permanentWarranty).toBeTruthy();
+    expect(snapshot.permanentWarranty!.version).toBe(1); // DEFAULT_PERMANENT_WARRANTY
+    expect(snapshot.permanentWarranty!.bullets).toHaveLength(6);
+  });
+
+  it('omits permanentWarranty on a non-permanent staff approval', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, service_type: 'holiday' });
+    sbRef.current = client;
+
+    await POST(makeReq(), ctx());
+    const snapshot = updatePayloads[0].approval_snapshot as Record<string, unknown>;
+    expect(snapshot.staffApproved).toBeTruthy();
+    expect(snapshot.permanentWarranty).toBeUndefined();
   });
 });

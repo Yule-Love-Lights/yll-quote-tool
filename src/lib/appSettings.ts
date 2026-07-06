@@ -16,10 +16,16 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   DEFAULT_COLOR_SCHEME_ID,
 } from './design/colorSchemes';
+import { DEFAULT_PERMANENT_SWATCHES } from './design/permanentScenes';
 // Event Lighting rate table (service_type 'event') — Settings-adjustable, the
 // #101 pattern. sanitizeEventRates always yields a complete valid table.
 import { sanitizeEventRates, DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
-import { DEFAULT_PERMANENT_RATES, type PermanentRates } from './permanent/types';
+import {
+  DEFAULT_PERMANENT_RATES,
+  type PermanentRates,
+  DEFAULT_PERMANENT_WARRANTY,
+  type PermanentWarranty,
+} from './permanent/types';
 
 // Customer-facing portal settings (Settings → Customer Portal).
 export type PortalSettings = {
@@ -39,6 +45,14 @@ export type SwatchSettings = {
   buildableColorIds: string[];
 };
 
+// Caps so an errant/oversized Settings write can't bloat the row. Six bullets
+// matches the six fixed icons in RiskReversalPermanent (PermanentWarranty +
+// DEFAULT_PERMANENT_WARRANTY live in ./permanent/types so the client bundle can
+// share them without pulling in this server-only module).
+const WARRANTY_TEXT_MAX = 160;
+const WARRANTY_BULLET_MAX = 500;
+const WARRANTY_MAX_BULLETS = 6;
+
 export type AppSettings = {
   colors: BulbColor[];
   defaults: ToolDefaults;
@@ -51,6 +65,13 @@ export type AppSettings = {
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
   // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
+  // Permanent Lighting "Your Protection" card copy (#88 P6b-2) — Settings-editable
+  // + versioned; frozen into a permanent quote's approval snapshot.
+  permanentWarranty: PermanentWarranty;
+  // Permanent Lighting portal color swatches (#88 P6b-4) — the permanent quote's
+  // color presets + build-your-own palette, Settings-editable like the holiday
+  // `swatches` (#101) but a separate list.
+  permanentSwatches: SwatchSettings;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -70,6 +91,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   swatches: DEFAULT_SWATCH_SETTINGS,
   eventRates: DEFAULT_EVENT_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
+  permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
+  permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -86,6 +109,39 @@ export function sanitizePermanentRates(v: unknown): Partial<PermanentRates> {
   if (ok(r.minimumJobAmount)) out.minimumJobAmount = r.minimumJobAmount;
   if (ok(r.maintenancePrice)) out.maintenancePrice = r.maintenancePrice;
   return out;
+}
+
+// Sanitize a permanent-warranty object to its known fields (#88 P6b-2). Strings
+// are trimmed + capped; bullets keep their SLOT positions (a blank slot is a
+// hidden bullet, its icon dropped with it), capped at WARRANTY_MAX_BULLETS. A
+// valid stored `version` is preserved (the read path); putAppSettings recomputes
+// it on write. Unknown/invalid fields are dropped — the caller merges over defaults.
+export function sanitizePermanentWarranty(v: unknown): Partial<PermanentWarranty> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const r = v as Record<string, unknown>;
+  const out: Partial<PermanentWarranty> = {};
+  if (typeof r.eyebrow === 'string') out.eyebrow = r.eyebrow.trim().slice(0, WARRANTY_TEXT_MAX);
+  if (typeof r.heading === 'string') out.heading = r.heading.trim().slice(0, WARRANTY_TEXT_MAX);
+  if (Array.isArray(r.bullets)) {
+    out.bullets = r.bullets
+      .slice(0, WARRANTY_MAX_BULLETS)
+      .map((b) => (typeof b === 'string' ? b.trim().slice(0, WARRANTY_BULLET_MAX) : ''));
+  }
+  if (typeof r.version === 'number' && Number.isFinite(r.version) && r.version >= 1) {
+    out.version = Math.floor(r.version);
+  }
+  return out;
+}
+
+// Whether two warranty records display the SAME copy (version-independent) — used
+// by putAppSettings to decide when to bump the version.
+function warrantyCopyEqual(a: PermanentWarranty, b: PermanentWarranty): boolean {
+  return (
+    a.eyebrow === b.eyebrow &&
+    a.heading === b.heading &&
+    a.bullets.length === b.bullets.length &&
+    a.bullets.every((t, i) => t === b.bullets[i])
+  );
 }
 
 // ── Validators (also used by the API route on write) ────────────────────────
@@ -256,6 +312,16 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     isPlainObject(rawSwatches) ? rawSwatches.buildableColorIds : undefined,
     validColorIds,
   );
+  // #88 P6b-4 — the permanent swatch list, same validation as holiday but its own key.
+  const rawPermSwatches = map.get('permanentSwatches');
+  const storedPermSchemes = normalizeSchemes(
+    isPlainObject(rawPermSwatches) ? rawPermSwatches.schemes : undefined,
+    validColorIds,
+  );
+  const storedPermBuildable = normalizeBuildable(
+    isPlainObject(rawPermSwatches) ? rawPermSwatches.buildableColorIds : undefined,
+    validColorIds,
+  );
   return {
     colors,
     defaults: isPlainObject(map.get('defaults')) ? (map.get('defaults') as ToolDefaults) : {},
@@ -267,6 +333,11 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     },
     eventRates: sanitizeEventRates(map.get('eventRates')),
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
+    permanentWarranty: { ...DEFAULT_PERMANENT_WARRANTY, ...sanitizePermanentWarranty(map.get('permanentWarranty')) },
+    permanentSwatches: {
+      schemes: storedPermSchemes ?? DEFAULT_PERMANENT_SWATCHES.schemes,
+      buildableColorIds: storedPermBuildable ?? DEFAULT_PERMANENT_SWATCHES.buildableColorIds,
+    },
   };
 }
 
@@ -296,6 +367,11 @@ export async function putAppSettings(patch: {
   swatches?: Partial<SwatchSettings>;
   eventRates?: EventRates;
   permanentRates?: Partial<PermanentRates>;
+  // Warranty copy patch (#88 P6b-2). Any `version` on the patch is IGNORED —
+  // putAppSettings recomputes it (bumps when the copy actually changed).
+  permanentWarranty?: Partial<PermanentWarranty>;
+  // Permanent swatch list patch (#88 P6b-4) — same shape/validation as swatches.
+  permanentSwatches?: Partial<SwatchSettings>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -340,6 +416,13 @@ export async function putAppSettings(patch: {
     rows.push({ key: 'swatches', value });
     map.set('swatches', value);
   }
+  if (patch.permanentSwatches !== undefined) {
+    // #88 P6b-4 — the permanent swatch list, same validation/merge as holiday.
+    const validColorIds = new Set(current.colors.map((c) => c.id));
+    const value = { ...current.permanentSwatches, ...sanitizeSwatches(patch.permanentSwatches, validColorIds) };
+    rows.push({ key: 'permanentSwatches', value });
+    map.set('permanentSwatches', value);
+  }
   if (patch.eventRates !== undefined) {
     // Merge over the current stored rates + sanitize, so a partial write keeps
     // the other fields and any invalid number falls back to the default (never
@@ -355,6 +438,29 @@ export async function putAppSettings(patch: {
     const value = { ...current.permanentRates, ...sanitizePermanentRates(patch.permanentRates) };
     rows.push({ key: 'permanentRates', value });
     map.set('permanentRates', value);
+  }
+
+  if (patch.permanentWarranty !== undefined) {
+    // Merge the sanitized copy over the current stored copy (a partial write keeps
+    // the other fields), then RECOMPUTE the version: bump by 1 when the displayed
+    // copy changed, keep it otherwise. The patch's own `version` is discarded so a
+    // client can't freeze/forge it — the version is server-authoritative, which is
+    // what makes the approval-snapshot freeze trustworthy.
+    const sanitized = sanitizePermanentWarranty(patch.permanentWarranty);
+    delete sanitized.version;
+    const mergedCopy: PermanentWarranty = {
+      ...current.permanentWarranty,
+      ...sanitized,
+      version: current.permanentWarranty.version,
+    };
+    const value: PermanentWarranty = {
+      ...mergedCopy,
+      version: warrantyCopyEqual(mergedCopy, current.permanentWarranty)
+        ? current.permanentWarranty.version
+        : current.permanentWarranty.version + 1,
+    };
+    rows.push({ key: 'permanentWarranty', value });
+    map.set('permanentWarranty', value);
   }
 
   if (rows.length > 0) {

@@ -37,6 +37,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canTransition, isQuoteStatus } from '@/lib/quoteStatus';
+import { getAppSettings } from '@/lib/appSettings';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -53,6 +54,8 @@ type QuoteRow = {
   result: QuoteResult | null;
   approval_snapshot: Record<string, unknown> | null;
   is_test: boolean;
+  // #88 P6b-2 — needed to freeze the warranty version on a permanent staff approval.
+  service_type: string | null;
 };
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -72,7 +75,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test, service_type',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -101,6 +104,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const operator = await getOperator();
   const approvedAt = new Date().toISOString();
 
+  // #88 P6b-2 — a permanent job still commits the customer to the warranty terms,
+  // even on a verbal/phone (staff) approval. Freeze the current warranty copy +
+  // version so the booked job records exactly which terms apply, regardless of the
+  // approval channel. Non-permanent quotes have no such card → omit it.
+  const permanentWarranty =
+    quote.service_type === 'permanent' ? (await getAppSettings()).permanentWarranty : null;
+
   // Build the snapshot: preserve any existing fields (e.g. if the customer had
   // partially filled out a portal form that was never submitted) and add the
   // staffApproved audit marker. This does NOT set customerSelection — there is
@@ -111,6 +121,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       by: operator?.email ?? null,
       at: approvedAt,
     },
+    ...(permanentWarranty ? { permanentWarranty } : {}),
   };
 
   // Atomic conditional write: .is('customer_approved_at', null) is the

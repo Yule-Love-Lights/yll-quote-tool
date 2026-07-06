@@ -59,6 +59,7 @@ describe('buildApprovePayload (W4-031)', () => {
       takedownSelected: true,
       colorSchemeId: 'warm-white',
       customPattern: [],
+      permanentEffect: 'chase', // #88 P6b-4 — defaulted when the selection omits it
       installTiming: 'october',
       installDiscountUsd: 150,
       signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' },
