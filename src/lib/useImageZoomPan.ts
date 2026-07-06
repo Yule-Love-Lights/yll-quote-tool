@@ -72,6 +72,20 @@ export function anchorPan(
   return cursor - nextZoom * local;
 }
 
+// New zoom for a two-finger pinch: the zoom at gesture start scaled by the
+// finger-distance ratio (fingers apart → zoom in), clamped. A zero/negative
+// start distance (degenerate first frame) leaves zoom unchanged.
+export function pinchZoom(
+  startZoom: number,
+  startDist: number,
+  dist: number,
+  min: number,
+  max: number,
+): number {
+  if (!(startDist > 0)) return clampZoom(startZoom, min, max);
+  return clampZoom(startZoom * (dist / startDist), min, max);
+}
+
 // ── Hook ────────────────────────────────────────────────────────────────────
 
 // The consumer owns the OUTER element's ref (the standard useRef + custom-hook
@@ -97,6 +111,12 @@ export function useImageZoomPan(
     stateRef.current = { zoom, panX, panY };
     cfgRef.current = { min, max, disabled };
   });
+
+  // Two-finger pinch state. `pinchActive` also gates the single-finger pan below
+  // so a 2-finger gesture never also pans (the first finger's pointer-pan is
+  // suppressed while pinching).
+  const pinchActiveRef = useRef(false);
+  const pinchRef = useRef<{ startDist: number; startZoom: number } | null>(null);
 
   const reset = useCallback(() => {
     setZoom(1);
@@ -133,6 +153,59 @@ export function useImageZoomPan(
     return () => el.removeEventListener('wheel', onWheel);
   });
 
+  // Pinch = two-finger zoom toward the gesture midpoint — the touch equivalent of
+  // the wheel (a touchscreen has no wheel). Native listeners with { passive:false }
+  // + touch-action:none so the browser's own page pinch-zoom / scroll can't steal
+  // the gesture. Same no-dep-array reasoning as the wheel effect (the box mounts
+  // conditionally). Single-finger touch still pans via the pointer handler below.
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const prevTouchAction = el.style.touchAction;
+    el.style.touchAction = 'none';
+
+    const distOf = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
+    const onStart = (e: TouchEvent) => {
+      if (cfgRef.current.disabled || e.touches.length !== 2) return;
+      e.preventDefault();
+      pinchRef.current = { startDist: distOf(e.touches), startZoom: stateRef.current.zoom };
+      pinchActiveRef.current = true;
+    };
+    const onMove = (e: TouchEvent) => {
+      const p = pinchRef.current;
+      if (!p || e.touches.length !== 2) return;
+      e.preventDefault();
+      const z0 = stateRef.current.zoom;
+      const z1 = pinchZoom(p.startZoom, p.startDist, distOf(e.touches), cfgRef.current.min, cfgRef.current.max);
+      if (z1 === z0) return;
+      const rect = el.getBoundingClientRect();
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      setZoom(z1);
+      setPanX(clampPan(anchorPan(midX, stateRef.current.panX, z0, z1), z1, rect.width));
+      setPanY(clampPan(anchorPan(midY, stateRef.current.panY, z0, z1), z1, rect.height));
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        pinchRef.current = null;
+        pinchActiveRef.current = false;
+      }
+    };
+
+    el.addEventListener('touchstart', onStart, { passive: false });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    return () => {
+      el.style.touchAction = prevTouchAction;
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  });
+
   // Drag the background to pan. Point handles call stopPropagation so this never
   // fires when grabbing a point. Window listeners (like the point-drag) so the
   // gesture continues outside the box.
@@ -148,6 +221,7 @@ export function useImageZoomPan(
       const w = rect?.width ?? 0;
       const h = rect?.height ?? 0;
       const move = (ev: PointerEvent) => {
+        if (pinchActiveRef.current) return; // a 2nd finger landed → pinch owns it
         const z = stateRef.current.zoom;
         setPanX(clampPan(basePanX + (ev.clientX - startX), z, w));
         setPanY(clampPan(basePanY + (ev.clientY - startY), z, h));

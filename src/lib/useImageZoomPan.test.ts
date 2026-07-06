@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clampZoom, clampPan, anchorPan } from './useImageZoomPan';
+import { clampZoom, clampPan, anchorPan, pinchZoom } from './useImageZoomPan';
 
 describe('clampZoom', () => {
   it('clamps to [min, max]', () => {
@@ -48,5 +48,21 @@ describe('anchorPan', () => {
   });
   it('returns the previous pan if prevZoom is non-positive', () => {
     expect(anchorPan(100, -20, 0, 2)).toBe(-20);
+  });
+});
+
+describe('pinchZoom', () => {
+  it('scales the start zoom by the finger-distance ratio', () => {
+    expect(pinchZoom(1, 100, 200, 1, 4)).toBe(2); // fingers 2× apart → 2×
+    expect(pinchZoom(2, 100, 50, 1, 4)).toBe(1); // fingers halved → half (→min 1)
+    expect(pinchZoom(1, 100, 100, 1, 4)).toBe(1); // no change
+  });
+  it('clamps to [min, max]', () => {
+    expect(pinchZoom(2, 100, 400, 1, 4)).toBe(4); // 2×4 = 8 → clamped to max
+    expect(pinchZoom(2, 100, 10, 1, 4)).toBe(1); // 2×0.1 = 0.2 → clamped to min
+  });
+  it('leaves zoom unchanged on a degenerate start distance', () => {
+    expect(pinchZoom(3, 0, 200, 1, 4)).toBe(3);
+    expect(pinchZoom(3, -5, 200, 1, 4)).toBe(3);
   });
 });
