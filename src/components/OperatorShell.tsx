@@ -1,4 +1,5 @@
 import { OperatorNav } from './dashboard/OperatorNav';
+import { MarkStaffDevice } from './MarkStaffDevice';
 
 export type OperatorArea =
   | 'home'
@@ -29,6 +30,9 @@ export function OperatorShell({
 }) {
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--op-bg)' }}>
+      {/* Marks this browser a staff device (S22) so a staff preview of a
+          customer's portal link isn't recorded/notified as a customer view. */}
+      <MarkStaffDevice />
       <OperatorNav active={active} />
       <div className="flex-1 py-8 px-4">{children}</div>
     </div>

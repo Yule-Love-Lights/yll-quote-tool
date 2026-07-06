@@ -95,11 +95,15 @@ function makeSb(
   return { client: builder, updatePayloads, insertPayloads };
 }
 
-function makeReq(): NextRequest {
+function makeReq(opts: { staffCookie?: boolean } = {}): NextRequest {
   return {
     json: async () => ({}),
     headers: { get: () => null },
     nextUrl: { origin: 'https://quote.example.com' },
+    cookies: {
+      get: (name: string) =>
+        opts.staffCookie && name === 'yll_staff_device' ? { value: '1' } : undefined,
+    },
   } as unknown as NextRequest;
 }
 const params = Promise.resolve({ id: ID });
@@ -187,5 +191,25 @@ describe('POST /api/quotes/[id]/view — staff view (operator session present)',
     const json = await res.json();
     expect(json.skipped).toBe('staff');
     expect(updatePayloads).toHaveLength(0);
+  });
+});
+
+describe('POST /api/quotes/[id]/view — staff view (device cookie, NO operator session)', () => {
+  it('the staff-device cookie alone skips the view — the dormant-auth case (S22)', async () => {
+    // op.current stays null: no operator session (auth gate dormant). The cookie
+    // is the only staff signal — it must still skip the DB write + event + email.
+    hl.configured.value = true;
+    process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+    const { client, updatePayloads, insertPayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ staffCookie: true }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.skipped).toBe('staff');
+    expect(updatePayloads).toHaveLength(0);
+    expect(insertPayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
   });
 });

@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isStaffPreview } from '@/lib/auth/staffDevice';
 
 export const runtime = 'nodejs';
 
@@ -32,6 +33,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
+  }
+
+  // A staff preview of the portal isn't a customer interest signal (S22) — same
+  // staff-device cookie / operator-session check the /view route uses. Skip
+  // before any DB work so a staff hover never writes an 'interested' event.
+  if (await isStaffPreview(req)) {
+    return NextResponse.json({ ok: true, skipped: 'staff' });
   }
 
   const sb = getSupabaseServiceClient()!;
