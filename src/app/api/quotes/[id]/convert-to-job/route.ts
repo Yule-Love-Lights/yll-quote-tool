@@ -32,6 +32,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { createJobFromQuote } from '@/lib/jobs';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -39,6 +40,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type QuoteForBooking = {
   id: string;
+  // #124: the persisted lifecycle status — needed so a quote the operator later
+  // DECLINED (approved→declined is now legal, keeping customer_approved_at set)
+  // can't be re-booked here. deriveStatus reads it.
+  status: QuoteStatus | null;
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   total: number | null;
@@ -81,7 +86,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref')
+    .select('id, status, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref')
     .eq('id', id)
     .maybeSingle<QuoteForBooking>();
 
@@ -93,6 +98,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (quote.deposit_paid_at) {
     const job = await createJobFromQuote(id); // idempotent on quote_id
     return NextResponse.json({ ok: true, alreadyBooked: true, jobId: job?.id ?? null });
+  }
+
+  // #124 money-safety: a DEAD quote (declined / cancelled / lost) must never be
+  // booked here — mirrors the /pay W1-007 guard. This route gates on the raw
+  // customer_approved_at column, but #124 makes approved→declined legal, so a
+  // declined quote can now carry customer_approved_at while status='declined'
+  // (deposit unpaid). Without this, a direct POST would re-book it (declined→booked,
+  // which canTransition forbids). deriveStatus returns the persisted terminal status.
+  const lifecycle = deriveStatus({
+    status: quote.status,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    quote_sent_at: null,
+    viewed_at: null,
+  });
+  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'lost') {
+    return NextResponse.json(
+      { error: `Cannot book a ${lifecycle} quote`, code: 'not-bookable' },
+      { status: 409 },
+    );
   }
 
   // Gate: only approved quotes can be converted to a job.
@@ -144,12 +169,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // Atomic booking write: .is('deposit_paid_at', null) is the concurrency guard.
   // If a concurrent request already wrote deposit_paid_at, this returns 0 rows
-  // and we fall through to the idempotent already-booked path below.
+  // and we fall through to the idempotent already-booked path below. The status
+  // .or(...) clause (#124) closes the TOCTOU where the quote is declined/cancelled
+  // between our SELECT and this write — mirrors the approve route's booking guard.
   const { data: claimed, error } = await sb
     .from('quotes')
     .update({ deposit_paid_at: bookedAt, deposit_amount_usd: clamped, status: 'booked' })
     .eq('id', id)
     .is('deposit_paid_at', null)
+    .or('status.not.in.(declined,cancelled,lost),status.is.null')
     .select('id');
 
   if (error) {

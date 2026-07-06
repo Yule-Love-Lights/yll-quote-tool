@@ -53,6 +53,10 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
       // close" path (canTransition('draft','approved') is legal; the staff-approve
       // route accepts it). Surfaced so an offline-closed draft has an approve action.
       a.push({ kind: 'mark-approved', label: 'Mark approved' });
+      // #124: a draft the customer declined before it was ever sent (phone/text).
+      // Legal FROM draft per canTransition(_, 'declined'); the staff-decline route
+      // guards the write on deposit_paid_at IS NULL (a draft never has one).
+      a.push({ kind: 'staff-decline', label: 'Mark declined' });
       break;
     case 'sent':
     case 'viewed':
@@ -68,6 +72,11 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
       break;
     case 'approved':
       a.push({ kind: 'convert-to-job', label: 'Convert to job' });
+      // #124: an approved-but-not-booked quote (customer approved, no deposit yet)
+      // the customer then backed out of. Legal FROM approved per canTransition(_,
+      // 'declined'); money-safe — approved ⇒ deposit_paid_at IS NULL (else booked),
+      // and the staff-decline route re-guards on it.
+      a.push({ kind: 'staff-decline', label: 'Mark declined' });
       break;
     case 'booked': {
       const job = r.job ?? null;

@@ -120,6 +120,7 @@ describe('canTransition — legal transitions', () => {
     ['draft', 'approved'],     // deliberate offline/in-person close (approvedWhileUnsent)
     ['draft', 'cancelled'],
     ['draft', 'lost'],
+    ['draft', 'declined'],     // #124 — a draft the customer declined before it was ever sent
     ['sent', 'viewed'],
     ['sent', 'approved'],
     ['sent', 'changes_requested'],
@@ -129,6 +130,7 @@ describe('canTransition — legal transitions', () => {
     ['viewed', 'changes_requested'],
     ['approved', 'booked'],
     ['approved', 'cancelled'],
+    ['approved', 'declined'],  // #124 — customer approved then backed out BEFORE paying the deposit (approved ⇒ no deposit)
     ['booked', 'cancelled'],
     ['changes_requested', 'sent'],
     ['changes_requested', 'declined'],
@@ -141,7 +143,7 @@ describe('canTransition — legal transitions', () => {
   const illegal: ReadonlyArray<[QuoteStatus, QuoteStatus]> = [
     ['draft', 'booked'],
     ['sent', 'booked'],          // must approve first
-    ['approved', 'declined'],    // can't decline a signed/approved quote
+    ['booked', 'declined'],      // #124 — a PAID deal is never "declined" (only cancelled, refund manual); money-safety
     ['booked', 'approved'],      // no going backward
     ['declined', 'sent'],        // terminal
     ['cancelled', 'draft'],      // terminal
