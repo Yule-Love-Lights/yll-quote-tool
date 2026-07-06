@@ -577,6 +577,11 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
     .from('inbox_items')
     .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
     .eq('status', 'unresponded')
+    // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
+    // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
+    // been handled outside the tool. Mirrors listOpenItems; an inbound clears
+    // followed_up_at (planIngest.clearFollowedUp) and re-arms escalation.
+    .is('followed_up_at', null)
     .or('lead_kind.is.null,lead_kind.neq.automated');
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
