@@ -45,8 +45,11 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
           Yule Love Lights
         </span>
 
-        {/* Desktop: inline links */}
-        <ul className="hidden md:flex items-center gap-1 text-sm">
+        {/* Desktop / tablet-landscape: inline links. Shown at lg+ (1024px), NOT
+            md (768px): the 9-item row needs ~832px, so at md it overflowed the
+            viewport → horizontal page scroll on iPad portrait (#56, S22). 768–1023
+            uses the hamburger below. */}
+        <ul className="hidden lg:flex items-center gap-1 text-sm">
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors" style={linkStyle(item)}>
@@ -56,10 +59,10 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
           ))}
         </ul>
 
-        {/* Mobile: hamburger toggle */}
+        {/* Mobile + tablet-portrait: hamburger toggle (shown below lg / 1024px) */}
         <button
           type="button"
-          className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md"
+          className="lg:hidden inline-flex items-center justify-center w-9 h-9 rounded-md"
           style={{ color: 'var(--op-text)' }}
           aria-label="Toggle navigation menu"
           aria-expanded={open}
@@ -71,10 +74,10 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
         </button>
       </div>
 
-      {/* Mobile: dropdown menu */}
+      {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
         <ul
-          className="md:hidden border-t"
+          className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
           {ITEMS.map(item => (
