@@ -58,7 +58,6 @@ import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
-import { PERMANENT_COLOR_SCHEMES, PERMANENT_BUILDABLE_IDS } from '@/lib/design/permanentScenes';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
@@ -262,13 +261,13 @@ export default async function PortalPage({
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
-        // #88 P6b-4 — permanent quotes use their own swatch presets + full
-        // build-your-own palette (any color), separate from the holiday swatches;
-        // the color still freezes through the same colorSchemeId/customPattern path.
-        // Effect is a separate pick (PermanentEffectPicker). Holiday uses the live
-        // operator swatch list. colorOverride resolves against whichever we pass.
-        schemes={quote.serviceType === 'permanent' ? PERMANENT_COLOR_SCHEMES : appSettings.swatches.schemes}
-        buildableColorIds={quote.serviceType === 'permanent' ? PERMANENT_BUILDABLE_IDS : appSettings.swatches.buildableColorIds}
+        // #88 P6b-4 — permanent quotes use their OWN Settings-editable swatch list +
+        // full build-your-own palette (any color), separate from the holiday
+        // swatches; the color still freezes through the same colorSchemeId/
+        // customPattern path. Effect is a separate pick (PermanentEffectPicker).
+        // colorOverride resolves against whichever list we pass.
+        schemes={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.schemes : appSettings.swatches.schemes}
+        buildableColorIds={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.buildableColorIds : appSettings.swatches.buildableColorIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero

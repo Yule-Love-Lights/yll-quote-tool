@@ -87,6 +87,28 @@ describe('putAppSettings (W2-025)', () => {
     expect(result.render.spritzerRayDensity).toBe(0.5);
     expect(result.portal.hideEarlyInstallDiscounts).toBe(true);
   });
+
+  it('permanentSwatches is stored under its OWN key, independent of holiday swatches (#88 P6b-4)', async () => {
+    const fake = makeFake([]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({
+      permanentSwatches: {
+        schemes: [
+          { id: 'as-designed', label: 'As Designed', colorIds: null },
+          { id: 'blue', label: 'Blue', colorIds: ['blue'] },
+        ],
+        buildableColorIds: ['red', 'blue'],
+      },
+    });
+
+    // Stored under permanentSwatches, NOT swatches.
+    expect(result.permanentSwatches.schemes.map((s) => s.id)).toContain('blue');
+    expect(fake.upserts.flat().some((r) => r.key === 'permanentSwatches')).toBe(true);
+    expect(fake.upserts.flat().some((r) => r.key === 'swatches')).toBe(false);
+    // Holiday swatches untouched → still the factory default.
+    expect(result.swatches.schemes.length).toBeGreaterThan(0);
+  });
 });
 
 describe('putAppSettings — permanentWarranty version bump (#88 P6b-2)', () => {

@@ -43,7 +43,19 @@ function slugify(s: string): string {
   );
 }
 
-export function PortalSwatchEditor() {
+// #88 P6b-4 — the same editor drives BOTH the holiday `swatches` and the permanent
+// `permanentSwatches` app_settings keys; the caller picks which via `settingsKey`.
+type PortalSwatchEditorProps = {
+  settingsKey?: 'swatches' | 'permanentSwatches';
+  title?: string;
+  description?: string;
+};
+
+export function PortalSwatchEditor({
+  settingsKey = 'swatches',
+  title = 'Light color swatches',
+  description = 'The color presets a customer picks from on the portal. Rename, reorder, remove, or add your own — built from your existing bulb colors. “Staff’s pick” (as designed) always stays first.',
+}: PortalSwatchEditorProps = {}) {
   const [schemes, setSchemes] = useState<ColorScheme[]>([]);
   const [buildable, setBuildable] = useState<string[]>([]);
   const [palette, setPalette] = useState<BulbColor[]>([]);
@@ -63,8 +75,8 @@ export function PortalSwatchEditor() {
         if (!res.ok) throw new Error('load failed');
         const data = await res.json();
         if (!alive) return;
-        setSchemes(data?.swatches?.schemes ?? []);
-        setBuildable(data?.swatches?.buildableColorIds ?? []);
+        setSchemes(data?.[settingsKey]?.schemes ?? []);
+        setBuildable(data?.[settingsKey]?.buildableColorIds ?? []);
         setPalette(Array.isArray(data?.colors) ? data.colors : []);
         setStatus('idle');
       } catch {
@@ -77,7 +89,7 @@ export function PortalSwatchEditor() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [settingsKey]);
 
   const colorMap = useMemo(() => new Map(palette.map((c) => [c.id, c])), [palette]);
   const hexOf = useCallback((id: string) => colorMap.get(id)?.hex ?? '#888888', [colorMap]);
@@ -138,7 +150,7 @@ export function PortalSwatchEditor() {
       const res = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ swatches: { schemes, buildableColorIds: buildable } }),
+        body: JSON.stringify({ [settingsKey]: { schemes, buildableColorIds: buildable } }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -146,8 +158,8 @@ export function PortalSwatchEditor() {
       }
       // Re-read the normalized result (as-designed pinned first, ids cleaned).
       const data = await res.json();
-      setSchemes(data?.swatches?.schemes ?? schemes);
-      setBuildable(data?.swatches?.buildableColorIds ?? buildable);
+      setSchemes(data?.[settingsKey]?.schemes ?? schemes);
+      setBuildable(data?.[settingsKey]?.buildableColorIds ?? buildable);
       setDirty(false);
       setStatus('saved');
       window.setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
@@ -161,12 +173,8 @@ export function PortalSwatchEditor() {
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5 md:p-6 mt-6">
-      <h2 className="text-[15px] font-medium text-gray-900">Light color swatches</h2>
-      <p className="text-sm text-gray-500 mt-1 leading-relaxed">
-        The color presets a customer picks from on the portal. Rename, reorder, remove, or add your
-        own — built from your existing bulb colors. &ldquo;Staff&apos;s pick&rdquo; (as designed) always
-        stays first.
-      </p>
+      <h2 className="text-[15px] font-medium text-gray-900">{title}</h2>
+      <p className="text-sm text-gray-500 mt-1 leading-relaxed">{description}</p>
 
       {status === 'loading' && <p className="text-sm text-gray-400 mt-4">Loading…</p>}
 

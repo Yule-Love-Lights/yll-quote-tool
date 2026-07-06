@@ -10,6 +10,7 @@ import { QuotesSettings } from '@/components/settings/QuotesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
 import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
 import { PermanentWarrantySettings } from '@/components/settings/PermanentWarrantySettings';
+import { PortalSwatchEditor } from '@/components/settings/PortalSwatchEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +51,16 @@ export default async function QuotesSettingsPage() {
 
         <div className="mt-6">
           <PermanentWarrantySettings />
+        </div>
+
+        <div className="mt-6">
+          {/* #88 P6b-4 — permanent portal color presets (its own list, separate
+              from the holiday swatches on Settings → Customer Portal). */}
+          <PortalSwatchEditor
+            settingsKey="permanentSwatches"
+            title="Permanent light colors"
+            description="The color presets a permanent-lighting customer picks from on the portal (they can also build their own from any color). Rename, reorder, remove, or add — built from your existing bulb colors. “As Designed” always stays first."
+          />
         </div>
       </main>
     </OperatorShell>

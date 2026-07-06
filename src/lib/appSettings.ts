@@ -16,6 +16,7 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   DEFAULT_COLOR_SCHEME_ID,
 } from './design/colorSchemes';
+import { DEFAULT_PERMANENT_SWATCHES } from './design/permanentScenes';
 // Event Lighting rate table (service_type 'event') — Settings-adjustable, the
 // #101 pattern. sanitizeEventRates always yields a complete valid table.
 import { sanitizeEventRates, DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
@@ -67,6 +68,10 @@ export type AppSettings = {
   // Permanent Lighting "Your Protection" card copy (#88 P6b-2) — Settings-editable
   // + versioned; frozen into a permanent quote's approval snapshot.
   permanentWarranty: PermanentWarranty;
+  // Permanent Lighting portal color swatches (#88 P6b-4) — the permanent quote's
+  // color presets + build-your-own palette, Settings-editable like the holiday
+  // `swatches` (#101) but a separate list.
+  permanentSwatches: SwatchSettings;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -87,6 +92,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   eventRates: DEFAULT_EVENT_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
+  permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -306,6 +312,16 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     isPlainObject(rawSwatches) ? rawSwatches.buildableColorIds : undefined,
     validColorIds,
   );
+  // #88 P6b-4 — the permanent swatch list, same validation as holiday but its own key.
+  const rawPermSwatches = map.get('permanentSwatches');
+  const storedPermSchemes = normalizeSchemes(
+    isPlainObject(rawPermSwatches) ? rawPermSwatches.schemes : undefined,
+    validColorIds,
+  );
+  const storedPermBuildable = normalizeBuildable(
+    isPlainObject(rawPermSwatches) ? rawPermSwatches.buildableColorIds : undefined,
+    validColorIds,
+  );
   return {
     colors,
     defaults: isPlainObject(map.get('defaults')) ? (map.get('defaults') as ToolDefaults) : {},
@@ -318,6 +334,10 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     eventRates: sanitizeEventRates(map.get('eventRates')),
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
     permanentWarranty: { ...DEFAULT_PERMANENT_WARRANTY, ...sanitizePermanentWarranty(map.get('permanentWarranty')) },
+    permanentSwatches: {
+      schemes: storedPermSchemes ?? DEFAULT_PERMANENT_SWATCHES.schemes,
+      buildableColorIds: storedPermBuildable ?? DEFAULT_PERMANENT_SWATCHES.buildableColorIds,
+    },
   };
 }
 
@@ -350,6 +370,8 @@ export async function putAppSettings(patch: {
   // Warranty copy patch (#88 P6b-2). Any `version` on the patch is IGNORED —
   // putAppSettings recomputes it (bumps when the copy actually changed).
   permanentWarranty?: Partial<PermanentWarranty>;
+  // Permanent swatch list patch (#88 P6b-4) — same shape/validation as swatches.
+  permanentSwatches?: Partial<SwatchSettings>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -393,6 +415,13 @@ export async function putAppSettings(patch: {
     const value = { ...current.swatches, ...sanitizeSwatches(patch.swatches, validColorIds) };
     rows.push({ key: 'swatches', value });
     map.set('swatches', value);
+  }
+  if (patch.permanentSwatches !== undefined) {
+    // #88 P6b-4 — the permanent swatch list, same validation/merge as holiday.
+    const validColorIds = new Set(current.colors.map((c) => c.id));
+    const value = { ...current.permanentSwatches, ...sanitizeSwatches(patch.permanentSwatches, validColorIds) };
+    rows.push({ key: 'permanentSwatches', value });
+    map.set('permanentSwatches', value);
   }
   if (patch.eventRates !== undefined) {
     // Merge over the current stored rates + sanitize, so a partial write keeps

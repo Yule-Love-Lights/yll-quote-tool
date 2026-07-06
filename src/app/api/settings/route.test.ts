@@ -88,6 +88,20 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
     expect(putSpy).not.toHaveBeenCalled();
   });
 
+  it('persists a valid permanentSwatches patch (#88 P6b-4)', async () => {
+    const res = await PUT(
+      makeReq({ permanentSwatches: { schemes: [{ id: 'as-designed', label: 'x', colorIds: null }], buildableColorIds: ['red'] } }),
+    );
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledOnce();
+  });
+
+  it('400s on a permanentSwatches patch with no recognized fields (#88 P6b-4)', async () => {
+    const res = await PUT(makeReq({ permanentSwatches: { schemes: 'nope', buildableColorIds: 'nope' } }));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
   // Permanent warranty copy (#88 P6b-2) — the boundary validation.
   it('persists a valid warranty patch (200, putAppSettings called)', async () => {
     const res = await PUT(makeReq({ permanentWarranty: { heading: 'Rock solid.' } }));

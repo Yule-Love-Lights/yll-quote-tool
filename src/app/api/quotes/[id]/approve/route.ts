@@ -61,13 +61,7 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
-import {
-  PERMANENT_COLOR_SCHEMES,
-  PERMANENT_BUILDABLE_IDS,
-  isPermanentEffect,
-  DEFAULT_PERMANENT_EFFECT,
-  type SceneEffect,
-} from '@/lib/design/permanentScenes';
+import { isPermanentEffect, DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
@@ -300,7 +294,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // resolve the customer's light-color choice further BELOW (once service_type is
   // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
   // quote the operator's live swatch list.
-  const { swatches, permanentWarranty } = await getAppSettings();
+  const { swatches, permanentWarranty, permanentSwatches } = await getAppSettings();
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -399,8 +393,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // operator swatch list. Either way the chosen id + its RESOLVED colors are frozen
   // into the snapshot so a later Settings edit can't retro-change what THIS customer
   // approved (#101 invariant). The permanent ANIMATION effect freezes separately below.
-  const activeSchemes = isPermanent ? PERMANENT_COLOR_SCHEMES : swatches.schemes;
-  const activeBuildable = isPermanent ? PERMANENT_BUILDABLE_IDS : swatches.buildableColorIds;
+  const activeSchemes = isPermanent ? permanentSwatches.schemes : swatches.schemes;
+  const activeBuildable = isPermanent ? permanentSwatches.buildableColorIds : swatches.buildableColorIds;
   const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, activeSchemes)
     ? body.colorSchemeId
     : DEFAULT_COLOR_SCHEME_ID;

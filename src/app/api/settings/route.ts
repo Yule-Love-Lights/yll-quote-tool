@@ -49,7 +49,7 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentWarranty } =
+  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentWarranty, permanentSwatches } =
     body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -59,7 +59,8 @@ export async function PUT(req: NextRequest) {
     swatches === undefined &&
     eventRates === undefined &&
     permanentRates === undefined &&
-    permanentWarranty === undefined
+    permanentWarranty === undefined &&
+    permanentSwatches === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -88,6 +89,16 @@ export async function PUT(req: NextRequest) {
     if (Object.keys(sanitizeSwatches(swatches, validColorIds)).length === 0) {
       return NextResponse.json(
         { error: 'swatches must have a valid schemes array and/or buildableColorIds array' },
+        { status: 400 },
+      );
+    }
+  }
+  // Permanent swatches (#88 P6b-4): same validation as holiday swatches.
+  if (permanentSwatches !== undefined) {
+    const validColorIds = new Set((await getAppSettings()).colors.map((c) => c.id));
+    if (Object.keys(sanitizeSwatches(permanentSwatches, validColorIds)).length === 0) {
+      return NextResponse.json(
+        { error: 'permanentSwatches must have a valid schemes array and/or buildableColorIds array' },
         { status: 400 },
       );
     }
@@ -142,6 +153,7 @@ export async function PUT(req: NextRequest) {
       eventRates: eventRates as never,
       permanentRates: permanentRates as never,
       permanentWarranty: permanentWarranty as never,
+      permanentSwatches: permanentSwatches as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

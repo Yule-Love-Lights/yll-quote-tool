@@ -38,7 +38,7 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   type ColorScheme,
 } from '@/lib/design/colorSchemes';
-import { DEFAULT_PERMANENT_EFFECT, isPermanentEffect, type SceneEffect } from '@/lib/design/permanentScenes';
+import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -244,9 +244,6 @@ export type SelectionProviderProps = {
   // from app_settings. Default to the built-ins for callers that don't pass them.
   schemes?: ColorScheme[];
   buildableColorIds?: string[];
-  // #88 P6b-4 — the permanent animation effect the portal opens on. A booked quote
-  // restores the frozen effect here; a fresh permanent quote defaults to Chase.
-  initialPermanentEffect?: SceneEffect;
   children: React.ReactNode;
 };
 
@@ -264,7 +261,6 @@ export function SelectionProvider({
   earlyInstallDiscountsHidden = false,
   schemes = DEFAULT_COLOR_SCHEMES,
   buildableColorIds = DEFAULT_BUILDABLE_COLOR_IDS,
-  initialPermanentEffect,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -334,10 +330,9 @@ export function SelectionProvider({
   // draw layer when it changes.
   const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
   // #88 P6b-4 — the permanent animation effect, chosen separately from the color.
-  // Restores a booked quote's frozen effect; a fresh permanent quote opens on Chase.
-  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(
-    isPermanentEffect(initialPermanentEffect) ? initialPermanentEffect : DEFAULT_PERMANENT_EFFECT,
-  );
+  // Opens on Chase (a booked portal re-opens on the default, same as colorSchemeId —
+  // the frozen effect lives in the approval snapshot, not re-displayed here).
+  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(DEFAULT_PERMANENT_EFFECT);
   const [customPattern, setCustomPattern] = useState<string[]>([]);
   // Custom pattern (#49) drives the override when its scheme is active; otherwise
   // resolve the preset. Sanitize the custom list so an invalid/empty pattern can

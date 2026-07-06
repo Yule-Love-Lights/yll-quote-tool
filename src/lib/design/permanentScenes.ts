@@ -54,6 +54,14 @@ export const PERMANENT_COLOR_SCHEMES: ColorScheme[] = PERMANENT_SWATCH_SCHEMES;
  *  palette color (permanent pucks can be any color). Same default as holiday. */
 export const PERMANENT_BUILDABLE_IDS: string[] = DEFAULT_BUILDABLE_COLOR_IDS;
 
+/** The factory permanent swatch settings — the Settings-editable list defaults to
+ *  this (#88 P6b-4). Structurally a SwatchSettings; typed inline so this stays
+ *  client-safe (no import of the server appSettings module). */
+export const DEFAULT_PERMANENT_SWATCHES: { schemes: ColorScheme[]; buildableColorIds: string[] } = {
+  schemes: PERMANENT_SWATCH_SCHEMES,
+  buildableColorIds: PERMANENT_BUILDABLE_IDS,
+};
+
 // ── EFFECT: the separate motion choice ──────────────────────────────────────
 export type PermanentEffectOption = { effect: SceneEffect; label: string; speedMs: number };
 
