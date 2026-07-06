@@ -32,7 +32,7 @@ import {
   internalViewedEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { isStaffPreview } from '@/lib/auth/staffDevice';
 
 export const runtime = 'nodejs';
 
@@ -71,13 +71,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
   }
 
-  // A logged-in operator opening the portal is a STAFF preview, not a customer
-  // view — don't notify, count, or log it. #81 gives staff a Supabase session;
-  // a customer has none, so getOperator() is the signal. (When auth is
-  // unconfigured/dormant it returns null → every view counts as a customer view,
-  // the pre-#81 behavior — a safe fallback.) Checked first so a staff preview
-  // touches neither the DB nor GHL.
-  if (await getOperator()) {
+  // A staff member opening the portal is a STAFF preview, not a customer view —
+  // don't notify, count, or log it. Signalled by the staff-device cookie (set on
+  // any browser that's visited the operator console) OR a live operator session
+  // (#81, once auth is enabled). The cookie is the no-login bridge — the old
+  // getOperator()-only check was inert while the auth gate is dormant, so every
+  // staff preview counted (S22 fix). Checked first so it touches neither DB nor GHL.
+  if (await isStaffPreview(req)) {
     return NextResponse.json({ ok: true, skipped: 'staff' });
   }
 

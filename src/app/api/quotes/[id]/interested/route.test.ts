@@ -20,7 +20,13 @@ const { state } = vi.hoisted(() => ({
   },
 }));
 
+const { staff } = vi.hoisted(() => ({ staff: { current: false } }));
+
 vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
+
+// Staff-preview detection is unit-tested in lib/auth/staffDevice.test.ts; here we
+// just drive its outcome to confirm the route honours a staff skip.
+vi.mock('@/lib/auth/staffDevice', () => ({ isStaffPreview: async () => staff.current }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => state.isConfigured,
@@ -68,6 +74,7 @@ beforeEach(() => {
   state.checkErr = null;
   state.insErr = null;
   state.throwOnCheck = false;
+  staff.current = false;
 });
 
 describe('POST /api/quotes/[id]/interested', () => {
@@ -102,6 +109,14 @@ describe('POST /api/quotes/[id]/interested', () => {
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.skipped).toBeUndefined();
+  });
+
+  it('skips a staff preview (S22) — before any DB work', async () => {
+    staff.current = true;
+    const res = await POST(req, ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.skipped).toBe('staff');
   });
 
   it('skips as already when an interested event already exists', async () => {
