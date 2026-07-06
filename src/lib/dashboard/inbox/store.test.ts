@@ -125,6 +125,78 @@ describe('planIngest — leadKind + quoteValue thread through to item row', () =
   });
 });
 
+// ─── planIngest — noopReingest (#110 W7-004 write-amplification) ──────────────
+
+describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
+  const resolved = (status: 'handled' | 'completed' | 'dismissed'): ExistingItem => ({
+    id: 'i1',
+    contactId: 'A',
+    status,
+    notifiedLevels: [],
+    lastMessageAt: T,
+  });
+
+  it('re-ingesting our own outbound on an already-handled item (same last_message_at) is a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: resolved('handled'),
+      touch: touch({ direction: 'outbound', lastMessageAt: T }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+    expect(plan.autoResolved).toBe(false);
+  });
+
+  it('re-ingesting a completed item with the same message is a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: resolved('completed'),
+      touch: touch({ direction: 'outbound', lastMessageAt: T }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+  });
+
+  it('a genuinely-new inbound that REOPENS a handled item is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: resolved('handled'),
+      touch: touch({ direction: 'inbound', lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.reopened).toBe(true);
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  it('the FIRST outbound that auto-resolves an unresponded item is NOT a no-op', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ direction: 'outbound', lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.autoResolved).toBe(true);
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  it('an unresponded item re-ingested with the same message is NOT a no-op (escalation colour ages)', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ direction: 'inbound', lastMessageAt: T }),
+      now: at(5 * HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  it('a brand-new conversation (no existing item) is NOT a no-op', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
+    expect(plan.noopReingest).toBe(false);
+  });
+});
+
 // ─── listOpenItems — I/O layer (mocked Supabase) ─────────────────────────────
 //
 // listOpenItems makes TWO sequential calls to sb.from('inbox_items'):

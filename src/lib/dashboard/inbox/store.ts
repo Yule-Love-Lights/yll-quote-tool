@@ -68,6 +68,12 @@ export type IngestPlan = {
    *  cold-contacting — there's no unresponded lead to track (avoids noise). A
    *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
   skip: boolean;
+  /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
+   *  with NOTHING to persist — same status, same last_message_at, no reopen /
+   *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
+   *  so writing them anyway floods inbox_items (fresh updated_at) + dashboard_activity
+   *  with dead 'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). */
+  noopReingest: boolean;
   contactOp: ContactOp;
   item: ItemRow;
   autoResolved: boolean;
@@ -130,6 +136,24 @@ export function planIngest(input: {
   // skip that escalation email.
   const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
 
+  // #110 W7-004: a resolved item re-ingested with nothing to persist is a no-op.
+  // Restricted to resolved statuses (escalation_level is fixed at 0, so skipping
+  // never freezes an aging unresponded item's display colour) AND an unchanged
+  // last_message_at (our own outbound reply re-read every reconcile is the common
+  // case). Everything that actually changes state — reopen, auto-resolve,
+  // snooze-clear, a newer message — falls through and writes normally.
+  const isResolvedStatus =
+    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
+  const noopReingest =
+    !!existing &&
+    !decision.autoResolved &&
+    !decision.reopened &&
+    !clearFollowedUp &&
+    isResolvedStatus &&
+    decision.status === existing.status &&
+    existing.lastMessageAt != null &&
+    touch.lastMessageAt.getTime() === existing.lastMessageAt.getTime();
+
   const item: ItemRow = {
     source: touch.source,
     external_id: touch.externalId,
@@ -149,6 +173,7 @@ export function planIngest(input: {
 
   return {
     skip: !existing && touch.direction === 'outbound',
+    noopReingest,
     contactOp,
     item,
     autoResolved: decision.autoResolved,
@@ -251,6 +276,14 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // Outbound with no existing item → nothing to track. Do not write.
   if (plan.skip) {
     return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
+  }
+
+  // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
+  // item upsert AND the 'ingested' activity insert so the every-minute reconcile
+  // cron stops flooding both tables with no-change writes. `existing` is non-null
+  // whenever noopReingest is true.
+  if (plan.noopReingest) {
+    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false };
   }
 
   // 1. Resolve the contact id.
