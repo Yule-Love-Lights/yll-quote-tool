@@ -8,21 +8,21 @@
 
 ## 1. Product / decision calls — only Jason can answer
 
-- [ ] **W2-026** — when a new quote comes in for a customer whose row already exists, should
-  their **contact/address fields update** to the newest quote's values, and if so does the
-  newest quote win (or first-wins)? The fix was deliberately **skipped** pending this call.
-  (`lib/customers.ts` findOrCreateCustomer/Property.)
-- [ ] **Package "Save $X vs à la carte"** (from W4-034) — the fix made the savings
-  **basis-consistent**, so today it renders **0 / hidden** (there's no real bundle-discount
-  feature). Decide: do you want packages to actually show savings (i.e. build bundle
-  discounts), or is 0/hidden correct? (`lib/portal/derivePackages.ts`.)
-- [ ] **W5 image downscaling — DECISION contingent on the device-check in §2** — the analyzer
-  now downscales images to **1568px** before the Claude Vision call (that's what makes it
-  cheaper). It's the one W5 change that alters what Claude *sees*. If the §2 detection-quality
-  check shows it hurts detection on large/detailed house photos, decide: keep it · raise the
-  ceiling · or revert. (`lib/fewShot.ts` `downscaleImageForVision`.)
-- [ ] **Auto-charge (#83)** — the standing Valor card-on-file/MIT decision (unchanged, still
-  yours). Blocks nothing new; flagged for completeness. Spec: `docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md`.
+- [x] **W2-026 — RESOLVED (Jason, 2026-07-06): NEWEST-WIN.** When a new quote comes in for an existing
+  customer, update their contact fields (name/email/phone) to the newest quote's values (when present).
+  **⏳ TO BUILD:** a small change to `findOrCreateCustomer` — the exact-match path currently first-wins
+  (returns the id, never updates). `lib/customers.ts` is **SHARED (data layer)** → Naldo heads-up before
+  editing. (Address is keyed, so a *changed* address already creates a new property row — the rule applies
+  to the customer's contact fields.)
+- [ ] **Package "Save $X vs à la carte" — awaiting Jason's decision.** NOT a bug — the display *capability*
+  exists but computes to **$0** because there is **no real bundle discount** today (a package costs the same
+  as its items à la carte). Decide: **build** real bundle discounts (packages priced below à la carte, so a
+  "Save $X" badge shows real savings), or **keep hidden** (current — no fake savings). (`lib/portal/derivePackages.ts`.)
+- [x] **W5 image downscaling — RESOLVED (Jason, 2026-07-06): KEEP the 1568px downscaling.** Detection quality
+  verified good on device; keep the cheaper path. No code change. (`photoAnalysis.ts` `downscaleImageForVision`.)
+- [ ] **Auto-charge (#83) — Jason: KEEP AS-IS for now (2026-07-06); flagged for NALDO** to weigh in on whether
+  to pursue (added to his handoff doc). The Valor card-on-file/MIT decision stays Jason's; blocks nothing.
+  Spec: `docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md`.
   - [ ] **W1-012 rider** — amend computes `requiresReconsent` but **nothing enforces it**;
     this MUST be closed before `VALOR_AUTO_CHARGE_ENABLED` is ever flipped on (staff could
     amend a booked order UP and MIT-charge a total the customer never re-approved). Recorded

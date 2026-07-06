@@ -331,6 +331,11 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // returns to the open list. OMITTED otherwise → the upsert preserves the
   // existing value (re-ingesting the same message keeps the snooze).
   if (plan.clearFollowedUp) itemUpsert.followed_up_at = null;
+  // #110 W7-003: stamp the customer's last INBOUND time only on inbound touches.
+  // OMITTED on outbound → the upsert preserves it, so the auto-resolve (which
+  // overwrites last_message_at with our outbound reply) can't corrupt the
+  // response-time measure (handled_at − last_inbound_at).
+  if (!isAnsweredByDirection(touch.direction)) itemUpsert.last_inbound_at = touch.lastMessageAt.toISOString();
   const { data: itemData, error: itemErr } = await sb
     .from('inbox_items')
     .upsert(itemUpsert, { onConflict: 'source,external_id' })
@@ -777,13 +782,14 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('status, last_message_at, handled_at, handled_by, source, created_at')
+    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at')
     .order('last_message_at', { ascending: false })
     .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((r): MetricItem => ({
     status: r.status as string,
     lastMessageAt: r.last_message_at ? new Date(r.last_message_at as string) : null,
+    lastInboundAt: r.last_inbound_at ? new Date(r.last_inbound_at as string) : null,
     handledAt: r.handled_at ? new Date(r.handled_at as string) : null,
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,
