@@ -27,11 +27,9 @@
     this MUST be closed before `VALOR_AUTO_CHARGE_ENABLED` is ever flipped on (staff could
     amend a booked order UP and MIT-charge a total the customer never re-approved). Recorded
     in the VALOR-AUTOCHARGE doc.
-- [ ] **W6-008 — `simulate-deposit` public vs operator** (decide before go-live, at fix-time). The anon
-  portal calls `POST /api/quotes/[id]/simulate-deposit` for TEST quotes (moves no money, flips a test-only
-  booking flag, already 400s non-test quotes). It's operator-gated + not in the allowlist → it 401s at
-  go-live. **(a)** allowlist it + re-check `is_test===true` for anon callers (recommended, least change), or
-  **(b)** move the trigger to an operator-only admin control. (`lib/auth/operatorGate.ts` PUBLIC_QUOTE_SUBROUTES.)
+- [x] **W6-008 — `simulate-deposit` public vs operator — RESOLVED (Jason, 2026-07-04): option (a).** Fixed in
+  PR #394 — allowlisted + `requireOperator` removed + `is_test===true`→403 pre-mutation boundary (anon caller
+  can only ever touch a test quote). LIVE (inert until the auth gate flips).
 
 ## 2. Hands-on device / in-browser checks — automation can't do these
 
@@ -105,18 +103,15 @@
   training-capture instance; the Calculate/Send flush still swallows silently) · training
   per-photo **calibration** (`feetPerUnit` stays whole-house; per-photo calibration is a
   separate change).
-- [ ] **W6 fix-later (audited S21, fixes HELD by Jason — do before go-live / the trial):**
-  - **HIGH:** W6-002 (designs/[id]/photos: add getDesign→404 before upload, mirror the W2-008 sibling + test) ·
-    W6-GAP-1 (add `rateLimitResponse` to `/api/login` — drop-in, the helper exists).
-  - **Auth allowlist go-live cluster** (ONE operatorGate PR before flipping `AUTH_GATE_ENABLED`): W6-001
-    (/api/health) · W6-005 (GET /api/quotes/[id]) · W6-008 (simulate-deposit — see the §1 decision first).
-    All fail closed today; all 401 the moment the gate flips.
-  - **Observability:** W6-003 (valor auto-PO fail log) · W6-009 (homeworks dup-send) · W6-010 (cancel quote-status).
-  - **Test-gaps:** W6-004 login/logout · W6-006 middleware · W6-011 designs/[id] · W6-016 interested · W6-017 hotkeys.
-  - **Accepted LOW (skip unless bored):** W6-012 worktree-ignore · W6-013 middleware→proxy (own task) · W6-014 stale comment · W6-015 NaN parse.
+- [x] **W6 fixes — DONE (S21 resume, 2026-07-04, master `ce7632f`, PRs #394/#395):** HIGH W6-002 + W6-GAP-1 ·
+  auth allowlist cluster W6-001/005/008 (all INERT until `AUTH_GATE_ENABLED` flips) · observability W6-003/009/010 ·
+  test-gaps W6-004/006/011/016/017 · LOW W6-014/015. **STILL OPEN:**
+  - [ ] **#396 (W6-012 tooling)** — SHARED eslint/vitest config → **Naldo reviews before merge** (held). **Loop Naldo.**
+  - [ ] **W6-013** — middleware→proxy Next.js 16 convention rename — deferred to its own task.
+  - [ ] **Loop Naldo** — W6-003 (valor auto-PO) + W6-010 (jobs/cancel) fixes touch his domain (route-level only).
 - [ ] **W6-007 → Naldo:** 6 event/permanent money engines never audited → money-lens pass added to his handoff
   (`AUDIT-2026-07-NALDO-HANDOFF.md`). Manifest generator fixed (regenerated, exit 0). **Loop Naldo.**
-- [x] **All 8 waves AUDITED** (W0–W7). Remaining epic tail = the W6 fix backlog above + the W1/W3 fix-laters.
+- [x] **All 8 waves AUDITED** (W0–W7); **W6 FIXED (S21).** Remaining epic tail = #396 + W6-013 + the W1/W3 fix-laters.
 
 ---
 _Update this file as items are handled. Pointer lives in the #110 ledger row._
