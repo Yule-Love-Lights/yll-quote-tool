@@ -67,6 +67,12 @@ Default habits to keep sessions cheap (S16 task #94):
 | SEAT (default) | **Opus 4.8** | plans, judges, reviews: orchestration, adversarial review passes, PR review, finding dispositions |
 | UP | **Fable 5** | top-tier — **always asks first**, never used silently |
 
+**Subagent spawns (added 2026-07-06, both devs):**
+- **Never spawn a subagent on Fable, for any reason.** Subagents inherit the session model by default, so in a Fable-seat session pass an explicit model on EVERY spawn (the Agent tool, Workflow `agent()` calls, council advisors), picked from the table above. Reason: Fable burns usage roughly twice as fast as Opus, and one forgotten spawn bills all its grunt work at the top rate. In non-Fable sessions this rule costs nothing.
+- **Do NOT enforce this with the `CLAUDE_CODE_SUBAGENT_MODEL` env var.** Per the official Claude Code docs it sits at the TOP of model resolution: it overrides agent frontmatter AND the explicit per-call `model` parameter, so any single value flattens this whole table (either Haiku reads bill at Opus, or Opus reviewers silently drop to Sonnet). Instruction-level routing keeps the tiers.
+- **Write every spawn brief self-contained:** goal, files or area involved, constraints, what done looks like, report format. Reason: the worker has zero context from the conversation, and a vague brief wastes the whole agent run.
+- **When a worker's output falls short, send the fix back to a worker with specific corrections** instead of the seat quietly redoing it. Reason: the seat redoing labor pays top rate twice for one piece of work.
+
 **2. Only 2 interruptions ever:** *"use the expensive model?"* and *"ship to production?"*. Everything else proceeds without stopping the dev.
 
 **3. Top-tier (Fable 5) = design, danger, or money ONLY** — architecture calls, production debugging, security review, migrations, money-math verdicts. **Never routine coding. ~20% of the work, max.**
