@@ -238,6 +238,17 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   const db = getSupabaseServiceClient();
   if (!db) return null;
 
+  // #110 W7-008: read + project the materials BEFORE claiming. Previously the
+  // claim (stock_decremented_at + stage) was stamped FIRST; getJobWorkOrder's
+  // reads swallow errors to empty (getJob→null, bindings→{}, onHand→[]), so a
+  // transient read failure left the job permanently marked prepped with ZERO
+  // stock deducted, and every retry returned alreadyDone. Reading first means a
+  // failed read (wo===null) returns without ever stamping a phantom claim, so
+  // the operator can safely retry. The atomic claim below still guards against
+  // double-deduction on concurrent prep clicks.
+  const wo = await getJobWorkOrder(id);
+  if (!wo) return null; // missing job or a transient read failure — no claim, retryable
+
   // Atomic claim — only the caller that flips NULL → now() proceeds to deduct.
   const { data: claimed } = await db
     .from('jobs')
@@ -248,7 +259,7 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
     .maybeSingle();
 
   if (!claimed) {
-    // Lost the claim (already prepped) or no such job. Distinguish for the caller.
+    // Lost the claim (already prepped) or the job vanished between read and claim.
     const job = await getJob(id);
     if (!job) return null;
     return { ok: true, alreadyDone: true };
@@ -259,8 +270,7 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // exactly like a real one (the claim above already marked it prepped + advanced
   // the stage), but it must NEVER touch real on-hand. Skip the deduction entirely
   // — an empty result, so the UI shows "prepped" with no phantom stock change.
-  const wo = await getJobWorkOrder(id);
-  const deductions = wo && !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
+  const deductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
   for (const d of deductions) {
     try {
       await upsertOnHand({ sku: d.sku, on_hand_qty: d.after });
