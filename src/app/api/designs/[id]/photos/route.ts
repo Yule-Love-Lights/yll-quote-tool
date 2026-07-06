@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { addDesignExtraPhoto, signDesignPhoto, isValidDesignId } from '@/lib/designs';
+import { addDesignExtraPhoto, signDesignPhoto, isValidDesignId, getDesign } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
@@ -38,6 +38,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const title = typeof body.title === 'string' ? body.title : null;
   if (!photoBase64) {
     return NextResponse.json({ error: 'photoBase64 is required' }, { status: 400 });
+  }
+
+  // #110 W2-008 / W6-002: check existence before uploading — mirrors the
+  // sibling /photo route. Without this a stale/deleted design id still
+  // performs a full upload + sharp decode before failing, orphaning the blob.
+  const row = await getDesign(id);
+  if (!row) {
+    return NextResponse.json({ error: 'Design not found' }, { status: 404 });
   }
 
   try {

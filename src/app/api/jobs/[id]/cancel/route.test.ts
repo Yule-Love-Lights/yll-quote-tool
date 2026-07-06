@@ -124,4 +124,16 @@ describe('POST /api/jobs/[id]/cancel', () => {
     expect(json.refundNeeded).toBe(true);
     expect(setInvoiceStatus).not.toHaveBeenCalled();
   });
+
+  it('(#110 W6-010) surfaces a failed source-quote status write instead of an unqualified success', async () => {
+    const b = sb.client as Record<string, unknown>;
+    (b as { then: unknown }).then = (resolve: (v: unknown) => void) =>
+      resolve({ error: { message: 'update failed' } });
+    const res = await POST(req, ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.quoteCancelled).toBe(false);
+    expect(json.note).toMatch(/could not be updated/i);
+  });
 });
