@@ -194,8 +194,7 @@ Adversarial-review + device-round findings with recorded dispositions (Jason's s
 **FIXED — merged to master `1e65602` (PRs #329/#330/#331/#334/#336):**
 W1-001 (CRIT, invoices.ts — bill agreed selection total) · W1-002/003 (quote route: canonical minilight types, booked re-price 409) · W1-004 (amend delta on agreed basis) · W1-005 (adapter filter by stable id) · W1-007/011/014/016/017/018/022/023 (status-guard/race) · W1-009/015/021/024 (close-invoice guard, pay-stamp race, valor timeout, discount clamp) · W1-027/050 (parallel notifications) · W1-043 (convert-to-job clamp) · W1-063 (dead Passage.js deleted) · W1-064 (shared round2). **= 23 fix-nows.**
 
-**FIX-LATER — ledger backlog (#110 W1 tail), NOT yet fixed:**
-W1-006 · W1-008 · W1-010 · W1-012 (recorded in VALOR-AUTOCHARGE doc) · W1-013 · W1-019 · W1-020 · W1-068.
+**FIX-LATER — #110 W1 tail:** **FIXED S21 (2026-07-04, master `13ba733`, PRs #402/#403/#404):** W1-006 (double-charge record+email+log) · W1-008 (cancel-refund record+email+log) · W1-010 + W1-013 (money-path tests) · W1-020 (GHL knob). **W1-019 was ALREADY FIXED** (W2-031+W4-016+W4-033, S20). **STILL OPEN:** W1-012 (auto-charge blocker — VALOR-AUTOCHARGE doc, gated on Jason/Valor) · W1-068 (job line_items filter — cosmetic, Naldo's jobs.ts → hand to Naldo).
 
 **ACCEPTED (LOW hygiene/docs-drift, not fixed) + known-open carried:** the remaining ~49 LOWs
 (consistency nits, docs-drift incl. W1-040 which resolved ledger UNKNOWN #80-094 as intentional)

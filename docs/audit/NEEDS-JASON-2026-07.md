@@ -93,16 +93,18 @@
 
 ## 5. Fix-later backlog (recorded, not yet done — before the Aug–Oct trial)
 
-- [ ] **W1 fix-later:** W1-006 (2nd-deposit durable record+alert) · W1-008 (cancel-of-paid
-  refund record — needs design) · W1-010 (design-projection route tests) · W1-013 (approve-
-  branch snapshot tests) · W1-019 (portal-open sequential DB round-trips) · W1-020 (GHL stage-
-  config knob drift) · W1-068 (job `line_items` selection filter).
-- [ ] **W3 fix-later:** W3-008 server-reorder half (the `saveSeq` token closed the UI-race; a
-  fuller in-flight abort/queue was deferred in the frozen editor.ts — self-heals on next save) ·
-  **#80-102 runQuote/Send flush-swallow** (the non-capture half — W3-006 only closed the
-  training-capture instance; the Calculate/Send flush still swallows silently) · training
-  per-photo **calibration** (`feetPerUnit` stays whole-house; per-photo calibration is a
-  separate change).
+- [x] **W1 fix-later — DONE (S21 resume, 2026-07-04, master `13ba733`, PRs #402/#403/#404):**
+  W1-006 (double-charge durable record + staff email + log) · W1-008 (cancel-refund record + email + log
+  — approval_snapshot marker, no migration) · W1-010 + W1-013 (money-path route tests) · W1-020 (GHL
+  stage-knob drift). **W1-019 was ALREADY FIXED** (W2-031 query-collapse + W4-016 loader-parallelize +
+  W4-033 column-narrow, shipped S20 — builder verified live, no-op). **STILL OPEN:**
+  - [ ] **W1-068** — job `line_items` selection filter (cosmetic; in Naldo's `jobs.ts`, gnarly portal-id
+    mapping) → **hand to Naldo** or leave.
+- [x] **#80-102 — DONE (PR #404):** the runQuote/Send flush-swallow half — Calculate + Send now warn
+  and abort on a flush rejection instead of pricing/sending a stale scene (mirrors W3-006's capture fix).
+- [ ] **W3 fix-later (deferred — recommend leaving):** W3-008 server-reorder half (the `saveSeq` token
+  closed the UI-race; a fuller in-flight abort/queue stays deferred in the frozen editor.ts — self-heals) ·
+  training per-photo **calibration** (`feetPerUnit` stays whole-house; separate change).
 - [x] **W6 fixes — DONE (S21 resume, 2026-07-04, master `ce7632f`, PRs #394/#395):** HIGH W6-002 + W6-GAP-1 ·
   auth allowlist cluster W6-001/005/008 (all INERT until `AUTH_GATE_ENABLED` flips) · observability W6-003/009/010 ·
   test-gaps W6-004/006/011/016/017 · LOW W6-014/015. **STILL OPEN:**
