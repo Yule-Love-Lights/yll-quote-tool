@@ -264,6 +264,30 @@ describe('findOrCreateCustomer', () => {
     expect(fake.tables.customers[0].match_key).toBe('email:jane@x.com');
   });
 
+  // W2-026 (Jason 2026-07-06: newest-win) — a repeat quote for the SAME customer
+  // refreshes the stored contact fields to the newer values, instead of the old
+  // first-wins behavior that let name/email/phone go stale.
+  it('W2-026: refreshes changed contact fields to the newest quote (newest-win)', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
+    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane Doe', phone: '5559998888' });
+    expect(b?.id).toBe(a?.id); // same customer row
+    expect(fake.tables.customers).toHaveLength(1); // not a duplicate
+    expect(fake.tables.customers[0].name).toBe('Jane Doe'); // updated
+    expect(fake.tables.customers[0].phone).toBe('5559998888'); // updated
+  });
+
+  it('W2-026: a missing field in the newer quote does NOT wipe the stored value', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
+    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane B' }); // no phone
+    expect(b?.id).toBe(a?.id);
+    expect(fake.tables.customers[0].name).toBe('Jane B'); // present → updated
+    expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent → preserved
+  });
+
   it('separates distinct identities into distinct customers', async () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
@@ -398,6 +422,20 @@ describe('findOrCreateProperty', () => {
     expect(p2?.id).toBe(p1?.id);
     expect(fake.tables.properties).toHaveLength(1);
     expect(fake.tables.properties[0].address_key).toBe('123 main st');
+  });
+
+  // W2-026 (newest-win) — same normalized address_key → refresh the display
+  // address + geo to the newer quote's values.
+  it('W2-026: refreshes display address + geo for the same normalized address', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const p1 = await findOrCreateProperty('cust-1', '123 Main St', { lat: 1, lng: 2 });
+    const p2 = await findOrCreateProperty('cust-1', '123 MAIN ST.', { lat: 3, lng: 4 }); // same key '123 main st'
+    expect(p2?.id).toBe(p1?.id);
+    expect(fake.tables.properties).toHaveLength(1); // not a duplicate
+    expect(fake.tables.properties[0].address).toBe('123 MAIN ST.'); // display refreshed
+    expect(fake.tables.properties[0].lat).toBe(3); // geo refreshed
+    expect(fake.tables.properties[0].lng).toBe(4);
   });
 
   it('a second property (rental) for the same customer is a new row', async () => {
