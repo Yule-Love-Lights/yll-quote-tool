@@ -55,6 +55,14 @@
   font-family: var(--font-portal-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Kill the stray page-level horizontal scrollbar: full-bleed rows (e.g.
+   * WhatsIncluded's calc(50% - 50vw) breakout) use 50vw, which includes the
+   * vertical scrollbar's width while 50% does not — the negative margins then
+   * overshoot the document edge by ~the scrollbar width and force a horizontal
+   * scrollbar site-wide. Clipping X here (the single /portal root) neutralizes
+   * any descendant full-bleed overshoot without touching vertical scroll or
+   * position:sticky/fixed. */
+  overflow-x: clip;
 }
 
 .portal-dark-root .font-display {

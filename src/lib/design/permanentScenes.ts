@@ -71,8 +71,8 @@ export type PermanentEffectOption = { effect: SceneEffect; label: string; speedM
 // needs per-bulb on/off, a harder follow-up.
 export const PERMANENT_EFFECTS: PermanentEffectOption[] = [
   { effect: 'static', label: 'Solid', speedMs: 0 },
-  { effect: 'chase',  label: 'Chase', speedMs: 180 },
-  { effect: 'cycle',  label: 'Fade',  speedMs: 700 },
+  { effect: 'chase',  label: 'Chase', speedMs: 360 },
+  { effect: 'cycle',  label: 'Fade',  speedMs: 1400 },
 ];
 
 /** The permanent portal opens on this effect — Chase, so a multi-color scene moves

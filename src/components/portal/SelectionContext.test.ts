@@ -123,6 +123,34 @@ describe('nextSelectedItemIds — mutually-exclusive roofline (XOR) + plain togg
     const next = nextSelectedItemIds(prev, 'roofline-other', new Set());
     expect(next).toEqual(new Set(['roofline-single', 'roofline-other']));
   });
+
+  // #125 — permanent portal tier selector: with only ONE package on offer
+  // (e.g. a single-surface permanent quote), the last remaining item must
+  // never be uncheckable down to a zero-package state.
+  it('onlyOnePackage=true: unchecking the LAST remaining item is a no-op', () => {
+    const prev = new Set(['permanent-front']);
+    const next = nextSelectedItemIds(prev, 'permanent-front', new Set(), true);
+    expect(next).toBe(prev);
+    expect(next).toEqual(new Set(['permanent-front']));
+  });
+
+  it('onlyOnePackage=true: unchecking one of SEVERAL selected items still works normally', () => {
+    const prev = new Set(['permanent-front', 'custom-0']);
+    const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
+    expect(next).toEqual(new Set(['permanent-front']));
+  });
+
+  it('onlyOnePackage=true: adding an item is unaffected', () => {
+    const prev = new Set(['permanent-front']);
+    const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
+    expect(next).toEqual(new Set(['permanent-front', 'custom-0']));
+  });
+
+  it('onlyOnePackage=false (default/multi-package): unchecking the last item still empties the set', () => {
+    const prev = new Set(['permanent-front']);
+    const next = nextSelectedItemIds(prev, 'permanent-front', new Set());
+    expect(next).toEqual(new Set());
+  });
 });
 
 describe('nextPackageSelectedItemIds — selectPackage tier/custom logic', () => {
