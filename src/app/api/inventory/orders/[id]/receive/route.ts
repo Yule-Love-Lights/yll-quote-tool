@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { receiveOrder, listOrders } from '@/lib/inventory/orders';
+import { recordAutoSentSignature } from '@/lib/inventory/purchaseOrder';
 
 export const runtime = 'nodejs';
 
@@ -32,11 +33,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     : undefined;
 
   const result = await receiveOrder(id, lines);
-  if (result) return NextResponse.json(result);
+  if (result) {
+    // A short receipt can reproduce a previously-sent delta signature (the
+    // shortfall re-appears at an old value) — reset the auto-send dedup so the
+    // next real shortfall always emails. Best-effort.
+    try {
+      await recordAutoSentSignature('');
+    } catch (err) {
+      console.error('[api/inventory/orders/receive] signature reset failed:', err);
+    }
+    return NextResponse.json(result);
+  }
 
   // receiveOrder returns null for both "order not found" (404) and "rejected an
-  // unknown SKU in the override" (400) — distinguish by checking existence.
+  // invalid override" (400) — distinguish by checking existence.
   const exists = (await listOrders()).some((o) => o.id === id);
   if (!exists) return NextResponse.json({ error: 'Order not found' }, { status: 404 });
-  return NextResponse.json({ error: 'Invalid receive lines — a SKU was not on the original order' }, { status: 400 });
+  return NextResponse.json(
+    { error: 'Invalid receive lines — the override must cover exactly the SKUs on the original order' },
+    { status: 400 },
+  );
 }

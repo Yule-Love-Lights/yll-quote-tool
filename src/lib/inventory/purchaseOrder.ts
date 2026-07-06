@@ -157,6 +157,27 @@ export async function emailSupplierPurchaseOrder(
     return { ok: false, status: 500, error: 'Could not record the order — not sent.' };
   }
 
+  // Concurrent-send guard: two send paths (the cron + the deposit-webhook
+  // trigger) can build the same delta simultaneously — both would record and
+  // email it, and now that orders are additive (no "replaces prior order"
+  // disclaimer) the supplier would ship both. After inserting OUR row, re-sum
+  // the open orders: if on-hand + the OTHER open orders already cover every
+  // line's need, ours is a duplicate — cancel it and skip the send. When both
+  // racers detect each other they both cancel, which under-orders and
+  // self-heals on the next build (the accepted failure direction; never
+  // double-ship).
+  const openAfter = await sumOpenOnOrder();
+  const redundant =
+    po.lines.length > 0 &&
+    po.lines.every((l) => {
+      const others = Math.max(0, (openAfter.get(l.sku) ?? 0) - l.order);
+      return l.onHand + others >= l.needed;
+    });
+  if (redundant) {
+    await cancelOrder(orderId); // best-effort — a stuck open order is staff-visible
+    return { ok: false, status: 409, error: 'Duplicate order — an order covering this need was just recorded. Nothing sent.' };
+  }
+
   try {
     await sendEmail({
       contactId,

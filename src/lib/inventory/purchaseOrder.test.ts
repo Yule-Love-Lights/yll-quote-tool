@@ -4,13 +4,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // send and the new Telegram ping. The pure tests below don't use either. Also
 // mock the on-order ledger (P8) — recordOrder/markOrderSent/cancelOrder are the
 // new insert-first-then-send seam.
-const { sendEmail, hlConfigured, notifyTelegram, recordOrder, markOrderSent, cancelOrder } = vi.hoisted(() => ({
+const { sendEmail, hlConfigured, notifyTelegram, recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder } = vi.hoisted(() => ({
   sendEmail: vi.fn(async () => ({})),
   hlConfigured: { value: true },
   notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
   recordOrder: vi.fn<() => Promise<string | null>>(async () => 'order-1'),
   markOrderSent: vi.fn(async () => {}),
   cancelOrder: vi.fn(async () => 'cancelled' as const),
+  sumOpenOnOrder: vi.fn<() => Promise<Map<string, number>>>(async () => new Map()),
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({
   sendEmail,
@@ -20,7 +21,7 @@ vi.mock('@/lib/integrations/telegramNotify', () => ({
   notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
 }));
-vi.mock('./orders', () => ({ recordOrder, markOrderSent, cancelOrder }));
+vi.mock('./orders', () => ({ recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder }));
 
 import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder } from './purchaseOrder';
 
@@ -175,5 +176,26 @@ describe('emailSupplierPurchaseOrder — on-order ledger (P8, folds in #110 W7-0
     expect(cancelOrder).toHaveBeenCalledWith('order-1');
     expect(markOrderSent).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  it('concurrent-send guard: cancels + skips the send when OTHER open orders already cover the need (a racing sender got there first)', async () => {
+    // PO needs 100 with 12 on hand → our delta is 88. After our insert the open
+    // sum is 176 = ours (88) + a concurrent sender's 88; others (88) + onHand
+    // (12) ≥ needed (100) → ours is a duplicate.
+    sumOpenOnOrder.mockResolvedValueOnce(new Map([['1001', 176]]));
+    const res = await emailSupplierPurchaseOrder(PO, 'Jul 6, 2026', 'auto-cron');
+    expect(res).toEqual({ ok: false, status: 409, error: 'Duplicate order — an order covering this need was just recorded. Nothing sent.' });
+    expect(cancelOrder).toHaveBeenCalledWith('order-1');
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(markOrderSent).not.toHaveBeenCalled();
+  });
+
+  it('concurrent-send guard: sends normally when the open sum is just our own order (no race)', async () => {
+    // Open sum 88 = ours alone; others (0) + onHand (12) < needed (100) → real need, send.
+    sumOpenOnOrder.mockResolvedValueOnce(new Map([['1001', 88]]));
+    const res = await emailSupplierPurchaseOrder(PO, 'Jul 6, 2026', 'auto-cron');
+    expect(res.ok).toBe(true);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(cancelOrder).not.toHaveBeenCalled();
   });
 });

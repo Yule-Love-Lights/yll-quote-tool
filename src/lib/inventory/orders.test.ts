@@ -272,6 +272,23 @@ describe('receiveOrder', () => {
     spy.mockRestore();
   });
 
+  it('rejects an INCOMPLETE override — a subset would close the order while the missing lines silently vanish from stock and on-order', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    currentDb = makeDb({ rows: [{ ...OPEN_ROW }] });
+    const res = await receiveOrder('o1', [{ sku: 'A', qty: 10 }]); // B omitted
+    expect(res).toBeNull();
+    expect(upsertOnHand).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('accepts an unshipped line received explicitly as qty 0', async () => {
+    currentDb = makeDb({ rows: [{ ...OPEN_ROW }] });
+    const res = await receiveOrder('o1', [{ sku: 'A', qty: 10 }, { sku: 'B', qty: 0 }]);
+    expect(res).toEqual({ ok: true });
+    expect(upsertOnHand).toHaveBeenCalledWith({ sku: 'A', on_hand_qty: 15 });
+    expect(upsertOnHand).toHaveBeenCalledWith({ sku: 'B', on_hand_qty: 1 }); // 1 + 0
+  });
+
   it('one failed on-hand write does not stop the others or unwind the claim', async () => {
     upsertOnHand.mockImplementationOnce(async () => { throw new Error('boom'); });
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});

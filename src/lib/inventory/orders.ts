@@ -138,13 +138,23 @@ export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): 
   if (order.status !== 'open') return { ok: true, alreadyDone: true };
 
   // Resolve the effective received lines. An override may only touch SKUs that
-  // were actually on the order — staff can't receive something never ordered.
+  // were actually on the order — staff can't receive something never ordered —
+  // and must cover EVERY ordered SKU (a subset would close the order while the
+  // missing lines' stock silently vanished from both on-hand and on-order; a
+  // genuinely-unshipped line is received as qty 0, explicit and auditable).
   const orderedSkus = new Set(order.lines.map((l) => l.sku));
   let effective: ReceivedLine[];
   if (receivedLines) {
     for (const l of receivedLines) {
       if (!orderedSkus.has(l.sku)) {
         console.error(`receiveOrder: rejected unknown SKU "${l.sku}" not on order ${id}`);
+        return null;
+      }
+    }
+    const overrideSkus = new Set(receivedLines.map((l) => l.sku));
+    for (const sku of orderedSkus) {
+      if (!overrideSkus.has(sku)) {
+        console.error(`receiveOrder: rejected incomplete override — SKU "${sku}" on order ${id} is missing`);
         return null;
       }
     }
