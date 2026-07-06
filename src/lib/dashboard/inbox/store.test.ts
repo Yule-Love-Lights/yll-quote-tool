@@ -361,4 +361,17 @@ describe('listEscalatableItems — .or filter excludes automated but keeps NULL'
     expect(orCall).toBeDefined();
     expect(orCall!.args[0]).toBe('lead_kind.is.null,lead_kind.neq.automated');
   });
+
+  it('excludes manually-Followed items via .is("followed_up_at", null) so a snoozed item stops escalating (#110 W7-005)', async () => {
+    const { builder, calls } = makeBuilder({ data: [], error: null });
+    sbRef.current = { from: () => builder };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+
+    const isCall = calls.find((c) => c.method === 'is');
+    expect(isCall).toBeDefined();
+    expect(isCall!.args[0]).toBe('followed_up_at');
+    expect(isCall!.args[1]).toBeNull();
+  });
 });
