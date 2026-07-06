@@ -168,6 +168,7 @@ const QUOTE = {
   highlevel_opportunity_id: 'opp-1',
   deposit_paid_at: null,
   deposit_amount_usd: 1350,
+  valor_txn_id: null,
   approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 1350 } },
 };
 
@@ -305,8 +306,10 @@ describe('Valor webhook — verification probe (Verify and Update)', () => {
 
 describe('Valor webhook — idempotency (the fix)', () => {
   it('does NOT double-fire side effects when the atomic claim loses the race', async () => {
-    // Conditional update returns 0 rows → a concurrent retry already claimed it.
-    const { client } = makeSb({ ...QUOTE }, []);
+    // Conditional update returns 0 rows → a concurrent retry of the SAME txn
+    // already claimed it (valor_txn_id matches the incoming event — W1-006 must
+    // NOT flag this as a duplicate).
+    const { client } = makeSb({ ...QUOTE, valor_txn_id: 'TXN-123' }, []);
     sbRef.current = client;
 
     const res = await POST(signedReq(APPROVED_PAYLOAD));
@@ -333,6 +336,98 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
     expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
+  });
+});
+
+describe('Valor webhook — possible double charge (W1-006)', () => {
+  it('SAME txn id retry on an already-paid quote stays a silent alreadyPaid ack (no marker, no email)', async () => {
+    const { client, updatePayloads } = makeSb(
+      { ...QUOTE, deposit_paid_at: '2026-06-25T00:00:00Z', valor_txn_id: 'TXN-123' },
+      [],
+    );
+    sbRef.current = client;
+
+    // Same txn id as the one already on file — a normal Valor retry.
+    const res = await POST(signedReq(APPROVED_PAYLOAD)); // txn_id: 'TXN-123'
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyPaid).toBe(true);
+    expect(updatePayloads).toHaveLength(0); // no approval_snapshot write
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('DISTINCT txn id on an already-paid quote stamps duplicatePayment + emails staff, still 200-acks', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      {
+        ...QUOTE,
+        deposit_paid_at: '2026-06-25T00:00:00Z',
+        valor_txn_id: 'TXN-ORIGINAL',
+        approval_snapshot: { customerSelection: { currentTotalUsd: 2700 }, signature: 'sig-data' },
+      },
+      [],
+    );
+    sbRef.current = client;
+
+    // A different txn id — a genuinely second approved charge (two open tabs).
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, txn_id: 'TXN-SECOND' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200); // still ack so Valor doesn't retry
+    expect(json.alreadyPaid).toBe(true);
+
+    // Merge-stamped into approval_snapshot — existing keys preserved.
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).toMatchObject({
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 2700 },
+        signature: 'sig-data',
+        duplicatePayment: { txnId: 'TXN-SECOND' },
+      },
+    });
+
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: 'internal-1', subject: expect.stringContaining('Jordan Smith') }),
+    );
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('POSSIBLE DOUBLE CHARGE'));
+    err.mockRestore();
+  });
+
+  it('DISTINCT txn id racing the atomic claim (lost-race path) also flags the duplicate', async () => {
+    const { client, updatePayloads } = makeSb(
+      { ...QUOTE, valor_txn_id: 'TXN-ORIGINAL' }, // deposit_paid_at NULL when read, but claim loses the race
+      [], // 0 rows claimed → another request already booked it
+    );
+    sbRef.current = client;
+
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, txn_id: 'TXN-SECOND' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyPaid).toBe(true);
+    // First updatePayload is the failed atomic-claim attempt; second is the duplicate marker.
+    expect(updatePayloads).toHaveLength(2);
+    expect(updatePayloads[1]).toMatchObject({
+      approval_snapshot: { duplicatePayment: { txnId: 'TXN-SECOND' } },
+    });
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fail the webhook when the duplicate-payment alert email throws (best-effort)', async () => {
+    const { client } = makeSb(
+      { ...QUOTE, deposit_paid_at: '2026-06-25T00:00:00Z', valor_txn_id: 'TXN-ORIGINAL' },
+      [],
+    );
+    sbRef.current = client;
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, txn_id: 'TXN-SECOND' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyPaid).toBe(true);
   });
 });
 
