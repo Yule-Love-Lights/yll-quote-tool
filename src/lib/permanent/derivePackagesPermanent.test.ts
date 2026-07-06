@@ -35,19 +35,50 @@ const RESULT = resultWith();
 const CHARGES = effectiveCharges(chargesFromResult(RESULT), false, false);
 
 describe('derivePackagesPermanent (#88 P5)', () => {
-  it('front-only quote → only package A, and D equals A', () => {
+  it('front-only quote → only package A (no redundant Whole Home D)', () => {
+    // #125-2: a single lit surface makes D "Whole Home" byte-identical to A —
+    // a redundant tier. Suppress D when there is only one billable line.
     const lineItems = [permItem('permanent-front', 4000)];
     const packages = derivePackagesPermanent(lineItems, RESULT);
 
-    const ids = packages.map((p) => p.id);
-    expect(ids).toEqual(['A', 'D']);
-
+    expect(packages.map((p) => p.id)).toEqual(['A']);
     const a = packages.find((p) => p.id === 'A')!;
-    const d = packages.find((p) => p.id === 'D')!;
     expect(a.includedItemIds).toEqual(['permanent-front']);
-    expect(d.includedItemIds).toEqual(['permanent-front']);
-    expect(d.total).toBe(a.total);
-    expect(d.deposit).toBe(a.deposit);
+  });
+
+  it('#125-3: a custom/manual line item lands in Whole Home D so it gets billed', () => {
+    // Custom (#27) line items carry a non-'permanent-' id, so they sit in NO
+    // A/B/C surface package. Without them in D they default OFF on the portal
+    // and go silently UNBILLED at approval. D must bundle them.
+    const lineItems = [
+      permItem('permanent-front', 4000),
+      permItem('permanent-sides', 5250),
+      permItem('custom-0', 300, 'roofline'),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    const d = packages.find((p) => p.id === 'D')!;
+    expect(d.includedItemIds).toContain('custom-0');
+    // A/B stay single-surface — the custom item only rides Whole Home.
+    expect(packages.find((p) => p.id === 'A')!.includedItemIds).toEqual(['permanent-front']);
+    const expectedD = priceSelection(4000 + 5250 + 300, CHARGES);
+    expect(d.total).toBe(expectedD.total);
+  });
+
+  it('#125-3: front + custom only (one surface) → D present because it adds the custom line', () => {
+    // A single surface PLUS a custom item still needs D — D (front + custom)
+    // differs from A (front only), so it is NOT redundant.
+    const lineItems = [
+      permItem('permanent-front', 4000),
+      permItem('custom-0', 300, 'roofline'),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    expect(packages.map((p) => p.id)).toEqual(['A', 'D']);
+    const d = packages.find((p) => p.id === 'D')!;
+    expect(d.includedItemIds.sort()).toEqual(['custom-0', 'permanent-front']);
+    const expectedD = priceSelection(4000 + 300, CHARGES);
+    expect(d.total).toBe(expectedD.total);
   });
 
   it('front + back quote → A, C, D (no B — sides absent)', () => {
@@ -105,8 +136,11 @@ describe('derivePackagesPermanent (#88 P5)', () => {
   });
 
   it('maintenance line is present but never appears in any package includedItemIds', () => {
+    // Multi-surface so Whole Home D exists; the opt-in maintenance add-on must
+    // still never fold into any package's default selection.
     const lineItems = [
       permItem('permanent-front', 4000),
+      permItem('permanent-back', 3500),
       permItem('permanent-maintenance', 250, 'permanent-addon'),
     ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
@@ -115,7 +149,7 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     }
     // And D ("Whole Home") must not silently fold the maintenance price in.
     const d = packages.find((p) => p.id === 'D')!;
-    const expected = priceSelection(4000, CHARGES);
+    const expected = priceSelection(4000 + 3500, CHARGES);
     expect(d.total).toBe(expected.total);
   });
 

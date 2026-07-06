@@ -201,6 +201,26 @@ export const EVENT_FAQ = [
     a: 'Yes — we bring everything, including freestanding poles and bases wherever there is nothing to hang lights from.' },
 ];
 
+// Permanent Lighting (#88, ledger #120) — the FAQ shown on a permanent quote's
+// portal (draft copy; Naldo can revise). Same { q, a } shape as MOCK_FAQ; the
+// portal page passes this instead of MOCK_FAQ when service_type is 'permanent'
+// (permanent otherwise inherited the holiday seasonal-install Q&A, which is wrong
+// for a year-round, track-mounted system).
+export const PERMANENT_FAQ = [
+  { q: 'Do the lights stay up all year?',
+    a: 'Yes. Permanent lighting is mounted in a discreet track along your roofline and stays up year-round — there is no takedown. You control colors, patterns, and scheduling from your phone.' },
+  { q: 'What can the lights do?',
+    a: 'Warm white for everyday curb appeal, full color for the holidays, game day, or any celebration — millions of colors, patterns, and animations, all from the app. Set a schedule and forget it.' },
+  { q: 'Is the track visible during the day?',
+    a: 'Barely. The low-profile track is color-matched to your fascia and tucks under the roofline, so the pucks disappear in daylight and only the light shows at night.' },
+  { q: 'What is the warranty?',
+    a: 'We back the materials for life — the lights and track carry a lifetime materials warranty for the original homeowner. Service labor is billed separately. Full terms are in your agreement.' },
+  { q: 'How is it priced?',
+    a: 'By the foot — a flat per-foot rate for the front, sides, and back you choose to light. Do the whole home, or start with the front and add on later.' },
+  { q: 'How long does installation take?',
+    a: 'Most homes are done in a day. We mount the track, set the pucks, wire the transformer and controller, and walk you through the app before we leave.' },
+];
+
 export const MOCK_TEAM = {
   // "Naldo" is the friendly short form used elsewhere (e.g. the WalkthroughVideo intro).
   // The company bio refers to the founder by his full name, Naldoven.

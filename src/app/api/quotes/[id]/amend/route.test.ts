@@ -268,6 +268,41 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sb.updates.invoices[0]).toMatchObject({ total: 4700, balance: 2200 });
   });
 
+  // ── #125-1: the amend re-sync is the THIRD invoice write-path (after
+  // createInvoiceFromJob + setInvoiceTaxOverride, both fixed by #384). On a
+  // TAX-OVERRIDDEN invoice the removable tax must be SCALED to the amended
+  // (possibly partial) total — else the WHOLE-quote tax is subtracted from a
+  // partial total and the customer is UNDER-BILLED.
+  it('scales the removable tax to the amended total on a tax-overridden invoice (#125-1)', async () => {
+    // Full quote, tax-inclusive @ 8.75%: taxable 5000 → tax 437.50 → total 5437.50.
+    // Diverged: the customer approved a $2,175 selection of a $4,350 full quote
+    // (pricing.total frozen at approval); staff re-priced the full quote to 5437.50.
+    // Amended agreed total = 2175 + (5437.50 − 4350) = 3262.50.
+    const taxQuote = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5000, discountAmount: 0, taxAmount: 437.5, total: 5437.5 },
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 2175 },
+        pricing: { total: 4350 },
+        amendments: [],
+      },
+    };
+    const sb = makeSb(taxQuote);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // The linked invoice has tax EXEMPTED (a tax-exempt customer).
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 1000, status: 'draft', tax_overridden: true });
+
+    const res = await POST(req({ reason: 'tax-exempt amend' }), ctx());
+    expect(res.status).toBe(200);
+
+    // Correct: remove only the tax embedded in the AGREED 3262.50 (= 262.50), so
+    // total = 3000.00. The bug removed the FULL-quote tax (437.50) → 2825.00.
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate.total).toBe(3000);
+    expect(invUpdate.balance).toBe(500); // 3000 − 2500 deposit paid
+  });
+
   it('409s (concurrent-amend) when the trail grew between read and write', async () => {
     // Initial read: 0 amendments; the pre-write re-read sees 1 → a racing amend.
     const racedFresh = {

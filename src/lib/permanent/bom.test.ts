@@ -172,6 +172,20 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(bom.totals.wholesaleCost).toBeLessThan(1160);
   });
 
+  it('#125-4: consolidates duplicate bare power supplies into one Qty-N line', () => {
+    // 800 ft → 1200 pucks → sizeTransformers picks 3×600 (one KIT + two bare).
+    // The two bare 600W supplies must collapse into a single APL11110-600 Qty-2
+    // line — else the printed order sheet lists the SKU on multiple Qty-1 rows
+    // (and the print page's `key={l.sku}` collides on duplicate keys).
+    const bom = buildPermanentBom(input({ footageBySide: { front: 800, left: 0, right: 0, back: 0 } }));
+    const bare600 = bom.lines.filter((l) => l.sku === 'APL11110-600');
+    expect(bare600).toHaveLength(1);
+    expect(bare600[0]!.qty).toBe(2);
+    // Every BOM line has a UNIQUE sku (safe as a stable React key on the sheet).
+    const skus = bom.lines.map((l) => l.sku);
+    expect(new Set(skus).size).toBe(skus.length);
+  });
+
   it('left+right footage sums into the light/track totals (sides billed together upstream)', () => {
     const bom = buildPermanentBom(input({ footageBySide: { front: 0, left: 50, right: 40, back: 60 } }));
     // per-side puck ceil: 75 + 60 + 90 = 225 lights
