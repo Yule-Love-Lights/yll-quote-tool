@@ -16,6 +16,11 @@ const eslintConfig = defineConfig([
     // own style for easy re-syncing — see src/components/design/editor-core).
     // tsc still type-checks it; only ESLint's style rules are skipped.
     "src/components/design/editor-core/**",
+    // Nested agent worktrees (#110 W6-012): parallel build agents create
+    // temporary git worktrees under .claude/worktrees/ that contain a full copy
+    // of src/ — without this, a bare `npm run lint` double-lints them. Ignoring
+    // here lets the plain gate command work without the `eslint src` workaround.
+    ".claude/**",
   ]),
 ]);
 

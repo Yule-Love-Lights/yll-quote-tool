@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
 // Mirror the `@/* -> ./src/*` path alias from tsconfig.json so tests can
@@ -10,5 +10,11 @@ const srcDir = fileURLToPath(new URL('./src', import.meta.url));
 export default defineConfig({
   resolve: {
     alias: [{ find: /^@\//, replacement: `${srcDir}/` }],
+  },
+  test: {
+    // #110 W6-012: exclude nested agent worktrees (.claude/worktrees/**) so a
+    // bare `vitest run src` doesn't pick up their duplicated test files. Spread
+    // the defaults so node_modules/dist/etc. stay excluded too.
+    exclude: [...configDefaults.exclude, '**/.claude/**'],
   },
 });
