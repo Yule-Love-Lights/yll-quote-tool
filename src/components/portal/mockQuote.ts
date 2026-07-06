@@ -201,6 +201,29 @@ export const EVENT_FAQ = [
     a: 'Yes — we bring everything, including freestanding poles and bases wherever there is nothing to hang lights from.' },
 ];
 
+// Permanent Lighting (#88 / #120) — the FAQ shown on a permanent quote's portal
+// (draft copy; Naldo can revise). Same { q, a } shape as MOCK_FAQ; the portal
+// page passes this instead of MOCK_FAQ when the quote's service_type is
+// 'permanent'. Facts pulled from the confirmed permanent decisions (year-round
+// track-and-puck LED, warm-white↔color, lifetime materials warranty, $2,500
+// minimum, priced by the linear foot).
+export const PERMANENT_FAQ = [
+  { q: 'What is permanent lighting?',
+    a: 'Low-profile LED pucks set into a slim track along your roofline. They all but disappear by day and light up on demand at night — warm white for everyday, or full color for the holidays and celebrations, all from your phone.' },
+  { q: 'Do the lights stay up all year?',
+    a: 'Yes — installed once, they stay put year-round. No seasonal install, no takedown. You decide when they are on, what color, and how bright.' },
+  { q: 'Can I change the colors?',
+    a: 'Anytime, from the app. Warm white for everyday, red-and-green for Christmas, orange for Halloween, your team colors for game day — millions of colors and preset scenes.' },
+  { q: 'Will it look bulky in the daylight?',
+    a: 'No. The track is slim and color-matched to your trim, and the pucks tuck inside it — most people never notice them until they turn on at night.' },
+  { q: 'What is the warranty?',
+    a: 'The lights and materials carry a lifetime warranty for the original homeowner. If a component ever fails, we replace the part (labor billed separately). Full terms are on your agreement.' },
+  { q: 'How is the price set?',
+    a: 'Permanent lighting is priced by the linear foot of roofline, with a $2,500 project minimum. Your quote breaks it down front / sides / back so you can pick the coverage you want.' },
+  { q: 'What about power and control?',
+    a: 'The system runs off a standard exterior outlet through a small weatherproof controller. On/off, schedules, colors, and brightness all live in one app on your phone.' },
+];
+
 export const MOCK_TEAM = {
   // "Naldo" is the friendly short form used elsewhere (e.g. the WalkthroughVideo intro).
   // The company bio refers to the founder by his full name, Naldoven.

@@ -50,6 +50,7 @@ import {
   MOCK_REVIEWS,
   MOCK_FAQ,
   EVENT_FAQ,
+  PERMANENT_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -352,8 +353,17 @@ export default async function PortalPage({
         {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 10. FAQ — event quotes get event-specific Q&A (#96). */}
-        <FAQ items={quote.serviceType === 'event' ? EVENT_FAQ : MOCK_FAQ} />
+        {/* 10. FAQ — each service line gets its own Q&A (#96 event, #120
+             permanent); holiday is the default. */}
+        <FAQ
+          items={
+            quote.serviceType === 'event'
+              ? EVENT_FAQ
+              : quote.serviceType === 'permanent'
+                ? PERMANENT_FAQ
+                : MOCK_FAQ
+          }
+        />
 
         {/* 11. Personal contact */}
         <PersonalContact
