@@ -16,6 +16,9 @@
 // of these: approve/pay/view from the hero + sticky bar, and decline /
 // request-changes (QuoteResponseModal) / interested (StickyBottomBar). Note: a
 // quote's `send` sub-route is the OPERATOR action and is intentionally NOT here.
+// 'simulate-deposit' (#81 W6-008) is the anonymous portal's TEST-quote deposit
+// simulator (DepositCheckout.tsx) — the route itself re-verifies is_test===true
+// before doing anything, so allowlisting it here only ever affects test rows.
 const PUBLIC_QUOTE_SUBROUTES = new Set([
   'approve',
   'pay',
@@ -24,11 +27,13 @@ const PUBLIC_QUOTE_SUBROUTES = new Set([
   'decline',
   'request-changes',
   'interested',
+  'simulate-deposit', // TEST quotes only — route re-checks is_test (#81 W6-008)
 ]);
 
 // Exact public API paths (webhooks + crons + the login surface).
 const PUBLIC_API_EXACT = new Set([
   '/api/login',
+  '/api/health', // uptime monitor probe — booleans/timestamp only, no PII/secrets (#81 W6-001)
   '/api/integrations/valor/webhook', // Valor deposit webhook (HMAC-verified in the route)
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/integrations/whatsapp/webhook', // Twilio WhatsApp webhook (signature-verified in the route, #82)
@@ -43,12 +48,23 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
 ]);
 
+// Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
+// so it can't accidentally swallow /api/quotes/<id>/<sub>.
+const QUOTE_BY_ID_RE = /^\/api\/quotes\/[^/]+$/;
+
 /**
- * True when `pathname` is reachable WITHOUT operator authentication — the
- * customer portal, its customer-triggered APIs, public webhooks + crons, public
- * image assets, and the login surface. Everything else is operator-only.
+ * True when `pathname` (+ optional HTTP `method`) is reachable WITHOUT operator
+ * authentication — the customer portal, its customer-triggered APIs, public
+ * webhooks + crons, public image assets, and the login surface. Everything else
+ * is operator-only.
+ *
+ * `method` defaults to GET when omitted (callers that only ever check GET-able
+ * surfaces, e.g. tests, don't need to pass it) — this is method-BLIND for every
+ * path except the bare quote-id route below, where it matters: GET is the public
+ * capability-token read (#81 W6-005), but DELETE on that same path is an
+ * operator-only action and must stay gated.
  */
-export function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string, method: string = 'GET'): boolean {
   // Normalize a single trailing slash before classifying. Next strips these when
   // trailingSlash is false (the default), but a third-party webhook (Twilio /
   // Valor / Zapier) configured WITH one must not 401 once the gate is live — so
@@ -66,9 +82,13 @@ export function isPublicPath(pathname: string): boolean {
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
-  // Customer quote sub-routes: /api/quotes/<id>/(approve|pay|view|decline|request-changes|interested).
+  // Customer quote sub-routes: /api/quotes/<id>/(approve|pay|view|decline|request-changes|interested|simulate-deposit).
   const m = /^\/api\/quotes\/[^/]+\/([^/]+)$/.exec(path);
   if (m && PUBLIC_QUOTE_SUBROUTES.has(m[1]!)) return true;
+
+  // Bare /api/quotes/<id> GET is the public capability-token portal read; DELETE
+  // on the same path is operator-only and must NOT be allowlisted (#81 W6-005).
+  if (method.toUpperCase() === 'GET' && QUOTE_BY_ID_RE.test(path)) return true;
 
   return false;
 }

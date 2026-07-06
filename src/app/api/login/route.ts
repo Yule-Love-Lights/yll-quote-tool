@@ -8,10 +8,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createRouteSupabase } from '@/lib/auth/supabaseServer';
+import { rateLimitResponse } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
+  // W6-GAP-1: this is the single most brute-forceable endpoint in the app (it
+  // guards every operator account) and was the notable public route with no
+  // per-IP throttle. Tight budget — a real operator won't hit 10 attempts/min.
+  const rl = rateLimitResponse(req, { bucket: 'login', limit: 10, windowMs: 60_000 });
+  if (rl) return rl;
+
   let email = '';
   let password = '';
   try {
