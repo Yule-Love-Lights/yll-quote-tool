@@ -37,6 +37,13 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         designId: design?.id ?? null,
         sentAt: quote.quote_sent_at,
         approvedAt: quote.customer_approved_at,
+        // Canonical status + display number for the header pill/ID (BUG-1/BUG-2,
+        // S22): getQuoteRaw already selects these. deriveStatus in the builder
+        // prefers a persisted declined/cancelled over the timestamps.
+        status: quote.status,
+        viewedAt: quote.viewed_at,
+        depositPaidAt: quote.deposit_paid_at,
+        quoteNumber: quote.quote_number,
         // Reopened test quote stays in TEST MODE (ledger #93) — from the saved
         // row, not the URL (is_test is immutable once set).
         isTest: quote.is_test,

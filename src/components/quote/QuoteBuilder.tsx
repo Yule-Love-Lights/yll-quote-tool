@@ -24,6 +24,7 @@ import {
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -226,9 +227,33 @@ export type QuoteBuilderInitial = {
   designId: string | null;
   sentAt: string | null;
   approvedAt: string | null;
+  // Canonical lifecycle fields (BUG-1/BUG-2, S22) so the header pill shows the
+  // real status — deriveStatus honors a persisted declined/cancelled over the
+  // timestamps a still-"sent"-looking row carries — and the ID shows the
+  // sequential display number. All optional: /quote/[id] populates them from the
+  // saved row; a brand-new quote leaves them null (header falls back to the UUID).
+  status?: QuoteStatus | null;
+  viewedAt?: string | null;
+  depositPaidAt?: string | null;
+  quoteNumber?: number | null;
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
+};
+
+// Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
+// so a declined/cancelled quote badges correctly instead of the old
+// approvedAt/sentAt-only 'Approved'/'Sent'. Mirrors the admin quotes list palette.
+const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
+  draft: { label: 'Draft', cls: 'bg-amber-100 text-amber-700' },
+  sent: { label: 'Sent', cls: 'bg-blue-100 text-blue-700' },
+  viewed: { label: 'Viewed', cls: 'bg-purple-100 text-purple-700' },
+  approved: { label: 'Approved', cls: 'bg-green-100 text-green-700' },
+  booked: { label: 'Booked', cls: 'bg-emerald-100 text-emerald-700' },
+  changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
+  declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },
+  cancelled: { label: 'Cancelled', cls: 'bg-gray-200 text-gray-600' },
+  lost: { label: 'Lost', cls: 'bg-gray-200 text-gray-600' },
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
@@ -247,6 +272,20 @@ export default function QuoteBuilder({
   // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
   // banner and Calculate persists the quote as is_test=true (saveQuote).
   const isTest = isTestProp ?? initialQuote?.isTest ?? false;
+  // BUG-1/BUG-2 (S22): the saved quote's canonical status + display number for
+  // the header. deriveStatus prefers a persisted declined/cancelled/etc. over the
+  // timestamps a still-"sent"-looking row carries. Only in edit mode; a brand-new
+  // quote has no saved status/number yet (the ID falls back to the UUID prefix).
+  const savedStatus: QuoteStatus | null = initialQuote
+    ? deriveStatus({
+        quote_sent_at: initialQuote.sentAt,
+        customer_approved_at: initialQuote.approvedAt,
+        deposit_paid_at: initialQuote.depositPaidAt ?? null,
+        viewed_at: initialQuote.viewedAt ?? null,
+        status: initialQuote.status ?? null,
+      })
+    : null;
+  const quoteNumber = initialQuote?.quoteNumber ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -1798,29 +1837,29 @@ export default function QuoteBuilder({
                 Test
               </span>
             )}
-            {initialQuote?.approvedAt ? (
-              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">
-                Approved
+            {/* Canonical lifecycle pill (BUG-1, S22): a declined/cancelled quote
+                reads correctly instead of the old timestamp-only Approved/Sent. */}
+            {savedStatus && (
+              <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${STATUS_BADGE[savedStatus].cls}`}>
+                {STATUS_BADGE[savedStatus].label}
               </span>
-            ) : initialQuote?.sentAt ? (
-              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
-                Sent
-              </span>
-            ) : null}
+            )}
             {/* Quote ID — appears once the quote exists (after the first Calculate
-                on a new quote, or immediately when editing a saved one). */}
+                on a new quote, or immediately when editing a saved one). Shows the
+                sequential display number (#1010) when allocated, else the UUID
+                prefix (a brand-new just-calculated quote until it's reopened). */}
             {savedQuoteId && (
               <span
                 className="text-[11px] font-mono text-gray-500 bg-gray-100 px-2 py-0.5 rounded whitespace-nowrap"
                 title={`Quote ID: ${savedQuoteId}`}
               >
-                ID {savedQuoteId.slice(0, 8)}
+                {quoteNumber != null ? `#${quoteNumber}` : `ID ${savedQuoteId.slice(0, 8)}`}
               </span>
             )}
           </div>
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
-              Editing saved quote <span className="font-mono">{initialQuote?.quoteId.slice(0, 8)}</span> —
+              Editing saved quote <span className="font-mono">{quoteNumber != null ? `#${quoteNumber}` : initialQuote?.quoteId.slice(0, 8)}</span> —
               Calculate updates this quote in place{initialQuote?.approvedAt
                 ? '. ⚠️ The customer already APPROVED this quote; edits change what their portal shows.'
                 : initialQuote?.sentAt
