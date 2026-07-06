@@ -10,9 +10,14 @@
 //   2. CRON-only — Vercel attaches `Authorization: Bearer ${CRON_SECRET}`; required.
 //   3. DEDUP — never re-emails an UNCHANGED order (signature stored in app_settings);
 //      resets when the shortfall clears so a re-appearing shortfall sends again.
-// KNOWN LIMITATION: there's no "on-order/received" tracking, so if the shortfall
-// CHANGES before stock arrives it can re-order items already on order. The dedup
-// + the human-gated /inventory/orders "Send" remain the safer fallbacks.
+// KNOWN LIMITATION (#110 W7-002, MITIGATED): there's no "on-order/received"
+// ledger, so if the shortfall CHANGES before stock arrives, a re-send re-lists
+// the full CUMULATIVE outstanding need (not the delta). The supplier email now
+// states this order REPLACES any prior unshipped order (fulfill as the total, not
+// additively), so a re-send can't cause double-shipping — the cumulative quantity
+// IS the true remaining need. A proper delta-based on-order ledger (order only
+// what isn't already en route) is future work (P8 inventory). The dedup + the
+// human-gated /inventory/orders "Send" remain the safer fallbacks.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';

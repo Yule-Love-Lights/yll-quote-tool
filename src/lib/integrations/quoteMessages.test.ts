@@ -36,6 +36,11 @@ describe('supplier purchase order email (#82 Phase 3)', () => {
     expect(html).toContain('300');
     expect(html).toContain('Noble &lt;Wreath&gt;'); // <> escaped
   });
+  it('states the order REPLACES any prior unshipped order (#110 W7-002 — prevents double-shipping)', () => {
+    const html = supplierOrderEmailHtml({ jobCount: 1, date: 'Jul 6, 2026', lines: [{ sku: 'X', name: 'Y', order: 5 }] });
+    expect(html).toContain('replaces');
+    expect(html).toMatch(/not in addition/i);
+  });
 });
 
 describe('inventory order email (#82 Slice 3)', () => {
