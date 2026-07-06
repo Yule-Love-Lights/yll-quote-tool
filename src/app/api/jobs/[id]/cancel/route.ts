@@ -101,6 +101,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // (quotes.deposit_amount_usd; result.depositAmount only as a legacy fallback).
       const amountUsd = q?.deposit_amount_usd ?? q?.result?.depositAmount ?? 0;
       const at = new Date().toISOString();
+      // Unconditional log so the obligation is traceable even if the DB stamp and
+      // the GHL alert below both fail (mirrors W1-006's double-charge log).
+      console.error(
+        `[api/jobs/:id/cancel] REFUND DUE for quote ${job.quote_id}: $${amountUsd} deposit already charged, order cancelled — refund in Valor`,
+      );
       try {
         await sb
           .from('quotes')
