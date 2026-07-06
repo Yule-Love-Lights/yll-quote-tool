@@ -31,6 +31,27 @@ describe('statusOf', () => {
     // approved without ever being marked sent still reads approved
     expect(statusOf(makeQuote({ customer_approved_at: '2026-06-03T00:00:00Z' }))).toBe('approved');
   });
+
+  // BUG-1 (S22): statusOf now delegates to deriveStatus, so a persisted branch/
+  // terminal status wins over the timestamps a declined/cancelled quote still
+  // carries — previously it read as a stale 'sent'/'approved'.
+  it('honors the persisted terminal/branch status over the timestamps', () => {
+    // A declined quote still has quote_sent_at — must read 'declined', not 'sent'.
+    expect(
+      statusOf(makeQuote({ quote_sent_at: '2026-06-02T00:00:00Z', status: 'declined' })),
+    ).toBe('declined');
+    expect(
+      statusOf(makeQuote({ quote_sent_at: '2026-06-02T00:00:00Z', status: 'changes_requested' })),
+    ).toBe('changes_requested');
+    expect(
+      statusOf(makeQuote({ quote_sent_at: '2026-06-02T00:00:00Z', status: 'cancelled' })),
+    ).toBe('cancelled');
+  });
+
+  it('derives viewed + booked from the extra timestamps', () => {
+    expect(statusOf(makeQuote({ quote_sent_at: '2026-06-02T00:00:00Z', viewed_at: '2026-06-02T01:00:00Z' }))).toBe('viewed');
+    expect(statusOf(makeQuote({ customer_approved_at: '2026-06-03T00:00:00Z', deposit_paid_at: '2026-06-04T00:00:00Z' }))).toBe('booked');
+  });
 });
 
 describe('aggregateCustomers — grouping', () => {

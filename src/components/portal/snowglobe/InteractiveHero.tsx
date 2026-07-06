@@ -123,6 +123,42 @@ export function InteractiveHero({
         : null,
     [design, activePhotoId],
   );
+  // #88 P6b — the normalized [0..1] bounding box of the lit items on the ACTIVE
+  // photo, so the facade glow sits over the roofline (where the lights actually
+  // are) instead of washing the entire photo. Coords are photo-space normalized
+  // by the photo size; the soft elliptical mask (portal-snowglobe.css) forgives
+  // the small object-cover crop on desktop, and mobile is aspect-locked = exact.
+  // null (no scene/geometry) → the CSS falls back to a centered default.
+  const permGlowBox = useMemo(() => {
+    const pw = activeW ?? design?.photoW ?? 0;
+    const ph = activeH ?? design?.photoH ?? 0;
+    const items = activeScene?.items;
+    if (serviceType !== 'permanent' || !pw || !ph || !items?.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (const it of items) {
+      const pts = (it as { points?: number[] }).points;
+      if (!Array.isArray(pts)) continue;
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        const x = pts[i], y = pts[i + 1];
+        if (typeof x !== 'number' || typeof y !== 'number') continue;
+        any = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (!any) return null;
+    // Horizontal span of the lights (where the strand runs) and the y of the
+    // light LINE. The glow spills DOWNWARD from the lights onto the facade —
+    // like a real install throwing light on the wall below — so it starts at the
+    // light line (never above it) and fades out further down the wall.
+    const x0 = minX / pw;
+    const x1 = maxX / pw;
+    const yTop = maxY / ph;                      // bottom edge of the light geometry
+    const yBot = Math.min(0.96, yTop + 0.24);    // fade out ~24% of the height below
+    return { x0, x1, yTop, yBot };
+  }, [serviceType, activeScene, activeW, activeH, design]);
   // A broken hero image (e.g. an expired signed URL) must never show the
   // browser's broken-image icon. When the daytime <img> or the static
   // next/image errors, fall back to a neutral night-sky poster instead.
@@ -251,12 +287,21 @@ export function InteractiveHero({
 
       {/* #88 P6b-3 — permanent scene facade glow (over the photo/bloom, screen-blend).
           Only when a scene color is active; sweeps for a motion scene. */}
-      {permGlow && (
+      {permGlow && !showDaylight && (
         <div
           aria-hidden
           className="portal-perm-glow"
           data-motion={permGlow.motion ? 'true' : 'false'}
-          style={{ ['--perm-glow' as string]: permGlow.gradient } as React.CSSProperties}
+          style={{
+            ['--perm-glow' as string]: permGlow.gradient,
+            // The glow spills DOWN from the light line onto the facade (#88): the
+            // mask is a horizontal window (light x-span) intersected with a
+            // downward fade that starts at the lights — never above them.
+            ['--pg-x0' as string]: `${((permGlowBox?.x0 ?? 0.2) * 100).toFixed(2)}%`,
+            ['--pg-x1' as string]: `${((permGlowBox?.x1 ?? 0.8) * 100).toFixed(2)}%`,
+            ['--pg-ytop' as string]: `${((permGlowBox?.yTop ?? 0.4) * 100).toFixed(2)}%`,
+            ['--pg-ybot' as string]: `${((permGlowBox?.yBot ?? 0.64) * 100).toFixed(2)}%`,
+          } as React.CSSProperties}
         />
       )}
 

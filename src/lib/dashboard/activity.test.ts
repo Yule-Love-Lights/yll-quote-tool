@@ -19,6 +19,19 @@ describe('buildCustomerActivity', () => {
     expect(ev[0]).toMatchObject({ kind: 'created', quoteId: 'q1', total: 100 });
   });
 
+  // BUG-2 (S22): the sequential display number rides every event so the feed
+  // shows `#1010` (falling back to the UUID prefix on a legacy row).
+  it('carries the quote_number onto its events (lifecycle + views), null when absent', () => {
+    const withNum = buildCustomerActivity(
+      [quote({ id: 'q1', created_at: '2026-06-24T10:00:00Z', quote_sent_at: '2026-06-24T14:00:00Z', quote_number: 1010 })],
+      [{ quote_id: 'q1', viewed_at: '2026-06-24T15:00:00Z' }],
+    );
+    expect(withNum.every((e) => e.quoteNumber === 1010)).toBe(true);
+
+    const legacy = buildCustomerActivity([quote({ id: 'q2', created_at: '2026-06-24T10:00:00Z' })], []);
+    expect(legacy[0].quoteNumber).toBeNull();
+  });
+
   it('emits created -> sent -> approved for a full lifecycle, newest first', () => {
     const ev = buildCustomerActivity(
       [

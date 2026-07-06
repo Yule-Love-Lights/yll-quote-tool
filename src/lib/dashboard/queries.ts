@@ -33,7 +33,10 @@ const DASHBOARD_QUOTES_SELECT =
   // Rebook Part D: customer_id feeds the "Rebook last season" button on the
   // customer detail page. NULL on quotes saved before the backfill runs; the
   // button hides itself when no customer_id is resolvable across the quotes.
-  'customer_id';
+  'customer_id, ' +
+  // BUG-2 (S22): the sequential display number (#83) so the customer detail
+  // history + activity feed show `#1010` instead of the raw UUID prefix.
+  'quote_number';
 
 /**
  * Fetch quotes for the dashboard, returning a discriminated result so callers

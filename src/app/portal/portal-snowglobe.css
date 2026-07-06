@@ -54,6 +54,11 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* Scope the mix-blend-mode:screen glow/bloom/flash layers to THIS box so the
+   * permanent facade wash composites only against the hero photo, never the
+   * page behind it. (The parent .portal-snow-stage is position:relative with no
+   * z-index, so without this the screen-blend reached the root stacking context.) */
+  isolation: isolate;
 }
 
 .portal-snow-stage-photo {
@@ -153,8 +158,20 @@
   background-repeat: repeat-x;
   background-size: 200% 100%;
   background-position: 0% 0%;
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
+  /* #88 P6b — the glow spills DOWNWARD from the lights onto the facade (like a
+     real install throwing light on the wall), never onto the roof above them.
+     Two mask layers intersected: a horizontal WINDOW bounding the light's
+     x-span (--pg-x0/x1) and a vertical fade that starts AT the light line
+     (--pg-ytop) and dies out lower on the wall (--pg-ybot), both set inline from
+     the scene by InteractiveHero. Defaults apply if the vars are unset. */
+  -webkit-mask-image:
+    linear-gradient(to right, transparent calc(var(--pg-x0, 20%) - 4%), #000 var(--pg-x0, 20%), #000 var(--pg-x1, 80%), transparent calc(var(--pg-x1, 80%) + 4%)),
+    linear-gradient(to bottom, transparent calc(var(--pg-ytop, 40%) - 1%), #000 var(--pg-ytop, 40%), rgba(0,0,0,0.85) calc(var(--pg-ytop, 40%) + 6%), transparent var(--pg-ybot, 64%));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent calc(var(--pg-x0, 20%) - 4%), #000 var(--pg-x0, 20%), #000 var(--pg-x1, 80%), transparent calc(var(--pg-x1, 80%) + 4%)),
+    linear-gradient(to bottom, transparent calc(var(--pg-ytop, 40%) - 1%), #000 var(--pg-ytop, 40%), rgba(0,0,0,0.85) calc(var(--pg-ytop, 40%) + 6%), transparent var(--pg-ybot, 64%));
+  mask-composite: intersect;
 }
 .portal-perm-glow[data-motion='true'] {
   animation: perm-glow-sweep var(--perm-glow-dur, 6s) linear infinite;

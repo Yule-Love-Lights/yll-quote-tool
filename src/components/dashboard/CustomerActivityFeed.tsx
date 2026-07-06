@@ -64,7 +64,7 @@ export function CustomerActivityFeed({ events }: { events: ActivityEvent[] }) {
                   className="text-xs font-mono hover:underline"
                   style={{ color: 'var(--op-primary)' }}
                 >
-                  Quote {e.quoteId.slice(0, 8)}
+                  Quote {e.quoteNumber != null ? `#${e.quoteNumber}` : e.quoteId.slice(0, 8)}
                 </Link>
                 <span className="ml-auto text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }}>
                   {fmtDateTime(e.at)}
