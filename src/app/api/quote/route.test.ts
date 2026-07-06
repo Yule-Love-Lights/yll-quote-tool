@@ -36,10 +36,17 @@ vi.mock('@/lib/quotes', () => ({
   getQuoteRaw: getRaw,
 }));
 
-// No design linked in these tests → isValidDesignId false, getDesign untouched.
+// No design linked in most tests → isValidDesignId false, getDesign untouched.
+// W1-010: designIdRef.current flips this per-test so the design-projection
+// money branch (route.ts ~398: getDesign → applyProjectionToInputs) gets real
+// route-level coverage instead of always being skipped.
+const { designIdRef, getDesignMock } = vi.hoisted(() => ({
+  designIdRef: { current: false },
+  getDesignMock: vi.fn(async (_id: string) => null as unknown),
+}));
 vi.mock('@/lib/designs', () => ({
-  isValidDesignId: () => false,
-  getDesign: vi.fn(),
+  isValidDesignId: () => designIdRef.current,
+  getDesign: getDesignMock,
 }));
 
 // Auth: gate allows (requireOperator → null); getOperator returns whatever the
@@ -97,6 +104,8 @@ const REAL_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 beforeEach(() => {
   vi.clearAllMocks();
   operatorRef.current = null;
+  designIdRef.current = false;
+  getDesignMock.mockResolvedValue(null);
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
   rawRef.current = {
@@ -507,6 +516,130 @@ describe('POST /api/quote — curtain minilight validation (W1-002)', () => {
     const res = await POST(makeReq({ inputs }));
     expect(res.status).toBe(400);
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+// W1-010: the #27 "design is the master item list" money path (route.ts ~398:
+// getDesign → applyProjectionToInputs replacing the per-unit inputs before
+// calculateQuote AND before saveQuote/updateQuote persists them) had zero
+// route-level coverage — every other test in this file mocks isValidDesignId
+// to false. A scene with one 48"-Noble fullDecor wreath (quoteSize/tier set,
+// so no default-fallback ambiguity) prices at a known, unmistakable $705
+// (BUSINESS_RULES.wreathPrices['48noble'].fullDecor) — a number nothing else
+// in this file produces — so a passing assertion proves the PROJECTED scene
+// drove pricing, not the manual body arrays.
+describe('POST /api/quote — design-projection money path (W1-010)', () => {
+  const DESIGN_ID = 'dddddddd-1111-4ccc-8ddd-eeeeeeeeeeee';
+
+  // One projectable item (a wreath) with an explicit quoteSize/tier so the
+  // projected mini/spritzer/garland arrays stay empty and the wreath price is
+  // unambiguous ($705, not a defaulted size/tier).
+  function designScene() {
+    return {
+      yardsticks: [],
+      items: [
+        {
+          id: 'wreath-1',
+          kind: 'wreath',
+          yardstickId: null,
+          x: 10,
+          y: 10,
+          sizeIn: 48,
+          withLights: true,
+          quoteSize: '48noble',
+          tier: 'fullDecor',
+        },
+      ],
+    };
+  }
+
+  const wreathLine = (r: { lineItems: Line[] }) =>
+    r.lineItems.find((l) => l.id === 'wreath-wreath-1');
+
+  it('prices the PROJECTED design items, not the manual body arrays, and persists the projected inputs', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designScene() });
+
+    // The body's manual wreaths array asks for a cheap 24noble/bow ($200) —
+    // if the route priced this instead of the projection, the assertions below
+    // would see $200/1-manual-wreath instead of $705/the projected wreath.
+    const inputs = validInputs();
+    inputs.wreaths = [{ size: '24noble', tier: 'bow', quantity: 1 }];
+
+    const res = await POST(makeReq({ designId: DESIGN_ID, inputs }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { lineItems: Line[] } };
+
+    // (1) the response prices the PROJECTED items.
+    expect(wreathLine(body.result)?.amount).toBe(705);
+    expect(body.result.lineItems.some((l) => l.amount === 200)).toBe(false); // the manual wreath never priced
+
+    // (2) saveQuote receives the PROJECTED inputs (wreaths array replaced).
+    expect(save).toHaveBeenCalledTimes(1);
+    const savedInputs = save.mock.calls[0]?.[1] as { wreaths: { size: string; tier: string; quantity: number }[] };
+    expect(savedInputs.wreaths).toEqual([
+      { size: '48noble', tier: 'fullDecor', quantity: 1, id: 'wreath-wreath-1', sceneItemIds: ['wreath-1'] },
+    ]);
+    expect(wreathLine(savedResult())?.amount).toBe(705);
+  });
+
+  it('replaces the projected inputs on an UPDATE too (updateQuote receives the projection)', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designScene() });
+
+    const inputs = validInputs();
+    inputs.wreaths = [{ size: '24noble', tier: 'bow', quantity: 1 }]; // stale manual value
+
+    const res = await POST(makeReq({ quoteId: REAL_UUID, designId: DESIGN_ID, inputs }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(wreathLine(updatedResult())?.amount).toBe(705);
+    const updatedInputs = update.mock.calls[0]?.[1] as { wreaths: { size: string; tier: string }[] };
+    expect(updatedInputs.wreaths[0]?.size).toBe('48noble');
+  });
+
+  it('a body with projection-only shapes (a curtain minilight) still 200s once the design projects it', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({
+      id: DESIGN_ID,
+      scene: {
+        yardsticks: [],
+        items: [
+          {
+            id: 'curtain-1',
+            kind: 'strand',
+            yardstickId: null,
+            bulbType: 'mini',
+            spacingIn: 4,
+            drawingStyle: 'strand',
+            colorPattern: [],
+            points: [0, 0, 10, 0],
+            surface: 'curtain',
+            wrapStyle: 'canopy',
+            stringCount: 3,
+          },
+        ],
+      },
+    });
+
+    // The manual body carries NO curtain items — the route must accept the
+    // request purely because the PROJECTED scene contains one (W1-002's fix
+    // validates the projected inputs, not just whatever the body sent).
+    const inputs = validInputs();
+    const res = await POST(makeReq({ designId: DESIGN_ID, inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    const savedInputs = save.mock.calls[0]?.[1] as { miniLightItems: { type: string }[] };
+    expect(savedInputs.miniLightItems[0]?.type).toBe('curtain');
+  });
+
+  it('a permanent quote is NOT projected even when a valid design is linked (permanent skips projection)', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designScene() });
+    const res = await POST(makeReq({ serviceType: 'permanent', designId: DESIGN_ID, inputs: permInputs(100) }));
+    expect(res.status).toBe(200);
+    expect(getDesignMock).not.toHaveBeenCalled();
+    expect(wreathLine(savedResult())).toBeUndefined();
   });
 });
 
