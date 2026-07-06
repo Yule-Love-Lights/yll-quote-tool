@@ -318,6 +318,110 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
   });
 });
 
+// W1-013: the manual-discount, waive-minimum, early-install, and rush/takedown
+// branches that shape the FROZEN approval snapshot total/deposit had zero
+// money-assertion coverage — every existing test above passes inputs:null and
+// leaves installTiming/rushSelected/takedownSelected unset. These lock the
+// route's mapping from quote.inputs into priceSelection/effectiveCharges
+// against real numbers (charter §6 — money paths must be TDD'd), on the same
+// roofline-santas $1200 + spritzer-1 $300 = $1500 subtotal the recompute tests
+// above already establish.
+describe('POST /api/quotes/[id]/approve — discount/waiver/timing/fee branches (W1-013)', () => {
+  it('a manual PERCENTAGE discount (0.2 = 20%) is applied as a fraction, not a whole percent', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ inputs: { discount: { type: 'percentage', amount: 0.2 } } }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $1500 subtotal - 20% ($300) = $1200 taxable, +8.75% tax ($105) = $1305,
+    // deposit = $652.50. A whole-percent bug (15 instead of 0.15-style) would
+    // either produce a wildly different total or 0 selected out entirely.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1305, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
+  });
+
+  it('a manual FLAT discount ($150) is subtracted as dollars, not treated as a rate', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ inputs: { discount: { type: 'flat', amount: 150 } } }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $1500 - $150 flat = $1350 taxable, +8.75% tax ($118.12, floating-point
+    // rounds 118.125 down) = $1468.12, deposit = $734.06.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1468.12, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(734.06, 2);
+  });
+
+  it('waiveMinimum:true approves a sub-$1,000 selection that would otherwise 400', async () => {
+    // Sanity check first: WITHOUT the waiver, a $300 spritzer-only selection is
+    // rejected below-minimum (mirrors the existing "rejects a below-minimum" test).
+    const { client: unwaived } = makeSb(baseQuote());
+    sbRef.current = unwaived;
+    const rejected = await POST(makeReq({ ...validBody, selectedItemIds: ['spritzer-1'] }), { params });
+    expect(rejected.status).toBe(400);
+
+    // WITH inputs.waiveMinimum, the identical selection is approved and priced
+    // for real (not zeroed) — $300 taxable, +8.75% tax ($26.25) = $326.25,
+    // deposit = $163.13.
+    const { client: waived, updatePayloads } = makeSb(
+      baseQuote({ inputs: { waiveMinimum: true } }),
+    );
+    sbRef.current = waived;
+    const res = await POST(makeReq({ ...validBody, selectedItemIds: ['spritzer-1'] }), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(326.25, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(163.13, 2);
+  });
+
+  it('installTiming:"september" freezes the SERVER-derived snapshotInstallDiscountUsd (15%)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ ...validBody, installTiming: 'september' }), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installTiming: string; installDiscountUsd: number; currentTotalUsd: number };
+    };
+    // $1500 * 15% = $225 discount → $1275 taxable, +8.75% tax ($111.56) = $1386.56.
+    expect(snap.customerSelection.installTiming).toBe('september');
+    expect(snap.customerSelection.installDiscountUsd).toBeCloseTo(225, 2);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1386.56, 2);
+  });
+
+  it('rushSelected + takedownSelected land their fees in the recomputed total', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, rushSelected: true, takedownSelected: true }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { rushSelected: boolean; takedownSelected: boolean; currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $1500 + $150 rush + $150 takedown = $1800 taxable, +8.75% tax ($157.50)
+    // = $1957.50, deposit = $978.75.
+    expect(snap.customerSelection.rushSelected).toBe(true);
+    expect(snap.customerSelection.takedownSelected).toBe(true);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1957.5, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(978.75, 2);
+  });
+});
+
 describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', () => {
   it('captures a typed signature into the snapshot', async () => {
     const { client, updatePayloads } = makeSb(baseQuote());
