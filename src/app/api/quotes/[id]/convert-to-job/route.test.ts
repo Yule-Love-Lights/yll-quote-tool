@@ -61,6 +61,7 @@ function makeSb(
     },
     eq: () => builder,
     is: () => builder,
+    or: () => builder, // #124: booking-write status guard clause
     maybeSingle: async () => ({ data: quote, error: null }),
     // .select('id') after .update().eq().is() terminates the update chain
     then: (resolve: (v: unknown) => void) => {
@@ -130,6 +131,19 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('not-approved');
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
+
+  it('#124: 409s when the quote was DECLINED after approval (status=declined, customer_approved_at still set) — never re-books a dead quote', async () => {
+    // approved→declined is now legal (#124), so a declined quote keeps
+    // customer_approved_at with deposit_paid_at NULL. The raw-column gate alone
+    // would let it through; the deriveStatus terminal guard blocks it.
+    const { client } = makeSb({ ...BASE_QUOTE, status: 'declined' });
+    sbRef.current = client;
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-bookable');
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 

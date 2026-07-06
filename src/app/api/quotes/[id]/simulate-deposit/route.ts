@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createJobFromQuote } from '@/lib/jobs';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -34,6 +35,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 type QuoteRow = {
   id: string;
   is_test: boolean;
+  // #124: persisted status so a declined quote (approved→declined keeps
+  // customer_approved_at set) can't be re-booked here. deriveStatus reads it.
+  status: QuoteStatus | null;
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   deposit_amount_usd: number | null;
@@ -53,7 +57,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, is_test, customer_approved_at, deposit_paid_at, deposit_amount_usd, approval_snapshot')
+    .select('id, is_test, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, approval_snapshot')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -91,6 +95,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true, simulated: true });
   }
 
+  // #124 money-safety: refuse to book a DEAD quote (declined / cancelled / lost) —
+  // same guard as convert-to-job + /pay (W1-007). approved→declined is now legal, so
+  // a declined test quote can carry customer_approved_at (passing the approve gate
+  // above) while status='declined'; without this it would be re-booked (declined→booked).
+  const lifecycle = deriveStatus({
+    status: quote.status,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    quote_sent_at: null,
+    viewed_at: null,
+  });
+  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'lost') {
+    return NextResponse.json(
+      { error: `Cannot book a ${lifecycle} quote`, code: 'not-bookable' },
+      { status: 409 },
+    );
+  }
+
   // Amount recorded for parity with the real flow (the snapshot is what the
   // customer "agreed to"); falls back to the stored amount, else 0.
   const depositUsd =
@@ -110,6 +132,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     .eq('id', id)
     .is('deposit_paid_at', null)
+    .or('status.not.in.(declined,cancelled,lost),status.is.null')
     .select('id');
 
   if (stampErr) {

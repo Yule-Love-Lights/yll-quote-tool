@@ -101,25 +101,31 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
  * (draft→sent→viewed→approved→booked); the portal branches (decline / request
  * changes) and the admin cancel/lost can fire from the pre-booked states.
  *
- *   draft             → sent · approved · cancelled · lost   (approved from draft = deliberate offline/in-person close)
+ *   draft             → sent · approved · cancelled · lost · declined   (approved from draft = offline close; declined = the customer said no before it was ever sent)
  *   sent              → viewed · approved · changes_requested · declined · cancelled · lost
  *   viewed            → approved · changes_requested · declined · cancelled · lost
- *   approved          → booked · cancelled            (post-approval signed; only booking or cancel)
- *   booked            → cancelled                     (a paid deal can only be cancelled — refunds manual)
+ *   approved          → booked · cancelled · declined   (#124 — declined = customer backed out BEFORE paying the deposit; approved ⇒ no deposit, so it's money-safe)
+ *   booked            → cancelled                     (a PAID deal is never "declined" — only cancelled, refunds manual)
  *   changes_requested → sent · declined · cancelled · lost   (staff edit → resend, or it falls through)
  *   declined          → (terminal)
  *   cancelled         → (terminal)
  *   lost              → (terminal)
+ *
+ * The `declined` targets (#124) stay money-safe by construction: `deriveStatus`
+ * returns 'booked' the moment a deposit is paid, so any status still reading
+ * 'draft'/'approved' provably has deposit_paid_at = NULL (no charge, no job). The
+ * decline routes ALSO guard the DB write on `.is(deposit_paid_at, null)`, so a
+ * quote that took a deposit can never be declined even under a race.
  *
  * Same-state "transitions" (from === to) are NOT legal here — callers gate real
  * state CHANGES; an idempotent no-op write is the caller's concern, not a
  * transition.
  */
 const ALLOWED_TRANSITIONS: Readonly<Record<QuoteStatus, readonly QuoteStatus[]>> = {
-  draft: ['sent', 'approved', 'cancelled', 'lost'],
+  draft: ['sent', 'approved', 'cancelled', 'lost', 'declined'],
   sent: ['viewed', 'approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
   viewed: ['approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
-  approved: ['booked', 'cancelled'],
+  approved: ['booked', 'cancelled', 'declined'],
   booked: ['cancelled'],
   changes_requested: ['sent', 'declined', 'cancelled', 'lost'],
   declined: [],
