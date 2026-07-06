@@ -36,7 +36,11 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const query = (url.searchParams.get('q') ?? '').trim();
-  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 20), 1), 50);
+  // #110 W6-015: Number() of a non-numeric ?limit= is NaN, and Math.min/max
+  // propagate it, so a bad value used to reach HighLevel as the literal
+  // string 'NaN'. Guard with Number.isFinite and fall back to the default.
+  const rawLimit = Number(url.searchParams.get('limit') ?? 20);
+  const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 20, 1), 50);
 
   if (query.length < 2) {
     return NextResponse.json({ contacts: [] });

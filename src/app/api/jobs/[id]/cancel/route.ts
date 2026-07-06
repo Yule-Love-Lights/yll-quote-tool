@@ -11,6 +11,8 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { getInvoiceByJob, setInvoiceStatus } from '@/lib/invoices';
+import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { refundDueEmailSubject, refundDueEmailHtml } from '@/lib/integrations/quoteMessages';
 
 export const runtime = 'nodejs';
 
@@ -67,28 +69,98 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // state FIRST so we can flag a deposit refund even when no invoice exists yet —
   // a booked-but-not-completed order still took a 50% deposit (review MEDIUM).
   let refundedDeposit = false;
+  let quoteCancelled = true;
   if (job.quote_id) {
     const sb = getSupabaseServiceClient()!;
     const { data: q } = await sb
       .from('quotes')
-      .select('deposit_paid_at')
+      .select('deposit_paid_at, deposit_amount_usd, result, customer_name, highlevel_contact_id, approval_snapshot')
       .eq('id', job.quote_id)
-      .maybeSingle<{ deposit_paid_at: string | null }>();
+      .maybeSingle<{
+        deposit_paid_at: string | null;
+        deposit_amount_usd: number | null;
+        result: { depositAmount?: number } | null;
+        customer_name: string | null;
+        highlevel_contact_id: string | null;
+        approval_snapshot: Record<string, unknown> | null;
+      }>();
     refundedDeposit = !!q?.deposit_paid_at;
     const { error } = await sb.from('quotes').update({ status: 'cancelled' }).eq('id', job.quote_id);
-    if (error) console.error('[api/jobs/:id/cancel] quote cancel failed:', error);
+    if (error) {
+      console.error('[api/jobs/:id/cancel] quote cancel failed:', error);
+      quoteCancelled = false;
+    }
+
+    // W1-008: cancelling a deposit-paid order leaves a real refund obligation.
+    // Persist it into approval_snapshot (merge — never clobber existing keys like
+    // customerSelection/amendments/signature) + alert staff, mirroring the
+    // deposit webhook's "money event → durable record + email" pattern, so the
+    // obligation survives past this response even if it's missed.
+    if (refundedDeposit) {
+      // Same source the invoice layer uses for the actually-charged deposit
+      // (quotes.deposit_amount_usd; result.depositAmount only as a legacy fallback).
+      const amountUsd = q?.deposit_amount_usd ?? q?.result?.depositAmount ?? 0;
+      const at = new Date().toISOString();
+      // Unconditional log so the obligation is traceable even if the DB stamp and
+      // the GHL alert below both fail (mirrors W1-006's double-charge log).
+      console.error(
+        `[api/jobs/:id/cancel] REFUND DUE for quote ${job.quote_id}: $${amountUsd} deposit already charged, order cancelled — refund in Valor`,
+      );
+      try {
+        await sb
+          .from('quotes')
+          .update({
+            approval_snapshot: {
+              ...(q?.approval_snapshot ?? {}),
+              refundDue: { reason: 'cancelled-deposit-paid', amountUsd, at },
+            },
+          })
+          .eq('id', job.quote_id);
+      } catch (err) {
+        console.error('[api/jobs/:id/cancel] refund-due snapshot stamp failed:', err);
+      }
+
+      try {
+        const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+        if (isHighLevelConfigured() && internalContactId) {
+          const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+          await sendEmail({
+            contactId: internalContactId,
+            subject: refundDueEmailSubject(q?.customer_name ?? null),
+            html: refundDueEmailHtml({
+              customerName: q?.customer_name ?? null,
+              amountUsd,
+              adminUrl: `${baseUrl}/quote/${job.quote_id}`,
+            }),
+            emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+          });
+        }
+      } catch (err) {
+        console.error('[api/jobs/:id/cancel] refund-due alert email failed:', err);
+      }
+    }
   }
 
   const refundedInvoice = !!(invoice && invoice.status === 'paid');
   const refundNeeded = refundedInvoice || refundedDeposit;
+  // #110 W6-010: surface a failed source-quote status write so the operator
+  // doesn't see an unqualified success while the quote can still read as
+  // bookable/booked in the portal and quote list.
+  const notes = [
+    refundNeeded
+      ? 'A payment was already taken — issue the refund manually in Valor.'
+      : 'No payment was taken — nothing to refund.',
+  ];
+  if (!quoteCancelled) {
+    notes.push('The job was cancelled but the source quote could not be updated — check manually.');
+  }
   return NextResponse.json({
     ok: true,
     cancelled: true,
     refundedInvoice,
     refundedDeposit,
     refundNeeded,
-    note: refundNeeded
-      ? 'A payment was already taken — issue the refund manually in Valor.'
-      : 'No payment was taken — nothing to refund.',
+    quoteCancelled,
+    note: notes.join(' '),
   });
 }

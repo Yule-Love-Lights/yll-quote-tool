@@ -51,6 +51,7 @@ import {
   MOCK_REVIEWS,
   MOCK_FAQ,
   EVENT_FAQ,
+  PERMANENT_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -259,7 +260,11 @@ export default async function PortalPage({
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
-        initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
+        initialInstallTiming={
+          quote.serviceType === 'permanent' || quote.serviceType === 'event'
+            ? 'none'
+            : quote.installTiming
+        }
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
         // #88 P6b-4 — permanent quotes use their OWN Settings-editable swatch list +
         // full build-your-own palette (any color), separate from the holiday
@@ -369,8 +374,17 @@ export default async function PortalPage({
         {/* 9. Philanthropy */}
         <Philanthropy />
 
-        {/* 10. FAQ — event quotes get event-specific Q&A (#96). */}
-        <FAQ items={quote.serviceType === 'event' ? EVENT_FAQ : MOCK_FAQ} />
+        {/* 10. FAQ — per service_type: event (#96) + permanent (#88, ledger #120)
+             each get their own Q&A; holiday keeps MOCK_FAQ. */}
+        <FAQ
+          items={
+            quote.serviceType === 'event'
+              ? EVENT_FAQ
+              : quote.serviceType === 'permanent'
+                ? PERMANENT_FAQ
+                : MOCK_FAQ
+          }
+        />
 
         {/* 11. Personal contact */}
         <PersonalContact

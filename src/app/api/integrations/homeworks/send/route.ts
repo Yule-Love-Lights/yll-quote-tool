@@ -208,7 +208,15 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', quote.id);
     if (updateErr) {
-      console.warn('[api/integrations/homeworks/send] DB update failed:', updateErr.message);
+      // #110 W6-009: escalate warn -> error and surface it — the send to
+      // home.works ALREADY happened (a real external estimate), so a failed
+      // local stamp means the idempotency guard above (line ~115) never
+      // engages and an operator retry would double-send.
+      console.error(
+        '[api/integrations/homeworks/send] DB stamp failed — resend may double-fire:',
+        { quoteId: quote.id, error: updateErr.message },
+      );
+      return NextResponse.json({ ok: true, sentAt, sentRecorded: false, dbSyncFailed: true });
     }
 
     return NextResponse.json({ ok: true, sentAt });

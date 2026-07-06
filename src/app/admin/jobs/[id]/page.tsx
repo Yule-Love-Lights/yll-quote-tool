@@ -144,8 +144,13 @@ export default function JobDetailPage() {
       setActionMsg(
         body.alreadyCancelled
           ? 'Already cancelled.'
-          : 'Order cancelled.' +
-              (body.refundedInvoice ? ' A paid invoice was cancelled — refund manually in Valor.' : ''),
+          // #110 W7-001: surface the route's refund note on EVERY cancel. The old
+          // code only warned on a paid INVOICE (body.refundedInvoice), so a
+          // booked-but-not-invoiced order whose 50% DEPOSIT was already charged
+          // (the common pre-install cancel) showed a bare "Order cancelled." while
+          // a real refund was owed. The route already computes refundedDeposit +
+          // refundNeeded + a note; consume them, with a ⚠️ cue when a refund is due.
+          : `${body.refundNeeded ? '⚠️ ' : ''}Order cancelled.${body.note ? ` ${body.note}` : ''}`,
       );
       await load();
     } catch (err) {

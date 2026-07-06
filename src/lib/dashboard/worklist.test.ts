@@ -107,6 +107,55 @@ describe('computeWorklist — sent-no-reply', () => {
   });
 });
 
+describe('computeWorklist — terminal statuses never nag (#110 W7-007, B7 class)', () => {
+  const oldSent = new Date(
+    NOW.getTime() - (DASHBOARD_CONFIG.sentNoReplyStaleDays + 5) * 86400_000,
+  ).toISOString();
+  const oldDraft = new Date(
+    NOW.getTime() - (DASHBOARD_CONFIG.draftStaleDays + 5) * 86400_000,
+  ).toISOString();
+
+  it('a declined quote (sent long ago, no approval) does NOT show as sent-no-reply', () => {
+    const out = computeWorklist(
+      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'declined' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('a cancelled quote does NOT nag', () => {
+    const out = computeWorklist(
+      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'cancelled' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('a lost quote does NOT nag', () => {
+    const out = computeWorklist(
+      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'lost' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('a changes_requested quote does NOT nag as sent-no-reply (mirrors needsAction/workflowBoard)', () => {
+    const out = computeWorklist(
+      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'changes_requested' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('a cancelled never-sent draft does NOT nag as draft-stale', () => {
+    const out = computeWorklist(
+      [makeQuote({ created_at: oldDraft, quote_sent_at: null, status: 'cancelled' })],
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+});
+
 describe('computeWorklist — sorting + cap', () => {
   it('sorts oldest-stale first (most overdue at the top)', () => {
     const aDay = 86400_000;

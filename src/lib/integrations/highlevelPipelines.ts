@@ -48,7 +48,7 @@ const PRIMARY_EXCLUDE = 'commercial';
 const STAGE_HINTS: { envVar: string; keywords: string[] }[] = [
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_CREATED', keywords: ['new lead', 'open'] },
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_SENT', keywords: ['bid sent', 'sent'] },
-  { envVar: 'HIGHLEVEL_STAGE_QUOTE_INTERESTED', keywords: ['interested'] },
+  { envVar: 'HIGHLEVEL_STAGE_QUOTE_APPROVED', keywords: ['approved'] },
   { envVar: 'HIGHLEVEL_STAGE_QUOTE_SIGNED', keywords: ['approved', 'signed', 'booked'] },
 ];
 

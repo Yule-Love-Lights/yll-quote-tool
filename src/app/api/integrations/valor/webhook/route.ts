@@ -47,6 +47,8 @@ import {
   receiptEmailHtml,
   internalPaidEmailSubject,
   internalPaidEmailHtml,
+  duplicatePaymentEmailSubject,
+  duplicatePaymentEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
@@ -68,6 +70,62 @@ function hlErrorMessage(err: unknown): string {
       : 'Unknown HighLevel error';
 }
 
+// W1-006: a quote already marked paid can still receive a SECOND approved
+// webhook carrying a DIFFERENT txn id — the customer paid on two live hosted
+// checkout pages for the same order ref. That's a genuine extra charge, not a
+// Valor retry (a retry replays the SAME txn id), so it must leave a durable
+// record + alert staff instead of a bare silent ack. Same-txn-id replays are
+// intentionally NOT flagged here — that's the correct, expected idempotent path.
+async function flagPossibleDuplicatePayment(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quote: Pick<QuoteRow, 'id' | 'customer_name' | 'valor_txn_id' | 'approval_snapshot'>,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<void> {
+  if (!event.approved || !event.txnId || event.txnId === quote.valor_txn_id) return;
+
+  const amountUsd = typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
+  console.error(
+    `[api/integrations/valor/webhook] POSSIBLE DOUBLE CHARGE for quote ${quote.id}: new txn ${event.txnId} differs from txn on file ${quote.valor_txn_id} — refund in Valor`,
+  );
+
+  // Merge into approval_snapshot — never clobber customerSelection/amendments/signature.
+  try {
+    await sb!
+      .from('quotes')
+      .update({
+        approval_snapshot: {
+          ...(quote.approval_snapshot ?? {}),
+          duplicatePayment: { txnId: event.txnId, at: new Date().toISOString(), amountUsd },
+        },
+      })
+      .eq('id', quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] duplicate-payment snapshot stamp failed:', err);
+  }
+
+  // Best-effort staff alert — must never break the 200 ack Valor is waiting on.
+  try {
+    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    if (isHighLevelConfigured() && internalContactId) {
+      await sendEmail({
+        contactId: internalContactId,
+        subject: duplicatePaymentEmailSubject(quote.customer_name),
+        html: duplicatePaymentEmailHtml({
+          customerName: quote.customer_name,
+          amountUsd,
+          newTxnId: event.txnId,
+          existingTxnId: quote.valor_txn_id,
+          adminUrl: `${baseUrl}/quote/${quote.id}`,
+        }),
+        emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+      });
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] duplicate-payment alert email failed:', err);
+  }
+}
+
 type QuoteRow = {
   id: string;
   customer_name: string | null;
@@ -79,12 +137,17 @@ type QuoteRow = {
   highlevel_opportunity_id: string | null;
   deposit_paid_at: string | null;
   deposit_amount_usd: number | null;
+  // The txn id stamped by the ORIGINAL deposit charge — read back so a second
+  // approved webhook (a genuinely distinct charge) can be told apart from a
+  // Valor retry of the SAME transaction (W1-006).
+  valor_txn_id: string | null;
   // Explicit lifecycle status (ledger #83) — used to refuse booking a dead
   // (cancelled / declined / lost) quote even when it still holds a live pay link
   // (W1-007).
   status: import('@/lib/quoteStatus').QuoteStatus | null;
   approval_snapshot: {
     customerSelection?: { currentTotalUsd?: number; currentDepositUsd?: number };
+    [key: string]: unknown;
   } | null;
   // Test Quote (ledger #93): a test quote must NEVER fire a real side effect.
   // In practice one can't reach here (a test quote has no valor_order_ref — /pay
@@ -216,7 +279,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, deposit_paid_at, deposit_amount_usd, status, approval_snapshot, is_test',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -240,7 +303,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Idempotency — already recorded as paid. Don't re-fire side effects.
+  // W1-006: but first check whether this is a GENUINELY DISTINCT approved charge
+  // (a different txn id than the one on file) rather than Valor retrying the same
+  // transaction — the former is a real double charge and must be flagged.
   if (quote.deposit_paid_at) {
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    await flagPossibleDuplicatePayment(sb, quote, event, baseUrl);
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
   }
 
@@ -336,7 +404,12 @@ export async function POST(req: NextRequest) {
 
   // Lost the race to a concurrent retry — it already recorded the payment and
   // (will) fire the side effects. Acknowledge without double-firing.
+  // W1-006: `quote.valor_txn_id` is the value read BEFORE this claim attempt (the
+  // row was unpaid then), so it's still the right basis to detect a genuinely
+  // distinct second approved charge racing in under a different txn id.
   if (!claimed || claimed.length === 0) {
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    await flagPossibleDuplicatePayment(sb, quote, event, baseUrl);
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
   }
 
@@ -407,6 +480,11 @@ export async function POST(req: NextRequest) {
     const r = await triggerAutoPOIfBusy({ minJobCount: 5 });
     if (r.ok && r.fired) {
       console.info(`[api/integrations/valor/webhook] auto-PO fired (${r.items} SKUs across ${r.jobCount} jobs)`);
+    } else if (!r.ok) {
+      // #110 W6-003: triggerAutoPOIfBusy resolves {ok:false} on a send failure
+      // (never throws), so this was previously silent — the automatic supplier
+      // order not going out would leave no trace.
+      console.error('[api/integrations/valor/webhook] auto-PO failed:', r.status, r.error);
     }
   };
 

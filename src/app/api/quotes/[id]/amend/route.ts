@@ -29,6 +29,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
 import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -244,8 +245,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // W1-004: re-sync to the AGREED new total (on the selection basis), not the
       // full quote.result.total — the breakdown lines stay from result for display,
       // the load-bearing total/balance use newTotal (same as the amendment trail).
+      //
+      // #125-1: this is the THIRD invoice write-path (after createInvoiceFromJob +
+      // setInvoiceTaxOverride, both fixed by #384). When tax is overridden,
+      // computeInvoiceTotals subtracts pricing.taxAmount from the total — so the
+      // whole-quote tax against a partial/amended newTotal would OVER-remove and
+      // UNDER-BILL. Scale the removable tax to the amended basis (exact under the
+      // flat rate: newTotal = taxable × (1+rate) ⇒ newTotal/fullTotal = taxable ratio),
+      // mirroring the other two write paths.
+      const fullTotal = quote.result.total ?? 0;
+      const scaledTax =
+        fullTotal > 0
+          ? round2((quote.result.taxAmount ?? 0) * (newTotal / fullTotal))
+          : (quote.result.taxAmount ?? 0);
       const totals = computeInvoiceTotals(
-        { ...quote.result, total: newTotal },
+        { ...quote.result, taxAmount: scaledTax, total: newTotal },
         depositPaid,
         { taxOverridden: invoiceForSync.tax_overridden },
       );

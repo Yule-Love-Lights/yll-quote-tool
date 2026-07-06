@@ -1,6 +1,6 @@
 import type { DashboardQuote, ServiceType } from './types';
 import { SERVICE_TYPES } from './types';
-import { serviceTypeOf } from './serviceMetrics';
+import { serviceTypeOf, isTerminalStatus } from './serviceMetrics';
 
 const MS_PER_DAY = 86_400_000;
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -34,7 +34,7 @@ export function monthlyRevenue(quotes: DashboardQuote[], now: Date, months = 12)
     index.set(key, point);
   }
   for (const q of quotes) {
-    if (!q.customer_approved_at) continue;
+    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/lost
     const point = index.get(monthKey(q.customer_approved_at));
     if (point) point.revenue += q.total ?? 0;
   }
@@ -48,7 +48,7 @@ export type ServiceRevenueSlice = { service: ServiceType; label: string; revenue
 export function revenueByService(quotes: DashboardQuote[]): ServiceRevenueSlice[] {
   const totals: Record<ServiceType, number> = { holiday: 0, permanent: 0, event: 0 };
   for (const q of quotes) {
-    if (!q.customer_approved_at) continue;
+    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/lost
     totals[serviceTypeOf(q)] += q.total ?? 0;
   }
   return SERVICE_TYPES.map(s => ({ service: s, label: SERVICE_LABEL[s], revenue: totals[s] }));
@@ -77,7 +77,11 @@ export function computeInsightStats(quotes: DashboardQuote[]): InsightStats {
 
   for (const q of quotes) {
     allTotalSum += q.total ?? 0;
-    const isApproved = !!q.customer_approved_at;
+    // B7 (#110 W7-006): a cancelled/declined/lost quote is NOT a win even if it
+    // once carried customer_approved_at — exclude it from the booked/approved
+    // rollups. It still counts as `reached` (it was sent), so closeRatio
+    // correctly treats a fallen-through deal as reached-but-not-won.
+    const isApproved = !!q.customer_approved_at && !isTerminalStatus(q);
     if (q.quote_sent_at || isApproved) reached += 1;
     if (isApproved) {
       approved += 1;
