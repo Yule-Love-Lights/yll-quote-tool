@@ -90,7 +90,7 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **21 dis
 | `HIGHLEVEL_PIPELINE_ID` | Holiday Lights sales pipeline ID | `api/integrations/highlevel/attach/route.ts` |
 | `HIGHLEVEL_STAGE_QUOTE_CREATED` | Stage: new quote built | attach route |
 | `HIGHLEVEL_STAGE_QUOTE_SENT` | Stage: quote sent to customer | `quotes/[id]/send/route.ts` |
-| `HIGHLEVEL_STAGE_QUOTE_INTERESTED` | Stage: customer approved on portal | `quotes/[id]/approve/route.ts` |
+| `HIGHLEVEL_STAGE_QUOTE_APPROVED` | Stage moved to when the deposit is PAID (Valor webhook); falls back to SIGNED | `api/integrations/valor/webhook/route.ts` |
 | `HIGHLEVEL_STAGE_QUOTE_SIGNED` | Stage: home.works reports signature | `api/integrations/homeworks/signed/route.ts` |
 | `HOMEWORKS_ZAPIER_WEBHOOK_URL` | Zapier Catch Hook for outbound quote→home.works | `integrations/homeworks.ts` |
 | `HOMEWORKS_SIGNED_SECRET` | Shared secret validating the inbound signature webhook (`x-homeworks-secret`) | `api/integrations/homeworks/signed/route.ts` |
@@ -107,7 +107,7 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **21 dis
 | `NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID` | Global YouTube walkthrough video ID for all portals (public ID, not a secret) | `lib/portal/adapter.ts` |
 
 **Discrepancies found during the scan (flag for Naldo):**
-- `HIGHLEVEL_STAGE_QUOTE_INTERESTED` was **used in code but missing from `.env.local.example`** — it has now been **added** to the example. Make sure your real `.env.local` sets it, or customer approval will silently fail to advance the CRM stage.
+- `HIGHLEVEL_STAGE_QUOTE_INTERESTED` was a dead config knob — no production code ever read it (the deposit-paid path in the Valor webhook actually reads `HIGHLEVEL_STAGE_QUOTE_APPROVED`, falling back to `HIGHLEVEL_STAGE_QUOTE_SIGNED`). Removed from the settings page, `.env.local.example`, and the pipeline-guess hints; `HIGHLEVEL_STAGE_QUOTE_APPROVED` added in its place (W1-020).
 - `.env.local.example` references a dev script `scripts/list-highlevel-pipelines.ts` that **does not exist** in the repo (comment softened). Use `listPipelines()` from `src/lib/integrations/highlevel.ts` to discover pipeline/stage IDs.
 
 ---

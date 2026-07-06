@@ -79,7 +79,7 @@ describe('guessAssignments', () => {
     // "Make Quote" stage.
     expect(g.HIGHLEVEL_STAGE_QUOTE_CREATED.value).toBe('open');
     expect(g.HIGHLEVEL_STAGE_QUOTE_SENT.value).toBe('bidsent');
-    expect(g.HIGHLEVEL_STAGE_QUOTE_INTERESTED.value).toBe('interested');
+    expect(g.HIGHLEVEL_STAGE_QUOTE_APPROVED.value).toBe('approved');
     expect(g.HIGHLEVEL_STAGE_QUOTE_SIGNED.value).toBe('approved');
   });
 

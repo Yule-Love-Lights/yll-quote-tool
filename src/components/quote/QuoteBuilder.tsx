@@ -1368,10 +1368,22 @@ export default function QuoteBuilder({
     // #92 — re-check fulfillability against the FRESHEST design at Send time: the
     // breakdown-driven gate can be stale if the operator edited the canvas after
     // Calculate. Flush the editor's pending save, re-fetch the live scene, re-check.
-    // Fails open (offered unknown / fetch error → don't block on the re-check).
+    // Fails open (offered unknown / fetch error → don't block on the re-check) —
+    // EXCEPT a flush rejection: #110 #80-102 (sibling of W3-006), a flush failure
+    // means an in-flight edit never made it to the server, so proceeding would
+    // send the customer a link priced/gated off a stale, pre-edit scene. Warn
+    // and abort instead.
+    if (designId && editorFlushRef.current) {
+      try {
+        await editorFlushRef.current();
+      } catch {
+        setSendStatus('idle');
+        setSendError('Design may not have saved — retry before sending');
+        return;
+      }
+    }
     if (designId && offeredIsKnown(offeredColors)) {
       try {
-        await editorFlushRef.current?.();
         const dres = await fetch(`/api/designs/${designId}`);
         const ddata = await dres.json();
         if (dres.ok) {
@@ -1386,7 +1398,7 @@ export default function QuoteBuilder({
           }
         }
       } catch {
-        // The re-check itself failed (flush/network) — don't block the send on it.
+        // The re-check itself failed (network) — don't block the send on it.
       }
     }
 
@@ -1478,8 +1490,16 @@ export default function QuoteBuilder({
       // Flush a pending design edit first (#8 M6): /api/quote projects the
       // design's scene server-side, so an un-persisted edit would price a
       // stale design. No-op when nothing's pending.
+      // #110 #80-102 (sibling of W3-006): a flush rejection here would silently
+      // price a stale, pre-edit scene — warn instead of proceeding as if the
+      // operator's latest edits were included.
       if (designId && editorFlushRef.current) {
-        try { await editorFlushRef.current(); } catch { /* price with last-saved scene */ }
+        try {
+          await editorFlushRef.current();
+        } catch {
+          setError('Design may not have saved — retry before calculating');
+          return;
+        }
       }
       const res = await fetch('/api/quote', {
         method: 'POST',
