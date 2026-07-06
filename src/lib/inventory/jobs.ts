@@ -174,8 +174,10 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
     }
   }
 
-  const { bindings } = await getInventoryBindings();
-  const lines = projectMaterials(scene, bindings, {}, colorChoice);
+  // #110 W7-009: pass clipRules through (see purchaseOrder.ts) so the job work
+  // order / print sheet / order email / prep stock-deduction include clips too.
+  const { bindings, clipRules } = await getInventoryBindings();
+  const lines = projectMaterials(scene, bindings, clipRules, colorChoice);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
   const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
