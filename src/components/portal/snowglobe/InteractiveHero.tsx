@@ -31,6 +31,8 @@ import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
+import { permanentSceneById } from '@/lib/design/permanentScenes';
+import { colorOf } from '@/components/design/editor-core/colors';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -72,9 +74,32 @@ export function InteractiveHero({
     selectedItemIds,
     hiddenSceneItemIds,
     colorOverride,
+    colorSchemeId,
     showDaylight,
     activeName,
   } = useSelection();
+  // #88 P6b-3 — permanent scenes animate the live design. Map the active scene id
+  // to its motion effect; a static scene (or any non-permanent quote) → null (the
+  // design renders static). Only the HERO animates (perf); reprise/gallery stay static.
+  const heroAnimation = useMemo(() => {
+    if (serviceType !== 'permanent') return null;
+    const sc = permanentSceneById(colorSchemeId);
+    return sc && (sc.effect === 'chase' || sc.effect === 'cycle')
+      ? { effect: sc.effect, speedMs: sc.speedMs }
+      : null;
+  }, [serviceType, colorSchemeId]);
+  // #88 P6b-3 — the facade glow gradient for the active permanent scene. Built from
+  // the scene's live palette (colorOverride), tinted via the configured palette hex.
+  // null (no wash) for non-permanent quotes and for "as designed" (colorOverride
+  // null) — the glow only shows for an explicit scene color. Motion scenes sweep it.
+  const permGlow = useMemo(() => {
+    if (serviceType !== 'permanent' || !design || !colorOverride || colorOverride.length === 0) return null;
+    const hexOf = (id: string) => palette?.find((c) => c.id === id)?.hex ?? colorOf(id).hex;
+    const hexes = colorOverride.map(hexOf);
+    // Repeat the first color at the end so the 200%-wide sweep loops seamlessly.
+    const stops = hexes.length === 1 ? `${hexes[0]}, ${hexes[0]}` : [...hexes, hexes[0]].join(', ');
+    return { gradient: `linear-gradient(90deg, ${stops})`, motion: !!heroAnimation };
+  }, [serviceType, design, colorOverride, palette, heroAnimation]);
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   // #13 multi-image: which photo the hero shows (null = the base photo). The
@@ -178,6 +203,7 @@ export function InteractiveHero({
             photoH={activeH}
             hiddenIds={hiddenSceneItemIds}
             colorOverride={colorOverride}
+            animation={heroAnimation}
             palette={palette}
             renderSettings={renderSettings}
             className="portal-snow-stage-photo absolute inset-0"
@@ -221,6 +247,17 @@ export function InteractiveHero({
         className="portal-snow-stage-bloom"
         data-level={packageId}
       />
+
+      {/* #88 P6b-3 — permanent scene facade glow (over the photo/bloom, screen-blend).
+          Only when a scene color is active; sweeps for a motion scene. */}
+      {permGlow && (
+        <div
+          aria-hidden
+          className="portal-perm-glow"
+          data-motion={permGlow.motion ? 'true' : 'false'}
+          style={{ ['--perm-glow' as string]: permGlow.gradient } as React.CSSProperties}
+        />
+      )}
 
       {/* Brand watermark (#45) — sits over the photo, outside the brightness-
           filtered photo element so it stays consistent across packages. */}

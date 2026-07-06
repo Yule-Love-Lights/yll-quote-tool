@@ -59,10 +59,9 @@ import {
   CUSTOM_SCHEME_ID,
   DEFAULT_COLOR_SCHEME_ID,
   isKnownColorSchemeId,
-  isPermanentColorSchemeId,
-  PERMANENT_COLOR_SCHEMES,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
+import { isPermanentColorSchemeId, PERMANENT_COLOR_SCHEMES } from '@/lib/design/permanentScenes';
 import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';

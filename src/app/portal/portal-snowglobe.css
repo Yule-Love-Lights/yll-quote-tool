@@ -135,6 +135,35 @@
 .portal-snow-stage-bloom[data-level='B'] { opacity: 0.72; }
 .portal-snow-stage-bloom[data-level='C'] { opacity: 1.0; }
 
+/* #88 P6b-3 — permanent scene FACADE GLOW. A soft colored wash that tints the
+   house with the live scene colors, approximating a real RGB install (bare
+   roofline dots alone read muted). `mix-blend: screen` ADDS light like the amber
+   bloom above; the mask concentrates it on the upper facade/roofline and fades it
+   toward the ground; blur keeps it a wash, not hard bands. `--perm-glow` is the
+   scene gradient set inline; a motion scene sweeps it (chase); static scenes hold.
+   Only rendered when a scene palette is active (never for "as designed"). */
+.portal-perm-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.42;
+  filter: blur(16px);
+  background-image: var(--perm-glow, none);
+  background-repeat: repeat-x;
+  background-size: 200% 100%;
+  background-position: 0% 0%;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
+}
+.portal-perm-glow[data-motion='true'] {
+  animation: perm-glow-sweep var(--perm-glow-dur, 6s) linear infinite;
+}
+@keyframes perm-glow-sweep {
+  from { background-position: 0% 0%; }
+  to { background-position: -200% 0%; }
+}
+
 /* Top + bottom legibility gradient. Top band darkened (#61) because the
    "Here's your home" heading now sits up there, over the photo's sky which can
    be near-white (esp. in daylight mode, which gets no brightness filter). */
@@ -238,6 +267,11 @@
   .portal-snow-stage-photo,
   .portal-snow-stage-bloom {
     transition: none !important;
+  }
+  /* #88 P6b-3 — hold the permanent glow static (the canvas dots also hold via the
+     JS reduced-motion check), so a motion-sensitive viewer gets a still wash. */
+  .portal-perm-glow[data-motion='true'] {
+    animation: none !important;
   }
   .portal-snow-flash {
     animation: none !important;

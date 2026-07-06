@@ -58,7 +58,7 @@ import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
-import { PERMANENT_COLOR_SCHEMES } from '@/lib/design/colorSchemes';
+import { PERMANENT_COLOR_SCHEMES } from '@/lib/design/permanentScenes';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
