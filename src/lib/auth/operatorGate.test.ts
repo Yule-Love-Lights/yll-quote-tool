@@ -18,7 +18,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
     // The portal lets the customer approve, pay, view, decline, request changes,
     // and signal interest — all gated only by the quote UUID, never operator auth.
     // Missing any one of these 401s a real customer once the gate is enabled.
-    for (const sub of ['approve', 'pay', 'pay-balance', 'view', 'decline', 'request-changes', 'interested']) {
+    for (const sub of ['approve', 'pay', 'pay-balance', 'view', 'decline', 'request-changes', 'interested', 'simulate-deposit']) {
       const p = `/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/${sub}`;
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -27,6 +27,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
   it('treats public webhooks + crons + the login API as public', () => {
     for (const p of [
       '/api/login',
+      '/api/health', // uptime monitor probe — booleans only, no PII/secrets (#81 W6-001)
       '/api/integrations/valor/webhook',
       '/api/integrations/homeworks/signed',
       '/api/integrations/whatsapp/webhook', // Twilio webhook (signature-verified in the route, #82)
@@ -64,7 +65,6 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/integrations/highlevel/attach',
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/send', // operator action
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/video', // operator-managed
-      '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60', // DELETE
       '/api/inbox', // #58 operator-only open-items feed
       '/api/dashboard/handled', // #58 operator action
       '/api/dashboard/dismiss', // #58 operator action
@@ -91,5 +91,17 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/api/quotesX/y/approve')).toBe(false);
     expect(isPublicPath('/api/quotes/y/delete')).toBe(false);
     expect(isPublicPath('/api/quotes/y/send')).toBe(false); // operator action, not customer
+  });
+
+  it('treats /api/health as public (uptime monitor probe, #81 W6-001)', () => {
+    expect(isPublicPath('/api/health')).toBe(true);
+  });
+
+  it('allows bare GET /api/quotes/<id> (capability-token portal read) but keeps DELETE operator-only (#81 W6-005)', () => {
+    const p = '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(p, 'POST')).toBe(false);
   });
 });

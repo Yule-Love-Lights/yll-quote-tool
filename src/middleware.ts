@@ -21,7 +21,7 @@ export async function middleware(req: NextRequest) {
   if (process.env.AUTH_GATE_ENABLED !== 'true') return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-  if (isPublicPath(pathname)) return NextResponse.next();
+  if (isPublicPath(pathname, req.method)) return NextResponse.next();
 
   // Authenticated operator? getUser() re-validates the JWT server-side (not the
   // unverified getSession). `res` carries any rotated session cookies, so we

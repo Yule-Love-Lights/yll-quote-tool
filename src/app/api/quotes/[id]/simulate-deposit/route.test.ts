@@ -1,13 +1,16 @@
-// Tests for the operator-gated simulate-deposit route (#93). It must: gate on
-// requireOperator, REFUSE a non-test quote (400), require approval (409), be
-// idempotent when already paid, and on success atomically book + auto-create the
-// Job (createJobFromQuote). Auth, Supabase, and the jobs layer are mocked.
+// Tests for the simulate-deposit route (#93 / #81 W6-008). This route is
+// reachable by an UNAUTHENTICATED customer-portal caller (capability-token auth
+// model, same as /approve and /pay — no requireOperator call) so the is_test
+// check IS the security boundary: it must REFUSE a non-test quote (403) before
+// anything else runs, so an anon caller can only ever affect a test quote. Also:
+// require approval (409), be idempotent when already paid, and on success
+// atomically book + auto-create the Job (createJobFromQuote). Supabase and the
+// jobs layer are mocked.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { NextResponse, type NextRequest } from 'next/server';
+import { type NextRequest } from 'next/server';
 
-const { requireOperatorMock, createJobFromQuote } = vi.hoisted(() => ({
-  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+const { createJobFromQuote } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
@@ -43,13 +46,11 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => makeSb(),
 }));
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
 
 import { POST } from './route';
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
-const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
 function makeReq(): NextRequest {
   return {} as unknown as NextRequest;
@@ -60,7 +61,6 @@ function ctx() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  requireOperatorMock.mockResolvedValue(null);
   claimWins = true;
   quoteRow = {
     id: ID,
@@ -73,18 +73,13 @@ beforeEach(() => {
 });
 
 describe('POST /api/quotes/[id]/simulate-deposit (#93)', () => {
-  it('returns the gate response (401) when the operator gate denies — no job created', async () => {
-    requireOperatorMock.mockResolvedValueOnce(denied401());
-    const res = await POST(makeReq(), ctx());
-    expect(res.status).toBe(401);
-    expect(createJobFromQuote).not.toHaveBeenCalled();
-  });
-
-  it('400s and creates no job for a NON-test quote', async () => {
+  it('#81 W6-008: refuses (403) an anonymous caller on a NON-test (real) quote — creates no job', async () => {
+    // This route has no requireOperator call — the is_test check is the only
+    // thing standing between an anonymous portal caller and a real quote.
     quoteRow = { ...quoteRow, is_test: false };
     const res = await POST(makeReq(), ctx());
     const json = await res.json();
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(json.code).toBe('not-test');
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });

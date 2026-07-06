@@ -1,27 +1,30 @@
-// Simulate a deposit payment for a TEST quote (ledger #93). OPERATOR-ONLY.
+// Simulate a deposit payment for a TEST quote (ledger #93).
 //
 // POST /api/quotes/[id]/simulate-deposit
 // Body: none — the quote id is in the URL.
 // Response: { ok: true, booked: true, simulated: true, paidAt } | { error, code? }
 //
 // A test quote never touches Valor. Instead of a real hosted-page charge, the
-// portal renders "Simulate deposit paid", which calls this route. It mirrors the
-// Valor webhook's booking path EXACTLY — atomic claim on deposit_paid_at →
+// portal renders "Simulate deposit paid" on the ANONYMOUS customer portal
+// (DepositCheckout.tsx calls this route directly, unauthenticated, for a quote
+// with is_test===true) — so this route follows the SAME capability-token auth
+// model as /approve and /pay: the quote id is the token, no operator session
+// required (#81 W6-008; it is allowlisted as a PUBLIC_QUOTE_SUBROUTE). It mirrors
+// the Valor webhook's booking path EXACTLY — atomic claim on deposit_paid_at →
 // status='booked' → createJobFromQuote — so a TEST Job appears and flows into the
 // fulfillment Kanban. But there is NO card charge, NO receipt, and NO auto-PO
 // trigger (a test job must never reach the real supplier order).
 //
 // Guards:
-//   - operator-only (requireOperator, dormant until AUTH_GATE_ENABLED) — this is
-//     a staff testing tool, never a customer-reachable endpoint, so it is NOT in
-//     the operatorGate public allowlist.
-//   - REFUSES a non-test quote (400) so it can never bypass a real deposit.
+//   - HARD, non-bypassable is_test===true check, checked FIRST after the quote
+//     loads — an anonymous caller can therefore only ever affect a test quote. A
+//     real (non-test) quote is refused with 403 before anything else runs, so
+//     this route can never be used to skip or fake a real deposit.
 //   - idempotent: the atomic claim + createJobFromQuote's own one-job-per-quote
 //     guard make concurrent / repeated clicks safe.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
 import { createJobFromQuote } from '@/lib/jobs';
 
 export const runtime = 'nodejs';
@@ -38,8 +41,6 @@ type QuoteRow = {
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const denied = await requireOperator();
-  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
@@ -63,12 +64,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // HARD GUARD: this route only ever touches TEST data. Refusing a real quote
-  // here means it can never be used to skip a real Valor deposit.
+  // HARD GUARD (#81 W6-008): this route is reachable by an unauthenticated
+  // customer-portal caller, so this check IS the auth boundary — it must run
+  // before anything else and must never be bypassable. Refusing a real quote
+  // here means an anon caller can never use this route to skip or fake a real
+  // deposit. 403 (not 400): this isn't a bad request, it's "you may not do this
+  // to this quote."
   if (!quote.is_test) {
     return NextResponse.json(
       { error: 'Not a test quote — refusing to simulate a deposit', code: 'not-test' },
-      { status: 400 },
+      { status: 403 },
     );
   }
 
