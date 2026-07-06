@@ -37,6 +37,11 @@ export type DashboardQuote = {
    *  (e.g. the dashboard KPI path) leave it undefined; the customer detail page
    *  adds it via DASHBOARD_QUOTES_SELECT. */
   customer_id?: string | null;
+  /** Sequential display number (#83, SPEC §4.6) — the human-friendly `#1010`.
+   *  Optional: NULL on legacy rows / surfaces that don't select it; the customers
+   *  detail page adds it via DASHBOARD_QUOTES_SELECT and falls back to the
+   *  truncated UUID when absent. */
+  quote_number?: number | null;
 };
 
 /** The 5 KPIs shown in the header strip. */
@@ -110,8 +115,12 @@ export type EventSummary = {
   bookedRevenue: number;
 };
 
-/** The latest lifecycle state of a customer's most recent quote. */
-export type CustomerStatus = 'draft' | 'sent' | 'approved';
+/** The latest lifecycle state of a customer's most recent quote. Now the FULL
+ *  canonical status set (BUG-1, S22): the old draft|sent|approved triple came
+ *  from a timestamp-only `statusOf`, so a declined/cancelled/booked quote read
+ *  as a stale 'sent'/'approved'. Aliased to QuoteStatus so the customers list +
+ *  detail history show the same badge the admin list + Workflow board do. */
+export type CustomerStatus = QuoteStatus;
 
 /** One customer = all quotes that share a stable customer key (#58 Phase 3).
  *  Aggregated from the quotes table — no separate customers table. */

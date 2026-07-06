@@ -196,7 +196,9 @@ export default async function CustomerDetailPage({
                   .map(q => (
                     <tr key={q.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                       <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(q.created_at)}</td>
-                      <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.id.slice(0, 8)}</td>
+                      {/* Sequential display number (#83) when allocated; falls
+                          back to the truncated UUID on legacy rows (BUG-2, S22). */}
+                      <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">
