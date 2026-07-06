@@ -81,6 +81,21 @@ describe('selectDrawableLineGroups (#51)', () => {
     expect(selectDrawableLineGroups(lines, ['gingerbread']).map((g) => g.key)).toEqual(['gingerbread']);
     expect(selectDrawableLineGroups(lines, []).map((g) => g.key)).toEqual([]);
   });
+
+  it('labelOverrides remaps a group label (e.g. permanent "Front of House")', () => {
+    const lines: PortalSatelliteLines = { ...empty, santas: [line(2)], gingerbread: [line(2)] };
+    const groups = selectDrawableLineGroups(lines, undefined, { santas: 'Front of House', gingerbread: 'Sides' });
+    expect(groups.find((g) => g.key === 'santas')!.label).toBe('Front of House');
+    expect(groups.find((g) => g.key === 'gingerbread')!.label).toBe('Sides');
+  });
+
+  it('omitting labelOverrides keeps the default labels (holiday/event unchanged)', () => {
+    const lines: PortalSatelliteLines = { ...empty, santas: [line(2)], gingerbread: [line(2)] };
+    const groups = selectDrawableLineGroups(lines, undefined, undefined);
+    expect(groups.find((g) => g.key === 'santas')!.label).toBe('Santa Roofline');
+    expect(groups.find((g) => g.key === 'gingerbread')!.label).toBe('Gingerbread');
+    expect(selectDrawableLineGroups(lines).find((g) => g.key === 'santas')!.label).toBe('Santa Roofline');
+  });
 });
 
 describe('permanentAllowedSatelliteKeys (#88 permanent satellite fix)', () => {

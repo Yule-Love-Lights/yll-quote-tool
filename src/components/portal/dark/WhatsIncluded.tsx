@@ -186,6 +186,11 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // quote. undefined for holiday/event so their satellite view is unchanged.
   const allowedSatelliteKeys =
     serviceType === 'permanent' ? permanentAllowedSatelliteKeys(items.map((li) => li.id)) : undefined;
+  // Satellite legend label fix: "Santa Roofline"/"Gingerbread" are holiday
+  // terms — on a permanent quote the legend should read "Front of House"/"Sides"
+  // instead. undefined for holiday/event so their legend is unchanged.
+  const satelliteLabelOverrides =
+    serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
   const {
     isItemSelected,
     toggleItem,
@@ -227,11 +232,13 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           >
             Your {activeName} — line by line.
           </h2>
-          <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
-            {locked
-              ? "This is your booked quote — here's everything included, line by line."
-              : "Toggle anything off to remove it and we'll update your total automatically."}
-          </p>
+          {(locked || items.length > 1) && (
+            <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
+              {locked
+                ? "This is your booked quote — here's everything included, line by line."
+                : "Toggle anything off to remove it and we'll update your total automatically."}
+            </p>
+          )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
         </div>
 
@@ -312,7 +319,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             data, the lit render stays full-width on its own. */}
         {design &&
           (!!design.satelliteUrl &&
-          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys).length > 0 ? (
+          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys, satelliteLabelOverrides).length > 0 ? (
             <div
               className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
@@ -324,7 +331,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
                 <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
-                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} />
+                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
           ) : (

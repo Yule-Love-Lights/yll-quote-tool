@@ -149,13 +149,15 @@ export function InteractiveHero({
       }
     }
     if (!any) return null;
-    const cx = ((minX + maxX) / 2) / pw;
-    const cy = ((minY + maxY) / 2) / ph;
-    // Half-extent of the lights + a glow-bleed margin, clamped so the wash is
-    // never a hard dot nor the whole frame.
-    const rx = Math.min(0.6, (maxX - minX) / 2 / pw + 0.14);
-    const ry = Math.min(0.4, (maxY - minY) / 2 / ph + 0.12);
-    return { cx, cy, rx, ry };
+    // Horizontal span of the lights (where the strand runs) and the y of the
+    // light LINE. The glow spills DOWNWARD from the lights onto the facade —
+    // like a real install throwing light on the wall below — so it starts at the
+    // light line (never above it) and fades out further down the wall.
+    const x0 = minX / pw;
+    const x1 = maxX / pw;
+    const yTop = maxY / ph;                      // bottom edge of the light geometry
+    const yBot = Math.min(0.96, yTop + 0.24);    // fade out ~24% of the height below
+    return { x0, x1, yTop, yBot };
   }, [serviceType, activeScene, activeW, activeH, design]);
   // A broken hero image (e.g. an expired signed URL) must never show the
   // browser's broken-image icon. When the daytime <img> or the static
@@ -285,18 +287,20 @@ export function InteractiveHero({
 
       {/* #88 P6b-3 — permanent scene facade glow (over the photo/bloom, screen-blend).
           Only when a scene color is active; sweeps for a motion scene. */}
-      {permGlow && (
+      {permGlow && !showDaylight && (
         <div
           aria-hidden
           className="portal-perm-glow"
           data-motion={permGlow.motion ? 'true' : 'false'}
           style={{
             ['--perm-glow' as string]: permGlow.gradient,
-            // Center + radii of the elliptical mask = where the lights are (#88).
-            ['--perm-glow-cx' as string]: `${((permGlowBox?.cx ?? 0.5) * 100).toFixed(2)}%`,
-            ['--perm-glow-cy' as string]: `${((permGlowBox?.cy ?? 0.4) * 100).toFixed(2)}%`,
-            ['--perm-glow-rx' as string]: `${((permGlowBox?.rx ?? 0.5) * 100).toFixed(2)}%`,
-            ['--perm-glow-ry' as string]: `${((permGlowBox?.ry ?? 0.28) * 100).toFixed(2)}%`,
+            // The glow spills DOWN from the light line onto the facade (#88): the
+            // mask is a horizontal window (light x-span) intersected with a
+            // downward fade that starts at the lights — never above them.
+            ['--pg-x0' as string]: `${((permGlowBox?.x0 ?? 0.2) * 100).toFixed(2)}%`,
+            ['--pg-x1' as string]: `${((permGlowBox?.x1 ?? 0.8) * 100).toFixed(2)}%`,
+            ['--pg-ytop' as string]: `${((permGlowBox?.yTop ?? 0.4) * 100).toFixed(2)}%`,
+            ['--pg-ybot' as string]: `${((permGlowBox?.yBot ?? 0.64) * 100).toFixed(2)}%`,
           } as React.CSSProperties}
         />
       )}

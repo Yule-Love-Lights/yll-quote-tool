@@ -21,13 +21,14 @@ function isDrawable(line: PortalSatelliteLine): boolean {
 export function selectDrawableLineGroups(
   lines: PortalSatelliteLines | null | undefined,
   allowedKeys?: SatelliteLineGroup['key'][],
+  labelOverrides?: Partial<Record<SatelliteLineGroup['key'], string>>,
 ): SatelliteLineGroup[] {
   if (!lines) return [];
   const groups: SatelliteLineGroup[] = [
-    { key: 'santas', color: '#ef4444', label: 'Santa Roofline', lines: lines.santas ?? [] },
-    { key: 'gingerbread', color: '#3b82f6', label: 'Gingerbread', lines: lines.gingerbread ?? [] },
-    { key: 'c9', color: '#10b981', label: 'C9 roofline', lines: lines.c9 ?? [] },
-    { key: 'stake', color: '#a855f7', label: 'Stake Lighting', lines: lines.stake ?? [] },
+    { key: 'santas', color: '#ef4444', label: labelOverrides?.santas ?? 'Santa Roofline', lines: lines.santas ?? [] },
+    { key: 'gingerbread', color: '#3b82f6', label: labelOverrides?.gingerbread ?? 'Gingerbread', lines: lines.gingerbread ?? [] },
+    { key: 'c9', color: '#10b981', label: labelOverrides?.c9 ?? 'C9 roofline', lines: lines.c9 ?? [] },
+    { key: 'stake', color: '#a855f7', label: labelOverrides?.stake ?? 'Stake Lighting', lines: lines.stake ?? [] },
   ];
   const allowedSet = allowedKeys ? new Set(allowedKeys) : null;
   return groups

@@ -27,6 +27,7 @@ export function SatelliteRoofView({
   className = 'mt-10 md:mt-12',
   inRow = false,
   allowedSatelliteKeys,
+  labelOverrides,
 }: {
   design: PortalDesign;
   // Root wrapper classes — defaults to its own top margin; the caller can
@@ -43,9 +44,13 @@ export function SatelliteRoofView({
   // otherwise independent of what permanent strands were sold). Undefined
   // (holiday/event, the default) draws every drawable group — byte-unchanged.
   allowedSatelliteKeys?: SatelliteLineGroup['key'][];
+  // Permanent Lighting legend fix: remaps a group's legend label (e.g.
+  // "Santa Roofline" -> "Front of House" on a permanent quote). Undefined
+  // (holiday/event, the default) leaves every label unchanged.
+  labelOverrides?: Partial<Record<SatelliteLineGroup['key'], string>>;
 }) {
   const { satelliteUrl, satelliteLines, satelliteW, satelliteH } = design;
-  const groups = selectDrawableLineGroups(satelliteLines, allowedSatelliteKeys);
+  const groups = selectDrawableLineGroups(satelliteLines, allowedSatelliteKeys, labelOverrides);
   // a11y/consistency fix (W4-026): a broken/expired satellite URL used to fall
   // through to the browser's broken-image icon inside "Where the lights go"
   // (the hero already guards its images the same way). Hide the whole section

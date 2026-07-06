@@ -158,14 +158,20 @@
   background-repeat: repeat-x;
   background-size: 200% 100%;
   background-position: 0% 0%;
-  /* #88 P6b — localize the wash to WHERE THE LIGHTS ARE. An elliptical mask
-     centered on the lit-items' bounding box (--perm-glow-cx/cy, radii
-     --perm-glow-rx/ry, set inline from the scene by InteractiveHero) confines
-     the glow to the roofline region and fades it out before the photo edges,
-     instead of the old full-width top-to-bottom wash that tinted the whole
-     image. Defaults (centered) apply if the vars are ever unset. */
-  -webkit-mask-image: radial-gradient(ellipse var(--perm-glow-rx, 50%) var(--perm-glow-ry, 28%) at var(--perm-glow-cx, 50%) var(--perm-glow-cy, 40%), rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 58%, transparent 82%);
-  mask-image: radial-gradient(ellipse var(--perm-glow-rx, 50%) var(--perm-glow-ry, 28%) at var(--perm-glow-cx, 50%) var(--perm-glow-cy, 40%), rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 58%, transparent 82%);
+  /* #88 P6b — the glow spills DOWNWARD from the lights onto the facade (like a
+     real install throwing light on the wall), never onto the roof above them.
+     Two mask layers intersected: a horizontal WINDOW bounding the light's
+     x-span (--pg-x0/x1) and a vertical fade that starts AT the light line
+     (--pg-ytop) and dies out lower on the wall (--pg-ybot), both set inline from
+     the scene by InteractiveHero. Defaults apply if the vars are unset. */
+  -webkit-mask-image:
+    linear-gradient(to right, transparent calc(var(--pg-x0, 20%) - 4%), #000 var(--pg-x0, 20%), #000 var(--pg-x1, 80%), transparent calc(var(--pg-x1, 80%) + 4%)),
+    linear-gradient(to bottom, transparent calc(var(--pg-ytop, 40%) - 1%), #000 var(--pg-ytop, 40%), rgba(0,0,0,0.85) calc(var(--pg-ytop, 40%) + 6%), transparent var(--pg-ybot, 64%));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent calc(var(--pg-x0, 20%) - 4%), #000 var(--pg-x0, 20%), #000 var(--pg-x1, 80%), transparent calc(var(--pg-x1, 80%) + 4%)),
+    linear-gradient(to bottom, transparent calc(var(--pg-ytop, 40%) - 1%), #000 var(--pg-ytop, 40%), rgba(0,0,0,0.85) calc(var(--pg-ytop, 40%) + 6%), transparent var(--pg-ybot, 64%));
+  mask-composite: intersect;
 }
 .portal-perm-glow[data-motion='true'] {
   animation: perm-glow-sweep var(--perm-glow-dur, 6s) linear infinite;
