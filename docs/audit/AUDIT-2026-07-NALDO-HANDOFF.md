@@ -215,3 +215,30 @@ Method: 15 finders (5 sub-areas × correctness/efficiency/quality) → 155 raw �
 correctness (largest-remainder for any multi-way split — cf. W7-093) · no silent 0/NaN price on a missing field ·
 override/discount interaction · idempotency on any money-mutating path. Run it as a small finder→verify pass like
 the other waves; dedupe against W1 (the holiday engine) since these mirror its shape.
+
+---
+
+## Heads-up — Jason's S21 changes that touch YOUR domain (2026-07-06)
+
+> These are LIVE on master already (Jason-authorized, route-level only — none edited your libs like
+> `jobs.ts`/`purchaseOrder.ts`/`invoices.ts`). Flagged here so you know before the Aug–Oct trial.
+
+- **W6-003 (PR #395)** — the **Valor deposit webhook** now `console.error`s when your **auto-PO** send fails
+  (`triggerAutoPOIfBusy` resolves `{ok:false}` — was previously swallowed silently). Route-level log only.
+- **W6-010 (PR #395)** — **`jobs/[id]/cancel`** now surfaces a failed source-quote status write in the response
+  (`quoteCancelled:false` + a note) instead of unqualified success. Route-level only; `jobs.ts` untouched.
+- **W1-006 (PR #403)** — the **Valor webhook** now flags a genuine **second/duplicate approved charge** (two open
+  checkout tabs, distinct txn_id): stamps `approval_snapshot.duplicatePayment` + staff email + error-log, still 200-acks.
+- **W1-008 (PR #403)** — **`jobs/[id]/cancel`** now records a **refund obligation** on a cancelled deposit-paid order:
+  stamps `approval_snapshot.refundDue` + staff email + error-log. Route-level only.
+- **W1-068 (STILL OPEN → yours to decide):** `createJobFromQuote` (`jobs.ts:307`) snapshots `line_items` from the FULL
+  `quote.result.lineItems` with no selection filter, so a job's fulfillment reference includes items the customer
+  deselected. Cosmetic (doesn't affect money); the portal-selection-id → `result.lineItems[].id` mapping is gnarly.
+  **Fix it in your lane, or leave** — your call.
+
+## #83 auto-charge — Jason wants your input (2026-07-06)
+
+Jason is **keeping Valor auto-charge OFF for now** (balance is collected via the customer pay-link, which you shipped).
+He's flagging it for **you to weigh in on whether to pursue** MIT auto-charge at all before/after the trial. If yes, the
+blocker is **W1-012** (amend computes `requiresReconsent` but nothing enforces it — a booked order amended UP could
+MIT-charge a total the customer never re-approved). Full spec + staging recipe: `docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md`.

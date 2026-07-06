@@ -16,6 +16,7 @@ import { SignaturePad, type CapturedSignature } from './SignaturePad';
 import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { InstallTiming, PackageId } from '../types';
+import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -41,6 +42,7 @@ export function buildApprovePayload(
     takedownSelected: boolean;
     colorSchemeId: string;
     customPattern: string[];
+    permanentEffect?: SceneEffect;
     installTiming: InstallTiming;
     breakdown: { discount: number };
   },
@@ -56,6 +58,7 @@ export function buildApprovePayload(
     takedownSelected: selection.takedownSelected,
     colorSchemeId: selection.colorSchemeId,
     customPattern: selection.customPattern,
+    permanentEffect: selection.permanentEffect ?? DEFAULT_PERMANENT_EFFECT,
     installTiming: selection.installTiming,
     installDiscountUsd: selection.breakdown.discount,
     // #83 Slice B — the e-signature captured in the "Confirm & sign" step.
@@ -114,6 +117,7 @@ export function StickyBottomBar({
     selectedItemIds,
     colorSchemeId,
     customPattern,
+    permanentEffect,
     installTiming,
     breakdown,
   } = useSelection();
@@ -197,6 +201,7 @@ export function StickyBottomBar({
               takedownSelected,
               colorSchemeId,
               customPattern,
+              permanentEffect,
               installTiming,
               breakdown,
             },

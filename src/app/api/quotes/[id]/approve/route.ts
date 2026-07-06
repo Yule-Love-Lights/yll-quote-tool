@@ -61,10 +61,12 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
+import { isPermanentEffect, DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { PermanentWarranty } from '@/lib/permanent/types';
 // Audit fix (g1-route): server-side recompute of the approved selection mirrors
 // exactly what the portal's SelectionContext displays, so we never freeze a
 // client-tampered total/deposit/discount into the authoritative snapshot.
@@ -135,6 +137,7 @@ type ApproveBody = {
   takedownSelected?: boolean;
   colorSchemeId?: string;
   customPattern?: unknown; // #49 — build-your-own pattern (sanitized server-side)
+  permanentEffect?: unknown; // #88 P6b-4 — permanent animation effect (validated server-side)
   installTiming?: 'none' | 'september' | 'october';
   installDiscountUsd?: number;
   // #83 Slice B — optional e-signature captured at approval. Backward-compatible:
@@ -211,6 +214,7 @@ type ApprovalSnapshot = {
     colorSchemeId: string;      // #10 — customer's light color/pattern choice
     customPattern: string[];    // #49 — build-your-own pattern (color ids), [] unless colorSchemeId === 'custom'
     colorIds: string[] | null;  // #101 — the RESOLVED effective colors, frozen at approve-time (null = as-designed) so a later swatch edit can't retro-change this order's materials
+    permanentEffect: SceneEffect | null; // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade); null for holiday/event
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
@@ -236,6 +240,11 @@ type ApprovalSnapshot = {
   // null when none was captured (older clients / not provided). The signature
   // attests to this exact frozen snapshot.
   signature: SignatureSnapshot | null;
+  // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
+  // customer agreed to, frozen so a later Settings edit can never retro-change a
+  // booked customer's terms. Set only for permanent quotes; null for holiday/event
+  // (they have no such card) and for snapshots written before this field existed.
+  permanentWarranty: PermanentWarranty | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -281,30 +290,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // toggle-inclusive amount is already in currentTotal/currentDeposit.
   const reqRushSelected = body.rushSelected === true;
   const reqTakedownSelected = body.takedownSelected === true;
-  // #10 — the customer's light color/pattern choice. A short scheme id; recorded
-  // in the snapshot as the authoritative record of what they approved. Validated
-  // against the known scheme set (presets + 'custom'); anything unknown/absent
-  // falls back to 'as-designed' (older clients / no design / junk POST).
-  // #101 — the LIVE operator-configured swatch list + build-your-own palette.
-  // Validate/sanitize + freeze the color choice against exactly what the customer
-  // saw, so a later Settings edit can't retro-change this approved order.
-  const { swatches } = await getAppSettings();
-  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, swatches.schemes)
-    ? body.colorSchemeId
-    : DEFAULT_COLOR_SCHEME_ID;
-  // #49 — build-your-own pattern, sanitized (offered palette ids only, capped).
-  // Only meaningful when they chose 'custom'; empty otherwise.
-  const customPattern =
-    requestedSchemeId === CUSTOM_SCHEME_ID
-      ? sanitizeCustomPattern(body.customPattern, swatches.buildableColorIds)
-      : [];
-  // Collapse an empty custom selection back to the default so the frozen snapshot
-  // is self-consistent: 'custom' with zero colors renders identically to
-  // 'as-designed', so we store 'as-designed' rather than a contradictory record.
-  const colorSchemeId =
-    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
-      ? DEFAULT_COLOR_SCHEME_ID
-      : requestedSchemeId;
+  // #10 / #88 P6b-2 — load the LIVE operator swatch list now, but validate +
+  // resolve the customer's light-color choice further BELOW (once service_type is
+  // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
+  // quote the operator's live swatch list.
+  const { swatches, permanentWarranty, permanentSwatches } = await getAppSettings();
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -395,6 +385,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const rushSelected = noHolidayFees ? false : reqRushSelected;
   const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
   const installTiming: 'none' | 'september' | 'october' = noHolidayFees ? 'none' : reqInstallTiming;
+
+  // #10 / #88 P6b-2 — resolve + freeze the light-color choice now that we know the
+  // service type. Permanent (#88 P6b-4, RGB pucks) uses its OWN swatch presets +
+  // full build-your-own palette (any color) — the SAME validation path as holiday,
+  // just a different swatch/buildable list. Holiday validates against the live
+  // operator swatch list. Either way the chosen id + its RESOLVED colors are frozen
+  // into the snapshot so a later Settings edit can't retro-change what THIS customer
+  // approved (#101 invariant). The permanent ANIMATION effect freezes separately below.
+  const activeSchemes = isPermanent ? permanentSwatches.schemes : swatches.schemes;
+  const activeBuildable = isPermanent ? permanentSwatches.buildableColorIds : swatches.buildableColorIds;
+  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, activeSchemes)
+    ? body.colorSchemeId
+    : DEFAULT_COLOR_SCHEME_ID;
+  const customPattern =
+    requestedSchemeId === CUSTOM_SCHEME_ID
+      ? sanitizeCustomPattern(body.customPattern, activeBuildable)
+      : [];
+  // Collapse an empty custom selection back to the default so the frozen snapshot
+  // is self-consistent: 'custom' with zero colors renders identically to
+  // 'as-designed', so we store 'as-designed' rather than a contradictory record.
+  const colorSchemeId =
+    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
+      ? DEFAULT_COLOR_SCHEME_ID
+      : requestedSchemeId;
+  // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade), validated. A
+  // permanent quote defaults to Chase when absent/invalid; null for holiday/event.
+  const permanentEffect: SceneEffect | null = isPermanent
+    ? isPermanentEffect(body.permanentEffect)
+      ? body.permanentEffect
+      : DEFAULT_PERMANENT_EFFECT
+    : null;
 
   // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
   // #39/#63/#74/#79) ────────────────────────────────────────────────────────
@@ -537,9 +558,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       takedownSelected,
       colorSchemeId,
       customPattern,
-      // #101 — freeze the resolved colors (from the live swatch list) so #92
-      // materials always match what the customer saw, even after a Settings edit.
-      colorIds: resolveColorChoice(colorSchemeId, customPattern, swatches.schemes),
+      // #101 — freeze the resolved colors (from the active scheme list — permanent
+      // or holiday) so #92 materials always match what the customer saw, even
+      // after a Settings edit.
+      colorIds: resolveColorChoice(colorSchemeId, customPattern, activeSchemes),
+      permanentEffect,
       installTiming,
       installDiscountUsd: snapshotInstallDiscountUsd,
     },
@@ -553,6 +576,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
     pricing: quote.result,
     signature,
+    // #88 P6b-2 — freeze the warranty copy + version for permanent quotes only.
+    permanentWarranty: isPermanent ? permanentWarranty : null,
   };
 
   // Audit fix (g1-route, #43): GUARDED conditional update closes the read-then-

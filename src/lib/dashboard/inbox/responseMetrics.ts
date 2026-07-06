@@ -1,13 +1,23 @@
 // Pure response-time / SLA analytics (#58 Phase 2). Measures the #1 pain —
 // "replying too late" — over inbox items. Response time = handled_at −
-// last_message_at (how long a customer waited). SLA hit-rates reuse the
-// escalation thresholds (within 1h / within 4h). Pure — the store fetches rows.
+// last_inbound_at (how long the CUSTOMER waited, from their last inbound message
+// to when we handled it). SLA hit-rates reuse the escalation thresholds (within
+// 1h / within 4h). Pure — the store fetches rows.
+//
+// #110 W7-003: this used last_message_at, which the reconcile overwrites with our
+// OWN outbound reply's timestamp — so the delta collapsed to ~1 min for any reply
+// sent outside the inbox UI. last_inbound_at is stamped only on inbound touches,
+// so it survives that overwrite. Pre-migration rows fall back to last_message_at.
 
 import { ESCALATION } from './escalation';
 
 export type MetricItem = {
   status: string;
   lastMessageAt: Date | null;
+  /** #110 W7-003: the customer's last INBOUND message time. Optional/null on
+   *  legacy rows (before the column existed) → responseFor falls back to
+   *  lastMessageAt, so existing callers/tests are unaffected. */
+  lastInboundAt?: Date | null;
   handledAt: Date | null;
   handledBy: string | null;
   source: string;
@@ -84,12 +94,15 @@ export function filterByWindow(items: MetricItem[], days: number | null, now: Da
 // ─── Main compute ─────────────────────────────────────────────────────────────
 
 export function computeResponseMetrics(items: MetricItem[], now: Date): ResponseMetrics {
-  const handledItems = items.filter((i) => i.status === 'handled' && i.lastMessageAt && i.handledAt);
+  // #110 W7-003: measure from the customer's last INBOUND (falls back to
+  // last_message_at on legacy rows that predate the last_inbound_at column).
+  const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
+  const handledItems = items.filter((i) => i.status === 'handled' && inboundOf(i) && i.handledAt);
   const openItems = items.filter((i) => i.status === 'unresponded');
 
   // Clamp to 0: an outbound that predates the last inbound shouldn't read negative.
   const responseFor = (i: MetricItem) =>
-    Math.max(0, (i.handledAt as Date).getTime() - (i.lastMessageAt as Date).getTime());
+    Math.max(0, (i.handledAt as Date).getTime() - (inboundOf(i) as Date).getTime());
   const responses = handledItems.map(responseFor);
 
   const within = (limit: number) =>

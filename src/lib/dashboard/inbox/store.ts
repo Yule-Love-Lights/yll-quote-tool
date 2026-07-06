@@ -68,6 +68,12 @@ export type IngestPlan = {
    *  cold-contacting — there's no unresponded lead to track (avoids noise). A
    *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
   skip: boolean;
+  /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
+   *  with NOTHING to persist — same status, same last_message_at, no reopen /
+   *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
+   *  so writing them anyway floods inbox_items (fresh updated_at) + dashboard_activity
+   *  with dead 'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). */
+  noopReingest: boolean;
   contactOp: ContactOp;
   item: ItemRow;
   autoResolved: boolean;
@@ -130,6 +136,24 @@ export function planIngest(input: {
   // skip that escalation email.
   const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
 
+  // #110 W7-004: a resolved item re-ingested with nothing to persist is a no-op.
+  // Restricted to resolved statuses (escalation_level is fixed at 0, so skipping
+  // never freezes an aging unresponded item's display colour) AND an unchanged
+  // last_message_at (our own outbound reply re-read every reconcile is the common
+  // case). Everything that actually changes state — reopen, auto-resolve,
+  // snooze-clear, a newer message — falls through and writes normally.
+  const isResolvedStatus =
+    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
+  const noopReingest =
+    !!existing &&
+    !decision.autoResolved &&
+    !decision.reopened &&
+    !clearFollowedUp &&
+    isResolvedStatus &&
+    decision.status === existing.status &&
+    existing.lastMessageAt != null &&
+    touch.lastMessageAt.getTime() === existing.lastMessageAt.getTime();
+
   const item: ItemRow = {
     source: touch.source,
     external_id: touch.externalId,
@@ -149,6 +173,7 @@ export function planIngest(input: {
 
   return {
     skip: !existing && touch.direction === 'outbound',
+    noopReingest,
     contactOp,
     item,
     autoResolved: decision.autoResolved,
@@ -253,6 +278,14 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
   }
 
+  // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
+  // item upsert AND the 'ingested' activity insert so the every-minute reconcile
+  // cron stops flooding both tables with no-change writes. `existing` is non-null
+  // whenever noopReingest is true.
+  if (plan.noopReingest) {
+    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false };
+  }
+
   // 1. Resolve the contact id.
   let contactId: string | null;
   if (plan.contactOp.kind === 'keep') {
@@ -298,6 +331,11 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // returns to the open list. OMITTED otherwise → the upsert preserves the
   // existing value (re-ingesting the same message keeps the snooze).
   if (plan.clearFollowedUp) itemUpsert.followed_up_at = null;
+  // #110 W7-003: stamp the customer's last INBOUND time only on inbound touches.
+  // OMITTED on outbound → the upsert preserves it, so the auto-resolve (which
+  // overwrites last_message_at with our outbound reply) can't corrupt the
+  // response-time measure (handled_at − last_inbound_at).
+  if (!isAnsweredByDirection(touch.direction)) itemUpsert.last_inbound_at = touch.lastMessageAt.toISOString();
   const { data: itemData, error: itemErr } = await sb
     .from('inbox_items')
     .upsert(itemUpsert, { onConflict: 'source,external_id' })
@@ -744,13 +782,14 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('status, last_message_at, handled_at, handled_by, source, created_at')
+    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at')
     .order('last_message_at', { ascending: false })
     .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((r): MetricItem => ({
     status: r.status as string,
     lastMessageAt: r.last_message_at ? new Date(r.last_message_at as string) : null,
+    lastInboundAt: r.last_inbound_at ? new Date(r.last_inbound_at as string) : null,
     handledAt: r.handled_at ? new Date(r.handled_at as string) : null,
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,

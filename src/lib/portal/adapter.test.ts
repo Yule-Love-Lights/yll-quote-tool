@@ -404,3 +404,54 @@ describe('event schedule (#96)', () => {
     expect(quoteRowToPortalQuote({ row, photos: PHOTOS })!.eventSuggestions).toBeUndefined();
   });
 });
+
+// ── Frozen permanent warranty back-compat (#88 P6b-2) ──────────────────────
+describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (#88 P6b-2)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown): QuoteRowForPortal {
+    return {
+      ...rowWith(result),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('populates approval.permanentWarranty from a well-formed frozen snapshot', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({
+        approvedAt: '2026-07-04T00:00:00Z',
+        customerSelection: { packageId: 'A' },
+        permanentWarranty: { eyebrow: 'Your Protection', heading: 'H', bullets: ['a', 'b'], version: 3 },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.permanentWarranty).toEqual({
+      eyebrow: 'Your Protection',
+      heading: 'H',
+      bullets: ['a', 'b'],
+      version: 3,
+    });
+  });
+
+  it('falls back to null for an OLD approved snapshot with no permanentWarranty (must not crash)', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval).toBeTruthy(); // the quote still loads
+    expect(portal.approval?.permanentWarranty).toBeNull(); // → portal renders live copy
+  });
+
+  it('returns null for a malformed frozen warranty (bad version / non-array bullets)', () => {
+    const bad1 = quoteRowToPortalQuote({
+      row: approvedRow({ customerSelection: {}, permanentWarranty: { version: 'x', bullets: ['a'] } }),
+      photos: PHOTOS,
+    })!;
+    expect(bad1.approval?.permanentWarranty).toBeNull();
+    const bad2 = quoteRowToPortalQuote({
+      row: approvedRow({ customerSelection: {}, permanentWarranty: { version: 2, bullets: 'nope' } }),
+      photos: PHOTOS,
+    })!;
+    expect(bad2.approval?.permanentWarranty).toBeNull();
+  });
+});

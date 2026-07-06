@@ -90,6 +90,39 @@ describe('computeResponseMetrics — clamps negative response times', () => {
   });
 });
 
+describe('computeResponseMetrics — measures from last_inbound_at, not last_message_at (#110 W7-003)', () => {
+  it('uses the customer inbound time even when last_message_at was overwritten by our outbound reply', () => {
+    // Customer messaged 3h ago; we replied via the GHL app just now, and the
+    // reconcile overwrote last_message_at with our outbound's ~now timestamp.
+    const inbound = ago(180 * MIN);
+    const item: MetricItem = {
+      status: 'handled',
+      lastMessageAt: ago(1 * MIN), // corrupted: our outbound reply's time
+      lastInboundAt: inbound, // the real customer message time
+      handledAt: T,
+      handledBy: 'rep-A',
+      source: 'ghl',
+      createdAt: inbound,
+    };
+    const m = computeResponseMetrics([item], T);
+    expect(m.medianResponseMs).toBe(180 * MIN); // 3h wait, NOT ~1min
+  });
+
+  it('falls back to last_message_at when last_inbound_at is absent (legacy rows)', () => {
+    const item: MetricItem = {
+      status: 'handled',
+      lastMessageAt: ago(120 * MIN),
+      lastInboundAt: null,
+      handledAt: T,
+      handledBy: 'rep-A',
+      source: 'ghl',
+      createdAt: ago(120 * MIN),
+    };
+    const m = computeResponseMetrics([item], T);
+    expect(m.medianResponseMs).toBe(120 * MIN);
+  });
+});
+
 // ─── Task 1: buckets + window filter + extended computeResponseMetrics ───────
 
 const T2 = new Date('2026-06-30T12:00:00Z');

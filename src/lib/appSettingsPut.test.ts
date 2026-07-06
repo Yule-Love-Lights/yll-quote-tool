@@ -9,6 +9,7 @@ const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
 import { putAppSettings } from './appSettings';
+import { DEFAULT_PERMANENT_WARRANTY } from './permanent/types';
 
 type StoredRow = { key: string; value: unknown };
 
@@ -85,5 +86,83 @@ describe('putAppSettings (W2-025)', () => {
 
     expect(result.render.spritzerRayDensity).toBe(0.5);
     expect(result.portal.hideEarlyInstallDiscounts).toBe(true);
+  });
+
+  it('permanentSwatches is stored under its OWN key, independent of holiday swatches (#88 P6b-4)', async () => {
+    const fake = makeFake([]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({
+      permanentSwatches: {
+        schemes: [
+          { id: 'as-designed', label: 'As Designed', colorIds: null },
+          { id: 'blue', label: 'Blue', colorIds: ['blue'] },
+        ],
+        buildableColorIds: ['red', 'blue'],
+      },
+    });
+
+    // Stored under permanentSwatches, NOT swatches.
+    expect(result.permanentSwatches.schemes.map((s) => s.id)).toContain('blue');
+    expect(fake.upserts.flat().some((r) => r.key === 'permanentSwatches')).toBe(true);
+    expect(fake.upserts.flat().some((r) => r.key === 'swatches')).toBe(false);
+    // Holiday swatches untouched → still the factory default.
+    expect(result.swatches.schemes.length).toBeGreaterThan(0);
+  });
+});
+
+describe('putAppSettings — permanentWarranty version bump (#88 P6b-2)', () => {
+  it('bumps the version by 1 when the copy changes', async () => {
+    const fake = makeFake([]); // unconfigured → default (version 1)
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({ permanentWarranty: { heading: 'Rock solid.' } });
+
+    expect(result.permanentWarranty.heading).toBe('Rock solid.');
+    expect(result.permanentWarranty.version).toBe(DEFAULT_PERMANENT_WARRANTY.version + 1); // 2
+  });
+
+  it('does NOT bump when the saved copy is byte-identical to the current copy', async () => {
+    const fake = makeFake([
+      { key: 'permanentWarranty', value: { ...DEFAULT_PERMANENT_WARRANTY, version: 5 } },
+    ]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({
+      permanentWarranty: {
+        eyebrow: DEFAULT_PERMANENT_WARRANTY.eyebrow,
+        heading: DEFAULT_PERMANENT_WARRANTY.heading,
+        bullets: DEFAULT_PERMANENT_WARRANTY.bullets,
+      },
+    });
+
+    expect(result.permanentWarranty.version).toBe(5); // no copy change → no bump
+  });
+
+  it('ignores a client-supplied version (server-authoritative — no copy change → no bump)', async () => {
+    const fake = makeFake([
+      { key: 'permanentWarranty', value: { ...DEFAULT_PERMANENT_WARRANTY, version: 3 } },
+    ]);
+    sbRef.current = fake.client;
+
+    // A client tries to force version 99 with no actual copy change.
+    const result = await putAppSettings({
+      permanentWarranty: { version: 99 } as never,
+    });
+
+    expect(result.permanentWarranty.version).toBe(3); // forged version discarded
+  });
+
+  it('bumps once per distinct edit across sequential saves', async () => {
+    const fake = makeFake([
+      { key: 'permanentWarranty', value: { ...DEFAULT_PERMANENT_WARRANTY, version: 2 } },
+    ]);
+    sbRef.current = fake.client;
+
+    const r1 = await putAppSettings({ permanentWarranty: { eyebrow: 'Guarantee' } });
+    expect(r1.permanentWarranty.version).toBe(3);
+
+    const r2 = await putAppSettings({ permanentWarranty: { eyebrow: 'Our Guarantee' } });
+    expect(r2.permanentWarranty.version).toBe(4);
   });
 });

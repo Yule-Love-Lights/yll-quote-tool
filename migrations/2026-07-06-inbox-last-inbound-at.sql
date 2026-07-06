@@ -1,0 +1,14 @@
+-- #110 W7-003: response-time analytics measured reconcile-cron lag, not the real
+-- customer wait — `last_message_at` is overwritten with our OUTBOUND reply's
+-- timestamp on every reconcile, so `handled_at − last_message_at` collapsed to
+-- ~1 min for any reply sent outside the inbox UI (the primary flow via the GHL app).
+--
+-- Fix: track the CUSTOMER's last inbound message time separately. Ingest stamps
+-- this only on inbound touches (never outbound), so it survives the auto-resolve
+-- that overwrites last_message_at. Response time is then handled_at − last_inbound_at.
+--
+-- Nullable, no backfill: historical rows read via the `last_inbound_at ?? last_message_at`
+-- fallback in responseMetrics (their true inbound time is unrecoverable — the bug
+-- already overwrote it); new data is accurate. No index — the metrics query reads
+-- rows in bulk and computes in JS, never filtering on this column.
+alter table public.inbox_items add column if not exists last_inbound_at timestamptz;

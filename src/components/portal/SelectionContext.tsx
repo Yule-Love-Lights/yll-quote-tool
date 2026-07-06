@@ -38,6 +38,7 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   type ColorScheme,
 } from '@/lib/design/colorSchemes';
+import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -119,6 +120,14 @@ type SelectionContextValue = {
    */
   customPattern: string[];
   setCustomPattern: (ids: string[]) => void;
+  /**
+   * #88 P6b-4 — permanent-only ANIMATION effect (Solid / Chase / Fade), chosen
+   * SEPARATELY from the color so any color can play any effect. Drives the hero's
+   * live animation and freezes into the approval snapshot. Unused for holiday/event
+   * (no effect picker renders there).
+   */
+  permanentEffect: SceneEffect;
+  setPermanentEffect: (e: SceneEffect) => void;
   /** #43 — true once the quote is approved: the portal is READ-ONLY. Every
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
@@ -320,6 +329,10 @@ export function SelectionProvider({
   // COLOR_SCHEMES constant), so passing it to DesignCanvas only re-renders the
   // draw layer when it changes.
   const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
+  // #88 P6b-4 — the permanent animation effect, chosen separately from the color.
+  // Opens on Chase (a booked portal re-opens on the default, same as colorSchemeId —
+  // the frozen effect lives in the approval snapshot, not re-displayed here).
+  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(DEFAULT_PERMANENT_EFFECT);
   const [customPattern, setCustomPattern] = useState<string[]>([]);
   // Custom pattern (#49) drives the override when its scheme is active; otherwise
   // resolve the preset. Sanitize the custom list so an invalid/empty pattern can
@@ -472,6 +485,8 @@ export function SelectionProvider({
     buildableColorIds,
     customPattern,
     setCustomPattern: locked ? noop : setCustomPattern,
+    permanentEffect,
+    setPermanentEffect: locked ? noop : setPermanentEffect,
     locked,
     showDaylight,
     toggleDaylight,

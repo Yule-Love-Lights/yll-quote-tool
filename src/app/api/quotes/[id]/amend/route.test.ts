@@ -194,6 +194,33 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
   });
 
+  // GAP 4 (P6b-2 review) — amend spreads the whole snapshot, so the frozen
+  // permanent warranty + the frozen color choice a customer agreed to must survive
+  // an amend unchanged (an amend must never silently alter agreed terms/colors).
+  it('preserves the frozen permanentWarranty + colorIds across an amend', async () => {
+    const frozen = {
+      ...BOOKED_QUOTE,
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 5000, colorSchemeId: 'warm-white', colorIds: ['warm-white'] },
+        pricing: { total: 5000 },
+        permanentWarranty: { eyebrow: 'Your Protection', heading: 'H', bullets: ['a'], version: 4 },
+        amendments: [],
+      },
+    };
+    const sb = makeSb(frozen);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    await POST(req({ reason: 'tweak' }), ctx());
+    const snap = sb.updates.quotes[0].approval_snapshot as {
+      permanentWarranty?: { version: number };
+      customerSelection?: { colorIds?: string[] };
+    };
+    expect(snap.permanentWarranty?.version).toBe(4); // survived the spread
+    expect(snap.customerSelection?.colorIds).toEqual(['warm-white']);
+  });
+
   it('reopens an already-PAID invoice to awaiting_payment when amended up', async () => {
     const sb = makeSb(BOOKED_QUOTE);
     sbRef.current = sb.client;
