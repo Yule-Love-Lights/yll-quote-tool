@@ -20,12 +20,13 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { PortalDesign } from '../types';
-import { selectDrawableLineGroups } from '@/lib/portal/satelliteLines';
+import { selectDrawableLineGroups, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
 
 export function SatelliteRoofView({
   design,
   className = 'mt-10 md:mt-12',
   inRow = false,
+  allowedSatelliteKeys,
 }: {
   design: PortalDesign;
   // Root wrapper classes — defaults to its own top margin; the caller can
@@ -36,9 +37,15 @@ export function SatelliteRoofView({
   // height. The img keeps its natural aspect (h-full w-auto) so the SVG overlay
   // stays pixel-aligned to the roof — no object-cover/contain distortion.
   inRow?: boolean;
+  // Permanent Lighting (#88) fix: restricts which traced line groups are
+  // drawn to only the surfaces actually billed on a permanent quote (the
+  // satellite trace is captured during the holiday roofline flow and is
+  // otherwise independent of what permanent strands were sold). Undefined
+  // (holiday/event, the default) draws every drawable group — byte-unchanged.
+  allowedSatelliteKeys?: SatelliteLineGroup['key'][];
 }) {
   const { satelliteUrl, satelliteLines, satelliteW, satelliteH } = design;
-  const groups = selectDrawableLineGroups(satelliteLines);
+  const groups = selectDrawableLineGroups(satelliteLines, allowedSatelliteKeys);
   // a11y/consistency fix (W4-026): a broken/expired satellite URL used to fall
   // through to the browser's broken-image icon inside "Where the lights go"
   // (the hero already guards its images the same way). Hide the whole section

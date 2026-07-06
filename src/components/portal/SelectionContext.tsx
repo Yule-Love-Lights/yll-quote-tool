@@ -166,13 +166,23 @@ export function computeInitialSelection(
 // item first removes every sibling in the group so Santa's and Gingerbread can
 // never both be selected (the single most money-sensitive selection rule — a
 // double roofline would double-count in the subtotal/approve total).
+//
+// `onlyOnePackage` (#125 permanent tier-selector fix): when the portal only
+// offers ONE package (e.g. a single-surface permanent quote — just "Front of
+// Home"), there is no other tier to fall back to, so unchecking the last
+// remaining item would leave the customer at a zero-package/zero-total state
+// with nothing to re-select from. Deselecting the last item is a no-op in
+// that case; with 2+ packages available the normal toggle-to-empty behavior
+// is unchanged.
 export function nextSelectedItemIds(
   prev: Set<string>,
   itemId: string,
   rooflineGroup: Set<string>,
+  onlyOnePackage = false,
 ): Set<string> {
   const next = new Set(prev);
   if (next.has(itemId)) {
+    if (onlyOnePackage && next.size === 1) return prev;
     next.delete(itemId);
   } else {
     if (rooflineGroup.has(itemId)) {
@@ -360,11 +370,20 @@ export function SelectionProvider({
     [packagesById],
   );
 
+  // #125 — with only one package on offer, there's no other tier to land on,
+  // so the last remaining item can never be unchecked down to zero.
+  const onlyOnePackage = packages.length === 1;
+
   const toggleItem = useCallback((itemId: string) => {
-    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup));
+    // Single-package quote: unchecking the last remaining item would strand the
+    // customer at a zero-package/$0 selection with no tier to fall back to. Make
+    // it a FULL no-op — no selection change AND no flip to Custom — so the tier
+    // label/highlight stays put on the dead click.
+    if (onlyOnePackage && selectedItemIds.size === 1 && selectedItemIds.has(itemId)) return;
+    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup, onlyOnePackage));
     // Any manual item toggle flips selection to Custom.
     setPackageId('D');
-  }, [rooflineGroup]);
+  }, [rooflineGroup, onlyOnePackage, selectedItemIds]);
 
   const isItemSelected = useCallback(
     (itemId: string) => selectedItemIds.has(itemId),

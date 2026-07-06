@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectDrawableLineGroups } from './satelliteLines';
+import { selectDrawableLineGroups, permanentAllowedSatelliteKeys } from './satelliteLines';
 import type { PortalSatelliteLines } from '@/components/portal/types';
 
 const line = (n: number): { points: [number, number][]; label: string } => ({
@@ -67,5 +67,47 @@ describe('selectDrawableLineGroups (#51)', () => {
     const lines = { santas: [line(2)] } as unknown as PortalSatelliteLines;
     const groups = selectDrawableLineGroups(lines);
     expect(groups.map((g) => g.key)).toEqual(['santas']);
+  });
+
+  it('with no allowedKeys arg, returns every drawable group (holiday/event unchanged)', () => {
+    const lines: PortalSatelliteLines = { santas: [line(2)], gingerbread: [line(2)], c9: [line(2)] };
+    expect(selectDrawableLineGroups(lines).map((g) => g.key)).toEqual(['santas', 'gingerbread', 'c9']);
+    expect(selectDrawableLineGroups(lines, undefined).map((g) => g.key)).toEqual(['santas', 'gingerbread', 'c9']);
+  });
+
+  it('allowedKeys restricts the returned groups to only those keys', () => {
+    const lines: PortalSatelliteLines = { santas: [line(2)], gingerbread: [line(2)], c9: [line(2)] };
+    expect(selectDrawableLineGroups(lines, ['santas']).map((g) => g.key)).toEqual(['santas']);
+    expect(selectDrawableLineGroups(lines, ['gingerbread']).map((g) => g.key)).toEqual(['gingerbread']);
+    expect(selectDrawableLineGroups(lines, []).map((g) => g.key)).toEqual([]);
+  });
+});
+
+describe('permanentAllowedSatelliteKeys (#88 permanent satellite fix)', () => {
+  it('maps permanent-front -> santas', () => {
+    expect(permanentAllowedSatelliteKeys(['permanent-front'])).toEqual(['santas']);
+  });
+
+  it('maps permanent-sides -> gingerbread', () => {
+    expect(permanentAllowedSatelliteKeys(['permanent-sides'])).toEqual(['gingerbread']);
+  });
+
+  it('maps both front + sides present -> both keys, in santas -> gingerbread order', () => {
+    expect(permanentAllowedSatelliteKeys(['permanent-sides', 'permanent-front'])).toEqual([
+      'santas',
+      'gingerbread',
+    ]);
+  });
+
+  it('permanent-back has no satellite equivalent -> contributes nothing', () => {
+    expect(permanentAllowedSatelliteKeys(['permanent-back'])).toEqual([]);
+  });
+
+  it('maintenance add-on id does not map to any key', () => {
+    expect(permanentAllowedSatelliteKeys(['permanent-maintenance'])).toEqual([]);
+  });
+
+  it('empty line items -> no allowed keys', () => {
+    expect(permanentAllowedSatelliteKeys([])).toEqual([]);
   });
 });

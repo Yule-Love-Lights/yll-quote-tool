@@ -54,6 +54,11 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* Scope the mix-blend-mode:screen glow/bloom/flash layers to THIS box so the
+   * permanent facade wash composites only against the hero photo, never the
+   * page behind it. (The parent .portal-snow-stage is position:relative with no
+   * z-index, so without this the screen-blend reached the root stacking context.) */
+  isolation: isolate;
 }
 
 .portal-snow-stage-photo {
