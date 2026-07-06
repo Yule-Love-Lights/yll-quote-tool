@@ -9,6 +9,9 @@ export type ActivityEvent = {
   kind: ActivityKind;
   at: string; // ISO timestamp
   quoteId: string;
+  /** Sequential display number (#83) for the `#1010` label; null on legacy rows
+   *  → the feed falls back to the truncated UUID (BUG-2, S22). */
+  quoteNumber: number | null;
   total: number | null;
 };
 
@@ -19,6 +22,7 @@ export type ActivityQuote = {
   quote_sent_at: string | null;
   customer_approved_at: string | null;
   total: number | null;
+  quote_number?: number | null;
 };
 
 // A row from the quote_view_events log. `kind` is 'viewed' or 'interested'
@@ -42,14 +46,16 @@ export function buildCustomerActivity(
   views: ViewEventRow[],
 ): ActivityEvent[] {
   const totalByQuote = new Map<string, number | null>(quotes.map((q) => [q.id, q.total]));
+  const numberByQuote = new Map<string, number | null>(quotes.map((q) => [q.id, q.quote_number ?? null]));
   const knownQuote = new Set(quotes.map((q) => q.id));
   const events: ActivityEvent[] = [];
 
   for (const q of quotes) {
-    events.push({ kind: 'created', at: q.created_at, quoteId: q.id, total: q.total });
-    if (q.quote_sent_at) events.push({ kind: 'sent', at: q.quote_sent_at, quoteId: q.id, total: q.total });
+    const n = q.quote_number ?? null;
+    events.push({ kind: 'created', at: q.created_at, quoteId: q.id, quoteNumber: n, total: q.total });
+    if (q.quote_sent_at) events.push({ kind: 'sent', at: q.quote_sent_at, quoteId: q.id, quoteNumber: n, total: q.total });
     if (q.customer_approved_at)
-      events.push({ kind: 'approved', at: q.customer_approved_at, quoteId: q.id, total: q.total });
+      events.push({ kind: 'approved', at: q.customer_approved_at, quoteId: q.id, quoteNumber: n, total: q.total });
   }
 
   // Viewed: one event per row (every open). Interested: collapse to ONE event
@@ -69,12 +75,19 @@ export function buildCustomerActivity(
         kind: 'viewed',
         at: v.viewed_at,
         quoteId: v.quote_id,
+        quoteNumber: numberByQuote.get(v.quote_id) ?? null,
         total: totalByQuote.get(v.quote_id) ?? null,
       });
     }
   }
   for (const [quoteId, at] of earliestInterested) {
-    events.push({ kind: 'interested', at, quoteId, total: totalByQuote.get(quoteId) ?? null });
+    events.push({
+      kind: 'interested',
+      at,
+      quoteId,
+      quoteNumber: numberByQuote.get(quoteId) ?? null,
+      total: totalByQuote.get(quoteId) ?? null,
+    });
   }
 
   return events.sort((a, b) => {

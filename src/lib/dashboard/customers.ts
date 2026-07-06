@@ -1,11 +1,19 @@
 import type { CustomerStatus, CustomerSummary, DashboardQuote } from './types';
 import { customerKey } from './metrics';
+import { deriveStatus } from '@/lib/quoteStatus';
 
-/** Lifecycle status of a single quote, from its timestamp chain. */
+/**
+ * Lifecycle status of a single quote. BUG-1 (S22): this used to read ONLY the
+ * timestamp chain (approved > sent > draft), so a quote in a state the
+ * timestamps can't express — declined / cancelled / lost / changes_requested —
+ * kept reading as its stale 'sent'/'approved'. It now delegates to the canonical
+ * `deriveStatus` (persisted branch/terminal `status` wins, else the timestamps),
+ * so the customers list + detail history badge matches the admin quotes list,
+ * the Workflow board, and the data layer. Requires `status`/`viewed_at` on the
+ * row — DASHBOARD_QUOTES_SELECT already fetches them.
+ */
 export function statusOf(q: DashboardQuote): CustomerStatus {
-  if (q.customer_approved_at) return 'approved';
-  if (q.quote_sent_at) return 'sent';
-  return 'draft';
+  return deriveStatus(q);
 }
 
 function nameOf(q: DashboardQuote): string | null {
