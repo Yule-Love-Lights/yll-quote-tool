@@ -227,15 +227,20 @@ export function buildPermanentBom(
   const tUnit = input.trackStyle === 'parapet' ? C.trackParapet : C.trackSingle;
   push(tSku, `40" ${input.trackStyle === 'parapet' ? 'parapet' : 'single'} track (${input.trackColor})`, tracks, cost(tSku, tUnit), 'track');
 
-  // Transformers (first = KIT with the system hub; rest bare).
+  // Transformers (first = KIT with the system hub; rest bare). #125-4: a large
+  // job can need 2+ bare supplies of the SAME wattage — emit ONE Qty-N line per
+  // wattage, not a Qty-1 line per unit, so the printed order sheet never lists a
+  // SKU on duplicate rows (and its `key={l.sku}` never collides). There is only
+  // ever one KIT (sizeTransformers puts it on the first unit).
   const units = sizeTransformers(totalLights);
-  for (const u of units) {
-    if (u.kit) {
-      push(`APL11111-${u.watts}-KIT`, `${u.watts}W KIT (power + hub + booster + adapter)`, 1, cost(`APL11111-${u.watts}-KIT`, u.watts === 350 ? C.kit350 : C.kit600), 'power');
-    } else {
-      push(`APL11110-${u.watts}`, `${u.watts}W power supply`, 1, cost(`APL11110-${u.watts}`, u.watts === 350 ? C.xfmr350 : C.xfmr600), 'power');
-    }
+  const kitUnit = units.find((u) => u.kit);
+  if (kitUnit) {
+    push(`APL11111-${kitUnit.watts}-KIT`, `${kitUnit.watts}W KIT (power + hub + booster + adapter)`, 1, cost(`APL11111-${kitUnit.watts}-KIT`, kitUnit.watts === 350 ? C.kit350 : C.kit600), 'power');
   }
+  const bare600 = units.filter((u) => !u.kit && u.watts === 600).length;
+  const bare350 = units.filter((u) => !u.kit && u.watts === 350).length;
+  push('APL11110-600', '600W power supply', bare600, cost('APL11110-600', C.xfmr600), 'power');
+  push('APL11110-350', '350W power supply', bare350, cost('APL11110-350', C.xfmr350), 'power');
 
   // Power injection — per powered segment (per transformer unit).
   const injections = units.reduce((s, u) => s + powerInjectionCount(u.lights), 0);

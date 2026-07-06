@@ -2769,11 +2769,13 @@ export default function QuoteBuilder({
             </button>
           </Section>
 
-          {/* ── Options ── holiday-only. Permanent forces takedown/rush/install off
-              in pricing and uses the $2,500 gate (not the $1,000 waive here), so the
-              whole section is hidden for it. Per-quote discount for permanent is a
-              fast-follow (custom $/ft + custom line items cover v1 price flexibility). */}
-          {form.serviceType !== 'permanent' && (
+          {/* ── Options ── holiday-only (takedown / rush / early-install). BOTH
+              permanent AND event force these off in pricing (permanent uses the
+              $2,500 gate, event carries no seasonal fees), so the whole section is
+              hidden for either — event has its own dates in EventSection. Per-quote
+              discount for permanent is a fast-follow (custom $/ft + custom line
+              items cover v1 price flexibility). */}
+          {form.serviceType !== 'permanent' && form.serviceType !== 'event' && (
           <Section title="Options">
 
             {/* Takedown */}
