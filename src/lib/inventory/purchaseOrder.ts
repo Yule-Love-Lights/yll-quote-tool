@@ -1,8 +1,9 @@
 // src/lib/inventory/purchaseOrder.ts
 // Auto purchase-order generator (#82 Phase 3 — "AI auto-ordering", email channel).
 // DEMAND-DRIVEN + deterministic: aggregate the material needs of the active,
-// not-yet-prepped jobs, subtract on-hand, and the positive shortfall is what to
-// order from the supplier. No arbitrary reorder target, no LLM — the design→SKU
+// not-yet-prepped jobs, subtract on-hand AND what's already open on order (the
+// P8 on-order ledger — #110 W7-002), and the positive remainder is what to order
+// from the supplier. No arbitrary reorder target, no LLM — the design→SKU
 // projection is the intelligence. The actual SEND is human-gated (staff click) —
 // The manual send is human-gated (staff click). An OPTIONAL unattended cron
 // auto-send exists too (off by default behind PO_AUTO_SEND_ENABLED), with a
@@ -13,6 +14,7 @@ import type { Scene } from '@/lib/design/sceneTypes';
 import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
 import { listOnHand } from './onHand';
+import { recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder, type InventoryOrder } from './orders';
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
@@ -21,17 +23,19 @@ import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integra
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { poSentMessage } from '@/lib/integrations/telegramMessages';
 
-export type POInput = { sku: string; needed: number; onHand: number };
-export type POLine = { sku: string; needed: number; onHand: number; order: number };
+export type POInput = { sku: string; needed: number; onHand: number; onOrder: number };
+export type POLine = { sku: string; needed: number; onHand: number; onOrder: number; order: number };
 
-// Pure: per SKU, order the shortfall = ceil(need) − on-hand (floored at 0). Drops
-// anything already covered by stock; sorted by SKU for a stable order sheet.
+// Pure: per SKU, order = ceil(need) − on-hand − on-order (floored at 0 at each
+// step, and the final result never negative). Drops anything already covered by
+// stock + what's already en route; sorted by SKU for a stable order sheet.
 export function computePurchaseOrder(items: POInput[]): POLine[] {
   return items
     .map((i) => {
       const needed = Math.max(0, Math.ceil(i.needed));
       const onHand = Math.max(0, i.onHand);
-      return { sku: i.sku, needed, onHand, order: Math.max(0, needed - onHand) };
+      const onOrder = Math.max(0, i.onOrder);
+      return { sku: i.sku, needed, onHand, onOrder, order: Math.max(0, needed - onHand - onOrder) };
     })
     .filter((l) => l.order > 0)
     .sort((a, b) => a.sku.localeCompare(b.sku));
@@ -43,7 +47,9 @@ export type SupplierPurchaseOrder = { lines: PurchaseOrderLine[]; jobCount: numb
 /**
  * Build the supplier purchase order from current demand: every active job that
  * hasn't been prepped yet (its stock isn't deducted), aggregated and compared to
- * on-hand. Only bound SKUs are orderable (unbound concepts have no SKU). Returns
+ * on-hand MINUS what's already open on order (the P8 ledger — #110 W7-002: a
+ * delta, not the full cumulative shortfall, so a re-send only lists the NEW
+ * need). Only bound SKUs are orderable (unbound concepts have no SKU). Returns
  * empty lines when nothing is short. Untracked SKUs count as 0 on-hand (order the
  * full need — we have no stock record for them).
  */
@@ -102,9 +108,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   }
   if (!needBySku.size) return { lines: [], jobCount: active.length };
 
-  const onHandBySku = new Map((await listOnHand()).map((r) => [r.sku, r.on_hand_qty]));
+  const [onHandRows, onOrderBySku] = await Promise.all([listOnHand(), sumOpenOnOrder()]);
+  const onHandBySku = new Map(onHandRows.map((r) => [r.sku, r.on_hand_qty]));
   const po = computePurchaseOrder(
-    [...needBySku].map(([sku, needed]) => ({ sku, needed, onHand: onHandBySku.get(sku) ?? 0 })),
+    [...needBySku].map(([sku, needed]) => ({
+      sku,
+      needed,
+      onHand: onHandBySku.get(sku) ?? 0,
+      onOrder: onOrderBySku.get(sku) ?? 0,
+    })),
   );
 
   const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
@@ -117,11 +129,34 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
 // ── Email the PO to the supplier (shared by the manual route + the cron) ─────
 export type SendResult = { ok: true } | { ok: false; status: number; error: string };
 
-export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date: string): Promise<SendResult> {
+/**
+ * Email the PO to the supplier AND record it on the on-order ledger (P8, folds
+ * in #110 W7-002). Insert-first: the order is recorded BEFORE the send, so the
+ * worst failure mode is under-ordering (the send never happens, the shortfall
+ * reappears next time, and staff sees a stuck open order to cancel) rather than
+ * an unrecorded send that could double-ship later. On a successful send the row
+ * is stamped sent; on a failed send it's best-effort cancelled so it doesn't sit
+ * around as a phantom open order skewing the next delta calc.
+ */
+export async function emailSupplierPurchaseOrder(
+  po: SupplierPurchaseOrder,
+  date: string,
+  channel: InventoryOrder['channel'],
+): Promise<SendResult> {
   const contactId = process.env.THUNDER_ORDER_CONTACT_ID;
   if (!isHighLevelConfigured() || !contactId) {
     return { ok: false, status: 503, error: 'Supplier order email not configured — needs HighLevel + THUNDER_ORDER_CONTACT_ID' };
   }
+
+  const orderId = await recordOrder({
+    channel,
+    lines: po.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.order })),
+    jobCount: po.jobCount,
+  });
+  if (!orderId) {
+    return { ok: false, status: 500, error: 'Could not record the order — not sent.' };
+  }
+
   try {
     await sendEmail({
       contactId,
@@ -133,6 +168,7 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });
+    await markOrderSent(orderId);
     // #82 follow-up — proactive ping to the inventory group with what was ordered.
     // Best-effort: a ping failure must not flip a successful send into an error.
     try {
@@ -149,6 +185,7 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
     return { ok: true };
   } catch (err) {
     console.error('emailSupplierPurchaseOrder failed:', err);
+    await cancelOrder(orderId); // best-effort — don't leave a phantom open order
     return { ok: false, status: 502, error: 'Failed to send the order email' };
   }
 }
@@ -156,7 +193,10 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
 // ── Unattended auto-send dedup (#82 optional) ────────────────────────────────
 // A stable signature of the order so the weekly cron never re-emails an UNCHANGED
 // PO. Stored in app_settings; reset to '' once the shortfall clears so a
-// re-appearing shortfall sends again.
+// re-appearing shortfall sends again. The P8 on-order ledger is now the PRIMARY
+// guard against duplicate/runaway ordering (it makes the computed order itself a
+// delta); this signature dedup is a belt-and-braces second layer that also
+// avoids emailing the supplier again for a truly unchanged order.
 export function purchaseOrderSignature(lines: { sku: string; order: number }[]): string {
   return lines
     .map((l) => `${l.sku}:${l.order}`)
@@ -213,7 +253,7 @@ export async function triggerAutoPOIfBusy(opts: { minJobCount: number }): Promis
     return { ok: true, fired: false, reason: 'unchanged since last send' };
   }
   const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const res = await emailSupplierPurchaseOrder(po, date);
+  const res = await emailSupplierPurchaseOrder(po, date, 'auto-webhook');
   if (!res.ok) return { ok: false, status: res.status, error: res.error };
   await recordAutoSentSignature(sig);
   return { ok: true, fired: true, signature: sig, jobCount: po.jobCount, items: po.lines.length };

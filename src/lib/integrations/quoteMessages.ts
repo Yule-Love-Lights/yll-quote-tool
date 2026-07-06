@@ -318,11 +318,6 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
     .join('\n');
   return [
     `<p>Hi — please prepare the following order for Yule Love Lights (covers ${input.jobCount} booked job${input.jobCount === 1 ? '' : 's'}, generated ${escapeHtml(input.date)}):</p>`,
-    // #110 W7-002: the auto-PO is demand-driven — each order is our CURRENT total
-    // outstanding need, not a delta. Without an on-order ledger a re-send re-lists
-    // the full running quantity, so we tell the supplier it REPLACES the prior
-    // unshipped order (fulfill this total, not in addition) to prevent double-shipping.
-    `<p style="margin:8px 0;padding:8px 12px;background:#FFF7E6;border-left:3px solid #E8B862;font-size:13px;"><strong>Please note:</strong> this is our current full order as of ${escapeHtml(input.date)}. If you have an earlier order from us that hasn't shipped yet, this <strong>replaces</strong> it — please fulfill this list as the total, not in addition to a previous request.</p>`,
     `<table style="border-collapse:collapse;font-size:13px;">`,
     `<tr style="text-align:left;border-bottom:1px solid #999;"><th style="padding:4px 12px 4px 0;">SKU</th><th style="padding:4px 12px 4px 0;">Item</th><th style="padding:4px 12px 4px 0;text-align:right;">Qty</th></tr>`,
     rows,

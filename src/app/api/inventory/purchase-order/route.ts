@@ -32,7 +32,7 @@ export async function POST() {
     return NextResponse.json({ error: 'Nothing to order — on-hand covers all booked jobs.' }, { status: 400 });
   }
   const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const res = await emailSupplierPurchaseOrder(po, date);
+  const res = await emailSupplierPurchaseOrder(po, date, 'manual');
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.status });
   return NextResponse.json({ ok: true, sent: po.lines.length });
 }
