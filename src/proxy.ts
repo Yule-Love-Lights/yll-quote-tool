@@ -1,5 +1,10 @@
 // Operator-surface auth perimeter (ledger #81, Option B — Supabase Auth).
 //
+// #110 W6-013: Next.js 16 renamed the `middleware` convention to `proxy` (same
+// file location, same behavior — see node_modules/next/dist/docs/01-app/
+// 01-getting-started/16-proxy.md). This is that rename: `src/middleware.ts` →
+// `src/proxy.ts`, exported `middleware` → `proxy`. Functionality is byte-identical.
+//
 // Default-deny: every request is operator-only unless isPublicPath() allows it
 // (the customer portal, customer-triggered quote APIs, public webhooks, image
 // assets, and the login surface). When enabled, access requires a valid
@@ -16,7 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isPublicPath } from '@/lib/auth/operatorGate';
 import { createMiddlewareSupabase } from '@/lib/auth/supabaseServer';
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   // DORMANT BY DEFAULT.
   if (process.env.AUTH_GATE_ENABLED !== 'true') return NextResponse.next();
 
