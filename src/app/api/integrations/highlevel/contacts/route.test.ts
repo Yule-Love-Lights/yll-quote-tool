@@ -46,3 +46,15 @@ describe('GET /api/integrations/highlevel/contacts — operator gate (CRITICAL #
     expect(json.contacts).toHaveLength(1);
   });
 });
+
+describe('GET /api/integrations/highlevel/contacts — limit NaN guard (#110 W6-015)', () => {
+  it('falls back to the default limit when ?limit= is non-numeric', async () => {
+    await GET(makeReq('https://x/api/integrations/highlevel/contacts?q=jane&limit=notanumber'));
+    expect(searchContacts).toHaveBeenCalledWith('jane', 20);
+  });
+
+  it('still clamps a valid numeric limit', async () => {
+    await GET(makeReq('https://x/api/integrations/highlevel/contacts?q=jane&limit=999'));
+    expect(searchContacts).toHaveBeenCalledWith('jane', 50);
+  });
+});

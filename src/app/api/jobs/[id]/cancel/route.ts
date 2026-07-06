@@ -67,6 +67,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // state FIRST so we can flag a deposit refund even when no invoice exists yet —
   // a booked-but-not-completed order still took a 50% deposit (review MEDIUM).
   let refundedDeposit = false;
+  let quoteCancelled = true;
   if (job.quote_id) {
     const sb = getSupabaseServiceClient()!;
     const { data: q } = await sb
@@ -76,19 +77,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .maybeSingle<{ deposit_paid_at: string | null }>();
     refundedDeposit = !!q?.deposit_paid_at;
     const { error } = await sb.from('quotes').update({ status: 'cancelled' }).eq('id', job.quote_id);
-    if (error) console.error('[api/jobs/:id/cancel] quote cancel failed:', error);
+    if (error) {
+      console.error('[api/jobs/:id/cancel] quote cancel failed:', error);
+      quoteCancelled = false;
+    }
   }
 
   const refundedInvoice = !!(invoice && invoice.status === 'paid');
   const refundNeeded = refundedInvoice || refundedDeposit;
+  // #110 W6-010: surface a failed source-quote status write so the operator
+  // doesn't see an unqualified success while the quote can still read as
+  // bookable/booked in the portal and quote list.
+  const notes = [
+    refundNeeded
+      ? 'A payment was already taken — issue the refund manually in Valor.'
+      : 'No payment was taken — nothing to refund.',
+  ];
+  if (!quoteCancelled) {
+    notes.push('The job was cancelled but the source quote could not be updated — check manually.');
+  }
   return NextResponse.json({
     ok: true,
     cancelled: true,
     refundedInvoice,
     refundedDeposit,
     refundNeeded,
-    note: refundNeeded
-      ? 'A payment was already taken — issue the refund manually in Valor.'
-      : 'No payment was taken — nothing to refund.',
+    quoteCancelled,
+    note: notes.join(' '),
   });
 }

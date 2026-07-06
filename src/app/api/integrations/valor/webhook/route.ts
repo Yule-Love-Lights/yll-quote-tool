@@ -407,6 +407,11 @@ export async function POST(req: NextRequest) {
     const r = await triggerAutoPOIfBusy({ minJobCount: 5 });
     if (r.ok && r.fired) {
       console.info(`[api/integrations/valor/webhook] auto-PO fired (${r.items} SKUs across ${r.jobCount} jobs)`);
+    } else if (!r.ok) {
+      // #110 W6-003: triggerAutoPOIfBusy resolves {ok:false} on a send failure
+      // (never throws), so this was previously silent — the automatic supplier
+      // order not going out would leave no trace.
+      console.error('[api/integrations/valor/webhook] auto-PO failed:', r.status, r.error);
     }
   };
 

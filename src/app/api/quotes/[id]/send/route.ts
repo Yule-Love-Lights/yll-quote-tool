@@ -21,12 +21,10 @@
 //      ("Bid Sent"). Non-fatal on failure — the quote is still "sent" locally.
 //   5. Return success
 //
-// Auth model: same as /approve — the quote UUID is the capability token.
-// In practice this is only called from the admin UI, but we don't enforce
-// admin auth here because (a) admin auth is not yet wired in the app and
-// (b) the side effects are low-risk (stage move + timestamp). If abused,
-// the worst case is a stage-move spam on an opportunity the attacker
-// already has the UUID for.
+// Auth model: operator-gated — requireOperator() is called below, same as the
+// other admin-triggered quote actions. (Historically this route also relied on
+// the quote UUID as a capability token before the operator gate was wired in;
+// that no longer applies now that admin auth is enforced.)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
