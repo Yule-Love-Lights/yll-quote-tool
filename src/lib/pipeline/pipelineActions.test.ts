@@ -6,12 +6,13 @@ const base: PipelineRecord = { quoteId: 'q1', quoteStatus: 'draft', isTest: fals
 const kinds = (r: PipelineRecord) => pipelineActions(r).map(a => a.kind);
 
 describe('pipelineActions', () => {
-  it('draft → send channels + mark-approved + details', () => {
+  it('draft → send channels + mark-approved + staff-decline + details', () => {
     // A draft can be staff-approved directly — the "deliberate offline/in-person
     // close" path (ALLOWED_TRANSITIONS.draft includes 'approved'; the staff-approve
     // route accepts it). The menu must surface it so an offline-closed draft isn't
-    // stuck with no approve affordance.
-    expect(kinds(base)).toEqual(['send', 'send', 'send', 'mark-approved', 'details']);
+    // stuck with no approve affordance. #124: staff-decline too — a customer can
+    // decline a quote before it's ever sent (recorded by staff).
+    expect(kinds(base)).toEqual(['send', 'send', 'send', 'mark-approved', 'staff-decline', 'details']);
     expect(pipelineActions(base).filter(a => a.kind === 'send').map(a => (a as {channel:string}).channel))
       .toEqual(['both', 'email', 'sms']);
   });
@@ -27,8 +28,10 @@ describe('pipelineActions', () => {
   it('changes_requested → resend + staff-decline + details', () => {
     expect(kinds({ ...base, quoteStatus: 'changes_requested' })).toEqual(['send', 'send', 'send', 'staff-decline', 'details']);
   });
-  it('approved (unbooked) → convert-to-job + details', () => {
-    expect(kinds({ ...base, quoteStatus: 'approved' })).toEqual(['convert-to-job', 'details']);
+  it('approved (unbooked) → convert-to-job + staff-decline + details', () => {
+    // #124: an approved-but-not-booked quote (no deposit) can still be declined —
+    // the customer backed out before paying. Money-safe: approved ⇒ deposit unpaid.
+    expect(kinds({ ...base, quoteStatus: 'approved' })).toEqual(['convert-to-job', 'staff-decline', 'details']);
   });
   it('booked but job is null (auto-create failed at deposit) → create-job + details', () => {
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: null }))
@@ -66,11 +69,12 @@ describe('pipelineActions', () => {
     for (const s of ['draft', 'sent', 'viewed', 'changes_requested', 'approved', 'booked'] as const)
       expect(kinds({ ...base, quoteStatus: s })).not.toContain('rebook');
   });
-  it('offers staff-decline only from the states a decline is legal FROM (sent/viewed/changes_requested)', () => {
-    // Mirror quoteStatus.ts canTransition(from, "declined") = {sent, viewed, changes_requested}.
-    for (const s of ['sent', 'viewed', 'changes_requested'] as const)
+  it('offers staff-decline exactly from the states a decline is legal FROM (#124: draft/sent/viewed/approved/changes_requested)', () => {
+    // Mirror quoteStatus.ts canTransition(from, "declined") = {draft, sent, viewed,
+    // approved, changes_requested}. NOT from booked (paid → cancel only) or terminals.
+    for (const s of ['draft', 'sent', 'viewed', 'approved', 'changes_requested'] as const)
       expect(kinds({ ...base, quoteStatus: s })).toContain('staff-decline');
-    for (const s of ['draft', 'approved', 'booked', 'declined', 'cancelled', 'lost'] as const)
+    for (const s of ['booked', 'declined', 'cancelled', 'lost'] as const)
       expect(kinds({ ...base, quoteStatus: s })).not.toContain('staff-decline');
   });
   it('staff-decline carries a Mark-declined label', () => {

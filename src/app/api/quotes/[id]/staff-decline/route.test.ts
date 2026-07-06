@@ -132,8 +132,8 @@ describe('POST /api/quotes/[id]/staff-decline', () => {
     expect(snap.staffDeclined.by).toBe('operator@example.com');
     expect(typeof snap.staffDeclined.at).toBe('string');
     expect(snap.staffDeclined.reason).toBe('Went with a competitor');
-    // Guard: the write is filtered to still-declinable rows.
-    expect(orArgs[0]).toContain('status.in.(sent,viewed,changes_requested)');
+    // Guard: the write is filtered to still-declinable rows (#124 adds draft + approved).
+    expect(orArgs[0]).toContain('status.in.(draft,sent,viewed,approved,changes_requested)');
     expect(orArgs[0]).toContain('status.is.null');
   });
 
@@ -153,18 +153,35 @@ describe('POST /api/quotes/[id]/staff-decline', () => {
     expect((await res.json()).status).toBe('declined');
   });
 
-  it('409s when the quote is approved — a signed/approved quote is not declinable', async () => {
+  it('#124: declines an APPROVED (unbooked) quote — customer backed out before paying the deposit', async () => {
     const { client, updatePayloads } = makeSb({
       ...BASE_SENT_QUOTE,
       status: 'approved',
       customer_approved_at: '2026-07-01T02:00:00Z',
+      deposit_paid_at: null, // approved ⇒ no deposit; money-safe to decline
     });
     sbRef.current = client;
-    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const res = await POST(makeReq({ reason: 'changed their mind' }), ctx());
     const json = await res.json();
-    expect(res.status).toBe(409);
-    expect(json.code).toBe('illegal-transition');
-    expect(updatePayloads).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(json.status).toBe('declined');
+    expect(updatePayloads[0].status).toBe('declined');
+  });
+
+  it('#124: declines a DRAFT quote the customer declined before it was ever sent', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...BASE_SENT_QUOTE,
+      status: null, // a draft carries no persisted status; deriveStatus ⇒ 'draft'
+      quote_sent_at: null,
+      viewed_at: null,
+      customer_approved_at: null,
+    });
+    sbRef.current = client;
+    const res = await POST(makeReq({ reason: 'never wanted it' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.status).toBe('declined');
+    expect(updatePayloads[0].status).toBe('declined');
   });
 
   it('409s when the quote is booked (deposit paid)', async () => {

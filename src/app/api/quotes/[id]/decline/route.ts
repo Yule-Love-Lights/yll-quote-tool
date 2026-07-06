@@ -45,11 +45,15 @@ export const runtime = 'nodejs';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REASON_MAX = 2000;
 
-// The set of statuses a decline is legal FROM — derived once from the canonical
-// transition table so this route can never drift from quoteStatus.ts. Used both
-// to short-circuit (current status) and to GUARD the DB write (.in(...)).
-const DECLINABLE_FROM: QuoteStatus[] = QUOTE_STATUSES.filter((s) =>
-  canTransition(s, 'declined'),
+// The statuses a CUSTOMER-initiated decline (this portal route) is legal FROM.
+// #124 widened the state machine so draft + approved → declined are legal too, but
+// those are OPERATOR-only (the /staff-decline route): a customer never self-declines
+// a draft they were never sent, nor un-approves a quote they already signed. So this
+// route keeps its original narrower set — derived from the canonical table (so
+// booked/terminal stay excluded automatically) MINUS the #124 staff-only additions.
+// Used both to short-circuit (current status) and to GUARD the DB write (.in(...)).
+const CUSTOMER_DECLINABLE_FROM: QuoteStatus[] = QUOTE_STATUSES.filter(
+  (s) => canTransition(s, 'declined') && s !== 'draft' && s !== 'approved',
 );
 
 function hlErrorMessage(err: unknown): string {
@@ -119,7 +123,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Status gate (fast path). deriveStatus prefers an explicit branch status and
   // otherwise reads the timestamps. A booked/terminal quote can't be declined.
   const current = deriveStatus(quote);
-  if (!canTransition(current, 'declined')) {
+  if (!CUSTOMER_DECLINABLE_FROM.includes(current)) {
     return NextResponse.json(
       { error: `Cannot decline a quote that is ${current}`, code: 'invalid-status' },
       { status: 409 },
@@ -133,7 +137,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // timestamps), AND the deposit hasn't been paid (booking is the one race that
   // can flip a still-"sent"/NULL row out from under us). `.select('id')` returns
   // the affected rows; zero rows ⇒ we lost the race ⇒ 409.
-  const declinableFilter = `status.in.(${DECLINABLE_FROM.join(',')}),status.is.null`;
+  const declinableFilter = `status.in.(${CUSTOMER_DECLINABLE_FROM.join(',')}),status.is.null`;
   const { data: updatedRows, error: updErr } = await sb
     .from('quotes')
     .update({ status: 'declined' satisfies QuoteStatus, decline_reason: reason })
