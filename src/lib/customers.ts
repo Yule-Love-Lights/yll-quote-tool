@@ -176,8 +176,35 @@ export async function findOrCreateCustomer(
   const sb = svc();
   if (!sb) return null;
 
-  const existing = await sb.from('customers').select('id').eq('match_key', key).maybeSingle();
-  if (existing.data) return { id: existing.data.id as string };
+  const existing = await sb
+    .from('customers')
+    .select('id, name, email, phone, hl_contact_id')
+    .eq('match_key', key)
+    .maybeSingle<Pick<CustomerRow, 'id' | 'name' | 'email' | 'phone' | 'hl_contact_id'>>();
+  if (existing.data) {
+    // W2-026 (Jason 2026-07-06: NEWEST-WIN) — a repeat quote for an existing
+    // customer refreshes the stored contact fields to this newer quote's values
+    // (when present), so name/email/phone don't go stale. match_key is unchanged
+    // on this exact-match path, so only the display/contact columns move. Only
+    // write when something actually changed (no needless write per quote).
+    const row = existing.data;
+    const next = {
+      name: norm(identity.name) ?? row.name,
+      email: norm(identity.email) ?? row.email,
+      phone: norm(identity.phone) ?? row.phone,
+      hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
+    };
+    if (
+      next.name !== row.name ||
+      next.email !== row.email ||
+      next.phone !== row.phone ||
+      next.hl_contact_id !== row.hl_contact_id
+    ) {
+      const { error: updErr } = await sb.from('customers').update(next).eq('id', row.id);
+      if (updErr) console.error('findOrCreateCustomer newest-win update error:', updErr);
+    }
+    return { id: row.id as string };
+  }
 
   // W2-009 secondary-identity search, BOTH directions:
   //  (a) an existing row's match_key equals one of THIS identity's lower-
@@ -256,11 +283,27 @@ export async function findOrCreateProperty(
 
   const existing = await sb
     .from('properties')
-    .select('id')
+    .select('id, address, lat, lng')
     .eq('customer_id', customerId)
     .eq('address_key', address_key)
-    .maybeSingle();
-  if (existing.data) return { id: existing.data.id as string };
+    .maybeSingle<Pick<PropertyRow, 'id' | 'address' | 'lat' | 'lng'>>();
+  if (existing.data) {
+    // W2-026 (newest-win) — same normalized address_key, so refresh the display
+    // address + geo to this quote's newer values when present (formatting/geo can
+    // drift between quotes for the same place). Only write on a real change.
+    const row = existing.data;
+    const nextAddress = norm(address) ?? row.address;
+    const nextLat = geo?.lat ?? row.lat;
+    const nextLng = geo?.lng ?? row.lng;
+    if (nextAddress !== row.address || nextLat !== row.lat || nextLng !== row.lng) {
+      const { error: updErr } = await sb
+        .from('properties')
+        .update({ address: nextAddress, lat: nextLat, lng: nextLng })
+        .eq('id', row.id);
+      if (updErr) console.error('findOrCreateProperty newest-win update error:', updErr);
+    }
+    return { id: row.id as string };
+  }
 
   const ins = await sb
     .from('properties')

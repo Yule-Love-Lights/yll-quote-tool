@@ -10,14 +10,12 @@
 
 - [x] **W2-026 — RESOLVED (Jason, 2026-07-06): NEWEST-WIN.** When a new quote comes in for an existing
   customer, update their contact fields (name/email/phone) to the newest quote's values (when present).
-  **⏳ TO BUILD:** a small change to `findOrCreateCustomer` — the exact-match path currently first-wins
-  (returns the id, never updates). `lib/customers.ts` is **SHARED (data layer)** → Naldo heads-up before
-  editing. (Address is keyed, so a *changed* address already creates a new property row — the rule applies
-  to the customer's contact fields.)
-- [ ] **Package "Save $X vs à la carte" — awaiting Jason's decision.** NOT a bug — the display *capability*
-  exists but computes to **$0** because there is **no real bundle discount** today (a package costs the same
-  as its items à la carte). Decide: **build** real bundle discounts (packages priced below à la carte, so a
-  "Save $X" badge shows real savings), or **keep hidden** (current — no fake savings). (`lib/portal/derivePackages.ts`.)
+  **✅ BUILT + LIVE (PR #418, master `433d8f5`):** `findOrCreateCustomer` + `findOrCreateProperty` now refresh
+  contact fields + display address/geo to newest-if-present (was first-wins; a missing field never wipes the
+  stored value). SHARED `customers.ts` — Jason-authorized; Naldo heads-up in the handoff. +3 tests.
+- [x] **Package "Save $X" — RESOLVED (Jason, 2026-07-06): KEEP HIDDEN.** No bundle-discount feature — packages
+  cost the same as à la carte, so there are no real savings to show. Current 0/hidden behavior is correct; not
+  building bundle discounts. (`lib/portal/derivePackages.ts`.)
 - [x] **W5 image downscaling — RESOLVED (Jason, 2026-07-06): KEEP the 1568px downscaling.** Detection quality
   verified good on device; keep the cheaper path. No code change. (`photoAnalysis.ts` `downscaleImageForVision`.)
 - [ ] **Auto-charge (#83) — Jason: KEEP AS-IS for now (2026-07-06); flagged for NALDO** to weigh in on whether
@@ -33,37 +31,28 @@
 
 ## 2. Hands-on device / in-browser checks — automation can't do these
 
-- [ ] **W4-003 (fixed, needs confirm)** — on a real portal: draw a signature → "Type my name
-  instead" → "Or draw instead" → confirm the canvas is **blank** and **Approve stays disabled**
-  until a fresh stroke. (Synthetic canvas strokes don't register, so this couldn't be
-  automated — the reset logic was verified by review only.)
-- [ ] **W4-013 (fixed, needs confirm)** — a quote that was approved-but-unpaid then
-  **cancelled/declined by staff** should no longer show an actionable "Complete deposit"
-  button. Needs a quote in that exact state to see.
-- [ ] **W4-002 (fixed, needs confirm)** — the "Try again" button after a **real checkout
-  network failure** now actually retries (verified by review; needs a live failure to trigger).
-- [ ] **W5 downscale detection quality (fixed, needs confirm — feeds the §1 decision)** —
-  analyze a **real large house photo** and eyeball that the 1568px downscaling doesn't
-  visibly hurt detection vs full-res. The pipeline is live-verified to RUN (valid analysis
-  returned); this is the quality question automation can't answer.
+- [x] **W4-003 — VERIFIED (Jason, 2026-07-06): works.** Signature draw → type → draw resets to blank + Approve stays disabled until a fresh stroke.
+- [ ] **W4-013 — SEEDED, ready to verify (2026-07-06):** a test quote in the exact state →
+  [`portal/5d4c8b19-…-ca69fe117120`](https://quote.yulelovelights.com/portal/5d4c8b19-af33-4f4a-813e-ca69fe117120)
+  (cancelled + approved + unpaid, `is_test` — safe to delete). Confirm **no actionable "Complete deposit" button**.
+- [x] **W4-002 — ACCEPTED review-only (2026-07-06):** can't reproduce via a link (needs a live checkout network failure); verified by review, leaving as-is.
+- [x] **W5 downscale detection quality — VERIFIED (Jason, 2026-07-06): looks good** → KEEP the 1568px downscaling (the §1 decision).
 - [ ] **W5 prompt-cache savings (fixed, needs confirm)** — confirm `cache_read_input_tokens
   > 0` on a **repeat analyze within 5 min** (the ~90% input-token savings actually landing) —
   visible in Anthropic usage/logs, not surfaced to the client.
 - [ ] **Railing AI (carry-over from S18 #108)** — run the analyzer on a **real porch/deck-
   railing photo**; the pipeline shipped but live detection is still unconfirmed.
-- [ ] **#13 "Every angle" gallery (🧪 trial)** — final **keep/drop verdict** once it's been
-  felt with real customer quotes.
-- [ ] **W3-002/030 (fixed, needs confirm)** — in the editor: marquee-select a mix of grouped
-  + ungrouped mini strands (or a linked twin) → **Duplicate / Ctrl+V / Ctrl+D** → confirm the
-  clone now **shows up as a billed line** (before, it stayed on-canvas but was never billed).
-- [ ] **W3-009 (fixed, needs confirm)** — Ctrl+C / Ctrl+V a **scattershot mini-area** → the
-  paste should land offset, **not stacked exactly on the original** (was invisible-double-bill risk).
+- [x] **#13 "Every angle" gallery — VERIFIED (Jason, 2026-07-06): looks good → KEEP** (trial flag can come off).
+- [x] **W3-002/030 — VERIFIED (Jason, 2026-07-06): behaves as expected + safe.** The standalone strand's clone
+  bills (kept its tag); duplicated grouped-strand *members* become loose tag-less strands (the tag lives on the
+  group) → not billed until re-grouped, but visibly loose (no more disguised-unbilled ghost). **Jason declined**
+  the optional "duplicate-a-group → billed copy of the group" follow-up.
+- [x] **W3-009 — VERIFIED (Jason, 2026-07-06): works** — paste lands at the cursor / offset (landing on top only when the cursor is exactly on the original's corner — non-issue).
 - [ ] **W3-001 (fixed, needs confirm)** — pull a **street-preferred address** (tree-cover /
   ambiguous road so satellite roofline lines come back empty) → the AI's Santa's/Gingerbread
   **footage should survive**, not snap to 0.
-- [ ] **W3-014 (fixed, needs confirm)** — upload **2+ training photos**, mark up photo 1, then
-  Auto-Analyze photo 2 → photo 1's confirmed markup must **survive** (was silently overwritten);
-  the saved example should carry **both** photos' markup.
+- [x] **W3-014 — VERIFIED (Jason, 2026-07-06): works** — markup survives across photo swaps.
+- [ ] **STILL OPEN (not checked yet):** W3-001 footage · W5 prompt-cache savings (Anthropic console) · Railing AI live detection.
 
 ## 3. Reviews / people (not decisions, but don't skip)
 

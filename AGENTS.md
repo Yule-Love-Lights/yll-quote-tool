@@ -23,6 +23,11 @@ Adopt these four principles by default when writing, reviewing, or refactoring *
 - **After a `git checkout` / branch switch, `Read` a file before you `Edit` it** — the harness requires a fresh read post-switch; doing it proactively avoids failed-edit retries.
 - **Read the giant `task_ledger.md` surgically.** Its rows are enormous single lines — grab a narrow line-range or `grep -o` just the bit you need; don't pull whole sections into context (it's the biggest avoidable context drain in a long session).
 - **Don't open a separate PR for every tiny docs/ledger tweak.** Batch the bundle-able ones into one PR or fold them into your session-close sync; only land a docs change on its own when something downstream needs it first (e.g. a rule before the work it governs).
+- **Cross-cutting change across N similar sites: `grep -c` the pattern and reconcile the count against your edit list before gating.** Reason: the photoId stamp covered 13 of 14 item-creation sites; the missed one (the garland TRACE commit path) shipped a bug only a device check caught (S19).
+- **Service-type / vertical seam gates are positive-match (`=== 'holiday'`), never negative (`!== 'permanent'`).** Reason: a negative gate silently hands every FUTURE vertical the old behavior; event inherited holiday's confirmation page, rush/takedown add-ons, and scheduling windows across 5 seams (S23/S25).
+- **Migration ORDER is a per-migration decision.** A column-add ships migration-first (the column must exist before code reads or writes it); enabling RLS ships code-first (the service-role switch lands before the lock, so RLS can't break the old anon paths). Reason: "additive + nullable tolerates pre-apply" proved false the moment code SELECTed the column (S16).
+- **A customer-facing money vertical is not "verified" until a human or a browser E2E runs create→send→portal→approve.** When that leg can't run (no creds, no browser), say so loudly, stage a rollback lever BEFORE the go, and hand the human the exact steps. Reason: event went live on a logic-layer E2E alone and the council flagged it as the session's #1 risk (S23).
+- **Deleting a launch flag deletes your instant rollback lever: name the replacement (usually revert-the-PR) in the same breath.** Reason: `eventEnabled` was deleted hours after go-live; right product call, suddenly missing kill switch (S23).
 
 # Codebase navigation — prefer the graphify graph for big-picture questions
 
@@ -49,7 +54,7 @@ Default habits to keep sessions cheap (S16 task #94):
 - **Keep continuity docs lean — archive on cadence, don't wait to be asked.** Tight ledger Notes; completed tasks → `task_ledger_archive.md`; session logs keep only the latest ~3 (older → `session_log_archive.md`); `project_quote_tool` history in its archive. **This happens automatically at every session close (a `/wrap` step), and a fresh session self-checks at start and archives if they've grown** — so the docs never balloon between manual cleanups and the dev never has to remember to ask.
 - **The `caveman` skill compresses OUTPUT** — per-machine opt-in via a SessionStart hook.
 
-**Skills placement.** Repo-shared skills live in `.claude/skills/` (git-synced to both devs); per-machine / global skills in `~/.claude/skills/`. Choose **repo** for team skills, **global** for personal. Don't keep the same skill in both (drift) — the **`llm-council` canonical copy is the repo one**.
+**Skills placement.** Repo-shared skills live in `.claude/skills/` (git-synced to both devs); per-machine / global skills in `~/.claude/skills/`. Choose **repo** for team skills, **global** for personal. Don't keep the same skill in both (drift) — the **`llm-council` canonical copy is the repo one**. Known exception: `wrap` exists in both ON PURPOSE (per-dev merge behavior; see "Review / merge" below); don't "fix" it as drift.
 
 # Model routing & production guardrails (STANDING POLICY — applies to ALL plans/builds, both devs; Naldo 2026-07-02)
 
@@ -61,6 +66,12 @@ Default habits to keep sessions cheap (S16 task #94):
 | DOWN | **Sonnet 5** | builds: routine implementation, tests, UI components, docs |
 | SEAT (default) | **Opus 4.8** | plans, judges, reviews: orchestration, adversarial review passes, PR review, finding dispositions |
 | UP | **Fable 5** | top-tier — **always asks first**, never used silently |
+
+**Subagent spawns (added 2026-07-06, both devs):**
+- **Never spawn a subagent on Fable, for any reason.** Subagents inherit the session model by default, so in a Fable-seat session pass an explicit model on EVERY spawn (the Agent tool, Workflow `agent()` calls, council advisors), picked from the table above. Reason: Fable burns usage roughly twice as fast as Opus, and one forgotten spawn bills all its grunt work at the top rate. In non-Fable sessions this rule costs nothing.
+- **Do NOT enforce this with the `CLAUDE_CODE_SUBAGENT_MODEL` env var.** Per the official Claude Code docs it sits at the TOP of model resolution: it overrides agent frontmatter AND the explicit per-call `model` parameter, so any single value flattens this whole table (either Haiku reads bill at Opus, or Opus reviewers silently drop to Sonnet). Instruction-level routing keeps the tiers.
+- **Write every spawn brief self-contained:** goal, files or area involved, constraints, what done looks like, report format. Reason: the worker has zero context from the conversation, and a vague brief wastes the whole agent run.
+- **When a worker's output falls short, send the fix back to a worker with specific corrections** instead of the seat quietly redoing it. Reason: the seat redoing labor pays top rate twice for one piece of work.
 
 **2. Only 2 interruptions ever:** *"use the expensive model?"* and *"ship to production?"*. Everything else proceeds without stopping the dev.
 
@@ -88,7 +99,7 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 *Reading* a shared file (e.g. importing from `src/lib/quotes.ts`) is always fine; only **editing** a SHARED file needs a heads-up to the other owner first.
 
 ## Review / merge
-- **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge.
+- **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge. One standing exception (Naldo, 2026-07-02, per-machine): on Naldo's machine the `wrap` skill may auto-merge its OWN docs-only session-notes PR after a re-sync onto fresh master and a collision check; every code/feature PR still needs the dev's explicit go. Reason: wrap notes PRs once piled up six deep waiting for manual gos. (Jason's machine keeps the human-gated wrap; the two wrap skill copies differ on purpose.)
 - **Own-area PRs: no cross-review needed** — a PR touching only your own area doesn't need the *other* owner's review (your own dev's go to merge still applies, per above).
 - **SHARED-file PRs: the other owner reviews first** before merge.
 - **Always merge current, never stale.** Before merging ANY PR, `git fetch`. If `master` has advanced past the branch's base, bring the branch up to date with `master` (merge `master` in or rebase, resolve any conflicts) and **re-run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) on the updated branch** before merging. Never merge a branch whose green gates predate the current `master` — a clean text-merge can still be a logical regression when `master` changed underneath (e.g. a renamed export, a changed type, new business rules). This applies even to same-day branches, and strengthens the "merge `master` back in if a branch lives more than a day" guidance above into a hard pre-merge step. (Merging on GitHub combines the branch with origin's *current* `master` regardless of your local state, so this is about updating the **branch**, not just pulling local `master`.)
