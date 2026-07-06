@@ -7,6 +7,16 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
+import { SERVICE_TYPE_LABELS, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+
+// Service-line badge palette (#123) — so an operator can tell holiday vs event
+// vs permanent at a glance. Holiday (the default, the majority) is muted; the
+// two rarer verticals get their own accent so they pop out of the list.
+const SERVICE_TYPE_STYLES: Record<ServiceType, string> = {
+  holiday: 'bg-slate-100 text-slate-600',
+  permanent: 'bg-indigo-100 text-indigo-700',
+  event: 'bg-amber-100 text-amber-800',
+};
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -290,6 +300,17 @@ export default function QuotesAdminPage() {
                       <td className="px-3 py-2 text-gray-700">
                         <div className="flex items-center gap-2">
                           <span>{q.customer_name ?? '—'}</span>
+                          {/* Service-line badge (#123) — holiday / permanent / event. */}
+                          {(() => {
+                            const svc = q.service_type ?? DEFAULT_SERVICE_TYPE;
+                            return (
+                              <span
+                                className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${SERVICE_TYPE_STYLES[svc]}`}
+                              >
+                                {SERVICE_TYPE_LABELS[svc]}
+                              </span>
+                            );
+                          })()}
                           <span
                             title={badgeTitle}
                             className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}

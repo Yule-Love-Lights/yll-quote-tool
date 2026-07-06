@@ -37,6 +37,9 @@ export type QuoteListItem = {
   // badge; the dashboard + persisted customer list exclude these. Always a real
   // boolean (DB column is NOT NULL DEFAULT false).
   is_test: boolean;
+  // Service line (#123): holiday (default) / permanent / event. NULL on legacy
+  // pre-migration rows — the admin list reads it as DEFAULT_SERVICE_TYPE.
+  service_type: ServiceType | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -48,7 +51,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
