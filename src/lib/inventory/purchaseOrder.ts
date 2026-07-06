@@ -88,12 +88,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
     (designs ?? []).map((d) => [(d as { quote_id: string }).quote_id, (d as { scene: unknown }).scene]),
   );
 
-  const { bindings } = await getInventoryBindings();
+  // #110 W7-009: pass clipRules through so C9 roofline clips are ordered. Dropping
+  // them (passing {}) made projectClips emit sku-less lines that aggregateMaterials
+  // discards — clips were never on the supplier PO despite configured SKUs.
+  const { bindings, clipRules } = await getInventoryBindings();
   const needBySku = new Map<string, number>();
   for (const j of active) {
     const scene = (sceneByQuote.get(j.quote_id) ?? { yardsticks: [], items: [] }) as Scene;
     const colorChoice = colorChoiceByQuote.get(j.quote_id) ?? null;
-    for (const a of aggregateMaterials(projectMaterials(scene, bindings, {}, colorChoice))) {
+    for (const a of aggregateMaterials(projectMaterials(scene, bindings, clipRules, colorChoice))) {
       needBySku.set(a.sku, (needBySku.get(a.sku) ?? 0) + a.qty);
     }
   }
