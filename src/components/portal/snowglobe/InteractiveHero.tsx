@@ -123,6 +123,40 @@ export function InteractiveHero({
         : null,
     [design, activePhotoId],
   );
+  // #88 P6b — the normalized [0..1] bounding box of the lit items on the ACTIVE
+  // photo, so the facade glow sits over the roofline (where the lights actually
+  // are) instead of washing the entire photo. Coords are photo-space normalized
+  // by the photo size; the soft elliptical mask (portal-snowglobe.css) forgives
+  // the small object-cover crop on desktop, and mobile is aspect-locked = exact.
+  // null (no scene/geometry) → the CSS falls back to a centered default.
+  const permGlowBox = useMemo(() => {
+    const pw = activeW ?? design?.photoW ?? 0;
+    const ph = activeH ?? design?.photoH ?? 0;
+    const items = activeScene?.items;
+    if (serviceType !== 'permanent' || !pw || !ph || !items?.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (const it of items) {
+      const pts = (it as { points?: number[] }).points;
+      if (!Array.isArray(pts)) continue;
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        const x = pts[i], y = pts[i + 1];
+        if (typeof x !== 'number' || typeof y !== 'number') continue;
+        any = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (!any) return null;
+    const cx = ((minX + maxX) / 2) / pw;
+    const cy = ((minY + maxY) / 2) / ph;
+    // Half-extent of the lights + a glow-bleed margin, clamped so the wash is
+    // never a hard dot nor the whole frame.
+    const rx = Math.min(0.6, (maxX - minX) / 2 / pw + 0.14);
+    const ry = Math.min(0.4, (maxY - minY) / 2 / ph + 0.12);
+    return { cx, cy, rx, ry };
+  }, [serviceType, activeScene, activeW, activeH, design]);
   // A broken hero image (e.g. an expired signed URL) must never show the
   // browser's broken-image icon. When the daytime <img> or the static
   // next/image errors, fall back to a neutral night-sky poster instead.
@@ -256,7 +290,14 @@ export function InteractiveHero({
           aria-hidden
           className="portal-perm-glow"
           data-motion={permGlow.motion ? 'true' : 'false'}
-          style={{ ['--perm-glow' as string]: permGlow.gradient } as React.CSSProperties}
+          style={{
+            ['--perm-glow' as string]: permGlow.gradient,
+            // Center + radii of the elliptical mask = where the lights are (#88).
+            ['--perm-glow-cx' as string]: `${((permGlowBox?.cx ?? 0.5) * 100).toFixed(2)}%`,
+            ['--perm-glow-cy' as string]: `${((permGlowBox?.cy ?? 0.4) * 100).toFixed(2)}%`,
+            ['--perm-glow-rx' as string]: `${((permGlowBox?.rx ?? 0.5) * 100).toFixed(2)}%`,
+            ['--perm-glow-ry' as string]: `${((permGlowBox?.ry ?? 0.28) * 100).toFixed(2)}%`,
+          } as React.CSSProperties}
         />
       )}
 

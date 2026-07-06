@@ -158,8 +158,14 @@
   background-repeat: repeat-x;
   background-size: 200% 100%;
   background-position: 0% 0%;
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.55) 44%, transparent 78%);
+  /* #88 P6b — localize the wash to WHERE THE LIGHTS ARE. An elliptical mask
+     centered on the lit-items' bounding box (--perm-glow-cx/cy, radii
+     --perm-glow-rx/ry, set inline from the scene by InteractiveHero) confines
+     the glow to the roofline region and fades it out before the photo edges,
+     instead of the old full-width top-to-bottom wash that tinted the whole
+     image. Defaults (centered) apply if the vars are ever unset. */
+  -webkit-mask-image: radial-gradient(ellipse var(--perm-glow-rx, 50%) var(--perm-glow-ry, 28%) at var(--perm-glow-cx, 50%) var(--perm-glow-cy, 40%), rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 58%, transparent 82%);
+  mask-image: radial-gradient(ellipse var(--perm-glow-rx, 50%) var(--perm-glow-ry, 28%) at var(--perm-glow-cx, 50%) var(--perm-glow-cy, 40%), rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 58%, transparent 82%);
 }
 .portal-perm-glow[data-motion='true'] {
   animation: perm-glow-sweep var(--perm-glow-dur, 6s) linear infinite;
