@@ -29,6 +29,7 @@ function makeSb() {
         },
         eq: () => b,
         is: () => b,
+        or: () => b, // #124: booking-write status guard clause
         single: async () => ({ data: quoteRow, error: quoteRow ? null : { message: 'no row' } }),
         then: (resolve: (v: unknown) => void) =>
           resolve(
@@ -88,6 +89,17 @@ describe('POST /api/quotes/[id]/simulate-deposit (#93)', () => {
     quoteRow = { ...quoteRow, customer_approved_at: null };
     const res = await POST(makeReq(), ctx());
     expect(res.status).toBe(409);
+    expect(createJobFromQuote).not.toHaveBeenCalled();
+  });
+
+  it('#124: 409s when a test quote was DECLINED after approval (status=declined) — never re-books a dead quote', async () => {
+    // approved→declined is legal (#124); a declined quote keeps customer_approved_at
+    // (passing the approve gate) with deposit unpaid. The deriveStatus guard blocks it.
+    quoteRow = { ...quoteRow, status: 'declined' };
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-bookable');
     expect(createJobFromQuote).not.toHaveBeenCalled();
   });
 
