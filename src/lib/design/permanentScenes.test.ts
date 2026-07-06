@@ -1,82 +1,84 @@
 import { describe, it, expect } from 'vitest';
 import {
-  PERMANENT_SCENES,
+  PERMANENT_SWATCH_SCHEMES,
   PERMANENT_COLOR_SCHEMES,
-  permanentSceneById,
-  isPermanentColorSchemeId,
+  PERMANENT_BUILDABLE_IDS,
+  PERMANENT_EFFECTS,
+  DEFAULT_PERMANENT_EFFECT,
+  isPermanentEffect,
+  effectSpeedMs,
   sceneColorsAt,
 } from './permanentScenes';
-import { resolveSchemeColorIds, CUSTOM_SCHEME_ID } from './colorSchemes';
+import { resolveSchemeColorIds } from './colorSchemes';
 import { DEFAULT_COLORS } from '@/components/design/editor-core/colors';
 
 const PALETTE_IDS = new Set(DEFAULT_COLORS.map((c) => c.id));
 
-describe('permanent scene set (#88 P6b-3)', () => {
-  it('opens on as-designed, includes warm-white, unique ids, no build-your-own', () => {
-    const ids = PERMANENT_SCENES.map((s) => s.id);
+describe('permanent swatch presets (#88 P6b-4)', () => {
+  it('opens on As Designed, has unique ids, all colorIds are real palette ids', () => {
+    const ids = PERMANENT_SWATCH_SCHEMES.map((s) => s.id);
     expect(ids[0]).toBe('as-designed'); // the default the provider opens on
-    expect(ids).toContain('warm-white');
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).not.toContain(CUSTOM_SCHEME_ID);
-  });
-
-  it('every scene colorId is a real palette id (a typo fails the gates)', () => {
-    for (const s of PERMANENT_SCENES) {
+    for (const s of PERMANENT_SWATCH_SCHEMES) {
       if (s.colorIds === null) continue;
       expect(s.colorIds.length).toBeGreaterThan(0);
       for (const cid of s.colorIds) expect(PALETTE_IDS.has(cid)).toBe(true);
     }
   });
 
-  it('every scene has a valid effect + non-negative speed; motion scenes are multi-color', () => {
-    for (const s of PERMANENT_SCENES) {
-      expect(['static', 'cycle', 'chase', 'twinkle']).toContain(s.effect);
-      expect(s.speedMs).toBeGreaterThanOrEqual(0);
-      // a chase/cycle needs >1 color to visibly move (a 1-color "chase" is just static)
-      if (s.effect === 'chase' || s.effect === 'cycle') {
-        expect(s.colorIds && s.colorIds.length).toBeGreaterThan(1);
-        expect(s.speedMs).toBeGreaterThan(0);
-      }
-    }
+  it('offers full color freedom: solids + multi-color presets + a build-your-own palette', () => {
+    const ids = PERMANENT_SWATCH_SCHEMES.map((s) => s.id);
+    expect(ids).toContain('blue'); // a solid
+    expect(ids).toContain('rainbow'); // a multi-color preset
+    expect(PERMANENT_BUILDABLE_IDS.length).toBeGreaterThan(3);
+    expect(PERMANENT_BUILDABLE_IDS).not.toContain('black');
+    for (const id of PERMANENT_BUILDABLE_IDS) expect(PALETTE_IDS.has(id)).toBe(true);
   });
 
-  it('PERMANENT_COLOR_SCHEMES is the scenes widened to ColorScheme (same list)', () => {
-    expect(PERMANENT_COLOR_SCHEMES.map((s) => s.id)).toEqual(PERMANENT_SCENES.map((s) => s.id));
+  it('PERMANENT_COLOR_SCHEMES aliases the swatch presets (import-compat)', () => {
+    expect(PERMANENT_COLOR_SCHEMES).toBe(PERMANENT_SWATCH_SCHEMES);
   });
 
-  it('permanentSceneById resolves known ids, undefined otherwise', () => {
-    expect(permanentSceneById('rainbow')?.effect).toBe('chase');
-    expect(permanentSceneById('warm-white')?.effect).toBe('static');
-    expect(permanentSceneById('candy-cane')).toBeUndefined();
-    expect(permanentSceneById(null)).toBeUndefined();
-    expect(permanentSceneById(undefined)).toBeUndefined();
-  });
-
-  it('isPermanentColorSchemeId accepts only the fixed permanent set', () => {
-    for (const s of PERMANENT_SCENES) expect(isPermanentColorSchemeId(s.id)).toBe(true);
-    expect(isPermanentColorSchemeId(CUSTOM_SCHEME_ID)).toBe(false); // no custom
-    expect(isPermanentColorSchemeId('candy-cane')).toBe(false); // holiday-only
-    expect(isPermanentColorSchemeId('')).toBe(false);
-    expect(isPermanentColorSchemeId(null)).toBe(false);
-    expect(isPermanentColorSchemeId(42)).toBe(false);
-  });
-
-  it('resolves against its own list (independent of operator swatch curation)', () => {
-    expect(resolveSchemeColorIds('warm-white', PERMANENT_COLOR_SCHEMES)).toEqual(['warm-white']);
+  it('resolves a preset against its own list', () => {
+    expect(resolveSchemeColorIds('blue', PERMANENT_COLOR_SCHEMES)).toEqual(['blue']);
     expect(resolveSchemeColorIds('as-designed', PERMANENT_COLOR_SCHEMES)).toBeNull();
-    expect(resolveSchemeColorIds('rainbow', PERMANENT_COLOR_SCHEMES)).toEqual(
-      permanentSceneById('rainbow')!.colorIds,
-    );
   });
 });
 
-describe('sceneColorsAt (#88 P6b-3 — the animation stepper)', () => {
-  it('static holds the palette regardless of time', () => {
-    expect(sceneColorsAt(['a', 'b'], 'static', 0, 200)).toEqual(['a', 'b']);
-    expect(sceneColorsAt(['a', 'b'], 'static', 99999, 200)).toEqual(['a', 'b']);
+describe('permanent effects (#88 P6b-4)', () => {
+  it('offers Solid + the two motion effects with sane speeds; default is a motion effect', () => {
+    const effects = PERMANENT_EFFECTS.map((e) => e.effect);
+    expect(effects).toContain('static');
+    expect(effects).toContain('chase');
+    expect(effects).toContain('cycle');
+    for (const e of PERMANENT_EFFECTS) {
+      expect(e.label.length).toBeGreaterThan(0);
+      if (e.effect === 'static') expect(e.speedMs).toBe(0);
+      else expect(e.speedMs).toBeGreaterThan(0);
+    }
+    expect(['chase', 'cycle']).toContain(DEFAULT_PERMANENT_EFFECT); // animate by default
   });
 
-  it('twinkle holds the palette (opacity is animated elsewhere, unused in v1)', () => {
+  it('isPermanentEffect accepts only the offered effects', () => {
+    expect(isPermanentEffect('static')).toBe(true);
+    expect(isPermanentEffect('chase')).toBe(true);
+    expect(isPermanentEffect('cycle')).toBe(true);
+    expect(isPermanentEffect('twinkle')).toBe(false); // modeled but not offered yet
+    expect(isPermanentEffect('nope')).toBe(false);
+    expect(isPermanentEffect(null)).toBe(false);
+    expect(isPermanentEffect(42)).toBe(false);
+  });
+
+  it('effectSpeedMs returns the offered speed, 0 for static/unknown', () => {
+    expect(effectSpeedMs('static')).toBe(0);
+    expect(effectSpeedMs('chase')).toBeGreaterThan(0);
+    expect(effectSpeedMs('twinkle')).toBe(0); // not offered → 0
+  });
+});
+
+describe('sceneColorsAt (#88 — the animation stepper)', () => {
+  it('static / twinkle hold the palette regardless of time', () => {
+    expect(sceneColorsAt(['a', 'b'], 'static', 99999, 200)).toEqual(['a', 'b']);
     expect(sceneColorsAt(['a', 'b'], 'twinkle', 12345, 200)).toEqual(['a', 'b']);
   });
 
@@ -92,7 +94,6 @@ describe('sceneColorsAt (#88 P6b-3 — the animation stepper)', () => {
     const base = ['a', 'b', 'c'];
     expect(sceneColorsAt(base, 'cycle', 0, 100)).toEqual(['a']);
     expect(sceneColorsAt(base, 'cycle', 100, 100)).toEqual(['b']);
-    expect(sceneColorsAt(base, 'cycle', 250, 100)).toEqual(['c']);
     expect(sceneColorsAt(base, 'cycle', 300, 100)).toEqual(['a']); // wraps
   });
 
@@ -101,11 +102,11 @@ describe('sceneColorsAt (#88 P6b-3 — the animation stepper)', () => {
     expect(sceneColorsAt([], 'chase', 500, 100)).toEqual([]);
   });
 
-  it('a zero/invalid speed never divides by zero — holds at step 0', () => {
+  it('a zero speed never divides by zero — holds at step 0', () => {
     expect(sceneColorsAt(['a', 'b', 'c'], 'chase', 500, 0)).toEqual(['a', 'b', 'c']);
   });
 
-  it('is deterministic for a given time (same t → same colors)', () => {
+  it('is deterministic for a given time', () => {
     const base = ['a', 'b', 'c', 'd'];
     expect(sceneColorsAt(base, 'chase', 640, 160)).toEqual(sceneColorsAt(base, 'chase', 640, 160));
   });

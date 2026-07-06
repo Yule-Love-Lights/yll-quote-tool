@@ -1,67 +1,92 @@
-// Permanent Lighting portal SCENES (#88 P6b-3) — the animated evolution of the
-// P6b-2 static color picker. A "scene" is a permanent-only picker option: a color
-// palette + an animation effect the portal plays on the live design.
+// Permanent Lighting portal COLOR + EFFECT model (#88 P6b-3/P6b-4).
 //
-// Isolated from colorSchemes.ts (holiday/shared) because permanent scenes are a
-// vertical-specific concept: they add an `effect` and are NOT part of the operator's
-// holiday swatch list. The freeze path is unchanged from P6b-2 — a scene's `id` is
-// what freezes into the approval snapshot via `colorSchemeId`, validated by
-// `isPermanentColorSchemeId`. Effects are applied ONLY at portal render time.
+// Permanent (Omni/Ascend RGB puck) systems are app-controlled, so the portal gives
+// the customer full color control (like the holiday picker) PLUS a separate effect
+// choice — decoupled, so any color can play any effect:
+//   • COLOR  — a permanent swatch preset, a build-your-own pattern, or "As Designed"
+//              (the operator's authored colors). Reuses the holiday picker UI over
+//              the permanent swatch list below. Freezes via `colorSchemeId` (+ custom
+//              pattern), exactly like holiday.
+//   • EFFECT — Solid / Chase / Fade, picked separately (PERMANENT_EFFECTS). Freezes
+//              via `permanentEffect`. Applied ONLY at portal render time.
 //
-// The render (render-readonly) cycles each light item's `colorIds` along its bulbs,
-// so the two motion effects fall out of recomputing the palette per step:
-//   • chase  — ROTATE the palette → the pattern travels along the roofline
-//   • cycle  — step a SINGLE color → the whole house fades through the palette
-// static holds the palette; twinkle (modeled, unused in v1) is an opacity effect.
+// The render (render-readonly) cycles each light item's colorIds along its bulbs, so
+// the two motion effects fall out of recomputing the palette per step (sceneColorsAt):
+//   chase = rotate the palette (pattern travels) · cycle = step a single color (fade).
 
 import type { ColorScheme } from './colorSchemes';
+import { DEFAULT_BUILDABLE_COLOR_IDS } from './colorSchemes';
 
 export type SceneEffect = 'static' | 'cycle' | 'chase' | 'twinkle';
 
-/** A permanent picker option: a ColorScheme plus how it animates. */
-export type PermanentScene = ColorScheme & {
-  effect: SceneEffect;
-  /** Milliseconds per animation step (one palette rotation / color change). */
-  speedMs: number;
-};
+/** A permanent picker option: a ColorScheme plus how it animates. Kept for the
+ *  Settings-editable preset shape (a preset can carry a default effect). */
+export type PermanentScene = ColorScheme & { effect: SceneEffect; speedMs: number };
 
-// The fixed curated scene set (built from Naldo's reference install videos, S24).
-// `as-designed` (the operator's authored colors) is first so the provider opens on
-// it. Every non-null colorId is a built-in palette id (a unit test asserts this).
-// ids are STABLE — they're the values that freeze into approved quotes.
-export const PERMANENT_SCENES: PermanentScene[] = [
-  { id: 'as-designed', label: 'Color',              colorIds: null,                                                              effect: 'static', speedMs: 0 },
-  { id: 'warm-white',  label: 'Warm White',         colorIds: ['warm-white'],                                                    effect: 'static', speedMs: 0 },
-  { id: 'rainbow',     label: 'Rainbow',            colorIds: ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'], effect: 'chase',  speedMs: 180 },
-  { id: 'spooky',      label: 'Purple & Green',     colorIds: ['purple', 'green'],                                               effect: 'chase',  speedMs: 220 },
-  { id: 'patriotic',   label: 'Red · White · Blue', colorIds: ['red', 'cool-white', 'blue'],                                     effect: 'chase',  speedMs: 220 },
+// ── COLOR: the permanent swatch presets ─────────────────────────────────────
+// The quick-pick color presets on the permanent portal (in addition to the full
+// palette via build-your-own). "As Designed" is first (the default the provider
+// opens on = the operator's authored colors, e.g. the blue Naldo drew). RGB pucks
+// look good as solids, so unlike the holiday list this includes single colors.
+// Every colorId is a built-in palette id (a unit test asserts it). ids are STABLE —
+// they're what freezes into an approved quote. (#88 P6b-4 will make this list
+// Settings-editable, mirroring the #101 holiday swatches; these are the defaults.)
+export const PERMANENT_SWATCH_SCHEMES: ColorScheme[] = [
+  { id: 'as-designed', label: 'As Designed',        colorIds: null },
+  { id: 'warm-white',  label: 'Warm White',         colorIds: ['warm-white'] },
+  { id: 'cool-white',  label: 'Pure White',         colorIds: ['cool-white'] },
+  { id: 'blue',        label: 'Blue',               colorIds: ['blue'] },
+  { id: 'red',         label: 'Red',                colorIds: ['red'] },
+  { id: 'green',       label: 'Green',              colorIds: ['green'] },
+  { id: 'purple',      label: 'Purple',             colorIds: ['purple'] },
+  { id: 'teal',        label: 'Teal',               colorIds: ['teal'] },
+  { id: 'orange',      label: 'Orange',             colorIds: ['orange'] },
+  { id: 'pink',        label: 'Pink',               colorIds: ['pink'] },
+  { id: 'rainbow',     label: 'Rainbow',            colorIds: ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'] },
+  { id: 'spooky',      label: 'Purple & Green',     colorIds: ['purple', 'green'] },
+  { id: 'patriotic',   label: 'Red · White · Blue', colorIds: ['red', 'cool-white', 'blue'] },
 ];
 
-// The scenes viewed as plain ColorSchemes — the picker + the approve-route color
-// freeze consume this (drop-in for the P6b-2 PERMANENT_COLOR_SCHEMES; same name so
-// call sites only change the import path). PermanentScene extends ColorScheme, so
-// this is just a widening.
-export const PERMANENT_COLOR_SCHEMES: ColorScheme[] = PERMANENT_SCENES;
+/** Alias kept so existing importers (approve route, portal page) don't churn. */
+export const PERMANENT_COLOR_SCHEMES: ColorScheme[] = PERMANENT_SWATCH_SCHEMES;
 
-const SCENE_BY_ID = new Map<string, PermanentScene>(PERMANENT_SCENES.map((s) => [s.id, s]));
+/** The build-your-own palette offered on the permanent picker — every non-black
+ *  palette color (permanent pucks can be any color). Same default as holiday. */
+export const PERMANENT_BUILDABLE_IDS: string[] = DEFAULT_BUILDABLE_COLOR_IDS;
 
-/** The scene record for an id, or undefined if it isn't a permanent scene. */
-export function permanentSceneById(id: string | null | undefined): PermanentScene | undefined {
-  return id == null ? undefined : SCENE_BY_ID.get(id);
+// ── EFFECT: the separate motion choice ──────────────────────────────────────
+export type PermanentEffectOption = { effect: SceneEffect; label: string; speedMs: number };
+
+// The selectable effects (static for now). Solid = no motion; Chase = the pattern
+// travels along the roofline; Fade = the whole house steps through the colors.
+// speedMs = ms per step. twinkle is modeled (SceneEffect) but not offered yet — it
+// needs per-bulb on/off, a harder follow-up.
+export const PERMANENT_EFFECTS: PermanentEffectOption[] = [
+  { effect: 'static', label: 'Solid', speedMs: 0 },
+  { effect: 'chase',  label: 'Chase', speedMs: 180 },
+  { effect: 'cycle',  label: 'Fade',  speedMs: 700 },
+];
+
+/** The permanent portal opens on this effect — Chase, so a multi-color scene moves
+ *  by default (a single color stays solid regardless). */
+export const DEFAULT_PERMANENT_EFFECT: SceneEffect = 'chase';
+
+const EFFECT_BY_ID = new Map<SceneEffect, PermanentEffectOption>(PERMANENT_EFFECTS.map((e) => [e.effect, e]));
+
+/** Whether a value is a selectable permanent effect. */
+export function isPermanentEffect(v: unknown): v is SceneEffect {
+  return typeof v === 'string' && EFFECT_BY_ID.has(v as SceneEffect);
 }
 
-// Whether an id is one a PERMANENT customer could legitimately pick/freeze. Does
-// NOT accept 'custom' (no build-your-own) or holiday-only schemes — only the fixed
-// permanent set. (Moved verbatim from colorSchemes.ts in P6b-3.)
-export function isPermanentColorSchemeId(id: unknown): id is string {
-  return typeof id === 'string' && SCENE_BY_ID.has(id);
+/** The step speed (ms) for an effect, or 0 for static/unknown. */
+export function effectSpeedMs(effect: SceneEffect): number {
+  return EFFECT_BY_ID.get(effect)?.speedMs ?? 0;
 }
 
 /**
- * The palette to feed the renderer at elapsed time `tMs` for a scene's effect —
- * the pure heart of the animation (deterministic in `tMs`, unit-testable without a
- * canvas). `base` is the scene's colorIds (null/empty = as-designed → unchanged).
- *
+ * The palette to feed the renderer at elapsed time `tMs` for an effect — the pure
+ * heart of the animation (deterministic in `tMs`, unit-testable without a canvas).
+ * `base` is the chosen colors (null/empty = as-designed → unchanged).
  *   static / twinkle → the palette unchanged (twinkle animates opacity elsewhere)
  *   chase            → the palette ROTATED by the step index (pattern travels)
  *   cycle            → a SINGLE color, stepping through the palette (whole-house fade)

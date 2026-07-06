@@ -61,7 +61,13 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
 } from '@/lib/design/colorSchemes';
-import { isPermanentColorSchemeId, PERMANENT_COLOR_SCHEMES } from '@/lib/design/permanentScenes';
+import {
+  PERMANENT_COLOR_SCHEMES,
+  PERMANENT_BUILDABLE_IDS,
+  isPermanentEffect,
+  DEFAULT_PERMANENT_EFFECT,
+  type SceneEffect,
+} from '@/lib/design/permanentScenes';
 import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
@@ -137,6 +143,7 @@ type ApproveBody = {
   takedownSelected?: boolean;
   colorSchemeId?: string;
   customPattern?: unknown; // #49 — build-your-own pattern (sanitized server-side)
+  permanentEffect?: unknown; // #88 P6b-4 — permanent animation effect (validated server-side)
   installTiming?: 'none' | 'september' | 'october';
   installDiscountUsd?: number;
   // #83 Slice B — optional e-signature captured at approval. Backward-compatible:
@@ -213,6 +220,7 @@ type ApprovalSnapshot = {
     colorSchemeId: string;      // #10 — customer's light color/pattern choice
     customPattern: string[];    // #49 — build-your-own pattern (color ids), [] unless colorSchemeId === 'custom'
     colorIds: string[] | null;  // #101 — the RESOLVED effective colors, frozen at approve-time (null = as-designed) so a later swatch edit can't retro-change this order's materials
+    permanentEffect: SceneEffect | null; // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade); null for holiday/event
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
   };
@@ -385,25 +393,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const installTiming: 'none' | 'september' | 'october' = noHolidayFees ? 'none' : reqInstallTiming;
 
   // #10 / #88 P6b-2 — resolve + freeze the light-color choice now that we know the
-  // service type. Permanent (RGB pucks) offers a FIXED curated preview set
-  // (PERMANENT_COLOR_SCHEMES) — independent of the operator's holiday swatch
-  // curation and with NO build-your-own — so a permanent customer's choice stays
-  // valid + freezable even if staff removed 'warm-white' from the Christmas
-  // swatches; holiday validates against the live operator swatch list. Either way
-  // the chosen id + its RESOLVED colors are frozen into the snapshot so a later
-  // Settings edit can't retro-change what THIS customer approved (#101 invariant).
+  // service type. Permanent (#88 P6b-4, RGB pucks) uses its OWN swatch presets +
+  // full build-your-own palette (any color) — the SAME validation path as holiday,
+  // just a different swatch/buildable list. Holiday validates against the live
+  // operator swatch list. Either way the chosen id + its RESOLVED colors are frozen
+  // into the snapshot so a later Settings edit can't retro-change what THIS customer
+  // approved (#101 invariant). The permanent ANIMATION effect freezes separately below.
   const activeSchemes = isPermanent ? PERMANENT_COLOR_SCHEMES : swatches.schemes;
-  const requestedSchemeId = isPermanent
-    ? isPermanentColorSchemeId(body.colorSchemeId)
-      ? body.colorSchemeId
-      : DEFAULT_COLOR_SCHEME_ID
-    : isKnownColorSchemeId(body.colorSchemeId, swatches.schemes)
-      ? body.colorSchemeId
-      : DEFAULT_COLOR_SCHEME_ID;
-  // Build-your-own is holiday-only; a permanent quote never carries a custom pattern.
+  const activeBuildable = isPermanent ? PERMANENT_BUILDABLE_IDS : swatches.buildableColorIds;
+  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, activeSchemes)
+    ? body.colorSchemeId
+    : DEFAULT_COLOR_SCHEME_ID;
   const customPattern =
-    !isPermanent && requestedSchemeId === CUSTOM_SCHEME_ID
-      ? sanitizeCustomPattern(body.customPattern, swatches.buildableColorIds)
+    requestedSchemeId === CUSTOM_SCHEME_ID
+      ? sanitizeCustomPattern(body.customPattern, activeBuildable)
       : [];
   // Collapse an empty custom selection back to the default so the frozen snapshot
   // is self-consistent: 'custom' with zero colors renders identically to
@@ -412,6 +415,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
       ? DEFAULT_COLOR_SCHEME_ID
       : requestedSchemeId;
+  // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade), validated. A
+  // permanent quote defaults to Chase when absent/invalid; null for holiday/event.
+  const permanentEffect: SceneEffect | null = isPermanent
+    ? isPermanentEffect(body.permanentEffect)
+      ? body.permanentEffect
+      : DEFAULT_PERMANENT_EFFECT
+    : null;
 
   // ── Server-side recompute (audit fix g1-route, merge of #12/#13/#30/#31/
   // #39/#63/#74/#79) ────────────────────────────────────────────────────────
@@ -558,6 +568,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // or holiday) so #92 materials always match what the customer saw, even
       // after a Settings edit.
       colorIds: resolveColorChoice(colorSchemeId, customPattern, activeSchemes),
+      permanentEffect,
       installTiming,
       installDiscountUsd: snapshotInstallDiscountUsd,
     },

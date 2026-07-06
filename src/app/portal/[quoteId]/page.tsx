@@ -27,7 +27,7 @@ import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
-import { PermanentColorToggle } from '@/components/portal/dark/PermanentColorToggle';
+import { PermanentEffectPicker } from '@/components/portal/dark/PermanentEffectPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
 import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
 import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
@@ -58,7 +58,7 @@ import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
-import { PERMANENT_COLOR_SCHEMES } from '@/lib/design/permanentScenes';
+import { PERMANENT_COLOR_SCHEMES, PERMANENT_BUILDABLE_IDS } from '@/lib/design/permanentScenes';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 
@@ -262,12 +262,13 @@ export default async function PortalPage({
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={quote.serviceType === 'permanent' ? 'none' : quote.installTiming}
         earlyInstallDiscountsHidden={appSettings.portal.hideEarlyInstallDiscounts}
-        // #88 P6b-2 — permanent quotes preview a FIXED curated set (warm white +
-        // a few scenes), independent of the holiday swatch curation; the choice
-        // still freezes through the same colorSchemeId path. Holiday uses the live
+        // #88 P6b-4 — permanent quotes use their own swatch presets + full
+        // build-your-own palette (any color), separate from the holiday swatches;
+        // the color still freezes through the same colorSchemeId/customPattern path.
+        // Effect is a separate pick (PermanentEffectPicker). Holiday uses the live
         // operator swatch list. colorOverride resolves against whichever we pass.
         schemes={quote.serviceType === 'permanent' ? PERMANENT_COLOR_SCHEMES : appSettings.swatches.schemes}
-        buildableColorIds={appSettings.swatches.buildableColorIds}
+        buildableColorIds={quote.serviceType === 'permanent' ? PERMANENT_BUILDABLE_IDS : appSettings.swatches.buildableColorIds}
       >
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
@@ -282,13 +283,14 @@ export default async function PortalPage({
           serviceType={quote.serviceType}
         />
 
-        {/* 1.5 Light color picker (#48/#57) — moved out of the hero into a band
-            below the packages so the swatches don't overlap the photo on a phone.
-            Only when a design is linked (recolor needs a live scene). */}
-        {quote.design && quote.serviceType !== 'permanent' && <LightColorPicker />}
-        {/* 1.5b #88 P6b-2 — permanent warm-white↔color preview toggle (the
-            permanent analog of LightColorPicker; fixed curated scheme set). */}
-        {quote.design && quote.serviceType === 'permanent' && <PermanentColorToggle />}
+        {/* 1.5 Light color picker (#48/#57) — the full picker (presets + palette +
+            build-your-own). Permanent (#88 P6b-4) uses the SAME picker over its own
+            swatch list, so a permanent customer gets full color control too. Only
+            when a design is linked (recolor needs a live scene). */}
+        {quote.design && <LightColorPicker />}
+        {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
+            row under the color so any color can play any effect. */}
+        {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
 
         {/* 2. Walkthrough video — global default or per-quote override */}
         {quote.video && <WalkthroughVideo video={quote.video} />}

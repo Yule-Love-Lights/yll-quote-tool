@@ -603,7 +603,7 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     expect(sel.colorIds).toEqual(['warm-white']);
   });
 
-  it('drops build-your-own on a permanent quote (custom is holiday-only)', async () => {
+  it('accepts build-your-own on a permanent quote (#88 P6b-4 — full color control)', async () => {
     const { client, updatePayloads } = makeSb(
       baseQuote({ result: PERM_RESULT, service_type: 'permanent' }),
     );
@@ -621,9 +621,35 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     const sel = (updatePayloads[0].approval_snapshot as {
       customerSelection: { colorSchemeId: string; customPattern: string[]; colorIds: string[] | null };
     }).customerSelection;
-    expect(sel.colorSchemeId).toBe('as-designed'); // 'custom' not a permanent id → default
-    expect(sel.customPattern).toEqual([]); // no build-your-own for permanent
-    expect(sel.colorIds).toBeNull();
+    expect(sel.colorSchemeId).toBe('custom'); // build-your-own now allowed for permanent
+    expect(sel.customPattern).toEqual(['red', 'blue']);
+    expect(sel.colorIds).toEqual(['red', 'blue']); // resolved from the custom pattern
+  });
+
+  it('freezes the permanent animation effect (defaults to Chase; null for holiday)', async () => {
+    const perm = makeSb(baseQuote({ result: PERM_RESULT, service_type: 'permanent' }));
+    sbRef.current = perm.client;
+    await POST(makeReq({ ...validBody, selectedItemIds: ['permanent-front'], permanentEffect: 'cycle' }), { params });
+    const permSel = (perm.updatePayloads[0].approval_snapshot as {
+      customerSelection: { permanentEffect: string | null };
+    }).customerSelection;
+    expect(permSel.permanentEffect).toBe('cycle');
+
+    // absent/invalid on a permanent quote → default Chase
+    const perm2 = makeSb(baseQuote({ result: PERM_RESULT, service_type: 'permanent' }));
+    sbRef.current = perm2.client;
+    await POST(makeReq({ ...validBody, selectedItemIds: ['permanent-front'], permanentEffect: 'bogus' }), { params });
+    expect((perm2.updatePayloads[0].approval_snapshot as {
+      customerSelection: { permanentEffect: string | null };
+    }).customerSelection.permanentEffect).toBe('chase');
+
+    // a holiday quote never carries an effect
+    const hol = makeSb(baseQuote());
+    sbRef.current = hol.client;
+    await POST(makeReq({ ...validBody, selectedItemIds: ['roofline-santas'], permanentEffect: 'chase' }), { params });
+    expect((hol.updatePayloads[0].approval_snapshot as {
+      customerSelection: { permanentEffect: string | null };
+    }).customerSelection.permanentEffect).toBeNull();
   });
 
   // GAP 2 (P6b-2 review) — the warranty copy + version freeze into the snapshot for

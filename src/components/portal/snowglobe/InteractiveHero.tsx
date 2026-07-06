@@ -31,7 +31,7 @@ import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
-import { permanentSceneById } from '@/lib/design/permanentScenes';
+import { effectSpeedMs } from '@/lib/design/permanentScenes';
 import { colorOf } from '@/components/design/editor-core/colors';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -74,24 +74,25 @@ export function InteractiveHero({
     selectedItemIds,
     hiddenSceneItemIds,
     colorOverride,
-    colorSchemeId,
+    permanentEffect,
     showDaylight,
     activeName,
   } = useSelection();
-  // #88 P6b-3 — permanent scenes animate the live design. Map the active scene id
-  // to its motion effect; a static scene (or any non-permanent quote) → null (the
-  // design renders static). Only the HERO animates (perf); reprise/gallery stay static.
+  // #88 P6b-4 — permanent lights animate the live design per the SEPARATELY-chosen
+  // effect (Solid/Chase/Fade), applied to whatever color the customer picked. A
+  // motion effect → {effect,speedMs}; Solid or a non-permanent quote → null (static).
+  // Only the HERO animates (perf); reprise/gallery stay static. A single-color pick
+  // has nothing to move, so the animation controller no-ops it (stays solid).
   const heroAnimation = useMemo(() => {
     if (serviceType !== 'permanent') return null;
-    const sc = permanentSceneById(colorSchemeId);
-    return sc && (sc.effect === 'chase' || sc.effect === 'cycle')
-      ? { effect: sc.effect, speedMs: sc.speedMs }
+    return permanentEffect === 'chase' || permanentEffect === 'cycle'
+      ? { effect: permanentEffect, speedMs: effectSpeedMs(permanentEffect) }
       : null;
-  }, [serviceType, colorSchemeId]);
-  // #88 P6b-3 — the facade glow gradient for the active permanent scene. Built from
-  // the scene's live palette (colorOverride), tinted via the configured palette hex.
-  // null (no wash) for non-permanent quotes and for "as designed" (colorOverride
-  // null) — the glow only shows for an explicit scene color. Motion scenes sweep it.
+  }, [serviceType, permanentEffect]);
+  // #88 P6b-3/4 — the facade glow gradient for the active permanent color. Built from
+  // the live palette (colorOverride), tinted via the configured palette hex. null (no
+  // wash) for non-permanent quotes and for "as designed" (colorOverride null) — the
+  // glow only shows for an explicit color. A motion effect sweeps it.
   const permGlow = useMemo(() => {
     if (serviceType !== 'permanent' || !design || !colorOverride || colorOverride.length === 0) return null;
     const hexOf = (id: string) => palette?.find((c) => c.id === id)?.hex ?? colorOf(id).hex;

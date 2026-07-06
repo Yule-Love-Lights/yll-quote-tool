@@ -38,6 +38,7 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   type ColorScheme,
 } from '@/lib/design/colorSchemes';
+import { DEFAULT_PERMANENT_EFFECT, isPermanentEffect, type SceneEffect } from '@/lib/design/permanentScenes';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -119,6 +120,14 @@ type SelectionContextValue = {
    */
   customPattern: string[];
   setCustomPattern: (ids: string[]) => void;
+  /**
+   * #88 P6b-4 — permanent-only ANIMATION effect (Solid / Chase / Fade), chosen
+   * SEPARATELY from the color so any color can play any effect. Drives the hero's
+   * live animation and freezes into the approval snapshot. Unused for holiday/event
+   * (no effect picker renders there).
+   */
+  permanentEffect: SceneEffect;
+  setPermanentEffect: (e: SceneEffect) => void;
   /** #43 — true once the quote is approved: the portal is READ-ONLY. Every
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
@@ -235,6 +244,9 @@ export type SelectionProviderProps = {
   // from app_settings. Default to the built-ins for callers that don't pass them.
   schemes?: ColorScheme[];
   buildableColorIds?: string[];
+  // #88 P6b-4 — the permanent animation effect the portal opens on. A booked quote
+  // restores the frozen effect here; a fresh permanent quote defaults to Chase.
+  initialPermanentEffect?: SceneEffect;
   children: React.ReactNode;
 };
 
@@ -252,6 +264,7 @@ export function SelectionProvider({
   earlyInstallDiscountsHidden = false,
   schemes = DEFAULT_COLOR_SCHEMES,
   buildableColorIds = DEFAULT_BUILDABLE_COLOR_IDS,
+  initialPermanentEffect,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -320,6 +333,11 @@ export function SelectionProvider({
   // COLOR_SCHEMES constant), so passing it to DesignCanvas only re-renders the
   // draw layer when it changes.
   const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
+  // #88 P6b-4 — the permanent animation effect, chosen separately from the color.
+  // Restores a booked quote's frozen effect; a fresh permanent quote opens on Chase.
+  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(
+    isPermanentEffect(initialPermanentEffect) ? initialPermanentEffect : DEFAULT_PERMANENT_EFFECT,
+  );
   const [customPattern, setCustomPattern] = useState<string[]>([]);
   // Custom pattern (#49) drives the override when its scheme is active; otherwise
   // resolve the preset. Sanitize the custom list so an invalid/empty pattern can
@@ -472,6 +490,8 @@ export function SelectionProvider({
     buildableColorIds,
     customPattern,
     setCustomPattern: locked ? noop : setCustomPattern,
+    permanentEffect,
+    setPermanentEffect: locked ? noop : setPermanentEffect,
     locked,
     showDaylight,
     toggleDaylight,
