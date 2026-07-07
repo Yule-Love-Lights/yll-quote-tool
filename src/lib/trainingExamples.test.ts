@@ -102,6 +102,35 @@ describe('exampleToFewShot', () => {
     expect(ex.satelliteSantasLines).toHaveLength(1);
     expect(ex.satelliteSantasFootage).toBe(50);
   });
+
+  it('a scale-less manual satellite trace (lines present, NO derived footage) is NOT taught — would teach "traced real lines, report 0 ft"', () => {
+    // Mirrors QuoteBuilder: satelliteFeetPerPixel null → satFootage.santas/ginger
+    // are null → the *Footage keys are omitted from satellite_lines entirely,
+    // even though real traced lines were pushed.
+    const ex = exampleToFewShot(row({
+      satellite_base64: 'SAT', satellite_media_type: 'image/jpeg', satellite_feet_per_pixel: null,
+      satellite_lines: {
+        santas: [{ points: [[0.2, 0.5], [0.7, 0.5]], label: 'front' }],
+        gingerbread: [], c9: [],
+        // no santasFootage / gingerbreadFootage
+      },
+    }))!;
+    expect(ex.photos).toHaveLength(1); // satellite dropped entirely
+    expect(ex.photos.every((p) => p.tag !== 'satellite')).toBe(true);
+    expect(ex.satelliteSantasLines).toEqual([]);
+    expect(ex.satelliteSantasFootage).toBeUndefined();
+  });
+
+  it('a satellite trace with footage explicitly 0 is also NOT taught (0 is not a positive measurement)', () => {
+    const ex = exampleToFewShot(row({
+      satellite_base64: 'SAT', satellite_media_type: 'image/jpeg', satellite_feet_per_pixel: 0.1,
+      satellite_lines: {
+        santas: [{ points: [[0.2, 0.5], [0.7, 0.5]], label: 'front' }],
+        gingerbread: [], c9: [], santasFootage: 0,
+      },
+    }))!;
+    expect(ex.photos).toHaveLength(1);
+  });
 });
 
 // #52 — inline edit of a saved example: enumerate + correct detections (mini
@@ -287,6 +316,76 @@ describe('captureTrainingExample footage sanitization (W5-030)', () => {
     const finalInputs = getUpsertedRow()!.final_inputs as Record<string, unknown>;
     expect(finalInputs.winterWonderlandFootage).toBe(25);
     expect(finalInputs.stakeLightingFootage).toBe(12);
+  });
+});
+
+// ─── notes sanitization (parity with training.ts's sanitizeCorpusText) ─────
+// training_examples.notes flows straight into aiFailureNotes, injected into
+// EVERY analyze prompt; training_houses got a 2000-char cap + control-char
+// strip for exactly this reason (W5-028) but training_examples never did.
+
+describe('captureTrainingExample / updateTrainingExample notes sanitization', () => {
+  beforeEach(() => {
+    quoteRef.current = null;
+    designRef.current = null;
+    sbRef.current = null;
+  });
+
+  it('captureTrainingExample caps an oversized notes string to 2000 chars and strips control chars', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', inputs: {} };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    const huge = 'x'.repeat(2500) + '\x00\x01BAD';
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual', notes: huge });
+
+    const row = getUpsertedRow()!;
+    expect((row.notes as string).length).toBeLessThanOrEqual(2000);
+    expect(row.notes).not.toMatch(/[\x00-\x1f]/);
+  });
+
+  it('captureTrainingExample passes a normal notes string through unchanged', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', inputs: {} };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual', notes: 'roofline ran short, add 10ft' });
+
+    expect(getUpsertedRow()!.notes).toBe('roofline ran short, add 10ft');
+  });
+
+  it('updateTrainingExample caps + strips notes the same way', async () => {
+    let updatedRow: Record<string, unknown> | null = null;
+    const builder: Record<string, unknown> = {};
+    builder.eq = () => builder;
+    builder.update = (row: Record<string, unknown>) => {
+      updatedRow = row;
+      return builder;
+    };
+    builder.then = (resolve: (v: unknown) => void) => resolve({ error: null });
+    sbRef.current = { from: () => builder };
+
+    const huge = 'y'.repeat(2200) + '\x02\x03';
+    await updateTrainingExample('ex-1', { notes: huge });
+
+    expect((updatedRow!.notes as string).length).toBeLessThanOrEqual(2000);
+    expect(updatedRow!.notes).not.toMatch(/[\x00-\x1f]/);
   });
 });
 
