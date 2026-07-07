@@ -15,6 +15,8 @@ vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
 vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: [], clipRules: CLIP_RULES })) }));
 vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => [{ sku: 'SKU-A', name: 'Widget' }]) }));
 vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []) }));
+// P8 on-order ledger — no open orders in these scenarios, so the delta term is 0.
+vi.mock('./orders', () => ({ sumOpenOnOrder: vi.fn(async () => new Map()) }));
 // Every job projects 5 of SKU-A, so the PO size is a direct count of INCLUDED jobs.
 vi.mock('./materialsProjection', () => ({
   projectMaterials: vi.fn(() => []),
@@ -79,14 +81,14 @@ describe('buildSupplierPurchaseOrder — Test Quote exclusion (#93)', () => {
   it('drops the test job: only the real job (5 of SKU-A) reaches the PO', async () => {
     const po = await buildSupplierPurchaseOrder();
     expect(po.jobCount).toBe(1); // T excluded, R kept
-    expect(po.lines).toEqual([{ sku: 'SKU-A', name: 'Widget', needed: 5, onHand: 0, order: 5 }]);
+    expect(po.lines).toEqual([{ sku: 'SKU-A', name: 'Widget', needed: 5, onHand: 0, onOrder: 0, order: 5 }]);
   });
 
   it('keeps both jobs (order 10) when neither quote is a test quote', async () => {
     testQuoteIds = [];
     const po = await buildSupplierPurchaseOrder();
     expect(po.jobCount).toBe(2);
-    expect(po.lines).toEqual([{ sku: 'SKU-A', name: 'Widget', needed: 10, onHand: 0, order: 10 }]);
+    expect(po.lines).toEqual([{ sku: 'SKU-A', name: 'Widget', needed: 10, onHand: 0, onOrder: 0, order: 10 }]);
   });
 
   it('passes clipRules through to projectMaterials (#110 W7-009 — clips must reach the PO, not be dropped as {})', async () => {
