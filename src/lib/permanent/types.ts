@@ -69,6 +69,14 @@ export type PermanentQuoteFields = {
   /** Applies to left + right combined. */
   sidesCustomRate?: number;
   backCustomRate?: number;
+  /**
+   * Per-side provenance for footage/corners (#88). 'auto' = last written by a
+   * design Refresh, 'manual' = the operator typed it. "Refresh from design"
+   * overwrites 'auto' sides (INCLUDING clearing a side whose design run was
+   * deleted, so a stale run can't keep billing) but preserves 'manual'
+   * (satellite-measured) sides. Absent/legacy reads as 'manual'.
+   */
+  sideSource?: Partial<Record<'front' | 'left' | 'right' | 'back', 'auto' | 'manual'>>;
 };
 
 /**
@@ -156,5 +164,6 @@ export function makeDefaultPermanentFields(): PermanentQuoteFields {
     trackColor: '9003',
     blackHousing: false,
     maintenanceAddOn: false,
+    sideSource: {},
   };
 }

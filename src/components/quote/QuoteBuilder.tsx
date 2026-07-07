@@ -1067,6 +1067,9 @@ export default function QuoteBuilder({
     formattedAddress?: string;
     lat?: number;
     lng?: number;
+    // #88: permanent address lookup returns imagery only (Street View + satellite
+    // + scale) with no holiday analysis/seed — the operator draws the roofline.
+    permanentImageryOnly?: boolean;
     fewShotCount?: number;
     fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
   };
@@ -1178,7 +1181,7 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-address', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: addr }),
+        body: JSON.stringify({ address: addr, serviceType: form.serviceType }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
@@ -1198,19 +1201,24 @@ export default function QuoteBuilder({
       if (data.result) {
         applyAnalysisResult(data);
       } else {
-        // FAIL-SAFE: the analyzer was unavailable (e.g. Claude down). The imagery
-        // still came back — load the street photo into the editor (the eager
-        // design effect creates the design from it) so staff design MANUALLY, and
-        // keep the satellite + its scale for manual measurement. Skip the seed.
+        // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
+        // holiday analyzer by design) or the fail-safe (analyzer down). The street
+        // photo creates the design; the satellite + its scale stay for measuring.
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
-        setAnalysisWarning(
-          data.analysisError ??
-            'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
-        );
+        if (data.permanentImageryOnly) {
+          setAnalysisNotes(
+            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+          );
+        } else {
+          setAnalysisWarning(
+            data.analysisError ??
+              'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
+          );
+        }
       }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
@@ -1221,6 +1229,39 @@ export default function QuoteBuilder({
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
+    // #88: permanent lighting designs MANUALLY — no holiday auto-measure/seed.
+    // Load the uploaded photo into a bare design (no Anthropic call, no
+    // santas/gingerbread roofline drawn) so the operator draws the permanent
+    // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
+    if (form.serviceType === 'permanent') {
+      // Read the base64 from the File itself — photoPreview is a blob: object URL
+      // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
+      const base64 = await new Promise<string | null>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const s = typeof r.result === 'string' ? r.result : '';
+          const comma = s.indexOf(',');
+          resolve(comma >= 0 ? s.slice(comma + 1) : null);
+        };
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(photoFile);
+      });
+      if (!base64) {
+        setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
+      pendingSeedRef.current = null;
+      setAnalysisError(null);
+      setAnalysisWarning(null);
+      setPhotoBase64(base64);
+      setPhotoMediaType(photoFile.type || 'image/jpeg');
+      setFewShotCount(0);
+      setViewMode('design');
+      setAnalysisNotes(
+        'Photo loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+      );
+      return;
+    }
     setAnalyzing(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -1954,10 +1995,13 @@ export default function QuoteBuilder({
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
-              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.
+              {form.serviceType === 'permanent'
+                ? 'Upload the house photo (or look it up on Google Maps) so the design canvas opens with the house. Permanent lighting is measured from the design and satellite, not the holiday auto-measure. Draw each roofline run, tag its side, then Refresh from design in the Permanent section.'
+                : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
-            {/* Google lookup */}
+            {/* Google lookup — pulls Street View + satellite. Permanent skips the
+                holiday analyzer (imagery only) so it never designs as Christmas. */}
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
@@ -1971,7 +2015,9 @@ export default function QuoteBuilder({
                 </button>
               </div>
               <p className="text-xs text-blue-700">
-                Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
+                {form.serviceType === 'permanent'
+                  ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
+                  : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -2018,7 +2064,7 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2051,7 +2097,9 @@ export default function QuoteBuilder({
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
-                    Analysis complete — measurements auto-filled, roofline drawn on the design.
+                    {form.serviceType === 'permanent'
+                      ? 'Photo loaded for the design canvas.'
+                      : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">
                         • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference
@@ -2113,7 +2161,7 @@ export default function QuoteBuilder({
                     Satellite (top-down)
                   </button>
                 </div>
-                {satelliteFeetPerPixel != null && (
+                {form.serviceType !== 'permanent' && satelliteFeetPerPixel != null && (
                   <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
                     Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
                   </div>
@@ -2244,14 +2292,28 @@ export default function QuoteBuilder({
                       key={designEditorKey}
                       designId={designId}
                       height={640}
+                      permanentOnly={form.serviceType === 'permanent'}
                       onReady={(flush) => { editorFlushRef.current = flush; }}
                     />
-                    <p className="text-xs text-gray-400 mt-2">
-                      Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
-                      quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
-                      represent). Saves automatically and attaches to this quote on Calculate.
-                    </p>
-                    <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    {form.serviceType === 'permanent' ? (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw each permanent roofline run on the photo and tag its side (front/left/right/back).
+                        Then use &ldquo;Refresh from design&rdquo; in the Permanent section to pull footage, corners
+                        &amp; gaps. Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
+                        quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
+                        represent). Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    )}
+                    {/* #88: the "From your design" billable-items summary (minis/
+                        spritzers/wreaths/garland/bows) is holiday/event only — a
+                        permanent quote bills from the Permanent section, not drawn items. */}
+                    {form.serviceType !== 'permanent' && (
+                      <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">
@@ -2267,9 +2329,11 @@ export default function QuoteBuilder({
               <div className={viewMode === 'satellite' ? '' : 'hidden'}>
                 {satellitePreview ? (
                   <>
-                    <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
-                      <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
-                    </div>
+                    {form.serviceType !== 'permanent' && (
+                      <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
+                        <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
+                      </div>
+                    )}
                     {/* Zoom/pan controls (#26) */}
                     <div className="flex items-center justify-between mb-1.5 text-[11px] text-gray-500">
                       <span>Scroll to zoom · drag to pan{satZoom.isZoomed ? ` · ${Math.round(satZoom.zoom * 100)}%` : ''}</span>
@@ -2419,6 +2483,18 @@ export default function QuoteBuilder({
                     </div>
                     </div>
 
+                    {/* #88: the holiday roofline satellite measurement (Front
+                        Gutterline / Ridge + Sides polylines) does not apply to
+                        permanent — it measures front/left/right/back by eye and
+                        enters them in the Permanent section, or draws + Refreshes. */}
+                    {form.serviceType === 'permanent' ? (
+                      <p className="mt-3 text-sm text-gray-500">
+                        Measure the left, right, and back rooflines off this satellite view and enter each
+                        side&apos;s footage in the Permanent section below. (Or draw the runs on the design and
+                        use Refresh from design.)
+                      </p>
+                    ) : (
+                    <>
                     {/* Add-line controls */}
                     {addMode ? (
                       <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
@@ -2612,6 +2688,8 @@ export default function QuoteBuilder({
                       </div>
                       </>)}
                     </div>
+                    </>
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">

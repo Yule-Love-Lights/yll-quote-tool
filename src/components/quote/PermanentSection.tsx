@@ -1,14 +1,27 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { QuoteFormData } from '@/lib/quoteForm';
 import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
-import { projectPermanentDesign } from '@/lib/permanent/projectPermanent';
+import { projectPermanentDesign, applyPermanentProjection } from '@/lib/permanent/projectPermanent';
 import type { Scene } from '@/lib/design/sceneTypes';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
+
+// Which house side each footage/corner field belongs to — editing one marks that
+// side 'manual' so a later "Refresh from design" won't overwrite a satellite number.
+const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left' | 'right' | 'back'>> = {
+  frontFootage: 'front',
+  frontCorners: 'front',
+  leftFootage: 'left',
+  leftCorners: 'left',
+  rightFootage: 'right',
+  rightCorners: 'right',
+  backFootage: 'back',
+  backCorners: 'back',
+};
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -28,10 +41,22 @@ type PermanentSectionProps = {
 export default function PermanentSection({ form, setForm, designId }: PermanentSectionProps) {
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // The design's actual footage per side (from the last projection). Used to warn
+  // when a side bills footage but has no matching run drawn (S29, per Jason —
+  // catches an orphaned manual number after a run is deleted, so a quote can't be
+  // sent billing footage the customer has no lights to match). Seeded on mount +
+  // updated by "Refresh from design".
+  const [designFeetBySide, setDesignFeetBySide] =
+    useState<Record<'front' | 'left' | 'right' | 'back' | 'unassigned', number> | null>(null);
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
-    setForm((f) => ({ ...f, permanent: { ...f.permanent, [k]: v } }));
+    setForm((f) => {
+      const side = SIDE_OF_FIELD[k];
+      const permanent = { ...f.permanent, [k]: v };
+      if (side) permanent.sideSource = { ...(f.permanent.sideSource ?? {}), [side]: 'manual' };
+      return { ...f, permanent };
+    });
 
   const patchGap = (idx: number, patch: Partial<PermanentGap>) =>
     setForm((f) => {
@@ -63,40 +88,17 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
         return;
       }
       const proj = projectPermanentDesign(scene);
-      const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
-        lengthFt: c.lengthFt,
-        detectedFt: c.lengthFt,
-        source: 'auto' as const,
-      }));
-      // Auto rows are regenerated fresh from geometry; only operator-added 'manual'
-      // rows survive. An 'edited' row (operator ticked a splitter or corrected an
-      // auto gap's length) is reset — count them so we can warn instead of silently
-      // dropping the operator's splitter flags / length corrections.
+      setDesignFeetBySide(proj.feetBySide);
+      // #88: the design now drives ALL FOUR sides (front/left/right/back). A side
+      // the design doesn't cover keeps the operator's manual entry, and 'edited'
+      // gap rows reset to the fresh auto values (count them to warn, not drop
+      // silently) — the merge lives in applyPermanentProjection (pure, tested).
       const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
-      const gaps = [...autoRows, ...form.permanent.gaps.filter((g) => g.source === 'manual')];
-      setForm((f) => ({
-        ...f,
-        permanent: {
-          ...f.permanent,
-          frontFootage: proj.feetBySide.front,
-          frontCorners: proj.cornersBySide.front,
-          gaps,
-        },
-      }));
-      // Refresh writes FRONT footage only (left/right/back are satellite-measured
-      // and manually entered, so overwriting them would wipe the operator's numbers).
-      // But warn about design footage refresh does NOT carry through, so a tagged
-      // side run can't be silently dropped → under-billed with no signal.
-      const sideFt = proj.feetBySide.left + proj.feetBySide.right + proj.feetBySide.back;
+      setForm((f) => ({ ...f, permanent: applyPermanentProjection(f.permanent, proj) }));
       const warnings: string[] = [];
       if (proj.feetBySide.unassigned > 0) {
         warnings.push(
           `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
-        );
-      }
-      if (sideFt > 0) {
-        warnings.push(
-          `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
         );
       }
       if (resetEditedGaps > 0) {
@@ -113,6 +115,38 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
       setRefreshing(false);
     }
   };
+
+  // Seed designFeetBySide on mount / design change (best-effort) so the no-run
+  // warnings are right on a reopened quote, not only after a manual Refresh.
+  useEffect(() => {
+    if (!designId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/designs/${designId}`);
+        const data = await res.json();
+        const scene: Scene | undefined = data?.design?.scene;
+        if (!cancelled) setDesignFeetBySide(scene ? projectPermanentDesign(scene).feetBySide : null);
+      } catch {
+        /* best-effort — a load failure just leaves the warnings off */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [designId]);
+
+  // Red check-note when a side bills footage the design has no run for. Fires on
+  // any of the 4 sides (Jason's call): for a satellite-typed side it's a "confirm
+  // this measurement" reminder; for a deleted-run side it catches the orphan so it
+  // can't reach a customer as footage with no lights to match.
+  const noRunWarning = (side: 'front' | 'left' | 'right' | 'back', footage: number) =>
+    designId != null && designFeetBySide != null && footage > 0 && designFeetBySide[side] === 0 ? (
+      <p className="text-xs text-red-600 mt-1 font-medium">
+        ⚠ No {side} run on the design — this {footage} ft bills from your typed number. Draw the run
+        or confirm the measurement before sending.
+      </p>
+    ) : null;
 
   return (
     <div>
@@ -132,6 +166,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
                 Front footage is 0 — refresh from the design or enter it manually.
               </p>
             )}
+            {noRunWarning('front', p.frontFootage)}
           </div>
           <div>
             <label className={lbl}>Front corners</label>
@@ -158,7 +193,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
           </button>
           {!designId && (
             <p className="text-xs text-gray-400 mt-1">
-              Design the front first to auto-detect footage, corners &amp; gaps.
+              Design the house first (tag each run&apos;s side) to auto-detect footage, corners &amp; gaps.
             </p>
           )}
           {refreshWarning && <p className="text-xs text-amber-600 mt-1">{refreshWarning}</p>}
@@ -167,8 +202,9 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
 
       <Section title="Sides &amp; Back">
         <p className="text-xs text-gray-400 mb-3">
-          Measure off the satellite view or enter manually. Left + Right are billed together as
-          &lsquo;Sides&rsquo;.
+          Auto-filled from the design when each run is side-tagged (Refresh above), or measure off the
+          satellite view / enter manually. A side the design doesn&apos;t cover keeps your manual number.
+          Left + Right are billed together as &lsquo;Sides&rsquo;.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -180,6 +216,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.leftFootage}
               onChange={(e) => setP('leftFootage', Number(e.target.value))}
             />
+            {noRunWarning('left', p.leftFootage)}
           </div>
           <div>
             <label className={lbl}>Left corners</label>
@@ -200,6 +237,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.rightFootage}
               onChange={(e) => setP('rightFootage', Number(e.target.value))}
             />
+            {noRunWarning('right', p.rightFootage)}
           </div>
           <div>
             <label className={lbl}>Right corners</label>
@@ -220,6 +258,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.backFootage}
               onChange={(e) => setP('backFootage', Number(e.target.value))}
             />
+            {noRunWarning('back', p.backFootage)}
           </div>
           <div>
             <label className={lbl}>Back corners</label>

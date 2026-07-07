@@ -8,6 +8,7 @@ export const PERM_DEFAULTS = {
   distanceToSurfaceFt: 0,
   opacity: 1,
   showCoverage: false,
+  showBeam: true,
 } as const;
 
 export function createPermanentLight(
@@ -18,6 +19,7 @@ export function createPermanentLight(
   distanceToSurfaceFt: number,
   opacity: number,
   showCoverage: boolean,
+  showBeam: boolean,
 ): Konva.Group {
   const color = colorOf(colorId);
   const beamLength = Math.max(8, beamLengthFt * pxPerFoot);
@@ -35,7 +37,9 @@ export function createPermanentLight(
   const botHalf = beamWidth / 2;
 
   // --- The beam — a single trapezoidal cone with a smooth vertical fade.
-  //     No double-cone outline; just one shape with a single gradient. ---
+  //     No double-cone outline; just one shape with a single gradient.
+  //     #88: skippable per strand (showBeam=false = just the puck dots). ---
+  if (showBeam) {
   const beam = new Konva.Shape({
     sceneFunc: (ctx, shape) => {
       ctx.beginPath();
@@ -58,6 +62,7 @@ export function createPermanentLight(
     listening: false,
   });
   group.add(beam);
+  }
 
   // --- 3. Floor wash — soft horizontal smear where the beam lands.
   //        Optional — user can hide this if they want a "spotlight only" look.

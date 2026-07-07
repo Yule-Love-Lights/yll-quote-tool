@@ -20,6 +20,7 @@
 import type { Scene, StrandItem, SideOfHouse } from '@/lib/design/sceneTypes';
 import { isStrand } from '@/lib/design/sceneTypes';
 import { pxPerFoot } from '@/components/design/editor-core/yardstick-scale';
+import type { PermanentQuoteFields, PermanentGap } from './types';
 
 /** Below this the two runs are touching, not a real gap needing an extension. */
 const GAP_MIN_FT = 0.5;
@@ -115,4 +116,74 @@ export function projectPermanentDesign(scene: Scene): PermanentDesignProjection 
   }
 
   return { feetBySide, cornersBySide, frontGapCandidates };
+}
+
+/**
+ * Merge a design projection into the permanent quote fields — the design now
+ * drives ALL FOUR sides (#88: front/left/right/back), not front alone.
+ *
+ * The design is the source of truth for any side it actually covers; a side the
+ * design has NO footage for keeps the operator's existing manual entry, so a
+ * Refresh never wipes a satellite-measured side that wasn't drawn. Front gap
+ * candidates are regenerated fresh from geometry; operator-added 'manual' gap
+ * rows survive, while stale 'auto'/'edited' rows are replaced by the new detection.
+ */
+export function applyPermanentProjection(
+  fields: PermanentQuoteFields,
+  proj: PermanentDesignProjection,
+): PermanentQuoteFields {
+  const src = fields.sideSource ?? {};
+  const nextSrc: NonNullable<PermanentQuoteFields['sideSource']> = { ...src };
+
+  // Per side, provenance-aware — checked IN THIS ORDER:
+  //  • operator typed it ('manual')        → ALWAYS preserve, even when the design
+  //    covers that side (a hand-typed override wins over a drawn run). This must be
+  //    checked FIRST: otherwise a Refresh with a run still on that side overwrites
+  //    the operator's number with the design's (the S29 bug Jason caught). To hand
+  //    a side back to auto, clear its field.
+  //  • design covers it (ft > 0)           → apply, tag 'auto'.
+  //  • an 'auto' side the design no longer covers → clear to 0 so a deleted run
+  //    can't keep billing stale footage.
+  //  • otherwise (legacy/no source, no design) → keep the current value.
+  const mergeSide = (
+    side: 'front' | 'left' | 'right' | 'back',
+    ft: number,
+    corners: number,
+    curFt: number,
+    curCorners: number,
+  ): [number, number] => {
+    if (src[side] === 'manual') return [curFt, curCorners];
+    if (ft > 0) {
+      nextSrc[side] = 'auto';
+      return [ft, corners];
+    }
+    if (src[side] === 'auto') return [0, 0];
+    return [curFt, curCorners];
+  };
+
+  const [frontFootage, frontCorners] = mergeSide('front', proj.feetBySide.front, proj.cornersBySide.front, fields.frontFootage, fields.frontCorners);
+  const [leftFootage, leftCorners] = mergeSide('left', proj.feetBySide.left, proj.cornersBySide.left, fields.leftFootage, fields.leftCorners);
+  const [rightFootage, rightCorners] = mergeSide('right', proj.feetBySide.right, proj.cornersBySide.right, fields.rightFootage, fields.rightCorners);
+  const [backFootage, backCorners] = mergeSide('back', proj.feetBySide.back, proj.cornersBySide.back, fields.backFootage, fields.backCorners);
+
+  const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
+    lengthFt: c.lengthFt,
+    detectedFt: c.lengthFt,
+    source: 'auto' as const,
+  }));
+  const gaps: PermanentGap[] = [...autoRows, ...fields.gaps.filter((g) => g.source === 'manual')];
+
+  return {
+    ...fields,
+    frontFootage,
+    frontCorners,
+    leftFootage,
+    leftCorners,
+    rightFootage,
+    rightCorners,
+    backFootage,
+    backCorners,
+    gaps,
+    sideSource: nextSrc,
+  };
 }
