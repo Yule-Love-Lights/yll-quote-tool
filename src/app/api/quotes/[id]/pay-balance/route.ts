@@ -80,7 +80,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // route a BALANCE payment to the invoice (vs a deposit, which books a quote).
   const orderRef = `bal_${id}`;
   const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-  const successUrl = `${baseUrl}/portal/${id}/approved`;
+  // `?balance=paid` tells the approved page the customer just paid off the
+  // remaining balance (not the deposit) so it confirms the payment instead of
+  // repeating the "collected after install" copy.
+  const successUrl = `${baseUrl}/portal/${id}/approved?balance=paid`;
   const failureUrl = `${baseUrl}/portal/${id}/pay-balance`;
 
   try {

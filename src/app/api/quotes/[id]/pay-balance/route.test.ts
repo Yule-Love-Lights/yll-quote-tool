@@ -113,4 +113,11 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
       expect.objectContaining({ amountUsd: 2500, orderRef: `bal_${ID}` }),
     );
   });
+
+  it('sends a balance-specific successUrl so the approved page confirms payment, not "still owed"', async () => {
+    await POST(req(), ctx());
+    expect(createHostedPageSaleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ successUrl: `https://portal.test/portal/${ID}/approved?balance=paid` }),
+    );
+  });
 });
