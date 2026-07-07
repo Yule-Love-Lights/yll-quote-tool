@@ -10,14 +10,14 @@
 //   2. CRON-only — Vercel attaches `Authorization: Bearer ${CRON_SECRET}`; required.
 //   3. DEDUP — never re-emails an UNCHANGED order (signature stored in app_settings);
 //      resets when the shortfall clears so a re-appearing shortfall sends again.
-// KNOWN LIMITATION (#110 W7-002, MITIGATED): there's no "on-order/received"
-// ledger, so if the shortfall CHANGES before stock arrives, a re-send re-lists
-// the full CUMULATIVE outstanding need (not the delta). The supplier email now
-// states this order REPLACES any prior unshipped order (fulfill as the total, not
-// additively), so a re-send can't cause double-shipping — the cumulative quantity
-// IS the true remaining need. A proper delta-based on-order ledger (order only
-// what isn't already en route) is future work (P8 inventory). The dedup + the
-// human-gated /inventory/orders "Send" remain the safer fallbacks.
+// #110 W7-002 — FIXED (P8): there is now an on-order ledger (inventory_orders,
+// src/lib/inventory/orders.ts). Every sent order is recorded, and
+// buildSupplierPurchaseOrder subtracts the sum of all OPEN orders' quantities
+// from need before computing the shortfall — so a re-send lists only the NEW
+// need, not the full cumulative one. Staff mark an order received (adds its
+// quantities to on-hand) or cancelled (drops it from the delta math without
+// touching stock) from /inventory/orders. The dedup above + the human-gated
+// /inventory/orders "Send" remain additional layers, not the primary guard.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
   }
 
   const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const res = await emailSupplierPurchaseOrder(po, date);
+  const res = await emailSupplierPurchaseOrder(po, date, 'auto-cron');
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.status });
   await recordAutoSentSignature(sig);
   return NextResponse.json({ ok: true, sent: true, items: po.lines.length });

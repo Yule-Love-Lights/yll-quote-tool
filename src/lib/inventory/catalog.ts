@@ -5,6 +5,7 @@
 
 import { getSupabaseServiceClient, getSupabaseClient } from '../supabase';
 import type { ParsedCatalogItem } from './parseThunderCsv';
+import { costOverridesFromCatalog } from './ascendCatalog';
 
 export type CatalogItem = ParsedCatalogItem & {
   yll_category: string | null; // operator override (1b); null → use `category`
@@ -27,6 +28,14 @@ export async function listCatalog(): Promise<CatalogItem[]> {
     return [];
   }
   return (data ?? []) as CatalogItem[];
+}
+
+// P8 PR-2 — live catalog costs for buildPermanentBom's costOverrides hook (SKU →
+// wholesale_cost). A read failure already swallows to [] inside listCatalog, so
+// this degrades to an empty map → every SKU falls back to the BOM engine's own
+// built-in cost; callers never need their own try/catch for this.
+export async function catalogCostOverrides(): Promise<Map<string, number>> {
+  return costOverridesFromCatalog(await listCatalog());
 }
 
 // Pure: the EXACT column set an import upsert writes. yll_category + locked are

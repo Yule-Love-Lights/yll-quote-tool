@@ -1,8 +1,9 @@
 // src/lib/inventory/purchaseOrder.ts
 // Auto purchase-order generator (#82 Phase 3 — "AI auto-ordering", email channel).
 // DEMAND-DRIVEN + deterministic: aggregate the material needs of the active,
-// not-yet-prepped jobs, subtract on-hand, and the positive shortfall is what to
-// order from the supplier. No arbitrary reorder target, no LLM — the design→SKU
+// not-yet-prepped jobs, subtract on-hand AND what's already open on order (the
+// P8 on-order ledger — #110 W7-002), and the positive remainder is what to order
+// from the supplier. No arbitrary reorder target, no LLM — the design→SKU
 // projection is the intelligence. The actual SEND is human-gated (staff click) —
 // The manual send is human-gated (staff click). An OPTIONAL unattended cron
 // auto-send exists too (off by default behind PO_AUTO_SEND_ENABLED), with a
@@ -13,25 +14,30 @@ import type { Scene } from '@/lib/design/sceneTypes';
 import { getInventoryBindings } from './bindings';
 import { listCatalog } from './catalog';
 import { listOnHand } from './onHand';
+import { recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder, type InventoryOrder } from './orders';
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
+import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { poSentMessage } from '@/lib/integrations/telegramMessages';
 
-export type POInput = { sku: string; needed: number; onHand: number };
-export type POLine = { sku: string; needed: number; onHand: number; order: number };
+export type POInput = { sku: string; needed: number; onHand: number; onOrder: number };
+export type POLine = { sku: string; needed: number; onHand: number; onOrder: number; order: number };
 
-// Pure: per SKU, order the shortfall = ceil(need) − on-hand (floored at 0). Drops
-// anything already covered by stock; sorted by SKU for a stable order sheet.
+// Pure: per SKU, order = ceil(need) − on-hand − on-order (floored at 0 at each
+// step, and the final result never negative). Drops anything already covered by
+// stock + what's already en route; sorted by SKU for a stable order sheet.
 export function computePurchaseOrder(items: POInput[]): POLine[] {
   return items
     .map((i) => {
       const needed = Math.max(0, Math.ceil(i.needed));
       const onHand = Math.max(0, i.onHand);
-      return { sku: i.sku, needed, onHand, order: Math.max(0, needed - onHand) };
+      const onOrder = Math.max(0, i.onOrder);
+      return { sku: i.sku, needed, onHand, onOrder, order: Math.max(0, needed - onHand - onOrder) };
     })
     .filter((l) => l.order > 0)
     .sort((a, b) => a.sku.localeCompare(b.sku));
@@ -43,7 +49,9 @@ export type SupplierPurchaseOrder = { lines: PurchaseOrderLine[]; jobCount: numb
 /**
  * Build the supplier purchase order from current demand: every active job that
  * hasn't been prepped yet (its stock isn't deducted), aggregated and compared to
- * on-hand. Only bound SKUs are orderable (unbound concepts have no SKU). Returns
+ * on-hand MINUS what's already open on order (the P8 ledger — #110 W7-002: a
+ * delta, not the full cumulative shortfall, so a re-send only lists the NEW
+ * need). Only bound SKUs are orderable (unbound concepts have no SKU). Returns
  * empty lines when nothing is short. Untracked SKUs count as 0 on-hand (order the
  * full need — we have no stock record for them).
  */
@@ -64,10 +72,12 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   // Test Quote safety (ledger #93): a test job IS a real jobs row, but its
   // materials must NEVER reach the real supplier PO. is_test lives on the quote —
   // drop any active job whose quote is a test quote before aggregating demand.
+  // P8 PR-2: also select service_type + inputs so a permanent job's demand can
+  // be accumulated from the BOM engine instead of the scene projection below.
   const allQuoteIds = [...new Set(active.map((j) => j.quote_id))];
   const { data: quoteRows } = await db
     .from('quotes')
-    .select('id, is_test, approval_snapshot')
+    .select('id, is_test, approval_snapshot, service_type, inputs')
     .in('id', allQuoteIds);
   const testQuoteIds = new Set(
     (quoteRows ?? []).filter((r) => (r as { is_test: boolean | null }).is_test).map((r) => (r as { id: string }).id),
@@ -79,11 +89,25 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
       colorChoiceFromSnapshot((r as { approval_snapshot: unknown }).approval_snapshot),
     ]),
   );
+  // P8 PR-2: which active quotes are permanent (positive gate), and their stored
+  // permanent inputs to feed permanentBomFromQuote.
+  const permanentFieldsByQuote = new Map<string, PermanentQuoteFields | undefined>(
+    (quoteRows ?? [])
+      .filter((r) => (r as { service_type: string | null }).service_type === 'permanent')
+      .map((r) => {
+        const row = r as { id: string; inputs: { permanent?: PermanentQuoteFields } | null };
+        return [row.id, row.inputs?.permanent] as const;
+      }),
+  );
   active = active.filter((j) => !testQuoteIds.has(j.quote_id));
   if (!active.length) return { lines: [], jobCount: 0 };
 
-  const quoteIds = [...new Set(active.map((j) => j.quote_id))];
-  const { data: designs } = await db.from('designs').select('quote_id, scene').in('quote_id', quoteIds);
+  // Only fetch scenes for the NON-permanent active jobs — a permanent job's
+  // design scene (if any) must never feed the scene projection.
+  const sceneQuoteIds = active.map((j) => j.quote_id).filter((id) => !permanentFieldsByQuote.has(id));
+  const { data: designs } = sceneQuoteIds.length
+    ? await db.from('designs').select('quote_id, scene').in('quote_id', sceneQuoteIds)
+    : { data: [] };
   const sceneByQuote = new Map(
     (designs ?? []).map((d) => [(d as { quote_id: string }).quote_id, (d as { scene: unknown }).scene]),
   );
@@ -94,6 +118,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   const { bindings, clipRules } = await getInventoryBindings();
   const needBySku = new Map<string, number>();
   for (const j of active) {
+    if (permanentFieldsByQuote.has(j.quote_id)) {
+      // Permanent (P8 PR-2): accumulate need from the Ascend/Dauer BOM engine —
+      // no costOverrides here (the PO cares about quantities, not costs).
+      const bom = permanentBomFromQuote({ permanent: permanentFieldsByQuote.get(j.quote_id) });
+      for (const l of bom?.lines ?? []) {
+        needBySku.set(l.sku, (needBySku.get(l.sku) ?? 0) + l.qty);
+      }
+      continue;
+    }
     const scene = (sceneByQuote.get(j.quote_id) ?? { yardsticks: [], items: [] }) as Scene;
     const colorChoice = colorChoiceByQuote.get(j.quote_id) ?? null;
     for (const a of aggregateMaterials(projectMaterials(scene, bindings, clipRules, colorChoice))) {
@@ -102,9 +135,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   }
   if (!needBySku.size) return { lines: [], jobCount: active.length };
 
-  const onHandBySku = new Map((await listOnHand()).map((r) => [r.sku, r.on_hand_qty]));
+  const [onHandRows, onOrderBySku] = await Promise.all([listOnHand(), sumOpenOnOrder()]);
+  const onHandBySku = new Map(onHandRows.map((r) => [r.sku, r.on_hand_qty]));
   const po = computePurchaseOrder(
-    [...needBySku].map(([sku, needed]) => ({ sku, needed, onHand: onHandBySku.get(sku) ?? 0 })),
+    [...needBySku].map(([sku, needed]) => ({
+      sku,
+      needed,
+      onHand: onHandBySku.get(sku) ?? 0,
+      onOrder: onOrderBySku.get(sku) ?? 0,
+    })),
   );
 
   const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
@@ -117,11 +156,55 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
 // ── Email the PO to the supplier (shared by the manual route + the cron) ─────
 export type SendResult = { ok: true } | { ok: false; status: number; error: string };
 
-export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date: string): Promise<SendResult> {
+/**
+ * Email the PO to the supplier AND record it on the on-order ledger (P8, folds
+ * in #110 W7-002). Insert-first: the order is recorded BEFORE the send, so the
+ * worst failure mode is under-ordering (the send never happens, the shortfall
+ * reappears next time, and staff sees a stuck open order to cancel) rather than
+ * an unrecorded send that could double-ship later. On a successful send the row
+ * is stamped sent; on a failed send it's best-effort cancelled so it doesn't sit
+ * around as a phantom open order skewing the next delta calc.
+ */
+export async function emailSupplierPurchaseOrder(
+  po: SupplierPurchaseOrder,
+  date: string,
+  channel: InventoryOrder['channel'],
+): Promise<SendResult> {
   const contactId = process.env.THUNDER_ORDER_CONTACT_ID;
   if (!isHighLevelConfigured() || !contactId) {
     return { ok: false, status: 503, error: 'Supplier order email not configured — needs HighLevel + THUNDER_ORDER_CONTACT_ID' };
   }
+
+  const orderId = await recordOrder({
+    channel,
+    lines: po.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.order })),
+    jobCount: po.jobCount,
+  });
+  if (!orderId) {
+    return { ok: false, status: 500, error: 'Could not record the order — not sent.' };
+  }
+
+  // Concurrent-send guard: two send paths (the cron + the deposit-webhook
+  // trigger) can build the same delta simultaneously — both would record and
+  // email it, and now that orders are additive (no "replaces prior order"
+  // disclaimer) the supplier would ship both. After inserting OUR row, re-sum
+  // the open orders: if on-hand + the OTHER open orders already cover every
+  // line's need, ours is a duplicate — cancel it and skip the send. When both
+  // racers detect each other they both cancel, which under-orders and
+  // self-heals on the next build (the accepted failure direction; never
+  // double-ship).
+  const openAfter = await sumOpenOnOrder();
+  const redundant =
+    po.lines.length > 0 &&
+    po.lines.every((l) => {
+      const others = Math.max(0, (openAfter.get(l.sku) ?? 0) - l.order);
+      return l.onHand + others >= l.needed;
+    });
+  if (redundant) {
+    await cancelOrder(orderId); // best-effort — a stuck open order is staff-visible
+    return { ok: false, status: 409, error: 'Duplicate order — an order covering this need was just recorded. Nothing sent.' };
+  }
+
   try {
     await sendEmail({
       contactId,
@@ -133,6 +216,7 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });
+    await markOrderSent(orderId);
     // #82 follow-up — proactive ping to the inventory group with what was ordered.
     // Best-effort: a ping failure must not flip a successful send into an error.
     try {
@@ -149,6 +233,7 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
     return { ok: true };
   } catch (err) {
     console.error('emailSupplierPurchaseOrder failed:', err);
+    await cancelOrder(orderId); // best-effort — don't leave a phantom open order
     return { ok: false, status: 502, error: 'Failed to send the order email' };
   }
 }
@@ -156,7 +241,10 @@ export async function emailSupplierPurchaseOrder(po: SupplierPurchaseOrder, date
 // ── Unattended auto-send dedup (#82 optional) ────────────────────────────────
 // A stable signature of the order so the weekly cron never re-emails an UNCHANGED
 // PO. Stored in app_settings; reset to '' once the shortfall clears so a
-// re-appearing shortfall sends again.
+// re-appearing shortfall sends again. The P8 on-order ledger is now the PRIMARY
+// guard against duplicate/runaway ordering (it makes the computed order itself a
+// delta); this signature dedup is a belt-and-braces second layer that also
+// avoids emailing the supplier again for a truly unchanged order.
 export function purchaseOrderSignature(lines: { sku: string; order: number }[]): string {
   return lines
     .map((l) => `${l.sku}:${l.order}`)
@@ -213,7 +301,7 @@ export async function triggerAutoPOIfBusy(opts: { minJobCount: number }): Promis
     return { ok: true, fired: false, reason: 'unchanged since last send' };
   }
   const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const res = await emailSupplierPurchaseOrder(po, date);
+  const res = await emailSupplierPurchaseOrder(po, date, 'auto-webhook');
   if (!res.ok) return { ok: false, status: res.status, error: res.error };
   await recordAutoSentSignature(sig);
   return { ok: true, fired: true, signature: sig, jobCount: po.jobCount, items: po.lines.length };

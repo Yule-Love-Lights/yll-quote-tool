@@ -8,6 +8,7 @@ import type { CSSProperties } from 'react';
 import { notFound } from 'next/navigation';
 import { getQuoteRaw } from '@/lib/quotes';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { catalogCostOverrides } from '@/lib/inventory/catalog';
 import type { BomCategory } from '@/lib/permanent/bom';
 import { PrintButton } from '@/components/inventory/PrintButton';
 
@@ -30,7 +31,11 @@ export default async function PermanentBomPrintPage({ params }: { params: Promis
   const { id } = await params;
   const quote = await getQuoteRaw(id);
   if (!quote) notFound();
-  const bom = permanentBomFromQuote(quote.inputs);
+  // P8 — live inventory_catalog costs override the engine's built-in fallback
+  // prices; a catalog read failure swallows to [] → an empty override map →
+  // every SKU falls back. Page already 404s for a non-permanent quote below, so
+  // the fetch stays unconditional (this page never renders for holiday/event).
+  const bom = permanentBomFromQuote(quote.inputs, await catalogCostOverrides());
   if (!bom) notFound(); // not a permanent quote / no permanent inputs
 
   const groups = CATEGORY_ORDER.map((cat) => ({
