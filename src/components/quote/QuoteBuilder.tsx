@@ -1221,6 +1221,24 @@ export default function QuoteBuilder({
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
+    // #88: permanent lighting designs MANUALLY — no holiday auto-measure/seed.
+    // Load the uploaded photo into a bare design (no Anthropic call, no
+    // santas/gingerbread roofline drawn) so the operator draws the permanent
+    // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
+    if (form.serviceType === 'permanent') {
+      const base64 = photoPreview && photoPreview.includes(',') ? photoPreview.split(',')[1] : null;
+      pendingSeedRef.current = null;
+      setAnalysisError(null);
+      setAnalysisWarning(null);
+      setPhotoBase64(base64);
+      setPhotoMediaType(photoFile.type || 'image/jpeg');
+      setFewShotCount(0);
+      setViewMode('design');
+      setAnalysisNotes(
+        'Photo loaded — draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+      );
+      return;
+    }
     setAnalyzing(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -1954,10 +1972,13 @@ export default function QuoteBuilder({
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
-              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.
+              {form.serviceType === 'permanent'
+                ? 'Upload the house photo (or look it up on Google Maps) so the design canvas opens with the house. Permanent lighting is measured from the design and satellite, not the holiday auto-measure. Draw each roofline run, tag its side, then Refresh from design in the Permanent section.'
+                : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
-            {/* Google lookup */}
+            {/* Google lookup — holiday/event only; permanent designs manually (no holiday auto-measure) */}
+            {form.serviceType !== 'permanent' && (
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
@@ -1998,9 +2019,12 @@ export default function QuoteBuilder({
                 </p>
               )}
             </div>
+            )}
 
             {/* Manual upload */}
-            <p className="text-xs text-gray-500 font-medium mb-2">— Or upload a photo manually —</p>
+            <p className="text-xs text-gray-500 font-medium mb-2">
+              {form.serviceType === 'permanent' ? 'Upload the house photo' : '— Or upload a photo manually —'}
+            </p>
             <div className="space-y-3">
               <input
                 type="file"
@@ -2018,7 +2042,7 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2244,13 +2268,22 @@ export default function QuoteBuilder({
                       key={designEditorKey}
                       designId={designId}
                       height={640}
+                      permanentOnly={form.serviceType === 'permanent'}
                       onReady={(flush) => { editorFlushRef.current = flush; }}
                     />
-                    <p className="text-xs text-gray-400 mt-2">
-                      Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
-                      quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
-                      represent). Saves automatically and attaches to this quote on Calculate.
-                    </p>
+                    {form.serviceType === 'permanent' ? (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw each permanent roofline run on the photo and tag its side (front/left/right/back).
+                        Then use &ldquo;Refresh from design&rdquo; in the Permanent section to pull footage, corners
+                        &amp; gaps. Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
+                        quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
+                        represent). Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    )}
                     <DesignSummary designId={designId} refreshKey={designEditorKey} />
                   </>
                 ) : (

@@ -12,6 +12,9 @@ type Props = {
   onClose?: () => void;
   /** Embedded (collapsed) editor height in px. Full screen ignores this. */
   height?: number;
+  /** #88: lock the design to permanent pucks only (a permanent-service quote) —
+   *  hides holiday bulb types (c9/mini/bistro) + all decor/text/pole tools. */
+  permanentOnly?: boolean;
   /**
    * Handed a flush() that synchronously persists a pending debounced scene save
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
@@ -49,7 +52,7 @@ function fileToDataUrl(file: File): Promise<string> {
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, permanentOnly }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -137,6 +140,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
         showQuoteBinding: true,
         keymap: km,
         activePhotoId,
+        permanentOnly,
       });
       if (cancelled) {
         handle?.();
@@ -153,7 +157,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady 
       onReadyRef.current?.(null);
       handle?.();
     };
-  }, [designId, activePhotoId]);
+  }, [designId, activePhotoId, permanentOnly]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {

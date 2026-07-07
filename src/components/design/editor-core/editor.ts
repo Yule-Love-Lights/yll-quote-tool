@@ -124,7 +124,7 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -270,8 +270,11 @@ export async function renderEditor(
   let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
   const tool: ToolState = {
     category: "lights",
-    bulbType: "c9",
-    spacingIn: 12,
+    // #88: a permanent quote's design is locked to permanent pucks — seed the
+    // bulb type + spacing to permanent so the operator only ever draws permanent
+    // roofline runs (no holiday bulb types / decor on a permanent quote).
+    bulbType: opts.permanentOnly ? "permanent" : "c9",
+    spacingIn: opts.permanentOnly ? 8 : 12,
     drawingStyle: "strand",
     scattershot: false,
     colorPattern: ["warm-white"],
@@ -1482,6 +1485,7 @@ export async function renderEditor(
       return;
     }
     sb.innerHTML = `
+      ${opts.permanentOnly ? "" : `
       <section>
         <h3>Category</h3>
         <div class="bulb-types" id="categories" style="flex-wrap:wrap">
@@ -1491,7 +1495,7 @@ export async function renderEditor(
           <button data-cat="custom" class="${tool.category === "custom" ? "active" : ""}">Custom</button>
           <button data-cat="poles" class="${tool.category === "poles" ? "active" : ""}">Poles</button>
         </div>
-      </section>
+      </section>`}
       ${(() => {
         // #13 linked twins: re-place items from OTHER photos onto this one.
         const cands = stampCandidates();
@@ -1598,7 +1602,7 @@ export async function renderEditor(
       <section>
         <h3>Bulb Type</h3>
         <div class="bulb-types" id="bulb-types">
-          ${BULB_TYPES.map((b) => `<button data-type="${b.id}" class="${tool.bulbType === b.id ? "active" : ""}">${b.label}</button>`).join("")}
+          ${BULB_TYPES.filter((b) => !opts.permanentOnly || b.id === "permanent").map((b) => `<button data-type="${b.id}" class="${tool.bulbType === b.id ? "active" : ""}">${b.label}</button>`).join("")}
         </div>
         ${(() => {
           const count = allStrands().filter((s) => s.bulbType === tool.bulbType).length;
@@ -2434,7 +2438,7 @@ export async function renderEditor(
       <section>
         <h3>Bulb Type</h3>
         <div class="bulb-types" id="sel-bulb-types">
-          ${BULB_TYPES.map((b) => `<button data-type="${b.id}" class="${sharedBulbType.length === 1 && sharedBulbType[0] === b.id ? "active" : ""}">${b.label}</button>`).join("")}
+          ${BULB_TYPES.filter((b) => !opts.permanentOnly || b.id === "permanent").map((b) => `<button data-type="${b.id}" class="${sharedBulbType.length === 1 && sharedBulbType[0] === b.id ? "active" : ""}">${b.label}</button>`).join("")}
         </div>
       </section>
 
