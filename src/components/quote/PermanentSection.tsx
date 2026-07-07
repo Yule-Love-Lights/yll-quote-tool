@@ -20,10 +20,14 @@ const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left'
   backCorners: 'back',
 };
 
+// Mirrors the holiday builder's Section card (QuoteBuilder.tsx) so the permanent
+// sections read as the same surface — white card, uppercase header, divider.
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="border border-gray-200 rounded-lg p-4 mb-4">
-      <h3 className="text-sm font-semibold text-gray-800 mb-3">{title}</h3>
+    <div className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
+      <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-4 pb-2 border-b border-gray-100">
+        {title}
+      </h3>
       {children}
     </div>
   );
