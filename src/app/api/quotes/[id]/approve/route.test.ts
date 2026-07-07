@@ -46,12 +46,16 @@ vi.mock('@/lib/integrations/valorCheckout', () => ({
 // #101: the route reads the live swatch list via getAppSettings to validate +
 // freeze the color choice. Stub it to the factory defaults (built-in swatches) so
 // these approval tests don't route an app_settings query through the quote mock.
+// Wrapped in vi.fn() (not a bare async fn) so individual tests (e.g. the
+// hideEarlyInstallDiscounts enforcement test below) can override the resolved
+// value for one call via mockResolvedValueOnce.
 vi.mock('@/lib/appSettings', async () => {
   const actual = await vi.importActual<typeof import('@/lib/appSettings')>('@/lib/appSettings');
-  return { ...actual, getAppSettings: async () => actual.DEFAULT_APP_SETTINGS };
+  return { ...actual, getAppSettings: vi.fn(async () => actual.DEFAULT_APP_SETTINGS) };
 });
 
 import { POST } from './route';
+import { getAppSettings, DEFAULT_APP_SETTINGS } from '@/lib/appSettings';
 
 // A QuoteResult whose portal line items are: Santa's $1200, Gingerbread $1500
 // (mutually-exclusive roofline options → ids roofline-santas/roofline-gingerbread)
@@ -399,6 +403,31 @@ describe('POST /api/quotes/[id]/approve — discount/waiver/timing/fee branches 
     expect(snap.customerSelection.installTiming).toBe('september');
     expect(snap.customerSelection.installDiscountUsd).toBeCloseTo(225, 2);
     expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1386.56, 2);
+  });
+
+  it('forces the early-install discount OFF server-side when portal.hideEarlyInstallDiscounts is on, even if installTiming=september is forged', async () => {
+    // Audit fix (approve-discount-enforce): staff turned the "hide early-install
+    // discounts" portal setting on (Settings → Customer Portal). A forged/
+    // stale-tab POST with installTiming:'september' must NOT still earn the
+    // 15% discount in the frozen snapshot — the server must force installTiming
+    // to 'none' regardless of what the client sent.
+    vi.mocked(getAppSettings).mockResolvedValueOnce({
+      ...DEFAULT_APP_SETTINGS,
+      portal: { hideEarlyInstallDiscounts: true },
+    });
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ ...validBody, installTiming: 'september' }), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installTiming: string; installDiscountUsd: number; currentTotalUsd: number };
+    };
+    // No discount at all → $1500 taxable, +8.75% tax = $1631.25 (same subtotal as
+    // the base recompute test, which has no install timing).
+    expect(snap.customerSelection.installTiming).toBe('none');
+    expect(snap.customerSelection.installDiscountUsd).toBe(0);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
   });
 
   it('rushSelected + takedownSelected land their fees in the recomputed total', async () => {
