@@ -1,0 +1,16 @@
+-- Dashboard reply double-submit guard (audit finding dashboard-reply-double-
+-- submit). POST /api/dashboard/reply fires a REAL GHL SMS/email send with no
+-- server-side idempotency — only the client's `sendBusy` disable protected
+-- it, which stops neither a network retry nor a stale second operator tab.
+--
+-- Fix: a nullable claim timestamp the route atomically claims BEFORE the
+-- send (conditional UPDATE — same idiom as markItemHandledLocal's
+-- `.neq('status','handled')` guard in store.ts). A request landing while a
+-- prior claim is still fresh (within the route's short dedupe window) gets
+-- 0 rows back from the claim UPDATE and is rejected as a duplicate before
+-- any GHL send fires. Released back to null on a genuine send failure so a
+-- legitimate retry isn't blocked for the rest of the window.
+--
+-- Nullable, no backfill — purely an operational guard column, not customer
+-- data. No index — read/written only by id (already the primary key).
+alter table public.inbox_items add column if not exists reply_claimed_at timestamptz;
