@@ -128,7 +128,7 @@ export function StickyBottomBar({
   // booked page. Off by default (the code ships dark; flipped on after testing).
   const [showCheckout, setShowCheckout] = useState(false);
   // #83 Slice B — the "Confirm & sign" step shown before the approve POST, and
-  // the captured signature it collects (typed name baseline / drawn canvas).
+  // the captured signature it collects (the customer's typed full name).
   const [showSign, setShowSign] = useState(false);
   const [signature, setSignature] = useState<CapturedSignature | null>(null);
   // #83 Slice B — the Decline / Request-changes modal (null = none open).
@@ -341,7 +341,7 @@ export function StickyBottomBar({
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
           runs the existing approve POST with it. The signature is required
-          (typed name baseline; drawn canvas optional). */}
+          (the customer's typed full name). */}
       {showSign && (
         <SignModal
           submitting={submitting}
@@ -402,7 +402,11 @@ export function StickyBottomBar({
         <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
           {formatUsd(currentTotal)}
         </span>
-        <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
+        {/* The verbose "incl. tax · $X deposit" is hidden on phones (< sm): it's
+            whitespace-nowrap and collided with the Decline/Approve buttons in the
+            floating pill (S22). The compact total stays; the full breakdown is in
+            the hero + the package tiles. */}
+        <span className="hidden sm:inline text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
           incl. tax · <span className="tabular-nums text-[#FFD07A]">{formatUsd(currentDeposit)}</span> deposit
         </span>
       </div>
@@ -457,9 +461,9 @@ export function StickyBottomBar({
 }
 
 // #83 Slice B — the "Confirm & sign" modal. A thin dark-theme shell around the
-// SignaturePad. Approve is gated on a captured signature (typed name baseline,
-// drawn canvas optional). Errors from the approve POST surface here so the
-// customer can retry without losing what they signed.
+// SignaturePad. Approve is gated on a captured signature (the customer's typed
+// full name). Errors from the approve POST surface here so the customer can
+// retry without losing what they signed.
 function SignModal({
   submitting,
   errorMsg,
