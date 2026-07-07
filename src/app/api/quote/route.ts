@@ -90,8 +90,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest } =
+  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest, amendReprice: rawAmendReprice } =
     body as Record<string, unknown>;
+
+  // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
+  // Only an exact `true` enables it; any other value falls through to the normal
+  // (locked) behavior. See the reprice-lock block below for the full rationale.
+  const amendReprice = rawAmendReprice === true;
 
   // Test Quote (ledger #93): optional boolean. Only honored on a NEW save
   // (saveQuote); the update branch never touches is_test (immutable). Anything
@@ -365,19 +370,48 @@ export async function POST(req: NextRequest) {
     const isUpdate = typeof quoteId === 'string' && UUID_RE.test(quoteId);
     const existing = isUpdate ? await getQuoteRaw(quoteId as string) : null;
 
+    // Fail-CLOSED guard (audit fix): an update targets an EXISTING row (the builder
+    // loaded that quote to edit it). getQuoteRaw returns null for BOTH a genuinely
+    // missing row AND a transient read error, so falling through here would skip the
+    // reprice-lock, the rate-drift snapshot guard, and the stored-service-type
+    // fallback and then let updateQuote overwrite inputs/result. Stop instead of
+    // silently proceeding. (A proper 503-on-read-error vs 404-on-missing split needs
+    // getQuoteRaw to distinguish the two — see notes; it is out of this unit's file
+    // scope. Until then both collapse to a safe, non-destructive 404.)
+    if (isUpdate && !existing) {
+      return NextResponse.json(
+        { error: 'Quote not found', code: 'quote-not-found' },
+        { status: 404 },
+      );
+    }
+
     // W1-003: a booked (deposit-paid) or terminal quote must NOT be re-priced in
     // place — that silently rewrites result/total with no amendment trail, no
     // invoice re-sync, and no re-consent. Changing a booked order goes through the
     // amend flow instead. 409 when locked.
-    if (isUpdate && existing && REPRICE_LOCKED_STATUSES.has(deriveStatus(existing))) {
-      return NextResponse.json(
-        {
-          error:
-            'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
-          code: 'quote-locked',
-        },
-        { status: 409 },
-      );
+    //
+    // Amend deadlock fix: the amend flow (/api/quotes/[id]/amend) measures the change
+    // as result.total − snapshot.pricing.total, but this very lock freezes a booked
+    // order's result, so the amend delta is ALWAYS 0 and every post-booking amend
+    // 409s "no-change" forever — the extra charge can never be added. An explicit,
+    // operator-only `amendReprice` re-price is therefore allowed for a BOOKED order:
+    // it updates result/inputs in place (updateQuote writes only inputs/result/total/
+    // service_type — never deposit_paid_at or status, so the lifecycle stays booked),
+    // which the operator immediately follows with the amend record. Terminal statuses
+    // (declined/cancelled/lost) stay hard-locked — a dead order is never re-priced.
+    if (isUpdate && existing) {
+      const currentStatus = deriveStatus(existing);
+      const amendRepriceAllowed = amendReprice && currentStatus === 'booked';
+      if (REPRICE_LOCKED_STATUSES.has(currentStatus) && !amendRepriceAllowed) {
+        return NextResponse.json(
+          {
+            error:
+              'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
+            code: 'quote-locked',
+          },
+          { status: 409 },
+        );
+      }
     }
 
     // The service type that drives PRICING: the request's when provided (a
