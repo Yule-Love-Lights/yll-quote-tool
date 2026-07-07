@@ -1067,6 +1067,9 @@ export default function QuoteBuilder({
     formattedAddress?: string;
     lat?: number;
     lng?: number;
+    // #88: permanent address lookup returns imagery only (Street View + satellite
+    // + scale) with no holiday analysis/seed — the operator draws the roofline.
+    permanentImageryOnly?: boolean;
     fewShotCount?: number;
     fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
   };
@@ -1178,7 +1181,7 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-address', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: addr }),
+        body: JSON.stringify({ address: addr, serviceType: form.serviceType }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
@@ -1198,19 +1201,24 @@ export default function QuoteBuilder({
       if (data.result) {
         applyAnalysisResult(data);
       } else {
-        // FAIL-SAFE: the analyzer was unavailable (e.g. Claude down). The imagery
-        // still came back — load the street photo into the editor (the eager
-        // design effect creates the design from it) so staff design MANUALLY, and
-        // keep the satellite + its scale for manual measurement. Skip the seed.
+        // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
+        // holiday analyzer by design) or the fail-safe (analyzer down). The street
+        // photo creates the design; the satellite + its scale stay for measuring.
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
-        setAnalysisWarning(
-          data.analysisError ??
-            'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
-        );
+        if (data.permanentImageryOnly) {
+          setAnalysisNotes(
+            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+          );
+        } else {
+          setAnalysisWarning(
+            data.analysisError ??
+              'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
+          );
+        }
       }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
@@ -1992,8 +2000,8 @@ export default function QuoteBuilder({
                 : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
-            {/* Google lookup — holiday/event only; permanent designs manually (no holiday auto-measure) */}
-            {form.serviceType !== 'permanent' && (
+            {/* Google lookup — pulls Street View + satellite. Permanent skips the
+                holiday analyzer (imagery only) so it never designs as Christmas. */}
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
@@ -2007,7 +2015,9 @@ export default function QuoteBuilder({
                 </button>
               </div>
               <p className="text-xs text-blue-700">
-                Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
+                {form.serviceType === 'permanent'
+                  ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
+                  : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -2034,12 +2044,9 @@ export default function QuoteBuilder({
                 </p>
               )}
             </div>
-            )}
 
             {/* Manual upload */}
-            <p className="text-xs text-gray-500 font-medium mb-2">
-              {form.serviceType === 'permanent' ? 'Upload the house photo' : '— Or upload a photo manually —'}
-            </p>
+            <p className="text-xs text-gray-500 font-medium mb-2">— Or upload a photo manually —</p>
             <div className="space-y-3">
               <input
                 type="file"
