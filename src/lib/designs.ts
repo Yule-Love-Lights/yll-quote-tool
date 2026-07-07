@@ -59,6 +59,13 @@ export type DesignSatelliteLines = {
   // Stake Lighting satellite runs — own channel, parallel to c9 (Winter
   // Wonderland). Optional so designs saved before Stake Lighting still load.
   stake?: { points: [number, number][]; label: string }[];
+  // Permanent Lighting (#88 / S23): the four house-side rooflines traced on the
+  // satellite view — permanent bills from these and the portal draws them.
+  // Optional so pre-permanent (holiday/event) designs still load unchanged.
+  front?: { points: [number, number][]; label: string }[];
+  left?: { points: [number, number][]; label: string }[];
+  right?: { points: [number, number][]; label: string }[];
+  back?: { points: [number, number][]; label: string }[];
   santasFootage?: number;
   gingerbreadFootage?: number;
 };

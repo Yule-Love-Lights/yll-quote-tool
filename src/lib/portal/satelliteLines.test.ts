@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectDrawableLineGroups, permanentAllowedSatelliteKeys } from './satelliteLines';
+import { selectDrawableLineGroups } from './satelliteLines';
 import type { PortalSatelliteLines } from '@/components/portal/types';
 
 const line = (n: number): { points: [number, number][]; label: string } => ({
@@ -98,31 +98,28 @@ describe('selectDrawableLineGroups (#51)', () => {
   });
 });
 
-describe('permanentAllowedSatelliteKeys (#88 permanent satellite fix)', () => {
-  it('maps permanent-front -> santas', () => {
-    expect(permanentAllowedSatelliteKeys(['permanent-front'])).toEqual(['santas']);
-  });
-
-  it('maps permanent-sides -> gingerbread', () => {
-    expect(permanentAllowedSatelliteKeys(['permanent-sides'])).toEqual(['gingerbread']);
-  });
-
-  it('maps both front + sides present -> both keys, in santas -> gingerbread order', () => {
-    expect(permanentAllowedSatelliteKeys(['permanent-sides', 'permanent-front'])).toEqual([
-      'santas',
-      'gingerbread',
+describe('selectDrawableLineGroups — permanent side channels (#88 / S23)', () => {
+  it('draws front/left/right/back as their own labeled, colored groups', () => {
+    const lines: PortalSatelliteLines = {
+      santas: [], gingerbread: [], c9: [],
+      front: [line(2)], left: [line(2)], right: [line(2)], back: [line(2)],
+    };
+    const groups = selectDrawableLineGroups(lines, ['front', 'left', 'right', 'back']);
+    expect(groups.map((g) => g.key)).toEqual(['front', 'left', 'right', 'back']);
+    expect(groups.map((g) => g.label)).toEqual([
+      'Front of House',
+      'Left Side',
+      'Right Side',
+      'Back of House',
     ]);
   });
 
-  it('permanent-back has no satellite equivalent -> contributes nothing', () => {
-    expect(permanentAllowedSatelliteKeys(['permanent-back'])).toEqual([]);
-  });
-
-  it('maintenance add-on id does not map to any key', () => {
-    expect(permanentAllowedSatelliteKeys(['permanent-maintenance'])).toEqual([]);
-  });
-
-  it('empty line items -> no allowed keys', () => {
-    expect(permanentAllowedSatelliteKeys([])).toEqual([]);
+  it('hides a permanent side with no drawn line (only traced sides show)', () => {
+    const lines: PortalSatelliteLines = {
+      santas: [], gingerbread: [], c9: [],
+      front: [line(2)], left: [], right: [], back: [],
+    };
+    const groups = selectDrawableLineGroups(lines, ['front', 'left', 'right', 'back']);
+    expect(groups.map((g) => g.key)).toEqual(['front']);
   });
 });

@@ -1,17 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import type { QuoteFormData } from '@/lib/quoteForm';
 import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
-import { projectPermanentDesign, applyPermanentProjection } from '@/lib/permanent/projectPermanent';
-import type { Scene } from '@/lib/design/sceneTypes';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 
 // Which house side each footage/corner field belongs to — editing one marks that
-// side 'manual' so a later "Refresh from design" won't overwrite a satellite number.
+// side 'manual' (a hand-typed override of the satellite-measured number).
 const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left' | 'right' | 'back'>> = {
   frontFootage: 'front',
   frontCorners: 'front',
@@ -35,19 +32,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 type PermanentSectionProps = {
   form: QuoteFormData;
   setForm: React.Dispatch<React.SetStateAction<QuoteFormData>>;
-  designId: string | null;
 };
 
-export default function PermanentSection({ form, setForm, designId }: PermanentSectionProps) {
-  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  // The design's actual footage per side (from the last projection). Used to warn
-  // when a side bills footage but has no matching run drawn (S29, per Jason —
-  // catches an orphaned manual number after a run is deleted, so a quote can't be
-  // sent billing footage the customer has no lights to match). Seeded on mount +
-  // updated by "Refresh from design".
-  const [designFeetBySide, setDesignFeetBySide] =
-    useState<Record<'front' | 'left' | 'right' | 'back' | 'unassigned', number> | null>(null);
+// Footage + corners come from the satellite-view roofline draw (#88 / S23, per
+// Jason — the design projection was dropped as inaccurate). The operator draws
+// each side on the Satellite tab; those measurements flow into the fields below,
+// which stay hand-editable.
+export default function PermanentSection({ form, setForm }: PermanentSectionProps) {
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
@@ -75,79 +66,6 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
       permanent: { ...f.permanent, gaps: [...f.permanent.gaps, { lengthFt: 0, source: 'manual' as const }] },
     }));
 
-  const refreshFromDesign = async () => {
-    if (!designId) return;
-    setRefreshing(true);
-    setRefreshWarning(null);
-    try {
-      const res = await fetch(`/api/designs/${designId}`);
-      const data = await res.json();
-      const scene: Scene | undefined = data?.design?.scene;
-      if (!scene) {
-        setRefreshWarning("Couldn't load the design to refresh.");
-        return;
-      }
-      const proj = projectPermanentDesign(scene);
-      setDesignFeetBySide(proj.feetBySide);
-      // #88: the design now drives ALL FOUR sides (front/left/right/back). A side
-      // the design doesn't cover keeps the operator's manual entry, and 'edited'
-      // gap rows reset to the fresh auto values (count them to warn, not drop
-      // silently) — the merge lives in applyPermanentProjection (pure, tested).
-      const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
-      setForm((f) => ({ ...f, permanent: applyPermanentProjection(f.permanent, proj) }));
-      const warnings: string[] = [];
-      if (proj.feetBySide.unassigned > 0) {
-        warnings.push(
-          `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
-        );
-      }
-      if (resetEditedGaps > 0) {
-        warnings.push(
-          `${resetEditedGaps} edited gap ${resetEditedGaps === 1 ? 'row was' : 'rows were'} reset to the auto-detected values — re-apply any splitter flags or length corrections`
-        );
-      }
-      if (warnings.length > 0) {
-        setRefreshWarning(`⚠ ${warnings.join('. ')}.`);
-      }
-    } catch {
-      setRefreshWarning("Couldn't load the design to refresh.");
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  // Seed designFeetBySide on mount / design change (best-effort) so the no-run
-  // warnings are right on a reopened quote, not only after a manual Refresh.
-  useEffect(() => {
-    if (!designId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/designs/${designId}`);
-        const data = await res.json();
-        const scene: Scene | undefined = data?.design?.scene;
-        if (!cancelled) setDesignFeetBySide(scene ? projectPermanentDesign(scene).feetBySide : null);
-      } catch {
-        /* best-effort — a load failure just leaves the warnings off */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [designId]);
-
-  // Red check-note when a side bills footage the design has no run for. Fires on
-  // any of the 4 sides (Jason's call): for a satellite-typed side it's a "confirm
-  // this measurement" reminder; for a deleted-run side it catches the orphan so it
-  // can't reach a customer as footage with no lights to match.
-  const noRunWarning = (side: 'front' | 'left' | 'right' | 'back', footage: number) =>
-    designId != null && designFeetBySide != null && footage > 0 && designFeetBySide[side] === 0 ? (
-      <p className="text-xs text-red-600 mt-1 font-medium">
-        ⚠ No {side} run on the design — this {footage} ft bills from your typed number. Draw the run
-        or confirm the measurement before sending.
-      </p>
-    ) : null;
-
   return (
     <div>
       <Section title="Front of Home">
@@ -163,10 +81,9 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
             />
             {p.frontFootage === 0 && (
               <p className="text-xs text-amber-600 mt-1">
-                Front footage is 0 — refresh from the design or enter it manually.
+                Front footage is 0 — draw the front roofline on the Satellite tab, or enter it manually.
               </p>
             )}
-            {noRunWarning('front', p.frontFootage)}
           </div>
           <div>
             <label className={lbl}>Front corners</label>
@@ -178,33 +95,16 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               onChange={(e) => setP('frontCorners', Number(e.target.value))}
             />
             <p className="text-xs text-gray-400 mt-1">
-              Every corner / end / gable peak = 3 lights. Auto-counted from the design; adjust if needed.
+              Every corner / end / gable peak = 3 lights. Auto-counted from the satellite draw; adjust if needed.
             </p>
           </div>
-        </div>
-        <div className="mt-3">
-          <button
-            type="button"
-            disabled={!designId || refreshing}
-            onClick={() => void refreshFromDesign()}
-            className="text-sm px-3 py-1.5 rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh from design'}
-          </button>
-          {!designId && (
-            <p className="text-xs text-gray-400 mt-1">
-              Design the house first (tag each run&apos;s side) to auto-detect footage, corners &amp; gaps.
-            </p>
-          )}
-          {refreshWarning && <p className="text-xs text-amber-600 mt-1">{refreshWarning}</p>}
         </div>
       </Section>
 
       <Section title="Sides &amp; Back">
         <p className="text-xs text-gray-400 mb-3">
-          Auto-filled from the design when each run is side-tagged (Refresh above), or measure off the
-          satellite view / enter manually. A side the design doesn&apos;t cover keeps your manual number.
-          Left + Right are billed together as &lsquo;Sides&rsquo;.
+          Drawn on the Satellite tab (footage &amp; corners fill in per side), or enter manually. A hand-typed
+          number overrides the drawn measurement. Left + Right are billed together as &lsquo;Sides&rsquo;.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -216,7 +116,6 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.leftFootage}
               onChange={(e) => setP('leftFootage', Number(e.target.value))}
             />
-            {noRunWarning('left', p.leftFootage)}
           </div>
           <div>
             <label className={lbl}>Left corners</label>
@@ -237,7 +136,6 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.rightFootage}
               onChange={(e) => setP('rightFootage', Number(e.target.value))}
             />
-            {noRunWarning('right', p.rightFootage)}
           </div>
           <div>
             <label className={lbl}>Right corners</label>
@@ -258,7 +156,6 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.backFootage}
               onChange={(e) => setP('backFootage', Number(e.target.value))}
             />
-            {noRunWarning('back', p.backFootage)}
           </div>
           <div>
             <label className={lbl}>Back corners</label>
