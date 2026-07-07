@@ -63,3 +63,72 @@ export async function deleteOnHand(sku: string): Promise<void> {
   const { error } = await sb.from('inventory_on_hand').delete().eq('sku', sku);
   if (error) throw new Error(`deleteOnHand: ${error.message}`);
 }
+
+// How many times an on-hand adjust re-reads and retries when a concurrent writer
+// bumps the row out from under us before we win (mirrors designs.ts).
+const MAX_ONHAND_RETRIES = 5;
+
+/**
+ * Add `delta` (a SIGNED integer — positive for a receipt, negative for a job
+ * decrement) to a SKU's on-hand qty ATOMICALLY, guarded by an updated_at
+ * optimistic-concurrency check (modeled on designs.updateExtraPhotosAtomic). The
+ * result never goes below 0.
+ *
+ * Why not read-then-absolute-set (upsertOnHand): two writers touching the same
+ * SKU — a receipt increment and a job decrement, or two job decrements — each
+ * snapshot the same on-hand qty, then each writes its own absolute "after". Last
+ * write wins and silently drops the other's delta: phantom stock, which makes the
+ * next supplier PO under- or over-order. Reading on_hand_qty + updated_at and
+ * writing under a `.eq('updated_at', snapshot)` precondition turns each side into
+ * a true delta: the inventory_on_hand before-update trigger bumps updated_at on
+ * every write, so a racing commit invalidates our precondition (0 rows matched)
+ * and we retry against the fresh value.
+ *
+ * Talks to inventory_on_hand directly (not upsertOnHand, which does an absolute
+ * set) because the atomic-delta guard is the whole point.
+ */
+export async function adjustOnHandAtomic(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  sku: string,
+  delta: number,
+): Promise<void> {
+  const d = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+  if (d === 0) return;
+  for (let attempt = 0; attempt < MAX_ONHAND_RETRIES; attempt++) {
+    const { data, error } = await sb
+      .from('inventory_on_hand')
+      .select('on_hand_qty, updated_at')
+      .eq('sku', sku)
+      .maybeSingle();
+    if (error) throw new Error(`on-hand read: ${error.message}`);
+
+    if (!data) {
+      // No row for this SKU yet — create it at max(0, delta). A negative delta
+      // with no row means nothing to deduct, so it floors to 0. ignoreDuplicates
+      // so a concurrent insert of the same SKU doesn't error; if we lose that
+      // race the upsert returns no row and we loop to read + adjust theirs.
+      const seed = Math.max(0, d);
+      const { data: inserted, error: insErr } = await sb
+        .from('inventory_on_hand')
+        .upsert({ sku, on_hand_qty: seed }, { onConflict: 'sku', ignoreDuplicates: true })
+        .select('sku');
+      if (insErr) throw new Error(`on-hand insert: ${insErr.message}`);
+      if (Array.isArray(inserted) && inserted.length > 0) return;
+      continue;
+    }
+
+    const row = data as { on_hand_qty: number; updated_at: string };
+    const next = Math.max(0, toQty(row.on_hand_qty) + d);
+    const { data: updated, error: updErr } = await sb
+      .from('inventory_on_hand')
+      .update({ on_hand_qty: next })
+      .eq('sku', sku)
+      .eq('updated_at', row.updated_at)
+      .select('sku');
+    if (updErr) throw new Error(`on-hand write: ${updErr.message}`);
+    // A non-empty result means our updated_at precondition matched — we won.
+    // An empty result means another writer bumped the row first; retry.
+    if (Array.isArray(updated) && updated.length > 0) return;
+  }
+  throw new Error(`on-hand write: too many concurrent-update retries for ${sku}`);
+}

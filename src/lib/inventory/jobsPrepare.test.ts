@@ -10,7 +10,7 @@ let currentDb: unknown = null;
 let jobRow: Record<string, unknown> | null = null;
 let quoteRow: Record<string, unknown> | null = null;
 
-const { upsertOnHand } = vi.hoisted(() => ({ upsertOnHand: vi.fn(async () => {}) }));
+const { adjustOnHandAtomic } = vi.hoisted(() => ({ adjustOnHandAtomic: vi.fn(async () => {}) }));
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
 vi.mock('../jobs', () => ({
@@ -19,7 +19,7 @@ vi.mock('../jobs', () => ({
 }));
 vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: [] })) }));
 vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => []) }));
-vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []), upsertOnHand }));
+vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []), adjustOnHandAtomic }));
 // buildMaterialsView returns one tracked, deductible SKU regardless of inputs —
 // so a real job WOULD deduct, and only the is_test gate stops it.
 vi.mock('./materialsProjection', () => ({
@@ -94,7 +94,9 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
       alreadyDone: false,
       deductions: [{ sku: 'SKU-A', before: 10, deducted: 2, after: 8 }],
     });
-    expect(upsertOnHand).toHaveBeenCalledWith({ sku: 'SKU-A', on_hand_qty: 8 });
+    // The write is now an ATOMIC NEGATIVE delta (-deducted), not an absolute set,
+    // so a concurrent receipt/decrement on the same SKU can't be clobbered.
+    expect(adjustOnHandAtomic).toHaveBeenCalledWith(expect.anything(), 'SKU-A', -2);
   });
 
   it('does NOT decrement on-hand for a TEST job, but still marks it prepped', async () => {
@@ -102,14 +104,14 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     const res = await prepareJobMaterials('j1');
     // Won the claim (advanced + prepped) but zero stock movement.
     expect(res).toEqual({ ok: true, alreadyDone: false, deductions: [] });
-    expect(upsertOnHand).not.toHaveBeenCalled();
+    expect(adjustOnHandAtomic).not.toHaveBeenCalled();
   });
 
   it('reports alreadyDone (no deduction) when the claim is already taken', async () => {
     currentDb = makeDb({ claimWins: false });
     const res = await prepareJobMaterials('j1');
     expect(res).toEqual({ ok: true, alreadyDone: true });
-    expect(upsertOnHand).not.toHaveBeenCalled();
+    expect(adjustOnHandAtomic).not.toHaveBeenCalled();
   });
 
   it('does NOT stamp a phantom claim when the materials read fails (#110 W7-008 — read before claim)', async () => {
@@ -123,6 +125,6 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     // marked prepped with zero stock deducted (the old bug), and a retry works.
     expect(res).toBeNull();
     expect(claimAttempted).toBe(false);
-    expect(upsertOnHand).not.toHaveBeenCalled();
+    expect(adjustOnHandAtomic).not.toHaveBeenCalled();
   });
 });
