@@ -18,6 +18,8 @@ import { recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder, type Inventory
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
+import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
@@ -70,10 +72,12 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   // Test Quote safety (ledger #93): a test job IS a real jobs row, but its
   // materials must NEVER reach the real supplier PO. is_test lives on the quote —
   // drop any active job whose quote is a test quote before aggregating demand.
+  // P8 PR-2: also select service_type + inputs so a permanent job's demand can
+  // be accumulated from the BOM engine instead of the scene projection below.
   const allQuoteIds = [...new Set(active.map((j) => j.quote_id))];
   const { data: quoteRows } = await db
     .from('quotes')
-    .select('id, is_test, approval_snapshot')
+    .select('id, is_test, approval_snapshot, service_type, inputs')
     .in('id', allQuoteIds);
   const testQuoteIds = new Set(
     (quoteRows ?? []).filter((r) => (r as { is_test: boolean | null }).is_test).map((r) => (r as { id: string }).id),
@@ -85,11 +89,25 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
       colorChoiceFromSnapshot((r as { approval_snapshot: unknown }).approval_snapshot),
     ]),
   );
+  // P8 PR-2: which active quotes are permanent (positive gate), and their stored
+  // permanent inputs to feed permanentBomFromQuote.
+  const permanentFieldsByQuote = new Map<string, PermanentQuoteFields | undefined>(
+    (quoteRows ?? [])
+      .filter((r) => (r as { service_type: string | null }).service_type === 'permanent')
+      .map((r) => {
+        const row = r as { id: string; inputs: { permanent?: PermanentQuoteFields } | null };
+        return [row.id, row.inputs?.permanent] as const;
+      }),
+  );
   active = active.filter((j) => !testQuoteIds.has(j.quote_id));
   if (!active.length) return { lines: [], jobCount: 0 };
 
-  const quoteIds = [...new Set(active.map((j) => j.quote_id))];
-  const { data: designs } = await db.from('designs').select('quote_id, scene').in('quote_id', quoteIds);
+  // Only fetch scenes for the NON-permanent active jobs — a permanent job's
+  // design scene (if any) must never feed the scene projection.
+  const sceneQuoteIds = active.map((j) => j.quote_id).filter((id) => !permanentFieldsByQuote.has(id));
+  const { data: designs } = sceneQuoteIds.length
+    ? await db.from('designs').select('quote_id, scene').in('quote_id', sceneQuoteIds)
+    : { data: [] };
   const sceneByQuote = new Map(
     (designs ?? []).map((d) => [(d as { quote_id: string }).quote_id, (d as { scene: unknown }).scene]),
   );
@@ -100,6 +118,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   const { bindings, clipRules } = await getInventoryBindings();
   const needBySku = new Map<string, number>();
   for (const j of active) {
+    if (permanentFieldsByQuote.has(j.quote_id)) {
+      // Permanent (P8 PR-2): accumulate need from the Ascend/Dauer BOM engine —
+      // no costOverrides here (the PO cares about quantities, not costs).
+      const bom = permanentBomFromQuote({ permanent: permanentFieldsByQuote.get(j.quote_id) });
+      for (const l of bom?.lines ?? []) {
+        needBySku.set(l.sku, (needBySku.get(l.sku) ?? 0) + l.qty);
+      }
+      continue;
+    }
     const scene = (sceneByQuote.get(j.quote_id) ?? { yardsticks: [], items: [] }) as Scene;
     const colorChoice = colorChoiceByQuote.get(j.quote_id) ?? null;
     for (const a of aggregateMaterials(projectMaterials(scene, bindings, clipRules, colorChoice))) {

@@ -10,10 +10,12 @@ import { listJobs, getJob, type JobRow } from '../jobs';
 import type { JobStatus } from '../jobStatus';
 import type { Scene } from '@/lib/design/sceneTypes';
 import { getInventoryBindings } from './bindings';
-import { listCatalog } from './catalog';
+import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, upsertOnHand } from './onHand';
-import { projectMaterials, buildMaterialsView, type MaterialsView } from './materialsProjection';
+import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
+import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -143,6 +145,25 @@ export type WorkOrderJob = {
 };
 export type WorkOrder = { job: WorkOrderJob; materials: MaterialsView };
 
+// P8 PR-2: map a permanent BOM's lines onto the shared MaterialLine shape so a
+// permanent job's work order / prep-deduction reuse buildMaterialsView exactly
+// like a holiday job. Every BOM line already carries a real SKU + qty > 0 (see
+// bom.ts's `push`), so conceptKey/label are never surfaced (no unbound lines);
+// `category` has no holiday-taxonomy equivalent for an Ascend/Dauer part (the
+// existing MaterialCategory union is wreath/garland/spritzer/mini/bulb/clip/wire)
+// so 'mini' is a neutral placeholder — buildMaterialsView/aggregateMaterials
+// never branch on it. `sceneItemId` has no BOM equivalent either.
+function materialLinesFromBom(lines: { sku: string; qty: number }[]): MaterialLine[] {
+  return lines.map((l): MaterialLine => ({
+    sku: l.sku,
+    qty: l.qty,
+    category: 'mini',
+    conceptKey: l.sku,
+    label: l.sku,
+    sceneItemId: '',
+  }));
+}
+
 export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   const db = getSupabaseServiceClient();
   if (!db) return null;
@@ -158,18 +179,33 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   let customerName: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let isPermanent = false;
+  let permanentFields: PermanentQuoteFields | undefined;
   let colorChoice: string[] | null = null; // #92 — the customer's approved color pick
   if (job.quote_id) {
     const [{ data: design }, { data: quote }] = await Promise.all([
       db.from('designs').select('scene').eq('quote_id', job.quote_id).maybeSingle(),
-      db.from('quotes').select('customer_name, customer_address, is_test, approval_snapshot').eq('id', job.quote_id).maybeSingle(),
+      db
+        .from('quotes')
+        .select('customer_name, customer_address, is_test, approval_snapshot, service_type, inputs')
+        .eq('id', job.quote_id)
+        .maybeSingle(),
     ]);
     if (design?.scene) scene = design.scene as Scene;
     if (quote) {
-      const q = quote as { customer_name: string | null; customer_address: string | null; is_test: boolean | null; approval_snapshot: unknown };
+      const q = quote as {
+        customer_name: string | null;
+        customer_address: string | null;
+        is_test: boolean | null;
+        approval_snapshot: unknown;
+        service_type: string | null;
+        inputs: { permanent?: PermanentQuoteFields } | null;
+      };
       customerName = q.customer_name ?? null;
       customerAddress = q.customer_address ?? null;
       isTest = !!q.is_test;
+      isPermanent = q.service_type === 'permanent';
+      permanentFields = q.inputs?.permanent;
       colorChoice = colorChoiceFromSnapshot(q.approval_snapshot);
     }
   }
@@ -177,7 +213,15 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   // #110 W7-009: pass clipRules through (see purchaseOrder.ts) so the job work
   // order / print sheet / order email / prep stock-deduction include clips too.
   const { bindings, clipRules } = await getInventoryBindings();
-  const lines = projectMaterials(scene, bindings, clipRules, colorChoice);
+  // Permanent (P8 PR-2): materials come from the Ascend/Dauer BOM engine, NEVER
+  // the scene projection — a permanent job's design scene (if any) must not
+  // feed holiday materials. Positive `=== 'permanent'` gate; holiday/event jobs
+  // keep the scene-projection path exactly as before.
+  const lines = isPermanent
+    ? materialLinesFromBom(
+        permanentBomFromQuote({ permanent: permanentFields }, await catalogCostOverrides())?.lines ?? [],
+      )
+    : projectMaterials(scene, bindings, clipRules, colorChoice);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
   const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));

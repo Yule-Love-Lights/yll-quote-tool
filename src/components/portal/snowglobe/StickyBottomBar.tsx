@@ -128,7 +128,7 @@ export function StickyBottomBar({
   // booked page. Off by default (the code ships dark; flipped on after testing).
   const [showCheckout, setShowCheckout] = useState(false);
   // #83 Slice B — the "Confirm & sign" step shown before the approve POST, and
-  // the captured signature it collects (typed name baseline / drawn canvas).
+  // the captured signature it collects (the customer's typed full name).
   const [showSign, setShowSign] = useState(false);
   const [signature, setSignature] = useState<CapturedSignature | null>(null);
   // #83 Slice B — the Decline / Request-changes modal (null = none open).
@@ -334,6 +334,65 @@ export function StickyBottomBar({
     );
   }
 
+  // Shared bar pieces, placed into a mobile (taller, two-row) and a desktop
+  // (single-row) layout below (S22, per Jason: on phones the totals sit on top,
+  // Request-changes + Decline below, and Approve to the right). Only one layout
+  // is visible at a time (the sm breakpoint), and the component-level interest
+  // ref-guard keeps the "interested" ping single regardless of which Approve fires.
+  const totalsBlock = (
+    <div className="flex items-baseline gap-x-2 gap-y-0.5 min-w-0 flex-wrap">
+      <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
+        {formatUsd(currentTotal)}
+      </span>
+      <span className="text-[11px] md:text-[12px] text-[#A89F87]">
+        incl. tax · <span className="tabular-nums text-[#FFD07A]">{formatUsd(currentDeposit)}</span> deposit
+      </span>
+    </div>
+  );
+  const requestChangesBtn = (
+    <button
+      type="button"
+      onClick={() => setResponseIntent('request-changes')}
+      aria-label="Request changes to this quote"
+      className="inline-flex items-center justify-center min-h-[44px] px-2 sm:px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] whitespace-nowrap"
+    >
+      Request changes
+    </button>
+  );
+  const declineBtn = (
+    <button
+      type="button"
+      onClick={() => setResponseIntent('decline')}
+      aria-label="Decline this quote"
+      className="inline-flex items-center justify-center min-h-[44px] px-2 sm:px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744]"
+    >
+      Decline
+    </button>
+  );
+  const approveBtn = (
+    <span
+      className="inline-flex shrink-0"
+      onMouseEnter={startHoverIntent}
+      onMouseLeave={cancelHoverIntent}
+      onFocus={flagInterest}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          setErrorMsg(null);
+          setShowSign(true);
+        }}
+        disabled={submitting || !meetsMinimum}
+        aria-label="Approve quote"
+        aria-describedby={!errorMsg && !meetsMinimum ? 'approve-minimum-nudge' : undefined}
+        className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        Approve
+        <ArrowRight className="w-4 h-4" aria-hidden />
+      </button>
+    </span>
+  );
+
   return (
     <>
       {showCheckout && (
@@ -341,7 +400,7 @@ export function StickyBottomBar({
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
           runs the existing approve POST with it. The signature is required
-          (typed name baseline; drawn canvas optional). */}
+          (the customer's typed full name). */}
       {showSign && (
         <SignModal
           submitting={submitting}
@@ -398,58 +457,29 @@ export function StickyBottomBar({
             : `Add ${formatUsd(amountToMinimum)} more to reach the ${formatUsd(minimumOrderSubtotal)} minimum`}
         </p>
       )}
-      <div className="flex items-baseline gap-2 min-w-0">
-        <span className="portal-snow-price font-display text-[17px] md:text-[20px] font-bold text-[#F4ECD8]">
-          {formatUsd(currentTotal)}
-        </span>
-        <span className="text-[11px] md:text-[12px] text-[#A89F87] whitespace-nowrap">
-          incl. tax · <span className="tabular-nums text-[#FFD07A]">{formatUsd(currentDeposit)}</span> deposit
-        </span>
+      {/* Mobile (< sm): a taller bar — totals on top, Request-changes + Decline
+          below, Approve to the right (S22, per Jason). The full-width + squared
+          shape comes from the .portal-snow-sticky mobile media query. */}
+      <div className="flex sm:hidden items-center gap-3 w-full">
+        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+          {totalsBlock}
+          <div className="flex items-center gap-1">
+            {requestChangesBtn}
+            {declineBtn}
+          </div>
+        </div>
+        {approveBtn}
       </div>
 
-      {/* Actions: secondary Decline / Request-changes + the primary Approve.
-          The wrapper carries the interest listeners so they fire even when the
-          Approve button is disabled (under the $1,000 minimum). */}
-      <div className="flex items-center gap-2">
-        {/* #83 Slice B — secondary customer responses. Compact, lower-emphasis
-            than Approve; always available pre-approval. */}
-        <button
-          type="button"
-          onClick={() => setResponseIntent('request-changes')}
-          aria-label="Request changes to this quote"
-          className="hidden sm:inline-flex items-center justify-center min-h-[44px] px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744]"
-        >
-          Request changes
-        </button>
-        <button
-          type="button"
-          onClick={() => setResponseIntent('decline')}
-          aria-label="Decline this quote"
-          className="inline-flex items-center justify-center min-h-[44px] px-3 py-2 rounded-full text-[12px] md:text-[13px] text-[#A89F87] hover:text-[#F4ECD8] underline-offset-2 hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744]"
-        >
-          Decline
-        </button>
-        <span
-          className="inline-flex"
-          onMouseEnter={startHoverIntent}
-          onMouseLeave={cancelHoverIntent}
-          onFocus={flagInterest}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setErrorMsg(null);
-              setShowSign(true);
-            }}
-            disabled={submitting || !meetsMinimum}
-            aria-label="Approve quote"
-            aria-describedby={!errorMsg && !meetsMinimum ? 'approve-minimum-nudge' : undefined}
-            className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Approve
-            <ArrowRight className="w-4 h-4" aria-hidden />
-          </button>
-        </span>
+      {/* Desktop (sm+): the original single-row pill — totals, then the secondary
+          responses + the primary Approve. */}
+      <div className="hidden sm:flex items-center gap-3">
+        {totalsBlock}
+        <div className="flex items-center gap-2">
+          {requestChangesBtn}
+          {declineBtn}
+          {approveBtn}
+        </div>
       </div>
       </div>
     </>
@@ -457,9 +487,9 @@ export function StickyBottomBar({
 }
 
 // #83 Slice B — the "Confirm & sign" modal. A thin dark-theme shell around the
-// SignaturePad. Approve is gated on a captured signature (typed name baseline,
-// drawn canvas optional). Errors from the approve POST surface here so the
-// customer can retry without losing what they signed.
+// SignaturePad. Approve is gated on a captured signature (the customer's typed
+// full name). Errors from the approve POST surface here so the customer can
+// retry without losing what they signed.
 function SignModal({
   submitting,
   errorMsg,
