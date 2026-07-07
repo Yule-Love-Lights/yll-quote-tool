@@ -117,6 +117,15 @@ describe('POST /api/analyze-photo — input validation (existing behavior, guard
     expect(analyzePhoto).not.toHaveBeenCalled();
   });
 
+  it('400s a HEIC upload with a clear format message instead of the outage fail-safe', async () => {
+    const res = await POST(makeReq({ photo: makeFile('photo.heic', 'image/heic') }));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toMatch(/unsupported image format/i);
+    expect(json.error).not.toBe('unavailable');
+    expect(analyzePhoto).not.toHaveBeenCalled();
+  });
+
   it('400s an oversized photo', async () => {
     const res = await POST(makeReq({ photo: makeFile('big.jpg', 'image/jpeg', 11 * 1024 * 1024) }));
     expect(res.status).toBe(400);

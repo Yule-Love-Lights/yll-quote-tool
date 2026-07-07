@@ -9,6 +9,13 @@ export const maxDuration = 60;
 
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
+// Mirrors analyzePhoto()'s validMediaTypes allowlist in photoAnalysis.ts. Checked
+// here too, before the analyzer call, so an unsupported format (HEIC/AVIF/BMP/
+// TIFF/etc) gets a clear 400 instead of falling into the outage fail-safe —
+// analyzePhoto() throws "Unsupported image type", which runAnalyzeWithFewShot
+// swallows into the generic "temporarily unavailable" message.
+const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
 export async function POST(req: NextRequest) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -40,8 +47,11 @@ export async function POST(req: NextRequest) {
   }
 
   const mediaType = file.type;
-  if (!mediaType.startsWith('image/')) {
-    return NextResponse.json({ error: 'File must be an image' }, { status: 400 });
+  if (!SUPPORTED_IMAGE_TYPES.includes(mediaType)) {
+    return NextResponse.json(
+      { error: 'Unsupported image format — convert to JPEG, PNG, GIF, or WEBP and try again' },
+      { status: 400 },
+    );
   }
 
   const houseStyleHint = (formData.get('houseStyle') as string | null)?.trim() || undefined;
