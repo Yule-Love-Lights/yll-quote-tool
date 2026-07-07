@@ -690,10 +690,19 @@ export async function setInvoiceTaxOverride(
     patch.paid_at = new Date().toISOString();
   }
 
+  // TOCTOU fix (audit HIGH): the invoice was read at the top of this function,
+  // then this write happens after an async round-trip to the source quote. A
+  // concurrent write (e.g. the Valor balance webhook settling this invoice to
+  // 'paid') could land in that gap. Without a precondition the write below
+  // would clobber it — resurrecting a paid invoice to `reconciledStatus` with
+  // a phantom positive balance. Make it a CAS on the freshly-read status,
+  // mirroring setInvoiceStatus's `.eq('status', current.status)`: if the row
+  // moved since our read, 0 rows match and we abort rather than overwrite.
   const { data, error } = await db
     .from('invoices')
     .update(patch)
     .eq('id', id)
+    .eq('status', invoice.status)
     .select(INVOICE_SELECT)
     .single();
   if (error) {

@@ -546,6 +546,54 @@ describe('setInvoiceTaxOverride', () => {
     expect(fake.tables.invoices[0]).toMatchObject({ status: 'paid', paid_at: '2026-06-01T12:00:00Z' });
   });
 
+  // HIGH audit finding: setInvoiceTaxOverride's final write had no status
+  // compare-and-swap. A Valor balance settlement landing between the initial
+  // read and the final UPDATE (e.g. the invoice goes 'awaiting_payment' →
+  // 'paid' while the quote lookup is in flight) must not be clobbered — the
+  // write must be a CAS on the freshly-read status, mirroring
+  // setInvoiceStatus's `.eq('status', current.status)` pattern. A settled
+  // invoice must never be resurrected to awaiting_payment with a phantom
+  // positive balance.
+  it('does not resurrect a paid invoice raced by a concurrent settlement (CAS)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', quote_id: 'q1', deposit_applied: 2446.88, subtotal: 4500, discount: 0, tax: 393.75, total: 4893.75, balance: 2446.87, credit_note: 0, status: 'awaiting_payment', tax_overridden: false },
+      ],
+      quotes: [quote],
+    });
+    // Simulate a concurrent Valor balance settlement landing between
+    // setInvoiceTaxOverride's initial getInvoice() read and its final UPDATE:
+    // as soon as the source-quote lookup runs (the step right after the
+    // read), flip the invoice to paid/balance-0/paid_at. REPLACE (not mutate)
+    // the row object so the earlier read stays a frozen snapshot — matching
+    // a real Supabase client, where every response is an independent
+    // deserialized copy, never a live reference into the DB's row.
+    const realFrom = fake.client.from;
+    fake.client.from = (table: string) => {
+      if (table === 'quotes') {
+        fake.tables.invoices[0] = {
+          ...fake.tables.invoices[0],
+          status: 'paid',
+          balance: 0,
+          paid_at: '2026-07-07T00:00:00Z',
+        };
+      }
+      return realFrom(table);
+    };
+    sbRef.current = fake.client;
+
+    const result = await setInvoiceTaxOverride('i1', true);
+
+    expect(result).toBeNull();
+    // The concurrently-settled invoice must be left untouched by the raced
+    // tax-override write — no resurrection to awaiting_payment, no phantom balance.
+    expect(fake.tables.invoices[0]).toMatchObject({
+      status: 'paid',
+      balance: 0,
+      paid_at: '2026-07-07T00:00:00Z',
+    });
+  });
+
   it('still works normally for a draft invoice (no regression)', async () => {
     const fake = makeFakeSupabase({
       invoices: [
