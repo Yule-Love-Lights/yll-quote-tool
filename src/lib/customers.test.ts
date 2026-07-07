@@ -411,6 +411,28 @@ describe('findOrCreateCustomer', () => {
       expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // unchanged
     });
   });
+
+  // customers-or-sanitize: secondaryMatchKeys are free text (a name can carry
+  // a comma/paren) and used to get string-interpolated straight into a
+  // PostgREST `match_key.in.(...)` filter with no sanitizing. A crafted/plain
+  // comma in the name corrupts the in-list, the merge lookup silently misses,
+  // and a duplicate customer row gets created instead of deduping.
+  it('a secondary match key containing a comma does not corrupt the query — still merges into the existing row', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+
+    // Quote A: name only (no email/phone/hl) — match_key is the free-text
+    // name key itself, comma and all.
+    const a = await findOrCreateCustomer({ name: 'Smith, John' });
+    // Quote B: same person, now HL-linked. The ONLY way to find quote A's row
+    // is the secondary match_key.in() search on `name:smith, john` — there's
+    // no hl/email/phone raw column value shared to fall back on.
+    const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', name: 'Smith, John' });
+
+    expect(b?.id).toBe(a?.id); // merged into the same row, not a duplicate
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // upgraded
+  });
 });
 
 describe('findOrCreateProperty', () => {
