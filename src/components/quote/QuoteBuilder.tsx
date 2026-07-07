@@ -519,6 +519,9 @@ export default function QuoteBuilder({
               // The bridge auto-design (#35 Phase 2): the design is born
               // already designed from the analysis.
               seedAnalysis: pendingSeedRef.current ?? undefined,
+              // #88 permanent has no analyzer to calibrate scale — seed a default
+              // yardstick so the design opens with one to size, like holiday.
+              seedDefaultYardstick: form.serviceType === 'permanent',
             }),
           });
           const data = await res.json();

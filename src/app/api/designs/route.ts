@@ -57,6 +57,9 @@ export async function POST(req: NextRequest) {
       // Full bridge auto-design payload (#35 Phase 2): roofline lines +
       // per-unit detections — the design opens already designed.
       seedAnalysis: sanitizeAnalysisSeed(body.seedAnalysis),
+      // #88 permanent: born with a default (uncalibrated) yardstick to size by
+      // hand — no analyzer to derive scale from.
+      seedDefaultYardstick: body.seedDefaultYardstick === true,
       createdBy: operator?.id ?? null,
     });
     if (!created) {

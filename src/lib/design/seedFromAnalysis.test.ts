@@ -5,6 +5,7 @@ import {
   analysisSeedHasContent,
   countSeededItems,
   countSeededGarlandUnestimated,
+  makeDefaultYardstick,
   AnalysisSeed,
 } from './seedFromAnalysis';
 import type { Scene, StrandItem, MiniAreaItem, WreathItem, SpritzerItem, GarlandItem } from './sceneTypes';
@@ -428,5 +429,22 @@ describe('sanitizeAnalysisSeed', () => {
   it('returns an empty seed for garbage', () => {
     expect(analysisSeedHasContent(sanitizeAnalysisSeed(null))).toBe(false);
     expect(analysisSeedHasContent(sanitizeAnalysisSeed({ detections: {} }))).toBe(false);
+  });
+});
+
+describe('makeDefaultYardstick (#88 permanent — uncalibrated auto-yardstick)', () => {
+  it('is a 5 ft seed yardstick sized/placed proportionally to the photo', () => {
+    const ys = makeDefaultYardstick(1000, 800);
+    expect(ys.id).toBe('seed-yardstick-1'); // seed- id → "staff calibration wins" still holds
+    expect(ys.realFeet).toBe(5);
+    expect(ys.width).toBe(150); // 15% of photo width — a visible handle to size by hand
+    expect(ys.x).toBe(40); // 4% — same lower-left corner as the holiday seed
+    expect(ys.y).toBe(592); // 74%
+    expect(ys.height).toBe(67.5); // width * 0.45 (cosmetic)
+  });
+
+  it('scales its handle with the photo width', () => {
+    expect(makeDefaultYardstick(2000, 1000).width).toBe(300);
+    expect(makeDefaultYardstick(500, 400).width).toBe(75);
   });
 });
