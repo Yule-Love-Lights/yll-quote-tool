@@ -15,6 +15,15 @@ real cost basis is the ASCEND `APL` list below (it reproduces the estimator tota
   labor as informational only, NEVER a customer line. BOM = materials + wholesale cost only.
 
 ## ASCEND `APL` catalog (SKU · description · wholesale $)
+> **Seeding the live catalog (P8):** this list is encoded as `ASCEND_CATALOG` in
+> `src/lib/inventory/ascendCatalog.ts`. To load it into `inventory_catalog` (needed
+> so operator BOM/order screens show part names + live costs), run
+> `npm run seed-ascend-catalog` with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`
+> in the env (or `.env.local`). Idempotent — keyed on `sku`, writes only vendor
+> columns, never clobbers operator `yll_category`/`locked`. Re-run after any
+> `ASCEND_CATALOG` edit. A lock-in test (`ascendCatalog.test.ts`) pins every
+> BOM-engine-emitted SKU's cost against this list.
+
 | SKU | Description | Wholesale |
 |---|---|---|
 | APL11000 | ASCEND DEMO KIT WITH CASE | 485.10 |
