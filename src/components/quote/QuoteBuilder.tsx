@@ -1185,7 +1185,16 @@ export default function QuoteBuilder({
     const clampFt = (n: number) => Math.max(0, Math.round(Number.isFinite(n) ? n : 0));
     const sideFt = hasSat ? r.satelliteFeetBySide : r.feetBySide;
     const sideCorners = hasSat ? r.satelliteCornersBySide : r.cornersBySide;
-    const gapSrc = [...(r.gapCandidates ?? []), ...(hasSat ? r.satelliteGapCandidates ?? [] : [])];
+    // Partition gaps by side like the footage above, so a front break visible in
+    // BOTH the street and satellite images isn't counted twice: front gaps from
+    // the street pass, left/right/back gaps from the satellite pass (street-only
+    // when no satellite came back).
+    const gapSrc = hasSat
+      ? [
+          ...(r.gapCandidates ?? []).filter((g) => g.side === 'front'),
+          ...(r.satelliteGapCandidates ?? []).filter((g) => g.side !== 'front'),
+        ]
+      : (r.gapCandidates ?? []);
     const autoGaps: PermanentGap[] = gapSrc
       .filter((g) => typeof g.lengthFt === 'number' && (g.lengthFt as number) > 0)
       .map((g) => ({ lengthFt: Math.round(g.lengthFt as number), detectedFt: Math.round(g.lengthFt as number), source: 'auto' as const }));
@@ -1265,8 +1274,12 @@ export default function QuoteBuilder({
         setFewShotCount(0);
         setViewMode('design');
         if (data.permanentImageryOnly) {
-          setAnalysisNotes(
-            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+          // permanentImageryOnly here means the permanent analyzer THREW (it never
+          // returns null on success), so surface it as a WARNING, not a green
+          // "measured" note — nothing was actually measured.
+          setAnalysisWarning(
+            data.analysisError ??
+              'The permanent auto-measure is temporarily unavailable. Your photos are loaded; measure the roofline manually.',
           );
         } else {
           setAnalysisWarning(
