@@ -108,7 +108,13 @@ export type PortalApproval = {
   totalUsd: number;          // amount the customer saw at approval time
   depositUsd: number;        // amount paid up front
   selectedItemCount: number; // for a "X items included" line
+  // The FROZEN line-item selection the customer approved (the exact ids), so a
+  // booked portal can re-seed SelectionProvider from what they signed instead of
+  // the recommendation/staff defaults (audit: approved-portal-snapshot). Empty
+  // for older snapshots that predate the freeze.
+  selectedItemIds: string[];
   installTiming: InstallTiming; // #40 — Sep/Oct early-install choice (or 'none')
+  rushSelected: boolean;        // #4 — rush-install add-on chosen (frozen at approval)
   takedownSelected: boolean;    // #4 — premium (before-Jan-9) takedown chosen
   // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
   // customer agreed to, frozen at approval. null for non-permanent quotes or

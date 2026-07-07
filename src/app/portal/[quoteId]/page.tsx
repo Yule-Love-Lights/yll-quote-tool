@@ -56,6 +56,7 @@ import {
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
+import { deriveIsBooked, resolveApprovalSelectionSeed } from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
@@ -159,16 +160,40 @@ export default async function PortalPage({
       </main>
     );
   }
-  // Bug fix (#83 B3 UI): a quote in a terminal branch (declined/cancelled/lost)
-  // or under revision (changes_requested) must NOT show the approve+pay flow —
-  // the customer could otherwise pay/approve a quote staff already killed or are
-  // revising. The server already rejects it (the /approve status gate + /pay's
-  // approve-first guard); this is the matching UI gate. Skip the gate once the
-  // customer has approved (`quote.approval`) so a booked quote later marked
-  // 'cancelled' still renders its confirmation/booked view rather than this
-  // neutral notice. Mirrors the empty-quote guard above (page-level read-only
-  // fallback before the interactive UI mounts).
-  if (!quote.approval && !isPortalActionable(quote.quoteStatus)) {
+  // Booked state, resolved up front so the terminal-branch gate below can tell an
+  // approved-but-KILLED quote (staff CANCEL/DECLINE after the customer approved,
+  // deposit unpaid) from a genuinely booked one.
+  // #43 — once approved the portal reads as BOOKED rather than re-shoppable.
+  const isApproved = !!quote.approval;
+  // #38 — read the customer-checkout flag on the server (request time) so the
+  // sticky bar's Approve either opens the embedded deposit checkout (on) or routes
+  // to the booked page (off). Server-read avoids a stale baked value.
+  const checkoutEnabled = isValorCheckoutEnabled();
+  // #38 — with checkout ON, "booked" means the deposit was actually PAID (the
+  // webhook stamped deposit_paid_at); approval alone isn't booked. #93 — a TEST
+  // quote uses the same paid-based logic (simulated deposit). With checkout OFF
+  // (the placeholder flow) approval is the end state, but only while the quote is
+  // still live or already paid — see deriveIsBooked.
+  const isPaid = !!quote.approval?.depositPaidAt;
+  const isBooked = deriveIsBooked({
+    checkoutEnabled,
+    isTest: !!quote.isTest,
+    isPaid,
+    isApproved,
+    quoteStatus: quote.quoteStatus,
+  });
+
+  // Bug fix (#83 B3 UI + audit approved-portal-snapshot): a quote in a terminal
+  // branch (declined/cancelled/lost) or under revision (changes_requested) must
+  // NOT show the approve+pay flow — the customer could otherwise pay/approve a
+  // quote staff already killed or are revising. The server already rejects it
+  // (the /approve status gate + /pay's approve-first guard); this is the matching
+  // UI gate. A GENUINELY booked quote (still actionable, or actually paid — see
+  // isBooked) keeps its confirmation/booked view; an approved-but-killed-and-unpaid
+  // quote falls through to this neutral closed notice instead of a stale booked
+  // view. Mirrors the empty-quote guard above (page-level read-only fallback
+  // before the interactive UI mounts).
+  if (!isPortalActionable(quote.quoteStatus) && !isBooked) {
     const isRevising = quote.quoteStatus === 'changes_requested';
     return (
       <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
@@ -200,30 +225,12 @@ export default async function PortalPage({
   // GOOGLE_PLACE_ID isn't set, the Places API call fails, or Google returns no
   // usable reviews → the section keeps its mock block below. (Fetched above,
   // in parallel with the quote + app settings — audit W4-005.)
-  // #43 — once the customer has approved, the portal reads as BOOKED rather than
-  // re-shoppable: a banner up top + the sticky bar's Approve CTA becomes a
-  // "View confirmation" link (the approval snapshot drives /approved).
-  const isApproved = !!quote.approval;
-  // #38 — read the customer-checkout flag on the server (request time), so the
-  // sticky bar's Approve either opens the embedded deposit checkout (on) or
-  // routes to the booked page (off). Server-read avoids a stale baked value.
-  const checkoutEnabled = isValorCheckoutEnabled();
-  // #38 — with online checkout ON, "booked" means the deposit was actually PAID
-  // (the webhook stamped deposit_paid_at). Approval alone is NOT booked — an
-  // approved-but-unpaid customer still owes the deposit and must be able to pay.
-  // With checkout OFF (the placeholder flow), approval is the end state.
-  const isPaid = !!quote.approval?.depositPaidAt;
-  // #93 — a TEST quote uses the same "booked = deposit PAID" logic as checkout-on
-  // (the simulated deposit stamps deposit_paid_at), so an approved-not-yet-paid
-  // test quote still shows the "Simulate deposit paid" bar instead of jumping
-  // straight to booked. Real quotes are unchanged.
-  const isBooked = checkoutEnabled || quote.isTest ? isPaid : isApproved;
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   // (Fetched above, in parallel with the quote + reviews — audit W4-005.)
   // Fallback default package — escalates past B to a tier that clears the
   // $1,000 minimum so a no-recommendation quote opens approvable (#12).
-  const initialPackageId = pickInitialPackageId(
+  const fallbackPackageId = pickInitialPackageId(
     quote.packages,
     quote.lineItems,
     quote.minimumOrderSubtotal,
@@ -238,10 +245,33 @@ export default async function PortalPage({
   // staff recommended nothing, D is the empty "Build Your Own" card and we fall
   // back to the package-seeded default (Tier 1 — see pickInitialPackageId).
   const ourRecommendation = quote.packages.find((p) => p.id === 'D');
-  const initialSelectedItemIds =
+  const fallbackSelectedItemIds =
     ourRecommendation && ourRecommendation.includedItemIds.length > 0
       ? ourRecommendation.includedItemIds
       : undefined;
+
+  // Audit fix (approved-portal-snapshot): on an approved (locked) portal, seed the
+  // selection from the FROZEN snapshot so the hero price, tie-out, package
+  // highlight, and "Included" badges match what the customer SIGNED — not the
+  // recommendation/staff defaults. An active (unapproved) quote keeps the
+  // recommendation/default seed. installTiming is already restored via
+  // quote.installTiming (the adapter prefers the approval); this mirrors it for
+  // the package/item selection and the rush/premium-takedown add-ons.
+  const { initialPackageId, initialSelectedItemIds } = resolveApprovalSelectionSeed(
+    quote.approval,
+    { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
+  );
+  // SelectionProvider seeds the rush/takedown toggles from these defaultOn flags,
+  // so overriding them with the frozen choices restores the customer's approved
+  // add-ons (the staff defaults in quote.charges would otherwise contradict the
+  // signed selection). Only affects the seed — live pricing uses charges.*.amount.
+  const seededCharges = quote.approval
+    ? {
+        ...quote.charges,
+        rush: { ...quote.charges.rush, defaultOn: quote.approval.rushSelected },
+        takedown: { ...quote.charges.takedown, defaultOn: quote.approval.takedownSelected },
+      }
+    : quote.charges;
 
   return (
     <main className="relative w-full">
@@ -254,7 +284,7 @@ export default async function PortalPage({
         packages={quote.packages}
         lineItems={quote.lineItems}
         roofline={quote.roofline}
-        charges={quote.charges}
+        charges={seededCharges}
         minimumOrderSubtotal={quote.minimumOrderSubtotal}
         initialPackageId={initialPackageId}
         initialSelectedItemIds={initialSelectedItemIds}

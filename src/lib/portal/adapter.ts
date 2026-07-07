@@ -25,7 +25,7 @@ import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './deriv
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import type { PortalPhotos } from './photos';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -46,8 +46,10 @@ type ApprovalSnapshotJson = {
     // ids) when colorSchemeId === 'custom'.
     colorSchemeId?: string;
     customPattern?: string[];
-    // The premium-takedown (#4) + Sep/Oct early-install (#40) choices the
-    // customer approved with. Optional/back-compat: older snapshots predate them.
+    // The rush-install (#4) + premium-takedown (#4) + Sep/Oct early-install (#40)
+    // choices the customer approved with. Optional/back-compat: older snapshots
+    // predate them.
+    rushSelected?: boolean;
     takedownSelected?: boolean;
     installTiming?: 'none' | 'september' | 'october';
   };
@@ -357,13 +359,64 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
     selectedItemCount: Array.isArray(sel?.selectedItemIds)
       ? sel.selectedItemIds.length
       : 0,
+    // The exact frozen selection, so a booked portal re-seeds SelectionProvider
+    // from what the customer signed rather than the recommendation/staff defaults
+    // (audit: approved-portal-snapshot). Sanitize to a clean string[] — the
+    // approve route already validated these against real ids, but old/forged
+    // snapshots shouldn't leak non-strings into the seed.
+    selectedItemIds: Array.isArray(sel?.selectedItemIds)
+      ? sel.selectedItemIds.filter((x): x is string => typeof x === 'string')
+      : [],
     installTiming:
       sel?.installTiming === 'september' || sel?.installTiming === 'october'
         ? sel.installTiming
         : 'none',
+    rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
   };
+}
+
+// ── Portal-page display derivations (audit: approved-portal-snapshot) ────────
+// Extracted here (server-free, unit-testable) because the portal page component
+// pulls in `server-only` deps and can't be imported by a test.
+
+// Whether the portal should render the BOOKED experience (banner + booked
+// sticky bar + the /approved celebration link).
+//   - checkout ON / test quote: "booked" means the deposit was actually PAID.
+//   - checkout OFF (placeholder flow): approval is the end state, BUT only while
+//     the quote is still live (actionable) or already paid — a quote staff
+//     CANCEL/DECLINE after approval must fall out of the booked view (it's shown
+//     the neutral closed notice instead). A genuinely paid deal stays booked.
+export function deriveIsBooked(args: {
+  checkoutEnabled: boolean;
+  isTest: boolean;
+  isPaid: boolean;
+  isApproved: boolean;
+  quoteStatus: string | null | undefined;
+}): boolean {
+  const { checkoutEnabled, isTest, isPaid, isApproved, quoteStatus } = args;
+  if (checkoutEnabled || isTest) return isPaid;
+  return isApproved && (isPaid || isPortalActionable(quoteStatus));
+}
+
+// Seed the SelectionProvider package/item selection. On an approved (locked)
+// portal we prefer the FROZEN snapshot over the recommendation/staff default so
+// the display matches what the customer signed:
+//   - a divergent/custom approval (packageId 'D') restores its exact item set
+//     (passing the id list highlights the custom "Build Your Own" slot);
+//   - a named tier (A/B/C) restores by packageId with NO id list, because
+//     computeInitialSelection collapses a non-empty id list to 'D' — passing the
+//     ids for a lettered package would wrongly drop its tier highlight.
+export function resolveApprovalSelectionSeed(
+  approval: Pick<PortalApproval, 'packageId' | 'selectedItemIds'> | undefined,
+  fallback: { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined },
+): { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined } {
+  if (!approval) return fallback;
+  if (approval.packageId === 'D') {
+    return { initialPackageId: 'D', initialSelectedItemIds: approval.selectedItemIds };
+  }
+  return { initialPackageId: approval.packageId, initialSelectedItemIds: undefined };
 }
 
 function buildVideo(row: QuoteRowForPortal): PortalVideo | undefined {
