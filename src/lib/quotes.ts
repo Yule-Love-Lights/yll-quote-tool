@@ -85,7 +85,17 @@ export async function deleteAllQuotes(): Promise<number> {
   // linked to a quote (quote_id not null); unlinked, never-Calculated designs
   // are intentionally left (they belong to no quote and aren't dropped by a
   // quote wipe — out of scope for this fix, see decisionsForReviewer).
-  const { data: linked } = await sb.from('designs').select('id').not('quote_id', 'is', null);
+  const { data: linked, error: linkedError } = await sb
+    .from('designs')
+    .select('id')
+    .not('quote_id', 'is', null);
+  // quotes-delete-select-error: abort BEFORE the bulk quote delete on a failed
+  // lookup. Without this, a transient error leaves `linked` null/empty, zero
+  // designs get cleaned, and the quote delete proceeds anyway — orphaning
+  // design rows (FK is `on delete set null`) with customer photos stranded in
+  // the private bucket, the exact PII hole this function's cleanup exists to
+  // close.
+  if (linkedError) throw new Error(`deleteAllQuotes: ${linkedError.message}`);
   // W2-034: designs are mutually independent (each's cleanup is its own row +
   // storage-prefix delete), so nothing forces strictly-serial one-at-a-time
   // deletion. Bounded-concurrency chunks (mirrors customers.ts
@@ -117,7 +127,14 @@ export async function deleteAllQuotes(): Promise<number> {
 export async function deleteTestQuotes(): Promise<number> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) throw new Error('Supabase not configured');
-  const { data: testRows } = await sb.from('quotes').select('id').eq('is_test', true);
+  const { data: testRows, error: testRowsError } = await sb
+    .from('quotes')
+    .select('id')
+    .eq('is_test', true);
+  // quotes-delete-select-error: same abort-before-bulk-delete as deleteAllQuotes
+  // above — a failed lookup must not fall through to the bulk delete as if no
+  // test rows needed cleanup.
+  if (testRowsError) throw new Error(`deleteTestQuotes: ${testRowsError.message}`);
   // W2-034: same bounded-concurrency chunking as deleteAllQuotes above — each
   // test quote's design cleanup is independent of the others.
   const DELETE_CHUNK_SIZE = 8;
