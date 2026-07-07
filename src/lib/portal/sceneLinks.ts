@@ -25,7 +25,7 @@
 // not by order, so it is never affected (see audit fix #33 below). This mirrors
 // the contract's "co-derived, born consistent" stance.
 
-import type { Scene, Surface } from '@/lib/design/sceneTypes';
+import type { Scene, Surface, SideOfHouse } from '@/lib/design/sceneTypes';
 import { isStrand } from '@/lib/design/sceneTypes';
 import { projectScene, type ProjectedCategory } from '@/lib/design/projectScene';
 import type { PortalLineItem, PortalLineItemKind } from '@/components/portal/types';
@@ -50,6 +50,17 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   const gingerIds = idsForSurface('gingerbread');
   const wwIds = idsForSurface('winter-wonderland');
   const stakeIds = idsForSurface('stake-lighting');
+  // Permanent Lighting (#88 / S23): per-side strand ids for the portal package
+  // toggle. Permanent runs are tagged sideOfHouse + bulbType 'permanent' and DO
+  // twin across photos (unlike holiday roofline), so a package deselect hides a
+  // side's lights on EVERY angle (the twin expansion below adds the depictions).
+  // Left + Right are billed together as 'Sides'.
+  const permanentSideIds = (sides: SideOfHouse[]) =>
+    items
+      .filter(
+        (i) => isStrand(i) && i.bulbType === 'permanent' && i.sideOfHouse != null && sides.includes(i.sideOfHouse),
+      )
+      .map((i) => i.id);
   // Winter Wonderland is measurement-driven (NOT projected), so its `recommended`
   // flag (#12) rides on its scene strands rather than a ProjectedLineItem. Carry
   // it through on the WW line item so the portal's "Our Recommendation" can
@@ -131,6 +142,11 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
       return stakeRecommended
         ? { ...li, sceneItemIds: stakeIds, recommended: true }
         : { ...li, sceneItemIds: stakeIds };
+    // Permanent per-side line items → the drawn permanent strands tagged that
+    // side. The twin expansion below then carries the hide/show to every photo.
+    if (li.id === 'permanent-front') return { ...li, sceneItemIds: permanentSideIds(['front']) };
+    if (li.id === 'permanent-sides') return { ...li, sceneItemIds: permanentSideIds(['left', 'right']) };
+    if (li.id === 'permanent-back') return { ...li, sceneItemIds: permanentSideIds(['back']) };
 
     const cat = KIND_TO_CATEGORY[li.kind];
     if (!cat) return li; // custom / unknown → no scene link

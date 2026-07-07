@@ -178,7 +178,11 @@ export async function renderEditor(
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
     (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) || isMiniArea(i) ||
-      (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")));
+      (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")) ||
+      // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
+      // roofline, which staff re-draw per photo) so a portal package toggle
+      // hides/shows a side's lights on every angle it appears on.
+      (isStrand(i) && i.bulbType === "permanent"));
   const stampCandidates = (): SceneItem[] =>
     scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
   const photoLabelOf = (i: { photoId?: string | null }): string => {
@@ -194,8 +198,9 @@ export async function renderEditor(
         : isGarland(i) ? "garland run"
           : isSpritzer(i) ? `${i.sizeIn}" spritzer`
             : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                : "item";
+              : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
+                : isStrand(i) ? `${i.surface ?? "mini"} wrap`
+                  : "item";
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
