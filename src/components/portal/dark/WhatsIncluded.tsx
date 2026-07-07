@@ -180,12 +180,18 @@ export type WhatsIncludedProps = {
 
 export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
   const isEvent = serviceType === 'event';
-  // Permanent Lighting (#88 / S23): permanent traces its own four side rooflines
-  // on the satellite (front/left/right/back), each already labeled + colored by
-  // selectDrawableLineGroups. Show all four — a side with no drawn line self-hides.
+  // Permanent Lighting (#88 / S23): show permanent's own four side rooflines
+  // (front/left/right/back, from the satellite draw) PLUS — for quotes made before
+  // that draw existed — the LEGACY santas/gingerbread trace, relabeled Front/Sides
+  // (a straight #443-regression fix; those quotes used the holiday channels).
+  // selectDrawableLineGroups hides empty channels, so old + new never collide.
   // undefined for holiday/event so their satellite view is unchanged.
   const allowedSatelliteKeys =
-    serviceType === 'permanent' ? PERMANENT_SIDE_SATELLITE_KEYS : undefined;
+    serviceType === 'permanent'
+      ? [...PERMANENT_SIDE_SATELLITE_KEYS, 'santas' as const, 'gingerbread' as const]
+      : undefined;
+  const satelliteLabelOverrides =
+    serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
   const {
     isItemSelected,
     toggleItem,
@@ -314,7 +320,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             data, the lit render stays full-width on its own. */}
         {design &&
           (!!design.satelliteUrl &&
-          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys).length > 0 ? (
+          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys, satelliteLabelOverrides).length > 0 ? (
             <div
               className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
@@ -326,7 +332,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
                 <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
-                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} />
+                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
           ) : (

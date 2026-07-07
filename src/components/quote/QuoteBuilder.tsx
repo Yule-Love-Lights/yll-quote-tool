@@ -1277,6 +1277,20 @@ export default function QuoteBuilder({
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
+        // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
+        // can show the "Where the lights go" view. Holiday does this in
+        // applyAnalysisResult; permanent has no analysis result, so without parking
+        // the context here satellite_path stays null and the portal hides the
+        // satellite even after the operator draws the side rooflines. The eager
+        // design effect pushes this once the design exists.
+        if (data.satelliteBase64) {
+          pendingContextRef.current = {
+            ...(pendingContextRef.current ?? {}),
+            satelliteBase64: data.satelliteBase64,
+            satelliteMediaType: data.satelliteMediaType ?? 'image/jpeg',
+            satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
+          };
+        }
         if (data.permanentImageryOnly) {
           setAnalysisNotes(
             'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
