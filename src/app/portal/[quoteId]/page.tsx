@@ -278,7 +278,11 @@ export default async function PortalPage({
       {/* #68 — records the customer's open (client-side, fire-and-forget). */}
       <QuoteViewTracker quoteId={quoteId} />
       {isBooked && (
-        <BookedBanner quoteId={quoteId} approvedAt={quote.approval?.approvedAt} />
+        <BookedBanner
+          quoteId={quoteId}
+          approvedAt={quote.approval?.approvedAt}
+          depositFlow={checkoutEnabled || !!quote.isTest}
+        />
       )}
       <SelectionProvider
         packages={quote.packages}
