@@ -433,10 +433,10 @@ describe('sanitizeAnalysisSeed', () => {
 });
 
 describe('makeDefaultYardstick (#88 permanent — uncalibrated auto-yardstick)', () => {
-  it('is a 5 ft seed yardstick sized/placed proportionally to the photo', () => {
+  it('is a 10 ft seed yardstick sized/placed proportionally to the photo', () => {
     const ys = makeDefaultYardstick(1000, 800);
     expect(ys.id).toBe('seed-yardstick-1'); // seed- id → "staff calibration wins" still holds
-    expect(ys.realFeet).toBe(5);
+    expect(ys.realFeet).toBe(10); // Jason S23 — permanent default labels 10 ft
     expect(ys.width).toBe(150); // 15% of photo width — a visible handle to size by hand
     expect(ys.x).toBe(40); // 4% — same lower-left corner as the holiday seed
     expect(ys.y).toBe(592); // 74%
