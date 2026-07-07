@@ -329,7 +329,7 @@ export function calculateEventQuote(
       Number.isFinite(inputs.discount.amount) && inputs.discount.amount > 0 ? inputs.discount.amount : 0;
     discountAmount =
       inputs.discount.type === 'percentage'
-        ? Math.round(subtotalBeforeDiscount * amount)
+        ? Math.round(subtotalBeforeDiscount * amount * 100) / 100
         : amount;
   }
   const subtotalAfterDiscount = Math.max(0, subtotalBeforeDiscount - discountAmount);
