@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { QuoteFormData } from '@/lib/quoteForm';
 import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
 import { projectPermanentDesign, applyPermanentProjection } from '@/lib/permanent/projectPermanent';
@@ -41,6 +41,13 @@ type PermanentSectionProps = {
 export default function PermanentSection({ form, setForm, designId }: PermanentSectionProps) {
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // The design's actual footage per side (from the last projection). Used to warn
+  // when a side bills footage but has no matching run drawn (S29, per Jason —
+  // catches an orphaned manual number after a run is deleted, so a quote can't be
+  // sent billing footage the customer has no lights to match). Seeded on mount +
+  // updated by "Refresh from design".
+  const [designFeetBySide, setDesignFeetBySide] =
+    useState<Record<'front' | 'left' | 'right' | 'back' | 'unassigned', number> | null>(null);
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
@@ -81,6 +88,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
         return;
       }
       const proj = projectPermanentDesign(scene);
+      setDesignFeetBySide(proj.feetBySide);
       // #88: the design now drives ALL FOUR sides (front/left/right/back). A side
       // the design doesn't cover keeps the operator's manual entry, and 'edited'
       // gap rows reset to the fresh auto values (count them to warn, not drop
@@ -108,6 +116,38 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
     }
   };
 
+  // Seed designFeetBySide on mount / design change (best-effort) so the no-run
+  // warnings are right on a reopened quote, not only after a manual Refresh.
+  useEffect(() => {
+    if (!designId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/designs/${designId}`);
+        const data = await res.json();
+        const scene: Scene | undefined = data?.design?.scene;
+        if (!cancelled) setDesignFeetBySide(scene ? projectPermanentDesign(scene).feetBySide : null);
+      } catch {
+        /* best-effort — a load failure just leaves the warnings off */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [designId]);
+
+  // Red check-note when a side bills footage the design has no run for. Fires on
+  // any of the 4 sides (Jason's call): for a satellite-typed side it's a "confirm
+  // this measurement" reminder; for a deleted-run side it catches the orphan so it
+  // can't reach a customer as footage with no lights to match.
+  const noRunWarning = (side: 'front' | 'left' | 'right' | 'back', footage: number) =>
+    designId != null && designFeetBySide != null && footage > 0 && designFeetBySide[side] === 0 ? (
+      <p className="text-xs text-red-600 mt-1 font-medium">
+        ⚠ No {side} run on the design — this {footage} ft bills from your typed number. Draw the run
+        or confirm the measurement before sending.
+      </p>
+    ) : null;
+
   return (
     <div>
       <Section title="Front of Home">
@@ -126,6 +166,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
                 Front footage is 0 — refresh from the design or enter it manually.
               </p>
             )}
+            {noRunWarning('front', p.frontFootage)}
           </div>
           <div>
             <label className={lbl}>Front corners</label>
@@ -175,6 +216,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.leftFootage}
               onChange={(e) => setP('leftFootage', Number(e.target.value))}
             />
+            {noRunWarning('left', p.leftFootage)}
           </div>
           <div>
             <label className={lbl}>Left corners</label>
@@ -195,6 +237,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.rightFootage}
               onChange={(e) => setP('rightFootage', Number(e.target.value))}
             />
+            {noRunWarning('right', p.rightFootage)}
           </div>
           <div>
             <label className={lbl}>Right corners</label>
@@ -215,6 +258,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               value={p.backFootage}
               onChange={(e) => setP('backFootage', Number(e.target.value))}
             />
+            {noRunWarning('back', p.backFootage)}
           </div>
           <div>
             <label className={lbl}>Back corners</label>
