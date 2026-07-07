@@ -105,23 +105,6 @@ export type QuoteRowForPortal = {
   service_type?: import('@/lib/serviceType').ServiceType | null;
 };
 
-// Scarcity context comes from environment variables (per design B3).
-// Naldo updates these weekly; deliberately not stored per-quote because
-// they're a global property of the business calendar, not the quote.
-function readScarcityFromEnv(): {
-  weeklyBookings: number;
-  bookedThroughDate: string;
-} {
-  const wbRaw = process.env.NEXT_PUBLIC_PORTAL_WEEKLY_BOOKINGS;
-  const wbParsed = wbRaw ? parseInt(wbRaw, 10) : NaN;
-  const weeklyBookings = Number.isFinite(wbParsed) && wbParsed >= 0 ? wbParsed : 8;
-
-  const bookedThroughDate =
-    process.env.NEXT_PUBLIC_PORTAL_BOOKED_THROUGH_DATE?.trim() || 'early November';
-
-  return { weeklyBookings, bookedThroughDate };
-}
-
 function deriveFirstName(fullName: string | null): string {
   if (!fullName) return 'there';
   const [first] = fullName.trim().split(/\s+/);
@@ -489,7 +472,6 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     : isEvent
       ? derivePackagesEvent(lineItems, row.result)
       : derivePackages(lineItems, row.result, roofline);
-  const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
@@ -564,11 +546,6 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
         ? row.inputs.installTiming
         : 'none',
-    weeklyBookings,
-    seasonCapacity: {
-      installedThisWeek: weeklyBookings,
-      bookedThroughDate,
-    },
     approval,
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.

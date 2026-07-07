@@ -559,42 +559,6 @@ export async function recordWriteback(itemId: string, sync: unknown): Promise<vo
   await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
 }
 
-export type FollowedItem = {
-  id: string;
-  source: InboxSource;
-  channel: string | null;
-  preview: string | null;
-  followedUpAt: string | null;
-  customerName: string | null;
-};
-export type FollowedItemsResult = { ok: true; items: FollowedItem[] } | { ok: false; error: string };
-
-export async function listFollowedItems(limit = 100): Promise<FollowedItemsResult> {
-  const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
-    .from('inbox_items')
-    .select('id, source, channel, preview, followed_up_at, dashboard_contacts ( display_name )')
-    .not('followed_up_at', 'is', null)
-    .neq('status', 'dismissed')
-    .order('followed_up_at', { ascending: false })
-    .limit(limit);
-  if (error) return { ok: false, error: error.message };
-  const items: FollowedItem[] = (data ?? []).map((r) => {
-    const row = r as unknown as Record<string, unknown>;
-    const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
-    return {
-      id: String(row.id),
-      source: row.source as InboxSource,
-      channel: (row.channel as string | null) ?? null,
-      preview: (row.preview as string | null) ?? null,
-      followedUpAt: (row.followed_up_at as string | null) ?? null,
-      customerName: (c?.display_name as string | null) ?? null,
-    };
-  });
-  return { ok: true, items };
-}
-
 // ─── Escalation support ─────────────────────────────────────────────────────
 
 export type EscalatableItem = {
@@ -968,22 +932,6 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
     awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
     handled: mapInWorksRow(hd.data ?? [], 'handled_at'),
   };
-}
-
-export type CompletedResult = { ok: true; items: InWorksItem[] } | { ok: false; error: string };
-
-/** Recent completed items, newest-first, for the Completed tab. */
-export async function listCompleted(limit = 200): Promise<CompletedResult> {
-  const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
-    .from('inbox_items')
-    .select(IN_WORKS_SELECT)
-    .eq('status', 'completed')
-    .order('handled_at', { ascending: false })
-    .limit(limit);
-  if (error) return { ok: false, error: error.message };
-  return { ok: true, items: mapInWorksRow(data ?? [], 'handled_at') };
 }
 
 /** Mark an item completed: capture prior state, stamp status + handled fields,

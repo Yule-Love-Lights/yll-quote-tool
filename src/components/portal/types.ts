@@ -243,11 +243,6 @@ export type PortalQuote = {
   // Staff-set early-install promo (#40): seeds the customer's portal timing so
   // they see the Sep/Oct discount pre-applied. 'none'/undefined = no promo set.
   installTiming?: InstallTiming;
-  weeklyBookings: number;    // real scarcity — pulled from DB in production
-  seasonCapacity: {
-    installedThisWeek: number;
-    bookedThroughDate: string; // human-readable: "early November"
-  };
   // Set ONLY after the customer clicks Approve. Undefined while the
   // quote is still awaiting customer action — the approved page uses
   // its absence as the signal to 404 (prevents anyone from previewing

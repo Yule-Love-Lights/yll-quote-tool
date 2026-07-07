@@ -449,21 +449,6 @@ export async function getCustomer(id: string): Promise<CustomerRow | null> {
   return (data as CustomerRow | null) ?? null;
 }
 
-export async function listCustomers(limit = 500): Promise<CustomerRow[]> {
-  const sb = svc();
-  if (!sb) return [];
-  const { data, error } = await sb
-    .from('customers')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) {
-    console.error('listCustomers error:', error);
-    return [];
-  }
-  return (data ?? []) as CustomerRow[];
-}
-
 export async function getPropertiesForCustomer(customerId: string): Promise<PropertyRow[]> {
   const sb = svc();
   if (!sb) return [];

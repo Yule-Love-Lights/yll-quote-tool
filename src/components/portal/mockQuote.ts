@@ -111,11 +111,6 @@ export const MOCK_QUOTE: PortalQuote = {
   },
   // Mock items total well over $1,000, so the $1,000 approval gate is active.
   minimumOrderSubtotal: 1000,
-  weeklyBookings: 12,
-  seasonCapacity: {
-    installedThisWeek: 12,
-    bookedThroughDate: 'early November',
-  },
 };
 
 // Gallery — REAL Yule Love Lights installs (public/references/*).
