@@ -6,6 +6,7 @@ import {
   seedSceneFromAnalysis,
   analysisSeedHasContent,
   countSeededGarlandUnestimated,
+  makeDefaultYardstick,
   type AnalysisSeed,
 } from './design/seedFromAnalysis';
 
@@ -176,6 +177,13 @@ export async function createDesign(opts: {
   seedLines?: RooflineSeedLines | null;
   /** Full bridge auto-design payload (#35 Phase 2): roofline lines + per-unit detections. */
   seedAnalysis?: AnalysisSeed | null;
+  /**
+   * #88 permanent: seed a DEFAULT (uncalibrated) scale yardstick — permanent has
+   * no analyzer to derive real px/ft, so the operator sizes it by hand (parity
+   * with the holiday auto-yardstick, minus the AI calibration). Ignored when an
+   * analysis seed is present (that path seeds its own calibrated yardstick).
+   */
+  seedDefaultYardstick?: boolean;
   /** Actor audit trail (#90): the operator's Supabase user id, or null. */
   createdBy?: string | null;
 }): Promise<{ id: string; garlandSectionsUnestimated: number; seedFailed: boolean } | null> {
@@ -224,6 +232,15 @@ export async function createDesign(opts: {
         // #90: surface garland runs seeded with no scale so the builder can warn
         // staff to set their section counts (silent fallback to 1 = under-bill).
         garlandSectionsUnestimated = countSeededGarlandUnestimated(seed, scene, photo.width, photo.height);
+      } else if (opts.seedDefaultYardstick && photo.width > 0 && photo.height > 0) {
+        // #88 permanent: no analysis seed, so drop a default (uncalibrated) 5 ft
+        // yardstick the operator sizes by hand — the design is born with a
+        // yardstick instead of an empty canvas (parity with holiday's pull).
+        const scene: DesignScene = {
+          ...newDesignScene(),
+          yardsticks: [makeDefaultYardstick(photo.width, photo.height)],
+        };
+        await updateDesignScene(id, scene);
       }
     } catch (err) {
       // A failed photo/roofline seed isn't fatal — the design still exists and

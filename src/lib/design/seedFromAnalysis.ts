@@ -81,6 +81,30 @@ const SEED_PREFIX = 'seed-';
 // measuring dimension (pxPerFoot = width / realFeet — see
 // editor-core/yardstick.ts); height is cosmetic.
 const YARDSTICK_REAL_FEET = 5;
+// The permanent DEFAULT (uncalibrated) yardstick labels 10 ft (Jason, S23) — its
+// own constant so it doesn't move the holiday calibrated seed above.
+const PERMANENT_DEFAULT_YARDSTICK_FEET = 10;
+
+/**
+ * A DEFAULT (uncalibrated) scale yardstick for a design that has NO analyzer to
+ * derive real px/ft from — permanent quotes (#88). Parity with the holiday
+ * auto-yardstick (same `seed-` id, same lower-left corner position) MINUS the AI
+ * calibration: it labels 10 ft (Jason's pick) and the width is a fixed FRACTION
+ * of the photo (a visible, proportional handle), so the operator sizes it against
+ * a known object (garage door ≈ 16 ft, etc.). The `seed-` id keeps "staff
+ * calibration wins" intact — a hand-dropped yardstick (non-seed id) supersedes it.
+ */
+export function makeDefaultYardstick(photoW: number, photoH: number): Yardstick {
+  const width = round2(photoW * 0.15);
+  return {
+    id: `${SEED_PREFIX}yardstick-1`,
+    realFeet: PERMANENT_DEFAULT_YARDSTICK_FEET,
+    x: round2(photoW * 0.04),
+    y: round2(photoH * 0.74),
+    width,
+    height: round2(width * 0.45), // cosmetic — only width measures
+  };
+}
 // Plausibility bounds for a derived pixels-per-foot — outside this range the
 // calibration inputs are garbage (degenerate line, absurd footage).
 const MIN_PPF = 2;
