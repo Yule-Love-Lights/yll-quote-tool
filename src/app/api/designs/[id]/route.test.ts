@@ -137,10 +137,20 @@ describe('PUT /api/designs/[id]', () => {
     expect(updateDesignScene).not.toHaveBeenCalled();
   });
 
-  it('400s a malformed satelliteLines', async () => {
-    const res = await PUT(makeReq({ satelliteLines: { santas: [] } }), ctx()); // missing gingerbread/c9
-    expect(res.status).toBe(400);
+  it('400s a malformed satelliteLines (no array channel / a non-array channel)', async () => {
+    // #88/S23: channels are independent (holiday sends santas/gingerbread/c9;
+    // permanent sends front/left/right/back) — validation rejects a body with no
+    // array channel or a channel of the wrong type.
+    expect((await PUT(makeReq({ satelliteLines: { santas: 'nope' } }), ctx())).status).toBe(400);
+    expect((await PUT(makeReq({ satelliteLines: {} }), ctx())).status).toBe(400);
     expect(updateDesignSatelliteLines).not.toHaveBeenCalled();
+  });
+
+  it('saves permanent side-only satelliteLines (front/left/right/back)', async () => {
+    const permLines = { front: [{ points: [[0.1, 0.5], [0.9, 0.5]], label: 'Front roofline' }], left: [], right: [], back: [] };
+    const res = await PUT(makeReq({ satelliteLines: permLines }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSatelliteLines).toHaveBeenCalledWith(VALID_ID, permLines);
   });
 
   it('400s an invalid quoteId', async () => {

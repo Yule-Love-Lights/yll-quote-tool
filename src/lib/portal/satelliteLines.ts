@@ -7,7 +7,7 @@
 import type { PortalSatelliteLine, PortalSatelliteLines } from '@/components/portal/types';
 
 export type SatelliteLineGroup = {
-  key: 'santas' | 'gingerbread' | 'c9' | 'stake';
+  key: 'santas' | 'gingerbread' | 'c9' | 'stake' | 'front' | 'left' | 'right' | 'back';
   color: string;
   label: string;
   lines: PortalSatelliteLine[];
@@ -29,6 +29,11 @@ export function selectDrawableLineGroups(
     { key: 'gingerbread', color: '#3b82f6', label: labelOverrides?.gingerbread ?? 'Gingerbread', lines: lines.gingerbread ?? [] },
     { key: 'c9', color: '#10b981', label: labelOverrides?.c9 ?? 'C9 roofline', lines: lines.c9 ?? [] },
     { key: 'stake', color: '#a855f7', label: labelOverrides?.stake ?? 'Stake Lighting', lines: lines.stake ?? [] },
+    // Permanent Lighting (#88 / S23) — the four house sides, each its own color.
+    { key: 'front', color: '#ef4444', label: labelOverrides?.front ?? 'Front of House', lines: lines.front ?? [] },
+    { key: 'left', color: '#3b82f6', label: labelOverrides?.left ?? 'Left Side', lines: lines.left ?? [] },
+    { key: 'right', color: '#f59e0b', label: labelOverrides?.right ?? 'Right Side', lines: lines.right ?? [] },
+    { key: 'back', color: '#a855f7', label: labelOverrides?.back ?? 'Back of House', lines: lines.back ?? [] },
   ];
   const allowedSet = allowedKeys ? new Set(allowedKeys) : null;
   return groups
@@ -37,22 +42,14 @@ export function selectDrawableLineGroups(
     .filter((g) => g.lines.length > 0);
 }
 
-// Permanent Lighting (#88) fix: the satellite trace data (santas/gingerbread/
-// c9/stake) is captured once during the HOLIDAY roofline flow and is
-// INDEPENDENT of which permanent strands the customer actually bought — so on
-// a permanent quote the raw groups can show a roofline that was never
-// installed (e.g. a front-only permanent job still drawing the holiday
-// "Gingerbread" ridge/sides line). This maps the permanent line items that
-// are actually BILLED on the quote to the satellite group(s) that correspond
-// to the same surface, so the customer only ever sees lines for what they're
-// getting. 'permanent-back' has no satellite equivalent (no group to show).
-// Pure + holiday/event untouched (only called for serviceType === 'permanent').
-export function permanentAllowedSatelliteKeys(
-  lineItemIds: string[],
-): SatelliteLineGroup['key'][] {
-  const idSet = new Set(lineItemIds);
-  const keys: SatelliteLineGroup['key'][] = [];
-  if (idSet.has('permanent-front')) keys.push('santas');
-  if (idSet.has('permanent-sides')) keys.push('gingerbread');
-  return keys;
-}
+// The permanent satellite trace uses its OWN four side channels (#88 / S23): the
+// operator draws front/left/right/back on the satellite and those persist + draw
+// on the portal. Any side with no drawn line is hidden by selectDrawableLineGroups,
+// so passing all four is safe — only what was traced shows. (Replaced the earlier
+// approach of reusing the holiday santas/gingerbread channels for permanent.)
+export const PERMANENT_SIDE_SATELLITE_KEYS: SatelliteLineGroup['key'][] = [
+  'front',
+  'left',
+  'right',
+  'back',
+];

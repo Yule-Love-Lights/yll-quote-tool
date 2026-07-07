@@ -40,15 +40,13 @@ function isSceneShape(v: unknown): v is DesignScene {
 function isSatelliteLinesShape(v: unknown): v is DesignSatelliteLines {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
-  // `stake` (Stake Lighting) is OPTIONAL — kept tolerant so designs/clients
-  // saved before Stake Lighting (no stake key) still validate; only its type is
-  // checked when present.
-  return (
-    Array.isArray(o.santas) &&
-    Array.isArray(o.gingerbread) &&
-    Array.isArray(o.c9) &&
-    (o.stake === undefined || Array.isArray(o.stake))
-  );
+  // Every channel is checked ONLY when present (type-tolerant): holiday sends
+  // santas/gingerbread/c9; permanent (#88/S23) sends front/left/right/back; a
+  // client from before either still validates. At least one line channel must
+  // be an array so a truly empty/garbage body is still rejected.
+  const optArr = (x: unknown) => x === undefined || Array.isArray(x);
+  const channels = [o.santas, o.gingerbread, o.c9, o.stake, o.front, o.left, o.right, o.back];
+  return channels.every(optArr) && channels.some((c) => Array.isArray(c));
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -104,7 +102,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   if (satelliteLines !== undefined && !isSatelliteLinesShape(satelliteLines)) {
     return NextResponse.json(
-      { error: 'satelliteLines must be an object with santas[]/gingerbread[]/c9[] (and optional stake[]) line arrays' },
+      { error: 'satelliteLines must be an object with line arrays for at least one channel (santas/gingerbread/c9/stake or front/left/right/back)' },
       { status: 400 },
     );
   }

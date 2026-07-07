@@ -33,6 +33,7 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -199,6 +200,19 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   }
   return total;
 }
+
+// Permanent Lighting (#88 / S23): the four house sides traced on the satellite
+// view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
+const PERMANENT_SIDES = ['front', 'left', 'right', 'back'] as const;
+type PermanentSideKey = (typeof PERMANENT_SIDES)[number];
+const PERMANENT_SIDE_META: Record<PermanentSideKey, { label: string; color: string }> = {
+  front: { label: 'Front', color: '#ef4444' },
+  left: { label: 'Left', color: '#3b82f6' },
+  right: { label: 'Right', color: '#f59e0b' },
+  back: { label: 'Back', color: '#a855f7' },
+};
+const isPermanentSide = (t: string): t is PermanentSideKey =>
+  (PERMANENT_SIDES as readonly string[]).includes(t);
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -624,6 +638,17 @@ export default function QuoteBuilder({
   const [satelliteGingerbreadLines, setSatelliteGingerbreadLines] = useState<LineSegment[]>([]);
   const [satelliteC9Lines, setSatelliteC9Lines] = useState<LineSegment[]>([]);
   const [satelliteStakeLines, setSatelliteStakeLines] = useState<LineSegment[]>([]);
+  // Permanent Lighting (#88 / S23): the four house-side rooflines traced on the
+  // satellite view. Each feeds its side's footage (× feet-per-pixel) + corners
+  // (vertex count) into form.permanent, and persists to the design for the portal.
+  const [permanentSatLines, setPermanentSatLines] = useState<Record<PermanentSideKey, LineSegment[]>>({
+    front: [], left: [], right: [], back: [],
+  });
+  // Tracks whether each side had lines on the previous derive so removing the
+  // last run resets that side's footage/corners (mirrors hadC9LinesRef below).
+  const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
+    front: false, left: false, right: false, back: false,
+  });
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -635,7 +660,7 @@ export default function QuoteBuilder({
   const [viewMode, setViewMode] = useState<'design' | 'satellite'>('design');
 
   // Drag state for editing satellite polyline points
-  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake';
+  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake' | PermanentSideKey;
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
@@ -712,16 +737,55 @@ export default function QuoteBuilder({
 
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
-  const getSetter = (type: LineType) => {
+  const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
     if (type === 'santas') return setSatelliteSantasLines;
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
     if (type === 'stake') return setSatelliteStakeLines;
+    if (isPermanentSide(type)) {
+      return (updater) => setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
+    }
     return setSatelliteC9Lines;
   };
   const activeSantasLines = satelliteSantasLines;
   const activeGingerbreadLines = satelliteGingerbreadLines;
   const activeC9Lines = satelliteC9Lines;
   const activeStakeLines = satelliteStakeLines;
+
+  // Permanent Lighting (#88 / S23): derive each side's footage + corners from its
+  // satellite trace → form.permanent. Footage needs the satellite scale (address
+  // pulls have it); corners are scale-free. A side with no lines this session is
+  // left alone (a manual/persisted value wins); removing the last run resets it
+  // to 0. Mirrors the holiday hadRef reset pattern above.
+  useEffect(() => {
+    if (form.serviceType !== 'permanent') return;
+    const t = {} as Record<PermanentSideKey, { footage: number | null; corners: number | null }>;
+    for (const side of PERMANENT_SIDES) {
+      const lines = permanentSatLines[side];
+      const has = lines.length > 0;
+      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      t[side] = {
+        footage: has ? m.footage : hadPermLinesRef.current[side] ? 0 : null,
+        corners: has ? m.corners : hadPermLinesRef.current[side] ? 0 : null,
+      };
+      hadPermLinesRef.current[side] = has;
+    }
+    queueMicrotask(() =>
+      setForm((f) => {
+        if (f.serviceType !== 'permanent') return f;
+        const p = f.permanent;
+        let n = p;
+        if (t.front.footage != null && n.frontFootage !== t.front.footage) n = { ...n, frontFootage: t.front.footage };
+        if (t.front.corners != null && n.frontCorners !== t.front.corners) n = { ...n, frontCorners: t.front.corners };
+        if (t.left.footage != null && n.leftFootage !== t.left.footage) n = { ...n, leftFootage: t.left.footage };
+        if (t.left.corners != null && n.leftCorners !== t.left.corners) n = { ...n, leftCorners: t.left.corners };
+        if (t.right.footage != null && n.rightFootage !== t.right.footage) n = { ...n, rightFootage: t.right.footage };
+        if (t.right.corners != null && n.rightCorners !== t.right.corners) n = { ...n, rightCorners: t.right.corners };
+        if (t.back.footage != null && n.backFootage !== t.back.footage) n = { ...n, backFootage: t.back.footage };
+        if (t.back.corners != null && n.backCorners !== t.back.corners) n = { ...n, backCorners: t.back.corners };
+        return n === p ? f : { ...f, permanent: n };
+      }),
+    );
+  }, [permanentSatLines, satelliteFeetPerPixel, satelliteAspect, form.serviceType]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -781,7 +845,8 @@ export default function QuoteBuilder({
     }
     const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
+        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -1617,23 +1682,32 @@ export default function QuoteBuilder({
       // design (#8 Stage A) — Calculate is the "measurement finalized"
       // moment. Only when a satellite session is actually active: a reopened
       // quote with no satellite state must NOT clobber stored lines.
-      const satelliteActive =
+      const holidaySatelliteActive =
         satellitePreview != null &&
         (satelliteSantasLines.length > 0 || satelliteGingerbreadLines.length > 0 || satelliteC9Lines.length > 0 || satelliteStakeLines.length > 0);
-      if (designId && satelliteActive) {
-        void fetch(`/api/designs/${designId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            satelliteLines: {
+      // Permanent (#88/S23): persist the four side traces so the portal draws them.
+      const permanentSatelliteActive =
+        form.serviceType === 'permanent' && PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+      if (designId && (holidaySatelliteActive || permanentSatelliteActive)) {
+        const satelliteLines = permanentSatelliteActive
+          ? {
+              front: permanentSatLines.front,
+              left: permanentSatLines.left,
+              right: permanentSatLines.right,
+              back: permanentSatLines.back,
+            }
+          : {
               santas: satelliteSantasLines,
               gingerbread: satelliteGingerbreadLines,
               c9: satelliteC9Lines,
               stake: satelliteStakeLines,
               ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
               ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
-            },
-          }),
+            };
+        void fetch(`/api/designs/${designId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ satelliteLines }),
         }).catch(() => {});
       }
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
@@ -2424,11 +2498,25 @@ export default function QuoteBuilder({
                             vectorEffect="non-scaling-stroke"
                           />
                         ))}
+                        {form.serviceType === 'permanent' && PERMANENT_SIDES.flatMap((side) =>
+                          permanentSatLines[side].map((line, i) => (
+                            <polyline
+                              key={`perm-${side}-${i}`}
+                              points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                              fill="none"
+                              stroke={PERMANENT_SIDE_META[side].color}
+                              strokeWidth="4"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          )),
+                        )}
                         {pendingPoints.length > 0 && (
                           <polyline
                             points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                             fill="none"
-                            stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
+                            stroke={isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
                             strokeWidth="3"
                             strokeDasharray="6 4"
                             vectorEffect="non-scaling-stroke"
@@ -2476,26 +2564,103 @@ export default function QuoteBuilder({
                           title="Drag to move • Double-click to delete"
                         />
                       )))}
+                      {!addMode && form.serviceType === 'permanent' && PERMANENT_SIDES.flatMap((side) =>
+                        permanentSatLines[side].flatMap((line, li) => line.points.map(([x, y], pi) => (
+                          <div
+                            key={`perm-h-${side}-${li}-${pi}`}
+                            className="absolute w-5 h-5 rounded-full border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                            style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)`, backgroundColor: PERMANENT_SIDE_META[side].color }}
+                            onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: side, lineIdx: li, ptIdx: pi }); }}
+                            onDoubleClick={() => deletePoint(side, li, pi)}
+                            title="Drag to move • Double-click to delete"
+                          />
+                        ))),
+                      )}
                       {pendingPoints.map(([x, y], i) => (
                         <div
                           key={`pp-${i}`}
-                          className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : addMode === 'stake' ? 'bg-purple-500' : 'bg-emerald-500'} border-2 border-white shadow`}
-                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
+                          className="absolute w-3 h-3 rounded-full border-2 border-white shadow"
+                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)`, backgroundColor: isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981' }}
                         />
                       ))}
                     </div>
                     </div>
 
-                    {/* #88: the holiday roofline satellite measurement (Front
-                        Gutterline / Ridge + Sides polylines) does not apply to
-                        permanent — it measures front/left/right/back by eye and
-                        enters them in the Permanent section, or draws + Refreshes. */}
+                    {/* #88 / S23: permanent measures its four sides HERE — draw each
+                        side's roofline on the satellite and it feeds that side's
+                        footage (× Google's scale) + corners (vertex count) into the
+                        Permanent section, and persists to the design for the portal. */}
                     {form.serviceType === 'permanent' ? (
-                      <p className="mt-3 text-sm text-gray-500">
-                        Measure the left, right, and back rooflines off this satellite view and enter each
-                        side&apos;s footage in the Permanent section below. (Or draw the runs on the design and
-                        use Refresh from design.)
-                      </p>
+                      <>
+                        <p className="mt-3 text-sm text-gray-500">
+                          Draw each roofline on the satellite view by side. Footage &amp; corners fill in
+                          automatically below.
+                          {satelliteFeetPerPixel == null && (
+                            <span className="text-amber-600">
+                              {' '}No satellite scale on this photo — corners still count, but type each
+                              side&apos;s footage by hand.
+                            </span>
+                          )}
+                        </p>
+                        {addMode ? (
+                          <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
+                            <span className="text-sm text-yellow-900">
+                              Adding new {isPermanentSide(addMode) ? PERMANENT_SIDE_META[addMode].label : ''} roofline
+                              — click on the photo to add points ({pendingPoints.length} placed).
+                            </span>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
+                                className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
+                                Done
+                              </button>
+                              <button type="button" onClick={cancelAdd}
+                                className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {PERMANENT_SIDES.map((side) => (
+                              <button key={side} type="button"
+                                onClick={() => { setAddMode(side); setPendingPoints([]); }}
+                                className="text-xs font-medium border rounded px-3 py-1.5 hover:opacity-70"
+                                style={{ color: PERMANENT_SIDE_META[side].color, borderColor: PERMANENT_SIDE_META[side].color }}>
+                                + Add {PERMANENT_SIDE_META[side].label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {PERMANENT_SIDES.map((side) => {
+                            const lines = permanentSatLines[side];
+                            const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+                            return (
+                              <div key={side}>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="w-4 h-1 rounded" style={{ backgroundColor: PERMANENT_SIDE_META[side].color }}></span>
+                                  <span className="text-sm font-semibold text-gray-800">
+                                    {PERMANENT_SIDE_META[side].label} — {m.footage != null ? `${m.footage}ft` : '—'} · {m.corners} corner{m.corners === 1 ? '' : 's'}
+                                  </span>
+                                </div>
+                                {lines.length > 0 ? (
+                                  <ul className="space-y-1 ml-6">
+                                    {lines.map((line, i) => (
+                                      <li key={`${side}-${i}`} className="flex items-center gap-2 text-xs">
+                                        <span className="flex-1 text-gray-500">Run {i + 1} — {line.points.length} pts</span>
+                                        <button type="button" onClick={() => deleteLine(side, i)}
+                                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-xs text-gray-400 ml-6">No runs drawn</p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
                     ) : (
                     <>
                     {/* Add-line controls */}
@@ -2708,7 +2873,7 @@ export default function QuoteBuilder({
               replacing the holiday item sections. Holiday item sections are hidden
               for permanent so the operator can't enter Christmas footage on it. */}
           {form.serviceType === 'permanent' && (
-            <PermanentSection form={form} setForm={setForm} designId={designId} />
+            <PermanentSection form={form} setForm={setForm} />
           )}
 
           {form.serviceType !== 'permanent' && (

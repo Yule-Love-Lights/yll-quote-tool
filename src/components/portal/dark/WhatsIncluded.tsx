@@ -15,7 +15,7 @@ import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
-import { selectDrawableLineGroups, permanentAllowedSatelliteKeys } from '@/lib/portal/satelliteLines';
+import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS } from '@/lib/portal/satelliteLines';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -180,17 +180,12 @@ export type WhatsIncludedProps = {
 
 export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
   const isEvent = serviceType === 'event';
-  // Permanent Lighting (#88) fix: the satellite trace is captured during the
-  // holiday roofline flow, independent of which permanent strands were sold —
-  // restrict the drawn/legend groups to the surfaces actually billed on this
-  // quote. undefined for holiday/event so their satellite view is unchanged.
+  // Permanent Lighting (#88 / S23): permanent traces its own four side rooflines
+  // on the satellite (front/left/right/back), each already labeled + colored by
+  // selectDrawableLineGroups. Show all four — a side with no drawn line self-hides.
+  // undefined for holiday/event so their satellite view is unchanged.
   const allowedSatelliteKeys =
-    serviceType === 'permanent' ? permanentAllowedSatelliteKeys(items.map((li) => li.id)) : undefined;
-  // Satellite legend label fix: "Santa Roofline"/"Gingerbread" are holiday
-  // terms — on a permanent quote the legend should read "Front of House"/"Sides"
-  // instead. undefined for holiday/event so their legend is unchanged.
-  const satelliteLabelOverrides =
-    serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
+    serviceType === 'permanent' ? PERMANENT_SIDE_SATELLITE_KEYS : undefined;
   const {
     isItemSelected,
     toggleItem,
@@ -319,7 +314,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             data, the lit render stays full-width on its own. */}
         {design &&
           (!!design.satelliteUrl &&
-          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys, satelliteLabelOverrides).length > 0 ? (
+          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys).length > 0 ? (
             <div
               className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
@@ -331,7 +326,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
                 <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
-                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
+                <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} />
               </div>
             </div>
           ) : (
