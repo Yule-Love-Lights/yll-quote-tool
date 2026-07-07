@@ -32,8 +32,6 @@ import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
-import type { PermanentPhotoAnalysisResult } from '@/lib/permanent/photoAnalysis';
-import type { PermanentGap } from '@/lib/permanent/types';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -1069,10 +1067,8 @@ export default function QuoteBuilder({
     formattedAddress?: string;
     lat?: number;
     lng?: number;
-    // #88: the permanent analyzer's roofline measurement (front from street,
-    // sides/back from satellite, plus gaps). Null when the analyzer was down —
-    // permanentImageryOnly is then true and the operator measures manually.
-    permanentResult?: PermanentPhotoAnalysisResult | null;
+    // #88: permanent address lookup returns imagery only (Street View + satellite
+    // + scale) with no holiday analysis/seed — the operator draws the roofline.
     permanentImageryOnly?: boolean;
     fewShotCount?: number;
     fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
@@ -1171,64 +1167,6 @@ export default function QuoteBuilder({
     setFewShotRanking(data.fewShotBreakdown?.ranking ?? 'recency');
   };
 
-  // #88: fill the Permanent section from the permanent analyzer. Front comes from
-  // the STREET measurement; left/right/back from the SATELLITE (the street can't
-  // see them), falling back to street when no satellite came back. Values are
-  // marked 'manual' so a later "Refresh from design" (which only knows the front)
-  // can't wipe the AI's side/back numbers — the operator can still redraw the
-  // front and Refresh to override it. Gaps with a derivable length pre-fill the
-  // BOM extension rows; the design canvas opens with the house for a visual check.
-  const applyPermanentAnalysis = (data: AnalysisResponse) => {
-    const r = data.permanentResult;
-    if (!r) return;
-    const hasSat = data.satelliteBase64 != null;
-    const clampFt = (n: number) => Math.max(0, Math.round(Number.isFinite(n) ? n : 0));
-    const sideFt = hasSat ? r.satelliteFeetBySide : r.feetBySide;
-    const sideCorners = hasSat ? r.satelliteCornersBySide : r.cornersBySide;
-    // Partition gaps by side like the footage above, so a front break visible in
-    // BOTH the street and satellite images isn't counted twice: front gaps from
-    // the street pass, left/right/back gaps from the satellite pass (street-only
-    // when no satellite came back).
-    const gapSrc = hasSat
-      ? [
-          ...(r.gapCandidates ?? []).filter((g) => g.side === 'front'),
-          ...(r.satelliteGapCandidates ?? []).filter((g) => g.side !== 'front'),
-        ]
-      : (r.gapCandidates ?? []);
-    const autoGaps: PermanentGap[] = gapSrc
-      .filter((g) => typeof g.lengthFt === 'number' && (g.lengthFt as number) > 0)
-      .map((g) => ({ lengthFt: Math.round(g.lengthFt as number), detectedFt: Math.round(g.lengthFt as number), source: 'auto' as const }));
-    setForm((f) => ({
-      ...f,
-      permanent: {
-        ...f.permanent,
-        frontFootage: clampFt(r.feetBySide.front),
-        frontCorners: clampFt(r.cornersBySide.front),
-        leftFootage: clampFt(sideFt.left),
-        leftCorners: clampFt(sideCorners.left),
-        rightFootage: clampFt(sideFt.right),
-        rightCorners: clampFt(sideCorners.right),
-        backFootage: clampFt(sideFt.back),
-        backCorners: clampFt(sideCorners.back),
-        gaps: [...autoGaps, ...f.permanent.gaps.filter((g) => g.source === 'manual')],
-        sideSource: {
-          front: 'manual' as const,
-          left: 'manual' as const,
-          right: 'manual' as const,
-          back: 'manual' as const,
-        },
-      },
-    }));
-    setPhotoBase64(data.photoBase64 ?? null);
-    setPhotoMediaType(data.photoMediaType ?? null);
-    if (data.satelliteFeetPerPixel != null) setSatelliteFeetPerPixel(data.satelliteFeetPerPixel);
-    setFewShotCount(0);
-    setViewMode('design');
-    setAnalysisNotes(
-      `Permanent roofline measured (confidence: ${r.confidence}). ${r.notes} Review each side in the Permanent section and adjust before quoting.`,
-    );
-  };
-
   const handleLookupAddress = async () => {
     const addr = form.customer.address.trim();
     if (!addr) {
@@ -1262,8 +1200,6 @@ export default function QuoteBuilder({
       setSvFov(80);
       if (data.result) {
         applyAnalysisResult(data);
-      } else if (data.permanentResult) {
-        applyPermanentAnalysis(data);
       } else {
         // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
         // holiday analyzer by design) or the fail-safe (analyzer down). The street
@@ -1274,12 +1210,8 @@ export default function QuoteBuilder({
         setFewShotCount(0);
         setViewMode('design');
         if (data.permanentImageryOnly) {
-          // permanentImageryOnly here means the permanent analyzer THREW (it never
-          // returns null on success), so surface it as a WARNING, not a green
-          // "measured" note — nothing was actually measured.
-          setAnalysisWarning(
-            data.analysisError ??
-              'The permanent auto-measure is temporarily unavailable. Your photos are loaded; measure the roofline manually.',
+          setAnalysisNotes(
+            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
           );
         } else {
           setAnalysisWarning(
@@ -1302,39 +1234,32 @@ export default function QuoteBuilder({
     // santas/gingerbread roofline drawn) so the operator draws the permanent
     // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
     if (form.serviceType === 'permanent') {
-      // Permanent runs its OWN analyzer server-side (roofline gutter line, no
-      // ridges/peaks, gap detection). A manual upload has no satellite, so only
-      // the front is auto-measured; the operator enters left/right/back off the
-      // satellite tab. Analyzer down → the photo still loads for manual design.
-      setAnalyzing(true);
+      // Read the base64 from the File itself — photoPreview is a blob: object URL
+      // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
+      const base64 = await new Promise<string | null>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const s = typeof r.result === 'string' ? r.result : '';
+          const comma = s.indexOf(',');
+          resolve(comma >= 0 ? s.slice(comma + 1) : null);
+        };
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(photoFile);
+      });
+      if (!base64) {
+        setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
+      pendingSeedRef.current = null;
       setAnalysisError(null);
       setAnalysisWarning(null);
-      setAnalysisNotes(null);
-      try {
-        const fd = new FormData();
-        fd.append('photo', photoFile);
-        fd.append('serviceType', 'permanent');
-        const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-        if (data.permanentResult) {
-          applyPermanentAnalysis(data);
-        } else {
-          pendingSeedRef.current = null;
-          setPhotoBase64(data.photoBase64 ?? null);
-          setPhotoMediaType(data.photoMediaType ?? null);
-          setFewShotCount(0);
-          setViewMode('design');
-          setAnalysisWarning(
-            data.analysisError ??
-              'The permanent auto-measure is temporarily unavailable. Your photo is loaded; measure the roofline manually.',
-          );
-        }
-      } catch (err) {
-        setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
-      } finally {
-        setAnalyzing(false);
-      }
+      setPhotoBase64(base64);
+      setPhotoMediaType(photoFile.type || 'image/jpeg');
+      setFewShotCount(0);
+      setViewMode('design');
+      setAnalysisNotes(
+        'Photo loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+      );
       return;
     }
     setAnalyzing(true);
@@ -2071,7 +1996,7 @@ export default function QuoteBuilder({
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
-                ? 'Look up the address (or upload a photo). The permanent analyzer measures the roofline (front from Street View, sides and back from the satellite) and fills the Permanent section. Review each side and adjust before quoting.'
+                ? 'Upload the house photo (or look it up on Google Maps) so the design canvas opens with the house. Permanent lighting is measured from the design and satellite, not the holiday auto-measure. Draw each roofline run, tag its side, then Refresh from design in the Permanent section.'
                 : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
@@ -2091,7 +2016,7 @@ export default function QuoteBuilder({
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
-                  ? 'Uses the Property Address above. Measures the front from Street View and the sides/back from the satellite (permanent roofline only, no ridges).'
+                  ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
                   : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
@@ -2139,7 +2064,7 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2173,7 +2098,7 @@ export default function QuoteBuilder({
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
                     {form.serviceType === 'permanent'
-                      ? 'Permanent roofline measured. Review each side below.'
+                      ? 'Photo loaded for the design canvas.'
                       : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">

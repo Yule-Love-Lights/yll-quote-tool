@@ -3,7 +3,6 @@ import { isClaudeConfigured } from '@/lib/claude';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
-import { analyzePermanentPhoto } from '@/lib/permanent/photoAnalysis';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -52,29 +51,6 @@ export async function POST(req: NextRequest) {
 
   const arrayBuffer = await file.arrayBuffer();
   const base64 = Buffer.from(arrayBuffer).toString('base64');
-
-  // #88: a permanent quote runs the PERMANENT analyzer (roofline gutter line on
-  // all sides, no ridges/peaks, gap detection), not the holiday one. A manual
-  // upload has no satellite, so only the front is reliably measured; the operator
-  // enters left/right/back off the satellite tab. FAIL-SAFE mirrors below.
-  if (formData.get('serviceType') === 'permanent') {
-    let permanentResult = null;
-    let permanentError: string | undefined;
-    try {
-      permanentResult = await analyzePermanentPhoto(base64, mediaType);
-    } catch (err) {
-      console.error('[api/analyze-photo] permanent analysis failed:', err);
-      permanentError = 'The permanent auto-measure is temporarily unavailable. Your photo is loaded; measure the roofline manually.';
-    }
-    return NextResponse.json({
-      result: null,
-      permanentResult,
-      permanentImageryOnly: permanentResult == null,
-      analysisError: permanentError,
-      photoBase64: base64,
-      photoMediaType: mediaType,
-    });
-  }
 
   // FAIL-SAFE (analyzer outage): if Claude is down we still return the uploaded
   // photo with result: null so the client loads it for manual design — the staff

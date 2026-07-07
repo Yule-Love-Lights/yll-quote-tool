@@ -3,7 +3,6 @@ import { isClaudeConfigured } from '@/lib/claude';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
-import { analyzePermanentPhoto } from '@/lib/permanent/photoAnalysis';
 import {
   isGoogleMapsConfigured,
   getCachedAddressImagery,
@@ -75,31 +74,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── #88: permanent lighting uses its OWN analyzer (roofline gutter line on
-  // front/left/right/back, no ridges/peaks, plus gap detection), NOT the holiday
-  // santas/gingerbread analyzer. Front comes from the street view, sides/back
-  // from the satellite. FAIL-SAFE: if the analyzer is down we still return the
-  // imagery (permanentImageryOnly) so the operator can measure manually.
+  // ── #88: permanent lighting does NOT use the holiday roofline analyzer (it
+  // hunts ridges + a santas/gingerbread split that don't apply to puck-on-track).
+  // Return the imagery ONLY so the operator draws the permanent roofline on the
+  // real photo + scaled satellite; the permanent-specific analyzer is wired in a
+  // later phase. No Anthropic call, no holiday seed.
   if (body.serviceType === 'permanent') {
-    let permanentResult = null;
-    let permanentError: string | undefined;
-    try {
-      permanentResult = await analyzePermanentPhoto(streetView.base64, streetView.mediaType, {
-        satellite: {
-          base64: satellite.base64,
-          mediaType: satellite.mediaType,
-          feetPerPixel: satelliteFeetPerPixel,
-        },
-      });
-    } catch (err) {
-      console.error('[api/analyze-address] permanent analysis failed:', err);
-      permanentError = 'The permanent auto-measure is temporarily unavailable. The photos are loaded; measure the roofline manually.';
-    }
     return NextResponse.json({
       result: null,
-      permanentResult,
-      permanentImageryOnly: permanentResult == null,
-      analysisError: permanentError,
+      permanentImageryOnly: true,
       photoBase64: streetView.base64,
       photoMediaType: streetView.mediaType,
       satelliteBase64: satellite.base64,
