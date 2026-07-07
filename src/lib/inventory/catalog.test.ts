@@ -1,7 +1,25 @@
 // src/lib/inventory/catalog.test.ts
-import { describe, it, expect } from 'vitest';
-import { toCatalogUpsertRow, normalizeHiddenCategories } from './catalog';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ParsedCatalogItem } from './parseThunderCsv';
+
+// catalogCostOverrides() is listCatalog() piped through costOverridesFromCatalog
+// (ascendCatalog.ts) — mock the Supabase client so listCatalog resolves from a
+// fake `inventory_catalog` select rather than needing real config.
+let catalogRows: Record<string, unknown>[] = [];
+vi.mock('../supabase', () => ({
+  getSupabaseServiceClient: () => ({
+    from: () => ({
+      select: () => ({
+        order: () => ({
+          order: async () => ({ data: catalogRows, error: null }),
+        }),
+      }),
+    }),
+  }),
+  getSupabaseClient: () => null,
+}));
+
+const { toCatalogUpsertRow, normalizeHiddenCategories, catalogCostOverrides } = await import('./catalog');
 
 const SAMPLE: ParsedCatalogItem = {
   sku: '14147', name: 'C9 Flex Clip White', category: 'Hardware', color: 'White',
@@ -32,5 +50,26 @@ describe('normalizeHiddenCategories', () => {
     expect(normalizeHiddenCategories(null)).toEqual([]);
     expect(normalizeHiddenCategories('x')).toEqual([]);
     expect(normalizeHiddenCategories([1, 2, {}])).toEqual([]);
+  });
+});
+
+describe('catalogCostOverrides', () => {
+  beforeEach(() => {
+    catalogRows = [];
+  });
+
+  it('listCatalog() piped through costOverridesFromCatalog', async () => {
+    catalogRows = [
+      { sku: 'APL11012-5', wholesale_cost: 15.5156316 },
+      { sku: 'APL11012-1', wholesale_cost: null }, // no usable price — skipped
+    ];
+    const map = await catalogCostOverrides();
+    expect([...map.entries()]).toEqual([['APL11012-5', 15.5156316]]);
+  });
+
+  it('returns an empty map when the catalog is empty', async () => {
+    catalogRows = [];
+    const map = await catalogCostOverrides();
+    expect(map.size).toBe(0);
   });
 });

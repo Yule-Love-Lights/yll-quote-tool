@@ -10,6 +10,7 @@ import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { catalogCostOverrides } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
@@ -74,10 +75,17 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
 
-  // Permanent Lighting (#88 P7): the operator BOM (Ascend/Dauer APL material list
-  // + wholesale cost) for ordering. Null for non-permanent quotes. Materials never
-  // touch the customer price — this is ordering + margin only.
-  const bom = quote.service_type === 'permanent' ? permanentBomFromQuote(quote.inputs) : null;
+  // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
+  // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials
+  // never touch the customer price — this is ordering + margin only. Live
+  // inventory_catalog costs (P8) override the engine's built-in fallback prices
+  // when a SKU's been re-priced in Settings; a catalog read failure swallows to
+  // [] → an empty override map → every SKU quietly falls back. Only fetched for
+  // permanent quotes — no reason to hit the catalog for a holiday/event quote.
+  const bom =
+    quote.service_type === 'permanent'
+      ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides())
+      : null;
 
   return (
     <OperatorShell active="quotes">
