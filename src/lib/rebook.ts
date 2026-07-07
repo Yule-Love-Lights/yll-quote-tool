@@ -1,5 +1,6 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { cloneDesignToNewQuote } from './designs';
+import { allocateNumber } from './displayId';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -78,6 +79,21 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
 const SOURCE_COLUMNS =
   'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test';
 
+// Best-effort sequential quote_number (ledger #83, SPEC §4.6) for a rebooked
+// clone — same allocateNumber('quote_number_seq') + try/catch-omit pattern
+// saveQuote uses. A failed allocation (RPC/sequence missing) must NOT block
+// the rebook; the column is nullable and the truncated-UUID display (#77)
+// still works. Without this, rebooked quotes silently skip the sequence and
+// are missed by any number search/sort.
+async function allocateRebookQuoteNumber(caller: string): Promise<number | null> {
+  try {
+    return await allocateNumber('quote_number_seq');
+  } catch (err) {
+    console.warn(`${caller}: quote_number allocation skipped:`, err);
+    return null;
+  }
+}
+
 // Clone a customer's last APPROVED quote (+ its design) into a fresh draft.
 // `propertyId` optionally scopes the source to one property (a customer with a
 // home + a rental rebooks the right one). Returns the new quote id + the cloned
@@ -86,6 +102,10 @@ const SOURCE_COLUMNS =
 export async function rebookLastSeason(
   customerId: string,
   propertyId?: string | null,
+  // Actor audit trail (#90): the operator's Supabase user id, or null when the
+  // auth gate is dormant (no session) / the caller doesn't have one. Same
+  // convention as saveQuote's createdBy param.
+  createdBy: string | null = null,
 ): Promise<{ quoteId: string; designId: string | null } | null> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) return null;
@@ -110,11 +130,16 @@ export async function rebookLastSeason(
   if (!data) return null; // no approved quote to rebook from
   const src = data as RebookSource & { id: string };
 
-  const insertRow = buildRebookInsert({
-    ...src,
-    // Honor an explicit property scope; otherwise keep the source's property.
-    property_id: propertyId ?? src.property_id ?? null,
-  });
+  const quoteNumber = await allocateRebookQuoteNumber('rebookLastSeason');
+  const insertRow = {
+    ...buildRebookInsert({
+      ...src,
+      // Honor an explicit property scope; otherwise keep the source's property.
+      property_id: propertyId ?? src.property_id ?? null,
+    }),
+    ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
+    created_by: createdBy,
+  };
   const ins = await sb.from('quotes').insert(insertRow).select('id').single();
   if (ins.error || !ins.data) {
     console.error('rebookLastSeason (insert) error:', ins.error);
@@ -146,6 +171,10 @@ export async function rebookLastSeason(
 // quote or Supabase isn't configured.
 export async function rebookFromQuote(
   quoteId: string,
+  // Actor audit trail (#90): the operator's Supabase user id, or null when the
+  // auth gate is dormant (no session) / the caller doesn't have one. Same
+  // convention as saveQuote's createdBy param.
+  createdBy: string | null = null,
 ): Promise<{ quoteId: string; designId: string | null } | null> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!sb) return null;
@@ -162,7 +191,12 @@ export async function rebookFromQuote(
   if (!data) return null; // no such quote to rebook from
   const src = data as RebookSource & { id: string };
 
-  const insertRow = buildRebookInsert(src);
+  const quoteNumber = await allocateRebookQuoteNumber('rebookFromQuote');
+  const insertRow = {
+    ...buildRebookInsert(src),
+    ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
+    created_by: createdBy,
+  };
   const ins = await sb.from('quotes').insert(insertRow).select('id').single();
   if (ins.error || !ins.data) {
     console.error('rebookFromQuote (insert) error:', ins.error);

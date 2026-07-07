@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rebookFromQuote } from '@/lib/rebook';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -27,6 +27,7 @@ export async function POST(
 ) {
   const denied = await requireOperator();
   if (denied) return denied;
+  const operator = await getOperator();
 
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
@@ -40,7 +41,7 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
   }
 
-  const result = await rebookFromQuote(id);
+  const result = await rebookFromQuote(id, operator?.id ?? null);
   if (!result) {
     return NextResponse.json(
       { error: 'No quote to rebook from', code: 'no-source' },

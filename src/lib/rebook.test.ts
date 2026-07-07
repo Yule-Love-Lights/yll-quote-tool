@@ -6,12 +6,19 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 const { cloneMock } = vi.hoisted(() => ({ cloneMock: vi.fn() }));
+// allocateNumber hits an RPC; rebookLastSeason/rebookFromQuote treat any
+// failure as "skip the number" (same best-effort pattern as saveQuote).
+// Controllable ref so a test can force a rejection.
+const { allocRef } = vi.hoisted(() => ({
+  allocRef: { current: vi.fn(async () => 1000) as (seq: string) => Promise<number> },
+}));
 
 vi.mock('./supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
   getSupabaseClient: () => sbRef.current,
 }));
 vi.mock('./designs', () => ({ cloneDesignToNewQuote: cloneMock }));
+vi.mock('./displayId', () => ({ allocateNumber: (seq: string) => allocRef.current(seq) }));
 
 import { buildRebookInsert, rebookLastSeason, rebookFromQuote } from './rebook';
 
@@ -106,6 +113,7 @@ beforeEach(() => {
   sbRef.current = null;
   cloneMock.mockReset();
   cloneMock.mockResolvedValue({ id: 'design-clone' });
+  allocRef.current = vi.fn(async () => 1000);
 });
 
 // ─── Pure: buildRebookInsert ────────────────────────────────────────────────
@@ -299,6 +307,59 @@ describe('rebookLastSeason', () => {
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.is_test).toBe(false);
   });
+
+  // rebook-number-createdby: a rebooked quote must get a sequential quote_number
+  // (same allocateNumber('quote_number_seq') as saveQuote) so it isn't stuck on
+  // the truncated-UUID fallback and stays findable by number search/sort.
+  it('allocates a sequential quote_number on the rebooked row', async () => {
+    allocRef.current = vi.fn(async () => 1042);
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.quote_number).toBe(1042);
+  });
+
+  // Best-effort, same as saveQuote: a failed allocation (RPC/sequence missing)
+  // must not block the rebook — the column is nullable.
+  it('omits quote_number (does not fail) when allocation throws', async () => {
+    allocRef.current = vi.fn(async () => {
+      throw new Error('sequence missing');
+    });
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1');
+    expect(res?.quoteId).toBeTruthy();
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.quote_number).toBeUndefined();
+  });
+
+  // rebook-number-createdby: the operator performing the rebook (when known)
+  // must be stamped as created_by, same actor-audit-trail column saveQuote
+  // stamps (#90).
+  it('stamps created_by with the operator id when passed', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1', null, 'op-1');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.created_by).toBe('op-1');
+  });
+
+  it('defaults created_by to null when no operator id is passed', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookLastSeason('c1');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.created_by ?? null).toBeNull();
+  });
 });
 
 // ─── DB: rebookFromQuote (#116 — revive a specific dead quote) ────────────────
@@ -360,5 +421,51 @@ describe('rebookFromQuote', () => {
     const res = await rebookFromQuote('a');
     expect(res?.quoteId).toBeTruthy();
     expect(res?.designId).toBeNull();
+  });
+
+  // rebook-number-createdby
+  it('allocates a sequential quote_number on the rebooked row', async () => {
+    allocRef.current = vi.fn(async () => 2001);
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.quote_number).toBe(2001);
+  });
+
+  it('omits quote_number (does not fail) when allocation throws', async () => {
+    allocRef.current = vi.fn(async () => {
+      throw new Error('sequence missing');
+    });
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    expect(res?.quoteId).toBeTruthy();
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.quote_number).toBeUndefined();
+  });
+
+  it('stamps created_by with the operator id when passed', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a', 'op-2');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.created_by).toBe('op-2');
+  });
+
+  it('defaults created_by to null when no operator id is passed', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 } }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.created_by ?? null).toBeNull();
   });
 });
