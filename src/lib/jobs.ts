@@ -373,7 +373,7 @@ export async function setJobStatus(id: string, to: JobStatus): Promise<JobRow | 
   return data as unknown as JobRow;
 }
 
-// TODO #83 Phase 2 + #81: admin jobs page (/admin/jobs list + detail) and a
-// /api/jobs route are NEW operator surfaces gated on the #81 auth perimeter —
-// deferred until that lands. The dashboard Workflow board (existing surface)
-// reads jobs server-side and is fine now.
+// #83 Phase 2 + #81: the admin jobs page (/admin/jobs list + detail) and the
+// /api/jobs route are LIVE operator surfaces, gated behind the #81 auth
+// perimeter (requireOperator()). The dashboard Workflow board (existing
+// surface) also reads jobs server-side.

@@ -6,16 +6,17 @@
 // total, compute the new balance, the amendment-trail entry to append to
 // `approval_snapshot.amendments[]`, the re-consent predicate, and the resulting
 // quote status. No IO, no Supabase, no Valor, no HighLevel — every input is a
-// plain object so the math is trivially testable and reusable from the future
-// amend route.
+// plain object so the math is trivially testable and reusable from the live
+// amend route (src/app/api/quotes/[id]/amend/route.ts).
 //
-// What this module is NOT (deliberately deferred — see the TODO at the bottom):
-// it does NOT re-open the order, write the trail, charge/refund a card, move a
-// GHL stage, or touch the approve route / portal lock / Valor webhook. Amending
-// re-opens a BOOKED order, which rewrites the "freeze snapshot / read-only after
-// approval" assumption the revenue-critical booking path relies on (approve
-// route 409, portal lock). That integration + the operator/customer amend
-// SURFACE move money, so they land behind the #81 auth perimeter, NOT here.
+// What this module is NOT (that integration lives in the route, not here — see
+// the note at the bottom): it does NOT re-open the order, write the trail,
+// charge/refund a card, move a GHL stage, or touch the approve route / portal
+// lock / Valor webhook. Amending re-opens a BOOKED order, which rewrites the
+// "freeze snapshot / read-only after approval" assumption the revenue-critical
+// booking path relies on (approve route 409, portal lock). That integration +
+// the operator/customer amend SURFACE move money, so they live behind the #81
+// auth perimeter, in the route, NOT here.
 //
 // Reuse, don't reinvent: the new total is produced by the SAME pricing the
 // portal + approve route use (`priceSelection` from derivePackages, ultimately
@@ -242,14 +243,13 @@ export function amendedQuoteStatus(
   return requiresReconsent(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
 }
 
-// TODO #83 Phase 4 + #81: amend route + UI (wires this lib). The operator
-// "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and its UI are
-// NEW money-moving operator surfaces — they re-open a BOOKED order, append the
-// trail entry from computeAmendment() to approval_snapshot.amendments[] (WITHOUT
-// overwriting the original signed snapshot), update the linked invoice balance,
-// and — per the re-consent default above — re-notify / re-collect the customer's
-// re-approval on a total change before charging the new balance. That route must
-// also REJECT amendments on a non-booked order (only a booked order has a paid
-// deposit to apply). All of it sits behind the #81 auth perimeter. Deferred
-// until #81 lands; do NOT wire this into approve/route.ts, the portal, or the
-// Valor webhook before then.
+// #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The
+// operator "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and
+// its UI are money-moving operator surfaces — they re-open a BOOKED order,
+// append the trail entry from computeAmendment() to
+// approval_snapshot.amendments[] (WITHOUT overwriting the original signed
+// snapshot), update the linked invoice balance, and — per the re-consent
+// default above — re-notify / re-collect the customer's re-approval on a total
+// change before charging the new balance. That route also REJECTs amendments
+// on a non-booked order (only a booked order has a paid deposit to apply). All
+// of it sits behind the #81 auth perimeter (requireOperator()).
