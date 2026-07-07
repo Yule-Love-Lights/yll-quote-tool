@@ -85,6 +85,7 @@ type ToolState = {
   distanceToSurfaceFt: number;
   opacity: number;
   showCoverage: boolean;
+  showBeam: boolean;
   // Bistro-only: per-strand catenary sag as a fraction of horizontal span.
   bistroSagFactor: number;
   // Decor sub-type
@@ -284,6 +285,7 @@ export async function renderEditor(
     distanceToSurfaceFt: 0,
     opacity: 1,
     showCoverage: false,
+    showBeam: true,
     bistroSagFactor: 0.10,
     decorType: "wreath",
     wreathSizeIn: 36,
@@ -1647,6 +1649,13 @@ export async function renderEditor(
       </section>
       <section>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="tool-beam" ${tool.showBeam ? "checked" : ""} />
+          <span>Show light beam</span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Off = just the puck dots, no cone.</div>
+      </section>
+      <section>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="tool-coverage" ${tool.showCoverage ? "checked" : ""} />
           <span>Show floor coverage</span>
         </label>
@@ -2139,6 +2148,10 @@ export async function renderEditor(
       wireToolSlider("tool-beam-wid", "beamWidthFt", " ft", 1);
       wireToolSlider("tool-dist", "distanceToSurfaceFt", " ft", 1);
       wireToolSlider("tool-opacity", "opacity", "", 2);
+      const beamCb = sb.querySelector("#tool-beam") as HTMLInputElement;
+      beamCb.addEventListener("change", () => {
+        tool.showBeam = beamCb.checked;
+      });
       const cov = sb.querySelector("#tool-coverage") as HTMLInputElement;
       cov.addEventListener("change", () => {
         tool.showCoverage = cov.checked;
@@ -2492,6 +2505,13 @@ export async function renderEditor(
       </section>
       <section>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="sel-beam" ${sel.every((s) => (s.showBeam ?? true)) ? "checked" : ""} />
+          <span>Show light beam</span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Off = just the puck dots, no cone.</div>
+      </section>
+      <section>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="sel-coverage" ${sel.every((s) => (s.showCoverage ?? true)) ? "checked" : ""} />
           <span>Show floor coverage</span>
         </label>
@@ -2686,6 +2706,10 @@ export async function renderEditor(
       wire("sel-dist", "distanceToSurfaceFt", " ft", 1);
       wire("sel-opacity", "opacity", "", 2);
 
+      const beamSelCb = sb.querySelector("#sel-beam") as HTMLInputElement;
+      beamSelCb.addEventListener("change", () => {
+        updateSelected((s) => ({ ...s, showBeam: beamSelCb.checked }));
+      });
       const coverageCb = sb.querySelector("#sel-coverage") as HTMLInputElement;
       coverageCb.addEventListener("change", () => {
         updateSelected((s) => ({ ...s, showCoverage: coverageCb.checked }));
@@ -4442,6 +4466,7 @@ export async function renderEditor(
       distanceToSurfaceFt: tool.distanceToSurfaceFt,
       opacity: tool.opacity,
       showCoverage: tool.showCoverage,
+      showBeam: tool.showBeam,
     };
   }
 
@@ -5195,6 +5220,7 @@ export async function renderEditor(
       if (typeof entry.distanceToSurfaceFt === "number") tool.distanceToSurfaceFt = entry.distanceToSurfaceFt;
       if (typeof entry.opacity === "number") tool.opacity = entry.opacity;
       if (typeof entry.showCoverage === "boolean") tool.showCoverage = entry.showCoverage;
+      if (typeof entry.showBeam === "boolean") tool.showBeam = entry.showBeam;
       if (typeof entry.sagFactor === "number") tool.bistroSagFactor = entry.sagFactor;
     } else if (tool.category === "decor" && tool.decorType === "wreath") {
       const entry = savedDefaults?.["wreath"];
