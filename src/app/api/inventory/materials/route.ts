@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getInventoryBindings } from '@/lib/inventory/bindings';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { listOnHand } from '@/lib/inventory/onHand';
@@ -16,6 +17,8 @@ import type { Scene } from '@/lib/design/sceneTypes';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }

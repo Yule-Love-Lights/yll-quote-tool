@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { orderEmailSubject, orderEmailHtml } from '@/lib/integrations/quoteMessages';
@@ -13,6 +14,8 @@ import { orderEmailSubject, orderEmailHtml } from '@/lib/integrations/quoteMessa
 export const runtime = 'nodejs';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireOperator();
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
