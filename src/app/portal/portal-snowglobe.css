@@ -279,6 +279,21 @@
   max-width: calc(100% - 28px);
 }
 
+/* S22 — on phones the approval bar is a taller, two-row layout (totals on top,
+   Request-changes + Decline below, Approve on the right), so it spans near-full
+   width, squares off from the desktop capsule, and pushes its button to the
+   right. Also keeps the single-row states (booked / complete-deposit) from
+   left-packing. (639.98px matches Tailwind's `sm` breakpoint used in the JSX.) */
+@media (max-width: 639.98px) {
+  .portal-snow-sticky {
+    width: calc(100% - 24px);
+    max-width: none;
+    justify-content: space-between;
+    border-radius: 20px;
+    padding: 12px 14px;
+  }
+}
+
 /* ============ Reduced motion ============ */
 @media (prefers-reduced-motion: reduce) {
   .portal-snow-stage-photo,
