@@ -2161,7 +2161,7 @@ export default function QuoteBuilder({
                     Satellite (top-down)
                   </button>
                 </div>
-                {satelliteFeetPerPixel != null && (
+                {form.serviceType !== 'permanent' && satelliteFeetPerPixel != null && (
                   <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
                     Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
                   </div>
@@ -2308,7 +2308,12 @@ export default function QuoteBuilder({
                         represent). Saves automatically and attaches to this quote on Calculate.
                       </p>
                     )}
-                    <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    {/* #88: the "From your design" billable-items summary (minis/
+                        spritzers/wreaths/garland/bows) is holiday/event only — a
+                        permanent quote bills from the Permanent section, not drawn items. */}
+                    {form.serviceType !== 'permanent' && (
+                      <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">
@@ -2324,9 +2329,11 @@ export default function QuoteBuilder({
               <div className={viewMode === 'satellite' ? '' : 'hidden'}>
                 {satellitePreview ? (
                   <>
-                    <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
-                      <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
-                    </div>
+                    {form.serviceType !== 'permanent' && (
+                      <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
+                        <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
+                      </div>
+                    )}
                     {/* Zoom/pan controls (#26) */}
                     <div className="flex items-center justify-between mb-1.5 text-[11px] text-gray-500">
                       <span>Scroll to zoom · drag to pan{satZoom.isZoomed ? ` · ${Math.round(satZoom.zoom * 100)}%` : ''}</span>
@@ -2476,6 +2483,18 @@ export default function QuoteBuilder({
                     </div>
                     </div>
 
+                    {/* #88: the holiday roofline satellite measurement (Front
+                        Gutterline / Ridge + Sides polylines) does not apply to
+                        permanent — it measures front/left/right/back by eye and
+                        enters them in the Permanent section, or draws + Refreshes. */}
+                    {form.serviceType === 'permanent' ? (
+                      <p className="mt-3 text-sm text-gray-500">
+                        Measure the left, right, and back rooflines off this satellite view and enter each
+                        side&apos;s footage in the Permanent section below. (Or draw the runs on the design and
+                        use Refresh from design.)
+                      </p>
+                    ) : (
+                    <>
                     {/* Add-line controls */}
                     {addMode ? (
                       <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
@@ -2669,6 +2688,8 @@ export default function QuoteBuilder({
                       </div>
                       </>)}
                     </div>
+                    </>
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">
