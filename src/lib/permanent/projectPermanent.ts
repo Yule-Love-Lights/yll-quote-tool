@@ -20,6 +20,7 @@
 import type { Scene, StrandItem, SideOfHouse } from '@/lib/design/sceneTypes';
 import { isStrand } from '@/lib/design/sceneTypes';
 import { pxPerFoot } from '@/components/design/editor-core/yardstick-scale';
+import type { PermanentQuoteFields, PermanentGap } from './types';
 
 /** Below this the two runs are touching, not a real gap needing an extension. */
 const GAP_MIN_FT = 0.5;
@@ -115,4 +116,52 @@ export function projectPermanentDesign(scene: Scene): PermanentDesignProjection 
   }
 
   return { feetBySide, cornersBySide, frontGapCandidates };
+}
+
+/**
+ * Merge a design projection into the permanent quote fields — the design now
+ * drives ALL FOUR sides (#88: front/left/right/back), not front alone.
+ *
+ * The design is the source of truth for any side it actually covers; a side the
+ * design has NO footage for keeps the operator's existing manual entry, so a
+ * Refresh never wipes a satellite-measured side that wasn't drawn. Front gap
+ * candidates are regenerated fresh from geometry; operator-added 'manual' gap
+ * rows survive, while stale 'auto'/'edited' rows are replaced by the new detection.
+ */
+export function applyPermanentProjection(
+  fields: PermanentQuoteFields,
+  proj: PermanentDesignProjection,
+): PermanentQuoteFields {
+  // Apply a side only when the design covers it (footage > 0); else keep manual.
+  const merge = (
+    ft: number,
+    corners: number,
+    curFt: number,
+    curCorners: number,
+  ): [number, number] => (ft > 0 ? [ft, corners] : [curFt, curCorners]);
+
+  const [frontFootage, frontCorners] = merge(proj.feetBySide.front, proj.cornersBySide.front, fields.frontFootage, fields.frontCorners);
+  const [leftFootage, leftCorners] = merge(proj.feetBySide.left, proj.cornersBySide.left, fields.leftFootage, fields.leftCorners);
+  const [rightFootage, rightCorners] = merge(proj.feetBySide.right, proj.cornersBySide.right, fields.rightFootage, fields.rightCorners);
+  const [backFootage, backCorners] = merge(proj.feetBySide.back, proj.cornersBySide.back, fields.backFootage, fields.backCorners);
+
+  const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
+    lengthFt: c.lengthFt,
+    detectedFt: c.lengthFt,
+    source: 'auto' as const,
+  }));
+  const gaps: PermanentGap[] = [...autoRows, ...fields.gaps.filter((g) => g.source === 'manual')];
+
+  return {
+    ...fields,
+    frontFootage,
+    frontCorners,
+    leftFootage,
+    leftCorners,
+    rightFootage,
+    rightCorners,
+    backFootage,
+    backCorners,
+    gaps,
+  };
 }

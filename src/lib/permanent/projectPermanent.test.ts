@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { projectPermanentDesign } from './projectPermanent';
+import { projectPermanentDesign, applyPermanentProjection } from './projectPermanent';
+import { makeDefaultPermanentFields } from './types';
+import type { PermanentDesignProjection } from './projectPermanent';
 import type { Scene, StrandItem, SideOfHouse, Yardstick } from '@/lib/design/sceneTypes';
 
 // A yardstick where px == ft (100 px measured == 100 real ft → pxPerFoot = 1),
@@ -90,5 +92,64 @@ describe('projectPermanentDesign', () => {
     expect(p.feetBySide).toEqual({ front: 0, left: 0, right: 0, back: 0, unassigned: 0 });
     expect(p.cornersBySide).toEqual({ front: 0, left: 0, right: 0, back: 0, unassigned: 0 });
     expect(p.frontGapCandidates).toEqual([]);
+  });
+});
+
+describe('applyPermanentProjection', () => {
+  function proj(overrides: Partial<PermanentDesignProjection> = {}): PermanentDesignProjection {
+    return {
+      feetBySide: { front: 0, left: 0, right: 0, back: 0, unassigned: 0 },
+      cornersBySide: { front: 0, left: 0, right: 0, back: 0, unassigned: 0 },
+      frontGapCandidates: [],
+      ...overrides,
+    };
+  }
+
+  it('drives ALL FOUR sides (footage + corners) from the design when covered', () => {
+    const out = applyPermanentProjection(
+      makeDefaultPermanentFields(),
+      proj({
+        feetBySide: { front: 100, left: 40, right: 30, back: 20, unassigned: 0 },
+        cornersBySide: { front: 5, left: 3, right: 3, back: 2, unassigned: 0 },
+      }),
+    );
+    expect([out.frontFootage, out.leftFootage, out.rightFootage, out.backFootage]).toEqual([100, 40, 30, 20]);
+    expect([out.frontCorners, out.leftCorners, out.rightCorners, out.backCorners]).toEqual([5, 3, 3, 2]);
+  });
+
+  it('keeps a manual side the design does NOT cover (never wipes satellite-measured footage)', () => {
+    const fields = { ...makeDefaultPermanentFields(), backFootage: 55, backCorners: 6 };
+    const out = applyPermanentProjection(
+      fields,
+      proj({
+        feetBySide: { front: 100, left: 0, right: 0, back: 0, unassigned: 0 },
+        cornersBySide: { front: 2, left: 0, right: 0, back: 0, unassigned: 0 },
+      }),
+    );
+    expect(out.frontFootage).toBe(100); // design covers front → applied
+    expect(out.backFootage).toBe(55); // design has no back → manual preserved
+    expect(out.backCorners).toBe(6);
+  });
+
+  it('regenerates auto front-gap rows and keeps only operator manual gaps', () => {
+    const fields = {
+      ...makeDefaultPermanentFields(),
+      gaps: [
+        { lengthFt: 9, source: 'manual' as const },
+        { lengthFt: 4, detectedFt: 4, source: 'auto' as const },
+        { lengthFt: 7, detectedFt: 5, source: 'edited' as const },
+      ],
+    };
+    const out = applyPermanentProjection(
+      fields,
+      proj({
+        feetBySide: { front: 50, left: 0, right: 0, back: 0, unassigned: 0 },
+        frontGapCandidates: [{ lengthFt: 6, fromStrandId: 'a', toStrandId: 'b' }],
+      }),
+    );
+    expect(out.gaps).toEqual([
+      { lengthFt: 6, detectedFt: 6, source: 'auto' },
+      { lengthFt: 9, source: 'manual' },
+    ]);
   });
 });

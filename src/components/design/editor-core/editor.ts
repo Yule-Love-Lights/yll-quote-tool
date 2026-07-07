@@ -39,7 +39,9 @@ const BULB_TYPES: { id: BulbType; label: string }[] = [
 const SPACINGS: Record<BulbType, number[]> = {
   c9: [6, 9, 12, 15, 18, 24, 36],
   mini: [4, 6, 9, 12, 18],
-  permanent: [4, 6, 8, 9, 12, 15, 18, 24],
+  // #88: permanent pucks ship 8" on-center ONLY — no other spacing is offered
+  // (the BOM math already assumes 8"). Single fixed option.
+  permanent: [8],
   // Bistro spacing typical real-world range: 12"–24" between bulbs.
   bistro: [9, 12, 15, 18, 24, 36],
 };
@@ -1625,7 +1627,7 @@ export async function renderEditor(
       ${tool.bulbType === "permanent" ? `
       <section>
         <h3>Beam Length <span id="tool-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
-        <input type="range" id="tool-beam-len" min="0.5" max="12" step="0.1" value="${tool.beamLengthFt}" />
+        <input type="range" id="tool-beam-len" min="0.5" max="20" step="0.1" value="${tool.beamLengthFt}" />
       </section>
       <section>
         <h3>Beam Width <span id="tool-beam-wid-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -2470,7 +2472,7 @@ export async function renderEditor(
       ${isPerm ? `
       <section>
         <h3>Beam Length <span id="sel-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
-        <input type="range" id="sel-beam-len" min="0.5" max="12" step="0.1" value="${avg(sel.map((s) => s.beamLengthFt ?? 4))}" />
+        <input type="range" id="sel-beam-len" min="0.5" max="20" step="0.1" value="${avg(sel.map((s) => s.beamLengthFt ?? 4))}" />
       </section>
       <section>
         <h3>Beam Width <span id="sel-beam-wid-val" style="float:right;color:var(--text);font-weight:400"></span></h3>

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { QuoteFormData } from '@/lib/quoteForm';
 import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
-import { projectPermanentDesign } from '@/lib/permanent/projectPermanent';
+import { projectPermanentDesign, applyPermanentProjection } from '@/lib/permanent/projectPermanent';
 import type { Scene } from '@/lib/design/sceneTypes';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
@@ -63,40 +63,16 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
         return;
       }
       const proj = projectPermanentDesign(scene);
-      const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
-        lengthFt: c.lengthFt,
-        detectedFt: c.lengthFt,
-        source: 'auto' as const,
-      }));
-      // Auto rows are regenerated fresh from geometry; only operator-added 'manual'
-      // rows survive. An 'edited' row (operator ticked a splitter or corrected an
-      // auto gap's length) is reset — count them so we can warn instead of silently
-      // dropping the operator's splitter flags / length corrections.
+      // #88: the design now drives ALL FOUR sides (front/left/right/back). A side
+      // the design doesn't cover keeps the operator's manual entry, and 'edited'
+      // gap rows reset to the fresh auto values (count them to warn, not drop
+      // silently) — the merge lives in applyPermanentProjection (pure, tested).
       const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
-      const gaps = [...autoRows, ...form.permanent.gaps.filter((g) => g.source === 'manual')];
-      setForm((f) => ({
-        ...f,
-        permanent: {
-          ...f.permanent,
-          frontFootage: proj.feetBySide.front,
-          frontCorners: proj.cornersBySide.front,
-          gaps,
-        },
-      }));
-      // Refresh writes FRONT footage only (left/right/back are satellite-measured
-      // and manually entered, so overwriting them would wipe the operator's numbers).
-      // But warn about design footage refresh does NOT carry through, so a tagged
-      // side run can't be silently dropped → under-billed with no signal.
-      const sideFt = proj.feetBySide.left + proj.feetBySide.right + proj.feetBySide.back;
+      setForm((f) => ({ ...f, permanent: applyPermanentProjection(f.permanent, proj) }));
       const warnings: string[] = [];
       if (proj.feetBySide.unassigned > 0) {
         warnings.push(
           `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
-        );
-      }
-      if (sideFt > 0) {
-        warnings.push(
-          `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
         );
       }
       if (resetEditedGaps > 0) {
@@ -158,7 +134,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
           </button>
           {!designId && (
             <p className="text-xs text-gray-400 mt-1">
-              Design the front first to auto-detect footage, corners &amp; gaps.
+              Design the house first (tag each run&apos;s side) to auto-detect footage, corners &amp; gaps.
             </p>
           )}
           {refreshWarning && <p className="text-xs text-amber-600 mt-1">{refreshWarning}</p>}
@@ -167,8 +143,9 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
 
       <Section title="Sides &amp; Back">
         <p className="text-xs text-gray-400 mb-3">
-          Measure off the satellite view or enter manually. Left + Right are billed together as
-          &lsquo;Sides&rsquo;.
+          Auto-filled from the design when each run is side-tagged (Refresh above), or measure off the
+          satellite view / enter manually. A side the design doesn&apos;t cover keeps your manual number.
+          Left + Right are billed together as &lsquo;Sides&rsquo;.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
