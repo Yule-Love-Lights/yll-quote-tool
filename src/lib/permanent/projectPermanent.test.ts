@@ -189,4 +189,25 @@ describe('applyPermanentProjection', () => {
     expect(out.backFootage).toBe(40); // manual back preserved
     expect(out.backCorners).toBe(4);
   });
+
+  it("keeps a hand-typed value even when the design STILL covers that side (S29 bug)", () => {
+    // The operator drew a front run (auto 65), then hand-typed front = 80 (→ 'manual').
+    // A Refresh while the run is still there must NOT snap it back to the design's 65.
+    const fields = {
+      ...makeDefaultPermanentFields(),
+      frontFootage: 80,
+      frontCorners: 4,
+      sideSource: { front: 'manual' as const },
+    };
+    const out = applyPermanentProjection(
+      fields,
+      proj({
+        feetBySide: { front: 65, left: 0, right: 0, back: 0, unassigned: 0 },
+        cornersBySide: { front: 9, left: 0, right: 0, back: 0, unassigned: 0 },
+      }),
+    );
+    expect(out.frontFootage).toBe(80); // hand-typed override wins over the drawn run
+    expect(out.frontCorners).toBe(4);
+    expect(out.sideSource?.front).toBe('manual'); // stays manual
+  });
 });

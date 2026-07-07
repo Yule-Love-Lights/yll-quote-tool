@@ -135,11 +135,16 @@ export function applyPermanentProjection(
   const src = fields.sideSource ?? {};
   const nextSrc: NonNullable<PermanentQuoteFields['sideSource']> = { ...src };
 
-  // Per side, provenance-aware:
-  //  • design covers it (ft > 0)          → apply, tag 'auto'.
-  //  • design has cleared a side it filled → clear to 0 (stays 'auto') so a
-  //    deleted run can't keep billing stale footage.
-  //  • operator typed it ('manual'/legacy) → preserve (satellite-measured side).
+  // Per side, provenance-aware — checked IN THIS ORDER:
+  //  • operator typed it ('manual')        → ALWAYS preserve, even when the design
+  //    covers that side (a hand-typed override wins over a drawn run). This must be
+  //    checked FIRST: otherwise a Refresh with a run still on that side overwrites
+  //    the operator's number with the design's (the S29 bug Jason caught). To hand
+  //    a side back to auto, clear its field.
+  //  • design covers it (ft > 0)           → apply, tag 'auto'.
+  //  • an 'auto' side the design no longer covers → clear to 0 so a deleted run
+  //    can't keep billing stale footage.
+  //  • otherwise (legacy/no source, no design) → keep the current value.
   const mergeSide = (
     side: 'front' | 'left' | 'right' | 'back',
     ft: number,
@@ -147,6 +152,7 @@ export function applyPermanentProjection(
     curFt: number,
     curCorners: number,
   ): [number, number] => {
+    if (src[side] === 'manual') return [curFt, curCorners];
     if (ft > 0) {
       nextSrc[side] = 'auto';
       return [ft, corners];
