@@ -842,7 +842,7 @@ export function computeTotalsTail(
         ? inputs.discount.amount
         : 0;
     discountAmount = inputs.discount.type === 'percentage'
-      ? Math.round(subtotalBeforeDiscount * amount)
+      ? Math.round(subtotalBeforeDiscount * amount * 100) / 100
       : amount;
   }
 
