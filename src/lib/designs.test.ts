@@ -208,6 +208,7 @@ function makeExtrasSb(row: {
   scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
   photo_path?: string | null;
   onSceneRefetch?: (state: { row: Record<string, unknown> }) => void;
+  onExtraPhotosRefetch?: (state: { row: Record<string, unknown> }) => void;
 }) {
   const state = {
     row: {
@@ -277,6 +278,10 @@ function makeExtrasSb(row: {
           return { data: { extra_photos: state.row.extra_photos }, error: null };
         }
         if (selectCols === 'extra_photos, updated_at') {
+          // updateExtraPhotosAtomic's per-attempt read — inject a concurrent
+          // writer's effect right here, as if it committed between the
+          // caller's initial snapshot read (above) and this guarded read.
+          if (row.onExtraPhotosRefetch) row.onExtraPhotosRefetch(state);
           return { data: { extra_photos: state.row.extra_photos, updated_at: state.row.updated_at }, error: null };
         }
         if (selectCols === 'extra_photos, scene') {
@@ -432,6 +437,36 @@ describe('extra street photos (#13)', () => {
     expect(state.removedPaths).toHaveLength(0);
   });
 
+  // designs-atomic-extraphotos: removeDesignExtraPhoto's array write must go
+  // through updateExtraPhotosAtomic (guarded read-then-write), not a plain
+  // write off the top-of-function snapshot — otherwise a writer that lands in
+  // between (another add, a rename, a removal) is silently dropped.
+  it('removeDesignExtraPhoto does not drop a photo added by a concurrent writer (guarded atomic write)', async () => {
+    let applied = false;
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      onExtraPhotosRefetch: (s) => {
+        if (applied) return;
+        applied = true;
+        // A concurrent addDesignExtraPhoto lands between this function's
+        // top-of-function snapshot read and its guarded write.
+        const r = s.row as { extra_photos: DesignExtraPhoto[]; updated_at: string };
+        r.extra_photos = [
+          ...r.extra_photos,
+          { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 5, h: 5, title: null },
+        ];
+        r.updated_at = 'concurrent-add';
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+
+    // PHOTO_A removed; the concurrently-added PHOTO_B must survive, not be
+    // clobbered by a write computed off the stale initial snapshot.
+    expect((state.row.extra_photos as DesignExtraPhoto[]).map(p => p.id)).toEqual([PHOTO_B]);
+  });
+
   it('updateDesignExtraPhotoTitle renames and clears (empty → null)', async () => {
     const { client, state } = makeExtrasSb({
       extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: 'Old' }],
@@ -445,6 +480,33 @@ describe('extra street photos (#13)', () => {
     expect((state.row.extra_photos as DesignExtraPhoto[])[0].title).toBeNull();
 
     expect(await updateDesignExtraPhotoTitle(ID, PHOTO_B, 'x')).toBe(false);
+  });
+
+  // designs-atomic-extraphotos: updateDesignExtraPhotoTitle's array write must
+  // go through updateExtraPhotosAtomic too, for the same reason as remove.
+  it('updateDesignExtraPhotoTitle does not drop a photo added by a concurrent writer (guarded atomic write)', async () => {
+    let applied = false;
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: 'Old' }],
+      onExtraPhotosRefetch: (s) => {
+        if (applied) return;
+        applied = true;
+        const r = s.row as { extra_photos: DesignExtraPhoto[]; updated_at: string };
+        r.extra_photos = [
+          ...r.extra_photos,
+          { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 5, h: 5, title: null },
+        ];
+        r.updated_at = 'concurrent-add';
+      },
+    });
+    sbRef.current = client;
+
+    expect(await updateDesignExtraPhotoTitle(ID, PHOTO_A, 'New name')).toBe(true);
+
+    const stored = state.row.extra_photos as DesignExtraPhoto[];
+    expect(stored.map(p => p.id).sort()).toEqual([PHOTO_A, PHOTO_B].sort());
+    expect(stored.find(p => p.id === PHOTO_A)?.title).toBe('New name');
+    expect(stored.find(p => p.id === PHOTO_B)).toBeTruthy(); // not dropped
   });
 
   it('getDesignWithPhoto returns [] extras for pre-migration rows and signed entries when present', async () => {
