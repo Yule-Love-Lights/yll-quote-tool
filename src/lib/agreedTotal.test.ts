@@ -100,4 +100,53 @@ describe('amendedAgreedTotal', () => {
     expect(amendedAgreedTotal({ pricing: { total: 5600 } }, null, agreed)).toBe(agreed);
     expect(amendedAgreedTotal({ pricing: { total: 5600 } }, { total: NaN }, agreed)).toBe(agreed);
   });
+
+  // ── Sequential amendments must each bill ONLY their own increment. The shift
+  // basis is the frozen approval full total PLUS the amendments already applied,
+  // not the raw snapshot.pricing.total — otherwise a 2nd amendment re-includes the
+  // 1st amendment's change (double-count).
+  it('a SECOND amendment measures only its own increment (no double-count) — $8k, +$500 then +$300', () => {
+    // $8,000 agreed (no selection divergence: agreed == full == $8,000).
+    // First amendment took the full quote to $8,500 (+$500), recorded as
+    // { new_total: 8500, delta: 500 }. Now staff amends again, taking the full
+    // quote to $8,800 — only +$300 of NEW work. Final agreed must be $8,800
+    // (delta $300 off the $8,500 prior agreed), NOT $9,300 (which would re-add the
+    // first amendment's $500).
+    const snap = {
+      pricing: { total: 8000 },
+      amendments: [{ new_total: 8500, delta: 500 }],
+    };
+    const priorAgreed = 8500; // = last amendment new_total (resolveAgreedTotal)
+    expect(amendedAgreedTotal(snap, { total: 8800 }, priorAgreed)).toBe(8800);
+  });
+
+  it('sequential amendments on a DIVERGED selection still measure only the new increment', () => {
+    // Approval: $5,000 selection of a $5,600 full quote. First amendment took the
+    // full quote to $5,900 (+$300 real work) → agreed $5,300. Second amendment
+    // takes the full quote to $6,100 (+$200 more) → agreed must be $5,500
+    // ($5,000 + $300 + $200), NOT $5,800 (which would re-add the first $300).
+    const snap = {
+      customerSelection: { currentTotalUsd: 5000 },
+      pricing: { total: 5600 },
+      amendments: [{ new_total: 5300, delta: 300 }],
+    };
+    const priorAgreed = 5300;
+    expect(amendedAgreedTotal(snap, { total: 6100 }, priorAgreed)).toBe(5500);
+  });
+
+  it('a THIRD amendment sums ALL prior deltas into the basis', () => {
+    // agreed $10,000 == full. Two prior amendments: +$1,000 then −$400
+    // (deltas 1000, −400 → agreed now $10,600). Third takes full to $11,200
+    // (net +$600 of full-total change from $10,000): basis = 10000 + 600 = 10600,
+    // current full 11200 → shift +$600 → agreed $11,200.
+    const snap = {
+      pricing: { total: 10000 },
+      amendments: [
+        { new_total: 11000, delta: 1000 },
+        { new_total: 10600, delta: -400 },
+      ],
+    };
+    const priorAgreed = 10600;
+    expect(amendedAgreedTotal(snap, { total: 11200 }, priorAgreed)).toBe(11200);
+  });
 });
