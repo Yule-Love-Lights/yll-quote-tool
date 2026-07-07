@@ -152,4 +152,41 @@ describe('applyPermanentProjection', () => {
       { lengthFt: 9, source: 'manual' },
     ]);
   });
+
+  it('clears a side once its design run is removed — no stale over-bill', () => {
+    // 1st refresh: design covers the back → filled + tagged 'auto'.
+    const filled = applyPermanentProjection(
+      makeDefaultPermanentFields(),
+      proj({
+        feetBySide: { front: 0, left: 0, right: 0, back: 55, unassigned: 0 },
+        cornersBySide: { front: 0, left: 0, right: 0, back: 6, unassigned: 0 },
+      }),
+    );
+    expect(filled.backFootage).toBe(55);
+    expect(filled.sideSource?.back).toBe('auto');
+    // 2nd refresh: the back strand was deleted → design covers no back → cleared
+    // to 0 (NOT the stale 55 that would keep billing ~$1,925).
+    const cleared = applyPermanentProjection(filled, proj());
+    expect(cleared.backFootage).toBe(0);
+    expect(cleared.backCorners).toBe(0);
+  });
+
+  it("never overwrites a side the operator marked 'manual' (satellite-measured)", () => {
+    const fields = {
+      ...makeDefaultPermanentFields(),
+      backFootage: 40,
+      backCorners: 4,
+      sideSource: { back: 'manual' as const },
+    };
+    const out = applyPermanentProjection(
+      fields,
+      proj({
+        feetBySide: { front: 100, left: 0, right: 0, back: 0, unassigned: 0 },
+        cornersBySide: { front: 2, left: 0, right: 0, back: 0, unassigned: 0 },
+      }),
+    );
+    expect(out.frontFootage).toBe(100); // design covers front
+    expect(out.backFootage).toBe(40); // manual back preserved
+    expect(out.backCorners).toBe(4);
+  });
 });

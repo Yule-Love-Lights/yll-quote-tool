@@ -10,6 +10,19 @@ const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 
+// Which house side each footage/corner field belongs to — editing one marks that
+// side 'manual' so a later "Refresh from design" won't overwrite a satellite number.
+const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left' | 'right' | 'back'>> = {
+  frontFootage: 'front',
+  frontCorners: 'front',
+  leftFootage: 'left',
+  leftCorners: 'left',
+  rightFootage: 'right',
+  rightCorners: 'right',
+  backFootage: 'back',
+  backCorners: 'back',
+};
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="border border-gray-200 rounded-lg p-4 mb-4">
@@ -31,7 +44,12 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
-    setForm((f) => ({ ...f, permanent: { ...f.permanent, [k]: v } }));
+    setForm((f) => {
+      const side = SIDE_OF_FIELD[k];
+      const permanent = { ...f.permanent, [k]: v };
+      if (side) permanent.sideSource = { ...(f.permanent.sideSource ?? {}), [side]: 'manual' };
+      return { ...f, permanent };
+    });
 
   const patchGap = (idx: number, patch: Partial<PermanentGap>) =>
     setForm((f) => {

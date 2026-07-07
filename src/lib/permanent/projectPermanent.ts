@@ -132,18 +132,33 @@ export function applyPermanentProjection(
   fields: PermanentQuoteFields,
   proj: PermanentDesignProjection,
 ): PermanentQuoteFields {
-  // Apply a side only when the design covers it (footage > 0); else keep manual.
-  const merge = (
+  const src = fields.sideSource ?? {};
+  const nextSrc: NonNullable<PermanentQuoteFields['sideSource']> = { ...src };
+
+  // Per side, provenance-aware:
+  //  • design covers it (ft > 0)          → apply, tag 'auto'.
+  //  • design has cleared a side it filled → clear to 0 (stays 'auto') so a
+  //    deleted run can't keep billing stale footage.
+  //  • operator typed it ('manual'/legacy) → preserve (satellite-measured side).
+  const mergeSide = (
+    side: 'front' | 'left' | 'right' | 'back',
     ft: number,
     corners: number,
     curFt: number,
     curCorners: number,
-  ): [number, number] => (ft > 0 ? [ft, corners] : [curFt, curCorners]);
+  ): [number, number] => {
+    if (ft > 0) {
+      nextSrc[side] = 'auto';
+      return [ft, corners];
+    }
+    if (src[side] === 'auto') return [0, 0];
+    return [curFt, curCorners];
+  };
 
-  const [frontFootage, frontCorners] = merge(proj.feetBySide.front, proj.cornersBySide.front, fields.frontFootage, fields.frontCorners);
-  const [leftFootage, leftCorners] = merge(proj.feetBySide.left, proj.cornersBySide.left, fields.leftFootage, fields.leftCorners);
-  const [rightFootage, rightCorners] = merge(proj.feetBySide.right, proj.cornersBySide.right, fields.rightFootage, fields.rightCorners);
-  const [backFootage, backCorners] = merge(proj.feetBySide.back, proj.cornersBySide.back, fields.backFootage, fields.backCorners);
+  const [frontFootage, frontCorners] = mergeSide('front', proj.feetBySide.front, proj.cornersBySide.front, fields.frontFootage, fields.frontCorners);
+  const [leftFootage, leftCorners] = mergeSide('left', proj.feetBySide.left, proj.cornersBySide.left, fields.leftFootage, fields.leftCorners);
+  const [rightFootage, rightCorners] = mergeSide('right', proj.feetBySide.right, proj.cornersBySide.right, fields.rightFootage, fields.rightCorners);
+  const [backFootage, backCorners] = mergeSide('back', proj.feetBySide.back, proj.cornersBySide.back, fields.backFootage, fields.backCorners);
 
   const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
     lengthFt: c.lengthFt,
@@ -163,5 +178,6 @@ export function applyPermanentProjection(
     backFootage,
     backCorners,
     gaps,
+    sideSource: nextSrc,
   };
 }

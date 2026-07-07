@@ -1226,7 +1226,22 @@ export default function QuoteBuilder({
     // santas/gingerbread roofline drawn) so the operator draws the permanent
     // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
     if (form.serviceType === 'permanent') {
-      const base64 = photoPreview && photoPreview.includes(',') ? photoPreview.split(',')[1] : null;
+      // Read the base64 from the File itself — photoPreview is a blob: object URL
+      // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
+      const base64 = await new Promise<string | null>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const s = typeof r.result === 'string' ? r.result : '';
+          const comma = s.indexOf(',');
+          resolve(comma >= 0 ? s.slice(comma + 1) : null);
+        };
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(photoFile);
+      });
+      if (!base64) {
+        setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
       pendingSeedRef.current = null;
       setAnalysisError(null);
       setAnalysisWarning(null);
@@ -1235,7 +1250,7 @@ export default function QuoteBuilder({
       setFewShotCount(0);
       setViewMode('design');
       setAnalysisNotes(
-        'Photo loaded — draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+        'Photo loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
       );
       return;
     }
@@ -2075,7 +2090,9 @@ export default function QuoteBuilder({
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
-                    Analysis complete — measurements auto-filled, roofline drawn on the design.
+                    {form.serviceType === 'permanent'
+                      ? 'Photo loaded for the design canvas.'
+                      : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">
                         • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference

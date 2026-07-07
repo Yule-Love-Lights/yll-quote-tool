@@ -5171,6 +5171,14 @@ export async function renderEditor(
       const entry = savedDefaults?.[tool.bulbType];
       if (!entry || typeof entry !== "object") return;
       if (typeof entry.spacingIn === "number") tool.spacingIn = entry.spacingIn;
+      // #88: a stale saved spacing (e.g. a legacy 6"/12" permanent default from
+      // before the 8"-only lockdown) must not escape the type's allow-list —
+      // clamp to SPACINGS, mirroring the bulb-type click handler. For permanent
+      // (SPACINGS = [8]) this forces 8" on-center regardless of stored settings.
+      const allowedSpacings = SPACINGS[tool.bulbType];
+      if (!allowedSpacings.includes(tool.spacingIn)) {
+        tool.spacingIn = allowedSpacings[Math.floor(allowedSpacings.length / 2)] ?? allowedSpacings[0];
+      }
       if (typeof entry.drawingStyle === "string") {
         const ds = entry.drawingStyle;
         if (ds === "strand" || ds === "trace" || ds === "single") tool.drawingStyle = ds;
