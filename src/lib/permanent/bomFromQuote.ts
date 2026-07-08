@@ -5,6 +5,10 @@
 import type { PermanentQuoteFields } from './types';
 import { buildPermanentBom, type PermanentBom, type PermanentBomInput } from './bom';
 
+// Untyped-DB-JSON clamp: a count that isn't a positive finite number reads 0.
+const count = (n: unknown): number =>
+  typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+
 /** Map the per-side footage/corners + track/gap fields onto the BOM engine input. */
 export function permanentBomInputFromFields(p: PermanentQuoteFields): PermanentBomInput {
   return {
@@ -28,6 +32,25 @@ export function permanentBomInputFromFields(p: PermanentQuoteFields): PermanentB
     // block that predates/omits gaps would otherwise be undefined → buildPermanentBom
     // does `input.gaps.filter(...)`, 500-ing the operator BOM + print pages.
     gaps: Array.isArray(p.gaps) ? p.gaps : [],
+    // #140 precedence — THE predicate: the Extensions/Splitters card overrides
+    // the gaps path ONLY once something actually wrote it (`accessoriesSource`
+    // set by the geometry/AI seed or the operator). Never key on the objects
+    // merely existing: a defaulted all-zero `extensions` would silently zero
+    // the BOM of every legacy quote that still orders via its gaps rows.
+    ...(p.accessoriesSource != null
+      ? {
+          accessories: {
+            extensions: {
+              e3: count(p.extensions?.e3),
+              e5: count(p.extensions?.e5),
+              e10: count(p.extensions?.e10),
+              e25: count(p.extensions?.e25),
+            },
+            splitters: count(p.splittersNeeded),
+            jumpBoosters: count(p.jumpBoosters),
+          },
+        }
+      : {}),
   };
 }
 

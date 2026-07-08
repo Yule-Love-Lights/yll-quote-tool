@@ -33,6 +33,19 @@ export type PermanentBomInput = {
   controllerToFirstLightFt?: number;
   /** Jumps between runs — drive extensions (sized per gap), splitters, and >50ft boosters. */
   gaps: PermanentGap[];
+  /**
+   * #140 — the Extensions/Splitters card counts. When present they OVERRIDE the
+   * gaps-derived accessories entirely: extension lines come from `extensions`,
+   * the splitter line from `splitters`, and long-jump boosters from
+   * `jumpBoosters` (the controller>10ft booster rule still applies on top).
+   * Callers set this ONLY when the card was actually written (see
+   * bomFromQuote's accessoriesSource predicate) — never from a defaulted object.
+   */
+  accessories?: {
+    extensions: { e3: number; e5: number; e10: number; e25: number };
+    splitters: number;
+    jumpBoosters: number;
+  };
 };
 
 export type TransformerUnit = { watts: 350 | 600; kit: boolean; lights: number };
@@ -68,7 +81,6 @@ const C = {
   ext5: 3.4565976,
   ext10: 4.6087968,
   ext25: 10.7115468,
-  ext50: 21.1008684,
 } as const;
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -140,19 +152,58 @@ export function powerInjectionCount(lights: number): number {
   return Math.ceil(lights / 75);
 }
 
-/** Signal boosters: controller >10 ft → 1; each gap run >50 ft → +1. */
+/**
+ * Signal boosters: controller >10 ft → 1; long jumps >50 ft → +1 each. Long
+ * jumps come from the card's `jumpBoosters` when the accessories override is
+ * present (#140), else from the legacy gaps rows.
+ */
 export function boosterCount(input: PermanentBomInput): number {
   const ctrl = (input.controllerToFirstLightFt ?? 0) > 10 ? 1 : 0;
-  const gapBoost = input.gaps.filter((g) => Number.isFinite(g.lengthFt) && g.lengthFt > 50).length;
-  return ctrl + gapBoost;
+  const jumpBoost = input.accessories
+    ? posInt(input.accessories.jumpBoosters)
+    : input.gaps.filter((g) => Number.isFinite(g.lengthFt) && g.lengthFt > 50).length;
+  return ctrl + jumpBoost;
 }
 
-const EXT_SIZES = [3, 5, 10, 25, 50] as const;
-type ExtSize = (typeof EXT_SIZES)[number];
+// Stock extension sizes (#140, Jason S24): 3'/5'/10'/25' ONLY — 50s are dropped
+// ("issues in the past with 50s"); anything longer CHAINS (15 = 10+5,
+// 30 = 25+5, 60 = 25+25+10).
+export const EXT_SIZES = [3, 5, 10, 25] as const;
+export type ExtSize = (typeof EXT_SIZES)[number];
 
 /**
- * Extensions per gap: the smallest stock size that covers it; a run over 50 ft is
- * combined (60 → 50' + 10'). Each `splitter` gap adds one 12V splitter.
+ * Bucket one needed length into stock extension pieces (#140, Jason S24):
+ *   • >25 ft chains 25s, then the remainder below;
+ *   • (15, 25] → a single 25 (overshoot beats a 3-piece chain);
+ *   • (10, 15] → 10 + the ≤5 remainder ("a 25 is a large jump from 10");
+ *   • (0, 10]  → the smallest covering size.
+ * Shared by the legacy gaps path here and the #140 jump-sizing ladder
+ * (trackAccessories) so the two can never bucket differently.
+ */
+export function bucketExtensionLength(lengthFt: number): ExtSize[] {
+  let len = Number.isFinite(lengthFt) ? lengthFt : 0;
+  if (len <= 0) return [];
+  const pieces: ExtSize[] = [];
+  while (len > 25) {
+    pieces.push(25);
+    len -= 25;
+  }
+  if (len > 15) {
+    pieces.push(25);
+  } else {
+    if (len > 10) {
+      pieces.push(10);
+      len -= 10;
+    }
+    if (len > 0) pieces.push(EXT_SIZES.find((s) => s >= len) ?? 25);
+  }
+  return pieces.sort((a, b) => a - b);
+}
+
+/**
+ * Extensions per gap (the LEGACY path — pre-#140 stored quotes whose card was
+ * never written), bucketed via bucketExtensionLength. Each `splitter` gap adds
+ * one 12V splitter.
  */
 export function extensionsForGaps(
   gaps: PermanentGap[],
@@ -161,14 +212,9 @@ export function extensionsForGaps(
   let splitters = 0;
   for (const g of gaps) {
     if (g.splitter) splitters++;
-    let len = Number.isFinite(g.lengthFt) ? g.lengthFt : 0;
-    if (len <= 0) continue;
-    while (len > 50) {
-      counts.set(50, (counts.get(50) ?? 0) + 1);
-      len -= 50;
+    for (const size of bucketExtensionLength(g.lengthFt)) {
+      counts.set(size, (counts.get(size) ?? 0) + 1);
     }
-    const size = EXT_SIZES.find((s) => s >= len) ?? 50;
-    counts.set(size, (counts.get(size) ?? 0) + 1);
   }
   const extensions = [...counts.entries()]
     .sort((a, b) => a[0] - b[0])
@@ -176,12 +222,27 @@ export function extensionsForGaps(
   return { extensions, splitters };
 }
 
+/** The card counts → the same shape extensionsForGaps returns (#140 override). */
+function extensionsFromAccessories(
+  acc: NonNullable<PermanentBomInput['accessories']>,
+): { extensions: Array<{ ft: ExtSize; qty: number }>; splitters: number } {
+  const byFt: Array<[ExtSize, number]> = [
+    [3, posInt(acc.extensions.e3)],
+    [5, posInt(acc.extensions.e5)],
+    [10, posInt(acc.extensions.e10)],
+    [25, posInt(acc.extensions.e25)],
+  ];
+  return {
+    extensions: byFt.filter(([, qty]) => qty > 0).map(([ft, qty]) => ({ ft, qty })),
+    splitters: posInt(acc.splitters),
+  };
+}
+
 const EXT_COST: Record<ExtSize, number> = {
   3: C.ext3,
   5: C.ext5,
   10: C.ext10,
   25: C.ext25,
-  50: C.ext50,
 };
 
 function trackSku(style: TrackStyle, color: TrackColor): string {
@@ -246,9 +307,12 @@ export function buildPermanentBom(
   const injections = units.reduce((s, u) => s + powerInjectionCount(u.lights), 0);
   push('APL11123', 'Power T-injector 12V', injections, cost('APL11123', C.powerT), 'power');
 
-  // Data: extra boosters (beyond the KIT's) + splitters + extensions.
+  // Data: extra boosters (beyond the KIT's) + splitters + extensions. The #140
+  // card counts override the gaps-derived accessories entirely when present.
   push('APL11121', 'Signal booster', boosterCount(input), cost('APL11121', C.booster), 'data');
-  const { extensions, splitters } = extensionsForGaps(input.gaps);
+  const { extensions, splitters } = input.accessories
+    ? extensionsFromAccessories(input.accessories)
+    : extensionsForGaps(input.gaps);
   push('APL11122', 'Splitter 12V', splitters, cost('APL11122', C.splitter), 'data');
   for (const e of extensions) {
     push(`APL11312-${e.ft}`, `${e.ft}' extension 12V`, e.qty, cost(`APL11312-${e.ft}`, EXT_COST[e.ft]), 'extension');

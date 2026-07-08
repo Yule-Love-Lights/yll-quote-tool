@@ -7,6 +7,7 @@ import {
   sizeTransformers,
   powerInjectionCount,
   boosterCount,
+  bucketExtensionLength,
   extensionsForGaps,
   type PermanentBomInput,
 } from './bom';
@@ -83,24 +84,94 @@ describe('permanent BOM — unit formulas', () => {
     expect(powerInjectionCount(188)).toBe(3);
   });
 
-  it('boosterCount: controller >10ft → 1; each gap >50ft → +1', () => {
+  it('boosterCount: controller >10ft → 1; each legacy gap >50ft → +1', () => {
     expect(boosterCount(input({ controllerToFirstLightFt: 12 }))).toBe(1);
     expect(boosterCount(input({ controllerToFirstLightFt: 5 }))).toBe(0);
     expect(boosterCount(input({ gaps: [{ lengthFt: 60 }, { lengthFt: 20 }] }))).toBe(1);
     expect(boosterCount(input({ controllerToFirstLightFt: 35, gaps: [{ lengthFt: 60 }] }))).toBe(2);
   });
 
-  it('extensionsForGaps: smallest covering size; >50 combines; splitter counted', () => {
+  it('boosterCount (#140): the accessories override supplies jump boosters; gaps are ignored', () => {
+    const acc = { extensions: { e3: 0, e5: 0, e10: 0, e25: 0 }, splitters: 0, jumpBoosters: 2 };
+    expect(boosterCount(input({ accessories: acc, gaps: [{ lengthFt: 60 }] }))).toBe(2); // NOT 3
+    expect(boosterCount(input({ controllerToFirstLightFt: 35, accessories: acc }))).toBe(3); // ctrl rule stacks
+    expect(boosterCount(input({ accessories: { ...acc, jumpBoosters: 0 }, gaps: [{ lengthFt: 60 }] }))).toBe(0);
+  });
+
+  it('bucketExtensionLength (#140): the Jason S24 chaining rules, exhaustively', () => {
+    expect(bucketExtensionLength(0)).toEqual([]);
+    expect(bucketExtensionLength(-4)).toEqual([]);
+    expect(bucketExtensionLength(Number.NaN)).toEqual([]);
+    expect(bucketExtensionLength(2)).toEqual([3]);
+    expect(bucketExtensionLength(3)).toEqual([3]);
+    expect(bucketExtensionLength(4)).toEqual([5]);
+    expect(bucketExtensionLength(7)).toEqual([10]);
+    expect(bucketExtensionLength(10)).toEqual([10]);
+    expect(bucketExtensionLength(12)).toEqual([3, 10]); // 10 + ≤5 remainder
+    expect(bucketExtensionLength(15)).toEqual([5, 10]); // "15 = 10+5"
+    expect(bucketExtensionLength(20)).toEqual([25]); // (15,25] → single 25
+    expect(bucketExtensionLength(25)).toEqual([25]);
+    expect(bucketExtensionLength(30)).toEqual([5, 25]); // "30 = 25+5"
+    expect(bucketExtensionLength(60)).toEqual([10, 25, 25]); // "60 = 25+25+10"
+    expect(bucketExtensionLength(105)).toEqual([5, 25, 25, 25, 25]); // 100 + 5
+  });
+
+  it('extensionsForGaps (#140 sizes): smallest covering size from 3/5/10/25; >25 chains 25s; splitter counted', () => {
     expect(extensionsForGaps([{ lengthFt: 10 }, { lengthFt: 25, splitter: true }])).toEqual({
       extensions: [{ ft: 10, qty: 1 }, { ft: 25, qty: 1 }],
       splitters: 1,
     });
+    // 50s are gone (Jason S24: "issues in the past") — 60 chains 25+25+10.
     expect(extensionsForGaps([{ lengthFt: 60 }])).toEqual({
-      extensions: [{ ft: 10, qty: 1 }, { ft: 50, qty: 1 }],
+      extensions: [{ ft: 10, qty: 1 }, { ft: 25, qty: 2 }],
       splitters: 0,
     });
+    // 15 = 10 + 5 (no 15' SKU); 30 = 25 + 5.
+    expect(extensionsForGaps([{ lengthFt: 15 }])).toEqual({
+      extensions: [{ ft: 5, qty: 1 }, { ft: 10, qty: 1 }],
+      splitters: 0,
+    });
+    expect(extensionsForGaps([{ lengthFt: 30 }])).toEqual({
+      extensions: [{ ft: 5, qty: 1 }, { ft: 25, qty: 1 }],
+      splitters: 0,
+    });
+    // (15, 25] takes the single 25 — overshoot beats a 3-piece chain.
+    expect(extensionsForGaps([{ lengthFt: 20 }])).toEqual({ extensions: [{ ft: 25, qty: 1 }], splitters: 0 });
     expect(extensionsForGaps([{ lengthFt: 3 }])).toEqual({ extensions: [{ ft: 3, qty: 1 }], splitters: 0 });
     expect(extensionsForGaps([{ lengthFt: 0 }])).toEqual({ extensions: [], splitters: 0 });
+  });
+
+  it('buildPermanentBom (#140): card accessories override the gaps path for extensions + splitters', () => {
+    const bom = buildPermanentBom(
+      input({
+        footageBySide: { front: 50, left: 0, right: 0, back: 0 },
+        gaps: [{ lengthFt: 60, splitter: true }], // would give 25×2+10 + 1 splitter
+        accessories: {
+          extensions: { e3: 2, e5: 1, e10: 0, e25: 4 },
+          splitters: 3,
+          jumpBoosters: 1,
+        },
+      }),
+    );
+    expect(line(bom, 'APL11312-3')!.qty).toBe(2);
+    expect(line(bom, 'APL11312-5')!.qty).toBe(1);
+    expect(line(bom, 'APL11312-10')).toBeFalsy(); // zero count → no line
+    expect(line(bom, 'APL11312-25')!.qty).toBe(4);
+    expect(line(bom, 'APL11122')!.qty).toBe(3); // card splitters, not the gap's 1
+    expect(line(bom, 'APL11121')!.qty).toBe(1); // card jumpBoosters, not the gap's >50 rule
+  });
+
+  it('buildPermanentBom (#140): NO accessories → the legacy gaps path still orders', () => {
+    const bom = buildPermanentBom(
+      input({
+        footageBySide: { front: 50, left: 0, right: 0, back: 0 },
+        gaps: [{ lengthFt: 60, splitter: true }],
+      }),
+    );
+    expect(line(bom, 'APL11312-25')!.qty).toBe(2);
+    expect(line(bom, 'APL11312-10')!.qty).toBe(1);
+    expect(line(bom, 'APL11122')!.qty).toBe(1);
+    expect(line(bom, 'APL11121')!.qty).toBe(1); // 60ft gap > 50 → legacy jump booster
   });
 });
 
