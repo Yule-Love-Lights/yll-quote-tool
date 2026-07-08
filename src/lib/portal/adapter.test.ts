@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { quoteRowToPortalQuote, BILLED_ROOFLINE_IDS, type QuoteRowForPortal } from './adapter';
 import { calculateQuote, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
+import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
 import type { PortalPhotos } from './photos';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
@@ -511,6 +512,63 @@ describe('quoteRowToPortalQuote — hides packages below the approval minimum (#
     })!;
     expect(portal.minimumOrderSubtotal).toBe(0); // auto-waived
     expect(portal.packages.length).toBeGreaterThan(0);
+  });
+
+  // ── S24 adversarial-review regressions (the 3 confirmed #134 findings) ────
+
+  it("REVIEW FIX: holiday's EMPTY 'D' recommendation slot survives the filter (applyOurRecommendation populates it later)", () => {
+    // Pre-fix the filter summed D's empty includedItemIds to $0 < gate and
+    // dropped it — the loader's applyOurRecommendation then found no D, so the
+    // whole #12 staff-recommendation flow + the "Build Your Own" card silently
+    // vanished on every holiday quote ≥ $1,000.
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 150, rooflineChoice: 'santas' }), // $1,500 → gate active
+    );
+    const portal = portalFrom(result)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    const d = portal.packages.find((p) => p.id === 'D');
+    expect(d).toBeDefined();
+    expect(d!.includedItemIds).toEqual([]); // still the empty placeholder
+  });
+
+  it('REVIEW FIX: default-ON rush fee counts toward the tile basis (same basis the approve gate uses)', () => {
+    // Gingerbread recommended → tierLineItems = $900 + $250 = $1,150 → gate
+    // active at $1,000. Entry tier A (always Santa's) = $700 + $250 = $950
+    // items-only — but the staff-seeded rush fee (+$150) makes it approvable
+    // as tapped ($1,100 ≥ $1,000), so it must NOT be hidden.
+    const inputs = emptyInputs({
+      santasFootage: 70, // $700 medium
+      gingerbreadFootage: 20, // gingerbread option $900
+      rooflineChoice: 'gingerbread',
+      rushFee: true,
+      customLineItems: [{ label: 'Extra décor', amount: 250, quantity: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    expect(portal.charges.rush.defaultOn).toBe(true);
+    expect(portal.packages.some((p) => p.id === 'A')).toBe(true);
+  });
+
+  it('REVIEW FIX: maintenance-triggered gate cannot empty the tile row (fallback keeps all packages)', () => {
+    // Front-only $2,000 + maintenance $600: whole-quote $2,600 ≥ $2,500 so the
+    // gate does NOT auto-waive, but maintenance sits in NO package — pre-fix
+    // the lone A ($2,000 < $2,500) was filtered and the tile row went EMPTY.
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 50, leftFootage: 0, rightFootage: 0, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: true,
+      },
+    });
+    const result = calculatePermanentQuote(inputs, { ...DEFAULT_PERMANENT_RATES, maintenancePrice: 600 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(2500); // NOT auto-waived ($2,600 ≥ $2,500)
+    expect(portal.packages.map((p) => p.id)).toEqual(['A']); // fallback kept it
   });
 
   it('holiday regression: a tier meeting the $1,000 gate exactly is kept (>=, not >)', () => {
