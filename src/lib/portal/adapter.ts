@@ -510,20 +510,38 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
         tierLineItems,
         isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
       );
-  // #134 (Jason S24): hide any package tile whose selection can't be approved —
-  // its PRE-TAX subtotal lands under the gate, so tapping it only walks the
-  // customer into the "add $X more" wall. Gate 0 (waived / auto-waived because
-  // the whole quote is under the minimum) hides nothing, so tiles can never
-  // ALL vanish; the individual line-item toggles are unaffected either way.
+  // #134 (Jason S24): hide any package tile the customer can't approve AS
+  // TAPPED — its selection basis (pre-tax items + the default-ON rush/takedown
+  // fees, the SAME basis orderMinimumStatus gates on) lands under the gate, so
+  // tapping it only walks the customer into the "add $X more" wall. Gate 0
+  // (staff-waived / auto-waived) hides nothing. Three carve-outs, all from the
+  // S24 adversarial review of this filter:
+  //   • A placeholder tile with NO items always passes — holiday's 'D' is an
+  //     EMPTY recommendation slot here (applyOurRecommendation populates it
+  //     LATER, in the loader); filtering it out silently killed the whole #12
+  //     staff-recommendation flow + the "Build Your Own" card. Tapping an
+  //     empty D is a selection no-op, so it can never be a below-min trap.
+  //   • Default-ON fees count toward the basis (orderMinimumStatus counts the
+  //     live fee toggles, which seed from these defaults — a tile that clears
+  //     the gate WITH the staff-seeded rush fee is approvable as tapped).
+  //   • If filtering would remove EVERY real tile (reachable when the
+  //     maintenance add-on lifts the quote past auto-waive while sitting in
+  //     no package), keep them all — a portal with zero tiles is worse than
+  //     below-min tiles, and the "tiles never all vanish" invariant holds.
+  const jobCharges = chargesFromResult(row.result);
+  const defaultOnFees =
+    (jobCharges.rush.defaultOn ? jobCharges.rush.amount : 0) +
+    (jobCharges.takedown.defaultOn ? jobCharges.takedown.amount : 0);
   const priceById = new Map(lineItems.map((li) => [li.id, li.price]));
-  const packages =
-    approvalGate > 0
-      ? allPackages.filter(
-          (pkg) =>
-            pkg.includedItemIds.reduce((sum, id) => sum + (priceById.get(id) ?? 0), 0) >=
-            approvalGate,
-        )
-      : allPackages;
+  let packages = allPackages;
+  if (approvalGate > 0) {
+    const kept = allPackages.filter((pkg) => {
+      if (pkg.includedItemIds.length === 0) return true; // placeholder slot (holiday 'D')
+      const subtotal = pkg.includedItemIds.reduce((sum, id) => sum + (priceById.get(id) ?? 0), 0);
+      return subtotal + defaultOnFees >= approvalGate;
+    });
+    packages = kept.some((pkg) => pkg.includedItemIds.length > 0) ? kept : allPackages;
+  }
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
@@ -574,7 +592,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Per-job charges so the custom "Build Your Own" total is priced the
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
-    charges: { ...chargesFromResult(row.result), manualDiscount },
+    charges: { ...jobCharges, manualDiscount },
     // The approval gate threshold — see `approvalGate` above (hoisted so the
     // #134 package filter and this gate can never disagree).
     minimumOrderSubtotal: approvalGate,
