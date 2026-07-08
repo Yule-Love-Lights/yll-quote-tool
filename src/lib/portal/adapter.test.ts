@@ -578,3 +578,42 @@ describe('quoteRowToPortalQuote — hides packages below the approval minimum (#
     expect(portal.packages.length).toBeGreaterThan(0);
   });
 });
+
+// ── #131: permanent per-side recommend flags reach the portal line items ────
+describe('quoteRowToPortalQuote — permanent recommended sides (#131)', () => {
+  function permInputsWith(over: Record<string, boolean> = {}): QuoteInputs {
+    return emptyInputs({
+      permanent: {
+        frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 39,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+        ...over,
+      },
+    });
+  }
+
+  it('marks exactly the flagged sides recommended (front + left here)', () => {
+    const inputs = permInputsWith({ frontRecommended: true, leftRecommended: true });
+    const result = calculatePermanentQuote(inputs);
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const recById = Object.fromEntries(portal.lineItems.map((li) => [li.id, !!li.recommended]));
+    expect(recById['permanent-front']).toBe(true);
+    expect(recById['permanent-left']).toBe(true);
+    expect(recById['permanent-right']).toBe(false);
+    expect(recById['permanent-back']).toBe(false);
+  });
+
+  it('no flags → no permanent line is recommended (portal keeps the Whole Home default)', () => {
+    const inputs = permInputsWith();
+    const result = calculatePermanentQuote(inputs);
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.lineItems.some((li) => li.recommended)).toBe(false);
+  });
+});

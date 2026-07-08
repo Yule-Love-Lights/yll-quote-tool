@@ -228,13 +228,34 @@ export default async function PortalPage({
   // Global app settings (#32) — applied to the live design render so the customer
   // sees the configured palette + render tunables (e.g. spritzer density).
   // (Fetched above, in parallel with the quote + reviews — audit W4-005.)
+  // #131 (permanent): staff-recommended sides seed the portal selection. The
+  // holiday applyOurRecommendation path is deliberately SKIPPED for permanent
+  // (its 'D' is the real Whole Home bundle, not the recommendation slot), so
+  // permanent recommends ride item.recommended straight off the adapter. When
+  // the recommended set IS one of the offered tiers, open ON that tier so it
+  // highlights; otherwise open on the custom set (the D slot then renders
+  // "Build Your Own"). Empty for every other service type.
+  const permanentRecommendedIds =
+    quote.serviceType === 'permanent'
+      ? quote.lineItems.filter((li) => li.recommended).map((li) => li.id)
+      : [];
+  const permanentRecommendedPackage =
+    permanentRecommendedIds.length > 0
+      ? quote.packages.find(
+          (p) =>
+            p.includedItemIds.length === permanentRecommendedIds.length &&
+            permanentRecommendedIds.every((id) => p.includedItemIds.includes(id)),
+        )
+      : undefined;
   // Fallback default package — escalates past B to a tier that clears the
   // $1,000 minimum so a no-recommendation quote opens approvable (#12).
-  const fallbackPackageId = pickInitialPackageId(
-    quote.packages,
-    quote.lineItems,
-    quote.minimumOrderSubtotal,
-  );
+  const fallbackPackageId = permanentRecommendedPackage
+    ? permanentRecommendedPackage.id
+    : pickInitialPackageId(
+        quote.packages,
+        quote.lineItems,
+        quote.minimumOrderSubtotal,
+      );
   const heroAfter = quote.photo.after || FALLBACK_HERO;
   const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
 
@@ -244,11 +265,17 @@ export default async function PortalPage({
   // portal on that set (computeInitialSelection switches to custom 'D'); when
   // staff recommended nothing, D is the empty "Build Your Own" card and we fall
   // back to the package-seeded default (Tier 1 — see pickInitialPackageId).
+  // (Permanent quotes reach this with D = Whole Home, so a no-recommendation
+  // permanent portal opens on the Whole Home set — unchanged behavior.)
   const ourRecommendation = quote.packages.find((p) => p.id === 'D');
   const fallbackSelectedItemIds =
-    ourRecommendation && ourRecommendation.includedItemIds.length > 0
-      ? ourRecommendation.includedItemIds
-      : undefined;
+    permanentRecommendedIds.length > 0
+      ? permanentRecommendedPackage
+        ? undefined // seed from the matched tier's own bundle
+        : permanentRecommendedIds
+      : ourRecommendation && ourRecommendation.includedItemIds.length > 0
+        ? ourRecommendation.includedItemIds
+        : undefined;
 
   // Audit fix (approved-portal-snapshot): on an approved (locked) portal, seed the
   // selection from the FROZEN snapshot so the hero price, tie-out, package
