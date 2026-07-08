@@ -77,6 +77,15 @@ export type PermanentQuoteFields = {
    * (satellite-measured) sides. Absent/legacy reads as 'manual'.
    */
   sideSource?: Partial<Record<'front' | 'left' | 'right' | 'back', 'auto' | 'manual'>>;
+  /**
+   * Staff "advised for this home" flags per side (#131 — the WW/Stake #12
+   * pattern: rides the inputs, saves on Calculate). The portal opens with the
+   * recommended sides pre-selected instead of the Whole Home default.
+   */
+  frontRecommended?: boolean;
+  leftRecommended?: boolean;
+  rightRecommended?: boolean;
+  backRecommended?: boolean;
 };
 
 /**

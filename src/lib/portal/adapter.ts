@@ -143,6 +143,21 @@ function recommendedByCustomLabel(inputs: QuoteInputs | null): Map<string, boole
   return out;
 }
 
+// #131: which inputs.permanent flag marks each permanent side line recommended.
+// The legacy combined 'permanent-sides' line predates the flags (any Calculate
+// that saves them also splits the line), so it is deliberately absent here.
+// Exported: the builder breakdown renders its recommend checkboxes off the
+// same map, so the two can't drift.
+export const PERMANENT_RECOMMEND_FIELDS: Record<
+  string,
+  'frontRecommended' | 'leftRecommended' | 'rightRecommended' | 'backRecommended'
+> = {
+  'permanent-front': 'frontRecommended',
+  'permanent-left': 'leftRecommended',
+  'permanent-right': 'rightRecommended',
+  'permanent-back': 'backRecommended',
+};
+
 function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): PortalLineItem[] {
   // Defensive: old rows or partial saves may have a missing / non-array
   // lineItems field. Treat as empty so the portal still renders (the
@@ -175,6 +190,11 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
           price: raw.amount,
           stableId: raw.id,
         };
+        // #131: staff per-side recommend flags ride the inputs (the WW/Stake #12
+        // pattern — permanent sides bill from footage NUMBERS, so there may be no
+        // scene strand to carry the flag). The portal pre-selects these.
+        const recommendField = PERMANENT_RECOMMEND_FIELDS[raw.id];
+        if (recommendField && inputs?.permanent?.[recommendField]) item.recommended = true;
         return item;
       }
       const { kind, detail } = parseLineItem(raw.label);

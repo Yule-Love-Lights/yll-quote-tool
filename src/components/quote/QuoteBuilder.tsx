@@ -8,7 +8,7 @@ import type {
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
-import { buildPortalLineItems, BILLED_ROOFLINE_IDS } from '@/lib/portal/adapter';
+import { buildPortalLineItems, BILLED_ROOFLINE_IDS, PERMANENT_RECOMMEND_FIELDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
 import type { PortalLineItem } from '@/components/portal/types';
@@ -1848,6 +1848,10 @@ export default function QuoteBuilder({
     form.winterWonderlandRecommended,
     form.stakeLightingRecommended,
     form.rooflineChoice,
+    form.permanent?.frontRecommended,
+    form.permanent?.leftRecommended,
+    form.permanent?.rightRecommended,
+    form.permanent?.backRecommended,
   ]);
 
   // #12: the "recommended subtotal" = what the customer's portal opens with when
@@ -1864,6 +1868,12 @@ export default function QuoteBuilder({
   const recommendedSubtotal =
     breakdownLinked.reduce((s, li) => (li.recommended ? s + li.price : s), 0) +
     recommendedRooflineAmount;
+  // #131: the summary below gates against the RIGHT minimum — a permanent quote
+  // gates at its frozen snapshot minimumJobAmount, not the holiday $1,000.
+  const breakdownMinimum =
+    form.serviceType === 'permanent'
+      ? result?.permanentRatesSnapshot?.minimumJobAmount ?? 2500
+      : BUSINESS_RULES.minimumQuoteAmount;
 
   // The engine emits one row per VALID custom line item, last, in order, with a
   // deterministic label. Map each to its index in form.customLineItems so a
@@ -3444,6 +3454,29 @@ export default function QuoteBuilder({
                         title="Recommend this item to the customer (saves on Calculate)"
                       />
                     );
+                  } else if (item.id && form.permanent && PERMANENT_RECOMMEND_FIELDS[item.id]) {
+                    // #131: permanent per-side recommend rides the inputs (the
+                    // WW/Stake pattern above — sides bill from footage NUMBERS,
+                    // so there may be no scene strand to hold the flag). Saves on
+                    // the next Calculate. The legacy combined 'permanent-sides'
+                    // row has no map entry → no checkbox until a re-Calculate
+                    // splits it.
+                    const permKey = PERMANENT_RECOMMEND_FIELDS[item.id];
+                    const checked = !!form.permanent[permKey];
+                    checkbox = (
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer accent-green-600"
+                        checked={checked}
+                        onChange={() =>
+                          setForm((f) =>
+                            f.permanent ? { ...f, permanent: { ...f.permanent, [permKey]: !checked } } : f,
+                          )
+                        }
+                        aria-label={`Recommend ${item.label}`}
+                        title="Recommend this item to the customer (saves on Calculate)"
+                      />
+                    );
                   } else {
                     // Maybe a custom row → match by the engine label, in order.
                     const matchAt = customRowMatchers.findIndex(
@@ -3536,17 +3569,17 @@ export default function QuoteBuilder({
                     </span>
                     <span className="tabular-nums font-semibold text-gray-800">{usd(recommendedSubtotal)}</span>
                   </div>
-                  {result.subtotalBeforeDiscount >= BUSINESS_RULES.minimumQuoteAmount &&
-                    recommendedSubtotal < BUSINESS_RULES.minimumQuoteAmount && (
+                  {result.subtotalBeforeDiscount >= breakdownMinimum &&
+                    recommendedSubtotal < breakdownMinimum && (
                       <p className="text-xs text-red-600 mt-1">
-                        ⚠ Under the {usd(BUSINESS_RULES.minimumQuoteAmount)} minimum — the customer can&apos;t approve until they add{' '}
-                        {usd(BUSINESS_RULES.minimumQuoteAmount - recommendedSubtotal)} more. Recommend additional items before sending.
+                        ⚠ Under the {usd(breakdownMinimum)} minimum — the customer can&apos;t approve until they add{' '}
+                        {usd(breakdownMinimum - recommendedSubtotal)} more. Recommend additional items before sending.
                       </p>
                     )}
                 </>
               ) : (
                 <p className="text-xs text-gray-400">
-                  No items recommended — the customer&apos;s portal opens with the default selection (auto-set to clear the {usd(BUSINESS_RULES.minimumQuoteAmount)} minimum).
+                  No items recommended — the customer&apos;s portal opens with the default selection (auto-set to clear the {usd(breakdownMinimum)} minimum).
                 </p>
               )}
             </div>
