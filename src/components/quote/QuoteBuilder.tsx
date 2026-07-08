@@ -795,8 +795,15 @@ export default function QuoteBuilder({
   // this is a thin dispatcher with the same value-equality guard as the footage
   // effect above. 'manual' provenance pauses it (the operator owns the counts;
   // the card's Recount button hands ownership back by setting 'auto').
+  //
+  // SESSION GATE: only derives while a satellite session is live
+  // (satellitePreview set — an address pull / satellite upload this session).
+  // A REOPENED quote does not rehydrate permanentSatLines, so deriving there
+  // would clobber the saved auto counts with a weaker view (street-only, or
+  // zeros) — same reason the footage effect above leaves reopened sides alone.
   useEffect(() => {
     if (form.serviceType !== 'permanent') return;
+    if (satellitePreview == null) return;
     if (form.permanent?.accessoriesSource === 'manual') return;
     const streetStrandPoints = (breakdownScene?.items ?? [])
       .filter((i) => isStrand(i) && i.bulbType === 'permanent' && !isLinkedTwin(i))
@@ -840,6 +847,7 @@ export default function QuoteBuilder({
     permanentSatLines,
     satelliteFeetPerPixel,
     satelliteAspect,
+    satellitePreview,
     breakdownScene,
     form.serviceType,
     form.permanent?.accessoriesSource,
