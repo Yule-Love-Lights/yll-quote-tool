@@ -30,6 +30,43 @@ describe('permanentBomInputFromFields', () => {
   });
 });
 
+describe('permanentBomInputFromFields — #140 accessories precedence predicate', () => {
+  it('NO accessoriesSource → no accessories on the input, even when count objects exist', () => {
+    // The predicate keys on accessoriesSource, never on object presence — a
+    // defaulted zero object must not suppress the legacy gaps path.
+    const p = {
+      ...makeDefaultPermanentFields(),
+      extensions: { e3: 0, e5: 0, e10: 0, e25: 0 },
+      splittersNeeded: 0,
+    };
+    expect(permanentBomInputFromFields(p).accessories).toBeUndefined();
+  });
+
+  it('accessoriesSource set → accessories built with clamped counts', () => {
+    const p = {
+      ...makeDefaultPermanentFields(),
+      accessoriesSource: 'manual' as const,
+      extensions: { e3: 2, e5: -1, e10: 3.7, e25: Number.NaN },
+      splittersNeeded: 2,
+      jumpBoosters: 1,
+    };
+    expect(permanentBomInputFromFields(p).accessories).toEqual({
+      extensions: { e3: 2, e5: 0, e10: 3, e25: 0 }, // negatives/NaN clamp, floats floor
+      splitters: 2,
+      jumpBoosters: 1,
+    });
+  });
+
+  it("accessoriesSource 'auto' with missing count objects → all-zero accessories (untyped DB JSON)", () => {
+    const p = { ...makeDefaultPermanentFields(), accessoriesSource: 'auto' as const };
+    expect(permanentBomInputFromFields(p).accessories).toEqual({
+      extensions: { e3: 0, e5: 0, e10: 0, e25: 0 },
+      splitters: 0,
+      jumpBoosters: 0,
+    });
+  });
+});
+
 describe('permanentBomFromQuote', () => {
   it('returns null when the quote has no permanent block', () => {
     expect(permanentBomFromQuote(null)).toBeNull();

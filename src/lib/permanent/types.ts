@@ -86,6 +86,26 @@ export type PermanentQuoteFields = {
   leftRecommended?: boolean;
   rightRecommended?: boolean;
   backRecommended?: boolean;
+  /**
+   * #140 — the Extensions/Splitters card counts (BOM accessories). Once
+   * `accessoriesSource` is set these are THE ordered quantities (they override
+   * the legacy gaps-derived path in the BOM engine); geometry/AI seed them and
+   * an operator-typed value wins. ALL of these stay undefined on a fresh form
+   * (makeDefaultPermanentFields) — presence is keyed on `accessoriesSource`,
+   * never on the objects existing, so a legacy stored quote with only `gaps`
+   * keeps its old BOM path untouched.
+   */
+  extensions?: { e3: number; e5: number; e10: number; e25: number };
+  splittersNeeded?: number;
+  /** Extra signal boosters for long jumps (>50 ft), beyond the controller>10ft rule. */
+  jumpBoosters?: number;
+  /**
+   * 'auto' = last written by the geometry/AI derive (a re-derive may refresh);
+   * 'manual' = the operator typed a count (derives never overwrite; the card's
+   * "Recount" button resets to 'auto'). Absent = the card was never written →
+   * legacy gaps path.
+   */
+  accessoriesSource?: 'auto' | 'manual';
 };
 
 /**
