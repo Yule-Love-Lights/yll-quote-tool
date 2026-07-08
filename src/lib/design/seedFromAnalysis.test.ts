@@ -430,6 +430,88 @@ describe('sanitizeAnalysisSeed', () => {
     expect(analysisSeedHasContent(sanitizeAnalysisSeed(null))).toBe(false);
     expect(analysisSeedHasContent(sanitizeAnalysisSeed({ detections: {} }))).toBe(false);
   });
+
+  it('#140 P3: sanitizes permanent runs — street sides only, ≥2 finite clamped points', () => {
+    const out = sanitizeAnalysisSeed({
+      permanentRuns: [
+        { side: 'front', points: [[0.1, 0.5], [0.4, 0.5], [1.4, -0.2]] }, // out-of-range pts clamp
+        { side: 'back', points: [[0.1, 0.1], [0.9, 0.9]] }, // back never from street
+        { side: 'left', points: [[0.5, 0.5]] }, // degenerate
+        { side: 'right', points: 'nope' },
+      ],
+    });
+    expect(out.permanentRuns).toHaveLength(1);
+    expect(out.permanentRuns![0].side).toBe('front');
+    expect(out.permanentRuns![0].points).toEqual([[0.1, 0.5], [0.4, 0.5], [1, 0]]);
+    expect(analysisSeedHasContent(out)).toBe(true);
+  });
+});
+
+describe('#140 P3: permanent street runs → bulbType:permanent strands', () => {
+  const RUNS_SEED: AnalysisSeed = {
+    permanentRuns: [
+      { side: 'front', points: [[0.1, 0.4], [0.5, 0.4], [0.6, 0.2], [0.7, 0.4]] },
+      { side: 'left', points: [[0.05, 0.45], [0.1, 0.4]] },
+    ],
+  };
+
+  it('seeds tagged permanent strands (8" spacing, seed-perm ids, scene px points)', () => {
+    const out = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
+    const perms = out.items.filter((i): i is StrandItem => isStrand(i) && i.bulbType === 'permanent');
+    expect(perms).toHaveLength(2);
+    expect(perms[0].id).toBe('seed-perm-1');
+    expect(perms[0].sideOfHouse).toBe('front');
+    expect(perms[0].spacingIn).toBe(8);
+    expect(perms[0].points).toEqual([100, 200, 500, 200, 600, 100, 700, 200]); // ×W/H
+    expect(perms[1].sideOfHouse).toBe('left');
+  });
+
+  it('re-seeding replaces ONLY seeded permanent strands; hand-drawn ones survive', () => {
+    const handDrawn: StrandItem = {
+      id: 'staff-1',
+      yardstickId: null,
+      kind: 'strand',
+      bulbType: 'permanent',
+      spacingIn: 8,
+      drawingStyle: 'strand',
+      colorPattern: ['warm-white'],
+      points: [0, 0, 50, 50],
+      sideOfHouse: 'right',
+      included: true,
+    };
+    const first = seedSceneFromAnalysis({ yardsticks: [], items: [handDrawn] }, RUNS_SEED, W, H);
+    const again = seedSceneFromAnalysis(first, {
+      permanentRuns: [{ side: 'front', points: [[0.2, 0.3], [0.8, 0.3]] }],
+    }, W, H);
+    const perms = again.items.filter((i): i is StrandItem => isStrand(i) && i.bulbType === 'permanent');
+    expect(perms.map((p) => p.id).sort()).toEqual(['seed-perm-1', 'staff-1']);
+    expect(perms.find((p) => p.id === 'seed-perm-1')!.points).toEqual([200, 150, 800, 150]);
+  });
+
+  it('a later per-unit re-seed (holiday detections) does NOT drop seeded permanent strands', () => {
+    const withPerms = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
+    const withDetections = seedSceneFromAnalysis(withPerms, {
+      detections: { spritzers: [{ size: '24', box: [0.7, 0.7, 0.1, 0.1] }] },
+    }, W, H);
+    const perms = withDetections.items.filter((i) => isStrand(i) && i.bulbType === 'permanent');
+    expect(perms).toHaveLength(2);
+  });
+
+  it('counts seeded permanent strands in the roofline bucket', () => {
+    const out = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
+    expect(countSeededItems(out).roofline).toBe(2);
+  });
+
+  it('seeds the default 10 ft yardstick into a scene with none (S25 regression: analyze shipped a yardstick-less design)', () => {
+    const out = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
+    expect(out.yardsticks).toEqual([makeDefaultYardstick(W, H)]);
+  });
+
+  it('never replaces an existing yardstick — even an operator-resized seed one', () => {
+    const resized = { ...makeDefaultYardstick(W, H), width: 42 };
+    const out = seedSceneFromAnalysis({ yardsticks: [resized], items: [] }, RUNS_SEED, W, H);
+    expect(out.yardsticks).toEqual([resized]);
+  });
 });
 
 describe('makeDefaultYardstick (#88 permanent — uncalibrated auto-yardstick)', () => {

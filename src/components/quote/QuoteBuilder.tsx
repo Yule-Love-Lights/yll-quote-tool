@@ -651,6 +651,14 @@ export default function QuoteBuilder({
   const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
     front: false, left: false, right: false, back: false,
   });
+  // #140 P3: the analyzer's jump/splitter detections — what pure geometry can't
+  // see. Session-scoped extras for the Extensions/Splitters derive; the DERIVED
+  // counts persist on form.permanent (saved on Calculate), so nothing is lost
+  // across sessions even though the raw detections aren't stored.
+  const [permanentAiExtras, setPermanentAiExtras] = useState<{ splitters: number; jumpsFt: number[] }>({
+    splitters: 0,
+    jumpsFt: [],
+  });
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -814,6 +822,7 @@ export default function QuoteBuilder({
       satelliteFeetPerPixel,
       satelliteAspect,
       streetStrandPoints,
+      extras: permanentAiExtras, // #140 P3: AI jumps + splitter branch points
     });
     queueMicrotask(() =>
       setForm((f) => {
@@ -849,6 +858,7 @@ export default function QuoteBuilder({
     satelliteAspect,
     satellitePreview,
     breakdownScene,
+    permanentAiExtras,
     form.serviceType,
     form.permanent?.accessoriesSource,
   ]);
@@ -1375,11 +1385,40 @@ export default function QuoteBuilder({
               right: seeded.right ?? [],
               back: seeded.back ?? [],
             });
+            // #140 P3: street runs → editable bulbType:'permanent' strands on
+            // the design (visual + portal; billing stays satellite-sourced).
+            // Same dispatch-or-park flow the holiday seed uses.
+            const streetRuns = (data.permanentSatellite?.streetRuns ?? []) as Array<{
+              side: 'front' | 'left' | 'right';
+              points: [number, number][];
+            }>;
+            if (streetRuns.length > 0) {
+              const permSeed: AnalysisSeed = {
+                permanentRuns: streetRuns.map((r) => ({ side: r.side, points: r.points })),
+              };
+              if (designId) {
+                void seedDesignFromAnalysis(designId, permSeed); // bumps designEditorKey itself
+              } else {
+                pendingSeedRef.current = permSeed;
+              }
+            }
+            // #140 P3: AI-detected jumps + splitter branch points feed the
+            // Extensions/Splitters derive as `extras` (what geometry can't see).
+            const jumps = (data.permanentSatellite?.jumps ?? []) as Array<{
+              ft: number;
+              splitter: boolean;
+            }>;
+            setPermanentAiExtras({
+              splitters: jumps.filter((j) => j.splitter).length,
+              jumpsFt: jumps.map((j) => j.ft).filter((f) => Number.isFinite(f) && f > 0),
+            });
             const conf = data.permanentSatellite?.confidence;
             const aiNotes = data.permanentSatellite?.notes;
             setAnalysisNotes(
-              `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence). ` +
-                'Check each line on the Satellite tab and drag/redraw anything off — footage, corners, and extensions all follow the lines.' +
+              `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence)` +
+                (streetRuns.length ? `, plus ${streetRuns.length} street run(s) on the design` : '') +
+                (jumps.length ? `, ${jumps.length} jump(s)${jumps.some((j) => j.splitter) ? ' incl. splitter branch(es)' : ''}` : '') +
+                '. Check each line — footage, corners, and extensions all follow the lines.' +
                 (aiNotes ? ` AI notes: ${aiNotes}` : ''),
             );
           } else {
