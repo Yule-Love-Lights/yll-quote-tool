@@ -194,6 +194,17 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
         // identity (not position). Absent on legacy results → positional fallback.
         ...(raw.id ? { stableId: raw.id } : {}),
       };
+      // #138 (Jason S24): the customer card shows just the product name + price —
+      // the engine's " – 41ft (easy)" footage/difficulty suffix is operator
+      // detail (the builder breakdown renders result.lineItems directly, so it
+      // keeps the full label). Matched by kind+prefix so pre-#104 results with
+      // no stable id normalize too; Gingerbread is also kind 'ridge' but never
+      // starts with "Winter Wonderland". Same portal-only pattern as the S23
+      // permanent label strip above.
+      if (kind === 'ridge' && /^Winter Wonderland/i.test(item.label)) {
+        item.label = 'Winter Wonderland';
+        item.detail = '';
+      }
       // A custom line item flagged `recommended` by staff (#12). Matched by the
       // engine's exact label (custom labels never contain "Gingerbread Ridge",
       // so the shim above is a no-op for them).

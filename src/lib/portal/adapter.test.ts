@@ -134,6 +134,17 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     expect(portal.lineItems.some((li) => /Wonderland/.test(li.label))).toBe(true);
   });
 
+  it('#138: the Winter Wonderland card shows just the product name (footage/difficulty stripped)', () => {
+    const result = calculateQuote(
+      emptyInputs({ winterWonderlandFootage: 41, winterWonderlandDifficulty: 'easy' }),
+    );
+    const portal = portalFrom(result)!;
+    const ww = portal.lineItems.find((li) => li.kind === 'ridge')!;
+    expect(ww.label).toBe('Winter Wonderland'); // engine label was "Winter Wonderland – 41ft (easy)"
+    expect(ww.detail).toBe('');
+    expect(ww.price).toBe(41 * 8); // easy $8/ft — the price itself is untouched
+  });
+
   it('is undefined for legacy rows priced before Phase 1 (no rooflineOptions field)', () => {
     const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
     const legacy = { ...result, rooflineOptions: undefined } as unknown as QuoteResult;
