@@ -154,6 +154,18 @@ export const DEFAULT_PERMANENT_WARRANTY: PermanentWarranty = {
 };
 
 /**
+ * #139 (Jason S24): permanent footage bills in 5-ft steps — any measured or
+ * hand-typed per-side footage rounds UP to the next multiple of 5 (37→40,
+ * 22→25; exact multiples stay). Applied at the ENTRY points (the satellite
+ * derive + the builder inputs on blur), never inside the pricing engine, so
+ * the number the operator sees is exactly the number that bills.
+ */
+export function roundFootageUpTo5(n: number): number {
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.ceil(n / 5) * 5;
+}
+
+/**
  * A blank permanent block for a fresh/hydrating quote form. A FACTORY (not a
  * shared const) so each form gets its own `gaps` array — no cross-form mutation.
  */
