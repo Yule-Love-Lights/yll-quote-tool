@@ -20,7 +20,9 @@ import type { QuoteResult } from './pricing/pricingEngine';
 // One appended amendment-trail entry, as far as the agreed-total resolution
 // cares. Kept structural (not imported from lib/amend) so this module stays a
 // leaf with no extra dependencies; the real AmendmentTrailEntry satisfies it.
-type AmendmentLike = { new_total?: number | null };
+// `delta` (new_total − previous_total of that amendment) lets amendedAgreedTotal
+// advance the shift basis by everything already applied.
+type AmendmentLike = { new_total?: number | null; delta?: number | null };
 
 // The minimal approval snapshot shape the agreed total is read from. A malformed
 // / partial snapshot (any field missing or the wrong type) is tolerated — each
@@ -76,17 +78,27 @@ export function resolveAgreedTotal(
  * The amend flow re-prices the WHOLE quote in the builder, so the new
  * `result.total` is full-scope, while the previously agreed total is a SELECTION
  * subset. Subtracting one basis from the other fabricates a phantom increase
- * equal to the original divergence. Instead we measure only what STAFF changed —
- * `result.total − snapshot.pricing.total` (the full total frozen at approval) —
- * and apply that shift to the agreed total:
+ * equal to the original divergence. Instead we measure only what STAFF changed
+ * since the LAST time the order was priced, and apply that shift to the agreed
+ * total:
  *
- *   newAgreedTotal = agreedTotal + (currentFullTotal − approvalFullTotal)
+ *   basis          = approvalFullTotal + Σ(already-applied amendment deltas)
+ *   newAgreedTotal = agreedTotal + (currentFullTotal − basis)
  *
- * When no builder edit happened, currentFullTotal === approvalFullTotal → the
- * shift is 0 → the amend correctly reads as no-change (no phantom increase).
- * When the approval snapshot has no frozen full total (legacy rows), we fall
- * back to the current full total as the basis, so both sides are full-scope and
- * the delta is the pre-fix behavior — safe for the non-diverged path.
+ * The basis is the approval-time full total ADVANCED by every amendment already
+ * applied. Without that advance, a 2nd (or Nth) amendment would measure against
+ * the raw frozen `snapshot.pricing.total` and re-include every prior amendment's
+ * change — so two sequential +$500 then +$300 amendments would bill $500 then
+ * $800 instead of $500 then $300 (double-count). Each amendment's `delta`
+ * (new_total − previous_total) equals the full-total shift it applied, so summing
+ * the prior deltas moves the basis up to the full total as of the last amendment;
+ * `currentFullTotal − basis` is then this amendment's own increment.
+ *
+ * When no builder edit happened, currentFullTotal === basis → the shift is 0 →
+ * the amend correctly reads as no-change (no phantom increase). When the approval
+ * snapshot has no frozen full total (legacy rows), we fall back to the current
+ * full total as the basis, so both sides are full-scope and the delta is the
+ * pre-fix behavior — safe for the non-diverged path.
  */
 export function amendedAgreedTotal(
   snapshot: AgreedTotalSnapshot,
@@ -98,7 +110,16 @@ export function amendedAgreedTotal(
   const approvalFullTotal = finiteMoney(snapshot?.pricing?.total);
   // No frozen full total → measure on the full basis (legacy / pre-snapshot).
   if (approvalFullTotal === undefined) return currentFullTotal;
-  const shift = currentFullTotal - approvalFullTotal;
+  // Advance the approval-time full basis by every amendment already applied, so
+  // THIS amendment measures only its own increment (not the prior amendments').
+  const amendments = Array.isArray(snapshot?.amendments) ? snapshot!.amendments! : [];
+  let appliedDelta = 0;
+  for (const a of amendments) {
+    const d = a?.delta;
+    if (typeof d === 'number' && Number.isFinite(d)) appliedDelta += d;
+  }
+  const basis = approvalFullTotal + appliedDelta;
+  const shift = currentFullTotal - basis;
   const next = agreedTotal + shift;
   return next >= 0 ? next : 0; // never negative (a huge removal clamps to 0)
 }

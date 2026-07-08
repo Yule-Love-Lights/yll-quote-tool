@@ -216,9 +216,15 @@ export async function findOrCreateCustomer(
   // Only alphanumeric-ish/email/phone-shaped values are interpolated into the
   // .or() filter (safeOrValue) — same PostgREST-injection guard used by
   // lib/dashboard/inbox/store.ts's findCandidates.
+  //
+  // customers-or-sanitize: secondaryKeys are the free-text name/email/phone
+  // match keys (e.g. `name:${name}`), NOT column values — a name containing a
+  // comma or paren would corrupt a hand-built `match_key.in.(...)` string. Use
+  // the client's parameterized .in() for those instead (a separate query, run
+  // FIRST — a name-only identity's ONLY merge route, since there's no safe
+  // raw hl/email/phone column value to fall back on for it).
   const secondaryKeys = secondaryMatchKeys(identity).filter((k) => k !== key);
   const orConds: string[] = [];
-  if (secondaryKeys.length) orConds.push(`match_key.in.(${secondaryKeys.join(',')})`);
   const hl = norm(identity.hl_contact_id);
   if (hl && safeOrValue(hl)) orConds.push(`hl_contact_id.eq.${hl}`);
   const email = norm(identity.email);
@@ -226,28 +232,36 @@ export async function findOrCreateCustomer(
   const phoneRaw = norm(identity.phone);
   if (phoneRaw && safeOrValue(phoneRaw)) orConds.push(`phone.eq.${phoneRaw}`);
 
-  if (orConds.length) {
+  let merge: CustomerRow | undefined;
+  if (secondaryKeys.length) {
+    const { data: byKey } = await sb
+      .from('customers')
+      .select('*')
+      .in('match_key', secondaryKeys);
+    merge = (byKey as CustomerRow[] | null)?.[0];
+  }
+  if (!merge && orConds.length) {
     const { data: candidates } = await sb.from('customers').select('*').or(orConds.join(','));
-    const merge = (candidates as CustomerRow[] | null)?.[0];
-    if (merge) {
-      // Never DOWNGRADE an existing higher-(or-equal-)precedence match_key —
-      // only adopt `key` on the merged row when it out-ranks what's stored.
-      const mergeKeyRank = keyPrecedenceRank(merge.match_key);
-      const ourKeyRank = keyPrecedenceRank(key);
-      const nextMatchKey = ourKeyRank < mergeKeyRank ? key : merge.match_key;
-      const { error: updErr } = await sb
-        .from('customers')
-        .update({
-          match_key: nextMatchKey,
-          hl_contact_id: norm(identity.hl_contact_id) ?? merge.hl_contact_id,
-          name: norm(identity.name) ?? merge.name,
-          email: norm(identity.email) ?? merge.email,
-          phone: norm(identity.phone) ?? merge.phone,
-        })
-        .eq('id', merge.id);
-      if (updErr) console.error('findOrCreateCustomer merge-upgrade error:', updErr);
-      return { id: merge.id };
-    }
+    merge = (candidates as CustomerRow[] | null)?.[0];
+  }
+  if (merge) {
+    // Never DOWNGRADE an existing higher-(or-equal-)precedence match_key —
+    // only adopt `key` on the merged row when it out-ranks what's stored.
+    const mergeKeyRank = keyPrecedenceRank(merge.match_key);
+    const ourKeyRank = keyPrecedenceRank(key);
+    const nextMatchKey = ourKeyRank < mergeKeyRank ? key : merge.match_key;
+    const { error: updErr } = await sb
+      .from('customers')
+      .update({
+        match_key: nextMatchKey,
+        hl_contact_id: norm(identity.hl_contact_id) ?? merge.hl_contact_id,
+        name: norm(identity.name) ?? merge.name,
+        email: norm(identity.email) ?? merge.email,
+        phone: norm(identity.phone) ?? merge.phone,
+      })
+      .eq('id', merge.id);
+    if (updErr) console.error('findOrCreateCustomer merge-upgrade error:', updErr);
+    return { id: merge.id };
   }
 
   const ins = await sb
@@ -433,21 +447,6 @@ export async function getCustomer(id: string): Promise<CustomerRow | null> {
     return null;
   }
   return (data as CustomerRow | null) ?? null;
-}
-
-export async function listCustomers(limit = 500): Promise<CustomerRow[]> {
-  const sb = svc();
-  if (!sb) return [];
-  const { data, error } = await sb
-    .from('customers')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) {
-    console.error('listCustomers error:', error);
-    return [];
-  }
-  return (data ?? []) as CustomerRow[];
 }
 
 export async function getPropertiesForCustomer(customerId: string): Promise<PropertyRow[]> {

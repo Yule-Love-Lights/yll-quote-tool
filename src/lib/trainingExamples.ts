@@ -89,6 +89,19 @@ function asFootage(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+// notes is stored uncapped and maps straight to aiFailureNotes, which is
+// injected into EVERY analyze prompt as ground truth — a huge or control-char
+// payload poisons the corpus text. training.ts's training_houses path added
+// sanitizeCorpusText (2000-char cap + control-char strip) for exactly this
+// reason (W5-028); training_examples never got it. That helper isn't exported
+// from training.ts, so it's mirrored here rather than pulling in an unrelated
+// file for this scoped fix.
+const MAX_NOTES_LEN = 2000;
+function sanitizeNotes(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  return v.replace(/[\x00-\x1f]/g, ' ').trim().slice(0, MAX_NOTES_LEN) || null;
+}
+
 // Assemble + save a training example for a quote. Everything comes from
 // persisted rows; returns null with a reason when the quote can't make a
 // useful example (no linked design / no scene / no photo).
@@ -157,7 +170,7 @@ export async function captureTrainingExample(opts: {
     // a re-confirmed quote would never resurface in the "newest 2".
     created_at: new Date().toISOString(),
     source: opts.source,
-    notes: opts.notes ?? null,
+    notes: sanitizeNotes(opts.notes),
     address: quote.customer_address,
     street_photo_base64: street.base64,
     street_media_type: street.mediaType,
@@ -356,7 +369,7 @@ export async function updateTrainingExample(
   if (!sb) return false;
   const row: Record<string, unknown> = {};
   if (patch.excluded !== undefined) row.excluded = patch.excluded;
-  if (patch.notes !== undefined) row.notes = patch.notes;
+  if (patch.notes !== undefined) row.notes = sanitizeNotes(patch.notes);
   if (!Object.keys(row).length) return true;
   const { error } = await sb.from('training_examples').update(row).eq('id', id);
   if (error) {
@@ -452,9 +465,21 @@ export function exampleToFewShot(row: TrainingExampleRow): FewShotExample | null
   // with its confirmed measurement lines. A scale-less manual satellite with
   // no traced lines has layout value but no measurement truth — including it
   // would teach "empty satellite arrays for a visible top-down". Skip it.
+  //
+  // The reverse gap also needs guarding: QuoteBuilder can push traced satellite
+  // LINES with no derived footage at all (satelliteFeetPerPixel null → the
+  // *Footage keys are omitted entirely from satellite_lines). buildFewShotMessages
+  // then coerces the missing footage to 0, which would teach "traced real
+  // lines, report 0 ft" — biasing the model toward under-measurement. Require
+  // at least one positive derived footage before teaching the satellite half.
   const sat = row.satellite_lines;
   const satHasLines = (sat?.santas?.length ?? 0) > 0 || (sat?.gingerbread?.length ?? 0) > 0;
-  const includeSatellite = Boolean(row.satellite_base64 && row.satellite_media_type && satHasLines);
+  const satHasFootage =
+    (typeof sat?.santasFootage === 'number' && sat.santasFootage > 0) ||
+    (typeof sat?.gingerbreadFootage === 'number' && sat.gingerbreadFootage > 0);
+  const includeSatellite = Boolean(
+    row.satellite_base64 && row.satellite_media_type && satHasLines && satHasFootage,
+  );
   if (includeSatellite) {
     photos.push({
       base64: row.satellite_base64!,

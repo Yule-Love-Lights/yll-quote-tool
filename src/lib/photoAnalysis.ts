@@ -782,11 +782,17 @@ export async function analyzePhoto(
   // base prompt — ~3,400 tokens of ROOFLINE_TRACING_RULES + OUTPUT_JSON_SCHEMA
   // + mode-specific instructions, byte-identical across every call for a given
   // mode) and a DYNAMIC suffix (per-request notes: reference/example counts,
-  // satellite hints, the user's style-hint text, corpus bias). Marking the
-  // static block cacheable means only the dynamic suffix + images are billed
-  // at full price on every call after the first; the CONTENT of both pieces,
-  // concatenated, is byte-identical to the old single-string prompt — only
-  // the wrapping into blocks + the cache_control marker (below) are new.
+  // satellite hints, the user's style-hint text, corpus bias).
+  //
+  // cache-breakpoint fix: the dynamic suffix must NOT sit between the cached
+  // static prompt and the cached reference-image block. Its per-request text
+  // (e.g. satellite.feetPerPixel.toFixed(4)) changed the prefix hash for the
+  // reference block's cache_control breakpoint on every address, so the ~6-image
+  // library was re-written at 1.25x and almost never read back (a standing
+  // surcharge instead of the intended ~90% saving). The suffix now rides in the
+  // FINAL user message instead, so [static system prompt] + [reference block]
+  // form a byte-stable cached prefix. The model still receives the exact same
+  // words — only WHERE the dynamic text lives changed, not its content.
   const staticSystemPrompt = baseSystemPromptFor(mode);
   const dynamicSystemSuffix = refsNote + satelliteNote + satelliteSelfCheck + styleNote + examplesNote + (corpusBiasNote ?? '');
 
@@ -810,6 +816,14 @@ export async function analyzePhoto(
       source: { type: 'base64', media_type: satellite.mediaType, data: satellite.base64 },
     });
   }
+  // Per-request notes (reference/example counts, satellite hints, style hint,
+  // corpus bias) ride in the final user turn — NOT in the system array — so the
+  // static system prompt + reference-image block stay a byte-stable cached
+  // prefix (see the cache-breakpoint note above). Same words, new location.
+  // Omitted when empty (a blank/whitespace-only text block is a 400 from the API).
+  if (dynamicSystemSuffix.trim()) {
+    content.push({ type: 'text', text: dynamicSystemSuffix });
+  }
   content.push({
     type: 'text',
     text: mode === 'completed'
@@ -829,13 +843,10 @@ export async function analyzePhoto(
       // W5-012 (#110 wave 5): the static base prompt (ROOFLINE_TRACING_RULES +
       // OUTPUT_JSON_SCHEMA + mode instructions) is byte-identical across every
       // call for a given mode — cache it so it's billed once per TTL window
-      // instead of on every analyze call.
+      // instead of on every analyze call. The system array is ONLY this static
+      // block now: the per-request notes moved into the final user message so
+      // the reference-image block downstream stays a byte-stable cached prefix.
       { type: 'text', text: staticSystemPrompt, cache_control: { type: 'ephemeral' } },
-      // Per-request notes (reference/example counts, satellite hints, style
-      // hint, corpus bias) vary every call — left uncached, unchanged content.
-      // Omitted entirely when empty (a blank/whitespace-only text block is a
-      // 400 from the API) rather than sending a dangling empty block.
-      ...(dynamicSystemSuffix.trim() ? [{ type: 'text' as const, text: dynamicSystemSuffix }] : []),
     ],
     messages: [
       ...refMessages,

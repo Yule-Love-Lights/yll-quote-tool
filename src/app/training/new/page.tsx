@@ -15,9 +15,9 @@ import type {
 } from '@/lib/pricing/pricingEngine';
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
+import type { LineSegment } from '@/lib/photoAnalysis';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
-type LineSegment = { points: [number, number][]; label: string };
 type MiniLightDetection = {
   type: 'tree' | 'bush' | 'column' | 'railing';
   wrapStyle: 'canopy' | 'trunk';
@@ -547,6 +547,14 @@ export default function NewTrainingHousePage() {
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
+      // Fail-safe (analyzer outage): the API returns 200 with result:null + a
+      // friendly analysisError rather than an HTTP error — mirrors QuoteBuilder's
+      // applyAnalysisResult handling. Without this guard, reading r.santasLines
+      // below throws a raw TypeError instead of showing the server's message.
+      if (!data.result) {
+        setAnalysisError(data.analysisError ?? 'Analyzer temporarily unavailable');
+        return;
+      }
       const r = data.result as {
         santasFootage: number;
         santasDifficulty: 'easy' | 'medium' | 'hard';

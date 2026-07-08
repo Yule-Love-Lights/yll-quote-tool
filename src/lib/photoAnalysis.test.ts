@@ -333,16 +333,60 @@ describe('analyzePhoto — request shape (W5-011 / W5-012)', () => {
     expect(system).toHaveLength(1);
   });
 
-  it('appends an uncached dynamic block when there is per-request context (references present)', async () => {
+  it('keeps per-request context OUT of the system array and in the final user message', async () => {
+    // cache-breakpoint fix: the dynamic per-request suffix must not sit between
+    // the cached static system prompt and the cached reference-image block, or
+    // it changes the reference block's cache-prefix hash on every call. It now
+    // rides in the final user message instead.
     await analyzePhoto('AAAA', 'image/jpeg', [], {
       references: [
         { id: 'r1', created_at: '', asset_type: 'wreath', size: '30noble', tier: null, base64: 'BBBB', media_type: 'image/jpeg', caption: null, active: true },
       ],
     });
-    const { system } = createMock.mock.calls[0][0];
-    expect(system).toHaveLength(2);
-    expect(system[1].cache_control).toBeUndefined();
-    expect(system[1].text).toContain('product reference image(s)');
+    const { system, messages } = createMock.mock.calls[0][0];
+    // System stays a single cache-marked static block — no dynamic suffix block.
+    expect(system).toHaveLength(1);
+    expect(system[0].cache_control).toEqual({ type: 'ephemeral' });
+    // The per-request note rode along in the final user message instead.
+    const finalUser = messages[messages.length - 1];
+    const finalText = finalUser.content.map((b: { type: string; text?: string }) => b.text ?? '').join('');
+    expect(finalText).toContain('product reference image(s)');
+  });
+
+  it('keeps the reference-image cache prefix byte-stable across addresses (different feetPerPixel)', async () => {
+    // The bug: the dynamic suffix embedded feetPerPixel.toFixed(4), so the prefix
+    // leading up to the reference block's cache_control breakpoint differed on
+    // every address → the ~6-image library was re-written at 1.25x and almost
+    // never read back. After the fix, system + the reference turn(s) must be
+    // byte-identical between two different addresses; only the final user
+    // message carries the per-request scale.
+    await analyzePhoto('AAAA', 'image/jpeg', [], {
+      references: [
+        { id: 'r1', created_at: '', asset_type: 'wreath', size: '30noble', tier: null, base64: 'BBBB', media_type: 'image/jpeg', caption: null, active: true },
+      ],
+      satellite: { base64: 'SSSS', mediaType: 'image/jpeg', feetPerPixel: 0.1234 },
+    });
+    await analyzePhoto('AAAA', 'image/jpeg', [], {
+      references: [
+        { id: 'r1', created_at: '', asset_type: 'wreath', size: '30noble', tier: null, base64: 'BBBB', media_type: 'image/jpeg', caption: null, active: true },
+      ],
+      satellite: { base64: 'SSSS', mediaType: 'image/jpeg', feetPerPixel: 0.5678 },
+    });
+    const callA = createMock.mock.calls[0][0];
+    const callB = createMock.mock.calls[1][0];
+    // Cached prefix = system + the reference turn (cache_control sits on the last
+    // block of messages[0]) + the reference-ack assistant turn. All must be
+    // byte-identical so the reference block is a cache HIT on the 2nd call.
+    expect(JSON.stringify(callA.system)).toBe(JSON.stringify(callB.system));
+    expect(JSON.stringify(callA.messages[0])).toBe(JSON.stringify(callB.messages[0]));
+    expect(JSON.stringify(callA.messages[1])).toBe(JSON.stringify(callB.messages[1]));
+    // The per-request scale differs — and it lives only in the final user turn.
+    const finalTextA = callA.messages[callA.messages.length - 1].content.map((b: { text?: string }) => b.text ?? '').join('');
+    const finalTextB = callB.messages[callB.messages.length - 1].content.map((b: { text?: string }) => b.text ?? '').join('');
+    expect(finalTextA).toContain('0.1234');
+    expect(finalTextB).toContain('0.5678');
+    // The scale must NOT leak into the cached reference turn.
+    expect(JSON.stringify(callA.messages[0])).not.toContain('0.1234');
   });
 
   it('logs a warning when stop_reason is max_tokens (does not throw)', async () => {

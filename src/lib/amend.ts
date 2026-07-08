@@ -6,26 +6,23 @@
 // total, compute the new balance, the amendment-trail entry to append to
 // `approval_snapshot.amendments[]`, the re-consent predicate, and the resulting
 // quote status. No IO, no Supabase, no Valor, no HighLevel — every input is a
-// plain object so the math is trivially testable and reusable from the future
-// amend route.
+// plain object so the math is trivially testable and reusable from the live
+// amend route (src/app/api/quotes/[id]/amend/route.ts).
 //
-// What this module is NOT (deliberately deferred — see the TODO at the bottom):
-// it does NOT re-open the order, write the trail, charge/refund a card, move a
-// GHL stage, or touch the approve route / portal lock / Valor webhook. Amending
-// re-opens a BOOKED order, which rewrites the "freeze snapshot / read-only after
-// approval" assumption the revenue-critical booking path relies on (approve
-// route 409, portal lock). That integration + the operator/customer amend
-// SURFACE move money, so they land behind the #81 auth perimeter, NOT here.
+// What this module is NOT (that integration lives in the route, not here — see
+// the note at the bottom): it does NOT re-open the order, write the trail,
+// charge/refund a card, move a GHL stage, or touch the approve route / portal
+// lock / Valor webhook. Amending re-opens a BOOKED order, which rewrites the
+// "freeze snapshot / read-only after approval" assumption the revenue-critical
+// booking path relies on (approve route 409, portal lock). That integration +
+// the operator/customer amend SURFACE move money, so they live behind the #81
+// auth perimeter, in the route, NOT here.
 //
 // Reuse, don't reinvent: the new total is produced by the SAME pricing the
-// portal + approve route use (`priceSelection` from derivePackages, ultimately
-// `pricingEngine`). `repriceAmend()` is a thin convenience wrapper for callers
-// that have a fresh subtotal + charges; callers that already hold a priced
-// SelectionPrice just pass its `.total` straight into `computeAmendment`.
+// portal + approve route use (ultimately `pricingEngine`). Callers hold an
+// already-priced total and pass its `.total` straight into `computeAmendment`.
 
 import type { QuoteStatus } from './quoteStatus';
-import { priceSelection } from './portal/derivePackages';
-import type { SelectionCharges, SelectionPrice } from '@/components/portal/types';
 // #110 W1-064: shared EPSILON-nudged + finite-guarded round-to-cents (was copy-
 // pasted here / invoices.ts / balanceCollection.ts). Aliased to `round2` so the
 // call sites are byte-identical, and so the amend and the invoice it feeds still
@@ -88,7 +85,7 @@ export type ComputeAmendmentInput = {
   previousTotal: number;
   depositPaid: number; // immutable — never re-charged, never mutated
   previousBalance: number;
-  // The re-priced NEW total (tax-inclusive), from priceSelection / pricingEngine.
+  // The re-priced NEW total (tax-inclusive), from the pricing engine.
   newTotal: number;
   by: string;
   reason: string;
@@ -178,38 +175,6 @@ export function computeAmendment(input: ComputeAmendmentInput): AmendmentTrailEn
 }
 
 /**
- * Thin convenience wrapper for callers that have a fresh subtotal + charges
- * rather than an already-priced total: re-price via the SAME priceSelection the
- * portal + approve route use, then compute the amendment. Reuses the pricing
- * math (no reinvention). Returns both the full new price breakdown and the trail
- * entry, so the caller can persist the new total/deposit alongside the trail.
- */
-export function repriceAmend(args: {
-  newSubtotal: number;
-  charges: SelectionCharges;
-  previousTotal: number;
-  depositPaid: number;
-  previousBalance: number;
-  by: string;
-  reason: string;
-  lineItemChanges?: AmendmentLineItemChange[];
-  now?: () => Date;
-}): { price: SelectionPrice; amendment: AmendmentTrailEntry } {
-  const price = priceSelection(args.newSubtotal, args.charges);
-  const amendment = computeAmendment({
-    previousTotal: args.previousTotal,
-    depositPaid: args.depositPaid,
-    previousBalance: args.previousBalance,
-    newTotal: price.total,
-    by: args.by,
-    reason: args.reason,
-    lineItemChanges: args.lineItemChanges,
-    now: args.now,
-  });
-  return { price, amendment };
-}
-
-/**
  * Re-consent DEFAULT (SPEC §9 is UNDECIDED — Naldo must confirm). An amendment
  * that CHANGES the total requires the customer to re-approve the new total
  * (re-sign) before any balance change is charged; a zero-delta (cosmetic)
@@ -242,14 +207,13 @@ export function amendedQuoteStatus(
   return requiresReconsent(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
 }
 
-// TODO #83 Phase 4 + #81: amend route + UI (wires this lib). The operator
-// "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and its UI are
-// NEW money-moving operator surfaces — they re-open a BOOKED order, append the
-// trail entry from computeAmendment() to approval_snapshot.amendments[] (WITHOUT
-// overwriting the original signed snapshot), update the linked invoice balance,
-// and — per the re-consent default above — re-notify / re-collect the customer's
-// re-approval on a total change before charging the new balance. That route must
-// also REJECT amendments on a non-booked order (only a booked order has a paid
-// deposit to apply). All of it sits behind the #81 auth perimeter. Deferred
-// until #81 lands; do NOT wire this into approve/route.ts, the portal, or the
-// Valor webhook before then.
+// #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The
+// operator "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and
+// its UI are money-moving operator surfaces — they re-open a BOOKED order,
+// append the trail entry from computeAmendment() to
+// approval_snapshot.amendments[] (WITHOUT overwriting the original signed
+// snapshot), update the linked invoice balance, and — per the re-consent
+// default above — re-notify / re-collect the customer's re-approval on a total
+// change before charging the new balance. That route also REJECTs amendments
+// on a non-booked order (only a booked order has a paid deposit to apply). All
+// of it sits behind the #81 auth perimeter (requireOperator()).

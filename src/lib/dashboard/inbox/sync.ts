@@ -187,26 +187,49 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
     let autoResolved = 0;
     let ambiguous = 0;
     let errors = 0;
-    for (const ref of threads) {
-      try {
-        const raw = await getThread(token, ref.id);
-        if (!raw.messages || raw.messages.length === 0) {
+    // Bounded concurrency on the Gmail round trip (the actual bottleneck — each
+    // getThread is a network call, and up to 25 of them serialized cost 5-10s+ per
+    // poll). Chunk size mirrors backfillCustomersFromQuotes's CHUNK_SIZE=8. The
+    // ingestTouch write stays serial below: its contact find-or-create has no
+    // UNIQUE-index race-recovery (unlike customers.ts findOrCreateCustomer), so
+    // running it concurrently could create duplicate dashboard_contacts rows for
+    // two new threads from the same identity landing in the same chunk.
+    const CHUNK_SIZE = 8;
+    for (let i = 0; i < threads.length; i += CHUNK_SIZE) {
+      const chunk = threads.slice(i, i + CHUNK_SIZE);
+      const fetched = await Promise.all(
+        chunk.map(async (ref) => {
+          try {
+            return { ok: true as const, raw: await getThread(token, ref.id) };
+          } catch {
+            return { ok: false as const };
+          }
+        }),
+      );
+      for (const f of fetched) {
+        if (!f.ok) {
+          errors++;
+          continue;
+        }
+        if (!f.raw.messages || f.raw.messages.length === 0) {
           // Defensive: an empty thread would map to a no-identity, epoch-dated
           // item (noise). Gmail shouldn't return these, but skip if it does.
           skipped++;
           continue;
         }
-        const res = await ingestTouch(normalizeGmailThread(mapGmailThread(raw, identity), suppressed), now);
-        if (!res.ok) {
+        try {
+          const res = await ingestTouch(normalizeGmailThread(mapGmailThread(f.raw, identity), suppressed), now);
+          if (!res.ok) {
+            errors++;
+            continue;
+          }
+          if (res.skipped) skipped++;
+          else ingested++;
+          if (res.autoResolved) autoResolved++;
+          if (res.ambiguous) ambiguous++;
+        } catch {
           errors++;
-          continue;
         }
-        if (res.skipped) skipped++;
-        else ingested++;
-        if (res.autoResolved) autoResolved++;
-        if (res.ambiguous) ambiguous++;
-      } catch {
-        errors++;
       }
     }
     await recordSyncRun('gmail', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} thread error(s)` : undefined);

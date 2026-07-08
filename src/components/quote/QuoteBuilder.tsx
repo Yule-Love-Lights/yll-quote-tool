@@ -1678,6 +1678,15 @@ export default function QuoteBuilder({
           // Test Quote (#93): carried only into the first save (saveQuote);
           // ignored on update, so is_test is set once and never flips.
           isTest,
+          // Amend re-price (audit follow-up): re-pricing a BOOKED order in place is
+          // server-locked (409 quote-locked) UNLESS this operator-only flag is set —
+          // that lock otherwise freezes the amend delta at 0 forever. The job page's
+          // "Amend order" flow tells the operator to open the booked quote here and
+          // Calculate to re-price; this is that re-price. Gated to exactly 'booked'
+          // (the one locked-but-amendable status; the server only honors it there),
+          // so a normal edit of an unbooked quote sends nothing and stays locked.
+          // `undefined` is dropped by JSON.stringify, so no key ships when not booked.
+          amendReprice: savedStatus === 'booked' ? true : undefined,
         }),
       });
       const data = await res.json();

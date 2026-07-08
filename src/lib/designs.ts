@@ -924,12 +924,14 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: storage remove threw:', err);
   }
 
-  const { error: rowErr } = await sb
-    .from('designs')
-    .update({ extra_photos: extras.filter(p => p.id !== photoId) })
-    .eq('id', id);
-  if (rowErr) {
-    console.error('removeDesignExtraPhoto (row):', rowErr);
+  // Guarded-retry write (same as addDesignExtraPhoto) — closes the race where
+  // a concurrent writer (another add, a title rename, a removal) lands between
+  // this function's snapshot read above and a plain write, which would silently
+  // drop the interleaved change. See updateExtraPhotosAtomic.
+  try {
+    await updateExtraPhotosAtomic(sb, id, (current) => current.filter(p => p.id !== photoId));
+  } catch (err) {
+    console.error('removeDesignExtraPhoto (row):', err);
     return false;
   }
 
@@ -999,10 +1001,13 @@ export async function updateDesignExtraPhotoTitle(
     return false;
   }
   if (!extras.some(p => p.id === photoId)) return false;
-  const next = extras.map(p => (p.id === photoId ? { ...p, title: title?.trim() || null } : p));
-  const { error } = await sb.from('designs').update({ extra_photos: next }).eq('id', id);
-  if (error) {
-    console.error('updateDesignExtraPhotoTitle (row):', error);
+  // Guarded-retry write (same as addDesignExtraPhoto) — see updateExtraPhotosAtomic.
+  try {
+    await updateExtraPhotosAtomic(sb, id, (current) =>
+      current.map(p => (p.id === photoId ? { ...p, title: title?.trim() || null } : p)),
+    );
+  } catch (err) {
+    console.error('updateDesignExtraPhotoTitle (row):', err);
     return false;
   }
   return true;

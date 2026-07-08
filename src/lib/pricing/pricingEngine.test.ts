@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from './pricingEngine';
+import { priceSelection } from '@/lib/portal/derivePackages';
 
 // A fully-zeroed quote. Each test overrides only the fields it exercises, so
 // every assertion is about exactly one behavior.
@@ -532,6 +533,29 @@ describe('calculateQuote — discounts', () => {
     expect(r.discountAmount).toBe(300);
     expect(r.minimumApplied).toBe(false);
     expect(r.subtotalAfterDiscount).toBe(800); // real value, not floored to 1000
+  });
+
+  // Money-drift regression: a % discount on a non-round subtotal must round to
+  // CENTS, matching the portal's priceSelection exactly — not whole dollars.
+  // Whole-dollar rounding here vs. cents rounding on the portal/approve path
+  // silently drifted quotes.total up to ~54c from what the customer approves.
+  it('rounds a percentage discount to cents, matching priceSelection exactly', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Custom item', amount: 1235 }], // non-round subtotal
+      discount: { type: 'percentage', amount: 0.15 },
+    }));
+    expect(r.subtotalBeforeDiscount).toBe(1235);
+
+    const portalDiscount = priceSelection(1235, {
+      rushFee: 0,
+      takedown: 0,
+      taxRate: 0,
+      discountRate: 0.15,
+    }).discount;
+
+    expect(portalDiscount).toBe(185.25); // 1235 * 0.15, cents-rounded
+    expect(r.discountAmount).toBe(185.25); // engine must match, NOT the whole-dollar 185
+    expect(r.discountAmount).toBe(portalDiscount);
   });
 });
 

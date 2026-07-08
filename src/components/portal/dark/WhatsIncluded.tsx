@@ -171,15 +171,19 @@ export type WhatsIncludedProps = {
   design?: PortalDesign;
   palette?: BulbColor[];
   renderSettings?: RenderSettings;
-  // Permanent Lighting (#88): hide the holiday-only rush/takedown + early-install
-  // add-ons for a permanent quote (those fees are forced off in pricing/approve).
-  // Event (#96): when 'event', seasonal takedown/install wording is swapped for
-  // date-driven event wording; otherwise holiday copy is unchanged. Absent ⇒ holiday.
+  // Permanent Lighting (#88) + Event (#96): hide the holiday-only rush/takedown +
+  // early-install add-ons for those quotes (their fees are forced off in
+  // pricing/approve). These seasonal fee sections are HOLIDAY-ONLY via a positive
+  // match, so a FUTURE vertical won't inherit them either. Absent ⇒ holiday.
   serviceType?: ServiceType;
 };
 
 export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
-  const isEvent = serviceType === 'event';
+  // Holiday (or a legacy/null service_type, which reads as holiday) is the only
+  // vertical carrying the seasonal rush/takedown + early-install fee toggles.
+  // Positive-match on holiday — never `!== 'permanent'` — so a FUTURE vertical
+  // never inherits these real-dollar fees (AGENTS.md seam-gate rule).
+  const isHoliday = !serviceType || serviceType === 'holiday';
   // Permanent Lighting (#88 / S23): show permanent's own four side rooflines
   // (front/left/right/back, from the satellite draw) PLUS — for quotes made before
   // that draw existed — the LEGACY santas/gingerbread trace, relabeled Front/Sides
@@ -342,11 +346,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
          * package. Toggling either updates the totals + the approval.
-         * Event (#96) fix: events never carry rush/takedown (see
-         * src/lib/event/packages.ts:10) — hide the toggles so a customer can't
-         * add a holiday-only fee to a one-off event (derivePackages.ts also
-         * zeroes the charge amounts as defense in depth). */}
-        {serviceType !== 'permanent' && !isEvent && (
+         * Holiday-only: these seasonal fees don't apply to permanent (year-round)
+         * or event (date-driven) quotes, and shouldn't leak to any FUTURE vertical
+         * either — so this is a POSITIVE holiday match, not `!== 'permanent'`
+         * (AGENTS.md seam-gate rule; derivePackages.ts also zeroes the charge
+         * amounts for non-holiday as defense in depth). */}
+        {isHoliday && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Optional add-ons
@@ -364,12 +369,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             <AddOnToggle
               selected={takedownSelected}
               onToggle={toggleTakedown}
-              title={isEvent ? 'Early takedown' : 'Premium takedown'}
-              blurb={
-                isEvent
-                  ? 'We take everything down after your event, on the date we agreed.'
-                  : 'We take everything down before Jan 9 (standard is Jan 9 – Feb 3).'
-              }
+              title="Premium takedown"
+              blurb="We take everything down before Jan 9 (standard is Jan 9 – Feb 3)."
               amount={takedownAmount}
             />
           </ul>
@@ -382,7 +383,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
          * per quote — the "Your discount" banner below shows that instead), OR
          * when the global "hide early-install discounts" setting is on (the
          * season has passed — Settings → Customer Portal). */}
-        {serviceType !== 'permanent' && !isEvent && !hasManualDiscount && !earlyInstallHidden && (
+        {isHoliday && !hasManualDiscount && !earlyInstallHidden && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save
@@ -410,9 +411,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           <p className="mt-3 text-[13px] text-[#A89F87] leading-[1.6] max-w-2xl">
             <span className="text-[#E0D7C1] font-semibold">What early install means:</span> we put up your{' '}
             <span className="text-[#E0D7C1]">roof lights only</span>{' '}in mid–late September or anytime in October —
-            {isEvent
-              ? ' everything else is installed before your event and removed after.'
-              : ' everything else (wreaths, garland, trees, columns, railings, spritzers) still goes up in November.'}{' '}
+            everything else (wreaths, garland, trees, columns, railings, spritzers) still goes up in November.{' '}
             Your lights stay off until you&apos;re ready to turn them on. Pick a month and that&apos;s when we install — the
             discount requires the install to happen that month.
           </p>

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 let currentDb: unknown = null;
 let jobRow: Record<string, unknown> | null = null;
 let quoteRow: Record<string, unknown> | null = null;
-const { upsertOnHand } = vi.hoisted(() => ({ upsertOnHand: vi.fn(async () => {}) }));
+const { adjustOnHandAtomic } = vi.hoisted(() => ({ adjustOnHandAtomic: vi.fn(async () => {}) }));
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
 vi.mock('../jobs', () => ({
@@ -24,7 +24,7 @@ vi.mock('./catalog', () => ({
 // prove the deduction reads from the BOM-derived materials, not the empty scene.
 vi.mock('./onHand', () => ({
   listOnHand: vi.fn(async () => [{ sku: 'APL11012-5', on_hand_qty: 100 }]),
-  upsertOnHand,
+  adjustOnHandAtomic,
 }));
 vi.mock('./materialsProjection', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./materialsProjection')>();
@@ -118,6 +118,7 @@ describe('prepareJobMaterials — permanent job deducts BOM SKUs (P8 PR-2)', () 
     expect(apl5).toBeTruthy();
     expect(apl5!.before).toBe(100);
     expect(apl5!.deducted).toBeGreaterThan(0);
-    expect(upsertOnHand).toHaveBeenCalledWith({ sku: 'APL11012-5', on_hand_qty: apl5!.after });
+    // Deducted via an atomic NEGATIVE delta (-deducted), not an absolute set.
+    expect(adjustOnHandAtomic).toHaveBeenCalledWith(expect.anything(), 'APL11012-5', -apl5!.deducted);
   });
 });

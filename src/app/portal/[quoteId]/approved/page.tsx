@@ -40,10 +40,17 @@ async function resolveQuote(quoteId: string): Promise<PortalQuote> {
 
 export default async function PortalApprovedPage({
   params,
+  searchParams,
 }: {
   params: Promise<Params>;
+  searchParams: Promise<{ balance?: string }>;
 }) {
   const { quoteId } = await params;
+  // `?balance=paid` (set by the pay-balance hosted-page successUrl) means the
+  // customer just paid off the remaining balance, not the deposit. The copy
+  // below must confirm that payment instead of saying it's still owed.
+  const { balance } = await searchParams;
+  const balancePaid = balance === 'paid';
   const quote = await resolveQuote(quoteId);
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
@@ -92,11 +99,13 @@ export default async function PortalApprovedPage({
     title: string;
     body: string;
   }> = [
-    isPaid
+    isPaid || balancePaid
       ? {
           icon: CreditCard,
-          title: 'Deposit received',
-          body: `We've got your 50% deposit${depositPhrase} — your spot is locked in. The remaining balance is collected after your install is complete.`,
+          title: balancePaid ? 'Balance paid in full' : 'Deposit received',
+          body: balancePaid
+            ? `We've got your final balance payment. You're paid in full, thanks for choosing Yule Love Lights.`
+            : `We've got your 50% deposit${depositPhrase} — your spot is locked in. The remaining balance is collected after your install is complete.`,
         }
       : {
           icon: CreditCard,
@@ -304,9 +313,11 @@ export default async function PortalApprovedPage({
       <footer className="w-full bg-[#060B0F] border-t border-[#1F2A23]">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-12 text-center">
           <p className="text-[12px] leading-[1.65] text-[#7B7361] max-w-[65ch] mx-auto">
-            {isPaid
-              ? 'Your deposit is paid and your spot is locked in — the remaining balance is collected after your install is complete.'
-              : "No payment is due right now — we'll reach out to collect your deposit and confirm your install date."}
+            {balancePaid
+              ? 'Your balance is paid in full. Thank you for choosing Yule Love Lights.'
+              : isPaid
+                ? 'Your deposit is paid and your spot is locked in — the remaining balance is collected after your install is complete.'
+                : "No payment is due right now — we'll reach out to collect your deposit and confirm your install date."}
           </p>
         </div>
       </footer>

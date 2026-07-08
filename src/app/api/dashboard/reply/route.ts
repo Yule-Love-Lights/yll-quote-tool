@@ -10,8 +10,19 @@ import { getItemForReply, markItemFollowed, markItemHandledLocal, recordWritebac
 import { resolveReplyTarget } from '@/lib/dashboard/inbox/reply';
 import { sendSms, sendEmail } from '@/lib/integrations/highlevel';
 import { runHandledWriteback } from '@/lib/dashboard/inbox/sync';
+import { getSupabaseServiceClient } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
+
+// Double-submit guard (dashboard-reply-double-submit): a network retry or a
+// stale second operator tab can both fire this real GHL SMS/email send —
+// client-side `sendBusy` doesn't stop either. Before sending, atomically claim
+// the item (conditional UPDATE, same idiom as markItemHandledLocal's
+// `.neq('status','handled')` guard in store.ts): a request landing while a
+// prior claim is still fresh gets 0 rows back and is rejected as a duplicate
+// BEFORE any send fires. Long enough to absorb a retry + the GHL round-trip;
+// short enough that a genuinely new reply a bit later isn't blocked.
+const REPLY_CLAIM_WINDOW_MS = 20_000;
 
 export async function POST(req: NextRequest) {
   const denied = await requireOperator();
@@ -46,6 +57,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: target.reason }, { status: 400 });
   }
 
+  // Atomic pre-send claim. Fail OPEN on a claim-layer error (e.g. the column
+  // isn't migrated yet) — the guard must never block a legitimate send.
+  const sb = getSupabaseServiceClient();
+  if (sb) {
+    const cutoffIso = new Date(Date.now() - REPLY_CLAIM_WINDOW_MS).toISOString();
+    const { data: claimed, error: claimErr } = await sb
+      .from('inbox_items')
+      .update({ reply_claimed_at: new Date().toISOString() })
+      .eq('id', itemId)
+      .or(`reply_claimed_at.is.null,reply_claimed_at.lt.${cutoffIso}`)
+      .select('id')
+      .maybeSingle();
+    if (claimErr) {
+      console.warn('[api/dashboard/reply] duplicate-send guard check failed (continuing):', claimErr.message);
+    } else if (!claimed) {
+      return NextResponse.json(
+        { error: 'A reply for this item was just sent — wait a moment before retrying.' },
+        { status: 409 },
+      );
+    }
+  }
+
   try {
     if (target.via === 'sms') {
       await sendSms({
@@ -68,6 +101,9 @@ export async function POST(req: NextRequest) {
       });
     }
   } catch (e) {
+    // Release the claim: a genuine send failure must not block a legitimate
+    // retry for the rest of the dedupe window.
+    if (sb) await sb.from('inbox_items').update({ reply_claimed_at: null }).eq('id', itemId);
     return NextResponse.json(
       { error: e instanceof Error ? e.message.slice(0, 200) : 'Send failed' },
       { status: 502 },

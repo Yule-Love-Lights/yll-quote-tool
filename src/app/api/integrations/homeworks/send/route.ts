@@ -25,6 +25,8 @@ import type { HomeworksPayload } from '@/lib/integrations/types';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import { resolveAgreedTotal } from '@/lib/agreedTotal';
+import { roundMoneyGuarded as round2 } from '@/lib/money';
 
 export const runtime = 'nodejs';
 
@@ -47,14 +49,18 @@ type QuoteRow = {
 };
 
 // Narrow shape we read out of approval_snapshot — the rest is untrusted.
-// If the quote was customer-approved, this tells us which package name to
-// surface to home.works. If no snapshot (operator-initiated resend of a
-// never-approved quote), we fall back to a generic label.
+// Widened (money fix): `currentTotalUsd` + `amendments` feed resolveAgreedTotal
+// (src/lib/agreedTotal.ts) so a RESEND of an already-approved quote bills the
+// AGREED (possibly partial) total, not the full engine-priced result — the
+// cast used to silently drop currentTotalUsd, so a resend of a partial
+// approval billed home.works for more than the customer agreed to.
 type ApprovalSnapshotPartial = {
   customerSelection?: {
     activeName?: string;
     packageId?: string;
-  };
+    currentTotalUsd?: number | null;
+  } | null;
+  amendments?: Array<{ new_total?: number | null }> | null;
 };
 
 export async function POST(req: NextRequest) {
@@ -122,6 +128,36 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // ATOMIC CLAIM (MEDIUM double-send fix): the read-then-check above is only a
+  // fast path. Unlike /signed (an inbound webhook whose external call is a
+  // best-effort HighLevel stage move fired AFTER the DB stamp), the external
+  // call below is what CREATES the real home.works estimate — it must never
+  // fire twice for one logical send. Compare-and-swap on the exact value we
+  // just read: a normal first send claims `homeworks_sent_at IS NULL`; a
+  // `?force=true` resend claims off the previous sentAt. Only the request
+  // whose read is still current wins the claim; the loser updates 0 rows and
+  // bails with 409 instead of double-firing Zapier. sentAt is decided now
+  // (not after the send) so the claimed value is exactly what gets stamped.
+  const sentAt = new Date().toISOString();
+  const previousSentAt = quote.homeworks_sent_at;
+  const claimBase = sb.from('quotes').update({ homeworks_sent_at: sentAt }).eq('id', quote.id);
+  const { data: claimed, error: claimErr } = await (previousSentAt
+    ? claimBase.eq('homeworks_sent_at', previousSentAt)
+    : claimBase.is('homeworks_sent_at', null)
+  ).select('id');
+  if (claimErr) {
+    return NextResponse.json(
+      { error: `Failed to claim quote for sending: ${claimErr.message}` },
+      { status: 500 },
+    );
+  }
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json(
+      { error: 'Quote is already being sent (or was just sent) to home.works — retry in a moment.' },
+      { status: 409 },
+    );
+  }
+
   // Build the Zapier payload from the saved quote. We flatten the full
   // pricing breakdown so the Zap's field mapper can reach each value
   // without JavaScript code steps.
@@ -131,23 +167,37 @@ export async function POST(req: NextRequest) {
     amountUsd: li.amount,
   }));
 
-  const subtotalBeforeDiscountUsd = r?.subtotalBeforeDiscount ?? 0;
-  const discountAmountUsd = r?.discountAmount ?? 0;
-  const subtotalAfterDiscountUsd = r?.subtotalAfterDiscount ?? 0;
-  const rushFeeUsd = r?.rushFeeAmount ?? 0;
-  const takedownUsd = r?.takedownAmount ?? 0;
-  const taxableAmountUsd = r?.taxableAmount ?? 0;
-  const taxAmountUsd = r?.taxAmount ?? 0;
-  const totalUsd = r?.total ?? quote.total ?? 0;
-  const depositUsd = r?.depositAmount ?? 0;
-  const balanceDueUsd = r?.balanceDue ?? 0;
+  // HIGH money fix: this route resends an ALREADY-APPROVED quote, but the
+  // customer approves a SELECTION on the portal (deselecting items, picking
+  // the cheaper roofline tier, toggling rush/takedown) — r.* is the FULL
+  // engine-priced result across every input, not what was agreed to.
+  // resolveAgreedTotal (src/lib/agreedTotal.ts, mirrors invoices.ts) is the
+  // single source of truth for the AGREED total; scale every dollar figure
+  // below by the same ratio so the whole breakdown — including
+  // homeworksLineItem.totalUsd, the number home.works actually bills off of —
+  // is consistent with the agreed total instead of the full engine total.
+  const snapshot = (quote.approval_snapshot ?? null) as ApprovalSnapshotPartial | null;
+  const fullTotal = r?.total ?? quote.total ?? 0;
+  const agreedTotal = resolveAgreedTotal(snapshot, { total: fullTotal });
+  const scale = fullTotal > 0 ? agreedTotal / fullTotal : 1;
+  const scaleMoney = (n: number) => round2(n * scale);
+
+  const subtotalBeforeDiscountUsd = scaleMoney(r?.subtotalBeforeDiscount ?? 0);
+  const discountAmountUsd = scaleMoney(r?.discountAmount ?? 0);
+  const subtotalAfterDiscountUsd = scaleMoney(r?.subtotalAfterDiscount ?? 0);
+  const rushFeeUsd = scaleMoney(r?.rushFeeAmount ?? 0);
+  const takedownUsd = scaleMoney(r?.takedownAmount ?? 0);
+  const taxableAmountUsd = scaleMoney(r?.taxableAmount ?? 0);
+  const taxAmountUsd = scaleMoney(r?.taxAmount ?? 0);
+  const totalUsd = agreedTotal;
+  const depositUsd = scaleMoney(r?.depositAmount ?? 0);
+  const balanceDueUsd = scaleMoney(r?.balanceDue ?? 0);
   const minimumApplied = r?.minimumApplied ?? false;
 
   // Package name for the home.works single-line item. If this is a
   // resend of a customer-approved quote we use the name the customer saw
   // and agreed to. If an operator is sending an un-approved quote for
   // signature/payment, we fall back to a generic label.
-  const snapshot = (quote.approval_snapshot ?? null) as ApprovalSnapshotPartial | null;
   const packageName =
     snapshot?.customerSelection?.activeName
     || 'Yule Love Lights — Holiday Lighting Package';
@@ -187,40 +237,43 @@ export async function POST(req: NextRequest) {
     balanceDueUsd,
     minimumApplied,
     notes: undefined,  // TODO wire up when notes field is added to quotes
-    sentAt: new Date().toISOString(),
+    sentAt,
   };
 
   try {
     const result = await sendQuoteToHomeworks(payload);
     if (!result.ok) {
+      // The claim above already stamped homeworks_sent_at, but Zapier
+      // rejected the send — nothing actually went out, so release the claim
+      // (restore the pre-claim value) rather than leave the quote falsely
+      // marked sent and permanently blocked from a real retry.
+      await releaseClaim(sb, quote.id, previousSentAt);
       return NextResponse.json(
         { error: result.error ?? 'Zapier rejected the webhook', response: result.webhookResponse },
         { status: 502 },
       );
     }
 
-    const sentAt = payload.sentAt;
+    // homeworks_sent_at is already durably stamped by the claim above (before
+    // the send fired) — this write only attaches the webhook response for
+    // reference, so a failure here can't cause a double-send on retry.
     const { error: updateErr } = await sb
       .from('quotes')
-      .update({
-        homeworks_sent_at: sentAt,
-        homeworks_webhook_response: result.webhookResponse ?? null,
-      })
+      .update({ homeworks_webhook_response: result.webhookResponse ?? null })
       .eq('id', quote.id);
     if (updateErr) {
-      // #110 W6-009: escalate warn -> error and surface it — the send to
-      // home.works ALREADY happened (a real external estimate), so a failed
-      // local stamp means the idempotency guard above (line ~115) never
-      // engages and an operator retry would double-send.
-      console.error(
-        '[api/integrations/homeworks/send] DB stamp failed — resend may double-fire:',
+      console.warn(
+        '[api/integrations/homeworks/send] webhook-response stamp failed (send already succeeded; sentAt already recorded):',
         { quoteId: quote.id, error: updateErr.message },
       );
-      return NextResponse.json({ ok: true, sentAt, sentRecorded: false, dbSyncFailed: true });
+      return NextResponse.json({ ok: true, sentAt, sentRecorded: true, dbSyncFailed: true });
     }
 
     return NextResponse.json({ ok: true, sentAt });
   } catch (err) {
+    // The send itself threw (network/config error) — nothing reached Zapier,
+    // so release the claim just like the !result.ok branch above.
+    await releaseClaim(sb, quote.id, previousSentAt);
     console.error('[api/integrations/homeworks/send] failed:', err);
     if (err instanceof HomeworksError) {
       return NextResponse.json(
@@ -230,5 +283,27 @@ export async function POST(req: NextRequest) {
     }
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+// Roll back the pre-claim stamp when the external send never actually
+// reached Zapier (rejected or threw), so the quote isn't stuck permanently
+// "sent" — which would block every future retry via the idempotency guard
+// above — for a request that never fired. Best-effort: a failure here is
+// logged loudly but must not mask the original send error to the caller.
+async function releaseClaim(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteId: string,
+  previousSentAt: string | null,
+): Promise<void> {
+  const { error } = await sb
+    .from('quotes')
+    .update({ homeworks_sent_at: previousSentAt })
+    .eq('id', quoteId);
+  if (error) {
+    console.error(
+      '[api/integrations/homeworks/send] claim rollback failed — quote may be stuck as "sent":',
+      { quoteId, error: error.message },
+    );
   }
 }

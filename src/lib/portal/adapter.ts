@@ -25,7 +25,7 @@ import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './deriv
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import type { PortalPhotos } from './photos';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -46,8 +46,10 @@ type ApprovalSnapshotJson = {
     // ids) when colorSchemeId === 'custom'.
     colorSchemeId?: string;
     customPattern?: string[];
-    // The premium-takedown (#4) + Sep/Oct early-install (#40) choices the
-    // customer approved with. Optional/back-compat: older snapshots predate them.
+    // The rush-install (#4) + premium-takedown (#4) + Sep/Oct early-install (#40)
+    // choices the customer approved with. Optional/back-compat: older snapshots
+    // predate them.
+    rushSelected?: boolean;
     takedownSelected?: boolean;
     installTiming?: 'none' | 'september' | 'october';
   };
@@ -102,23 +104,6 @@ export type QuoteRowForPortal = {
   // the portal uses. Optional/back-compat — undefined/null reads as holiday.
   service_type?: import('@/lib/serviceType').ServiceType | null;
 };
-
-// Scarcity context comes from environment variables (per design B3).
-// Naldo updates these weekly; deliberately not stored per-quote because
-// they're a global property of the business calendar, not the quote.
-function readScarcityFromEnv(): {
-  weeklyBookings: number;
-  bookedThroughDate: string;
-} {
-  const wbRaw = process.env.NEXT_PUBLIC_PORTAL_WEEKLY_BOOKINGS;
-  const wbParsed = wbRaw ? parseInt(wbRaw, 10) : NaN;
-  const weeklyBookings = Number.isFinite(wbParsed) && wbParsed >= 0 ? wbParsed : 8;
-
-  const bookedThroughDate =
-    process.env.NEXT_PUBLIC_PORTAL_BOOKED_THROUGH_DATE?.trim() || 'early November';
-
-  return { weeklyBookings, bookedThroughDate };
-}
 
 function deriveFirstName(fullName: string | null): string {
   if (!fullName) return 'there';
@@ -359,13 +344,64 @@ function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
     selectedItemCount: Array.isArray(sel?.selectedItemIds)
       ? sel.selectedItemIds.length
       : 0,
+    // The exact frozen selection, so a booked portal re-seeds SelectionProvider
+    // from what the customer signed rather than the recommendation/staff defaults
+    // (audit: approved-portal-snapshot). Sanitize to a clean string[] — the
+    // approve route already validated these against real ids, but old/forged
+    // snapshots shouldn't leak non-strings into the seed.
+    selectedItemIds: Array.isArray(sel?.selectedItemIds)
+      ? sel.selectedItemIds.filter((x): x is string => typeof x === 'string')
+      : [],
     installTiming:
       sel?.installTiming === 'september' || sel?.installTiming === 'october'
         ? sel.installTiming
         : 'none',
+    rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
   };
+}
+
+// ── Portal-page display derivations (audit: approved-portal-snapshot) ────────
+// Extracted here (server-free, unit-testable) because the portal page component
+// pulls in `server-only` deps and can't be imported by a test.
+
+// Whether the portal should render the BOOKED experience (banner + booked
+// sticky bar + the /approved celebration link).
+//   - checkout ON / test quote: "booked" means the deposit was actually PAID.
+//   - checkout OFF (placeholder flow): approval is the end state, BUT only while
+//     the quote is still live (actionable) or already paid — a quote staff
+//     CANCEL/DECLINE after approval must fall out of the booked view (it's shown
+//     the neutral closed notice instead). A genuinely paid deal stays booked.
+export function deriveIsBooked(args: {
+  checkoutEnabled: boolean;
+  isTest: boolean;
+  isPaid: boolean;
+  isApproved: boolean;
+  quoteStatus: string | null | undefined;
+}): boolean {
+  const { checkoutEnabled, isTest, isPaid, isApproved, quoteStatus } = args;
+  if (checkoutEnabled || isTest) return isPaid;
+  return isApproved && (isPaid || isPortalActionable(quoteStatus));
+}
+
+// Seed the SelectionProvider package/item selection. On an approved (locked)
+// portal we prefer the FROZEN snapshot over the recommendation/staff default so
+// the display matches what the customer signed:
+//   - a divergent/custom approval (packageId 'D') restores its exact item set
+//     (passing the id list highlights the custom "Build Your Own" slot);
+//   - a named tier (A/B/C) restores by packageId with NO id list, because
+//     computeInitialSelection collapses a non-empty id list to 'D' — passing the
+//     ids for a lettered package would wrongly drop its tier highlight.
+export function resolveApprovalSelectionSeed(
+  approval: Pick<PortalApproval, 'packageId' | 'selectedItemIds'> | undefined,
+  fallback: { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined },
+): { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined } {
+  if (!approval) return fallback;
+  if (approval.packageId === 'D') {
+    return { initialPackageId: 'D', initialSelectedItemIds: approval.selectedItemIds };
+  }
+  return { initialPackageId: approval.packageId, initialSelectedItemIds: undefined };
 }
 
 function buildVideo(row: QuoteRowForPortal): PortalVideo | undefined {
@@ -438,7 +474,6 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     : isEvent
       ? derivePackagesEvent(lineItems, row.result)
       : derivePackages(lineItems, row.result, roofline);
-  const { weeklyBookings, bookedThroughDate } = readScarcityFromEnv();
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
@@ -513,11 +548,6 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
         ? row.inputs.installTiming
         : 'none',
-    weeklyBookings,
-    seasonCapacity: {
-      installedThisWeek: weeklyBookings,
-      bookedThroughDate,
-    },
     approval,
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.

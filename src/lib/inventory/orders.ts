@@ -9,7 +9,7 @@
 // widget shouldn't 500 just because a read blipped).
 
 import { getSupabaseServiceClient } from '../supabase';
-import { listOnHand, upsertOnHand, toQty } from './onHand';
+import { toQty, adjustOnHandAtomic } from './onHand';
 
 export type OrderLine = { sku: string; name: string; qty: number };
 export type ReceivedLine = { sku: string; qty: number };
@@ -117,8 +117,10 @@ export type ReceiveResult = { ok: true; alreadyDone?: true };
  * write-per-line shape (jobs.ts, #110 W7-008): read first so a missing order or
  * a bad override returns before any claim is staked, then atomically flip
  * open → received (a double-click loses the claim and must never double-count
- * stock), then only the claim winner writes on-hand, one SKU at a time so a
- * single failed write can't unwind the claim or block the rest.
+ * stock), then only the claim winner writes on-hand, one SKU at a time as an
+ * ATOMIC delta (see adjustOnHandAtomic in onHand.ts) so a single failed write
+ * can't unwind the claim or block the rest, and a concurrent receipt/decrement
+ * on the same SKU can't clobber this one's increment.
  */
 export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): Promise<ReceiveResult | null> {
   const sb = getSupabaseServiceClient();
@@ -178,11 +180,9 @@ export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): 
   }
   if (!claimed) return { ok: true, alreadyDone: true };
 
-  const onHandBySku = new Map((await listOnHand()).map((r) => [r.sku, r.on_hand_qty]));
   for (const line of effective) {
     try {
-      const current = onHandBySku.get(line.sku) ?? 0;
-      await upsertOnHand({ sku: line.sku, on_hand_qty: current + line.qty });
+      await adjustOnHandAtomic(sb, line.sku, line.qty);
     } catch (err) {
       // A single failed write shouldn't unwind the claim; staff can reconcile
       // that SKU manually on the Stock tab. Log for visibility.

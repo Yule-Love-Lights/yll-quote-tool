@@ -25,10 +25,20 @@ export function derivePackagesEvent(
   result: QuoteResult,
 ): PortalPackage[] {
   if (lineItems.length === 0) return [];
+  // The adapter surfaces BOTH mutually-exclusive roofline options as toggleable
+  // line items: Santa's (front only) and Gingerbread (front + ridge + sides).
+  // Gingerbread already contains the front footage, so bundling Santa's too
+  // double-bills the front (and that inflated total freezes into the approval
+  // snapshot + Valor deposit). Drop Santa's when Gingerbread is present (mirrors
+  // derivePackages' `excludeRooflineId`) from BOTH the id list and the subtotal.
+  const excludeRooflineId = lineItems.some((li) => li.id === 'roofline-gingerbread')
+    ? 'roofline-santas'
+    : null;
+  const included = lineItems.filter((li) => li.id !== excludeRooflineId);
   // Events never carry rush/takedown — force both off (same as permanent). Same
   // tax source (chargesFromResult) so the money math stays identical to holiday.
   const charges = effectiveCharges(chargesFromResult(result), false, false);
-  const subtotal = lineItems.reduce((sum, li) => sum + li.price, 0);
+  const subtotal = included.reduce((sum, li) => sum + li.price, 0);
   const p = priceSelection(subtotal, charges);
   return [
     {
@@ -40,7 +50,7 @@ export function derivePackagesEvent(
       total: p.total,
       deposit: p.deposit,
       recommended: true,
-      includedItemIds: lineItems.map((li) => li.id),
+      includedItemIds: included.map((li) => li.id),
     },
   ];
 }

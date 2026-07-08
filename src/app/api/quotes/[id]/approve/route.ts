@@ -294,7 +294,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // resolve the customer's light-color choice further BELOW (once service_type is
   // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
   // quote the operator's live swatch list.
-  const { swatches, permanentWarranty, permanentSwatches } = await getAppSettings();
+  const { swatches, permanentWarranty, permanentSwatches, portal } = await getAppSettings();
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -302,7 +302,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     body.installTiming === 'september' || body.installTiming === 'october'
       ? body.installTiming
       : 'none';
-  const installDiscountUsd =
+  const reqInstallDiscountUsd =
     typeof body.installDiscountUsd === 'number' && body.installDiscountUsd >= 0
       ? body.installDiscountUsd
       : 0;
@@ -384,7 +384,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const noHolidayFees = isPermanent || isEvent;
   const rushSelected = noHolidayFees ? false : reqRushSelected;
   const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
-  const installTiming: 'none' | 'september' | 'october' = noHolidayFees ? 'none' : reqInstallTiming;
+  // Audit fix (approve-discount-enforce): staff can hide the Sep/Oct early-install
+  // discount portal-wide once the season passes (Settings → Customer Portal,
+  // appSettings.portal.hideEarlyInstallDiscounts). Enforce that server-side too —
+  // a forged or stale-tab POST with installTiming:'september' must not still earn
+  // the discount. Force both the timing and the client-fallback discount dollar
+  // figure off, the same pattern as noHolidayFees above.
+  const hideEarlyInstall = portal.hideEarlyInstallDiscounts === true;
+  const installTiming: 'none' | 'september' | 'october' =
+    noHolidayFees || hideEarlyInstall ? 'none' : reqInstallTiming;
+  const installDiscountUsd = noHolidayFees || hideEarlyInstall ? 0 : reqInstallDiscountUsd;
 
   // #10 / #88 P6b-2 — resolve + freeze the light-color choice now that we know the
   // service type. Permanent (#88 P6b-4, RGB pucks) uses its OWN swatch presets +

@@ -98,3 +98,44 @@ describe('derivePackagesEvent', () => {
     expect(pkgs[0].name.toLowerCase().startsWith('your ')).toBe(false);
   });
 });
+
+// ── mutually-exclusive rooflines: don't bill the front twice ─────────────────
+// The adapter surfaces BOTH roofline options (Santa's = front only; Gingerbread
+// = front + ridge + sides) as toggleable portal line items when a quote has
+// front + sides footage. Gingerbread already contains the front, so bundling
+// Santa's too double-bills the front footage (and that inflated total freezes
+// into the approval snapshot + Valor deposit). Holiday drops Santa's via
+// excludeRooflineId; the event bundle must mirror that.
+describe('derivePackagesEvent — roofline double-bill guard (#96 money)', () => {
+  const santas = pli('roofline-santas', 800); // front only
+  const gingerbread = pli('roofline-gingerbread', 1200); // front (800) + ridge/sides (400)
+  const spritzer = pli('spritzer-0', 200); // a non-roofline line
+
+  it('drops Santa\'s when Gingerbread is present, so the front is billed once', () => {
+    const result = calculateEventQuote(baseInputs());
+    const pkgs = derivePackagesEvent([santas, gingerbread, spritzer], result);
+    expect(pkgs).toHaveLength(1);
+    // Santa's excluded from the id list; bundle = Gingerbread + non-roofline items.
+    expect(pkgs[0].includedItemIds).toEqual(['roofline-gingerbread', 'spritzer-0']);
+    // subtotal 1400 (1200 + 200), NOT 2200 (which would double-bill the 800 front).
+    // 1400 → +8.75% tax = 1522.50 → 50% deposit = 761.25.
+    expect(pkgs[0].total).toBeCloseTo(1522.5, 2);
+    expect(pkgs[0].deposit).toBeCloseTo(761.25, 2);
+  });
+
+  it('keeps Santa\'s when it is the only roofline (front-only event)', () => {
+    const result = calculateEventQuote(baseInputs());
+    const pkgs = derivePackagesEvent([santas, spritzer], result);
+    expect(pkgs[0].includedItemIds).toEqual(['roofline-santas', 'spritzer-0']);
+    // subtotal 1000 → +8.75% tax = 1087.50.
+    expect(pkgs[0].total).toBeCloseTo(1087.5, 2);
+  });
+
+  it('keeps Gingerbread when it is the only roofline', () => {
+    const result = calculateEventQuote(baseInputs());
+    const pkgs = derivePackagesEvent([gingerbread, spritzer], result);
+    expect(pkgs[0].includedItemIds).toEqual(['roofline-gingerbread', 'spritzer-0']);
+    // subtotal 1400 → +8.75% tax = 1522.50.
+    expect(pkgs[0].total).toBeCloseTo(1522.5, 2);
+  });
+});

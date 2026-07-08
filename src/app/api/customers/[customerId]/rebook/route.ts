@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rebookLastSeason } from '@/lib/rebook';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
 
@@ -25,6 +25,7 @@ export async function POST(
 ) {
   const denied = await requireOperator();
   if (denied) return denied;
+  const operator = await getOperator();
 
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
@@ -50,7 +51,7 @@ export async function POST(
     // No body or non-JSON body → rebook without a property scope.
   }
 
-  const result = await rebookLastSeason(customerId, propertyId);
+  const result = await rebookLastSeason(customerId, propertyId, operator?.id ?? null);
   if (!result) {
     return NextResponse.json(
       { error: 'No approved quote to rebook from', code: 'no-source' },

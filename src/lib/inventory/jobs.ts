@@ -11,7 +11,7 @@ import type { JobStatus } from '../jobStatus';
 import type { Scene } from '@/lib/design/sceneTypes';
 import { getInventoryBindings } from './bindings';
 import { listCatalog, catalogCostOverrides } from './catalog';
-import { listOnHand, upsertOnHand } from './onHand';
+import { listOnHand, adjustOnHandAtomic } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
@@ -319,7 +319,12 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   const deductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
   for (const d of deductions) {
     try {
-      await upsertOnHand({ sku: d.sku, on_hand_qty: d.after });
+      // Atomic NEGATIVE delta (mirrors receiveOrder's positive delta) so a job
+      // decrement can never clobber a concurrent receipt increment (or another
+      // job's decrement) on the same SKU. The old absolute set of d.after read a
+      // snapshot before the atomic claim and last-write-wins dropped the racer's
+      // delta — phantom stock. See adjustOnHandAtomic in onHand.ts.
+      await adjustOnHandAtomic(db, d.sku, -d.deducted);
     } catch (err) {
       // A single failed write shouldn't unwind the claim; staff can reconcile
       // that SKU manually on the Stock tab. Log for visibility.

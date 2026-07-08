@@ -317,6 +317,60 @@ describe('deleteAllQuotes — chunked design cleanup (W2-034)', () => {
   });
 });
 
+// ── quotes-delete-select-error: a failed designs/quotes lookup must abort the
+// bulk delete instead of proceeding as if zero rows needed cleanup — otherwise
+// a transient Supabase error orphans design rows + their private-bucket photos
+// (the exact PII hole deleteDesign/deleteDesignsForQuote exist to close). ────
+
+describe('deleteAllQuotes — aborts on a failed designs lookup', () => {
+  it('throws and never reaches the quote delete when the linked-designs select errors', async () => {
+    const calls: string[] = [];
+    const builder: Record<string, unknown> = {};
+    const ret = () => builder;
+    for (const m of ['select', 'eq', 'not', 'is']) builder[m] = ret;
+    builder.delete = () => builder;
+    builder.then = (resolve: (v: unknown) => void) => {
+      resolve({ data: null, error: { message: 'connection reset' }, count: null });
+    };
+    const client = {
+      from: (table: string) => {
+        calls.push(table);
+        return builder;
+      },
+    };
+    serviceRef.current = client;
+
+    await expect(deleteAllQuotes()).rejects.toThrow(/connection reset/);
+    expect(deleteDesign).not.toHaveBeenCalled();
+    // Only the failed designs lookup ran — the quotes table was never touched.
+    expect(calls).toEqual(['designs']);
+  });
+});
+
+describe('deleteTestQuotes — aborts on a failed test-rows lookup', () => {
+  it('throws and never reaches the quote delete when the is_test select errors', async () => {
+    const calls: string[] = [];
+    const builder: Record<string, unknown> = {};
+    const ret = () => builder;
+    for (const m of ['select', 'eq', 'not', 'is']) builder[m] = ret;
+    builder.delete = () => builder;
+    builder.then = (resolve: (v: unknown) => void) => {
+      resolve({ data: null, error: { message: 'connection reset' }, count: null });
+    };
+    const client = {
+      from: (table: string) => {
+        calls.push(table);
+        return builder;
+      },
+    };
+    serviceRef.current = client;
+
+    await expect(deleteTestQuotes()).rejects.toThrow(/connection reset/);
+    expect(deleteDesignsForQuote).not.toHaveBeenCalled();
+    expect(calls).toEqual(['quotes']);
+  });
+});
+
 // ── Rebook Part A: attach-on-save ───────────────────────────────────────────
 //
 // saveQuote now calls attachQuoteToCustomer after a successful insert.
