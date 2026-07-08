@@ -96,6 +96,11 @@ describe('selectDrawableLineGroups (#51)', () => {
     expect(groups.find((g) => g.key === 'gingerbread')!.label).toBe('Gingerbread');
     expect(selectDrawableLineGroups(lines).find((g) => g.key === 'santas')!.label).toBe('Santa Roofline');
   });
+
+  it('labels the c9 channel "Winter Wonderland" — the product it bills as (#136)', () => {
+    const lines: PortalSatelliteLines = { ...empty, c9: [line(2)] };
+    expect(selectDrawableLineGroups(lines).find((g) => g.key === 'c9')!.label).toBe('Winter Wonderland');
+  });
 });
 
 describe('selectDrawableLineGroups — permanent side channels (#88 / S23)', () => {
