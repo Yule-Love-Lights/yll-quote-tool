@@ -102,7 +102,7 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(packages.some((p) => p.id === 'B')).toBe(false);
   });
 
-  it('all sides present (split left/right, #132) → A, B, C, D; B bundles left + right', () => {
+  it('all sides present (split left/right, #132) → A, B, C, D; B = Front & Sides (#133)', () => {
     const lineItems = [
       permItem('permanent-front', 4000),
       permItem('permanent-left', 2750),
@@ -113,8 +113,9 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
 
     const b = packages.find((p) => p.id === 'B')!;
-    expect(b.includedItemIds.sort()).toEqual(['permanent-left', 'permanent-right']);
-    const expectedB = priceSelection(2750 + 2500, CHARGES);
+    expect(b.name).toBe('Front & Sides');
+    expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-left', 'permanent-right']);
+    const expectedB = priceSelection(4000 + 2750 + 2500, CHARGES);
     expect(b.total).toBe(expectedB.total);
 
     const d = packages.find((p) => p.id === 'D')!;
@@ -122,20 +123,40 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(d.total).toBe(expectedD.total);
   });
 
-  it('one drawn side only (left) → B carries just that side', () => {
-    const lineItems = [permItem('permanent-front', 4000), permItem('permanent-left', 2750)];
+  it('one drawn side only (left) → B = Front & Sides with front + that side', () => {
+    const lineItems = [
+      permItem('permanent-front', 4000),
+      permItem('permanent-left', 2750),
+      permItem('permanent-back', 3500),
+    ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
     const b = packages.find((p) => p.id === 'B')!;
-    expect(b.includedItemIds).toEqual(['permanent-left']);
-    expect(b.total).toBe(priceSelection(2750, CHARGES).total);
+    expect(b.name).toBe('Front & Sides');
+    expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-left']);
+    expect(b.total).toBe(priceSelection(4000 + 2750, CHARGES).total);
   });
 
-  it('left+right-only quote → B without a byte-identical Whole Home D', () => {
+  it('front + sides and no back → B (Front & Sides) without a byte-identical Whole Home D', () => {
+    // B = front+left+right IS the whole home here — the set-equality guard
+    // suppresses the duplicate D tile.
+    const lineItems = [
+      permItem('permanent-front', 4000),
+      permItem('permanent-left', 2750),
+      permItem('permanent-right', 2500),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B']);
+    expect(packages.find((p) => p.id === 'B')!.name).toBe('Front & Sides');
+  });
+
+  it('left+right-only quote (no front) → B degrades to "Both Sides", no duplicate D', () => {
     // Post-#132 a sides-only quote has TWO lines, so the old ">1 line" guard
     // alone would emit a D identical to B. The set-equality guard suppresses it.
     const lineItems = [permItem('permanent-left', 2750), permItem('permanent-right', 2500)];
     const packages = derivePackagesPermanent(lineItems, RESULT);
     expect(packages.map((p) => p.id)).toEqual(['B']);
+    expect(packages[0].name).toBe('Both Sides');
+    expect(packages[0].includedItemIds.sort()).toEqual(['permanent-left', 'permanent-right']);
   });
 
   it('LEGACY: a pre-#132 stored result with the combined sides line keeps A, B, C, D', () => {
@@ -148,8 +169,9 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
 
     const b = packages.find((p) => p.id === 'B')!;
-    expect(b.includedItemIds).toEqual(['permanent-sides']);
-    expect(b.total).toBe(priceSelection(5250, CHARGES).total);
+    expect(b.name).toBe('Front & Sides');
+    expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-sides']);
+    expect(b.total).toBe(priceSelection(4000 + 5250, CHARGES).total);
 
     const d = packages.find((p) => p.id === 'D')!;
     const expectedD = priceSelection(4000 + 5250 + 3500, CHARGES);

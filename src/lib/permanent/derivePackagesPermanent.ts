@@ -76,15 +76,19 @@ export function derivePackagesPermanent(
     });
   }
 
+  // Package B = "Front & Sides" (#133, Jason S24): the front PLUS both sides,
+  // so tapping tier 2 selects front + left + right. On a quote with no front
+  // line it degrades to the sides alone (named honestly).
   if (sideIds.length > 0) {
-    const p = priceIds(sideIds, lineItems, charges);
+    const bIds = hasFront ? [FRONT_ID, ...sideIds] : sideIds;
+    const p = priceIds(bIds, lineItems, charges);
     packages.push({
       id: 'B',
-      name: 'Both Sides',
-      tagline: 'Left + right sides.',
+      name: hasFront ? 'Front & Sides' : 'Both Sides',
+      tagline: hasFront ? 'The front plus both sides.' : 'Left + right sides.',
       total: p.total,
       deposit: p.deposit,
-      includedItemIds: sideIds,
+      includedItemIds: bIds,
     });
   }
 
