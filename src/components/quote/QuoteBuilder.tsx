@@ -487,6 +487,40 @@ export default function QuoteBuilder({
       setTrainError(err instanceof Error ? err.message : 'Capture failed');
     }
   };
+  // #141 — the permanent-analyzer training loop's capture, kept SEPARATE from
+  // captureExample above (different table/endpoint — this teaches the
+  // permanent satellite analyzer, not the holiday one). Shares the same
+  // trainStatus/trainError feedback state; the caller picks which fn to call
+  // based on form.serviceType.
+  const capturePermanentExample = async (source: 'auto-send' | 'manual') => {
+    if (!savedQuoteId) return;
+    setTrainStatus('saving');
+    setTrainError(null);
+    try {
+      // Persist any pending design edit BEFORE the server reads designs.scene
+      // (same reasoning as captureExample above).
+      if (editorFlushRef.current) {
+        try {
+          await editorFlushRef.current();
+        } catch {
+          setTrainStatus('error');
+          setTrainError('Design may not have saved — retry before capturing');
+          return;
+        }
+      }
+      const res = await fetch('/api/permanent-training-examples', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
+      setTrainStatus('saved');
+    } catch (err) {
+      setTrainStatus('error');
+      setTrainError(err instanceof Error ? err.message : 'Capture failed');
+    }
+  };
 
   // Push an analysis payload into the design as scene items (tagged roofline
   // strands + minis/wreaths/spritzers/garland at the detected spots). Server
@@ -1720,10 +1754,16 @@ export default function QuoteBuilder({
           ? (data.stageError ?? 'The HighLevel card may not have advanced to Bid Sent.')
           : null,
       );
-      // Auto-capture (#8 Stage A): sending = staff vouching the design is
-      // right, so the staff-final state becomes a training example (replaces
-      // this quote's previous auto snapshot on a re-send). Best-effort.
-      void captureExample('auto-send');
+      // Auto-capture (#8 Stage A / #141): sending = staff vouching the design
+      // is right, so the staff-final state becomes a training example
+      // (replaces this quote's previous auto snapshot on a re-send).
+      // Best-effort. Positive gate: permanent quotes teach the SEPARATE
+      // permanent-analyzer library, never the holiday one.
+      if (form.serviceType === 'permanent') {
+        void capturePermanentExample('auto-send');
+      } else {
+        void captureExample('auto-send');
+      }
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Send failed');
@@ -3856,11 +3896,12 @@ export default function QuoteBuilder({
               </div>
             )}
 
-            {/* ── Training capture (#8 Stage A) ── */}
+            {/* ── Training capture (#8 Stage A / #141 permanent) ── */}
             <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
-                Sending auto-saves this house as an AI training example. You can also save one now
-                without sending (e.g. to teach an unusual house mid-flow).
+                {form.serviceType === 'permanent'
+                  ? 'Sending auto-saves this house as a permanent-lighting training example. You can also save one now without sending (e.g. to teach an unusual roofline mid-flow).'
+                  : 'Sending auto-saves this house as an AI training example. You can also save one now without sending (e.g. to teach an unusual house mid-flow).'}
                 {trainStatus === 'saved' && (
                   <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
                 )}
@@ -3870,7 +3911,9 @@ export default function QuoteBuilder({
               </p>
               <button
                 type="button"
-                onClick={() => void captureExample('manual')}
+                onClick={() =>
+                  void (form.serviceType === 'permanent' ? capturePermanentExample('manual') : captureExample('manual'))
+                }
                 disabled={trainStatus === 'saving' || !savedQuoteId}
                 className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
               >

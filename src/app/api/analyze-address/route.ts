@@ -6,7 +6,9 @@ import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 import {
   analyzePermanentSatellite,
   type PermanentSatelliteAnalysis,
+  type PermanentFewShotMessage,
 } from '@/lib/permanent/photoAnalysis';
+import { assemblePermanentFewShot, buildPermanentFewShotMessages } from '@/lib/permanent/fewShot';
 import { bearingDegrees } from '@/lib/permanent/orientation';
 import {
   isGoogleMapsConfigured,
@@ -94,6 +96,19 @@ export async function POST(req: NextRequest) {
     // the direction the front faces. Deterministic orientation for the side
     // labels (the AI's own road-guess flipped a real house 180°).
     const frontBearingDeg = panoLocation ? bearingDegrees(geo, panoLocation) : null;
+    // #141: the permanent training loop's few-shot — operator-confirmed past
+    // houses, satellite-similarity ranked. FAIL-SAFE: any assembly error
+    // (embed/retrieval/projection) proceeds zero-shot rather than blocking
+    // the analyzer.
+    let fewShotMessages: PermanentFewShotMessage[] = [];
+    let fewShotCount = 0;
+    try {
+      const assembled = await assemblePermanentFewShot(satellite.base64, satellite.mediaType);
+      fewShotMessages = await buildPermanentFewShotMessages(assembled.examples);
+      fewShotCount = assembled.examples.length;
+    } catch (err) {
+      console.error('[api/analyze-address] permanent few-shot assembly failed — proceeding zero-shot:', err);
+    }
     try {
       permanentSatellite = await analyzePermanentSatellite({
         satelliteBase64: satellite.base64,
@@ -102,6 +117,7 @@ export async function POST(req: NextRequest) {
         streetMediaType: streetView.mediaType,
         feetPerPixel: satelliteFeetPerPixel,
         frontBearingDeg,
+        fewShotMessages,
       });
     } catch (err) {
       console.error('[api/analyze-address] permanent satellite analyzer failed:', err);
@@ -121,6 +137,7 @@ export async function POST(req: NextRequest) {
       formattedAddress: geo.formattedAddress,
       lat: geo.lat,
       lng: geo.lng,
+      fewShotCount,
     });
   }
 
