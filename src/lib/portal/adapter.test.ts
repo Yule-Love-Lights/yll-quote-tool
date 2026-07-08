@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { quoteRowToPortalQuote, BILLED_ROOFLINE_IDS, type QuoteRowForPortal } from './adapter';
 import { calculateQuote, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
+import { calculatePermanentQuote } from '@/lib/permanent/pricing';
+import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
 import type { PortalPhotos } from './photos';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
@@ -453,5 +455,126 @@ describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (#88 P6b-2
       photos: PHOTOS,
     })!;
     expect(bad2.approval?.permanentWarranty).toBeNull();
+  });
+});
+
+// ── #134: packages under the approval gate are hidden ───────────────────────
+describe('quoteRowToPortalQuote — hides packages below the approval minimum (#134)', () => {
+  // Permanent quote at the default $2,500 gate: front $1,520 · left $1,085 ·
+  // right $1,085 · back $1,365 (the Jason S24 screenshot shape post-#132/#133).
+  const permInputs = emptyInputs({
+    permanent: {
+      frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 39,
+      gaps: [], controllerToFirstLightFt: 0,
+      frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+      trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+    },
+  });
+  const permResult = calculatePermanentQuote(permInputs);
+  function permPortal(inputs: QuoteInputs = permInputs) {
+    return quoteRowToPortalQuote({
+      row: { ...rowWith(permResult, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+  }
+
+  it('hides tiles whose pre-tax selection is under the gate; keeps the approvable ones', () => {
+    const portal = permPortal();
+    expect(portal.minimumOrderSubtotal).toBe(2500);
+    const ids = portal.packages.map((p) => p.id);
+    // A (front $1,520) and C (back $1,365) can't clear $2,500 → hidden.
+    expect(ids).not.toContain('A');
+    expect(ids).not.toContain('C');
+    // B (Front & Sides $3,690) and D (Whole Home $5,055) clear it → shown.
+    expect(ids).toContain('B');
+    expect(ids).toContain('D');
+  });
+
+  it('staff-waived minimum (gate 0) hides nothing', () => {
+    const portal = permPortal({ ...permInputs, waiveMinimum: true });
+    expect(portal.minimumOrderSubtotal).toBe(0);
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+  });
+
+  it('auto-waive (whole quote under the minimum) hides nothing — tiles never ALL vanish', () => {
+    const smallInputs = emptyInputs({
+      permanent: {
+        frontFootage: 20, leftFootage: 10, rightFootage: 0, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const smallResult = calculatePermanentQuote(smallInputs); // $800 + $350 — under $2,500
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(smallResult, smallInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(0); // auto-waived
+    expect(portal.packages.length).toBeGreaterThan(0);
+  });
+
+  // ── S24 adversarial-review regressions (the 3 confirmed #134 findings) ────
+
+  it("REVIEW FIX: holiday's EMPTY 'D' recommendation slot survives the filter (applyOurRecommendation populates it later)", () => {
+    // Pre-fix the filter summed D's empty includedItemIds to $0 < gate and
+    // dropped it — the loader's applyOurRecommendation then found no D, so the
+    // whole #12 staff-recommendation flow + the "Build Your Own" card silently
+    // vanished on every holiday quote ≥ $1,000.
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 150, rooflineChoice: 'santas' }), // $1,500 → gate active
+    );
+    const portal = portalFrom(result)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    const d = portal.packages.find((p) => p.id === 'D');
+    expect(d).toBeDefined();
+    expect(d!.includedItemIds).toEqual([]); // still the empty placeholder
+  });
+
+  it('REVIEW FIX: default-ON rush fee counts toward the tile basis (same basis the approve gate uses)', () => {
+    // Gingerbread recommended → tierLineItems = $900 + $250 = $1,150 → gate
+    // active at $1,000. Entry tier A (always Santa's) = $700 + $250 = $950
+    // items-only — but the staff-seeded rush fee (+$150) makes it approvable
+    // as tapped ($1,100 ≥ $1,000), so it must NOT be hidden.
+    const inputs = emptyInputs({
+      santasFootage: 70, // $700 medium
+      gingerbreadFootage: 20, // gingerbread option $900
+      rooflineChoice: 'gingerbread',
+      rushFee: true,
+      customLineItems: [{ label: 'Extra décor', amount: 250, quantity: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    expect(portal.charges.rush.defaultOn).toBe(true);
+    expect(portal.packages.some((p) => p.id === 'A')).toBe(true);
+  });
+
+  it('REVIEW FIX: maintenance-triggered gate cannot empty the tile row (fallback keeps all packages)', () => {
+    // Front-only $2,000 + maintenance $600: whole-quote $2,600 ≥ $2,500 so the
+    // gate does NOT auto-waive, but maintenance sits in NO package — pre-fix
+    // the lone A ($2,000 < $2,500) was filtered and the tile row went EMPTY.
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 50, leftFootage: 0, rightFootage: 0, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: true,
+      },
+    });
+    const result = calculatePermanentQuote(inputs, { ...DEFAULT_PERMANENT_RATES, maintenancePrice: 600 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(2500); // NOT auto-waived ($2,600 ≥ $2,500)
+    expect(portal.packages.map((p) => p.id)).toEqual(['A']); // fallback kept it
+  });
+
+  it('holiday regression: a tier meeting the $1,000 gate exactly is kept (>=, not >)', () => {
+    const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' })); // $1,000
+    const portal = portalFrom(result)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    expect(portal.packages.length).toBeGreaterThan(0);
   });
 });
