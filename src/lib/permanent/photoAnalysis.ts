@@ -20,6 +20,7 @@
 
 import { getClaudeClient } from '@/lib/claude';
 import { extractJson, normalizeLines, type LineSegment } from '@/lib/photoAnalysis';
+import { compassLabel, relabelPermanentSides } from './orientation';
 
 export type PermanentSatelliteLines = {
   front: LineSegment[];
@@ -158,6 +159,13 @@ export async function analyzePermanentSatellite(args: {
   streetBase64?: string;
   streetMediaType?: 'image/jpeg' | 'image/png';
   feetPerPixel?: number | null;
+  /**
+   * Bearing (° from north) the house's FRONT faces — house→Street-View-camera
+   * from the pano geodata (S25). Ground truth for orientation: prompted as a
+   * hint AND enforced by a deterministic post-parse relabel of the four
+   * satellite channels. Null/undefined = fall back to the AI's own self-check.
+   */
+  frontBearingDeg?: number | null;
 }): Promise<PermanentSatelliteAnalysis> {
   const client = getClaudeClient();
   if (!client) {
@@ -179,6 +187,13 @@ export async function analyzePermanentSatellite(args: {
     content.push({
       type: 'image',
       source: { type: 'base64', media_type: args.streetMediaType, data: args.streetBase64 },
+    });
+  }
+  if (args.frontBearingDeg != null) {
+    const deg = Math.round(args.frontBearingDeg);
+    content.push({
+      type: 'text',
+      text: `ORIENTATION FACT (from the Street View camera's geodata — MORE RELIABLE than judging the road from the image; if it conflicts with your own road guess, trust this): the FRONT of the house faces ${compassLabel(deg)} (${deg}° from north). The satellite image is north-up, so the front side is the ${compassLabel(deg)} edge of the roof outline; left/right follow for a viewer standing on that side looking at the house.`,
     });
   }
   const scaleNote =
@@ -204,5 +219,16 @@ export async function analyzePermanentSatellite(args: {
   if (!textBlock || textBlock.type !== 'text') {
     throw new Error('No text response from Claude');
   }
-  return normalizePermanentSatelliteResult(extractJson(textBlock.text.trim()));
+  const result = normalizePermanentSatelliteResult(extractJson(textBlock.text.trim()));
+  // S25: enforce the known orientation geometrically — the prompt hint alone
+  // still leaves the labels to the model. relabelPermanentSides returns the
+  // SAME object when the AI already had them right.
+  if (args.frontBearingDeg != null) {
+    const relabeled = relabelPermanentSides(result.satelliteLines, args.frontBearingDeg);
+    if (relabeled !== result.satelliteLines) {
+      console.info('[analyzePermanentSatellite] side labels corrected via street-camera bearing');
+      return { ...result, satelliteLines: relabeled };
+    }
+  }
+  return result;
 }

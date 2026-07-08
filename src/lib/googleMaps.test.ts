@@ -85,6 +85,12 @@ describe('getCachedAddressImagery (#110 W5-013)', () => {
     expect(calls).toBeGreaterThan(0);
   });
 
+  it('captures the pano camera coords for orientation (S25)', async () => {
+    const { getCachedAddressImagery } = await import('./googleMaps');
+    const img = await getCachedAddressImagery('123 Main St');
+    expect(img.panoLocation).toEqual({ lat: 40.1, lng: -74.1 });
+  });
+
   it('serves a repeat request for the SAME address from cache, without re-hitting Google', async () => {
     const { getCachedAddressImagery } = await import('./googleMaps');
     await getCachedAddressImagery('123 Main St');

@@ -7,6 +7,7 @@ import {
   analyzePermanentSatellite,
   type PermanentSatelliteAnalysis,
 } from '@/lib/permanent/photoAnalysis';
+import { bearingDegrees } from '@/lib/permanent/orientation';
 import {
   isGoogleMapsConfigured,
   getCachedAddressImagery,
@@ -60,8 +61,9 @@ export async function POST(req: NextRequest) {
   let streetView: { base64: string; mediaType: 'image/jpeg' | 'image/png' };
   let satellite: { base64: string; mediaType: 'image/jpeg' | 'image/png' };
   let satelliteFeetPerPixel: number;
+  let panoLocation: { lat: number; lng: number } | null;
   try {
-    ({ geo, streetView, satellite, satelliteFeetPerPixel } = await getCachedAddressImagery(address));
+    ({ geo, streetView, satellite, satelliteFeetPerPixel, panoLocation } = await getCachedAddressImagery(address));
   } catch (err) {
     if (err instanceof NoStreetViewError) {
       return NextResponse.json({ error: err.message }, { status: 404 });
@@ -88,6 +90,10 @@ export async function POST(req: NextRequest) {
   if (body.serviceType === 'permanent') {
     let permanentSatellite: PermanentSatelliteAnalysis | null = null;
     let permanentAnalysisError: string | undefined;
+    // S25: the Street View camera sits on the road → house→camera bearing =
+    // the direction the front faces. Deterministic orientation for the side
+    // labels (the AI's own road-guess flipped a real house 180°).
+    const frontBearingDeg = panoLocation ? bearingDegrees(geo, panoLocation) : null;
     try {
       permanentSatellite = await analyzePermanentSatellite({
         satelliteBase64: satellite.base64,
@@ -95,6 +101,7 @@ export async function POST(req: NextRequest) {
         streetBase64: streetView.base64,
         streetMediaType: streetView.mediaType,
         feetPerPixel: satelliteFeetPerPixel,
+        frontBearingDeg,
       });
     } catch (err) {
       console.error('[api/analyze-address] permanent satellite analyzer failed:', err);

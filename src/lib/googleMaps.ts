@@ -108,12 +108,6 @@ export async function resolveStreetViewPano(lat: number, lng: number): Promise<S
   return { status: data.status, panoId: data.pano_id, lat: data.location?.lat, lng: data.location?.lng };
 }
 
-// Check whether Street View imagery exists at the given location before
-// consuming a billable tile request. Returns true when a panorama is available.
-export async function hasStreetView(lat: number, lng: number): Promise<boolean> {
-  return (await resolveStreetViewPano(lat, lng)).status === 'OK';
-}
-
 // Static Maps API — top-down satellite view of the property.
 // zoom=20 is tight enough to see individual rooflines on a single-family lot.
 export async function fetchSatellite(lat: number, lng: number, opts?: { size?: string; zoom?: number }): Promise<FetchedImage> {
@@ -141,6 +135,14 @@ export type AddressImagery = {
   streetView: FetchedImage;
   satellite: FetchedImage;
   satelliteFeetPerPixel: number;
+  /**
+   * The Street View panorama's ACTUAL camera coords, from the (free) metadata
+   * call we already make to probe availability — null when metadata omits
+   * them. The camera sits on the road the house is addressed on, so the
+   * house→camera bearing is the direction the FRONT of the house faces (S25
+   * permanent-analyzer orientation).
+   */
+  panoLocation: { lat: number; lng: number } | null;
 };
 
 type ImageryCacheEntry = { value: AddressImagery; expiresAt: number };
@@ -167,10 +169,13 @@ export async function getCachedAddressImagery(address: string): Promise<AddressI
 
   const geo = await geocodeAddress(address);
 
-  const svExists = await hasStreetView(geo.lat, geo.lng);
-  if (!svExists) {
+  // Resolve the pano directly (hasStreetView wraps the same metadata call but
+  // discards the camera coords we now keep for orientation).
+  const pano = await resolveStreetViewPano(geo.lat, geo.lng);
+  if (pano.status !== 'OK') {
     throw new NoStreetViewError(`No Street View imagery available at ${geo.formattedAddress}`);
   }
+  const panoLocation = pano.lat != null && pano.lng != null ? { lat: pano.lat, lng: pano.lng } : null;
 
   const [streetView, satellite] = await Promise.all([
     fetchStreetView(geo.lat, geo.lng),
@@ -183,7 +188,7 @@ export async function getCachedAddressImagery(address: string): Promise<AddressI
   const metersPerPixel = (156543.03392 * Math.cos((geo.lat * Math.PI) / 180)) / Math.pow(2, SAT_ZOOM);
   const satelliteFeetPerPixel = metersPerPixel * 3.28084;
 
-  const value: AddressImagery = { geo, streetView, satellite, satelliteFeetPerPixel };
+  const value: AddressImagery = { geo, streetView, satellite, satelliteFeetPerPixel, panoLocation };
   imageryCache.set(key, { value, expiresAt: now + __ADDRESS_CACHE_TTL_MS });
   return value;
 }
