@@ -1,9 +1,17 @@
-# Assistant session journal — archive
+﻿# Assistant session journal — archive
 
 > Older entries moved out of the repo `CLAUDE.md` journal so it stays lean (it loads
 > into every session). Newest on top. The living journal keeps only the recent
 > sessions plus the scorecard; the full narrative always lives in
 > `docs/context/session_log_naldo.md` / `session_log.md`.
+
+### S20 — 2026-07-03/04 — #110 FULL-TOOL QUALITY AUDIT: planned + W0/W1/W2/W4/W5 audited & FIXED, W7→Naldo handoff (master `d2c8027`→`746fbcf`)
+**One conversation = a whole audit-and-fix epic.** Scoped the 8-wave #110 quality audit (plan-critic-lite'd → 2 BLOCKERs caught pre-wave-0), then audited AND fixed **5 of 8 waves in-session**, handed 1 to Naldo. Gates **1695 → 1973** vitest (tsc 0 · eslint 0 throughout). Model-routing policy (Naldo's PR #335) adopted + followed: Sonnet-build / Opus-review / Fable-untouched.
+- **Shipped LIVE (~19 fix PRs + 6 audit/docs PRs):** **W0** scoping (manifest 648 files, charter, dedupe ledger) · **W1 money** 79 findings, CRITICAL W1-001 (invoice billed full `result.total` not the approved selection) + 4 HIGH + 22 more fixed · **W2 data** 36 findings, HIGH W2-001 (rebook dropped `extra_photos`) + W2-002 (rebook dropped `is_test`) all fixed · **W4 portal** 34 findings, W4-003 HIGH (blank e-signature on approve) + gallery/a11y all fixed, browser-verified · **W5 AI/training** 30 findings, HIGH axis-aware ppf + **token-cost lens** (prompt caching, image downscale, max_tokens) all fixed, **live-analyze verified** · **W7 Naldo** 96 findings → handoff doc (3 trial-critical HIGHs; no PRs in his lane).
+- **Did right:** plan-critic caught the coverage-manifest + Naldo-lane-CRITICAL BLOCKERs before any wave; adversarial-verify + dedupe kept findings real; **model policy followed to the letter** (cheap fix marathon); integrated + gated the COMBINED tree before every merge (never-stale for parallel batches); caught the S18 `sharp` client/server boundary risk (was `import type` → safe); browser + live-analyze verified the risky changes; every open item needing Jason captured in `docs/audit/NEEDS-JASON-2026-07.md`.
+- **Friction:** a W4 workflow parse error (fixed → write-to-file + `node --check` habit); W5's first run lost 10/14 finders to a transient server rate-limit (resumed from journal); two dev-server restarts for browser/live checks.
+- **Open for Jason (→ NEEDS-JASON):** decisions (W2-026 · package savings · W5 downscale quality) · device-checks (W4-003/013/002 + W5 downscale/cache + railing AI + gallery) · loop Naldo. **NEXT (S21): W3 (dense files) + W6 (routes) audits — both heavy, fresh budget** — then the W1 fix-later backlog.
+
 
 ### S19 — 2026-07-02 — #53 training revamp · #54 completed-install analyzer (council'd) · #13 MULTI-IMAGE QUOTING COMPLETE (12 PRs, all LIVE)
 **Shipped to prod (master `d2c8027`, 12 PRs merged + device-verified):** **#53** /training/new revamp — ft-reset bug + field/slot cleanup + `tree_bush` tag (PR #307) · **#54** completed-install analyzer mode — dedicated night prompt + shared ROOFLINE_TRACING_RULES/OUTPUT_JSON_SCHEMA consts, quoting prompt byte-identical (PR #308, council-reviewed → #109 raised) · **#13 multi-image quoting END-TO-END** — 6 PRs (#318/#319/#321/#322/#323/#324) in 3 checkpoints: `extra_photos`+`photo_title` prod migrations, editor photo tab strip (ported design-tool UX), staff photo-tag chips, **linked twins** (stamp + billing-link; skipped in projection/materials/fulfillability; sceneLinks twin-expansion), SV-vantage grab, portal hero-strip-below-price + reprise arrows + "Every angle" gallery (🧪 trial kept), admin thumbnails; vocabulary-only relays `593c115`+`a90b69a`. Gates **1445 → 1695** vitest.
