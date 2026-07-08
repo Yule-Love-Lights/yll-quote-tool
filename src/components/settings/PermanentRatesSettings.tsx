@@ -15,7 +15,7 @@ const FIELDS: { key: keyof PermanentRates; label: string; hint: string }[] = [
   { key: 'frontPerFt', label: 'Front $/ft', hint: 'Retail rate for the front of the house.' },
   { key: 'sidesPerFt', label: 'Sides $/ft', hint: 'Left + right (billed together).' },
   { key: 'backPerFt', label: 'Back $/ft', hint: 'Retail rate for the back.' },
-  { key: 'minimumJobAmount', label: 'Job minimum ($)', hint: 'Portal approval gate — a selection under this can’t be approved. Not a price floor.' },
+  { key: 'minimumJobAmount', label: 'Job minimum ($)', hint: 'Portal approval gate — a selection under this can’t be approved. Not a price floor. New quotes only: existing quotes keep the minimum they were created with.' },
   { key: 'maintenancePrice', label: 'Maintenance add-on ($)', hint: 'Annual maintenance plan price. 0 hides the add-on.' },
 ];
 
@@ -81,8 +81,9 @@ export function PermanentRatesSettings() {
       <h2 className="text-sm font-semibold text-gray-900">Permanent lighting rates</h2>
       <p className="text-sm text-gray-500 mt-1">
         Per-foot retail rates, the job minimum, and the maintenance add-on price for permanent
-        (Omni/Ascend) quotes. Changing a rate here never re-prices a quote that’s already been
-        calculated — each quote freezes the rates it was priced with.
+        (Omni/Ascend) quotes. Changes here apply to <strong>new quotes only</strong> — every quote
+        (including its job minimum) freezes these values when it’s first calculated, and
+        re-calculating an existing quote re-prices from its own frozen copy, never from this page.
       </p>
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
