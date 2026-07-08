@@ -4,6 +4,10 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 import {
+  analyzePermanentSatellite,
+  type PermanentSatelliteAnalysis,
+} from '@/lib/permanent/photoAnalysis';
+import {
   isGoogleMapsConfigured,
   getCachedAddressImagery,
   NoStreetViewError,
@@ -74,15 +78,34 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── #88: permanent lighting does NOT use the holiday roofline analyzer (it
-  // hunts ridges + a santas/gingerbread split that don't apply to puck-on-track).
-  // Return the imagery ONLY so the operator draws the permanent roofline on the
-  // real photo + scaled satellite; the permanent-specific analyzer is wired in a
-  // later phase. No Anthropic call, no holiday seed.
+  // ── #88/#140: permanent lighting uses its OWN analyzer (not the holiday
+  // roofline one — that hunts ridges + a santas/gingerbread split that don't
+  // apply to puck-on-track). The permanent analyzer traces the FOUR side
+  // channels on the satellite; the client seeds them into the same editable
+  // permanentSatLines the operator draws by hand, and footage/corners/
+  // extension-counts all derive from those lines. FAIL-SAFE: an analyzer
+  // outage still returns the imagery so the operator draws manually.
   if (body.serviceType === 'permanent') {
+    let permanentSatellite: PermanentSatelliteAnalysis | null = null;
+    let permanentAnalysisError: string | undefined;
+    try {
+      permanentSatellite = await analyzePermanentSatellite({
+        satelliteBase64: satellite.base64,
+        satelliteMediaType: satellite.mediaType,
+        streetBase64: streetView.base64,
+        streetMediaType: streetView.mediaType,
+        feetPerPixel: satelliteFeetPerPixel,
+      });
+    } catch (err) {
+      console.error('[api/analyze-address] permanent satellite analyzer failed:', err);
+      permanentAnalysisError =
+        'The satellite auto-trace is temporarily unavailable — photos are loaded; draw the side rooflines manually or retry in a few minutes.';
+    }
     return NextResponse.json({
       result: null,
       permanentImageryOnly: true,
+      permanentSatellite,
+      ...(permanentAnalysisError ? { permanentAnalysisError } : {}),
       photoBase64: streetView.base64,
       photoMediaType: streetView.mediaType,
       satelliteBase64: satellite.base64,
