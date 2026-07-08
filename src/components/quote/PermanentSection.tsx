@@ -1,7 +1,7 @@
 'use client';
 
 import type { QuoteFormData } from '@/lib/quoteForm';
-import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
+import { roundFootageUpTo5, type PermanentQuoteFields, type PermanentGap } from '@/lib/permanent/types';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
@@ -53,6 +53,17 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
       return { ...f, permanent };
     });
 
+  // #139 (Jason S24): footage bills in 5-ft steps — a hand-typed value rounds
+  // UP to the next multiple of 5 when the operator leaves the field (22 → 25;
+  // exact multiples stay put). On-blur, not per keystroke, so typing "22" isn't
+  // fought mid-entry. No-ops when already rounded, so merely focusing a
+  // satellite-measured field never flips its sideSource to 'manual'.
+  const roundFootageOnBlur =
+    (k: 'frontFootage' | 'leftFootage' | 'rightFootage' | 'backFootage') => () => {
+      const r = roundFootageUpTo5(p[k]);
+      if (r !== p[k]) setP(k, r);
+    };
+
   const patchGap = (idx: number, patch: Partial<PermanentGap>) =>
     setForm((f) => {
       const gaps = f.permanent.gaps.map((g, i) =>
@@ -82,6 +93,7 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
               className={inp}
               value={p.frontFootage}
               onChange={(e) => setP('frontFootage', Number(e.target.value))}
+              onBlur={roundFootageOnBlur('frontFootage')}
             />
             {p.frontFootage === 0 && (
               <p className="text-xs text-amber-600 mt-1">
@@ -119,6 +131,7 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
               className={inp}
               value={p.leftFootage}
               onChange={(e) => setP('leftFootage', Number(e.target.value))}
+              onBlur={roundFootageOnBlur('leftFootage')}
             />
           </div>
           <div>
@@ -139,6 +152,7 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
               className={inp}
               value={p.rightFootage}
               onChange={(e) => setP('rightFootage', Number(e.target.value))}
+              onBlur={roundFootageOnBlur('rightFootage')}
             />
           </div>
           <div>
@@ -159,6 +173,7 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
               className={inp}
               value={p.backFootage}
               onChange={(e) => setP('backFootage', Number(e.target.value))}
+              onBlur={roundFootageOnBlur('backFootage')}
             />
           </div>
           <div>

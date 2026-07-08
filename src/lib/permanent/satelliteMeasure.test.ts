@@ -1,12 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { deriveSideMeasure } from './satelliteMeasure';
+import { roundFootageUpTo5 } from './types';
+
+describe('roundFootageUpTo5 (#139)', () => {
+  it('rounds up to the next multiple of 5; exact multiples stay', () => {
+    expect(roundFootageUpTo5(37)).toBe(40);
+    expect(roundFootageUpTo5(22)).toBe(25);
+    expect(roundFootageUpTo5(41)).toBe(45);
+    expect(roundFootageUpTo5(35)).toBe(35);
+    expect(roundFootageUpTo5(51.2)).toBe(55); // raw satellite floats round up too
+    expect(roundFootageUpTo5(0.4)).toBe(5); // any drawn run bills at least 5 ft
+  });
+  it('0 / negative / NaN clamp to 0 (no line billed)', () => {
+    expect(roundFootageUpTo5(0)).toBe(0);
+    expect(roundFootageUpTo5(-20)).toBe(0);
+    expect(roundFootageUpTo5(Number.NaN)).toBe(0);
+  });
+});
 
 describe('deriveSideMeasure (#88 permanent satellite measurement)', () => {
-  it('footage = aspect-corrected length × 640px × feet-per-pixel, rounded to whole ft', () => {
+  it('footage = aspect-corrected length × 640px × feet-per-pixel, rounded UP to a 5-ft step (#139)', () => {
     // Horizontal run 0.1→0.9 on a square image (aspect 1) = 0.8 normalized.
-    // 0.8 × 640px = 512px; at 0.1 ft/px → 51.2 → 51 ft. corners = 2 endpoints.
+    // 0.8 × 640px = 512px; at 0.1 ft/px → 51.2 → 55 ft. corners = 2 endpoints.
     const m = deriveSideMeasure([{ points: [[0.1, 0.5], [0.9, 0.5]] }], 0.1, 1);
-    expect(m.footage).toBe(51);
+    expect(m.footage).toBe(55);
     expect(m.corners).toBe(2);
   });
 
@@ -24,8 +41,8 @@ describe('deriveSideMeasure (#88 permanent satellite measurement)', () => {
       0.1,
       1,
     );
-    // (0.8 + 0.5) × 640 × 0.1 = 83.2 → 83; corners = 2 + 2 = 4
-    expect(m.footage).toBe(83);
+    // (0.8 + 0.5) × 640 × 0.1 = 83.2 → 85 (5-ft step); corners = 2 + 2 = 4
+    expect(m.footage).toBe(85);
     expect(m.corners).toBe(4);
   });
 
@@ -41,9 +58,9 @@ describe('deriveSideMeasure (#88 permanent satellite measurement)', () => {
 
   it('applies the aspect correction to the vertical axis', () => {
     // Vertical run 0.2→0.7 (Δy 0.5) on a 2:1 (wide) image → yScale 1/2 → 0.25.
-    // 0.25 × 640 × 0.1 = 16 ft.
+    // 0.25 × 640 × 0.1 = 16 ft → 20 (5-ft step).
     const m = deriveSideMeasure([{ points: [[0.3, 0.2], [0.3, 0.7]] }], 0.1, 2);
-    expect(m.footage).toBe(16);
+    expect(m.footage).toBe(20);
   });
 
   it('a degenerate run (<2 points) contributes nothing', () => {

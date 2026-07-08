@@ -5,11 +5,14 @@
 //
 //   • footage — the aspect-corrected polyline length × Google's feet-per-pixel
 //     (address pulls carry the scale; a manual satellite upload has none, so
-//     footage is null → the operator types it). Rounded to whole feet, matching
-//     projectPermanentDesign's per-whole-foot convention.
+//     footage is null → the operator types it). Rounded UP to the next 5-ft
+//     step (#139, Jason S24 — permanent bills in 5-ft increments; the builder
+//     inputs round hand-typed footage the same way on blur).
 //   • corners — every polyline vertex incl. endpoints (Naldo's rule: a run
 //     traced start→corner→end = 3). Each corner consumes 3 single lights in the
 //     BOM. SCALE-FREE, so a no-scale upload still gets corners from the trace.
+
+import { roundFootageUpTo5 } from './types';
 
 export type SatMeasureLine = { points: [number, number][] };
 
@@ -46,8 +49,8 @@ function cornerCount(lines: SatMeasureLine[]): number {
 export type SideMeasure = { footage: number | null; corners: number };
 
 /**
- * Derive one house side's footage (whole ft, or null when there's no satellite
- * scale) + corner count from its drawn satellite polylines.
+ * Derive one house side's footage (rounded UP to the next 5-ft step, or null
+ * when there's no satellite scale) + corner count from its drawn polylines.
  */
 export function deriveSideMeasure(
   lines: SatMeasureLine[],
@@ -57,7 +60,7 @@ export function deriveSideMeasure(
   const corners = cornerCount(lines);
   const footage =
     feetPerPixel != null && feetPerPixel > 0
-      ? Math.round(polylineLength(lines, aspect) * SAT_PX * feetPerPixel)
+      ? roundFootageUpTo5(polylineLength(lines, aspect) * SAT_PX * feetPerPixel)
       : null;
   return { footage, corners };
 }
