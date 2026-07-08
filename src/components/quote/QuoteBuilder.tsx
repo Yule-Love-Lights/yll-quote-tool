@@ -1358,9 +1358,36 @@ export default function QuoteBuilder({
           };
         }
         if (data.permanentImageryOnly) {
-          setAnalysisNotes(
-            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
-          );
+          // #140 P2: the permanent satellite analyzer seeds the SAME editable
+          // side channels the operator draws by hand — footage/corners and the
+          // Extensions/Splitters counts then derive from the seeded lines via
+          // the existing effects. Nothing is billed that isn't visible as a line.
+          const seeded = data.permanentSatellite?.satelliteLines;
+          const seededSides = seeded
+            ? (PERMANENT_SIDES as readonly PermanentSideKey[]).filter(
+                (s) => Array.isArray(seeded[s]) && seeded[s].length > 0,
+              )
+            : [];
+          if (seeded && seededSides.length > 0) {
+            setPermanentSatLines({
+              front: seeded.front ?? [],
+              left: seeded.left ?? [],
+              right: seeded.right ?? [],
+              back: seeded.back ?? [],
+            });
+            const conf = data.permanentSatellite?.confidence;
+            const aiNotes = data.permanentSatellite?.notes;
+            setAnalysisNotes(
+              `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence). ` +
+                'Check each line on the Satellite tab and drag/redraw anything off — footage, corners, and extensions all follow the lines.' +
+                (aiNotes ? ` AI notes: ${aiNotes}` : ''),
+            );
+          } else {
+            setAnalysisNotes(
+              data.permanentAnalysisError ??
+                'Photos loaded. Draw each side of the roofline on the Satellite tab (front/left/right/back) — footage, corners, and extensions fill in from the drawing.',
+            );
+          }
         } else {
           setAnalysisWarning(
             data.analysisError ??
@@ -1406,7 +1433,7 @@ export default function QuoteBuilder({
       setFewShotCount(0);
       setViewMode('design');
       setAnalysisNotes(
-        'Photo loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+        'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
       );
       return;
     }
@@ -2172,7 +2199,7 @@ export default function QuoteBuilder({
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
-                ? 'Upload the house photo (or look it up on Google Maps) so the design canvas opens with the house. Permanent lighting is measured from the design and satellite, not the holiday auto-measure. Draw each roofline run, tag its side, then Refresh from design in the Permanent section.'
+                ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
                 : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
@@ -2473,9 +2500,9 @@ export default function QuoteBuilder({
                     />
                     {form.serviceType === 'permanent' ? (
                       <p className="text-xs text-gray-400 mt-2">
-                        Draw each permanent roofline run on the photo and tag its side (front/left/right/back).
-                        Then use &ldquo;Refresh from design&rdquo; in the Permanent section to pull footage, corners
-                        &amp; gaps. Saves automatically and attaches to this quote on Calculate.
+                        Drawing here is VISUAL (the portal shows these runs lit). Billing footage, corners
+                        &amp; extensions come from the Satellite tab&apos;s side lines — auto-traced on address
+                        lookup, hand-editable. Saves automatically and attaches to this quote on Calculate.
                       </p>
                     ) : (
                       <p className="text-xs text-gray-400 mt-2">
