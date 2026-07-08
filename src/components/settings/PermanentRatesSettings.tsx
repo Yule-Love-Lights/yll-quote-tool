@@ -13,7 +13,7 @@ import { DEFAULT_PERMANENT_RATES, type PermanentRates } from '@/lib/permanent/ty
 
 const FIELDS: { key: keyof PermanentRates; label: string; hint: string }[] = [
   { key: 'frontPerFt', label: 'Front $/ft', hint: 'Retail rate for the front of the house.' },
-  { key: 'sidesPerFt', label: 'Sides $/ft', hint: 'Left + right (billed together).' },
+  { key: 'sidesPerFt', label: 'Sides $/ft', hint: 'Left + right — one rate; each side bills as its own line.' },
   { key: 'backPerFt', label: 'Back $/ft', hint: 'Retail rate for the back.' },
   { key: 'minimumJobAmount', label: 'Job minimum ($)', hint: 'Portal approval gate — a selection under this can’t be approved. Not a price floor.' },
   { key: 'maintenancePrice', label: 'Maintenance add-on ($)', hint: 'Annual maintenance plan price. 0 hides the add-on.' },

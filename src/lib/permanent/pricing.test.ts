@@ -48,11 +48,15 @@ const amt = (r: ReturnType<typeof calculatePermanentQuote>, id: string) =>
   r.lineItems.find((l) => l.id === id)?.amount;
 
 describe('calculatePermanentQuote', () => {
-  it('prices per-side footage; left+right sum into one Sides line; totals via the shared tail', () => {
+  it('prices per-side footage; each side its own line (#132); totals via the shared tail', () => {
     const r = calculatePermanentQuote(inputs({ frontFootage: 120, leftFootage: 50, rightFootage: 40, backFootage: 60 }));
     expect(amt(r, 'permanent-front')).toBe(4800); // 120 * 40
-    expect(amt(r, 'permanent-sides')).toBe(3150); // (50+40) * 35
+    expect(amt(r, 'permanent-left')).toBe(1750); // 50 * 35
+    expect(amt(r, 'permanent-right')).toBe(1400); // 40 * 35
     expect(amt(r, 'permanent-back')).toBe(2100); // 60 * 35
+    expect(r.lineItems.map((l) => l.id)).toEqual([
+      'permanent-front', 'permanent-left', 'permanent-right', 'permanent-back',
+    ]);
     expect(r.subtotalBeforeDiscount).toBe(10050);
     expect(r.taxAmount).toBe(879.38); // 10050 * 0.0875
     expect(r.total).toBe(10929.38);
@@ -72,7 +76,9 @@ describe('calculatePermanentQuote', () => {
 
     const bad = calculatePermanentQuote(inputs({ frontFootage: Number.NaN, leftFootage: -20, rightFootage: 30 }));
     expect(bad.lineItems.find((l) => l.id === 'permanent-front')).toBeUndefined(); // NaN → 0 → no line
-    expect(amt(bad, 'permanent-sides')).toBe(30 * 35); // -20 clamps to 0, +30
+    expect(bad.lineItems.find((l) => l.id === 'permanent-left')).toBeUndefined(); // -20 clamps to 0 → no line
+    expect(amt(bad, 'permanent-right')).toBe(30 * 35);
+    expect(bad.lineItems.map((l) => l.id)).toEqual(['permanent-right']);
   });
 
   it('honors a per-quote custom $/ft only when positive-finite', () => {
@@ -83,7 +89,8 @@ describe('calculatePermanentQuote', () => {
     expect(amt(zero, 'permanent-front')).toBe(4800); // 0 → falls back to $40 table
 
     const sidesCustom = calculatePermanentQuote(inputs({ leftFootage: 50, rightFootage: 50, sidesCustomRate: 30 }));
-    expect(amt(sidesCustom, 'permanent-sides')).toBe(3000); // 100 * 30
+    expect(amt(sidesCustom, 'permanent-left')).toBe(1500); // 50 * 30 — one custom rate covers both sides
+    expect(amt(sidesCustom, 'permanent-right')).toBe(1500);
   });
 
   it('applies a #104 line-item total override (presence-keyed — 0 is honored)', () => {
