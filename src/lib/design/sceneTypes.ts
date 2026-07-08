@@ -127,6 +127,7 @@ export type StrandItem = ItemBase & MiniBilling & {
   distanceToSurfaceFt?: number;
   opacity?: number;
   showCoverage?: boolean;
+  showBeam?: boolean; // permanent: render the light beam/cone (default true); off = puck dots only
   // Bistro-only catenary sag (fraction of span). Ignored otherwise.
   sagFactor?: number;
   // mini-light wraps (bush/tree/column): wrapStyle/stringCount via MiniBilling.

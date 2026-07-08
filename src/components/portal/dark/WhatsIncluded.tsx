@@ -15,7 +15,7 @@ import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
-import { selectDrawableLineGroups, permanentAllowedSatelliteKeys } from '@/lib/portal/satelliteLines';
+import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS } from '@/lib/portal/satelliteLines';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -184,15 +184,16 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // Positive-match on holiday — never `!== 'permanent'` — so a FUTURE vertical
   // never inherits these real-dollar fees (AGENTS.md seam-gate rule).
   const isHoliday = !serviceType || serviceType === 'holiday';
-  // Permanent Lighting (#88) fix: the satellite trace is captured during the
-  // holiday roofline flow, independent of which permanent strands were sold —
-  // restrict the drawn/legend groups to the surfaces actually billed on this
-  // quote. undefined for holiday/event so their satellite view is unchanged.
+  // Permanent Lighting (#88 / S23): show permanent's own four side rooflines
+  // (front/left/right/back, from the satellite draw) PLUS — for quotes made before
+  // that draw existed — the LEGACY santas/gingerbread trace, relabeled Front/Sides
+  // (a straight #443-regression fix; those quotes used the holiday channels).
+  // selectDrawableLineGroups hides empty channels, so old + new never collide.
+  // undefined for holiday/event so their satellite view is unchanged.
   const allowedSatelliteKeys =
-    serviceType === 'permanent' ? permanentAllowedSatelliteKeys(items.map((li) => li.id)) : undefined;
-  // Satellite legend label fix: "Santa Roofline"/"Gingerbread" are holiday
-  // terms — on a permanent quote the legend should read "Front of House"/"Sides"
-  // instead. undefined for holiday/event so their legend is unchanged.
+    serviceType === 'permanent'
+      ? [...PERMANENT_SIDE_SATELLITE_KEYS, 'santas' as const, 'gingerbread' as const]
+      : undefined;
   const satelliteLabelOverrides =
     serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
   const {

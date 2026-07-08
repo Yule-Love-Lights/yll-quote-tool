@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { address?: string; houseStyle?: string };
+  let body: { address?: string; houseStyle?: string; serviceType?: string };
   try {
     body = await req.json();
   } catch {
@@ -72,6 +72,26 @@ export async function POST(req: NextRequest) {
       { error: 'Failed to fetch imagery for this address' },
       { status: 502 },
     );
+  }
+
+  // ── #88: permanent lighting does NOT use the holiday roofline analyzer (it
+  // hunts ridges + a santas/gingerbread split that don't apply to puck-on-track).
+  // Return the imagery ONLY so the operator draws the permanent roofline on the
+  // real photo + scaled satellite; the permanent-specific analyzer is wired in a
+  // later phase. No Anthropic call, no holiday seed.
+  if (body.serviceType === 'permanent') {
+    return NextResponse.json({
+      result: null,
+      permanentImageryOnly: true,
+      photoBase64: streetView.base64,
+      photoMediaType: streetView.mediaType,
+      satelliteBase64: satellite.base64,
+      satelliteMediaType: satellite.mediaType,
+      satelliteFeetPerPixel,
+      formattedAddress: geo.formattedAddress,
+      lat: geo.lat,
+      lng: geo.lng,
+    });
   }
 
   // ── 2. Analyze with Claude (#8 few-shot) — FAIL-SAFE ──────────────────────

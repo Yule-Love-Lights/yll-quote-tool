@@ -157,6 +157,7 @@ function placeBulb(
           strand.distanceToSurfaceFt ?? PERM_DEFAULTS.distanceToSurfaceFt,
           strand.opacity ?? PERM_DEFAULTS.opacity,
           strand.showCoverage ?? PERM_DEFAULTS.showCoverage,
+          strand.showBeam ?? PERM_DEFAULTS.showBeam,
         )
       : createBulb(strand.bulbType, colorId, pxPerFoot);
   node.position({ x, y });

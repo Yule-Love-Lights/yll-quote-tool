@@ -184,6 +184,12 @@ export type PortalSatelliteLines = {
   gingerbread: PortalSatelliteLine[];  // ridge & sides (blue)
   c9: PortalSatelliteLine[];           // C9 roofline (green)
   stake?: PortalSatelliteLine[];       // stake lighting (purple) — optional (older designs lack it)
+  // Permanent Lighting (#88 / S23): the four house-side rooflines — optional
+  // (holiday/event designs lack them). Drawn on the portal like the holiday trace.
+  front?: PortalSatelliteLine[];
+  left?: PortalSatelliteLine[];
+  right?: PortalSatelliteLine[];
+  back?: PortalSatelliteLine[];
 };
 
 export type PortalDesign = {

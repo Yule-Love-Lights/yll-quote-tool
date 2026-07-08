@@ -33,6 +33,7 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -199,6 +200,19 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   }
   return total;
 }
+
+// Permanent Lighting (#88 / S23): the four house sides traced on the satellite
+// view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
+const PERMANENT_SIDES = ['front', 'left', 'right', 'back'] as const;
+type PermanentSideKey = (typeof PERMANENT_SIDES)[number];
+const PERMANENT_SIDE_META: Record<PermanentSideKey, { label: string; color: string }> = {
+  front: { label: 'Front', color: '#ef4444' },
+  left: { label: 'Left', color: '#3b82f6' },
+  right: { label: 'Right', color: '#f59e0b' },
+  back: { label: 'Back', color: '#a855f7' },
+};
+const isPermanentSide = (t: string): t is PermanentSideKey =>
+  (PERMANENT_SIDES as readonly string[]).includes(t);
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -519,6 +533,9 @@ export default function QuoteBuilder({
               // The bridge auto-design (#35 Phase 2): the design is born
               // already designed from the analysis.
               seedAnalysis: pendingSeedRef.current ?? undefined,
+              // #88 permanent has no analyzer to calibrate scale — seed a default
+              // yardstick so the design opens with one to size, like holiday.
+              seedDefaultYardstick: form.serviceType === 'permanent',
             }),
           });
           const data = await res.json();
@@ -621,6 +638,17 @@ export default function QuoteBuilder({
   const [satelliteGingerbreadLines, setSatelliteGingerbreadLines] = useState<LineSegment[]>([]);
   const [satelliteC9Lines, setSatelliteC9Lines] = useState<LineSegment[]>([]);
   const [satelliteStakeLines, setSatelliteStakeLines] = useState<LineSegment[]>([]);
+  // Permanent Lighting (#88 / S23): the four house-side rooflines traced on the
+  // satellite view. Each feeds its side's footage (× feet-per-pixel) + corners
+  // (vertex count) into form.permanent, and persists to the design for the portal.
+  const [permanentSatLines, setPermanentSatLines] = useState<Record<PermanentSideKey, LineSegment[]>>({
+    front: [], left: [], right: [], back: [],
+  });
+  // Tracks whether each side had lines on the previous derive so removing the
+  // last run resets that side's footage/corners (mirrors hadC9LinesRef below).
+  const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
+    front: false, left: false, right: false, back: false,
+  });
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -632,7 +660,7 @@ export default function QuoteBuilder({
   const [viewMode, setViewMode] = useState<'design' | 'satellite'>('design');
 
   // Drag state for editing satellite polyline points
-  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake';
+  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake' | PermanentSideKey;
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
@@ -709,16 +737,55 @@ export default function QuoteBuilder({
 
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
-  const getSetter = (type: LineType) => {
+  const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
     if (type === 'santas') return setSatelliteSantasLines;
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
     if (type === 'stake') return setSatelliteStakeLines;
+    if (isPermanentSide(type)) {
+      return (updater) => setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
+    }
     return setSatelliteC9Lines;
   };
   const activeSantasLines = satelliteSantasLines;
   const activeGingerbreadLines = satelliteGingerbreadLines;
   const activeC9Lines = satelliteC9Lines;
   const activeStakeLines = satelliteStakeLines;
+
+  // Permanent Lighting (#88 / S23): derive each side's footage + corners from its
+  // satellite trace → form.permanent. Footage needs the satellite scale (address
+  // pulls have it); corners are scale-free. A side with no lines this session is
+  // left alone (a manual/persisted value wins); removing the last run resets it
+  // to 0. Mirrors the holiday hadRef reset pattern above.
+  useEffect(() => {
+    if (form.serviceType !== 'permanent') return;
+    const t = {} as Record<PermanentSideKey, { footage: number | null; corners: number | null }>;
+    for (const side of PERMANENT_SIDES) {
+      const lines = permanentSatLines[side];
+      const has = lines.length > 0;
+      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      t[side] = {
+        footage: has ? m.footage : hadPermLinesRef.current[side] ? 0 : null,
+        corners: has ? m.corners : hadPermLinesRef.current[side] ? 0 : null,
+      };
+      hadPermLinesRef.current[side] = has;
+    }
+    queueMicrotask(() =>
+      setForm((f) => {
+        if (f.serviceType !== 'permanent') return f;
+        const p = f.permanent;
+        let n = p;
+        if (t.front.footage != null && n.frontFootage !== t.front.footage) n = { ...n, frontFootage: t.front.footage };
+        if (t.front.corners != null && n.frontCorners !== t.front.corners) n = { ...n, frontCorners: t.front.corners };
+        if (t.left.footage != null && n.leftFootage !== t.left.footage) n = { ...n, leftFootage: t.left.footage };
+        if (t.left.corners != null && n.leftCorners !== t.left.corners) n = { ...n, leftCorners: t.left.corners };
+        if (t.right.footage != null && n.rightFootage !== t.right.footage) n = { ...n, rightFootage: t.right.footage };
+        if (t.right.corners != null && n.rightCorners !== t.right.corners) n = { ...n, rightCorners: t.right.corners };
+        if (t.back.footage != null && n.backFootage !== t.back.footage) n = { ...n, backFootage: t.back.footage };
+        if (t.back.corners != null && n.backCorners !== t.back.corners) n = { ...n, backCorners: t.back.corners };
+        return n === p ? f : { ...f, permanent: n };
+      }),
+    );
+  }, [permanentSatLines, satelliteFeetPerPixel, satelliteAspect, form.serviceType]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -778,7 +845,8 @@ export default function QuoteBuilder({
     }
     const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
+        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -1067,6 +1135,9 @@ export default function QuoteBuilder({
     formattedAddress?: string;
     lat?: number;
     lng?: number;
+    // #88: permanent address lookup returns imagery only (Street View + satellite
+    // + scale) with no holiday analysis/seed — the operator draws the roofline.
+    permanentImageryOnly?: boolean;
     fewShotCount?: number;
     fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
   };
@@ -1178,7 +1249,7 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-address', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: addr }),
+        body: JSON.stringify({ address: addr, serviceType: form.serviceType }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
@@ -1198,19 +1269,38 @@ export default function QuoteBuilder({
       if (data.result) {
         applyAnalysisResult(data);
       } else {
-        // FAIL-SAFE: the analyzer was unavailable (e.g. Claude down). The imagery
-        // still came back — load the street photo into the editor (the eager
-        // design effect creates the design from it) so staff design MANUALLY, and
-        // keep the satellite + its scale for manual measurement. Skip the seed.
+        // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
+        // holiday analyzer by design) or the fail-safe (analyzer down). The street
+        // photo creates the design; the satellite + its scale stay for measuring.
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
-        setAnalysisWarning(
-          data.analysisError ??
-            'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
-        );
+        // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
+        // can show the "Where the lights go" view. Holiday does this in
+        // applyAnalysisResult; permanent has no analysis result, so without parking
+        // the context here satellite_path stays null and the portal hides the
+        // satellite even after the operator draws the side rooflines. The eager
+        // design effect pushes this once the design exists.
+        if (data.satelliteBase64) {
+          pendingContextRef.current = {
+            ...(pendingContextRef.current ?? {}),
+            satelliteBase64: data.satelliteBase64,
+            satelliteMediaType: data.satelliteMediaType ?? 'image/jpeg',
+            satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
+          };
+        }
+        if (data.permanentImageryOnly) {
+          setAnalysisNotes(
+            'Photos loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+          );
+        } else {
+          setAnalysisWarning(
+            data.analysisError ??
+              'The auto-design analyzer is temporarily unavailable — your photos are loaded; design the house manually.',
+          );
+        }
       }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
@@ -1221,6 +1311,39 @@ export default function QuoteBuilder({
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
+    // #88: permanent lighting designs MANUALLY — no holiday auto-measure/seed.
+    // Load the uploaded photo into a bare design (no Anthropic call, no
+    // santas/gingerbread roofline drawn) so the operator draws the permanent
+    // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
+    if (form.serviceType === 'permanent') {
+      // Read the base64 from the File itself — photoPreview is a blob: object URL
+      // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
+      const base64 = await new Promise<string | null>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const s = typeof r.result === 'string' ? r.result : '';
+          const comma = s.indexOf(',');
+          resolve(comma >= 0 ? s.slice(comma + 1) : null);
+        };
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(photoFile);
+      });
+      if (!base64) {
+        setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
+      pendingSeedRef.current = null;
+      setAnalysisError(null);
+      setAnalysisWarning(null);
+      setPhotoBase64(base64);
+      setPhotoMediaType(photoFile.type || 'image/jpeg');
+      setFewShotCount(0);
+      setViewMode('design');
+      setAnalysisNotes(
+        'Photo loaded. Draw each permanent roofline run and tag its side (front/left/right/back), then Refresh from design.',
+      );
+      return;
+    }
     setAnalyzing(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -1582,23 +1705,32 @@ export default function QuoteBuilder({
       // design (#8 Stage A) — Calculate is the "measurement finalized"
       // moment. Only when a satellite session is actually active: a reopened
       // quote with no satellite state must NOT clobber stored lines.
-      const satelliteActive =
+      const holidaySatelliteActive =
         satellitePreview != null &&
         (satelliteSantasLines.length > 0 || satelliteGingerbreadLines.length > 0 || satelliteC9Lines.length > 0 || satelliteStakeLines.length > 0);
-      if (designId && satelliteActive) {
-        void fetch(`/api/designs/${designId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            satelliteLines: {
+      // Permanent (#88/S23): persist the four side traces so the portal draws them.
+      const permanentSatelliteActive =
+        form.serviceType === 'permanent' && PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+      if (designId && (holidaySatelliteActive || permanentSatelliteActive)) {
+        const satelliteLines = permanentSatelliteActive
+          ? {
+              front: permanentSatLines.front,
+              left: permanentSatLines.left,
+              right: permanentSatLines.right,
+              back: permanentSatLines.back,
+            }
+          : {
               santas: satelliteSantasLines,
               gingerbread: satelliteGingerbreadLines,
               c9: satelliteC9Lines,
               stake: satelliteStakeLines,
               ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
               ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
-            },
-          }),
+            };
+        void fetch(`/api/designs/${designId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ satelliteLines }),
         }).catch(() => {});
       }
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
@@ -1963,10 +2095,13 @@ export default function QuoteBuilder({
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
             <p className="text-xs text-gray-400 mb-3">
-              Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.
+              {form.serviceType === 'permanent'
+                ? 'Upload the house photo (or look it up on Google Maps) so the design canvas opens with the house. Permanent lighting is measured from the design and satellite, not the holiday auto-measure. Draw each roofline run, tag its side, then Refresh from design in the Permanent section.'
+                : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
-            {/* Google lookup */}
+            {/* Google lookup — pulls Street View + satellite. Permanent skips the
+                holiday analyzer (imagery only) so it never designs as Christmas. */}
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
@@ -1980,7 +2115,9 @@ export default function QuoteBuilder({
                 </button>
               </div>
               <p className="text-xs text-blue-700">
-                Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.
+                {form.serviceType === 'permanent'
+                  ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
+                  : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -2027,7 +2164,7 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : 'Analyze with Claude'}
+                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2060,7 +2197,9 @@ export default function QuoteBuilder({
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
-                    Analysis complete — measurements auto-filled, roofline drawn on the design.
+                    {form.serviceType === 'permanent'
+                      ? 'Photo loaded for the design canvas.'
+                      : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">
                         • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference
@@ -2122,7 +2261,7 @@ export default function QuoteBuilder({
                     Satellite (top-down)
                   </button>
                 </div>
-                {satelliteFeetPerPixel != null && (
+                {form.serviceType !== 'permanent' && satelliteFeetPerPixel != null && (
                   <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
                     Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
                   </div>
@@ -2253,14 +2392,28 @@ export default function QuoteBuilder({
                       key={designEditorKey}
                       designId={designId}
                       height={640}
+                      permanentOnly={form.serviceType === 'permanent'}
                       onReady={(flush) => { editorFlushRef.current = flush; }}
                     />
-                    <p className="text-xs text-gray-400 mt-2">
-                      Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
-                      quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
-                      represent). Saves automatically and attaches to this quote on Calculate.
-                    </p>
-                    <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    {form.serviceType === 'permanent' ? (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw each permanent roofline run on the photo and tag its side (front/left/right/back).
+                        Then use &ldquo;Refresh from design&rdquo; in the Permanent section to pull footage, corners
+                        &amp; gaps. Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
+                        quote&apos;s item list (Custom line items below are the escape hatch for anything it can&apos;t
+                        represent). Saves automatically and attaches to this quote on Calculate.
+                      </p>
+                    )}
+                    {/* #88: the "From your design" billable-items summary (minis/
+                        spritzers/wreaths/garland/bows) is holiday/event only — a
+                        permanent quote bills from the Permanent section, not drawn items. */}
+                    {form.serviceType !== 'permanent' && (
+                      <DesignSummary designId={designId} refreshKey={designEditorKey} />
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">
@@ -2276,9 +2429,11 @@ export default function QuoteBuilder({
               <div className={viewMode === 'satellite' ? '' : 'hidden'}>
                 {satellitePreview ? (
                   <>
-                    <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
-                      <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
-                    </div>
+                    {form.serviceType !== 'permanent' && (
+                      <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
+                        <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
+                      </div>
+                    )}
                     {/* Zoom/pan controls (#26) */}
                     <div className="flex items-center justify-between mb-1.5 text-[11px] text-gray-500">
                       <span>Scroll to zoom · drag to pan{satZoom.isZoomed ? ` · ${Math.round(satZoom.zoom * 100)}%` : ''}</span>
@@ -2366,11 +2521,25 @@ export default function QuoteBuilder({
                             vectorEffect="non-scaling-stroke"
                           />
                         ))}
+                        {form.serviceType === 'permanent' && PERMANENT_SIDES.flatMap((side) =>
+                          permanentSatLines[side].map((line, i) => (
+                            <polyline
+                              key={`perm-${side}-${i}`}
+                              points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                              fill="none"
+                              stroke={PERMANENT_SIDE_META[side].color}
+                              strokeWidth="4"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          )),
+                        )}
                         {pendingPoints.length > 0 && (
                           <polyline
                             points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                             fill="none"
-                            stroke={addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
+                            stroke={isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
                             strokeWidth="3"
                             strokeDasharray="6 4"
                             vectorEffect="non-scaling-stroke"
@@ -2418,16 +2587,105 @@ export default function QuoteBuilder({
                           title="Drag to move • Double-click to delete"
                         />
                       )))}
+                      {!addMode && form.serviceType === 'permanent' && PERMANENT_SIDES.flatMap((side) =>
+                        permanentSatLines[side].flatMap((line, li) => line.points.map(([x, y], pi) => (
+                          <div
+                            key={`perm-h-${side}-${li}-${pi}`}
+                            className="absolute w-5 h-5 rounded-full border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                            style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)`, backgroundColor: PERMANENT_SIDE_META[side].color }}
+                            onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: side, lineIdx: li, ptIdx: pi }); }}
+                            onDoubleClick={() => deletePoint(side, li, pi)}
+                            title="Drag to move • Double-click to delete"
+                          />
+                        ))),
+                      )}
                       {pendingPoints.map(([x, y], i) => (
                         <div
                           key={`pp-${i}`}
-                          className={`absolute w-3 h-3 rounded-full ${addMode === 'santas' ? 'bg-red-500' : addMode === 'gingerbread' ? 'bg-blue-500' : addMode === 'stake' ? 'bg-purple-500' : 'bg-emerald-500'} border-2 border-white shadow`}
-                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)` }}
+                          className="absolute w-3 h-3 rounded-full border-2 border-white shadow"
+                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)`, backgroundColor: isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981' }}
                         />
                       ))}
                     </div>
                     </div>
 
+                    {/* #88 / S23: permanent measures its four sides HERE — draw each
+                        side's roofline on the satellite and it feeds that side's
+                        footage (× Google's scale) + corners (vertex count) into the
+                        Permanent section, and persists to the design for the portal. */}
+                    {form.serviceType === 'permanent' ? (
+                      <>
+                        <p className="mt-3 text-sm text-gray-500">
+                          Draw each roofline on the satellite view by side. Footage &amp; corners fill in
+                          automatically below.
+                          {satelliteFeetPerPixel == null && (
+                            <span className="text-amber-600">
+                              {' '}No satellite scale on this photo — corners still count, but type each
+                              side&apos;s footage by hand.
+                            </span>
+                          )}
+                        </p>
+                        {addMode ? (
+                          <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
+                            <span className="text-sm text-yellow-900">
+                              Adding new {isPermanentSide(addMode) ? PERMANENT_SIDE_META[addMode].label : ''} roofline
+                              — click on the photo to add points ({pendingPoints.length} placed).
+                            </span>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
+                                className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
+                                Done
+                              </button>
+                              <button type="button" onClick={cancelAdd}
+                                className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {PERMANENT_SIDES.map((side) => (
+                              <button key={side} type="button"
+                                onClick={() => { setAddMode(side); setPendingPoints([]); }}
+                                className="text-xs font-medium border rounded px-3 py-1.5 hover:opacity-70"
+                                style={{ color: PERMANENT_SIDE_META[side].color, borderColor: PERMANENT_SIDE_META[side].color }}>
+                                + Add {PERMANENT_SIDE_META[side].label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {PERMANENT_SIDES.map((side) => {
+                            const lines = permanentSatLines[side];
+                            const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+                            return (
+                              <div key={side}>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="w-4 h-1 rounded" style={{ backgroundColor: PERMANENT_SIDE_META[side].color }}></span>
+                                  <span className="text-sm font-semibold text-gray-800">
+                                    {PERMANENT_SIDE_META[side].label} — {m.footage != null ? `${m.footage}ft` : '—'} · {m.corners} corner{m.corners === 1 ? '' : 's'}
+                                  </span>
+                                </div>
+                                {lines.length > 0 ? (
+                                  <ul className="space-y-1 ml-6">
+                                    {lines.map((line, i) => (
+                                      <li key={`${side}-${i}`} className="flex items-center gap-2 text-xs">
+                                        <span className="flex-1 text-gray-500">Run {i + 1} — {line.points.length} pts</span>
+                                        <button type="button" onClick={() => deleteLine(side, i)}
+                                          className="text-red-400 hover:text-red-600 font-bold">×</button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-xs text-gray-400 ml-6">No runs drawn</p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                    <>
                     {/* Add-line controls */}
                     {addMode ? (
                       <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
@@ -2621,6 +2879,8 @@ export default function QuoteBuilder({
                       </div>
                       </>)}
                     </div>
+                    </>
+                    )}
                   </>
                 ) : (
                   <p className="text-sm text-gray-500 py-10 text-center">
@@ -2636,7 +2896,7 @@ export default function QuoteBuilder({
               replacing the holiday item sections. Holiday item sections are hidden
               for permanent so the operator can't enter Christmas footage on it. */}
           {form.serviceType === 'permanent' && (
-            <PermanentSection form={form} setForm={setForm} designId={designId} />
+            <PermanentSection form={form} setForm={setForm} />
           )}
 
           {form.serviceType !== 'permanent' && (

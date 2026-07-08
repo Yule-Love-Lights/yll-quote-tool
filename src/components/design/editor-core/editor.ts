@@ -39,7 +39,9 @@ const BULB_TYPES: { id: BulbType; label: string }[] = [
 const SPACINGS: Record<BulbType, number[]> = {
   c9: [6, 9, 12, 15, 18, 24, 36],
   mini: [4, 6, 9, 12, 18],
-  permanent: [4, 6, 8, 9, 12, 15, 18, 24],
+  // #88: permanent pucks ship 8" on-center ONLY — no other spacing is offered
+  // (the BOM math already assumes 8"). Single fixed option.
+  permanent: [8],
   // Bistro spacing typical real-world range: 12"–24" between bulbs.
   bistro: [9, 12, 15, 18, 24, 36],
 };
@@ -83,6 +85,7 @@ type ToolState = {
   distanceToSurfaceFt: number;
   opacity: number;
   showCoverage: boolean;
+  showBeam: boolean;
   // Bistro-only: per-strand catenary sag as a fraction of horizontal span.
   bistroSagFactor: number;
   // Decor sub-type
@@ -122,7 +125,7 @@ const SPRITZER_SIZES = [16, 24, 36, 48];
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -175,7 +178,11 @@ export async function renderEditor(
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
     (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) || isMiniArea(i) ||
-      (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")));
+      (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")) ||
+      // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
+      // roofline, which staff re-draw per photo) so a portal package toggle
+      // hides/shows a side's lights on every angle it appears on.
+      (isStrand(i) && i.bulbType === "permanent"));
   const stampCandidates = (): SceneItem[] =>
     scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
   const photoLabelOf = (i: { photoId?: string | null }): string => {
@@ -191,8 +198,9 @@ export async function renderEditor(
         : isGarland(i) ? "garland run"
           : isSpritzer(i) ? `${i.sizeIn}" spritzer`
             : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                : "item";
+              : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
+                : isStrand(i) ? `${i.surface ?? "mini"} wrap`
+                  : "item";
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
@@ -268,8 +276,11 @@ export async function renderEditor(
   let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
   const tool: ToolState = {
     category: "lights",
-    bulbType: "c9",
-    spacingIn: 12,
+    // #88: a permanent quote's design is locked to permanent pucks — seed the
+    // bulb type + spacing to permanent so the operator only ever draws permanent
+    // roofline runs (no holiday bulb types / decor on a permanent quote).
+    bulbType: opts.permanentOnly ? "permanent" : "c9",
+    spacingIn: opts.permanentOnly ? 8 : 12,
     drawingStyle: "strand",
     scattershot: false,
     colorPattern: ["warm-white"],
@@ -279,6 +290,7 @@ export async function renderEditor(
     distanceToSurfaceFt: 0,
     opacity: 1,
     showCoverage: false,
+    showBeam: true,
     bistroSagFactor: 0.10,
     decorType: "wreath",
     wreathSizeIn: 36,
@@ -1480,6 +1492,7 @@ export async function renderEditor(
       return;
     }
     sb.innerHTML = `
+      ${opts.permanentOnly ? "" : `
       <section>
         <h3>Category</h3>
         <div class="bulb-types" id="categories" style="flex-wrap:wrap">
@@ -1489,7 +1502,7 @@ export async function renderEditor(
           <button data-cat="custom" class="${tool.category === "custom" ? "active" : ""}">Custom</button>
           <button data-cat="poles" class="${tool.category === "poles" ? "active" : ""}">Poles</button>
         </div>
-      </section>
+      </section>`}
       ${(() => {
         // #13 linked twins: re-place items from OTHER photos onto this one.
         const cands = stampCandidates();
@@ -1596,7 +1609,7 @@ export async function renderEditor(
       <section>
         <h3>Bulb Type</h3>
         <div class="bulb-types" id="bulb-types">
-          ${BULB_TYPES.map((b) => `<button data-type="${b.id}" class="${tool.bulbType === b.id ? "active" : ""}">${b.label}</button>`).join("")}
+          ${BULB_TYPES.filter((b) => !opts.permanentOnly || b.id === "permanent").map((b) => `<button data-type="${b.id}" class="${tool.bulbType === b.id ? "active" : ""}">${b.label}</button>`).join("")}
         </div>
         ${(() => {
           const count = allStrands().filter((s) => s.bulbType === tool.bulbType).length;
@@ -1625,7 +1638,7 @@ export async function renderEditor(
       ${tool.bulbType === "permanent" ? `
       <section>
         <h3>Beam Length <span id="tool-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
-        <input type="range" id="tool-beam-len" min="0.5" max="12" step="0.1" value="${tool.beamLengthFt}" />
+        <input type="range" id="tool-beam-len" min="0.5" max="20" step="0.1" value="${tool.beamLengthFt}" />
       </section>
       <section>
         <h3>Beam Width <span id="tool-beam-wid-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -1638,6 +1651,13 @@ export async function renderEditor(
       <section>
         <h3>Opacity <span id="tool-opacity-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
         <input type="range" id="tool-opacity" min="0.1" max="1" step="0.01" value="${tool.opacity}" />
+      </section>
+      <section>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="tool-beam" ${tool.showBeam ? "checked" : ""} />
+          <span>Show light beam</span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Off = just the puck dots, no cone.</div>
       </section>
       <section>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -2133,6 +2153,10 @@ export async function renderEditor(
       wireToolSlider("tool-beam-wid", "beamWidthFt", " ft", 1);
       wireToolSlider("tool-dist", "distanceToSurfaceFt", " ft", 1);
       wireToolSlider("tool-opacity", "opacity", "", 2);
+      const beamCb = sb.querySelector("#tool-beam") as HTMLInputElement;
+      beamCb.addEventListener("change", () => {
+        tool.showBeam = beamCb.checked;
+      });
       const cov = sb.querySelector("#tool-coverage") as HTMLInputElement;
       cov.addEventListener("change", () => {
         tool.showCoverage = cov.checked;
@@ -2432,7 +2456,7 @@ export async function renderEditor(
       <section>
         <h3>Bulb Type</h3>
         <div class="bulb-types" id="sel-bulb-types">
-          ${BULB_TYPES.map((b) => `<button data-type="${b.id}" class="${sharedBulbType.length === 1 && sharedBulbType[0] === b.id ? "active" : ""}">${b.label}</button>`).join("")}
+          ${BULB_TYPES.filter((b) => !opts.permanentOnly || b.id === "permanent").map((b) => `<button data-type="${b.id}" class="${sharedBulbType.length === 1 && sharedBulbType[0] === b.id ? "active" : ""}">${b.label}</button>`).join("")}
         </div>
       </section>
 
@@ -2470,7 +2494,7 @@ export async function renderEditor(
       ${isPerm ? `
       <section>
         <h3>Beam Length <span id="sel-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
-        <input type="range" id="sel-beam-len" min="0.5" max="12" step="0.1" value="${avg(sel.map((s) => s.beamLengthFt ?? 4))}" />
+        <input type="range" id="sel-beam-len" min="0.5" max="20" step="0.1" value="${avg(sel.map((s) => s.beamLengthFt ?? 4))}" />
       </section>
       <section>
         <h3>Beam Width <span id="sel-beam-wid-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -2483,6 +2507,13 @@ export async function renderEditor(
       <section>
         <h3>Opacity <span id="sel-opacity-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
         <input type="range" id="sel-opacity" min="0.1" max="1" step="0.01" value="${avg(sel.map((s) => s.opacity ?? 1))}" />
+      </section>
+      <section>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="sel-beam" ${sel.every((s) => (s.showBeam ?? true)) ? "checked" : ""} />
+          <span>Show light beam</span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Off = just the puck dots, no cone.</div>
       </section>
       <section>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -2680,6 +2711,10 @@ export async function renderEditor(
       wire("sel-dist", "distanceToSurfaceFt", " ft", 1);
       wire("sel-opacity", "opacity", "", 2);
 
+      const beamSelCb = sb.querySelector("#sel-beam") as HTMLInputElement;
+      beamSelCb.addEventListener("change", () => {
+        updateSelected((s) => ({ ...s, showBeam: beamSelCb.checked }));
+      });
       const coverageCb = sb.querySelector("#sel-coverage") as HTMLInputElement;
       coverageCb.addEventListener("change", () => {
         updateSelected((s) => ({ ...s, showCoverage: coverageCb.checked }));
@@ -4436,6 +4471,7 @@ export async function renderEditor(
       distanceToSurfaceFt: tool.distanceToSurfaceFt,
       opacity: tool.opacity,
       showCoverage: tool.showCoverage,
+      showBeam: tool.showBeam,
     };
   }
 
@@ -5165,6 +5201,14 @@ export async function renderEditor(
       const entry = savedDefaults?.[tool.bulbType];
       if (!entry || typeof entry !== "object") return;
       if (typeof entry.spacingIn === "number") tool.spacingIn = entry.spacingIn;
+      // #88: a stale saved spacing (e.g. a legacy 6"/12" permanent default from
+      // before the 8"-only lockdown) must not escape the type's allow-list —
+      // clamp to SPACINGS, mirroring the bulb-type click handler. For permanent
+      // (SPACINGS = [8]) this forces 8" on-center regardless of stored settings.
+      const allowedSpacings = SPACINGS[tool.bulbType];
+      if (!allowedSpacings.includes(tool.spacingIn)) {
+        tool.spacingIn = allowedSpacings[Math.floor(allowedSpacings.length / 2)] ?? allowedSpacings[0];
+      }
       if (typeof entry.drawingStyle === "string") {
         const ds = entry.drawingStyle;
         if (ds === "strand" || ds === "trace" || ds === "single") tool.drawingStyle = ds;
@@ -5181,6 +5225,7 @@ export async function renderEditor(
       if (typeof entry.distanceToSurfaceFt === "number") tool.distanceToSurfaceFt = entry.distanceToSurfaceFt;
       if (typeof entry.opacity === "number") tool.opacity = entry.opacity;
       if (typeof entry.showCoverage === "boolean") tool.showCoverage = entry.showCoverage;
+      if (typeof entry.showBeam === "boolean") tool.showBeam = entry.showBeam;
       if (typeof entry.sagFactor === "number") tool.bistroSagFactor = entry.sagFactor;
     } else if (tool.category === "decor" && tool.decorType === "wreath") {
       const entry = savedDefaults?.["wreath"];

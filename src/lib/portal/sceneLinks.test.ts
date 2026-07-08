@@ -308,3 +308,41 @@ describe('attachSceneLinks — #13 linked twins', () => {
     expect(out[0].sceneItemIds).toEqual(expect.arrayContaining(['s-canon', 's-twin']));
   });
 });
+
+describe('attachSceneLinks — permanent per-side linkage (#88 / S23)', () => {
+  const perm = (id: string, side: 'front' | 'left' | 'right' | 'back', over: Partial<Extract<SceneItem, { kind: 'strand' }>> = {}) =>
+    strand(id, undefined, { bulbType: 'permanent', sideOfHouse: side, ...over });
+  const scene: Scene = {
+    yardsticks: [],
+    items: [
+      perm('pf1', 'front'),
+      perm('pf1t', 'front', { linkedToId: 'pf1', photoId: 'p2' }), // twin on photo 2
+      perm('pl1', 'left'),
+      perm('pr1', 'right'),
+      perm('pb1', 'back'),
+    ] as SceneItem[],
+  };
+  const out = attachSceneLinks(
+    [
+      li('permanent-front', 'permanent'),
+      li('permanent-sides', 'permanent'),
+      li('permanent-back', 'permanent'),
+      li('permanent-maintenance', 'permanent-addon'),
+    ],
+    scene,
+  );
+  const byId = Object.fromEntries(out.map((l) => [l.id, l.sceneItemIds]));
+
+  it('links permanent-front to front strands AND their twins (hide on every photo)', () => {
+    expect(new Set(byId['permanent-front'])).toEqual(new Set(['pf1', 'pf1t']));
+  });
+  it('links permanent-sides to left + right strands together', () => {
+    expect(new Set(byId['permanent-sides'])).toEqual(new Set(['pl1', 'pr1']));
+  });
+  it('links permanent-back to back strands', () => {
+    expect(byId['permanent-back']).toEqual(['pb1']);
+  });
+  it('leaves the maintenance add-on unlinked', () => {
+    expect(byId['permanent-maintenance']).toBeUndefined();
+  });
+});

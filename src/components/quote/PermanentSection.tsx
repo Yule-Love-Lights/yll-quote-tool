@@ -1,19 +1,33 @@
 'use client';
 
-import { useState } from 'react';
 import type { QuoteFormData } from '@/lib/quoteForm';
 import type { PermanentQuoteFields, PermanentGap } from '@/lib/permanent/types';
-import { projectPermanentDesign } from '@/lib/permanent/projectPermanent';
-import type { Scene } from '@/lib/design/sceneTypes';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 
+// Which house side each footage/corner field belongs to — editing one marks that
+// side 'manual' (a hand-typed override of the satellite-measured number).
+const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left' | 'right' | 'back'>> = {
+  frontFootage: 'front',
+  frontCorners: 'front',
+  leftFootage: 'left',
+  leftCorners: 'left',
+  rightFootage: 'right',
+  rightCorners: 'right',
+  backFootage: 'back',
+  backCorners: 'back',
+};
+
+// Mirrors the holiday builder's Section card (QuoteBuilder.tsx) so the permanent
+// sections read as the same surface — white card, uppercase header, divider.
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="border border-gray-200 rounded-lg p-4 mb-4">
-      <h3 className="text-sm font-semibold text-gray-800 mb-3">{title}</h3>
+    <div className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
+      <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-4 pb-2 border-b border-gray-100">
+        {title}
+      </h3>
       {children}
     </div>
   );
@@ -22,16 +36,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 type PermanentSectionProps = {
   form: QuoteFormData;
   setForm: React.Dispatch<React.SetStateAction<QuoteFormData>>;
-  designId: string | null;
 };
 
-export default function PermanentSection({ form, setForm, designId }: PermanentSectionProps) {
-  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+// Footage + corners come from the satellite-view roofline draw (#88 / S23, per
+// Jason — the design projection was dropped as inaccurate). The operator draws
+// each side on the Satellite tab; those measurements flow into the fields below,
+// which stay hand-editable.
+export default function PermanentSection({ form, setForm }: PermanentSectionProps) {
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
-    setForm((f) => ({ ...f, permanent: { ...f.permanent, [k]: v } }));
+    setForm((f) => {
+      const side = SIDE_OF_FIELD[k];
+      const permanent = { ...f.permanent, [k]: v };
+      if (side) permanent.sideSource = { ...(f.permanent.sideSource ?? {}), [side]: 'manual' };
+      return { ...f, permanent };
+    });
 
   const patchGap = (idx: number, patch: Partial<PermanentGap>) =>
     setForm((f) => {
@@ -50,70 +70,6 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
       permanent: { ...f.permanent, gaps: [...f.permanent.gaps, { lengthFt: 0, source: 'manual' as const }] },
     }));
 
-  const refreshFromDesign = async () => {
-    if (!designId) return;
-    setRefreshing(true);
-    setRefreshWarning(null);
-    try {
-      const res = await fetch(`/api/designs/${designId}`);
-      const data = await res.json();
-      const scene: Scene | undefined = data?.design?.scene;
-      if (!scene) {
-        setRefreshWarning("Couldn't load the design to refresh.");
-        return;
-      }
-      const proj = projectPermanentDesign(scene);
-      const autoRows: PermanentGap[] = proj.frontGapCandidates.map((c) => ({
-        lengthFt: c.lengthFt,
-        detectedFt: c.lengthFt,
-        source: 'auto' as const,
-      }));
-      // Auto rows are regenerated fresh from geometry; only operator-added 'manual'
-      // rows survive. An 'edited' row (operator ticked a splitter or corrected an
-      // auto gap's length) is reset — count them so we can warn instead of silently
-      // dropping the operator's splitter flags / length corrections.
-      const resetEditedGaps = form.permanent.gaps.filter((g) => g.source === 'edited').length;
-      const gaps = [...autoRows, ...form.permanent.gaps.filter((g) => g.source === 'manual')];
-      setForm((f) => ({
-        ...f,
-        permanent: {
-          ...f.permanent,
-          frontFootage: proj.feetBySide.front,
-          frontCorners: proj.cornersBySide.front,
-          gaps,
-        },
-      }));
-      // Refresh writes FRONT footage only (left/right/back are satellite-measured
-      // and manually entered, so overwriting them would wipe the operator's numbers).
-      // But warn about design footage refresh does NOT carry through, so a tagged
-      // side run can't be silently dropped → under-billed with no signal.
-      const sideFt = proj.feetBySide.left + proj.feetBySide.right + proj.feetBySide.back;
-      const warnings: string[] = [];
-      if (proj.feetBySide.unassigned > 0) {
-        warnings.push(
-          `${proj.feetBySide.unassigned} ft of strands aren't tagged front/left/right/back — tag them in the design so they're counted`
-        );
-      }
-      if (sideFt > 0) {
-        warnings.push(
-          `${sideFt} ft is tagged to left/right/back — enter it in the Left/Right/Back fields below (refresh fills Front only)`
-        );
-      }
-      if (resetEditedGaps > 0) {
-        warnings.push(
-          `${resetEditedGaps} edited gap ${resetEditedGaps === 1 ? 'row was' : 'rows were'} reset to the auto-detected values — re-apply any splitter flags or length corrections`
-        );
-      }
-      if (warnings.length > 0) {
-        setRefreshWarning(`⚠ ${warnings.join('. ')}.`);
-      }
-    } catch {
-      setRefreshWarning("Couldn't load the design to refresh.");
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   return (
     <div>
       <Section title="Front of Home">
@@ -129,7 +85,7 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
             />
             {p.frontFootage === 0 && (
               <p className="text-xs text-amber-600 mt-1">
-                Front footage is 0 — refresh from the design or enter it manually.
+                Front footage is 0 — draw the front roofline on the Satellite tab, or enter it manually.
               </p>
             )}
           </div>
@@ -143,32 +99,16 @@ export default function PermanentSection({ form, setForm, designId }: PermanentS
               onChange={(e) => setP('frontCorners', Number(e.target.value))}
             />
             <p className="text-xs text-gray-400 mt-1">
-              Every corner / end / gable peak = 3 lights. Auto-counted from the design; adjust if needed.
+              Every corner / end / gable peak = 3 lights. Auto-counted from the satellite draw; adjust if needed.
             </p>
           </div>
-        </div>
-        <div className="mt-3">
-          <button
-            type="button"
-            disabled={!designId || refreshing}
-            onClick={() => void refreshFromDesign()}
-            className="text-sm px-3 py-1.5 rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh from design'}
-          </button>
-          {!designId && (
-            <p className="text-xs text-gray-400 mt-1">
-              Design the front first to auto-detect footage, corners &amp; gaps.
-            </p>
-          )}
-          {refreshWarning && <p className="text-xs text-amber-600 mt-1">{refreshWarning}</p>}
         </div>
       </Section>
 
       <Section title="Sides &amp; Back">
         <p className="text-xs text-gray-400 mb-3">
-          Measure off the satellite view or enter manually. Left + Right are billed together as
-          &lsquo;Sides&rsquo;.
+          Drawn on the Satellite tab (footage &amp; corners fill in per side), or enter manually. A hand-typed
+          number overrides the drawn measurement. Left + Right are billed together as &lsquo;Sides&rsquo;.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>

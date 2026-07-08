@@ -26,6 +26,7 @@ export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
     distanceToSurfaceFt: 0,
     opacity: 1,
     showCoverage: false,
+    showBeam: true,
   },
   bistro: { spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'], sagFactor: 0.1 },
   wreath: { sizeIn: 36, withLights: true, withBow: true, colorPattern: ['warm-white'] },
@@ -52,7 +53,7 @@ export type SectionSpec = { key: string; label: string; fields: FieldSpec[] };
 const SPACINGS_BY_TYPE: Record<string, number[]> = {
   c9: [6, 9, 12, 15, 18, 24, 36],
   mini: [4, 6, 9, 12, 18],
-  permanent: [4, 6, 8, 9, 12, 15, 18, 24],
+  permanent: [8], // #88: perm pucks ship 8" on-center only (BOM already assumes 8").
   bistro: [9, 12, 15, 18, 24, 36],
 };
 
@@ -85,10 +86,11 @@ export const SECTIONS: SectionSpec[] = [
       { key: 'spacingIn', label: 'Default spacing', kind: 'spacing', options: SPACINGS_BY_TYPE.permanent, unit: '"' },
       { key: 'drawingStyle', label: 'Default drawing style', kind: 'style', options: DRAWING_STYLES },
       { key: 'colorPattern', label: 'Default color', kind: 'color-pattern' },
-      { key: 'beamLengthFt', label: 'Default beam length', kind: 'number', min: 0.5, max: 12, step: 0.1, unit: ' ft' },
+      { key: 'beamLengthFt', label: 'Default beam length', kind: 'number', min: 0.5, max: 20, step: 0.1, unit: ' ft' },
       { key: 'beamWidthFt', label: 'Default beam width', kind: 'number', min: 0.2, max: 6, step: 0.1, unit: ' ft' },
       { key: 'distanceToSurfaceFt', label: 'Default distance to surface', kind: 'number', min: 0, max: 5, step: 0.1, unit: ' ft' },
       { key: 'opacity', label: 'Default opacity', kind: 'number', min: 0.1, max: 1, step: 0.01 },
+      { key: 'showBeam', label: 'Show light beam by default', kind: 'bool' },
       { key: 'showCoverage', label: 'Show floor coverage by default', kind: 'bool' },
     ],
   },

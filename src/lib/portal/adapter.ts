@@ -164,12 +164,14 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // key on it without a separate lookup.
       if (typeof raw.id === 'string' && raw.id.startsWith('permanent-')) {
         const isAddon = raw.id === 'permanent-maintenance';
-        const m = raw.label.match(/(\d+)\s*ft/i);
         const item: PortalLineItem = {
           id: raw.id,
           kind: isAddon ? 'permanent-addon' : 'permanent',
-          label: raw.label,
-          detail: isAddon ? '' : m ? `${m[1]} ft` : '',
+          // Customer-facing: drop the operator's " - N ft ($X/ft)" detail so the
+          // customer sees just the surface name + price (Jason S23). The operator
+          // breakdown keeps the full label — this transform is portal-only.
+          label: raw.label.replace(/\s*-\s*[\d,]+\s*ft\s*\(\$[\d.,]+\/ft\)\s*$/i, ''),
+          detail: '',
           price: raw.amount,
           stableId: raw.id,
         };
