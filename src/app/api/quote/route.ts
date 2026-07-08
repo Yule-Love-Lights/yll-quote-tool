@@ -293,6 +293,29 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid permanent.gaps element (lengthFt must be a non-negative number)' }, { status: 400 });
       }
     }
+    // #140: the Extensions/Splitters card fields (all optional; BOM-only).
+    if (
+      pf.accessoriesSource !== undefined &&
+      pf.accessoriesSource !== 'auto' &&
+      pf.accessoriesSource !== 'manual'
+    ) {
+      return NextResponse.json({ error: "permanent.accessoriesSource must be 'auto' or 'manual' if provided" }, { status: 400 });
+    }
+    if (pf.extensions !== undefined) {
+      if (!isObj(pf.extensions)) {
+        return NextResponse.json({ error: 'permanent.extensions must be an object if provided' }, { status: 400 });
+      }
+      for (const k of ['e3', 'e5', 'e10', 'e25'] as const) {
+        if (!isNonNegNumber((pf.extensions as Record<string, unknown>)[k])) {
+          return NextResponse.json({ error: `permanent.extensions.${k} must be a non-negative number` }, { status: 400 });
+        }
+      }
+    }
+    for (const f of ['splittersNeeded', 'jumpBoosters'] as const) {
+      if (pf[f] !== undefined && !isNonNegNumber(pf[f])) {
+        return NextResponse.json({ error: `permanent.${f} must be a non-negative number if provided` }, { status: 400 });
+      }
+    }
   }
 
   // Event Lighting (#96) — audit fixes: validate the optional event block at
