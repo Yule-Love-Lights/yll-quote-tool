@@ -501,6 +501,17 @@ describe('#140 P3: permanent street runs → bulbType:permanent strands', () => 
     const out = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
     expect(countSeededItems(out).roofline).toBe(2);
   });
+
+  it('seeds the default 10 ft yardstick into a scene with none (S25 regression: analyze shipped a yardstick-less design)', () => {
+    const out = seedSceneFromAnalysis(emptyScene(), RUNS_SEED, W, H);
+    expect(out.yardsticks).toEqual([makeDefaultYardstick(W, H)]);
+  });
+
+  it('never replaces an existing yardstick — even an operator-resized seed one', () => {
+    const resized = { ...makeDefaultYardstick(W, H), width: 42 };
+    const out = seedSceneFromAnalysis({ yardsticks: [resized], items: [] }, RUNS_SEED, W, H);
+    expect(out.yardsticks).toEqual([resized]);
+  });
 });
 
 describe('makeDefaultYardstick (#88 permanent — uncalibrated auto-yardstick)', () => {

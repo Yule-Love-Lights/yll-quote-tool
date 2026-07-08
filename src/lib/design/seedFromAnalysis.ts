@@ -530,6 +530,17 @@ export function seedSceneFromAnalysis(
       included: true,
     }));
     out = { ...out, items: [...kept, ...seeded] };
+    // A permanent seed has no holiday calibration, so the SCALE FIRST block
+    // above never fires — without this the analyze path ships a design with NO
+    // yardstick (the createDesign default-yardstick branch is skipped whenever
+    // an analysis seed is present). Seed the permanent default 10 ft yardstick,
+    // but ONLY into an empty array: unlike holiday's recalibration, the default
+    // carries no new information, so an existing (possibly operator-resized)
+    // yardstick always wins.
+    const existingYs: Yardstick[] = Array.isArray(out?.yardsticks) ? out.yardsticks : [];
+    if (existingYs.length === 0) {
+      out = { ...out, yardsticks: [makeDefaultYardstick(photoW, photoH)] };
+    }
   }
 
   if (detectionsHaveContent(seed.detections)) {
