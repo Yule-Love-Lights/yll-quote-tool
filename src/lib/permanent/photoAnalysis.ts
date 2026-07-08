@@ -1,17 +1,22 @@
-// Permanent Lighting #140 (P2) — the permanent-specific satellite analyzer.
+// Permanent Lighting #140 (P2+P3) — the permanent-specific analyzer.
 //
-// V1 scope: SATELLITE ONLY. It traces the house's gutter-line roof perimeter on
-// the top-down image as FOUR side channels (front/left/right/back) — the same
-// editable channels the operator draws by hand (QuoteBuilder.permanentSatLines)
-// — so everything downstream (footage/corners via deriveSideMeasure, the
+// SATELLITE: traces the house's gutter-line roof perimeter on the top-down
+// image as FOUR side channels (front/left/right/back) — the same editable
+// channels the operator draws by hand (QuoteBuilder.permanentSatLines) — so
+// everything downstream (footage/corners via deriveSideMeasure, the
 // Extensions/Splitters counts via trackAccessories, portal persistence) flows
 // from the DRAWN, OPERATOR-EDITABLE lines. Numbers never bypass the geometry:
 // that trust model is why the previous analyzer was removed (S22).
 //
-// The street photo rides along ONLY as an orientation cross-check (which edge
-// faces the road = front) — the single most common satellite failure mode,
-// inherited from the holiday analyzer's self-check. Street-run seeding + jump/
-// splitter detection are P3.
+// STREET (P3): traces the visible permanent runs on the street photo (gutter +
+// gable rakes, tagged front/left/right) — seeded as editable bulbType:
+// 'permanent' strands, VISUAL/portal only. And detects JUMPS between separated
+// runs (measured ft + the splitter branch flag) — what pure geometry can't see
+// — which seed the Extensions/Splitters card as `extras`.
+//
+// The street photo also anchors the satellite orientation cross-check (which
+// edge faces the road = front) — the #1 satellite failure mode, inherited from
+// the holiday analyzer's self-check.
 
 import { getClaudeClient } from '@/lib/claude';
 import { extractJson, normalizeLines, type LineSegment } from '@/lib/photoAnalysis';
@@ -23,8 +28,27 @@ export type PermanentSatelliteLines = {
   back: LineSegment[];
 };
 
+// #140 P3: a track run traced on the STREET photo, tagged with its house side
+// (back never shows from the street). Street-photo coordinate space.
+export type PermanentStreetRun = {
+  side: 'front' | 'left' | 'right';
+  points: [number, number][];
+  label: string;
+};
+
+// #140 P3: a detected JUMP — a physical break separated runs must bridge with
+// extensions (garage↔house, porch↔upper story). `splitter` marks the Jason
+// branch rule: the line splits two directions/levels at this connection.
+export type PermanentJump = {
+  ft: number;
+  splitter: boolean;
+  label: string;
+};
+
 export type PermanentSatelliteAnalysis = {
   satelliteLines: PermanentSatelliteLines;
+  streetRuns: PermanentStreetRun[];
+  jumps: PermanentJump[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -49,7 +73,19 @@ TRACING RULES:
 
 ORIENTATION SELF-CHECK (do this BEFORE finalizing): find the road in the satellite image and, when a street-view photo is provided, CONFIRM against it which edge is the front. If your front assignment would put "front" on an edge the street photo clearly shows is a side, they are wrong — fix them before answering. Left/right are from the ROAD's point of view (the road-viewer's left hand = "left").
 
-COORDINATES: every polyline point is normalized 0-1 relative to the satellite image (x = left→right, y = top→bottom).
+STREET RUNS (only when a street-view photo is provided): ALSO trace the permanent track runs ON THE STREET PHOTO as "streetRuns" — these become the customer's visual preview:
+- Follow the gutter/eave line AND go UP AND OVER front-facing gable peaks (rake edges) — permanent track runs up the rakes; NEVER trace ridges.
+- Vertex at EVERY direction change (gutter→rake transition, apex, rake→gutter, wall corner).
+- Tag each run's side: "front", "left", or "right" (the back never shows from the street).
+- Where the roofline PHYSICALLY BREAKS (a lower porch roof vs the upper story, a garage jog), END the polyline and start a NEW run — never draw across the break.
+
+JUMPS + SPLITTERS: report every place SEPARATED runs must be wired together as "jumps":
+- A jump = the wire bridge between two runs that do not touch (a lower porch roof up to the second-story roof, the house across to an attached garage's separate roof mass, around a deep recess).
+- "ft": best estimate of the wiring distance in FEET — use the satellite scale where the jump is visible top-down; else estimate from the street photo using cues (front door ≈ 7 ft tall, one story ≈ 10 ft).
+- "splitter": true when the line BRANCHES at this connection — it continues in one direction AND feeds a second direction or another LEVEL (e.g. a run's end feeding both an upper-story run and a continuing lower run). A simple end-to-end continuation is false.
+- Do NOT report the small cuts at corners/peaks WITHIN a traced run — those are counted from the drawn geometry downstream. Only bridges between SEPARATE runs.
+
+COORDINATES: satellite polyline points are normalized 0-1 relative to the SATELLITE image; street-run points are normalized 0-1 relative to the STREET photo (x = left→right, y = top→bottom in both). Never mix the two spaces.
 
 Respond with JSON ONLY, exactly this shape:
 {
@@ -57,11 +93,15 @@ Respond with JSON ONLY, exactly this shape:
   "left":  [{ "points": [[x,y],...], "label": "left eave ~30ft" }],
   "right": [{ "points": [[x,y],...], "label": "right eave ~30ft" }],
   "back":  [{ "points": [[x,y],...], "label": "back eave ~40ft" }],
+  "streetRuns": [{ "side": "front" | "left" | "right", "points": [[x,y],...], "label": "front gutter + gable" }],
+  "jumps": [{ "ft": 12, "splitter": true, "label": "porch roof up to second story, branches toward garage" }],
   "notes": "1-2 sentences: what was unclear, sides skipped and why",
   "confidence": "low" | "medium" | "high"
 }`;
 
 const SIDES = ['front', 'left', 'right', 'back'] as const;
+const STREET_SIDES = new Set(['front', 'left', 'right']);
+const MAX_JUMP_FT = 200; // sanity cap on a hallucinated distance
 
 /** Coerce the raw model JSON into the typed result (exported for tests). */
 export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSatelliteAnalysis {
@@ -70,9 +110,42 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
   for (const side of SIDES) {
     satelliteLines[side] = normalizeLines(obj[side] as LineSegment[] | undefined);
   }
+  // #140 P3: street runs — normalize each run's points individually (they share
+  // the LineSegment shape) and keep only street-visible side tags.
+  const streetRuns: PermanentStreetRun[] = [];
+  if (Array.isArray(obj.streetRuns)) {
+    for (const raw of obj.streetRuns as Array<Record<string, unknown>>) {
+      if (!raw || !STREET_SIDES.has(raw.side as string)) continue;
+      const [line] = normalizeLines([
+        { points: raw.points as [number, number][], label: typeof raw.label === 'string' ? raw.label : '' },
+      ]);
+      if (line && line.points.length >= 2) {
+        streetRuns.push({
+          side: raw.side as PermanentStreetRun['side'],
+          points: line.points,
+          label: line.label ?? '',
+        });
+      }
+    }
+  }
+  // #140 P3: jumps — finite positive feet only, capped; splitter coerced.
+  const jumps: PermanentJump[] = [];
+  if (Array.isArray(obj.jumps)) {
+    for (const raw of obj.jumps as Array<Record<string, unknown>>) {
+      const ft = typeof raw?.ft === 'number' && Number.isFinite(raw.ft) ? raw.ft : 0;
+      if (ft <= 0 || ft > MAX_JUMP_FT) continue;
+      jumps.push({
+        ft,
+        splitter: raw.splitter === true,
+        label: typeof raw.label === 'string' ? raw.label.slice(0, 200) : '',
+      });
+    }
+  }
   const conf = obj.confidence;
   return {
     satelliteLines,
+    streetRuns: streetRuns.slice(0, 40),
+    jumps: jumps.slice(0, 40),
     notes: typeof obj.notes === 'string' ? obj.notes.slice(0, 500) : '',
     confidence: conf === 'high' || conf === 'medium' ? conf : 'low',
   };

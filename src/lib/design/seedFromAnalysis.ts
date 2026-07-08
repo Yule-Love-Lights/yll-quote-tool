@@ -64,6 +64,14 @@ export type AnalysisDetections = {
   garland?: GarlandDetection[];
 };
 
+// Permanent street run (#140 P3): a track run the permanent analyzer traced on
+// the STREET photo, tagged with its house side. Becomes a bulbType:'permanent'
+// strand — VISUAL + portal only (billing footage stays satellite-sourced).
+export type PermanentRunSeed = {
+  side: 'front' | 'left' | 'right';
+  points: [number, number][]; // normalized 0-1 street-photo coords
+};
+
 export type AnalysisSeed = {
   lines?: RooflineSeedLines;
   detections?: AnalysisDetections;
@@ -73,6 +81,8 @@ export type AnalysisSeed = {
   // first-class roofline family elsewhere (quote/route.ts, QuoteBuilder C9), so
   // a WW-only roofline can now calibrate scale too.
   calibration?: { santasFootage?: number; gingerbreadFootage?: number; winterWonderlandFootage?: number };
+  // #140 P3: permanent street runs (see PermanentRunSeed above).
+  permanentRuns?: PermanentRunSeed[];
 };
 
 const SEED_PREFIX = 'seed-';
@@ -174,6 +184,26 @@ export function sanitizeAnalysisSeed(input: unknown): AnalysisSeed {
     if (Object.keys(calibration).length) out.calibration = calibration;
   }
 
+  // #140 P3: permanent street runs — side must be a street-visible side (back
+  // never comes from street view), points must be ≥2 finite pairs.
+  const PERM_SIDES = new Set(['front', 'left', 'right']);
+  if (Array.isArray(o.permanentRuns)) {
+    const runs: PermanentRunSeed[] = [];
+    for (const r of o.permanentRuns as unknown[]) {
+      if (!r || typeof r !== 'object') continue;
+      const run = r as { side?: unknown; points?: unknown };
+      if (!PERM_SIDES.has(run.side as string) || !Array.isArray(run.points)) continue;
+      const pts = (run.points as unknown[])
+        .filter(
+          (p): p is [number, number] =>
+            Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n)),
+        )
+        .map(([x, y]) => [clamp01(x), clamp01(y)] as [number, number]);
+      if (pts.length >= 2) runs.push({ side: run.side as PermanentRunSeed['side'], points: pts });
+    }
+    if (runs.length) out.permanentRuns = runs.slice(0, 40); // sanity cap
+  }
+
   const d = o.detections;
   if (d && typeof d === 'object') {
     const det = d as Record<string, unknown>;
@@ -235,7 +265,11 @@ export function detectionsHaveContent(d: AnalysisDetections | undefined): boolea
 }
 
 export function analysisSeedHasContent(seed: AnalysisSeed): boolean {
-  return Boolean((seed.lines && seedLinesHaveContent(seed.lines)) || detectionsHaveContent(seed.detections));
+  return Boolean(
+    (seed.lines && seedLinesHaveContent(seed.lines)) ||
+      detectionsHaveContent(seed.detections) ||
+      (seed.permanentRuns?.length ?? 0) > 0,
+  );
 }
 
 // A normalized box → pixel-space rect, clamped into the photo. Coords round
@@ -473,14 +507,40 @@ export function seedSceneFromAnalysis(
     out = seedRooflineStrands(out, seed.lines, photoW, photoH);
   }
 
+  // #140 P3: permanent street runs → bulbType:'permanent' strands tagged with
+  // their sideOfHouse. Replace-on-reseed swaps ONLY previously-seeded permanent
+  // strands (seed-* id + bulbType 'permanent') — hand-drawn permanent strands
+  // and every holiday item survive. Visual + portal only: billing footage stays
+  // satellite-sourced (the permanent money model).
+  if ((seed.permanentRuns?.length ?? 0) > 0) {
+    const existing: SceneItem[] = Array.isArray(out?.items) ? out.items : [];
+    const kept = existing.filter(
+      (i) => !(i.id.startsWith(SEED_PREFIX) && isStrand(i) && i.bulbType === 'permanent'),
+    );
+    const seeded: StrandItem[] = seed.permanentRuns!.map((run, i) => ({
+      id: `${SEED_PREFIX}perm-${i + 1}`,
+      yardstickId: null,
+      kind: 'strand',
+      bulbType: 'permanent',
+      spacingIn: 8, // the locked permanent spacing (S28)
+      drawingStyle: 'strand',
+      colorPattern: ['warm-white'],
+      points: run.points.flatMap(([x, y]) => [round2(clamp01(x) * photoW), round2(clamp01(y) * photoH)]),
+      sideOfHouse: run.side,
+      included: true,
+    }));
+    out = { ...out, items: [...kept, ...seeded] };
+  }
+
   if (detectionsHaveContent(seed.detections)) {
     const existing: SceneItem[] = Array.isArray(out?.items) ? out.items : [];
     // Replace previously AI-seeded PER-UNIT items: seed-* ids that are not
-    // roofline strands (those belong to the tag rule above). Staff items —
-    // any id without the prefix — always survive.
+    // roofline strands (those belong to the tag rule above) and not permanent
+    // runs (the #140 block above owns those). Staff items — any id without the
+    // prefix — always survive.
     const kept = existing.filter((i) => {
       if (!i.id.startsWith(SEED_PREFIX)) return true;
-      return isStrand(i) && i.bulbType === 'c9';
+      return isStrand(i) && (i.bulbType === 'c9' || i.bulbType === 'permanent');
     });
     // #90: garland section count uses the roofline calibration when present, else
     // the staff (or leftover seed) yardstick — so a long run with a drawn
@@ -500,7 +560,9 @@ export function countSeededItems(scene: Scene): { roofline: number; perUnit: num
   let perUnit = 0;
   for (const i of items) {
     if (!i.id.startsWith(SEED_PREFIX)) continue;
-    if (isStrand(i) && i.bulbType === 'c9') roofline++;
+    // Permanent runs count as "roofline" here — they're roof-run strands too
+    // (the counts feed builder status lines, not billing).
+    if (isStrand(i) && (i.bulbType === 'c9' || i.bulbType === 'permanent')) roofline++;
     else perUnit++;
   }
   return { roofline, perUnit };
