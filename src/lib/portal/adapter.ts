@@ -469,11 +469,41 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // bundled) instead of the holiday tier ladder / permanent surface packages.
   const isPermanent = row.service_type === 'permanent';
   const isEvent = row.service_type === 'event';
-  const packages = isPermanent
+  const allPackages = isPermanent
     ? derivePackagesPermanent(lineItems, row.result)
     : isEvent
       ? derivePackagesEvent(lineItems, row.result)
       : derivePackages(lineItems, row.result, roofline);
+  // The approval gate threshold — hoisted (was inline in the return below) so
+  // the package filter next uses the IDENTICAL value the approve gate enforces.
+  // $1,000 for holiday/event, or the permanent quote's FROZEN rate-snapshot
+  // minimumJobAmount (#88 — never live app_settings, the rate-drift guard;
+  // falls back to the canonical $2,500 default if a permanent result somehow
+  // lacks a snapshot). 0 when EITHER (a) staff checked "waive the minimum" on
+  // this quote (#59 — inputs.waiveMinimum), or (b) the quote's items already
+  // total under the minimum (the existing auto-waive in minimumOrderSubtotal()).
+  // Enforced on the portal, not in pricing. Uses tierLineItems so a
+  // two-roofline quote isn't double-counted.
+  const approvalGate = row.inputs?.waiveMinimum
+    ? 0
+    : minimumOrderSubtotal(
+        tierLineItems,
+        isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+      );
+  // #134 (Jason S24): hide any package tile whose selection can't be approved —
+  // its PRE-TAX subtotal lands under the gate, so tapping it only walks the
+  // customer into the "add $X more" wall. Gate 0 (waived / auto-waived because
+  // the whole quote is under the minimum) hides nothing, so tiles can never
+  // ALL vanish; the individual line-item toggles are unaffected either way.
+  const priceById = new Map(lineItems.map((li) => [li.id, li.price]));
+  const packages =
+    approvalGate > 0
+      ? allPackages.filter(
+          (pkg) =>
+            pkg.includedItemIds.reduce((sum, id) => sum + (priceById.get(id) ?? 0), 0) >=
+            approvalGate,
+        )
+      : allPackages;
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
@@ -525,21 +555,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // same way the A/B/C tiers are (rush/takedown + tax). Same source
     // derivePackages uses, kept in sync via the shared chargesFromResult.
     charges: { ...chargesFromResult(row.result), manualDiscount },
-    // The approval gate threshold: $1,000 for holiday, or the permanent
-    // quote's FROZEN rate-snapshot minimumJobAmount (#88 — never live
-    // app_settings, the rate-drift guard; falls back to the canonical $2,500
-    // default if a permanent result somehow lacks a snapshot). 0 when EITHER
-    // (a) staff checked "waive the minimum" on this quote (#59 —
-    // inputs.waiveMinimum), or (b) the quote's items already total under the
-    // minimum (the existing auto-waive in minimumOrderSubtotal()). Enforced on
-    // the portal, not in pricing. Uses tierLineItems so a two-roofline quote
-    // isn't double-counted.
-    minimumOrderSubtotal: row.inputs?.waiveMinimum
-      ? 0
-      : minimumOrderSubtotal(
-          tierLineItems,
-          isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
-        ),
+    // The approval gate threshold — see `approvalGate` above (hoisted so the
+    // #134 package filter and this gate can never disagree).
+    minimumOrderSubtotal: approvalGate,
     // Seeds the portal's install-timing (#40): the customer's APPROVED choice on a
     // booked quote, else the staff-set default so an active quote opens with the
     // Sep/Oct discount pre-selected (the customer can still change it).
