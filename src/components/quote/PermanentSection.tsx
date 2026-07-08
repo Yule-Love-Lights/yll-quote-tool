@@ -1,7 +1,7 @@
 'use client';
 
 import type { QuoteFormData } from '@/lib/quoteForm';
-import { roundFootageUpTo5, type PermanentQuoteFields, type PermanentGap } from '@/lib/permanent/types';
+import { roundFootageUpTo5, type PermanentQuoteFields } from '@/lib/permanent/types';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
@@ -64,22 +64,28 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
       if (r !== p[k]) setP(k, r);
     };
 
-  const patchGap = (idx: number, patch: Partial<PermanentGap>) =>
+  // #140 Extensions/Splitters card: typing any count takes MANUAL ownership —
+  // the geometry/AI derive stops writing until "Recount" hands it back.
+  const setAccessoryCount = (
+    patch: Partial<{ e3: number; e5: number; e10: number; e25: number }> | null,
+    scalar?: { key: 'splittersNeeded' | 'jumpBoosters'; value: number },
+  ) =>
     setForm((f) => {
-      const gaps = f.permanent.gaps.map((g, i) =>
-        i === idx ? { ...g, ...patch, source: (g.source === 'manual' ? 'manual' : 'edited') as PermanentGap['source'] } : g
-      );
-      return { ...f, permanent: { ...f.permanent, gaps } };
+      const cur = f.permanent;
+      const extensions = { e3: 0, e5: 0, e10: 0, e25: 0, ...(cur.extensions ?? {}), ...(patch ?? {}) };
+      return {
+        ...f,
+        permanent: {
+          ...cur,
+          extensions,
+          ...(scalar ? { [scalar.key]: scalar.value } : {}),
+          accessoriesSource: 'manual',
+        },
+      };
     });
 
-  const removeGap = (idx: number) =>
-    setForm((f) => ({ ...f, permanent: { ...f.permanent, gaps: f.permanent.gaps.filter((_, i) => i !== idx) } }));
-
-  const addGap = () =>
-    setForm((f) => ({
-      ...f,
-      permanent: { ...f.permanent, gaps: [...f.permanent.gaps, { lengthFt: 0, source: 'manual' as const }] },
-    }));
+  const recountAccessories = () =>
+    setForm((f) => ({ ...f, permanent: { ...f.permanent, accessoriesSource: 'auto' } }));
 
   return (
     <div>
@@ -204,53 +210,6 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
           </p>
         </div>
 
-        <div className="mt-4">
-          <p className="text-xs text-gray-400 mb-2">
-            Jumps between runs (controller→run, run→run, house→garage). Affects the materials/BOM
-            only — not the price.
-          </p>
-          <div className="space-y-2">
-            {p.gaps.map((g, idx) => (
-              <div key={idx} className="flex flex-wrap items-center gap-3 border border-gray-100 rounded-md p-2">
-                <div className="w-28">
-                  <label className={lbl}>Length (ft)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    className={inp}
-                    value={g.lengthFt}
-                    onChange={(e) => patchGap(idx, { lengthFt: Number(e.target.value) })}
-                  />
-                </div>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={!!g.splitter}
-                    onChange={(e) => patchGap(idx, { splitter: e.target.checked })}
-                  />
-                  Branches here (splitter)
-                </label>
-                {(g.source === 'auto' || g.source === 'edited') && g.detectedFt !== undefined && (
-                  <span className="text-xs text-gray-400">auto-detected: {g.detectedFt} ft</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeGap(idx)}
-                  className="text-xs text-red-600 hover:text-red-800 ml-auto"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={addGap}
-            className="mt-2 text-sm px-3 py-1.5 rounded-md border border-gray-300 bg-white hover:bg-gray-50"
-          >
-            Add gap
-          </button>
-        </div>
       </Section>
 
       <Section title="Track &amp; options">
@@ -302,6 +261,81 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
               Priced in Settings; no charge if unset.
             </p>
           </div>
+        </div>
+      </Section>
+
+      <Section title="Extensions / Splitters">
+        <p className="text-xs text-gray-400 mb-3">
+          Track accessories for the material order — never the customer price. Counted
+          automatically from the drawn lines (every corner/peak cut = one 5&apos;; measured jumps
+          size up generously). Type over any count to take it manual.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          {(
+            [
+              ['e3', "3' Extension"],
+              ['e5', "5' Extension"],
+              ['e10', "10' Extension"],
+              ['e25', "25' Extension"],
+            ] as const
+          ).map(([key, label]) => (
+            <div key={key}>
+              <label className={lbl}>{label}</label>
+              <input
+                type="number"
+                min={0}
+                className={inp}
+                value={p.extensions?.[key] ?? 0}
+                onChange={(e) => setAccessoryCount({ [key]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+              />
+            </div>
+          ))}
+          <div>
+            <label className={lbl}>Splitters needed</label>
+            <input
+              type="number"
+              min={0}
+              className={inp}
+              value={p.splittersNeeded ?? 0}
+              onChange={(e) =>
+                setAccessoryCount(null, { key: 'splittersNeeded', value: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+              }
+            />
+            <p className="text-xs text-gray-400 mt-1">Where the line branches to a second level/direction.</p>
+          </div>
+          <div>
+            <label className={lbl}>Extra signal boosters</label>
+            <input
+              type="number"
+              min={0}
+              className={inp}
+              value={p.jumpBoosters ?? 0}
+              onChange={(e) =>
+                setAccessoryCount(null, { key: 'jumpBoosters', value: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+              }
+            />
+            <p className="text-xs text-gray-400 mt-1">One per jump over {'>'}50 ft (the controller rule is separate).</p>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          {p.accessoriesSource === 'manual' ? (
+            <>
+              <span className="text-xs font-medium text-amber-600">Manually set — auto-count paused.</span>
+              <button
+                type="button"
+                onClick={recountAccessories}
+                className="text-sm px-3 py-1.5 rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+              >
+                Recount from drawn lines
+              </button>
+            </>
+          ) : (
+            <span className="text-xs text-gray-400">
+              {p.accessoriesSource === 'auto'
+                ? 'Auto-counted from the drawn lines.'
+                : 'Counts appear when lines are drawn (satellite or design).'}
+            </span>
+          )}
         </div>
       </Section>
 

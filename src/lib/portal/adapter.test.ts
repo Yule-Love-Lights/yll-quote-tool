@@ -136,6 +136,32 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     expect(portal.lineItems.some((li) => /Wonderland/.test(li.label))).toBe(true);
   });
 
+  it('#140: BOM accessories (extensions/splitters) never reach the customer line items', () => {
+    // Materials are operator-facing cost only — pricing.ts never imports the BOM.
+    // This locks the boundary: a permanent quote with card counts set still
+    // exposes only the per-side price lines on the portal.
+    const permInputs = emptyInputs({
+      permanent: {
+        frontFootage: 50, leftFootage: 0, rightFootage: 0, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+        extensions: { e3: 2, e5: 4, e10: 1, e25: 1 },
+        splittersNeeded: 2,
+        jumpBoosters: 1,
+        accessoriesSource: 'auto',
+      },
+    });
+    const permResult = calculatePermanentQuote(permInputs);
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(permResult, permInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.lineItems.map((li) => li.id)).toEqual(['permanent-front']);
+    expect(portal.lineItems[0].price).toBe(2000); // 50 × $40 — accessories cost the customer nothing
+    expect(JSON.stringify(portal.lineItems)).not.toMatch(/extension|splitter|APL/i);
+  });
+
   it('#138: the Winter Wonderland card shows just the product name (footage/difficulty stripped)', () => {
     const result = calculateQuote(
       emptyInputs({ winterWonderlandFootage: 41, winterWonderlandDifficulty: 'easy' }),

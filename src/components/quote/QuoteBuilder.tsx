@@ -34,6 +34,8 @@ import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
+import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
+import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -786,6 +788,70 @@ export default function QuoteBuilder({
       }),
     );
   }, [permanentSatLines, satelliteFeetPerPixel, satelliteAspect, form.serviceType]);
+
+  // #140: derive the Extensions/Splitters card counts from the DRAWN geometry —
+  // satellite plan-corners/junctions/jumps + street gable cuts (peak-only, so
+  // the two sources can't double-count). Pure math lives in trackAccessories.ts;
+  // this is a thin dispatcher with the same value-equality guard as the footage
+  // effect above. 'manual' provenance pauses it (the operator owns the counts;
+  // the card's Recount button hands ownership back by setting 'auto').
+  //
+  // SESSION GATE: only derives while a satellite session is live
+  // (satellitePreview set — an address pull / satellite upload this session).
+  // A REOPENED quote does not rehydrate permanentSatLines, so deriving there
+  // would clobber the saved auto counts with a weaker view (street-only, or
+  // zeros) — same reason the footage effect above leaves reopened sides alone.
+  useEffect(() => {
+    if (form.serviceType !== 'permanent') return;
+    if (satellitePreview == null) return;
+    if (form.permanent?.accessoriesSource === 'manual') return;
+    const streetStrandPoints = (breakdownScene?.items ?? [])
+      .filter((i) => isStrand(i) && i.bulbType === 'permanent' && !isLinkedTwin(i))
+      .map((i) => ({ points: (i as { points: number[] }).points ?? [] }));
+    const signal = hasAccessorySignal(permanentSatLines, streetStrandPoints);
+    const acc = deriveTrackAccessories({
+      satelliteLines: permanentSatLines,
+      satelliteFeetPerPixel,
+      satelliteAspect,
+      streetStrandPoints,
+    });
+    queueMicrotask(() =>
+      setForm((f) => {
+        if (f.serviceType !== 'permanent' || f.permanent.accessoriesSource === 'manual') return f;
+        // Never stamp 'auto' on an untouched quote with nothing drawn — that
+        // would flip a legacy stored quote off its gaps-driven BOM path.
+        if (!signal && f.permanent.accessoriesSource === undefined) return f;
+        const cur = f.permanent;
+        const same =
+          cur.accessoriesSource === 'auto' &&
+          cur.extensions?.e3 === acc.e3 &&
+          cur.extensions?.e5 === acc.e5 &&
+          cur.extensions?.e10 === acc.e10 &&
+          cur.extensions?.e25 === acc.e25 &&
+          (cur.splittersNeeded ?? 0) === acc.splitters &&
+          (cur.jumpBoosters ?? 0) === acc.jumpBoosters;
+        if (same) return f;
+        return {
+          ...f,
+          permanent: {
+            ...cur,
+            extensions: { e3: acc.e3, e5: acc.e5, e10: acc.e10, e25: acc.e25 },
+            splittersNeeded: acc.splitters,
+            jumpBoosters: acc.jumpBoosters,
+            accessoriesSource: 'auto',
+          },
+        };
+      }),
+    );
+  }, [
+    permanentSatLines,
+    satelliteFeetPerPixel,
+    satelliteAspect,
+    satellitePreview,
+    breakdownScene,
+    form.serviceType,
+    form.permanent?.accessoriesSource,
+  ]);
 
   useEffect(() => {
     if (!dragging) return;
