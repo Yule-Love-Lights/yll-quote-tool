@@ -108,7 +108,7 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
       <Section title="Sides &amp; Back">
         <p className="text-xs text-gray-400 mb-3">
           Drawn on the Satellite tab (footage &amp; corners fill in per side), or enter manually. A hand-typed
-          number overrides the drawn measurement. Left + Right are billed together as &lsquo;Sides&rsquo;.
+          number overrides the drawn measurement. Left and Right each bill as their own line item.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>

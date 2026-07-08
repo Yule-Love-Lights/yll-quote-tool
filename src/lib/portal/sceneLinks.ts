@@ -54,7 +54,8 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
   // toggle. Permanent runs are tagged sideOfHouse + bulbType 'permanent' and DO
   // twin across photos (unlike holiday roofline), so a package deselect hides a
   // side's lights on EVERY angle (the twin expansion below adds the depictions).
-  // Left + Right are billed together as 'Sides'.
+  // Each side bills as its own line (#132); 'permanent-sides' is the pre-#132
+  // combined left+right line still present on legacy stored results.
   const permanentSideIds = (sides: SideOfHouse[]) =>
     items
       .filter(
@@ -145,6 +146,8 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
     // Permanent per-side line items → the drawn permanent strands tagged that
     // side. The twin expansion below then carries the hide/show to every photo.
     if (li.id === 'permanent-front') return { ...li, sceneItemIds: permanentSideIds(['front']) };
+    if (li.id === 'permanent-left') return { ...li, sceneItemIds: permanentSideIds(['left']) };
+    if (li.id === 'permanent-right') return { ...li, sceneItemIds: permanentSideIds(['right']) };
     if (li.id === 'permanent-sides') return { ...li, sceneItemIds: permanentSideIds(['left', 'right']) };
     if (li.id === 'permanent-back') return { ...li, sceneItemIds: permanentSideIds(['back']) };
 

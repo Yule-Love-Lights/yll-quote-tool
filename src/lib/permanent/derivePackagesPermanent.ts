@@ -9,19 +9,29 @@
 // holiday — permanent just never carries a rush fee or takedown.
 //
 // Packages are keyed on the pricing engine's STABLE line-item ids
-// ('permanent-front' / 'permanent-sides' / 'permanent-back'), never label
-// regexes — a side is only offered as a package when its line item is
-// actually present on the quote. 'permanent-maintenance' is a toggleable
-// add-on line, never a package.
+// ('permanent-front' / 'permanent-left' / 'permanent-right' / 'permanent-back'
+// — plus the pre-#132 combined 'permanent-sides' still present on legacy stored
+// results), never label regexes — a side is only offered as a package when its
+// line item is actually present on the quote. 'permanent-maintenance' is a
+// toggleable add-on line, never a package.
 
 import { chargesFromResult, effectiveCharges, priceSelection } from '@/lib/portal/derivePackages';
 import type { PortalLineItem, PortalPackage } from '@/components/portal/types';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 const FRONT_ID = 'permanent-front';
-const SIDES_ID = 'permanent-sides';
+const LEFT_ID = 'permanent-left';
+const RIGHT_ID = 'permanent-right';
+// Pre-#132 results carry ONE combined sides line under this id — keep honoring
+// it so the sides package doesn't vanish from an already-sent quote's portal.
+const LEGACY_SIDES_ID = 'permanent-sides';
 const BACK_ID = 'permanent-back';
 const MAINTENANCE_ID = 'permanent-maintenance';
+
+/** Same id set regardless of order — used to suppress a duplicate tier. */
+function sameIdSet(a: string[], b: string[]): boolean {
+  return a.length === b.length && new Set([...a, ...b]).size === a.length;
+}
 
 function priceIds(
   ids: string[],
@@ -45,7 +55,11 @@ export function derivePackagesPermanent(
   const charges = effectiveCharges(chargesFromResult(result), false, false);
 
   const hasFront = lineItems.some((li) => li.id === FRONT_ID);
-  const hasSides = lineItems.some((li) => li.id === SIDES_ID);
+  // The sides package bundles whichever side lines this result carries: the
+  // split left/right lines (#132) or a legacy combined 'permanent-sides' line.
+  const sideIds = lineItems
+    .map((li) => li.id)
+    .filter((id) => id === LEFT_ID || id === RIGHT_ID || id === LEGACY_SIDES_ID);
   const hasBack = lineItems.some((li) => li.id === BACK_ID);
 
   const packages: PortalPackage[] = [];
@@ -62,15 +76,15 @@ export function derivePackagesPermanent(
     });
   }
 
-  if (hasSides) {
-    const p = priceIds([SIDES_ID], lineItems, charges);
+  if (sideIds.length > 0) {
+    const p = priceIds(sideIds, lineItems, charges);
     packages.push({
       id: 'B',
       name: 'Both Sides',
       tagline: 'Left + right sides.',
       total: p.total,
       deposit: p.deposit,
-      includedItemIds: [SIDES_ID],
+      includedItemIds: sideIds,
     });
   }
 
@@ -93,14 +107,16 @@ export function derivePackagesPermanent(
   //     and go silently UNBILLED at approval (the approve route only bills the
   //     selected ids). Bundling them into D fixes that — mirrors holiday's
   //     "everything" tier (derivePackages Tier C).
-  //   • #125-2: only emit D when it bundles MORE THAN ONE billable line. A
-  //     single-surface quote with no custom items makes D byte-identical to its
-  //     lone A/B/C package — a redundant tier. (One surface + a custom item is
-  //     two lines, so D still appears and carries the custom line.)
+  //   • #125-2: only emit D when it bundles MORE THAN ONE billable line AND its
+  //     id set differs from every A/B/C package already offered. A single-surface
+  //     quote makes D byte-identical to its lone A/B/C package, and (post-#132) a
+  //     left+right-only quote makes D identical to B — both redundant tiers.
+  //     (One surface + a custom item is two lines that no A/B/C covers, so D
+  //     still appears and carries the custom line.)
   const wholeHomeIds = lineItems
     .map((li) => li.id)
     .filter((id) => id !== MAINTENANCE_ID);
-  if (wholeHomeIds.length > 1) {
+  if (wholeHomeIds.length > 1 && !packages.some((pkg) => sameIdSet(pkg.includedItemIds, wholeHomeIds))) {
     const p = priceIds(wholeHomeIds, lineItems, charges);
     packages.push({
       id: 'D',

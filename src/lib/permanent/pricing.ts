@@ -5,8 +5,10 @@
 // invoices) works unchanged — the money spine is service_type-agnostic off
 // `total`. The route dispatches to this when service_type === 'permanent'.
 //
-// Retail = per-foot only (front $40, sides+back $35 — adjustable). Left + right
-// footage SUM into one "Sides" line. Materials (tracks/pucks/extensions/…) never
+// Retail = per-foot only (front $40, sides+back $35 — adjustable). Each of the
+// four sides bills as its OWN line (#132, S24 — left + right previously combined
+// into one "Sides" line; legacy stored results still carry 'permanent-sides').
+// Left + right share the sides rate. Materials (tracks/pucks/extensions/…) never
 // touch the customer price — they live in the BOM (Phase 2) for cost/margin only.
 //
 // The FULL rate table is frozen into `permanentRatesSnapshot` so approve/amend
@@ -43,9 +45,11 @@ export function calculatePermanentQuote(
 ): QuoteResult {
   const p = inputs.permanent;
 
-  // Per-side footage → amounts. Left + right combine into one "Sides" line.
+  // Per-side footage → amounts. Each side is its own line (#132); left + right
+  // share the sides rate (one Settings field + one per-quote custom override).
   const frontFt = ft(p?.frontFootage ?? 0);
-  const sidesFt = ft(p?.leftFootage ?? 0) + ft(p?.rightFootage ?? 0);
+  const leftFt = ft(p?.leftFootage ?? 0);
+  const rightFt = ft(p?.rightFootage ?? 0);
   const backFt = ft(p?.backFootage ?? 0);
 
   const frontRate = rate(rates.frontPerFt, p?.frontCustomRate);
@@ -60,11 +64,18 @@ export function calculatePermanentQuote(
       amount: Math.round(frontFt * frontRate),
     });
   }
-  if (sidesFt > 0) {
+  if (leftFt > 0) {
     sideLines.push({
-      id: 'permanent-sides',
-      label: `Permanent Lighting - Sides (left + right) - ${sidesFt} ft ($${sidesRate}/ft)`,
-      amount: Math.round(sidesFt * sidesRate),
+      id: 'permanent-left',
+      label: `Permanent Lighting - Left Side - ${leftFt} ft ($${sidesRate}/ft)`,
+      amount: Math.round(leftFt * sidesRate),
+    });
+  }
+  if (rightFt > 0) {
+    sideLines.push({
+      id: 'permanent-right',
+      label: `Permanent Lighting - Right Side - ${rightFt} ft ($${sidesRate}/ft)`,
+      amount: Math.round(rightFt * sidesRate),
     });
   }
   if (backFt > 0) {

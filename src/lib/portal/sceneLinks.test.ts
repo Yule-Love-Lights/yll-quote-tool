@@ -325,7 +325,8 @@ describe('attachSceneLinks — permanent per-side linkage (#88 / S23)', () => {
   const out = attachSceneLinks(
     [
       li('permanent-front', 'permanent'),
-      li('permanent-sides', 'permanent'),
+      li('permanent-left', 'permanent'),
+      li('permanent-right', 'permanent'),
       li('permanent-back', 'permanent'),
       li('permanent-maintenance', 'permanent-addon'),
     ],
@@ -336,8 +337,13 @@ describe('attachSceneLinks — permanent per-side linkage (#88 / S23)', () => {
   it('links permanent-front to front strands AND their twins (hide on every photo)', () => {
     expect(new Set(byId['permanent-front'])).toEqual(new Set(['pf1', 'pf1t']));
   });
-  it('links permanent-sides to left + right strands together', () => {
-    expect(new Set(byId['permanent-sides'])).toEqual(new Set(['pl1', 'pr1']));
+  it('links permanent-left / permanent-right each to only their own side (#132)', () => {
+    expect(byId['permanent-left']).toEqual(['pl1']);
+    expect(byId['permanent-right']).toEqual(['pr1']);
+  });
+  it('LEGACY: a pre-#132 combined permanent-sides line still links left + right together', () => {
+    const legacy = attachSceneLinks([li('permanent-sides', 'permanent')], scene);
+    expect(new Set(legacy[0].sceneItemIds)).toEqual(new Set(['pl1', 'pr1']));
   });
   it('links permanent-back to back strands', () => {
     expect(byId['permanent-back']).toEqual(['pb1']);

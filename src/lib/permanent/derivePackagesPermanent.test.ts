@@ -102,7 +102,43 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(packages.some((p) => p.id === 'B')).toBe(false);
   });
 
-  it('all three sides present → A, B, C, D', () => {
+  it('all sides present (split left/right, #132) → A, B, C, D; B bundles left + right', () => {
+    const lineItems = [
+      permItem('permanent-front', 4000),
+      permItem('permanent-left', 2750),
+      permItem('permanent-right', 2500),
+      permItem('permanent-back', 3500),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.includedItemIds.sort()).toEqual(['permanent-left', 'permanent-right']);
+    const expectedB = priceSelection(2750 + 2500, CHARGES);
+    expect(b.total).toBe(expectedB.total);
+
+    const d = packages.find((p) => p.id === 'D')!;
+    const expectedD = priceSelection(4000 + 2750 + 2500 + 3500, CHARGES);
+    expect(d.total).toBe(expectedD.total);
+  });
+
+  it('one drawn side only (left) → B carries just that side', () => {
+    const lineItems = [permItem('permanent-front', 4000), permItem('permanent-left', 2750)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.includedItemIds).toEqual(['permanent-left']);
+    expect(b.total).toBe(priceSelection(2750, CHARGES).total);
+  });
+
+  it('left+right-only quote → B without a byte-identical Whole Home D', () => {
+    // Post-#132 a sides-only quote has TWO lines, so the old ">1 line" guard
+    // alone would emit a D identical to B. The set-equality guard suppresses it.
+    const lineItems = [permItem('permanent-left', 2750), permItem('permanent-right', 2500)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    expect(packages.map((p) => p.id)).toEqual(['B']);
+  });
+
+  it('LEGACY: a pre-#132 stored result with the combined sides line keeps A, B, C, D', () => {
     const lineItems = [
       permItem('permanent-front', 4000),
       permItem('permanent-sides', 5250),
@@ -110,6 +146,10 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
     expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.includedItemIds).toEqual(['permanent-sides']);
+    expect(b.total).toBe(priceSelection(5250, CHARGES).total);
 
     const d = packages.find((p) => p.id === 'D')!;
     const expectedD = priceSelection(4000 + 5250 + 3500, CHARGES);
