@@ -26,7 +26,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
-import { sendEmail, isHighLevelConfigured, HighLevelError } from '@/lib/integrations/highlevel';
+import {
+  sendEmail,
+  updateOpportunity,
+  findOpportunityForContact,
+  isHighLevelConfigured,
+  HighLevelError,
+} from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import {
   internalDeclineEmailSubject,
   internalDeclineEmailHtml,
@@ -71,7 +78,32 @@ type QuoteRow = QuoteStatusRow & {
   customer_phone: string | null;
   customer_email: string | null;
   highlevel_contact_id: string | null;
+  // GHL card-move (#GHL pipeline sync): which pipeline the card lives in, the
+  // linked card (if any), and the Test Quote guard (#93).
+  highlevel_opportunity_id: string | null;
+  service_type: string | null;
+  is_test: boolean;
 };
+
+// Best-effort: move the quote's linked HighLevel opportunity to the Declined
+// stage for its service type. NEVER creates a card (only moves one that
+// already exists), and NEVER fails the decline — a GHL hiccup is logged and
+// swallowed, same pattern as the staff-notification email below.
+async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<void> {
+  if (quote.is_test || !isHighLevelConfigured()) return;
+  try {
+    const stages = resolvePipelineStages(quote.service_type);
+    let opportunityId = quote.highlevel_opportunity_id;
+    if (!opportunityId && quote.highlevel_contact_id) {
+      const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
+      opportunityId = existing?.id ?? null;
+    }
+    if (!opportunityId) return; // no card to move — never create one on decline
+    await updateOpportunity(opportunityId, { pipelineStageId: stages.declined });
+  } catch (err) {
+    console.error(`[api/quotes/:id/decline] GHL decline stage move failed for quote ${id}:`, hlErrorMessage(err));
+  }
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSupabaseServiceConfigured()) {
@@ -108,7 +140,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -157,6 +189,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { status: 409 },
     );
   }
+
+  // Best-effort: move the linked GHL card (if any) to the Declined stage for
+  // this quote's service type. Never fails the decline (see moveDeclinedOpportunity).
+  await moveDeclinedOpportunity(quote, id);
 
   // Best-effort staff notification — a messaging hiccup must never undo the
   // recorded decline.

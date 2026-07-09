@@ -19,12 +19,22 @@
 //   - Audit marker, mirroring staff-approve's approval_snapshot.staffApproved:
 //     approval_snapshot.staffDeclined = { by, at, reason }. No new column.
 //   - Idempotent: an already-declined quote → 200 { alreadyDeclined:true }.
-//   - NO GHL/notify calls: the customer already told the operator directly; the
-//     operator handles any follow-up. is_test quotes are safe (no external calls).
+//   - NO customer notify calls: the customer already told the operator directly;
+//     the operator handles any follow-up. is_test quotes are safe (no external
+//     calls). It DOES move the linked GHL opportunity card (if any) to the
+//     Declined stage for the quote's service type — same best-effort, never-
+//     creates-a-card, fail-open pattern as the customer /decline route.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import {
+  updateOpportunity,
+  findOpportunityForContact,
+  isHighLevelConfigured,
+  HighLevelError,
+} from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import {
   canTransition,
   deriveStatus,
@@ -43,6 +53,14 @@ const REASON_MAX = 2000;
 // to short-circuit (current status) and to GUARD the DB write (.or(...)).
 const DECLINABLE_FROM: QuoteStatus[] = QUOTE_STATUSES.filter((s) => canTransition(s, 'declined'));
 
+function hlErrorMessage(err: unknown): string {
+  return err instanceof HighLevelError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : 'Unknown HighLevel error';
+}
+
 type QuoteRow = {
   id: string;
   status: string | null;
@@ -51,7 +69,32 @@ type QuoteRow = {
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   approval_snapshot: Record<string, unknown> | null;
+  // GHL card-move (#GHL pipeline sync): which pipeline the card lives in, the
+  // linked card (if any), and the Test Quote guard (#93).
+  highlevel_contact_id: string | null;
+  highlevel_opportunity_id: string | null;
+  service_type: string | null;
+  is_test: boolean;
 };
+
+// Best-effort: move the quote's linked HighLevel opportunity to the Declined
+// stage for its service type. NEVER creates a card (only moves one that
+// already exists), and NEVER fails the decline.
+async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<void> {
+  if (quote.is_test || !isHighLevelConfigured()) return;
+  try {
+    const stages = resolvePipelineStages(quote.service_type);
+    let opportunityId = quote.highlevel_opportunity_id;
+    if (!opportunityId && quote.highlevel_contact_id) {
+      const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
+      opportunityId = existing?.id ?? null;
+    }
+    if (!opportunityId) return; // no card to move — never create one on decline
+    await updateOpportunity(opportunityId, { pipelineStageId: stages.declined });
+  } catch (err) {
+    console.error(`[api/quotes/:id/staff-decline] GHL decline stage move failed for quote ${id}:`, hlErrorMessage(err));
+  }
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
@@ -87,7 +130,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, approval_snapshot',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, approval_snapshot, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -159,6 +202,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { status: 409 },
     );
   }
+
+  // Best-effort: move the linked GHL card (if any) to the Declined stage for
+  // this quote's service type. Never fails the decline.
+  await moveDeclinedOpportunity(quote, id);
 
   return NextResponse.json({ ok: true, status: 'declined', staff: true });
 }
