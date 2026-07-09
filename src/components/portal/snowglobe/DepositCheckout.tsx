@@ -96,6 +96,15 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
 
     return () => {
       cancelled = true;
+      // #143: React strict mode (dev) mounts → unmounts → remounts. Without
+      // resetting the run-once ref here, run 1's response gets swallowed by
+      // `cancelled` while run 2 bails on startedRef — the POST lands (quote
+      // books) but router.push never fires, stranding the spinner forever.
+      // Resetting lets the remount re-run the POST (simulate-deposit is
+      // idempotent — alreadyPaid fast-path; /pay just mints a fresh hosted
+      // session). A REAL unmount never re-runs the effect, so this changes
+      // nothing outside strict mode's double-invoke.
+      startedRef.current = false;
     };
   }, [quoteId, router, isTest, attempt]);
 
