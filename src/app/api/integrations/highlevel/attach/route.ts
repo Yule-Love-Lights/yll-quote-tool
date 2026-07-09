@@ -4,10 +4,18 @@
 //
 // Semantics: LOOKUP FIRST. Customers typically exist in HighLevel before
 // opening the quote tool — they were captured via a lead form and placed
-// at "📭Open" in the Christmas Lights pipeline. We find that card and
-// attach our quote to it (no duplicate). If (rare) the contact has no
-// opportunity in the pipeline yet, we create one at the ENTRY stage
-// (HIGHLEVEL_STAGE_QUOTE_CREATED — e.g. 📭Open, never the internal "Make Quote").
+// at the entry stage of their service line's pipeline (e.g. "📭Open" in
+// Christmas Lights). We find that card and attach our quote to it (no
+// duplicate). If (rare) the contact has no opportunity in the pipeline yet,
+// we create one at the ENTRY stage — e.g. 📭Open / Open / New Lead, never an
+// internal stage like "Make Quote".
+//
+// Pipeline resolution (#GHL pipeline sync): the pipeline + entry stage come
+// from resolvePipelineStages(quote.service_type) — holiday still honors the
+// legacy HIGHLEVEL_PIPELINE_ID / HIGHLEVEL_STAGE_QUOTE_CREATED env vars when
+// set; permanent/event always use their own pipeline from the map. This route
+// is where the map's `entry` stage is consumed (the send route deliberately
+// creates missing cards at `sent`, per its own documented contract).
 //
 // POST /api/integrations/highlevel/attach
 // Body:
@@ -30,6 +38,7 @@ import {
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
@@ -49,19 +58,6 @@ export async function POST(req: NextRequest) {
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json(
       { error: 'Supabase service role not configured', code: 'supabase-missing' },
-      { status: 503 },
-    );
-  }
-
-  const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
-  const stageCreated = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
-  if (!pipelineId || !stageCreated) {
-    return NextResponse.json(
-      {
-        error:
-          'Missing HIGHLEVEL_PIPELINE_ID or HIGHLEVEL_STAGE_QUOTE_CREATED. Run scripts/list-highlevel-pipelines.ts to discover them.',
-        code: 'pipeline-missing',
-      },
       { status: 503 },
     );
   }
@@ -88,11 +84,46 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'contactId required (HighLevel contact id)' }, { status: 400 });
   }
 
+  const sb = getSupabaseServiceClient()!;
+
+  // Which pipeline this quote's card belongs in (#GHL pipeline sync): resolve
+  // from the quote's service_type. A read hiccup falls back to the holiday
+  // default rather than blocking the attach (fail-open — same posture as the
+  // other GHL call sites). The pipeline map always supplies ids, so the old
+  // "env vars not set" 503 can only trip if resolution somehow yields blanks
+  // (kept as a defensive guard with the same code/status as before).
+  const { data: quoteRow, error: quoteErr } = await sb
+    .from('quotes')
+    .select('id, service_type')
+    .eq('id', body.quoteId)
+    .maybeSingle<{ id: string; service_type: string | null }>();
+  if (quoteErr) {
+    console.warn(
+      '[api/integrations/highlevel/attach] service_type read failed — defaulting to the holiday pipeline:',
+      quoteErr.message,
+    );
+  }
+  const stages = resolvePipelineStages(quoteRow?.service_type);
+  if (!stages.pipelineId || !stages.entry) {
+    return NextResponse.json(
+      {
+        error:
+          'Could not resolve a HighLevel pipeline for this quote. Pipeline + stage ids come from the pipeline map (src/lib/integrations/ghlPipelineMap.ts); the HIGHLEVEL_PIPELINE_ID / HIGHLEVEL_STAGE_QUOTE_CREATED env vars only override the holiday entry.',
+        code: 'pipeline-missing',
+      },
+      { status: 503 },
+    );
+  }
+
   try {
+    // NOTE: this is where the map's `entry` stage is consumed — a contact with
+    // no card yet gets one created at their pipeline's entry stage (📭Open /
+    // Open / New Lead). The send route intentionally differs: it creates
+    // missing cards directly at the `sent` stage, per its own contract.
     const { opportunity, created } = await findOrCreateOpportunityForContact({
       contactId: body.contactId,
-      pipelineId,
-      fallbackStageId: stageCreated,
+      pipelineId: stages.pipelineId,
+      fallbackStageId: stages.entry,
       fallbackName: body.opportunityName?.trim() || `Holiday Lights quote ${body.quoteId.slice(0, 8)}`,
       monetaryValue:
         typeof body.monetaryValue === 'number' && body.monetaryValue > 0
@@ -105,7 +136,6 @@ export async function POST(req: NextRequest) {
     // lost the local link. We report `linked:false` so the operator UI can
     // surface "card created but not linked — retry safe" (a retry re-finds the
     // same open card and re-attaches, so no hard 500 is needed).
-    const sb = getSupabaseServiceClient()!;
     const { error: updateErr } = await sb
       .from('quotes')
       .update({
