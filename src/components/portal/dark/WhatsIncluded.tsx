@@ -44,12 +44,12 @@ function AddOnToggle({
         title={disabled ? disabledHint : undefined}
         onClick={onToggle}
         className={[
-          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity] duration-300 text-left border',
+          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity,box-shadow] duration-300 text-left border',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
           disabled
             ? 'opacity-40 cursor-not-allowed bg-[#18221C]/40 border-[#243029]'
             : selected
-              ? 'bg-[#1F2A23] border-[#3C4F43] cursor-pointer'
+              ? 'bg-[#1F2A23] border-[#E8B862] shadow-[0_0_0_1px_#E8B862,0_0_16px_rgba(232,184,98,0.25)] cursor-pointer'
               : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100 cursor-pointer',
         ].join(' ')}
       >
@@ -108,12 +108,12 @@ function DiscountToggle({
         title={disabled ? disabledHint : undefined}
         onClick={onToggle}
         className={[
-          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity] duration-300 text-left border',
+          'w-full flex items-start gap-4 p-4 md:p-5 rounded-2xl transition-[background-color,border-color,opacity,box-shadow] duration-300 text-left border',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
           disabled
             ? 'opacity-40 cursor-not-allowed bg-[#18221C]/40 border-[#243029]'
             : selected
-              ? 'bg-[#1F2A23] border-[#3C4F43] cursor-pointer'
+              ? 'bg-[#1F2A23] border-[#E8B862] shadow-[0_0_0_1px_#E8B862,0_0_16px_rgba(232,184,98,0.25)] cursor-pointer'
               : 'bg-[#18221C]/70 border-[#243029] opacity-60 hover:opacity-100 cursor-pointer',
         ].join(' ')}
       >
@@ -258,11 +258,11 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   aria-pressed={selected}
                   onClick={() => toggleItem(item.id)}
                   className={[
-                    'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color] duration-300 text-left',
+                    'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,box-shadow] duration-300 text-left',
                     'border',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#121B16]',
                     selected
-                      ? 'bg-[#1F2A23] border-[#3C4F43]'
+                      ? 'bg-[#1F2A23] border-[#E8B862] shadow-[0_0_0_1px_#E8B862,0_0_16px_rgba(232,184,98,0.25)]'
                       : 'bg-[#18221C]/70 border-[#243029] hover:border-[#3C4F43]',
                   ].join(' ')}
                 >

@@ -51,7 +51,7 @@ export function EventSection({
     <div className="space-y-4">
       <p className="text-sm text-gray-600">
         Event lighting is temporary. Bistro runs you draw on the design are priced automatically —
-        add any freestanding pole/base supports and the three dates below.
+        enter the three dates below.
       </p>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -85,19 +85,6 @@ export function EventSection({
       </div>
 
       {dateWarning && <p className="text-xs text-amber-600">⚠ {dateWarning}</p>}
-
-      <div>
-        <label className={lbl}>Freestanding pole &amp; base supports (temporary bistro)</label>
-        <input
-          type="number"
-          min={0}
-          step="1"
-          className={`${inp} w-24 text-right`}
-          value={value.barrelBoxes}
-          onChange={(ev) => set('barrelBoxes', Math.max(0, Math.floor(Number(ev.target.value) || 0)))}
-        />
-        <span className="ml-2 text-xs text-gray-400">$ each (rate in Settings)</span>
-      </div>
     </div>
   );
 }
