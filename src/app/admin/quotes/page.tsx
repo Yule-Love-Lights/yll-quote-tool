@@ -182,7 +182,7 @@ export default function QuotesAdminPage() {
 
   return (
     <OperatorShell active="quotes">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-none mx-auto">
         <BillingSubNav active="quotes" />
         <div className="flex justify-between items-center mb-6">
           <div>
