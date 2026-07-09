@@ -3308,6 +3308,20 @@ export default function QuoteBuilder({
           </>
           )}
 
+          {form.serviceType === 'event' && (
+            <Section title="Freestanding pole & base supports">
+              <input
+                type="number"
+                min={0}
+                step="1"
+                className="border border-gray-300 rounded px-2 py-1 text-sm w-24 text-right"
+                value={form.event.barrelBoxes || ''}
+                onChange={ev => setForm(f => ({ ...f, event: { ...f.event, barrelBoxes: Math.max(0, Math.floor(Number(ev.target.value) || 0)) } }))}
+              />
+              <span className="ml-2 text-xs text-gray-400">$ each (rate in Settings)</span>
+            </Section>
+          )}
+
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
             <p className="text-xs text-gray-400 mb-3">
