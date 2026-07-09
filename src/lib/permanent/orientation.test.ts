@@ -38,34 +38,54 @@ describe('relabelPermanentSides', () => {
   const westEdge = [{ points: [[0.2, 0.2], [0.2, 0.8]] as [number, number][], label: 'w' }];
   const eastEdge = [{ points: [[0.8, 0.2], [0.8, 0.8]] as [number, number][], label: 'e' }];
 
-  it("fixes the S25 device-round failure: AI flipped 180° (front↔back, left↔right), road SOUTH of house", () => {
-    // Truth for frontBearing=180 (camera due south): front=south edge,
-    // back=north, left=west (road-viewer at the south looking north), right=east.
-    const aiFlipped: PermanentSatelliteLines = {
+  // Left/right convention (Jason, S25 device round): standing AT THE HOUSE
+  // facing the street — the homeowner's left hand = "left".
+
+  it('fixes the S25 device-round mirror (6 Birch Road): road NORTH, left must be the WEST edge', () => {
+    // frontBearing=0 (camera due north): front=north edge; facing the street
+    // (north), the homeowner's left hand points WEST. The input carries the
+    // road-viewer mirror the first cut of this fix produced (left=east).
+    const mirrored: PermanentSatelliteLines = {
       front: northEdge,
       back: southEdge,
       left: eastEdge,
       right: westEdge,
     };
+    const out = relabelPermanentSides(mirrored, 0);
+    expect(out.front).toBe(northEdge);
+    expect(out.back).toBe(southEdge);
+    expect(out.left).toBe(westEdge);
+    expect(out.right).toBe(eastEdge);
+  });
+
+  it("fixes the original S25 failure: AI flipped 180° (front↔back), road SOUTH of house", () => {
+    // frontBearing=180: front=south edge; facing the street (south), the
+    // homeowner's left hand points EAST.
+    const aiFlipped: PermanentSatelliteLines = {
+      front: northEdge,
+      back: southEdge,
+      left: westEdge,
+      right: eastEdge,
+    };
     const out = relabelPermanentSides(aiFlipped, 180);
     expect(out.front).toBe(southEdge);
     expect(out.back).toBe(northEdge);
-    expect(out.left).toBe(westEdge);
-    expect(out.right).toBe(eastEdge);
+    expect(out.left).toBe(eastEdge);
+    expect(out.right).toBe(westEdge);
   });
 
   it('returns the SAME object when the AI labels already match the bearing', () => {
     const correct: PermanentSatelliteLines = {
       front: southEdge,
       back: northEdge,
-      left: westEdge,
-      right: eastEdge,
+      left: eastEdge,
+      right: westEdge,
     };
     expect(relabelPermanentSides(correct, 180)).toBe(correct);
   });
 
-  it('road EAST of house (bearing 90): front=east edge, left=south edge', () => {
-    // Viewer on the east looking west: left hand points south.
+  it('road EAST of house (bearing 90): front=east edge, left=north edge', () => {
+    // Facing the street (east), the homeowner's left hand points north.
     const mislabeled: PermanentSatelliteLines = {
       front: northEdge,
       back: southEdge,
@@ -75,8 +95,8 @@ describe('relabelPermanentSides', () => {
     const out = relabelPermanentSides(mislabeled, 90);
     expect(out.front).toBe(eastEdge);
     expect(out.back).toBe(westEdge);
-    expect(out.left).toBe(southEdge);
-    expect(out.right).toBe(northEdge);
+    expect(out.left).toBe(northEdge);
+    expect(out.right).toBe(southEdge);
   });
 
   it('relabels with a missing side (3 channels) — empty channel stays empty', () => {
@@ -88,8 +108,8 @@ describe('relabelPermanentSides', () => {
     };
     const out = relabelPermanentSides(threeSides, 180);
     expect(out.back).toBe(northEdge);
-    expect(out.left).toBe(westEdge);
-    expect(out.right).toBe(eastEdge);
+    expect(out.left).toBe(eastEdge);
+    expect(out.right).toBe(westEdge);
     expect(out.front).toEqual([]);
   });
 

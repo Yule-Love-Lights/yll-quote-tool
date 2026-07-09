@@ -73,7 +73,7 @@ const PERMANENT_SATELLITE_PROMPT = `You are a professional permanent-lighting es
 
 YOUR TASK: trace the house's roof perimeter as polylines, split into the four sides of the house:
 - "front" — the side whose plane faces the ROAD the house is addressed on.
-- "left" / "right" — as seen FROM THE ROAD looking at the front of the house.
+- "left" / "right" — the HOMEOWNER'S left and right: as if standing at the front door facing the street. In a street-view photo (camera on the road looking at the house) this is MIRRORED — the house side appearing on the RIGHT half of the photo is the home's "left".
 - "back" — the side facing away from the road.
 
 TRACING RULES:
@@ -84,7 +84,7 @@ TRACING RULES:
 5. The MAIN HOUSE only: include attached garages; EXCLUDE detached garages, sheds, pool houses, and the neighbors' roofs.
 6. Do NOT trace driveways, walkways, fences, hedges, tree canopies, or shadows. If a side is hidden under trees or unclear, return an EMPTY array for that side and say so in notes.
 
-ORIENTATION SELF-CHECK (do this BEFORE finalizing): find the road in the satellite image and, when a street-view photo is provided, CONFIRM against it which edge is the front. If your front assignment would put "front" on an edge the street photo clearly shows is a side, they are wrong — fix them before answering. Left/right are from the ROAD's point of view (the road-viewer's left hand = "left").
+ORIENTATION SELF-CHECK (do this BEFORE finalizing): find the road in the satellite image and, when a street-view photo is provided, CONFIRM against it which edge is the front. If your front assignment would put "front" on an edge the street photo clearly shows is a side, they are wrong — fix them before answering. Left/right are the HOMEOWNER'S (standing at the front door facing the street) — mirrored from the street photo's view.
 
 STREET RUNS (only when a street-view photo is provided): ALSO trace the permanent track runs ON THE STREET PHOTO as "streetRuns" — these become the customer's visual preview:
 - Follow the gutter/eave line AND go UP AND OVER front-facing gable peaks (rake edges) — permanent track runs up the rakes; NEVER trace ridges.
@@ -212,7 +212,7 @@ export async function analyzePermanentSatellite(args: {
     const deg = Math.round(args.frontBearingDeg);
     content.push({
       type: 'text',
-      text: `ORIENTATION FACT (from the Street View camera's geodata — MORE RELIABLE than judging the road from the image; if it conflicts with your own road guess, trust this): the FRONT of the house faces ${compassLabel(deg)} (${deg}° from north). The satellite image is north-up, so the front side is the ${compassLabel(deg)} edge of the roof outline; left/right follow for a viewer standing on that side looking at the house.`,
+      text: `ORIENTATION FACT (from the Street View camera's geodata — MORE RELIABLE than judging the road from the image; if it conflicts with your own road guess, trust this): the FRONT of the house faces ${compassLabel(deg)} (${deg}° from north). The satellite image is north-up, so the front side is the ${compassLabel(deg)} edge of the roof outline; left/right are the homeowner's, standing at the front door facing the street.`,
     });
   }
   const scaleNote =
