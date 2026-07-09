@@ -469,6 +469,58 @@ describe('Valor webhook — dead-quote guard (W1-007)', () => {
   });
 });
 
+describe('Valor webhook — per-service-type pipeline (#GHL pipeline sync)', () => {
+  it('holiday still moves the card via the legacy HIGHLEVEL_STAGE_QUOTE_APPROVED env var (byte-equivalent prod behavior)', async () => {
+    const { client } = makeSb({ ...QUOTE, service_type: 'holiday' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'stage-approved', // from HIGHLEVEL_STAGE_QUOTE_APPROVED
+      monetaryValue: 2700,
+    });
+  });
+
+  it('a permanent quote moves its card to the PERMANENT pipeline\'s "Closed" stage, ignoring the legacy env var', async () => {
+    const { client } = makeSb({ ...QUOTE, service_type: 'permanent' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    // HIGHLEVEL_STAGE_QUOTE_APPROVED is set to 'stage-approved' in beforeEach — a
+    // permanent quote must NOT use it.
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'f4bfe29f-5d5a-4725-a6d2-1f5f19ec4010', // Closed
+      monetaryValue: 2700,
+    });
+  });
+
+  it('an event quote moves its card to the EVENT pipeline\'s "Booked" stage', async () => {
+    const { client } = makeSb({ ...QUOTE, service_type: 'event' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: '4f6a7739-9bc9-4c27-a140-1ca9f58798fd', // Booked
+      monetaryValue: 2700,
+    });
+  });
+
+  it('a missing service_type (legacy row) defaults to holiday and still honors the env var', async () => {
+    const { client } = makeSb({ ...QUOTE, service_type: null }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'stage-approved',
+      monetaryValue: 2700,
+    });
+  });
+});
+
 describe('Valor webhook — rejects', () => {
   it('401s on an invalid signature', async () => {
     const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);

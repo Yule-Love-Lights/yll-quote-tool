@@ -41,6 +41,7 @@ import {
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import {
   RECEIPT_EMAIL_SUBJECT,
   receiptSmsBody,
@@ -135,6 +136,8 @@ type QuoteRow = {
   result: QuoteResult | null;
   highlevel_contact_id: string | null;
   highlevel_opportunity_id: string | null;
+  // Which GHL pipeline this quote's card lives in (resolvePipelineStages).
+  service_type: string | null;
   deposit_paid_at: string | null;
   deposit_amount_usd: number | null;
   // The txn id stamped by the ORIGINAL deposit charge — read back so a second
@@ -279,7 +282,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -488,12 +491,14 @@ export async function POST(req: NextRequest) {
     }
   };
 
-  // HighLevel: move the opportunity card → ⏰Approved AND reset its value to what
-  // the customer ACTUALLY approved (#107). Falls back to the SIGNED stage var
-  // (same stage id per the ledger) if the dedicated APPROVED var isn't set.
+  // HighLevel: move the opportunity card → ⏰Approved (holiday) / Booked (event) /
+  // Closed (permanent) AND reset its value to what the customer ACTUALLY approved
+  // (#107). Per-service-type resolution (#GHL pipeline sync) — holiday still
+  // honors the legacy HIGHLEVEL_STAGE_QUOTE_APPROVED env var (falling back to
+  // SIGNED, same stage id per the ledger) so prod behavior is byte-identical;
+  // permanent/event always use their own pipeline's depositPaid stage.
   const hlStageMove = async () => {
-    const approvedStage =
-      process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED || process.env.HIGHLEVEL_STAGE_QUOTE_SIGNED;
+    const stages = resolvePipelineStages(quote.service_type);
     if (!quote.highlevel_opportunity_id) {
       stageError = 'No HighLevel opportunity linked to this quote';
       return;
@@ -502,13 +507,9 @@ export async function POST(req: NextRequest) {
       stageError = 'HighLevel not configured';
       return;
     }
-    if (!approvedStage) {
-      stageError = 'HIGHLEVEL_STAGE_QUOTE_APPROVED env var not set';
-      return;
-    }
     try {
       await updateOpportunity(quote.highlevel_opportunity_id, {
-        pipelineStageId: approvedStage,
+        pipelineStageId: stages.depositPaid,
         // Guard 0/missing so a degenerate total never BLANKS a live card.
         monetaryValue: totalUsd > 0 ? totalUsd : undefined,
       });
