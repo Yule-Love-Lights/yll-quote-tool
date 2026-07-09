@@ -548,13 +548,13 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satellite_path: `${ID}/satellite.jpg`,
       satellite_w: 400,
       satellite_h: 400,
+      satellite_feet_per_pixel: 0.35, // #142: rehydrates the builder's satellite scale
       satellite_lines: { santas: [], gingerbread: [], c9: [] },
       extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
       photo_title: 'Front',
-      // Deliberately NO seed_analysis / satellite_feet_per_pixel / created_at /
-      // updated_at — a real narrowed select() from Supabase wouldn't return
-      // them either, so their absence here proves toDesignWithPhoto doesn't
-      // need them.
+      // Deliberately NO seed_analysis / created_at / updated_at — a real
+      // narrowed select() from Supabase wouldn't return them either, so their
+      // absence here proves toDesignWithPhoto doesn't need them.
     };
     const client = {
       storage: {
@@ -586,7 +586,7 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
 
     expect(selectedCols).not.toBe('*');
     expect(selectedCols).not.toMatch(/seed_analysis/);
-    expect(selectedCols).not.toMatch(/satellite_feet_per_pixel/);
+    expect(selectedCols).toMatch(/satellite_feet_per_pixel/); // #142: the builder rehydrate reads it
     // The full DesignWithPhoto shape is still populated from the narrowed row.
     expect(result).toEqual({
       id: ID,
@@ -598,6 +598,7 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satelliteUrl: `signed:${ID}/satellite.jpg`,
       satelliteW: 400,
       satelliteH: 400,
+      satelliteFeetPerPixel: 0.35,
       satelliteLines: { santas: [], gingerbread: [], c9: [] },
       extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
       photoTitle: 'Front',

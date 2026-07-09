@@ -36,13 +36,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 type PermanentSectionProps = {
   form: QuoteFormData;
   setForm: React.Dispatch<React.SetStateAction<QuoteFormData>>;
+  // #142: fired when the operator clicks "Recount from drawn lines" — the
+  // builder thaws its rehydrate freeze so the recount actually derives.
+  onRecount?: () => void;
 };
 
 // Footage + corners come from the satellite-view roofline draw (#88 / S23, per
 // Jason — the design projection was dropped as inaccurate). The operator draws
 // each side on the Satellite tab; those measurements flow into the fields below,
 // which stay hand-editable.
-export default function PermanentSection({ form, setForm }: PermanentSectionProps) {
+export default function PermanentSection({ form, setForm, onRecount }: PermanentSectionProps) {
   const p = form.permanent;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
@@ -84,8 +87,10 @@ export default function PermanentSection({ form, setForm }: PermanentSectionProp
       };
     });
 
-  const recountAccessories = () =>
+  const recountAccessories = () => {
+    onRecount?.();
     setForm((f) => ({ ...f, permanent: { ...f.permanent, accessoriesSource: 'auto' } }));
+  };
 
   return (
     <div>
