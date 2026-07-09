@@ -52,8 +52,8 @@ const INVOICE = {
 };
 
 // A minimal from().select().eq().maybeSingle() chain for the quote row the
-// installed-stage GHL move reads (src/app/api/jobs/[id]/complete/route.ts's
-// moveInstalledOpportunity).
+// installed-stage GHL move reads (the shared moveQuoteCardToInstalled in
+// src/lib/integrations/ghlQuoteCard.ts).
 function makeQuoteSb(quote: Record<string, unknown> | null) {
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
