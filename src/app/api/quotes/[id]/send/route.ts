@@ -32,11 +32,13 @@ import {
   createOpportunity,
   updateOpportunity,
   findOpportunityForContact,
+  upsertContactCustomField,
   sendSms,
   sendEmail,
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import {
   QUOTE_EMAIL_SUBJECT,
   quoteSmsBody,
@@ -74,6 +76,8 @@ type QuoteRow = {
   highlevel_opportunity_id: string | null;
   highlevel_contact_id: string | null;
   customer_name: string | null;
+  // Which GHL pipeline this quote's card lives in (resolvePipelineStages).
+  service_type: string | null;
   total: number | null;
   // #107: the saved pricing result carries the "Full Yule" ceiling total; the
   // Bid-Sent card value uses it (falling back to `total` on pre-#107 quotes).
@@ -133,7 +137,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -246,8 +250,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let opportunityCreated = false;
   let stageError: string | undefined;
 
-  const stageSent = process.env.HIGHLEVEL_STAGE_QUOTE_SENT;
-  const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
+  // Per-service-type pipeline/stage resolution (#GHL pipeline sync) — holiday
+  // still honors the legacy HIGHLEVEL_PIPELINE_ID/STAGE_* env vars when set
+  // (prod back-compat); permanent/event always use their own pipeline.
+  const stages = resolvePipelineStages(quote.service_type);
   // Card title = the customer's name; value = the "Full Yule" ceiling (#107),
   // falling back to the billed total on pre-#107 quotes.
   const cardName = quote.customer_name?.trim() || 'Yule Love Lights quote';
@@ -258,6 +264,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : typeof quote.total === 'number'
         ? quote.total
         : undefined;
+  // Computed early (moved up from the messaging block below) so the GHL stage
+  // chain can also stamp it onto the contact's custom field once the card
+  // move succeeds — reuses the EXACT same URL the customer is texted/emailed.
+  const portalUrl = `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/portal/${id}`;
 
   // W1-050: the GHL stage-move chain (+ its durable sync-state write) and the two
   // customer messages (SMS, email) are mutually independent — the operator's Send
@@ -273,15 +283,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       stageError = undefined;
     } else if (!isHighLevelConfigured()) {
       stageError = 'HighLevel not configured';
-    } else if (!stageSent || !pipelineId) {
-      stageError = 'HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID not set';
     } else {
       // 1. If a card is already linked, advance it to Bid Sent + refresh its
       //    title/value. If it was deleted in GHL, drop the stale id and fall
       //    through to find-or-create below.
       if (opportunityId) {
         try {
-          await updateOpportunity(opportunityId, { pipelineStageId: stageSent, name: cardName, monetaryValue });
+          await updateOpportunity(opportunityId, { pipelineStageId: stages.sent, name: cardName, monetaryValue });
           stageUpdated = true;
         } catch (err) {
           if (isMissingOpportunity(err)) {
@@ -300,15 +308,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           stageError = 'No HighLevel contact linked to this quote';
         } else {
           try {
-            const existing = await findOpportunityForContact(quote.highlevel_contact_id, pipelineId);
+            const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
             if (existing) {
-              await updateOpportunity(existing.id, { pipelineStageId: stageSent, name: cardName, monetaryValue });
+              await updateOpportunity(existing.id, { pipelineStageId: stages.sent, name: cardName, monetaryValue });
               opportunityId = existing.id;
             } else {
               const created = await createOpportunity({
                 contactId: quote.highlevel_contact_id,
-                pipelineId,
-                pipelineStageId: stageSent,
+                pipelineId: stages.pipelineId,
+                pipelineStageId: stages.sent,
                 name: cardName,
                 monetaryValue,
                 source: 'Quote Tool',
@@ -329,6 +337,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             console.warn('[api/quotes/:id/send] find-or-create opportunity failed:', err);
             stageError = hlErrorMessage(err);
           }
+        }
+      }
+    }
+
+    // Quote-link custom field: stamp the SAME portal URL we text/email the
+    // customer onto their CONTACT (not the card) so a GHL workflow/automation
+    // can merge {{contact.<field>}}. Only once the card move actually
+    // succeeded, and never for a test quote (no real contact to touch). The
+    // field id is dev-configured post-launch (the dev creates the field in GHL
+    // and sets the env var) — until then, skip silently with one warn rather
+    // than treating a missing field as a send failure.
+    if (stageUpdated && !quote.is_test && quote.highlevel_contact_id) {
+      const quoteLinkFieldId = process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
+      if (!quoteLinkFieldId) {
+        console.warn(
+          '[api/quotes/:id/send] HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK not set — skipping quote-link custom field stamp',
+        );
+      } else {
+        try {
+          await upsertContactCustomField(quote.highlevel_contact_id, quoteLinkFieldId, portalUrl);
+        } catch (err) {
+          console.error('[api/quotes/:id/send] quote-link custom field stamp failed:', hlErrorMessage(err));
         }
       }
     }
@@ -362,7 +392,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const canMessage =
     !isGhlRetry && !quote.is_test && isHighLevelConfigured() && !!quote.highlevel_contact_id;
   const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
-  const portalUrl = `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/portal/${id}`;
   const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
   const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
 

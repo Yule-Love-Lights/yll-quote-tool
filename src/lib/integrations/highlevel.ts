@@ -376,6 +376,26 @@ export async function addContactTags(contactId: string, tags: string[]): Promise
   });
 }
 
+// ─── Contact custom field upsert ───────────────────────────────────────────
+// Stamps a single custom field value onto a contact — e.g. the customer portal
+// link, so a GHL workflow/automation can merge {{contact.quote_link}} into a
+// message. PUT /contacts/{id} on the same v2 LeadConnector API (services.
+// leadconnectorhq.com, Version 2021-07-28) every other call in this file uses —
+// NOT the legacy v1 `PUT /v1/contacts/{id}` + `customField: {<fieldId>: value}`
+// object shape. This matches the READ side already confirmed live:
+// HighLevelContact.customFields is `Array<{ id, value }>` (see types.ts), and
+// v2's update endpoint accepts that same array shape back.
+export async function upsertContactCustomField(
+  contactId: string,
+  fieldId: string,
+  value: string,
+): Promise<void> {
+  await ghlFetch(`/contacts/${encodeURIComponent(contactId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ customFields: [{ id: fieldId, value }] }),
+  });
+}
+
 // ─── Mapper: HighLevel → CrmContact ───────────────────────────────────────
 // Centralized so a schema drift on GHL's side only breaks here, not in
 // every consumer. Audit fix: redaction is now the DEFAULT — the public
