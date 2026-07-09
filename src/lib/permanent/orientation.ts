@@ -34,17 +34,18 @@ export function compassLabel(deg: number): string {
 
 // Unit direction each side FACES, in normalized satellite-image coords
 // (x right = east, y down = south — the image is north-up). Left/right follow
-// the domain rule: as seen FROM THE ROAD looking at the front of the house
-// (the road-viewer's left hand = "left"). Viewer looks along -front, so
-// left = rotate(-front) by screen-space -90°: (-f.y, f.x).
+// the domain rule (Jason, S25 device round — supersedes the S24 road-viewer
+// wording): as if STANDING AT THE HOUSE facing the street — the homeowner's
+// left hand = "left". Facing along +front, left = rotate(front) by
+// screen-space -90°: (f.y, -f.x).
 function sideVectors(frontBearingDeg: number): Record<Side, [number, number]> {
   const rad = (frontBearingDeg * Math.PI) / 180;
   const f: [number, number] = [Math.sin(rad), -Math.cos(rad)];
   return {
     front: f,
     back: [-f[0], -f[1]],
-    left: [-f[1], f[0]],
-    right: [f[1], -f[0]],
+    left: [f[1], -f[0]],
+    right: [-f[1], f[0]],
   };
 }
 
