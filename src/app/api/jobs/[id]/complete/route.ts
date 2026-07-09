@@ -16,14 +16,69 @@
 // is nothing to collect, so the invoice is settled `paid` and the job closed.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { createInvoiceFromJob, setInvoiceStatus } from '@/lib/invoices';
+import {
+  updateOpportunity,
+  findOpportunityForContact,
+  isHighLevelConfigured,
+  HighLevelError,
+} from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function hlErrorMessage(err: unknown): string {
+  return err instanceof HighLevelError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : 'Unknown HighLevel error';
+}
+
+type QuoteGhlRow = {
+  id: string;
+  highlevel_contact_id: string | null;
+  highlevel_opportunity_id: string | null;
+  service_type: string | null;
+  is_test: boolean;
+};
+
+// Best-effort (#GHL pipeline sync): once a job's card FIRST transitions to
+// `installed`, move its linked GHL opportunity to the Installed stage for the
+// quote's service type. Never creates a card (only moves one that already
+// exists), skips a Test Quote (#93), and NEVER fails job completion on a GHL
+// hiccup — every failure is caught and logged here.
+async function moveInstalledOpportunity(quoteId: string | null): Promise<void> {
+  if (!quoteId) return;
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    const { data: quote } = await sb
+      .from('quotes')
+      .select('id, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test')
+      .eq('id', quoteId)
+      .maybeSingle<QuoteGhlRow>();
+    if (!quote || quote.is_test || !isHighLevelConfigured()) return;
+    const stages = resolvePipelineStages(quote.service_type);
+    let opportunityId = quote.highlevel_opportunity_id;
+    if (!opportunityId && quote.highlevel_contact_id) {
+      const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
+      opportunityId = existing?.id ?? null;
+    }
+    if (!opportunityId) return; // no card to move — never create one here
+    await updateOpportunity(opportunityId, { pipelineStageId: stages.installed });
+  } catch (err) {
+    console.error(
+      `[api/jobs/:id/complete] GHL installed stage move failed for quote ${quoteId}:`,
+      hlErrorMessage(err),
+    );
+  }
+}
 
 // Advance a job to `requires_invoicing` via the LEGAL jobStatus transitions
 // (to_schedule/scheduled → installed → requires_invoicing). Idempotent: a job
@@ -35,6 +90,8 @@ async function advanceToRequiresInvoicing(job: JobRow): Promise<JobRow | null> {
     const installed = await setJobStatus(current.id, 'installed');
     if (!installed) return null;
     current = installed;
+    // Best-effort GHL card move — see moveInstalledOpportunity; never throws.
+    await moveInstalledOpportunity(current.quote_id);
   }
   if (current.status === 'installed') {
     const ri = await setJobStatus(current.id, 'requires_invoicing');
