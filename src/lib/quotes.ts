@@ -1,6 +1,6 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
-import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
 import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
@@ -269,6 +269,35 @@ export async function updateQuote(
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
 
+  // #GHL pipeline sync — cross-pipeline card desync guard. The stored
+  // highlevel_opportunity_id records NO pipeline: every GHL move site
+  // (send / decline / deposit-paid / installed) resolves the pipeline from the
+  // quote's MUTABLE service_type at call time (resolvePipelineStages). If this
+  // update CHANGES the service type, the linked card still lives in the OLD
+  // pipeline, and every later move would push a foreign pipeline's stage id at
+  // it — which GHL either rejects or lets corrupt the card. So when the type
+  // actually changes, clear the opportunity link + its sent-stage sync stamp
+  // in the same write; the next send/attach re-finds or re-creates the card in
+  // the CORRECT pipeline. Compared on the RESOLVED type (a stored NULL reads
+  // as the holiday default everywhere, so NULL→'holiday' is not a pipeline
+  // change) — a same-value re-save or an update that omits serviceType never
+  // clears anything. Fail-open: if the pre-read fails, keep the link (clearing
+  // on a transient error would drop a valid card link).
+  let clearGhlLink = false;
+  if (serviceType) {
+    const { data: existing, error: readErr } = await supabase
+      .from('quotes')
+      .select('service_type')
+      .eq('id', id)
+      .maybeSingle<{ service_type: string | null }>();
+    if (readErr) {
+      console.warn('updateQuote: service_type pre-read failed (GHL link kept):', readErr.message);
+    } else if (existing) {
+      const storedType = asServiceType(existing.service_type) ?? DEFAULT_SERVICE_TYPE;
+      clearGhlLink = storedType !== serviceType;
+    }
+  }
+
   const { data, error } = await supabase
     .from('quotes')
     .update({
@@ -276,6 +305,7 @@ export async function updateQuote(
       result,
       total: result.total,
       ...(serviceType ? { service_type: serviceType } : {}),
+      ...(clearGhlLink ? { highlevel_opportunity_id: null, ghl_stage_synced_at: null } : {}),
       ...(customer
         ? {
             customer_name: blankToNull(customer.name) ?? 'Anonymous',
