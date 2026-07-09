@@ -693,6 +693,14 @@ export default function QuoteBuilder({
     splitters: 0,
     jumpsFt: [],
   });
+  // #142: reopened-quote satellite REHYDRATE freeze. Rehydrating the persisted
+  // satellite (image + lines + scale) makes the two permanent derive effects
+  // fire against state the operator hasn't touched — which would clobber saved
+  // values (a hand-typed footage override, or auto counts derived with the AI
+  // jump extras that are session-only by design). Frozen = both derives no-op;
+  // the FIRST user line edit (or a fresh address pull / Recount) thaws, and
+  // from there numbers follow the visible geometry exactly like a live session.
+  const permDeriveFrozenRef = useRef(false);
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -786,7 +794,12 @@ export default function QuoteBuilder({
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
     if (type === 'stake') return setSatelliteStakeLines;
     if (isPermanentSide(type)) {
-      return (updater) => setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
+      return (updater) => {
+        // #142: the operator touched the lines — thaw the rehydrate freeze so
+        // footage/counts follow the visible geometry again (live-session rules).
+        permDeriveFrozenRef.current = false;
+        setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
+      };
     }
     return setSatelliteC9Lines;
   };
@@ -802,6 +815,7 @@ export default function QuoteBuilder({
   // to 0. Mirrors the holiday hadRef reset pattern above.
   useEffect(() => {
     if (form.serviceType !== 'permanent') return;
+    if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
     const t = {} as Record<PermanentSideKey, { footage: number | null; corners: number | null }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
@@ -846,6 +860,7 @@ export default function QuoteBuilder({
   useEffect(() => {
     if (form.serviceType !== 'permanent') return;
     if (satellitePreview == null) return;
+    if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved counts win
     if (form.permanent?.accessoriesSource === 'manual') return;
     const streetStrandPoints = (breakdownScene?.items ?? [])
       .filter((i) => isStrand(i) && i.bulbType === 'permanent' && !isLinkedTwin(i))
@@ -896,6 +911,46 @@ export default function QuoteBuilder({
     form.serviceType,
     form.permanent?.accessoriesSource,
   ]);
+
+  // #142: REHYDRATE the satellite tab on a reopened permanent quote. The design
+  // row persists everything the tab needs (image path → signed URL, the four
+  // side traces, the pull scale), so a saved quote's lines come back EDITABLE
+  // instead of a blank tab that needed a fresh (billable) address re-pull.
+  // Derives stay FROZEN until the operator actually edits (see
+  // permDeriveFrozenRef above) — loading a quote must never move its numbers.
+  useEffect(() => {
+    if (!editMode || form.serviceType !== 'permanent') return;
+    if (!designId || satellitePreview != null) return; // live session already
+    let stale = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/designs/${designId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const d = data?.design;
+        if (stale || !d?.satelliteUrl) return;
+        const sl = d.satelliteLines ?? {};
+        const lines: Record<PermanentSideKey, LineSegment[]> = {
+          front: sl.front ?? [],
+          left: sl.left ?? [],
+          right: sl.right ?? [],
+          back: sl.back ?? [],
+        };
+        if (!PERMANENT_SIDES.some((s) => lines[s].length > 0)) return; // nothing traced — keep the old blank-tab behavior
+        permDeriveFrozenRef.current = true;
+        for (const side of PERMANENT_SIDES) hadPermLinesRef.current[side] = lines[side].length > 0;
+        setPermanentSatLines(lines);
+        setSatelliteFeetPerPixel(d.satelliteFeetPerPixel ?? null);
+        setSatellitePreview(d.satelliteUrl);
+      } catch (err) {
+        // Best-effort: a failed rehydrate just leaves the pre-#142 blank tab.
+        console.error('[QuoteBuilder] satellite rehydrate failed:', err);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [editMode, designId, satellitePreview, form.serviceType]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -1413,6 +1468,9 @@ export default function QuoteBuilder({
               )
             : [];
           if (seeded && seededSides.length > 0) {
+            // #142: a fresh analyze is a NEW live session — thaw any rehydrate
+            // freeze so the seeded lines drive footage/counts immediately.
+            permDeriveFrozenRef.current = false;
             setPermanentSatLines({
               front: seeded.front ?? [],
               left: seeded.left ?? [],
@@ -3078,7 +3136,13 @@ export default function QuoteBuilder({
               replacing the holiday item sections. Holiday item sections are hidden
               for permanent so the operator can't enter Christmas footage on it. */}
           {form.serviceType === 'permanent' && (
-            <PermanentSection form={form} setForm={setForm} />
+            <PermanentSection
+              form={form}
+              setForm={setForm}
+              onRecount={() => {
+                permDeriveFrozenRef.current = false; // #142: Recount = explicit re-derive
+              }}
+            />
           )}
 
           {form.serviceType !== 'permanent' && (

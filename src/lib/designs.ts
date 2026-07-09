@@ -123,6 +123,9 @@ export type DesignWithPhoto = {
   satelliteUrl: string | null;
   satelliteW: number | null;
   satelliteH: number | null;
+  // #142: the Google-pull scale (ft/px) — the builder needs it to rehydrate a
+  // reopened permanent quote's satellite measurement (null for manual uploads).
+  satelliteFeetPerPixel: number | null;
   satelliteLines: DesignSatelliteLines | null;
   // Extra street photos (#13), each with a freshly-signed URL. Empty array for
   // designs without extras (incl. every pre-migration design).
@@ -275,13 +278,15 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
 // W4-033: the exact columns toDesignWithPhoto reads — used by getDesignWithPhoto
 // (the editor GET) and getDesignByQuote (the portal/quote-page load, hit on
 // EVERY portal open). Deliberately excludes seed_analysis (the full raw AI
-// jsonb), satellite_feet_per_pixel, created_at, updated_at — none of which
-// toDesignWithPhoto or DesignWithPhoto ever touch. getDesign's own select('*')
+// jsonb), created_at, updated_at — none of which toDesignWithPhoto or
+// DesignWithPhoto ever touch. satellite_feet_per_pixel joined the list for #142
+// (the builder rehydrates a reopened permanent quote's satellite scale — one
+// numeric column, negligible on the portal read). getDesign's own select('*')
 // stays as-is: it's shared by staff/training paths that DO need seed_analysis
 // (trainingExamples.ts captureTrainingExample, the seed-roofline/seed-analysis
 // routes) and narrowing it would regress those.
 const DESIGN_WITH_PHOTO_COLUMNS =
-  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_lines, extra_photos, photo_title';
+  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, extra_photos, photo_title';
 
 type DesignWithPhotoRow = Pick<
   DesignRow,
@@ -294,6 +299,7 @@ type DesignWithPhotoRow = Pick<
   | 'satellite_path'
   | 'satellite_w'
   | 'satellite_h'
+  | 'satellite_feet_per_pixel'
   | 'satellite_lines'
   | 'extra_photos'
   | 'photo_title'
@@ -322,6 +328,7 @@ async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPho
     satelliteUrl,
     satelliteW: row.satellite_w ?? null,
     satelliteH: row.satellite_h ?? null,
+    satelliteFeetPerPixel: row.satellite_feet_per_pixel ?? null,
     satelliteLines: row.satellite_lines ?? null,
     extraPhotos: extras.map((p, i) => ({
       id: p.id,

@@ -65,6 +65,7 @@ function makeDesign(): DesignWithPhoto {
     satelliteUrl: null,
     satelliteW: null,
     satelliteH: null,
+    satelliteFeetPerPixel: null,
     satelliteLines: null,
     extraPhotos: [],
     photoTitle: null,
