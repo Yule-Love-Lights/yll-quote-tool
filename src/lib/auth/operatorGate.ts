@@ -90,5 +90,15 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // on the same path is operator-only and must NOT be allowlisted (#81 W6-005).
   if (method.toUpperCase() === 'GET' && QUOTE_BY_ID_RE.test(path)) return true;
 
+  // GET /api/inventory/offered-colors is the anonymous customer portal's color
+  // picker (DesignCanvas) — non-sensitive data (color ids only). Route-level auth
+  // was removed from this endpoint in #469, but this perimeter list is a SECOND,
+  // independent gate in front of it (the middleware default-denies before the
+  // route ever runs), so #469 alone wasn't sufficient — prod kept 401'ing. GET
+  // only; other methods on this exact path stay operator-gated (S26).
+  if (method.toUpperCase() === 'GET' && path === '/api/inventory/offered-colors') {
+    return true;
+  }
+
   return false;
 }

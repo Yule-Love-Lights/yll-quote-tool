@@ -69,6 +69,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/handled', // #58 operator action
       '/api/dashboard/dismiss', // #58 operator action
       '/api/dashboard/followup', // #58 operator action (mark follow-up done)
+      '/api/inventory/materials', // sibling inventory route — must stay operator-only
     ]) {
       expect(isPublicPath(p), p).toBe(false);
     }
@@ -103,5 +104,13 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p)).toBe(true); // method defaults to GET
     expect(isPublicPath(p, 'DELETE')).toBe(false);
     expect(isPublicPath(p, 'POST')).toBe(false);
+  });
+
+  it('allows GET /api/inventory/offered-colors (anonymous portal color picker) but keeps other methods operator-only (#469 / S26)', () => {
+    const p = '/api/inventory/offered-colors';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
+    expect(isPublicPath(p, 'POST')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
   });
 });
