@@ -62,6 +62,10 @@ export const ASCEND_CATALOG: ParsedCatalogItem[] = [
   row({ sku: 'APL11121', name: 'SIGNAL BOOSTER', wholesale_cost: 12.6644268 }),
   row({ sku: 'APL11122', name: 'SPLITTER 12V', wholesale_cost: 6.6495564 }),
   row({ sku: 'APL11123', name: 'POWER T-INJECTOR 12V', wholesale_cost: 5.8488756 }),
+  // #144 PROVISIONAL — not on the 2026 Ascend list; key + $0.23/ft carried
+  // from the OMNI estimator until Naldo confirms the real Ascend item. The
+  // BOM flags every order sheet that carries it.
+  row({ sku: 'APL-WIRE-16-2', name: 'POWER INJECTION WIRE 16/2 (per ft) — PROVISIONAL', wholesale_cost: 0.23 }),
   row({ sku: 'APL11126', name: 'FEMALE ADAPTER (wire into hub)', wholesale_cost: 2.9196 }),
   row({ sku: 'APL11130', name: "50' EXTENSION WITH SIGNAL BOOSTER", size: "50'", wholesale_cost: 33.7653 }),
   row({ sku: 'APL11200', name: 'POWDER COAT COLOR BOOK', wholesale_cost: 31.92 }),

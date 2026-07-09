@@ -110,13 +110,13 @@ describe('buildSupplierPurchaseOrder — permanent + holiday jobs together (P8 P
     // Holiday job: 5 of SKU-A (scene projection, untouched).
     expect(bySku.get('SKU-A')).toEqual({ sku: 'SKU-A', name: 'Holiday Widget', needed: 5, onHand: 0, onOrder: 0, order: 5 });
 
-    // Permanent job: 40ft single-white track, no corners → 60 pucks (12 sets of
-    // 5 + 0 singles) + track sections. Only asserting the lights line here;
-    // bom.test.ts pins the exact formulas.
+    // Permanent job: 40ft single-white track, no corners → 60 pucks = 12 sets
+    // of 5, ordered w/6% waste (#144) → 13. Only asserting the lights line
+    // here; bom.test.ts pins the exact formulas.
     const lights = bySku.get('APL11012-5');
     expect(lights).toBeTruthy();
-    expect(lights!.needed).toBe(12);
-    expect(lights!.order).toBe(12);
+    expect(lights!.needed).toBe(13);
+    expect(lights!.order).toBe(13);
 
     const track = bySku.get('APL11210-9003');
     expect(track).toBeTruthy();

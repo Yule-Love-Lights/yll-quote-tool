@@ -87,6 +87,21 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const posInt = (n: number) => (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
 const posFt = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
 
+// Waste on ORDERED quantities — 6% on track AND lights (#144, matching the
+// estimator sheet's convention + the BOM-DATA reconciliation; the tool
+// previously wasted track only). Applied per order line, rounded up.
+const WASTE = 0.06;
+const withWaste = (qty: number) => (qty > 0 ? Math.ceil(qty * (1 + WASTE)) : 0);
+
+// Power-injection wire (#144): each T-injector beyond the first needs a 16/2
+// low-voltage run back to the supply, budgeted at 70 ft per point (the
+// estimator sheet's rule, spare-inclusive count). No Ascend SKU/price on the
+// 2026 list yet — provisional key + flag, priced at the OMNI list's $0.23/ft
+// until Naldo confirms.
+const WIRE_SKU = 'APL-WIRE-16-2';
+const WIRE_FT_PER_INJECTOR = 70;
+const WIRE_COST_PER_FT = 0.23;
+
 /** Pucks for a run: 8" on-center → ceil(ft × 1.5). */
 export function puckCountForFeet(ft: number): number {
   if (!Number.isFinite(ft) || ft <= 0) return 0;
@@ -275,12 +290,21 @@ export function buildPermanentBom(
   const cornerSingles = sides.reduce((s, k) => s + posInt(input.cornersBySide[k]) * 3, 0);
   const totalLights = runPucks + cornerSingles;
 
-  // Lights: run pucks come as sets-of-5 + loose singles; corner lights are singles.
-  const { sets5, singles: runSingles } = splitSetsAndSingles(runPucks);
+  // Lights (#144): sets pack PER SIDE/run — a rigid 5-strip can't continue
+  // across a run break, so each side takes floor-into-5s plus its own
+  // remainder singles (the estimator sheet's per-run packing). Corner lights
+  // are always singles. Ordered quantities carry the 6% waste.
+  let sets5 = 0;
+  let runSingles = 0;
+  for (const k of sides) {
+    const split = splitSetsAndSingles(puckCountForFeet(input.footageBySide[k]));
+    sets5 += split.sets5;
+    runSingles += split.singles;
+  }
   const totalSingles = runSingles + cornerSingles;
   const blk = input.blackHousing ? '-BLK' : '';
-  push(`APL11012-5${blk}`, `RGBW set of 5${blk ? ' (black)' : ''}`, sets5, cost(`APL11012-5${blk}`, C.set5), 'lights');
-  push(`APL11012-1${blk}`, `RGBW single${blk ? ' (black)' : ''}`, totalSingles, cost(`APL11012-1${blk}`, C.single), 'lights');
+  push(`APL11012-5${blk}`, `RGBW set of 5${blk ? ' (black)' : ''}`, withWaste(sets5), cost(`APL11012-5${blk}`, C.set5), 'lights');
+  push(`APL11012-1${blk}`, `RGBW single${blk ? ' (black)' : ''}`, withWaste(totalSingles), cost(`APL11012-1${blk}`, C.single), 'lights');
 
   // Track.
   const tracks = trackSections(totalFt);
@@ -303,19 +327,34 @@ export function buildPermanentBom(
   push('APL11110-600', '600W power supply', bare600, cost('APL11110-600', C.xfmr600), 'power');
   push('APL11110-350', '350W power supply', bare350, cost('APL11110-350', C.xfmr350), 'power');
 
-  // Power injection — per powered segment (per transformer unit).
-  const injections = units.reduce((s, u) => s + powerInjectionCount(u.lights), 0);
-  push('APL11123', 'Power T-injector 12V', injections, cost('APL11123', C.powerT), 'power');
+  // Power injection — per powered segment (per transformer unit), plus ONE
+  // spare (#144, Jason: "a spare would be good"; the P8 ordering layer nets
+  // the spare against warehouse on-hand — the BOM itself always lists it).
+  const installedInjections = units.reduce((s, u) => s + powerInjectionCount(u.lights), 0);
+  const injections = installedInjections > 0 ? installedInjections + 1 : 0;
+  push('APL11123', 'Power T-injector 12V (incl. 1 spare)', injections, cost('APL11123', C.powerT), 'power');
+
+  // Injection wire (#144): 70 ft of 16/2 per injector beyond the first
+  // (spare-inclusive count — the estimator sheet's rule). Provisional
+  // SKU/price until the Ascend list carries it (flagged below).
+  const wireFt = injections > 1 ? (injections - 1) * WIRE_FT_PER_INJECTOR : 0;
+  push(WIRE_SKU, "Power injection wire 16/2 (ft)", wireFt, cost(WIRE_SKU, WIRE_COST_PER_FT), 'power');
 
   // Data: extra boosters (beyond the KIT's) + splitters + extensions. The #140
-  // card counts override the gaps-derived accessories entirely when present.
+  // card counts override the gaps-derived accessories entirely when present;
+  // the controller-run feed (#144) is ADDITIVE on top of either path — the
+  // card never counts the cable from the controller to the first light.
   push('APL11121', 'Signal booster', boosterCount(input), cost('APL11121', C.booster), 'data');
   const { extensions, splitters } = input.accessories
     ? extensionsFromAccessories(input.accessories)
     : extensionsForGaps(input.gaps);
+  const extCounts = new Map<ExtSize, number>(extensions.map((e) => [e.ft, e.qty]));
+  for (const size of bucketExtensionLength(input.controllerToFirstLightFt ?? 0)) {
+    extCounts.set(size, (extCounts.get(size) ?? 0) + 1);
+  }
   push('APL11122', 'Splitter 12V', splitters, cost('APL11122', C.splitter), 'data');
-  for (const e of extensions) {
-    push(`APL11312-${e.ft}`, `${e.ft}' extension 12V`, e.qty, cost(`APL11312-${e.ft}`, EXT_COST[e.ft]), 'extension');
+  for (const [ft, qty] of [...extCounts.entries()].sort((a, b) => a[0] - b[0])) {
+    push(`APL11312-${ft}`, `${ft}' extension 12V`, qty, cost(`APL11312-${ft}`, EXT_COST[ft]), 'extension');
   }
 
   const wholesaleCost = round2(lines.reduce((s, l) => s + l.extCost, 0));
@@ -323,6 +362,11 @@ export function buildPermanentBom(
   // Parapet track is stocked only in white (9003) / black (9004).
   if (input.trackStyle === 'parapet' && input.trackColor !== '9003' && input.trackColor !== '9004') {
     flags.push('parapet-track-only-stocked-white-or-black');
+  }
+  // #144: the wire SKU/price is provisional (not on the 2026 Ascend list) —
+  // the order sheet must say so until Naldo confirms the real item.
+  if (wireFt > 0) {
+    flags.push('verify-injection-wire-sku-and-price-with-ascend');
   }
 
   return {

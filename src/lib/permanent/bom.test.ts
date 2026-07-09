@@ -176,13 +176,15 @@ describe('permanent BOM — unit formulas', () => {
 });
 
 describe('permanent BOM — buildPermanentBom', () => {
-  it('corner rule: each corner = 3 singles (Andrew W: 350 corners → 1050 singles ≈ $4,040)', () => {
+  it('corner rule: each corner = 3 singles (Andrew W: 350 corners → 1050 singles, ordered w/6% waste)', () => {
     // Andrew's degenerate all-corners entry validates the corner→3-singles rule
-    // against his $4,043.08 sheet (diff = adapter + rounding).
+    // against his $4,043.08 sheet (diff = adapter + rounding). #144: the ORDER
+    // qty carries the 6% waste — ceil(1050 × 1.06) = 1113; totals still report
+    // the raw 1050 corner singles.
     const bom = buildPermanentBom(input({ cornersBySide: { front: 350, left: 0, right: 0, back: 0 } }));
     expect(bom.totals.cornerSingles).toBe(1050);
-    expect(line(bom, 'APL11012-1')!.qty).toBe(1050);
-    expect(line(bom, 'APL11012-1')!.extCost).toBeCloseTo(4039.53, 1);
+    expect(line(bom, 'APL11012-1')!.qty).toBe(1113);
+    expect(line(bom, 'APL11012-1')!.extCost).toBeCloseTo(4281.9, 1);
     expect(bom.totals.trackSections).toBe(0); // no footage → no track
   });
 
@@ -213,7 +215,11 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(line(bom, 'APL11012-5')!.unitCost).toBe(99);
   });
 
-  it('GOLDEN — Greg M 125ft single-white → ≈ $1,286.56 (sheet w/waste $1,290.81, ~0.3%)', () => {
+  it('GOLDEN — Greg M 125ft single-white → ≈ $1,391.11 (sheet w/waste $1,290.81 + the #144 rules)', () => {
+    // Re-anchored S25 (#144): the pre-#144 tool total was $1,286.56 (~0.3% off
+    // the sheet's $1,290.81). The reconciliation added, on this job exactly:
+    // light waste 6% (sets 37→40, singles 3→4, +$50.40) + the spare injector
+    // (+$5.85) + injection wire 210 ft @ $0.23 (+$48.30) = +$104.55 → $1,391.11.
     const bom = buildPermanentBom(
       input({
         footageBySide: { front: 125, left: 0, right: 0, back: 0 },
@@ -223,12 +229,16 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(bom.totals.puckCount).toBe(188);
     expect(bom.totals.trackSections).toBe(41);
     expect(line(bom, 'APL11111-350-KIT')).toBeTruthy(); // one 350 KIT
-    expect(bom.totals.wholesaleCost).toBeCloseTo(1286.56, 2);
-    expect(bom.totals.wholesaleCost).toBeGreaterThan(1250);
-    expect(bom.totals.wholesaleCost).toBeLessThan(1330); // ±3% of the $1,290.81 sheet
+    expect(line(bom, 'APL11123')!.qty).toBe(4); // ceil(188/75)=3 installed + 1 spare
+    expect(line(bom, 'APL-WIRE-16-2')!.qty).toBe(210); // (4-1)×70 ft
+    expect(bom.totals.wholesaleCost).toBeCloseTo(1391.11, 2);
   });
 
-  it('GOLDEN — Melissa North 100ft single-white, controller 35 → ≈ $1,107.22 (sheet $1,084–$1,126)', () => {
+  it('GOLDEN — Melissa North 100ft single-white, controller 35 → ≈ $1,191.62 (sheet $1,084–$1,126 + the #144 rules)', () => {
+    // Re-anchored S25 (#144): pre-#144 total $1,107.22. Added on this job:
+    // light waste (sets 30→32, +$31.03) + spare injector (+$5.85) + wire
+    // 140 ft (+$32.20) + the controller-run feed bucketed 35 ft → 25'+10'
+    // (+$15.32) = +$84.40 → $1,191.62.
     const bom = buildPermanentBom(
       input({
         footageBySide: { front: 100, left: 0, right: 0, back: 0 },
@@ -239,8 +249,43 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(bom.totals.puckCount).toBe(150);
     expect(bom.totals.trackSections).toBe(32);
     expect(line(bom, 'APL11121')!.qty).toBe(1); // controller 35>10 → 1 booster
-    expect(bom.totals.wholesaleCost).toBeCloseTo(1107.22, 2);
-    expect(bom.totals.wholesaleCost).toBeLessThan(1160);
+    expect(line(bom, 'APL11312-25')!.qty).toBe(3); // 2 from gaps + 1 controller feed
+    expect(line(bom, 'APL11312-10')!.qty).toBe(3); // 2 from gaps + 1 controller feed
+    expect(bom.totals.wholesaleCost).toBeCloseTo(1191.62, 2);
+  });
+
+  it('#144: light sets pack PER SIDE — a 5-strip never crosses a run break', () => {
+    // Two 12-ft sides: 18 pucks each → 3 sets + 3 singles PER SIDE (pooled
+    // packing would have said 7 sets + 1 single). Ordered w/6% waste:
+    // sets ceil(6×1.06)=7, singles ceil(6×1.06)=7.
+    const bom = buildPermanentBom(input({ footageBySide: { front: 12, left: 12, right: 0, back: 0 } }));
+    expect(line(bom, 'APL11012-5')!.qty).toBe(7);
+    expect(line(bom, 'APL11012-1')!.qty).toBe(7);
+  });
+
+  it('#144: injector spare + wire line + provisional flag; absent on a zero job', () => {
+    const bom = buildPermanentBom(input({ footageBySide: { front: 100, left: 0, right: 0, back: 0 } }));
+    expect(line(bom, 'APL11123')!.qty).toBe(3); // ceil(150/75)=2 installed + 1 spare
+    expect(line(bom, 'APL11123')!.description).toContain('spare');
+    expect(line(bom, 'APL-WIRE-16-2')!.qty).toBe(140); // (3-1)×70
+    expect(bom.flags).toContain('verify-injection-wire-sku-and-price-with-ascend');
+
+    const empty = buildPermanentBom(input());
+    expect(line(empty, 'APL11123')).toBeFalsy();
+    expect(line(empty, 'APL-WIRE-16-2')).toBeFalsy();
+    expect(empty.flags).not.toContain('verify-injection-wire-sku-and-price-with-ascend');
+  });
+
+  it('#144: the controller-run feed is ADDITIVE on the card-override path too', () => {
+    const bom = buildPermanentBom(
+      input({
+        footageBySide: { front: 50, left: 0, right: 0, back: 0 },
+        controllerToFirstLightFt: 30, // buckets to 25'+5'
+        accessories: { extensions: { e3: 0, e5: 2, e10: 0, e25: 1 }, splitters: 0, jumpBoosters: 0 },
+      }),
+    );
+    expect(line(bom, 'APL11312-5')!.qty).toBe(3); // card 2 + controller 1
+    expect(line(bom, 'APL11312-25')!.qty).toBe(2); // card 1 + controller 1
   });
 
   it('#125-4: consolidates duplicate bare power supplies into one Qty-N line', () => {
