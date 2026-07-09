@@ -23,6 +23,7 @@ import {
 } from '@/lib/design/sceneCorrections';
 import { sceneToFewShotPieces } from '@/lib/design/sceneToFewShot';
 import AnnotatedPhoto, { type OverlayBox } from '@/components/training/AnnotatedPhoto';
+import PermanentExamplesTab from '@/components/training/PermanentExamplesTab';
 import { OperatorShell } from '@/components/OperatorShell';
 
 const RED = '#ef4444'; // Santa's / front
@@ -35,6 +36,10 @@ const tierLabel = (t: string) => (t === 'bow' ? 'Non-Decorated' : 'Decorated');
 const wreathLabel = (s: string) => s.replace('noble', '” Noble'); // 24noble → 24” Noble
 
 export default function TrainingExamplesPage() {
+  // #141 — a Permanent tab alongside the holiday examples below. Separate
+  // library/table (src/lib/permanent/trainingExamples.ts); the tab just
+  // switches which panel renders.
+  const [tab, setTab] = useState<'holiday' | 'permanent'>('holiday');
   const [items, setItems] = useState<TrainingExampleListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -166,6 +171,26 @@ export default function TrainingExamplesPage() {
           </div>
         </div>
 
+        {/* #141 — Holiday / Permanent tabs. Separate library + table per
+            vertical; this just switches which panel renders. */}
+        <div className="flex gap-1 mb-4 border-b border-gray-200">
+          {(['holiday', 'permanent'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                tab === t ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {t === 'holiday' ? 'Holiday' : 'Permanent'}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'permanent' ? (
+          <PermanentExamplesTab />
+        ) : (
+        <>
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700 mb-4">
             {error}
@@ -256,6 +281,8 @@ export default function TrainingExamplesPage() {
             );
           })}
         </div>
+        </>
+        )}
       </div>
     </OperatorShell>
   );

@@ -54,6 +54,18 @@ export type PermanentSatelliteAnalysis = {
   confidence: 'low' | 'medium' | 'high';
 };
 
+// #141 — a few-shot example turn pair (operator-confirmed past house), built
+// by permanent/fewShot.ts's buildPermanentFewShotMessages. Defined here (not
+// in fewShot.ts) so this module has no dependency on the training-example
+// library — fewShot.ts imports this type instead.
+export type PermanentFewShotMessage = {
+  role: 'user' | 'assistant';
+  content: Array<
+    | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } }
+    | { type: 'text'; text: string }
+  >;
+};
+
 // Static system prompt — byte-identical across calls so it caches (the W5-012
 // pattern). Permanent-specific: FULL perimeter (all four sides, unlike
 // holiday's front-section rule), gutter line only, no ridges.
@@ -166,6 +178,13 @@ export async function analyzePermanentSatellite(args: {
    * satellite channels. Null/undefined = fall back to the AI's own self-check.
    */
   frontBearingDeg?: number | null;
+  /**
+   * #141 — few-shot example turns (operator-confirmed past houses), PREPENDED
+   * to the messages array — exactly like the holiday analyzer's
+   * buildFewShotMessages. The system prompt above stays byte-identical
+   * across calls (still cached); few-shot rides in messages, not the prompt.
+   */
+  fewShotMessages?: PermanentFewShotMessage[];
 }): Promise<PermanentSatelliteAnalysis> {
   const client = getClaudeClient();
   if (!client) {
@@ -209,7 +228,7 @@ export async function analyzePermanentSatellite(args: {
     model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     system: [{ type: 'text', text: PERMANENT_SATELLITE_PROMPT, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content }],
+    messages: [...(args.fewShotMessages ?? []), { role: 'user', content }],
   });
 
   if (response.stop_reason === 'max_tokens') {
