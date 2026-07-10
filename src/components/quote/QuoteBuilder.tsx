@@ -39,6 +39,7 @@ import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
+import { track } from '@/lib/analytics/posthog';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -1804,6 +1805,8 @@ export default function QuoteBuilder({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Send failed (${res.status})`);
       setSendStatus('sent');
+      // PostHog v1 — staff-side confirmation the quote actually sent.
+      track('quote_sent', { quote_id: savedQuoteId, service_type: form.serviceType });
       // The quote is sent locally regardless; surface a non-blocking warning if
       // the HighLevel "Bid Sent" stage move didn't go through, so the operator
       // doesn't wrongly believe the CRM card advanced.
