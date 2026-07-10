@@ -15,6 +15,7 @@ const { sbRef, hl } = vi.hoisted(() => ({
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
+    upsertContactCustomField: vi.fn(async () => undefined),
     sendSms: vi.fn(async () => undefined),
     sendEmail: vi.fn(async () => undefined),
     configured: { value: true },
@@ -34,6 +35,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   createOpportunity: hl.createOpportunity,
   findOpportunityForContact: hl.findOpportunityForContact,
+  upsertContactCustomField: hl.upsertContactCustomField,
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
@@ -419,5 +421,124 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
     expect(stampWrite).toBeTruthy();
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipeline sync)', () => {
+  it('a permanent quote moves its card in the PERMANENT pipeline, ignoring the legacy env vars', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'permanent' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    // env vars (HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID) are set in
+    // beforeEach to 'stage_bid_sent' / 'pipeline_1' — a permanent quote must NOT
+    // use them; it moves in its own hardcoded "Proposal Sent" stage instead.
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: '4e507d3d-a939-44c3-a448-250a4b0ed353' }),
+    );
+  });
+
+  it('an event quote moves its card in the EVENT pipeline', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'event' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: 'b2262023-6986-4727-98e6-638ce45aedfe' }),
+    );
+  });
+
+  it('a holiday quote (explicit or missing service_type) still honors the legacy env vars', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'holiday' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: 'stage_bid_sent' }),
+    );
+  });
+
+  it('a fresh permanent-quote card is created in the permanent pipeline when none is linked', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'permanent',
+      highlevel_opportunity_id: null,
+    });
+    sbRef.current = client;
+    hl.findOpportunityForContact.mockResolvedValueOnce(null);
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.findOpportunityForContact).toHaveBeenCalledWith('contact_1', 'OqpjVflTdgmjmUQmbcSF');
+    expect(hl.createOpportunity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineId: 'OqpjVflTdgmjmUQmbcSF',
+        pipelineStageId: '4e507d3d-a939-44c3-a448-250a4b0ed353',
+      }),
+    );
+  });
+});
+
+describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
+  beforeEach(() => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK = 'field_quote_link';
+  });
+
+  it('stamps the exact portal URL onto the contact once the card move succeeds', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith(
+      'contact_1',
+      'field_quote_link',
+      'https://quote.example.com/portal/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    );
+  });
+
+  it('skips silently (one warn, no throw) when HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK is unset', async () => {
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK not set'));
+    warn.mockRestore();
+  });
+
+  it('never stamps for a TEST quote', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, is_test: true, highlevel_contact_id: null, highlevel_opportunity_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the send when the custom field stamp throws (best-effort)', async () => {
+    hl.upsertContactCustomField.mockRejectedValueOnce(new Error('GHL down'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining('quote-link custom field stamp failed'),
+      expect.anything(),
+    );
+    err.mockRestore();
   });
 });

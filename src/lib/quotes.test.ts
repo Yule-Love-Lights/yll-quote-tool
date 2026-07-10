@@ -192,6 +192,115 @@ describe('updateQuote', () => {
   });
 });
 
+// ── #GHL pipeline sync — cross-pipeline card desync guard ───────────────────
+// highlevel_opportunity_id records no pipeline; every GHL move site resolves
+// the pipeline from the quote's mutable service_type. When updateQuote CHANGES
+// the service type it must clear the opportunity link + sent-stage sync stamp
+// (so the next send/attach re-creates the card in the correct pipeline) — and
+// must NOT clear on a same-value re-save, an update that omits serviceType, or
+// a pre-read failure (fail-open keeps a valid link).
+
+// Fake tuned to updateQuote's two chains:
+//   pre-read: from('quotes').select('service_type').eq().maybeSingle() → storedRow
+//   write:    from('quotes').update(payload).eq().select('id').single()
+function makeUpdateFake(
+  storedRow: Record<string, unknown> | null,
+  readErr: { message: string } | null = null,
+) {
+  const updates: Record<string, unknown>[] = [];
+  let reads = 0;
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    select: () => builder,
+    eq: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return builder;
+    },
+    maybeSingle: async () => {
+      reads++;
+      return { data: readErr ? null : storedRow, error: readErr };
+    },
+    single: async () => ({ data: { id: 'q1' }, error: null }),
+  });
+  return { client: { from: () => builder }, updates, readCount: () => reads };
+}
+
+describe('updateQuote — service_type change clears the GHL opportunity link', () => {
+  it('clears highlevel_opportunity_id + ghl_stage_synced_at when the service type CHANGES', async () => {
+    const fake = makeUpdateFake({ service_type: 'holiday' });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, 'permanent');
+    expect(res).toEqual({ id: 'q1' });
+    expect(fake.updates).toHaveLength(1);
+    expect(fake.updates[0]).toMatchObject({
+      service_type: 'permanent',
+      highlevel_opportunity_id: null,
+      ghl_stage_synced_at: null,
+    });
+  });
+
+  it('does NOT clear on a same-value re-save', async () => {
+    const fake = makeUpdateFake({ service_type: 'permanent' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, 'permanent');
+    expect(fake.updates).toHaveLength(1);
+    expect(fake.updates[0]).toMatchObject({ service_type: 'permanent' });
+    expect(fake.updates[0]).not.toHaveProperty('highlevel_opportunity_id');
+    expect(fake.updates[0]).not.toHaveProperty('ghl_stage_synced_at');
+  });
+
+  it('treats a stored NULL as the holiday default — NULL→holiday is NOT a change', async () => {
+    const fake = makeUpdateFake({ service_type: null });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, 'holiday');
+    expect(fake.updates[0]).not.toHaveProperty('highlevel_opportunity_id');
+    expect(fake.updates[0]).not.toHaveProperty('ghl_stage_synced_at');
+  });
+
+  it('a stored NULL re-saved as permanent IS a pipeline change — clears the link', async () => {
+    const fake = makeUpdateFake({ service_type: null });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, 'permanent');
+    expect(fake.updates[0]).toMatchObject({
+      highlevel_opportunity_id: null,
+      ghl_stage_synced_at: null,
+    });
+  });
+
+  it('an update that omits serviceType never clears — and never pre-reads', async () => {
+    const fake = makeUpdateFake({ service_type: 'holiday' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT);
+    expect(fake.readCount()).toBe(0);
+    expect(fake.updates[0]).not.toHaveProperty('service_type');
+    expect(fake.updates[0]).not.toHaveProperty('highlevel_opportunity_id');
+    expect(fake.updates[0]).not.toHaveProperty('ghl_stage_synced_at');
+  });
+
+  it('keeps the link when the pre-read fails (fail-open, warns)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fake = makeUpdateFake(null, { message: 'connection reset' });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, 'permanent');
+    expect(res).toEqual({ id: 'q1' }); // the update itself still succeeds
+    expect(fake.updates[0]).toMatchObject({ service_type: 'permanent' });
+    expect(fake.updates[0]).not.toHaveProperty('highlevel_opportunity_id');
+    expect(fake.updates[0]).not.toHaveProperty('ghl_stage_synced_at');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('service_type pre-read failed'),
+      expect.anything(),
+    );
+    warn.mockRestore();
+  });
+});
+
 // #90 actor audit trail: saveQuote stamps created_by (the operator's user id).
 describe('saveQuote created_by', () => {
   it('writes the caller id into created_by on insert', async () => {

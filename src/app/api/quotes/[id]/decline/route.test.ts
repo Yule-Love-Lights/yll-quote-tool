@@ -17,6 +17,8 @@ const { sbRef, hl } = vi.hoisted(() => ({
   hl: {
     configured: { value: true },
     sendEmail: vi.fn(async () => ({})),
+    updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
+    findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
   },
 }));
 
@@ -30,6 +32,8 @@ vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
 vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hl.configured.value,
   sendEmail: hl.sendEmail,
+  updateOpportunity: hl.updateOpportunity,
+  findOpportunityForContact: hl.findOpportunityForContact,
   HighLevelError: class HighLevelError extends Error {},
 }));
 
@@ -246,5 +250,84 @@ describe('POST /api/quotes/[id]/decline', () => {
     expect(res.status).toBe(200);
 
     delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  });
+});
+
+describe('POST /api/quotes/[id]/decline — GHL card move (#GHL pipeline sync)', () => {
+  beforeEach(() => {
+    hl.configured.value = true;
+  });
+
+  it('moves an already-linked card to the holiday Declined stage', async () => {
+    const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_1', service_type: 'holiday' }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_1', {
+      pipelineStageId: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+    });
+  });
+
+  it('a permanent quote moves the card to Abandoned (no real Declined stage in that pipeline)', async () => {
+    const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_perm', service_type: 'permanent' }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_perm', {
+      pipelineStageId: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
+    });
+  });
+
+  it('looks up the card via the contact when no opportunity id is linked', async () => {
+    hl.findOpportunityForContact.mockResolvedValueOnce({ id: 'found_opp' });
+    const { client } = makeSb(
+      baseQuote({ highlevel_opportunity_id: null, highlevel_contact_id: 'contact_1', service_type: 'event' }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.findOpportunityForContact).toHaveBeenCalledWith('contact_1', 'YfCi5jy8Alc3oD5AfXmV');
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('found_opp', {
+      pipelineStageId: '239ec700-bd21-49ba-9691-f0a9b44637b0',
+    });
+  });
+
+  it('never CREATES a card — no opportunity and no contact match means no GHL call at all', async () => {
+    const { client } = makeSb(baseQuote({ highlevel_opportunity_id: null, highlevel_contact_id: null }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  it('never touches GHL for a TEST quote', async () => {
+    const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_1', is_test: true }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.findOpportunityForContact).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the decline when the GHL stage move throws (fail-open)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    hl.updateOpportunity.mockRejectedValueOnce(new Error('GHL down'));
+    const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_1' }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining('GHL decline stage move failed'),
+      expect.anything(),
+    );
+    err.mockRestore();
   });
 });

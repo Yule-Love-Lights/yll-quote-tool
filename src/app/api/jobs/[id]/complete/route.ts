@@ -20,6 +20,7 @@ import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { createInvoiceFromJob, setInvoiceStatus } from '@/lib/invoices';
+import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
 
 export const runtime = 'nodejs';
 
@@ -35,6 +36,9 @@ async function advanceToRequiresInvoicing(job: JobRow): Promise<JobRow | null> {
     const installed = await setJobStatus(current.id, 'installed');
     if (!installed) return null;
     current = installed;
+    // Best-effort GHL card move on the FIRST installed transition (#GHL
+    // pipeline sync) — shared with /api/jobs/[id]/close; never throws.
+    await moveQuoteCardToInstalled(current.quote_id);
   }
   if (current.status === 'installed') {
     const ri = await setJobStatus(current.id, 'requires_invoicing');
