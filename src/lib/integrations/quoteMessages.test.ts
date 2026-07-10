@@ -14,7 +14,82 @@ import {
   BALANCE_LINK_EMAIL_SUBJECT,
   balanceLinkSmsBody,
   balanceLinkEmailHtml,
+  quoteEmailSubject,
+  quoteSmsBody,
+  quoteEmailHtml,
 } from './quoteMessages';
+
+describe('quote-ready notifications, per service type (S26)', () => {
+  const PORTAL_URL = 'https://quote.yulelovelights.com/portal/abc';
+
+  it('holiday SMS is the exact copy', () => {
+    expect(quoteSmsBody('Jordan', PORTAL_URL, 'holiday')).toBe(
+      'Hi Jordan! 🎄 Your custom Yule Love Lights quote is ready! View your design, see the price, and approve here: https://quote.yulelovelights.com/portal/abc Reply with any questions!',
+    );
+  });
+
+  it('permanent SMS is the exact copy', () => {
+    expect(quoteSmsBody('Jordan', PORTAL_URL, 'permanent')).toBe(
+      'Hi Jordan! ✨ Your custom Yule Love Lights Permanent Lighting quote is ready! View your design, see the price, and approve here: https://quote.yulelovelights.com/portal/abc Reply with any questions!',
+    );
+  });
+
+  it('event SMS is the exact copy', () => {
+    expect(quoteSmsBody('Jordan', PORTAL_URL, 'event')).toBe(
+      'Hi Jordan! ✨ Your custom Yule Love Lights Event Lighting quote is ready! View your design, see the price, and approve here: https://quote.yulelovelights.com/portal/abc Reply with any questions!',
+    );
+  });
+
+  it('event SMS/email are the permanent copy with Event/event substituted for Permanent/permanent', () => {
+    const perm = quoteSmsBody('Jordan', PORTAL_URL, 'permanent');
+    const evt = quoteSmsBody('Jordan', PORTAL_URL, 'event');
+    expect(evt).toBe(perm.replace('Permanent Lighting', 'Event Lighting'));
+
+    const permHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent');
+    const evtHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'event');
+    expect(evtHtml).toBe(permHtml.replace('permanent lighting', 'event lighting'));
+
+    expect(quoteEmailSubject('event')).toBe(quoteEmailSubject('permanent').replace('Permanent', 'Event'));
+  });
+
+  it('per-type subjects', () => {
+    expect(quoteEmailSubject('holiday')).toBe('Your Yule Love Lights quote is ready 🎄');
+    expect(quoteEmailSubject('permanent')).toBe('Your Yule Love Lights Permanent Lighting quote is ready ✨');
+    expect(quoteEmailSubject('event')).toBe('Your Yule Love Lights Event Lighting quote is ready ✨');
+  });
+
+  it('defaults to holiday for an unknown/missing service_type', () => {
+    expect(quoteEmailSubject(null)).toBe(quoteEmailSubject('holiday'));
+    expect(quoteEmailSubject(undefined)).toBe(quoteEmailSubject('holiday'));
+    expect(quoteEmailSubject('not-a-real-type')).toBe(quoteEmailSubject('holiday'));
+    expect(quoteSmsBody('Jordan', PORTAL_URL, 'bogus')).toBe(quoteSmsBody('Jordan', PORTAL_URL, 'holiday'));
+    expect(quoteEmailHtml('Jordan', PORTAL_URL, undefined)).toBe(quoteEmailHtml('Jordan', PORTAL_URL, 'holiday'));
+  });
+
+  it("holiday email keeps its ORIGINAL wording byte-for-byte (line-item breakdown, 'holiday lighting')", () => {
+    const html = quoteEmailHtml('Jordan', PORTAL_URL, 'holiday');
+    expect(html).toContain('Your custom holiday lighting quote is ready.');
+    expect(html).toContain('with a full line-item breakdown and your price.');
+    expect(html).toContain(`<p><a href="${PORTAL_URL}">View my quote →</a></p>`);
+    expect(html).toContain("we're happy to help!");
+  });
+
+  it('permanent/event email bodies use "item breakdown" (no line- prefix) and the right lighting noun', () => {
+    const perm = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent');
+    expect(perm).toContain('Your custom permanent lighting quote is ready.');
+    expect(perm).toContain('with a full item breakdown and your price.');
+
+    const evt = quoteEmailHtml('Jordan', PORTAL_URL, 'event');
+    expect(evt).toContain('Your custom event lighting quote is ready.');
+    expect(evt).toContain('with a full item breakdown and your price.');
+  });
+
+  it('escapes HTML in the first name', () => {
+    const html = quoteEmailHtml('<script>', PORTAL_URL, 'permanent');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
 
 describe('supplier purchase order email (#82 Phase 3)', () => {
   it('subject names the job count', () => {

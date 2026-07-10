@@ -30,10 +30,11 @@ import {
   sendEmail,
   updateOpportunity,
   findOpportunityForContact,
+  upsertContactCustomField,
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
-import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import { resolvePipelineStages, quoteLinkFieldId } from '@/lib/integrations/ghlPipelineMap';
 import {
   internalDeclineEmailSubject,
   internalDeclineEmailHtml,
@@ -86,11 +87,15 @@ type QuoteRow = QuoteStatusRow & {
 };
 
 // Best-effort: move the quote's linked HighLevel opportunity to the Declined
-// stage for its service type. NEVER creates a card (only moves one that
-// already exists), and NEVER fails the decline — a GHL hiccup is logged and
-// swallowed, same pattern as the staff-notification email below.
+// stage for its service type, then (independent of whether the move
+// succeeded) blank the per-service-type quote-link contact custom field so a
+// declined quote's link stops feeding that pipeline's drip automations.
+// NEVER creates a card (only moves one that already exists), and NEVER fails
+// the decline — a GHL hiccup on either step is logged and swallowed, same
+// pattern as the staff-notification email below.
 async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<void> {
   if (quote.is_test || !isHighLevelConfigured()) return;
+
   try {
     const stages = resolvePipelineStages(quote.service_type);
     let opportunityId = quote.highlevel_opportunity_id;
@@ -98,10 +103,25 @@ async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<voi
       const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
       opportunityId = existing?.id ?? null;
     }
-    if (!opportunityId) return; // no card to move — never create one on decline
-    await updateOpportunity(opportunityId, { pipelineStageId: stages.declined });
+    if (opportunityId) {
+      await updateOpportunity(opportunityId, { pipelineStageId: stages.declined });
+    } // else: no card to move — never create one on decline
   } catch (err) {
     console.error(`[api/quotes/:id/decline] GHL decline stage move failed for quote ${id}:`, hlErrorMessage(err));
+  }
+
+  // Clear the quote-link field even if the card move above failed or found no
+  // card — the field can be stamped while the linked opportunity id is stale,
+  // so the two are attempted independently.
+  if (quote.highlevel_contact_id) {
+    const fieldId = quoteLinkFieldId(quote.service_type);
+    if (fieldId) {
+      try {
+        await upsertContactCustomField(quote.highlevel_contact_id, fieldId, '');
+      } catch (err) {
+        console.error(`[api/quotes/:id/decline] quote-link custom field clear failed for quote ${id}:`, hlErrorMessage(err));
+      }
+    }
   }
 }
 

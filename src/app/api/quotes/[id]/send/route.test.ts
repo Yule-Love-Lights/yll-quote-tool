@@ -46,7 +46,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 }));
 
 vi.mock('@/lib/integrations/quoteMessages', () => ({
-  QUOTE_EMAIL_SUBJECT: 'subj',
+  quoteEmailSubject: () => 'subj',
   quoteSmsBody: () => 'sms',
   quoteEmailHtml: () => '<p>email</p>',
 }));
