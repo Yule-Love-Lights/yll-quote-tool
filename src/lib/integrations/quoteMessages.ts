@@ -2,23 +2,59 @@
 // GHL (SMS + Email) when staff hit "Send Quote." Kept in one place so the
 // wording is easy to tweak. The caller fills in the customer's first name and
 // the portal link.
+//
+// Per-service-type (S26): holiday/permanent/event each get their own voice —
+// distinct copy also defeats carrier/GHL SMS de-dup that was suspected of
+// silently swallowing perm/event sends whose body was otherwise byte-identical
+// to holiday's. Type resolution mirrors ghlPipelineMap.ts: asServiceType ??
+// DEFAULT_SERVICE_TYPE (unknown/missing service_type → holiday).
 
-export const QUOTE_EMAIL_SUBJECT = 'Your Yule Love Lights quote is ready 🎄';
+import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 
-export function quoteSmsBody(firstName: string, portalUrl: string): string {
-  return `Hi ${firstName}! 🎄 Your custom Yule Love Lights quote is ready — view your design, see the price, and approve here: ${portalUrl}  Reply with any questions!`;
+const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
+  holiday: 'Your Yule Love Lights quote is ready 🎄',
+  permanent: 'Your Yule Love Lights Permanent Lighting quote is ready ✨',
+  event: 'Your Yule Love Lights Event Lighting quote is ready ✨',
+};
+
+export function quoteEmailSubject(serviceType?: string | null): string {
+  const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
+  return QUOTE_READY_EMAIL_SUBJECT[type];
+}
+
+const QUOTE_READY_SMS_INTRO: Record<ServiceType, string> = {
+  holiday: '🎄 Your custom Yule Love Lights quote is ready!',
+  permanent: '✨ Your custom Yule Love Lights Permanent Lighting quote is ready!',
+  event: '✨ Your custom Yule Love Lights Event Lighting quote is ready!',
+};
+
+export function quoteSmsBody(firstName: string, portalUrl: string, serviceType?: string | null): string {
+  const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
+  return `Hi ${firstName}! ${QUOTE_READY_SMS_INTRO[type]} View your design, see the price, and approve here: ${portalUrl} Reply with any questions!`;
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export function quoteEmailHtml(firstName: string, portalUrl: string): string {
+// Holiday keeps its ORIGINAL wording byte-for-byte ("holiday lighting" /
+// "line-item breakdown"); permanent/event mirror the same HTML skeleton with
+// their own service-line wording ("permanent|event lighting" / "item
+// breakdown" — no "line-" prefix, per the dev's exact copy).
+const QUOTE_READY_EMAIL_COPY: Record<ServiceType, { intro: string; breakdown: string }> = {
+  holiday: { intro: 'Your custom holiday lighting quote is ready.', breakdown: 'line-item' },
+  permanent: { intro: 'Your custom permanent lighting quote is ready.', breakdown: 'item' },
+  event: { intro: 'Your custom event lighting quote is ready.', breakdown: 'item' },
+};
+
+export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType?: string | null): string {
+  const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
+  const { intro, breakdown } = QUOTE_READY_EMAIL_COPY[type];
   const name = escapeHtml(firstName);
   return [
     `<p>Hi ${name},</p>`,
-    `<p>Your custom holiday lighting quote is ready.</p>`,
-    `<p>We've put together a design showing exactly how your home will look, with a full line-item breakdown and your price. You can review it, adjust what's included, and approve right from the page:</p>`,
+    `<p>${intro}</p>`,
+    `<p>We've put together a design showing exactly how your home will look, with a full ${breakdown} breakdown and your price. You can review it, adjust what's included, and approve right from the page:</p>`,
     `<p><a href="${portalUrl}">View my quote →</a></p>`,
     `<p>Once you approve and place your deposit, your spot on our install calendar is reserved.</p>`,
     `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,

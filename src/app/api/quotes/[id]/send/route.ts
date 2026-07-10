@@ -40,7 +40,7 @@ import {
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
 import {
-  QUOTE_EMAIL_SUBJECT,
+  quoteEmailSubject,
   quoteSmsBody,
   quoteEmailHtml,
 } from '@/lib/integrations/quoteMessages';
@@ -405,7 +405,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     try {
       await sendSms({
         contactId: quote.highlevel_contact_id,
-        message: quoteSmsBody(firstName, portalUrl),
+        message: quoteSmsBody(firstName, portalUrl, quote.service_type),
         fromNumber,
       });
       smsSent = true;
@@ -420,8 +420,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     try {
       await sendEmail({
         contactId: quote.highlevel_contact_id,
-        subject: QUOTE_EMAIL_SUBJECT,
-        html: quoteEmailHtml(firstName, portalUrl),
+        subject: quoteEmailSubject(quote.service_type),
+        html: quoteEmailHtml(firstName, portalUrl, quote.service_type),
         emailFrom,
       });
       emailSent = true;

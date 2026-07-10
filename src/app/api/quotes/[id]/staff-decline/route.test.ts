@@ -24,6 +24,7 @@ const { requireOperatorMock, getOperatorMock, sbRef, hl } = vi.hoisted(() => ({
     configured: { value: false },
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
+    upsertContactCustomField: vi.fn(async () => undefined),
   },
 }));
 
@@ -39,6 +40,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hl.configured.value,
   updateOpportunity: hl.updateOpportunity,
   findOpportunityForContact: hl.findOpportunityForContact,
+  upsertContactCustomField: hl.upsertContactCustomField,
   HighLevelError: class HighLevelError extends Error {},
 }));
 
@@ -360,5 +362,127 @@ describe('POST /api/quotes/[id]/staff-decline — GHL card move (#GHL pipeline s
     expect(res.status).toBe(200);
     expect((await res.json()).alreadyDeclined).toBe(true);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quotes/[id]/staff-decline — decline clears the quote-link field', () => {
+  beforeEach(() => {
+    hl.configured.value = true;
+  });
+
+  it('clears the per-type quote-link field on the contact after declining', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT = 'field_quote_link_event';
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_contact_id: 'contact_1',
+      highlevel_opportunity_id: 'opp_evt',
+      service_type: 'event',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'field_quote_link_event', '');
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT;
+  });
+
+  it('still clears the field when the card move found no card (card id stale)', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_contact_id: 'contact_1',
+      highlevel_opportunity_id: null,
+      service_type: 'holiday',
+    });
+    sbRef.current = client;
+    hl.findOpportunityForContact.mockResolvedValueOnce(null);
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'field_quote_link_holiday', '');
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+  });
+
+  it('still clears the field when the card move itself throws', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    hl.updateOpportunity.mockRejectedValueOnce(new Error('GHL down'));
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_contact_id: 'contact_1',
+      highlevel_opportunity_id: 'opp_1',
+      service_type: 'holiday',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'field_quote_link_holiday', '');
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+    vi.restoreAllMocks();
+  });
+
+  it('skips silently when the per-type field env var is unset', async () => {
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+    const { client } = makeSb({ ...BASE_SENT_QUOTE, highlevel_contact_id: 'contact_1', service_type: 'holiday' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the decline when the field clear throws (fail-open)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    hl.upsertContactCustomField.mockRejectedValueOnce(new Error('GHL down'));
+    const { client } = makeSb({ ...BASE_SENT_QUOTE, highlevel_contact_id: 'contact_1', service_type: 'holiday' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.status).toBe('declined');
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining('quote-link custom field clear failed'),
+      expect.anything(),
+    );
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+    err.mockRestore();
+  });
+
+  it('never clears the field for a TEST quote', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_contact_id: 'contact_1',
+      is_test: true,
+      service_type: 'holiday',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+  });
+
+  it('skips the clear entirely when HighLevel is not configured', async () => {
+    hl.configured.value = false;
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    const { client } = makeSb({ ...BASE_SENT_QUOTE, highlevel_contact_id: 'contact_1', service_type: 'holiday' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
   });
 });
