@@ -93,14 +93,47 @@ const posFt = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
 const WASTE = 0.06;
 const withWaste = (qty: number) => (qty > 0 ? Math.ceil(qty * (1 + WASTE)) : 0);
 
-// Power-injection wire (#144): each T-injector beyond the first needs a 16/2
-// low-voltage run back to the supply, budgeted at 70 ft per point (the
-// estimator sheet's rule, spare-inclusive count). No Ascend SKU/price on the
-// 2026 list yet — provisional key + flag, priced at the OMNI list's $0.23/ft
-// until Naldo confirms.
-const WIRE_SKU = 'APL-WIRE-16-2';
-const WIRE_FT_PER_INJECTOR = 70;
-const WIRE_COST_PER_FT = 0.23;
+// Power-injection wire (#145, Naldo 2026-07-10 confirmed w/ Ascend): each
+// INSTALLED T-injector needs a low-voltage run back to the supply, budgeted
+// at 70 ft per point (the spare injector gets none). Two real SKUs, sold by
+// the 500 ft roll — 16/2 feeds up to 2 injection points per run, 14/2 up to
+// 3. The whole job picks whichever type needs fewer runs; a tie goes to the
+// cheaper 16/2.
+const WIRE_FT_PER_INJECTION = 70;
+const WIRE_ROLL_FT = 500;
+const WIRE_16_2 = { sku: 'IW162500', label: '16/2', rollCost: 124.99, maxInjectionsPerRun: 2 } as const;
+const WIRE_14_2 = { sku: 'IW142500L', label: '14/2', rollCost: 179.99, maxInjectionsPerRun: 3 } as const;
+
+export type InjectionWireOrder = {
+  sku: string;
+  name: string;
+  rolls: number;
+  ftNeeded: number;
+  unitCost: number;
+};
+
+/**
+ * Pick the wire type + roll count for the whole job's power-injection runs
+ * (#145). `installedInjections` is the BOM's installed-only count (the +1
+ * spare injector gets no wire). Fewest runs wins; a tie goes to the cheaper
+ * 16/2. Whole 500 ft rolls — no waste multiplier (rolls carry their own
+ * slack). Returns null when there's nothing to wire.
+ */
+export function injectionWireOrder(installedInjections: number): InjectionWireOrder | null {
+  const n = posInt(installedInjections);
+  if (n === 0) return null;
+  const ftNeeded = n * WIRE_FT_PER_INJECTION;
+  const runs16 = Math.ceil(n / WIRE_16_2.maxInjectionsPerRun);
+  const runs14 = Math.ceil(n / WIRE_14_2.maxInjectionsPerRun);
+  const type = runs14 < runs16 ? WIRE_14_2 : WIRE_16_2;
+  return {
+    sku: type.sku,
+    name: `Power injection wire ${type.label} (500 ft roll; ~${ftNeeded} ft needed)`,
+    rolls: Math.ceil(ftNeeded / WIRE_ROLL_FT),
+    ftNeeded,
+    unitCost: type.rollCost,
+  };
+}
 
 /** Pucks for a run: 8" on-center → ceil(ft × 1.5). */
 export function puckCountForFeet(ft: number): number {
@@ -334,11 +367,14 @@ export function buildPermanentBom(
   const injections = installedInjections > 0 ? installedInjections + 1 : 0;
   push('APL11123', 'Power T-injector 12V (incl. 1 spare)', injections, cost('APL11123', C.powerT), 'power');
 
-  // Injection wire (#144): 70 ft of 16/2 per injector beyond the first
-  // (spare-inclusive count — the estimator sheet's rule). Provisional
-  // SKU/price until the Ascend list carries it (flagged below).
-  const wireFt = injections > 1 ? (injections - 1) * WIRE_FT_PER_INJECTOR : 0;
-  push(WIRE_SKU, "Power injection wire 16/2 (ft)", wireFt, cost(WIRE_SKU, WIRE_COST_PER_FT), 'power');
+  // Injection wire (#145): whole 500 ft rolls of 16/2 or 14/2, picked by
+  // fewest runs for the whole job — installedInjections, NOT the +1 spare
+  // (the old (injections−1)×70 with the spare-inclusive count reduces to the
+  // same installed×70 ft; the SKU/roll model is what's new).
+  const wireOrder = injectionWireOrder(installedInjections);
+  if (wireOrder) {
+    push(wireOrder.sku, wireOrder.name, wireOrder.rolls, cost(wireOrder.sku, wireOrder.unitCost), 'power');
+  }
 
   // Data: extra boosters (beyond the KIT's) + splitters + extensions. The #140
   // card counts override the gaps-derived accessories entirely when present;
@@ -363,12 +399,6 @@ export function buildPermanentBom(
   if (input.trackStyle === 'parapet' && input.trackColor !== '9003' && input.trackColor !== '9004') {
     flags.push('parapet-track-only-stocked-white-or-black');
   }
-  // #144: the wire SKU/price is provisional (not on the 2026 Ascend list) —
-  // the order sheet must say so until Naldo confirms the real item.
-  if (wireFt > 0) {
-    flags.push('verify-injection-wire-sku-and-price-with-ascend');
-  }
-
   return {
     lines,
     totals: {

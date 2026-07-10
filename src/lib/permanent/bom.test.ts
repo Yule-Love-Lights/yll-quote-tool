@@ -9,6 +9,7 @@ import {
   boosterCount,
   bucketExtensionLength,
   extensionsForGaps,
+  injectionWireOrder,
   type PermanentBomInput,
 } from './bom';
 
@@ -82,6 +83,43 @@ describe('permanent BOM — unit formulas', () => {
     expect(powerInjectionCount(76)).toBe(2);
     expect(powerInjectionCount(150)).toBe(2);
     expect(powerInjectionCount(188)).toBe(3);
+  });
+
+  it('injectionWireOrder (#145 confirmed): fewest runs wins, tie→cheaper 16/2, whole 500ft rolls', () => {
+    expect(injectionWireOrder(0)).toBeNull();
+    // N=1,2 → 16/2 (runs16=1==runs14=1, tie goes cheaper)
+    expect(injectionWireOrder(1)).toEqual({
+      sku: 'IW162500', name: 'Power injection wire 16/2 (500 ft roll; ~70 ft needed)',
+      rolls: 1, ftNeeded: 70, unitCost: 124.99,
+    });
+    expect(injectionWireOrder(2)).toEqual({
+      sku: 'IW162500', name: 'Power injection wire 16/2 (500 ft roll; ~140 ft needed)',
+      rolls: 1, ftNeeded: 140, unitCost: 124.99,
+    });
+    // N=3 → 14/2 (runs14=1 < runs16=2)
+    expect(injectionWireOrder(3)).toEqual({
+      sku: 'IW142500L', name: 'Power injection wire 14/2 (500 ft roll; ~210 ft needed)',
+      rolls: 1, ftNeeded: 210, unitCost: 179.99,
+    });
+    // N=4 → 16/2 (runs16=2==runs14=2, tie goes cheaper)
+    expect(injectionWireOrder(4)).toEqual({
+      sku: 'IW162500', name: 'Power injection wire 16/2 (500 ft roll; ~280 ft needed)',
+      rolls: 1, ftNeeded: 280, unitCost: 124.99,
+    });
+    // N=5,7 → 14/2 (fewer runs)
+    expect(injectionWireOrder(5)).toEqual({
+      sku: 'IW142500L', name: 'Power injection wire 14/2 (500 ft roll; ~350 ft needed)',
+      rolls: 1, ftNeeded: 350, unitCost: 179.99,
+    });
+    expect(injectionWireOrder(7)).toEqual({
+      sku: 'IW142500L', name: 'Power injection wire 14/2 (500 ft roll; ~490 ft needed)',
+      rolls: 1, ftNeeded: 490, unitCost: 179.99,
+    });
+    // N=8 → 560 ft needed → 2 rolls of 14/2
+    expect(injectionWireOrder(8)).toEqual({
+      sku: 'IW142500L', name: 'Power injection wire 14/2 (500 ft roll; ~560 ft needed)',
+      rolls: 2, ftNeeded: 560, unitCost: 179.99,
+    });
   });
 
   it('boosterCount: controller >10ft → 1; each legacy gap >50ft → +1', () => {
@@ -215,11 +253,13 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(line(bom, 'APL11012-5')!.unitCost).toBe(99);
   });
 
-  it('GOLDEN — Greg M 125ft single-white → ≈ $1,391.11 (sheet w/waste $1,290.81 + the #144 rules)', () => {
-    // Re-anchored S25 (#144): the pre-#144 tool total was $1,286.56 (~0.3% off
-    // the sheet's $1,290.81). The reconciliation added, on this job exactly:
-    // light waste 6% (sets 37→40, singles 3→4, +$50.40) + the spare injector
-    // (+$5.85) + injection wire 210 ft @ $0.23 (+$48.30) = +$104.55 → $1,391.11.
+  it('GOLDEN — Greg M 125ft single-white → ≈ $1,522.80 (sheet w/waste $1,290.81 + the #144/#145 rules)', () => {
+    // Re-anchored S25 (#144) to $1,391.11 on the provisional $0.23/ft wire.
+    // Re-anchored #145 (Naldo 2026-07-10, confirmed SKUs): 3 installed injections → runs14
+    // (ceil(3/3)=1) < runs16 (ceil(3/2)=2) → ONE roll of 14/2 (IW142500L).
+    // Delta on this job: old wire line 210 ft × $0.23 = $48.30 OUT; new wire
+    // line 1 roll × $179.99 = $179.99 IN → +$131.69 → $1,391.11 + $131.69 =
+    // $1,522.80.
     const bom = buildPermanentBom(
       input({
         footageBySide: { front: 125, left: 0, right: 0, back: 0 },
@@ -230,15 +270,21 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(bom.totals.trackSections).toBe(41);
     expect(line(bom, 'APL11111-350-KIT')).toBeTruthy(); // one 350 KIT
     expect(line(bom, 'APL11123')!.qty).toBe(4); // ceil(188/75)=3 installed + 1 spare
-    expect(line(bom, 'APL-WIRE-16-2')!.qty).toBe(210); // (4-1)×70 ft
-    expect(bom.totals.wholesaleCost).toBeCloseTo(1391.11, 2);
+    const wire = line(bom, 'IW142500L')!; // N=3 → 14/2 wins on runs (1 < 2)
+    expect(wire.qty).toBe(1); // 1 roll (210 ft needed, 500 ft roll)
+    expect(wire.unitCost).toBe(179.99);
+    expect(wire.description).toContain('~210 ft needed');
+    expect(line(bom, 'IW162500')).toBeFalsy();
+    expect(bom.totals.wholesaleCost).toBeCloseTo(1522.80, 2);
   });
 
-  it('GOLDEN — Melissa North 100ft single-white, controller 35 → ≈ $1,191.62 (sheet $1,084–$1,126 + the #144 rules)', () => {
-    // Re-anchored S25 (#144): pre-#144 total $1,107.22. Added on this job:
-    // light waste (sets 30→32, +$31.03) + spare injector (+$5.85) + wire
-    // 140 ft (+$32.20) + the controller-run feed bucketed 35 ft → 25'+10'
-    // (+$15.32) = +$84.40 → $1,191.62.
+  it('GOLDEN — Melissa North 100ft single-white, controller 35 → ≈ $1,284.41 (sheet $1,084–$1,126 + the #144/#145 rules)', () => {
+    // Re-anchored S25 (#144) to $1,191.62 on the provisional $0.23/ft wire.
+    // Re-anchored #145 (Naldo 2026-07-10, confirmed SKUs): 2 installed injections → runs16
+    // (ceil(2/2)=1) == runs14 (ceil(2/3)=1) → TIE → cheaper 16/2 (IW162500).
+    // Delta on this job: old wire line 140 ft × $0.23 = $32.20 OUT; new wire
+    // line 1 roll × $124.99 = $124.99 IN → +$92.79 → $1,191.62 + $92.79 =
+    // $1,284.41.
     const bom = buildPermanentBom(
       input({
         footageBySide: { front: 100, left: 0, right: 0, back: 0 },
@@ -251,7 +297,11 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(line(bom, 'APL11121')!.qty).toBe(1); // controller 35>10 → 1 booster
     expect(line(bom, 'APL11312-25')!.qty).toBe(3); // 2 from gaps + 1 controller feed
     expect(line(bom, 'APL11312-10')!.qty).toBe(3); // 2 from gaps + 1 controller feed
-    expect(bom.totals.wholesaleCost).toBeCloseTo(1191.62, 2);
+    const wire = line(bom, 'IW162500')!; // N=2 → tie → cheaper 16/2
+    expect(wire.qty).toBe(1); // 1 roll (140 ft needed, 500 ft roll)
+    expect(wire.unitCost).toBe(124.99);
+    expect(line(bom, 'IW142500L')).toBeFalsy();
+    expect(bom.totals.wholesaleCost).toBeCloseTo(1284.41, 2);
   });
 
   it('#144: light sets pack PER SIDE — a 5-strip never crosses a run break', () => {
@@ -263,17 +313,24 @@ describe('permanent BOM — buildPermanentBom', () => {
     expect(line(bom, 'APL11012-1')!.qty).toBe(7);
   });
 
-  it('#144: injector spare + wire line + provisional flag; absent on a zero job', () => {
+  it('#145: injector spare + a confirmed wire roll line; NO provisional flag; absent on a zero job', () => {
     const bom = buildPermanentBom(input({ footageBySide: { front: 100, left: 0, right: 0, back: 0 } }));
     expect(line(bom, 'APL11123')!.qty).toBe(3); // ceil(150/75)=2 installed + 1 spare
     expect(line(bom, 'APL11123')!.description).toContain('spare');
-    expect(line(bom, 'APL-WIRE-16-2')!.qty).toBe(140); // (3-1)×70
-    expect(bom.flags).toContain('verify-injection-wire-sku-and-price-with-ascend');
+    // 2 installed injections → tie → cheaper 16/2, 140 ft needed → 1 roll.
+    const wire = line(bom, 'IW162500')!;
+    expect(wire.qty).toBe(1);
+    expect(wire.unitCost).toBe(124.99);
+    expect(wire.description).toContain('~140 ft needed');
+    // The provisional flag is GONE entirely (SKU/price confirmed, no
+    // replacement flag) — this job would have carried ONLY that flag before,
+    // so an empty array proves the removal without re-quoting the old flag.
+    expect(bom.flags).toEqual([]);
 
     const empty = buildPermanentBom(input());
     expect(line(empty, 'APL11123')).toBeFalsy();
-    expect(line(empty, 'APL-WIRE-16-2')).toBeFalsy();
-    expect(empty.flags).not.toContain('verify-injection-wire-sku-and-price-with-ascend');
+    expect(line(empty, 'IW162500')).toBeFalsy();
+    expect(line(empty, 'IW142500L')).toBeFalsy();
   });
 
   it('#144: the controller-run feed is ADDITIVE on the card-override path too', () => {
