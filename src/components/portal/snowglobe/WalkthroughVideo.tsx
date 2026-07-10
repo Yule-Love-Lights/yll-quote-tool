@@ -9,10 +9,20 @@
 import { useState } from 'react';
 import { Play, Clock } from 'lucide-react';
 import type { PortalVideo } from '../types';
+import { useSelection } from '../SelectionContext';
+import { track } from '@/lib/analytics/posthog';
+import type { ServiceType } from '@/lib/serviceType';
 
 export type WalkthroughVideoProps = {
   video: PortalVideo;
 };
+
+// PostHog Wave 2 — property builder for video_played, extracted as a pure
+// function (no jsdom component-test infra in this repo) so the event-name/
+// property-shape contract is covered without rendering the component.
+export function videoPlayedProps(quoteId: string | undefined, serviceType: ServiceType | undefined) {
+  return { quote_id: quoteId, service_type: serviceType };
+}
 
 function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -30,6 +40,10 @@ function youtubeEmbedSrc(videoId: string): string {
 
 export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
   const [activated, setActivated] = useState(false);
+  // Renders inside <SelectionProvider> on the portal page (WalkthroughVideo's
+  // only render site), so quote_id/service_type come from context like the
+  // color/effect pickers rather than their own props.
+  const { quoteId, serviceType } = useSelection();
 
   const poster =
     video.poster ??
@@ -65,7 +79,10 @@ export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
           {!activated ? (
             <button
               type="button"
-              onClick={() => setActivated(true)}
+              onClick={() => {
+                setActivated(true);
+                track('video_played', videoPlayedProps(quoteId, serviceType));
+              }}
               aria-label={`Play walkthrough video from ${leader}`}
               className="group absolute inset-0 w-full h-full cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
             >
