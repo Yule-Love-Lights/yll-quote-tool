@@ -3,6 +3,7 @@
 // All prices in USD.
 
 import type { PortalQuote } from './types';
+import type { ServiceType } from '@/lib/serviceType';
 
 // Placeholder imagery — large suburban home via Unsplash.
 const BEFORE_PHOTO =
@@ -139,6 +140,35 @@ export const MOCK_GALLERY_ITEMS: Array<{
   { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.webp', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
   { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.webp',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
 ];
+
+type GalleryItemData = (typeof MOCK_GALLERY_ITEMS)[number];
+
+// Event Lighting (ledger #121) — Naldo will supply real completed-work event
+// photos. Same GalleryItem shape as MOCK_GALLERY_ITEMS above. Empty for now;
+// galleryItemsFor() falls back to the holiday set until these are populated.
+export const EVENT_GALLERY_ITEMS: GalleryItemData[] = [];
+
+// Permanent Lighting (ledger #121) — Naldo will supply real completed-work
+// permanent photos. Same GalleryItem shape as MOCK_GALLERY_ITEMS above. Empty
+// for now; galleryItemsFor() falls back to the holiday set until populated.
+export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [];
+
+// Per-service-type "Completed Work" gallery selector (ledger #121). Positive
+// match on the non-holiday types (never `!== 'holiday'` — see AGENTS.md
+// service-type seam convention); holiday is the default/fallback case, and
+// any type whose own list is still empty (event, permanent today) falls back
+// to it too, so the portal gallery section never renders empty.
+export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
+  switch (serviceType) {
+    case 'event':
+      return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    case 'permanent':
+      return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    case 'holiday':
+    default:
+      return MOCK_GALLERY_ITEMS;
+  }
+}
 
 export const MOCK_REVIEWS = [
   {
