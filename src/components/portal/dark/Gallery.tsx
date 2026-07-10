@@ -119,9 +119,11 @@ export function Gallery({ items, crossSell }: GalleryProps) {
           <div className="mt-16 md:mt-20 space-y-10 md:space-y-12">
             {crossSell.map((block) => (
               <div key={block.heading}>
-                <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-4">
+                {/* Naldo S30: the display serif (the MeetYourTeam heading face),
+                    kept in the gallery's gold. */}
+                <h3 className="font-display text-[24px] md:text-[32px] leading-[1.1] font-semibold text-[#E8B862] tracking-[-0.01em] mb-4 md:mb-5">
                   {block.heading}
-                </p>
+                </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
                   {block.items.map((it) => (
                     <div
