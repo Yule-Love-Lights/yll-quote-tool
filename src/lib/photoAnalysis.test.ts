@@ -444,3 +444,78 @@ describe('analyzePhoto — request shape (W5-011 / W5-012)', () => {
     expect(lastBlock.cache_control).toEqual({ type: 'ephemeral' });
   });
 });
+
+describe('analyzePhoto #149 retry-once on unusable JSON', () => {
+  const okAnalysisJson = JSON.stringify({
+    santasFootage: 40,
+    santasDifficulty: 'medium',
+    santasLines: [],
+    gingerbreadFootage: 20,
+    gingerbreadDifficulty: 'medium',
+    gingerbreadLines: [],
+    satelliteSantasLines: [],
+    satelliteSantasFootage: 0,
+    satelliteGingerbreadLines: [],
+    satelliteGingerbreadFootage: 0,
+    preferredSource: 'street',
+    miniLightDetections: [],
+    wreathDetections: [],
+    spritzerDetections: [],
+    garlandDetections: [],
+    notes: 'ok',
+    confidence: 'high',
+  });
+
+  let createMock: ReturnType<typeof vi.fn>;
+  let analyzePhoto: typeof import('./photoAnalysis').analyzePhoto;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    createMock = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: okAnalysisJson }],
+      stop_reason: 'end_turn',
+    });
+    vi.doMock('./claude', () => ({
+      getClaudeClient: () => ({ messages: { create: createMock } }),
+    }));
+    const mod = await import('./photoAnalysis');
+    analyzePhoto = mod.analyzePhoto;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.doUnmock('./claude');
+    vi.resetModules();
+  });
+
+  it('retries once on malformed JSON then succeeds', async () => {
+    createMock.mockResolvedValueOnce({ content: [{ type: 'text', text: '{"a": ,}' }], stop_reason: 'end_turn' });
+    // Second call falls through to the beforeEach default (the good response).
+    const result = await analyzePhoto('AAAA', 'image/jpeg');
+    expect(result.notes).toBe('ok');
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries once on a missing text block then succeeds', async () => {
+    createMock.mockResolvedValueOnce({ content: [], stop_reason: 'end_turn' });
+    // Second call falls through to the beforeEach default (the good response).
+    const result = await analyzePhoto('AAAA', 'image/jpeg');
+    expect(result.notes).toBe('ok');
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounded: two unusable responses throw the second parse error, exactly 2 calls (never a 3rd)', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"a": ,}' }], stop_reason: 'end_turn' })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"b": ,}' }], stop_reason: 'end_turn' });
+    await expect(analyzePhoto('AAAA', 'image/jpeg')).rejects.toThrow(/malformed JSON/);
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on an API-call rejection', async () => {
+    createMock.mockRejectedValueOnce(new Error('simulated 529'));
+    await expect(analyzePhoto('AAAA', 'image/jpeg')).rejects.toThrow('simulated 529');
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+});

@@ -831,7 +831,10 @@ export async function analyzePhoto(
       : 'Estimate Christmas lighting measurements for this house. Polylines go on the street-view image only. Respond with JSON only.',
   });
 
-  const response = await client.messages.create({
+  // #149: request built ONCE so a bounded retry (below) reuses the IDENTICAL
+  // params object — the cached static-prompt prefix (and the reference-image
+  // block above it) hits on the second call exactly as on any repeat request.
+  const request = {
     model: 'claude-sonnet-4-6',
     // W5-011 (#110 wave 5): 2048 was too tight for a large/commercial house —
     // a truncated response makes extractJson throw, silently dropping the
@@ -846,29 +849,51 @@ export async function analyzePhoto(
       // instead of on every analyze call. The system array is ONLY this static
       // block now: the per-request notes moved into the final user message so
       // the reference-image block downstream stays a byte-stable cached prefix.
-      { type: 'text', text: staticSystemPrompt, cache_control: { type: 'ephemeral' } },
+      { type: 'text' as const, text: staticSystemPrompt, cache_control: { type: 'ephemeral' as const } },
     ],
     messages: [
       ...refMessages,
       ...fewShotMessages,
-      { role: 'user', content },
+      { role: 'user' as const, content },
     ],
-  });
+  };
+  const requestOnce = () => client.messages.create(request);
 
-  // W5-011 (#110 wave 5): a large/commercial house can still hit the (much
-  // higher) ceiling — log so it's visible instead of silently truncating into
-  // a parse failure below.
-  if (response.stop_reason === 'max_tokens') {
-    console.warn(`[analyzePhoto] response truncated at max_tokens (mode=${mode}) — JSON may be incomplete`);
+  // #149: parse stage pulled out so it can run against the first response
+  // and, on a retry, again against a fresh one — identical logic either time.
+  const parseResponse = (response: Awaited<ReturnType<typeof requestOnce>>): unknown => {
+    // W5-011 (#110 wave 5): a large/commercial house can still hit the (much
+    // higher) ceiling — log so it's visible instead of silently truncating into
+    // a parse failure below.
+    if (response.stop_reason === 'max_tokens') {
+      console.warn(`[analyzePhoto] response truncated at max_tokens (mode=${mode}) — JSON may be incomplete`);
+    }
+
+    const textBlock = response.content.find(b => b.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') {
+      throw new Error('No text response from Claude');
+    }
+
+    const raw = textBlock.text.trim();
+    return extractJson(raw);
+  };
+
+  // The first call stays OUTSIDE the try — an API-call rejection (network,
+  // 5xx, rate limit; the Anthropic SDK already retries those internally)
+  // must propagate immediately and never trigger the #149 retry below.
+  const first = await requestOnce();
+  let parsedRaw: unknown;
+  try {
+    parsedRaw = parseResponse(first);
+  } catch (err) {
+    // #149: one bounded retry on transient unusable model JSON (missing text
+    // block / extractJson throw) — never on an API-call failure (caught
+    // above, outside this try). A second parse failure propagates exactly
+    // like before, so the route's imagery-only fail-safe still fires.
+    console.warn(`[analyzePhoto] model JSON unusable (mode=${mode}) — retrying once (#149): ${(err as Error).message}`);
+    parsedRaw = parseResponse(await requestOnce());
   }
-
-  const textBlock = response.content.find(b => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude');
-  }
-
-  const raw = textBlock.text.trim();
-  const parsed = extractJson(raw) as PhotoAnalysisResult;
+  const parsed = parsedRaw as PhotoAnalysisResult;
 
   return {
     ...parsed,
