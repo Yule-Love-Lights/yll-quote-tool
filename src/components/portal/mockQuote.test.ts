@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   galleryItemsFor,
+  crossSellFor,
   MOCK_GALLERY_ITEMS,
   EVENT_GALLERY_ITEMS,
   PERMANENT_GALLERY_ITEMS,
@@ -54,5 +55,46 @@ describe('galleryItemsFor', () => {
       expect(EVENT_GALLERY_ITEMS).toHaveLength(0);
       expect(galleryItemsFor('event')).toBe(MOCK_GALLERY_ITEMS);
     });
+  });
+});
+
+// Cross-sell strip (ledger #121, S30 extension): the two OTHER service
+// types' completed work, below the main gallery grid.
+describe('crossSellFor', () => {
+  it('viewing event shows holiday then permanent (never itself)', () => {
+    const blocks = crossSellFor('event');
+    expect(blocks.map((b) => b.serviceType)).toEqual(['holiday', 'permanent']);
+  });
+
+  it('viewing holiday shows permanent then event (never itself)', () => {
+    const blocks = crossSellFor('holiday');
+    expect(blocks.map((b) => b.serviceType)).toEqual(['permanent', 'event']);
+  });
+
+  it('viewing permanent shows holiday then event (never itself)', () => {
+    const blocks = crossSellFor('permanent');
+    expect(blocks.map((b) => b.serviceType)).toEqual(['holiday', 'event']);
+  });
+
+  it('undefined serviceType behaves like holiday', () => {
+    expect(crossSellFor(undefined)).toEqual(crossSellFor('holiday'));
+  });
+
+  it('every block has exactly 3 items', () => {
+    for (const serviceType of ['event', 'holiday', 'permanent'] as const) {
+      for (const block of crossSellFor(serviceType)) {
+        expect(block.items).toHaveLength(3);
+      }
+    }
+  });
+
+  it('heading strings are exact', () => {
+    const blocks = crossSellFor('event');
+    const byType = Object.fromEntries(blocks.map((b) => [b.serviceType, b.heading]));
+    expect(byType.holiday).toBe('Light up your life with Holiday Lighting');
+    expect(byType.permanent).toBe('Light up your life with Permanent Lighting');
+
+    const eventHeading = crossSellFor('holiday').find((b) => b.serviceType === 'event')?.heading;
+    expect(eventHeading).toBe('Light up your life with Event Lighting');
   });
 });

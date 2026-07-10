@@ -192,6 +192,69 @@ export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
   }
 }
 
+// Cross-sell strip at the bottom of the Completed Work gallery (ledger #121,
+// S30 extension): show the two OTHER service types so a customer on one
+// vertical's portal sees we also do the other two. Curated (not auto-picked)
+// so the tiles are always a strong showcase, not whatever happens to sort
+// first in each list.
+export type CrossSellBlock = {
+  serviceType: ServiceType;
+  heading: string;
+  items: GalleryItemData[];
+};
+
+const CROSS_SELL_DISPLAY_NAMES: Record<ServiceType, string> = {
+  holiday: 'Holiday Lighting',
+  permanent: 'Permanent Lighting',
+  event: 'Event Lighting',
+};
+
+// Preserves the given id order (rather than the source list's own order) and
+// drops any id that fails to resolve, so a future data edit degrades to a
+// shorter block instead of a crash.
+function pickItems(list: GalleryItemData[], ids: string[]): GalleryItemData[] {
+  return ids
+    .map((id) => list.find((item) => item.id === id))
+    .filter((item): item is GalleryItemData => item !== undefined);
+}
+
+function crossSellBlock(serviceType: ServiceType, items: GalleryItemData[]): CrossSellBlock {
+  return {
+    serviceType,
+    heading: `Light up your life with ${CROSS_SELL_DISPLAY_NAMES[serviceType]}`,
+    items,
+  };
+}
+
+const HOLIDAY_CROSS_SELL_ITEMS = pickItems(MOCK_GALLERY_ITEMS, ['g1', 'g3', 'g12']);
+const PERMANENT_CROSS_SELL_ITEMS = pickItems(PERMANENT_GALLERY_ITEMS, ['p1', 'p2', 'p3']);
+const EVENT_CROSS_SELL_ITEMS = pickItems(EVENT_GALLERY_ITEMS, ['e1', 'e5', 'e6']);
+
+// Ordered per the viewed service type; holiday is the default/fallback case
+// (never a negative `!== 'holiday'` gate — see AGENTS.md seam convention).
+// Blocks whose curated picks resolve empty are skipped (future-proofing; all
+// three are non-empty today).
+export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
+  const holidayBlock = crossSellBlock('holiday', HOLIDAY_CROSS_SELL_ITEMS);
+  const permanentBlock = crossSellBlock('permanent', PERMANENT_CROSS_SELL_ITEMS);
+  const eventBlock = crossSellBlock('event', EVENT_CROSS_SELL_ITEMS);
+
+  let blocks: CrossSellBlock[];
+  switch (serviceType) {
+    case 'event':
+      blocks = [holidayBlock, permanentBlock];
+      break;
+    case 'permanent':
+      blocks = [holidayBlock, eventBlock];
+      break;
+    case 'holiday':
+    default:
+      blocks = [permanentBlock, eventBlock];
+      break;
+  }
+  return blocks.filter((b) => b.items.length > 0);
+}
+
 export const MOCK_REVIEWS = [
   {
     id: 'r1',

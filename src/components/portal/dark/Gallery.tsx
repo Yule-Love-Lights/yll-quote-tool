@@ -18,6 +18,10 @@ export type GalleryItem = {
 
 export type GalleryProps = {
   items: GalleryItem[];
+  // Cross-sell strip (#121, S30): the two OTHER service types' completed work,
+  // rendered below the main grid. Static images only — not wired into the
+  // lightbox.
+  crossSell?: Array<{ heading: string; items: GalleryItem[] }>;
 };
 
 const DESKTOP_PATTERN = [
@@ -29,7 +33,7 @@ const DESKTOP_PATTERN = [
   'md:col-span-4 md:row-span-1',
 ];
 
-export function Gallery({ items }: GalleryProps) {
+export function Gallery({ items, crossSell }: GalleryProps) {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
 
   useEffect(() => {
@@ -107,6 +111,38 @@ export function Gallery({ items }: GalleryProps) {
             </li>
           ))}
         </ul>
+
+        {/* Cross-sell strip (#121, S30) — the two OTHER service types, so a
+            customer on one vertical's portal sees we also do the others.
+            Static tiles only, no lightbox wiring. */}
+        {crossSell && crossSell.length > 0 && (
+          <div className="mt-16 md:mt-20 space-y-10 md:space-y-12">
+            {crossSell.map((block) => (
+              <div key={block.heading}>
+                <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-4">
+                  {block.heading}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+                  {block.items.map((it) => (
+                    <div
+                      key={it.id}
+                      className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-[#243029]"
+                    >
+                      <Image
+                        src={it.src}
+                        alt={it.alt}
+                        fill
+                        loading="lazy"
+                        sizes="(max-width: 768px) 100vw, 33vw"
+                        className="object-cover"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Lightbox */}

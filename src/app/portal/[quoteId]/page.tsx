@@ -48,6 +48,7 @@ import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import {
   MOCK_QUOTE,
   galleryItemsFor,
+  crossSellFor,
   MOCK_REVIEWS,
   MOCK_FAQ,
   EVENT_FAQ,
@@ -430,8 +431,13 @@ export default async function PortalPage({
         />
 
         {/* 8. Gallery — per service_type (ledger #121); event/permanent fall
-             back to the holiday set until Naldo supplies their photos. */}
-        <Gallery items={galleryItemsFor(quote.serviceType)} />
+             back to the holiday set until Naldo supplies their photos.
+             crossSell (S30 extension of #121): the two OTHER service types'
+             completed work, below the main grid. */}
+        <Gallery
+          items={galleryItemsFor(quote.serviceType)}
+          crossSell={crossSellFor(quote.serviceType)}
+        />
 
         {/* 9. Philanthropy */}
         <Philanthropy />
