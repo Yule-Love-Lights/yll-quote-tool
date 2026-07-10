@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { normalizePermanentSatelliteResult } from './photoAnalysis';
 
 describe('normalizePermanentSatelliteResult (#140 P2)', () => {
@@ -76,5 +76,70 @@ describe('normalizePermanentSatelliteResult (#140 P2)', () => {
     const r = normalizePermanentSatelliteResult({ front: [], confidence: 'high' });
     expect(r.streetRuns).toEqual([]);
     expect(r.jumps).toEqual([]);
+  });
+});
+
+describe('analyzePermanentSatellite #149 retry-once on unusable JSON', () => {
+  const okAnalysisJson = JSON.stringify({
+    front: [{ points: [[0.1, 0.2], [0.5, 0.2]], label: 'front eave' }],
+    left: [],
+    right: [],
+    back: [],
+    streetRuns: [],
+    jumps: [],
+    notes: 'ok',
+    confidence: 'high',
+  });
+
+  let createMock: ReturnType<typeof vi.fn>;
+  let analyzePermanentSatellite: typeof import('./photoAnalysis').analyzePermanentSatellite;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    createMock = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: okAnalysisJson }],
+      stop_reason: 'end_turn',
+    });
+    vi.doMock('@/lib/claude', () => ({
+      getClaudeClient: () => ({ messages: { create: createMock } }),
+    }));
+    const mod = await import('./photoAnalysis');
+    analyzePermanentSatellite = mod.analyzePermanentSatellite;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.doUnmock('@/lib/claude');
+    vi.resetModules();
+  });
+
+  it('retries once on malformed JSON then succeeds, reusing the identical request object', async () => {
+    createMock.mockResolvedValueOnce({ content: [{ type: 'text', text: '{"a": ,}' }], stop_reason: 'end_turn' });
+    // Second call falls through to the beforeEach default (the good response).
+    const result = await analyzePermanentSatellite({ satelliteBase64: 'AAAA', satelliteMediaType: 'image/jpeg' });
+    expect(result.satelliteLines.front).toHaveLength(1);
+    expect(result.confidence).toBe('high');
+    expect(createMock).toHaveBeenCalledTimes(2);
+    // Pins the reuse-the-same-request behavior (byte-identical prefix for caching).
+    expect(createMock.mock.calls[0][0]).toBe(createMock.mock.calls[1][0]);
+  });
+
+  it('bounded: two malformed responses reject, exactly 2 calls (never a 3rd)', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"a": ,}' }], stop_reason: 'end_turn' })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"b": ,}' }], stop_reason: 'end_turn' });
+    await expect(
+      analyzePermanentSatellite({ satelliteBase64: 'AAAA', satelliteMediaType: 'image/jpeg' })
+    ).rejects.toThrow(/malformed JSON/);
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on an API-call rejection', async () => {
+    createMock.mockRejectedValueOnce(new Error('simulated 529'));
+    await expect(
+      analyzePermanentSatellite({ satelliteBase64: 'AAAA', satelliteMediaType: 'image/jpeg' })
+    ).rejects.toThrow('simulated 529');
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 });
