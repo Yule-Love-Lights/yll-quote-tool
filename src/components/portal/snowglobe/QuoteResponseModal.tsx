@@ -12,6 +12,8 @@
 
 import { useState } from 'react';
 import { useModalFocus } from '../useModalFocus';
+import type { ServiceType } from '@/lib/serviceType';
+import { track } from '@/lib/analytics/posthog';
 
 export type ResponseIntent = 'decline' | 'request-changes';
 
@@ -19,7 +21,50 @@ type Props = {
   quoteId: string;
   intent: ResponseIntent;
   onClose: () => void;
+  /** PostHog v1 — included on the quote_declined event's properties. */
+  serviceType?: ServiceType;
 };
+
+// Decline-only quick-pick chips (PostHog Wave 1). Optional, one-tap, none
+// selected by default — the textarea stays for free-form detail either way.
+// The id doubles as the event's `reason_category` value.
+export type DeclineChipId = 'price' | 'timing' | 'competitor' | 'just_looking';
+
+export const DECLINE_CHIPS: ReadonlyArray<{ id: DeclineChipId; label: string }> = [
+  { id: 'price', label: 'Price' },
+  { id: 'timing', label: 'Timing' },
+  { id: 'competitor', label: 'Went with someone else' },
+  { id: 'just_looking', label: 'Just looking' },
+];
+
+/**
+ * Composes the existing `reason` string field (no API/schema change) from the
+ * optional chip pick + optional free text:
+ *   chip + text → "<Chip label>: <text>"
+ *   chip only   → "<Chip label>"
+ *   text only   → text
+ *   neither     → 'No reason given' (matches the pre-Wave-1 default)
+ * `trimmedText` is expected already-trimmed (the caller already computes it
+ * for the character counter). Exported for test coverage.
+ */
+export function buildDeclineReason(chipId: DeclineChipId | null, trimmedText: string): string {
+  const label = chipId ? DECLINE_CHIPS.find((c) => c.id === chipId)?.label : undefined;
+  if (label && trimmedText) return `${label}: ${trimmedText}`;
+  if (label) return label;
+  if (trimmedText) return trimmedText;
+  return 'No reason given';
+}
+
+/** The quote_declined event's `reason_category` property. Exported for test coverage. */
+export function declineReasonCategory(chipId: DeclineChipId | null): DeclineChipId | 'none' {
+  return chipId ?? 'none';
+}
+
+/** Whether a confirmed submission should fire quote_declined — decline intent
+ *  only (request-changes is untouched). Exported for test coverage. */
+export function shouldFireQuoteDeclined(intent: ResponseIntent): boolean {
+  return intent === 'decline';
+}
 
 const COPY: Record<
   ResponseIntent,
@@ -60,12 +105,14 @@ const COPY: Record<
 
 const MAX = 2000;
 
-export function QuoteResponseModal({ quoteId, intent, onClose }: Props) {
+export function QuoteResponseModal({ quoteId, intent, onClose, serviceType }: Props) {
   const copy = COPY[intent];
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Decline-only quick-pick (PostHog Wave 1); unused for request-changes.
+  const [selectedChip, setSelectedChip] = useState<DeclineChipId | null>(null);
 
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
   // Decline allows an empty reason in the UI (we send a friendly default so the
@@ -78,8 +125,7 @@ export function QuoteResponseModal({ quoteId, intent, onClose }: Props) {
     if (!canSubmit) return;
     setSubmitting(true);
     setErrorMsg(null);
-    const value =
-      intent === 'decline' && !trimmed ? 'No reason given' : trimmed;
+    const value = intent === 'decline' ? buildDeclineReason(selectedChip, trimmed) : trimmed;
     try {
       const res = await fetch(
         `/api/quotes/${encodeURIComponent(quoteId)}/${copy.endpoint}`,
@@ -101,6 +147,16 @@ export function QuoteResponseModal({ quoteId, intent, onClose }: Props) {
         throw new Error(body.error ?? `Request failed (${res.status})`);
       }
       setDone(true);
+      // PostHog v1 Wave 1 — decline only; the reason TEXT never goes in the
+      // event, only the chip category + whether the customer typed anything.
+      if (shouldFireQuoteDeclined(intent)) {
+        track('quote_declined', {
+          quote_id: quoteId,
+          service_type: serviceType,
+          reason_category: declineReasonCategory(selectedChip),
+          has_text: trimmed.length > 0,
+        });
+      }
     } catch (err) {
       // Friendly-error convention (audit fix g10): never surface raw internals.
       console.error(`${copy.endpoint} failed`, err);
@@ -162,6 +218,32 @@ export function QuoteResponseModal({ quoteId, intent, onClose }: Props) {
               >
                 {errorMsg}
               </p>
+            )}
+
+            {/* Decline-only quick-pick chips (PostHog Wave 1) — optional, one-tap,
+                none selected by default; tapping the selected chip deselects it.
+                The textarea below stays for optional free-form detail either way. */}
+            {intent === 'decline' && (
+              <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Quick reason (optional)">
+                {DECLINE_CHIPS.map((chip) => {
+                  const pressed = selectedChip === chip.id;
+                  return (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      aria-pressed={pressed}
+                      onClick={() => setSelectedChip(pressed ? null : chip.id)}
+                      className={`inline-flex items-center justify-center min-h-[44px] px-3.5 py-2 rounded-full text-[13px] font-medium cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] ${
+                        pressed
+                          ? 'bg-[#C8313D] text-[#F4ECD8]'
+                          : 'bg-[#060B0F] border border-[#FFB744]/30 text-[#A89F87] hover:text-[#F4ECD8]'
+                      }`}
+                    >
+                      {chip.label}
+                    </button>
+                  );
+                })}
+              </div>
             )}
 
             <label htmlFor="response-text" className="block text-[13px] text-[#A89F87] mb-1.5">
