@@ -43,6 +43,8 @@ real cost basis is the ASCEND `APL` list below (it reproduces the estimator tota
 | APL11121 | SIGNAL BOOSTER | 12.6644 |
 | APL11122 | SPLITTER 12V | 6.6496 |
 | APL11123 | POWER T-INJECTOR 12V | 5.8489 |
+| IW162500 | POWER INJECTION WIRE 16/2 (500 FT ROLL) | 124.99 |
+| IW142500L | POWER INJECTION WIRE 14/2 (500 FT ROLL) | 179.99 |
 | APL11126 | FEMALE ADAPTER (wire into hub) | 2.9196 |
 | APL11130 | 50' EXTENSION WITH SIGNAL BOOSTER | 33.7653 |
 | APL11200 | POWDER COAT COLOR BOOK | 31.92 |
@@ -61,6 +63,14 @@ real cost basis is the ASCEND `APL` list below (it reproduces the estimator tota
 Notes: only WHITE (9003) and BLACK (9004) parapet-90 exist → a parapet job in cream/brown
 must flag "no stock parapet in this color". Custom powder-coat = 50-track (165') min, 6-wk lead.
 Screws/loom/WAGO not in this list → provisional keys, flag on the sheet.
+
+## Power injection wire (confirmed, Naldo 2026-07-10 from Ascend)
+Both wire types come as a 500 ft roll and each installed injection point needs 70 ft
+of feed wire (the spare injector gets none). A run of 16/2 can feed at most 2 injection
+points; a run of 14/2 can feed at most 3. The BOM engine picks ONE wire type for the
+whole job, whichever needs fewer runs (ties go to the cheaper 16/2), then orders whole
+rolls (round up, no extra waste percentage — the roll already carries slack). By
+installed-injection count: 1 or 2 → 16/2, 3 → 14/2, 4 → 16/2, 5 or more → 14/2.
 
 ## Golden jobs (validate `buildPermanentBom` quantities; cost ±2-3%)
 All single-track white, 8" OC. `$720` = labor placeholder (ignore).
