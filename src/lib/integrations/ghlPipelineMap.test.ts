@@ -1,13 +1,15 @@
-// Tests for resolvePipelineStages (#GHL pipeline sync).
+// Tests for resolvePipelineStages + quoteLinkFieldId (#GHL pipeline sync).
 //
 //   - holiday: legacy env vars override the map when set (prod back-compat);
 //     `installed`/`declined` always come from the map (no legacy env exists
 //     for either).
 //   - permanent / event: always the map, env vars never apply.
 //   - unknown/missing service_type falls back to holiday.
+//   - quoteLinkFieldId: one contact custom field id PER service_type, so a
+//     send never overwrites another pipeline's drip-automation field.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolvePipelineStages } from './ghlPipelineMap';
+import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from './ghlPipelineMap';
 
 const ENV_KEYS = [
   'HIGHLEVEL_PIPELINE_ID',
@@ -15,6 +17,9 @@ const ENV_KEYS = [
   'HIGHLEVEL_STAGE_QUOTE_SENT',
   'HIGHLEVEL_STAGE_QUOTE_APPROVED',
   'HIGHLEVEL_STAGE_QUOTE_SIGNED',
+  'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
+  'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
+  'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
 ] as const;
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -114,5 +119,57 @@ describe('resolvePipelineStages', () => {
     expect(resolvePipelineStages(null).pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
     expect(resolvePipelineStages(undefined).pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
     expect(resolvePipelineStages().pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
+  });
+});
+
+describe('quoteLinkFieldId', () => {
+  it('resolves the per-type env var for each service_type', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_holiday';
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT = 'field_permanent';
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT = 'field_event';
+
+    expect(quoteLinkFieldId('holiday')).toBe('field_holiday');
+    expect(quoteLinkFieldId('permanent')).toBe('field_permanent');
+    expect(quoteLinkFieldId('event')).toBe('field_event');
+  });
+
+  it('returns undefined when the type\'s env var is unset', () => {
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT;
+    expect(quoteLinkFieldId('permanent')).toBeUndefined();
+  });
+
+  it('returns undefined when the type\'s env var is set but empty', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT = '';
+    expect(quoteLinkFieldId('event')).toBeUndefined();
+  });
+
+  it('default/unknown service_type resolves to the HOLIDAY var', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_holiday';
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT;
+
+    expect(quoteLinkFieldId(null)).toBe('field_holiday');
+    expect(quoteLinkFieldId(undefined)).toBe('field_holiday');
+    expect(quoteLinkFieldId('not-a-real-type')).toBe('field_holiday');
+  });
+
+  it('never reads the legacy shared HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK var', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK = 'legacy_shared_field';
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+
+    expect(quoteLinkFieldId('holiday')).toBeUndefined();
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
+  });
+});
+
+describe('quoteLinkFieldEnvVar', () => {
+  it('names the exact per-type env var for each service_type', () => {
+    expect(quoteLinkFieldEnvVar('holiday')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY');
+    expect(quoteLinkFieldEnvVar('permanent')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT');
+    expect(quoteLinkFieldEnvVar('event')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT');
+  });
+
+  it('default/unknown service_type names the HOLIDAY var', () => {
+    expect(quoteLinkFieldEnvVar(null)).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY');
+    expect(quoteLinkFieldEnvVar('not-a-real-type')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY');
   });
 });

@@ -389,12 +389,13 @@ export async function addContactTags(contactId: string, tags: string[]): Promise
 // ⚠️ MERGE-VS-REPLACE UNVERIFIED. v2's partial-PUT semantics for the
 // `customFields` array are not confirmed against the live API: if GHL treats
 // the array as a REPLACE rather than a per-field merge, sending one field here
-// would WIPE every other custom field on the contact. Before setting
-// HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK in prod (which activates this call from
-// the send route), live-probe on a THROWAWAY contact carrying a second custom
-// field and confirm the second field survives this PUT. If it does not, switch
-// to read-modify-write (GET the contact's customFields, merge, PUT the full
-// array).
+// would WIPE every other custom field on the contact. Before setting any of
+// the per-service-type HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY/PERMANENT/
+// EVENT vars in prod (which activate this call from the send route via
+// ghlPipelineMap.ts's quoteLinkFieldId), live-probe on a THROWAWAY contact
+// carrying a second custom field and confirm the second field survives this
+// PUT. If it does not, switch to read-modify-write (GET the contact's
+// customFields, merge, PUT the full array).
 export async function upsertContactCustomField(
   contactId: string,
   fieldId: string,

@@ -94,3 +94,51 @@ export function resolvePipelineStages(serviceType?: string | null): PipelineStag
     declined: base.declined,
   };
 }
+
+// ─── Quote-link contact custom field, one per ServiceType ─────────────────
+// Env var per type — deliberately NOT hardcoded in this module like the
+// pipeline/stage ids above. Those ids were discovered live from the GHL API
+// and are location-scoped identifiers, safe to commit. These field ids were
+// just created by the dev in the GHL UI (2026-07) and belong in env, same as
+// any other per-environment/dev-configured secret-adjacent id.
+const QUOTE_LINK_FIELD_ENV: Record<ServiceType, string> = {
+  holiday: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
+  permanent: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
+  event: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
+};
+
+/**
+ * Resolve the HighLevel CONTACT custom field id that holds the quote-link
+ * value for a quote's service_type.
+ *
+ * WHY PER-TYPE (not one shared field): each service_type has its own GHL
+ * pipeline with its own drip automations, and those automations merge
+ * {{contact.<field>}} to text/email the customer their portal link. A single
+ * shared field collides across pipelines — e.g. sending a permanent quote
+ * would overwrite the field value a Christmas drip automation is about to
+ * merge, so the customer gets the wrong (or a stale) portal link. Splitting
+ * the field per service_type keeps each pipeline's automations reading
+ * (and being fed) only their own value.
+ *
+ * Resolved the same way resolvePipelineStages resolves a type: narrow via
+ * asServiceType, falling back to DEFAULT_SERVICE_TYPE (holiday) for an
+ * unknown/missing service_type. Returns undefined when that type's env var
+ * is unset or empty — callers skip the stamp rather than treating a missing
+ * field as an error.
+ *
+ * The legacy single-field HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK env var is DEAD
+ * — it is not read here or anywhere else in the app.
+ */
+export function quoteLinkFieldId(serviceType?: string | null): string | undefined {
+  return process.env[quoteLinkFieldEnvVar(serviceType)] || undefined;
+}
+
+/**
+ * The env var NAME (not its value) backing quoteLinkFieldId's resolution for
+ * a service_type — exported so call sites can name the exact var they're
+ * missing in a warn/log message without duplicating this map.
+ */
+export function quoteLinkFieldEnvVar(serviceType?: string | null): string {
+  const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
+  return QUOTE_LINK_FIELD_ENV[type];
+}

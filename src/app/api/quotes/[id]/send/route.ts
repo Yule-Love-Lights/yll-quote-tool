@@ -38,7 +38,7 @@ import {
   isHighLevelConfigured,
   HighLevelError,
 } from '@/lib/integrations/highlevel';
-import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
 import {
   QUOTE_EMAIL_SUBJECT,
   quoteSmsBody,
@@ -344,19 +344,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Quote-link custom field: stamp the SAME portal URL we text/email the
     // customer onto their CONTACT (not the card) so a GHL workflow/automation
     // can merge {{contact.<field>}}. Only once the card move actually
-    // succeeded, and never for a test quote (no real contact to touch). The
+    // succeeded, and never for a test quote (no real contact to touch).
+    //
+    // The field is resolved PER SERVICE TYPE (quoteLinkFieldId), not a single
+    // shared field: each pipeline's own drip automations merge this field, and
+    // one shared field would let e.g. a permanent send overwrite the link a
+    // Christmas drip automation is about to merge (see ghlPipelineMap.ts). The
     // field id is dev-configured post-launch (the dev creates the field in GHL
-    // and sets the env var) — until then, skip silently with one warn rather
-    // than treating a missing field as a send failure.
+    // and sets the per-type env var) — until then, skip silently with one warn
+    // rather than treating a missing field as a send failure.
     if (stageUpdated && !quote.is_test && quote.highlevel_contact_id) {
-      const quoteLinkFieldId = process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
-      if (!quoteLinkFieldId) {
+      const fieldId = quoteLinkFieldId(quote.service_type);
+      if (!fieldId) {
         console.warn(
-          '[api/quotes/:id/send] HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK not set — skipping quote-link custom field stamp',
+          `[api/quotes/:id/send] ${quoteLinkFieldEnvVar(quote.service_type)} not set — skipping quote-link custom field stamp`,
         );
       } else {
         try {
-          await upsertContactCustomField(quote.highlevel_contact_id, quoteLinkFieldId, portalUrl);
+          await upsertContactCustomField(quote.highlevel_contact_id, fieldId, portalUrl);
         } catch (err) {
           console.error('[api/quotes/:id/send] quote-link custom field stamp failed:', hlErrorMessage(err));
         }
