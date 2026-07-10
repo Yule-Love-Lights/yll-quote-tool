@@ -386,15 +386,13 @@ export async function addContactTags(contactId: string, tags: string[]): Promise
 // HighLevelContact.customFields is `Array<{ id, value }>` (see types.ts), and
 // v2's update endpoint accepts that same array shape back.
 //
-// ⚠️ MERGE-VS-REPLACE UNVERIFIED. v2's partial-PUT semantics for the
-// `customFields` array are not confirmed against the live API: if GHL treats
-// the array as a REPLACE rather than a per-field merge, sending one field here
-// would WIPE every other custom field on the contact. Before setting
-// HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK in prod (which activates this call from
-// the send route), live-probe on a THROWAWAY contact carrying a second custom
-// field and confirm the second field survives this PUT. If it does not, switch
-// to read-modify-write (GET the contact's customFields, merge, PUT the full
-// array).
+// ✅ MERGE-VS-REPLACE VERIFIED against the live API (S26, 2026-07-09): a
+// throwaway contact carrying a second custom field survived a PUT that sent
+// ONLY the quote-link field — v2 merges the `customFields` array per-field, it
+// does NOT replace it. So stamping one field here cannot wipe a contact's
+// other custom fields. (If GHL ever changes this to replace semantics, switch
+// to read-modify-write: GET the contact's customFields, merge, PUT the full
+// array — the failure mode would be silent data loss on real customers.)
 export async function upsertContactCustomField(
   contactId: string,
   fieldId: string,

@@ -1,8 +1,12 @@
 // scripts/ghl-list-custom-fields.ts — READ-ONLY discovery helper (#GHL pipeline
 // sync). Lists the HighLevel location's CONTACT custom fields (name + id) so the
-// dev can find (or create, in the GHL UI) the "Quote Link" field and set
-// HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK — the send route stamps the customer portal
-// URL onto that field via upsertContactCustomField (src/lib/integrations/highlevel.ts)
+// dev can find (or create, in the GHL UI) the THREE per-service-type quote-link
+// fields — "Holiday Quote Link", "Perm Quote Link", "Event Quote Link" — and set
+// HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY/PERMANENT/EVENT. One field per type
+// (not a single shared field) so a send never overwrites another pipeline's own
+// drip-automation value (see src/lib/integrations/ghlPipelineMap.ts's
+// quoteLinkFieldId). The send route stamps the customer portal URL onto the
+// resolved field via upsertContactCustomField (src/lib/integrations/highlevel.ts)
 // once it's configured; until then it skips with a console.warn.
 //
 // This script performs ONLY a GET. It never creates/updates/deletes anything in
@@ -107,14 +111,34 @@ async function main(): Promise<void> {
     console.log(`  ${f.id ?? '(no id)'}  —  ${f.name ?? '(unnamed)'}  [${f.dataType ?? '?'}]  key=${f.fieldKey ?? '?'}`);
   }
 
-  const quoteLinkMatch = contactFields.find((f) => (f.name ?? '').toLowerCase().includes('quote link'));
+  // One quote-link field PER service type (not a single shared field) — see
+  // src/lib/integrations/ghlPipelineMap.ts's quoteLinkFieldId for why. Match by
+  // a name-contains keyword (case-insensitive) so a rename like "Permanent
+  // Quote Link" still hits, not just the exact "Perm Quote Link".
+  const QUOTE_LINK_FIELDS: { label: string; envVar: string; keyword: string }[] = [
+    { label: 'Holiday Quote Link', envVar: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY', keyword: 'holiday' },
+    { label: 'Perm Quote Link', envVar: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT', keyword: 'perm' },
+    { label: 'Event Quote Link', envVar: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT', keyword: 'event' },
+  ];
+
   console.log('\n---');
-  if (quoteLinkMatch) {
-    console.log(`✓ Found a field named "${quoteLinkMatch.name}" — id: ${quoteLinkMatch.id}`);
-    console.log(`  Set:  HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK=${quoteLinkMatch.id}`);
-  } else {
-    console.log('No field named "Quote Link" found. Create one in GHL (Settings → Custom Fields →');
-    console.log('Contact), re-run this script to get its id, then set HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK.');
+  let anyFound = false;
+  for (const spec of QUOTE_LINK_FIELDS) {
+    const match = contactFields.find((f) => {
+      const name = (f.name ?? '').toLowerCase();
+      return name.includes(spec.keyword) && name.includes('quote link');
+    });
+    if (match) {
+      anyFound = true;
+      console.log(`✓ Found a field named "${match.name}" — id: ${match.id}`);
+      console.log(`  Set:  ${spec.envVar}=${match.id}`);
+    } else {
+      console.log(`✗ No field matching "${spec.label}" found (looked for a name containing "${spec.keyword}" + "quote link").`);
+    }
+  }
+  if (!anyFound) {
+    console.log('\nCreate the missing field(s) in GHL (Settings → Custom Fields → Contact), re-run this');
+    console.log('script to get their ids, then set the matching env var(s) above.');
   }
 }
 

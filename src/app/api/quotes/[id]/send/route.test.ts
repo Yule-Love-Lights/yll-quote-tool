@@ -487,7 +487,10 @@ describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipelin
 
 describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
   beforeEach(() => {
-    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK = 'field_quote_link';
+    // FRESH_QUOTE carries no service_type, which resolves to the default
+    // (holiday) — so the holiday-specific field var is what's read unless a
+    // test overrides service_type.
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
   });
 
   it('stamps the exact portal URL onto the contact once the card move succeeds', async () => {
@@ -498,13 +501,28 @@ describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
     expect(res.status).toBe(200);
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith(
       'contact_1',
-      'field_quote_link',
+      'field_quote_link_holiday',
       'https://quote.example.com/portal/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     );
   });
 
-  it('skips silently (one warn, no throw) when HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK is unset', async () => {
-    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
+  it('a PERMANENT quote stamps using the PERMANENT var\'s id, not the holiday one', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT = 'field_quote_link_permanent';
+    const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'permanent' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith(
+      'contact_1',
+      'field_quote_link_permanent',
+      'https://quote.example.com/portal/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    );
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT;
+  });
+
+  it('skips silently (one warn, no throw) when HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY is unset', async () => {
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { client } = makeSb({ ...FRESH_QUOTE });
     sbRef.current = client;
@@ -512,7 +530,9 @@ describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
     const res = await POST(makeReq(), { params });
     expect(res.status).toBe(200);
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK not set'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY not set'),
+    );
     warn.mockRestore();
   });
 
