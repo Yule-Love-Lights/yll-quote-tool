@@ -19,6 +19,7 @@ import type { InstallTiming, PackageId } from '../types';
 import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 import type { ServiceType } from '@/lib/serviceType';
 import { track } from '@/lib/analytics/posthog';
+import { categorizeApproveError } from '@/lib/analytics/errorCategory';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -66,6 +67,33 @@ export function buildApprovePayload(
     // #83 Slice B — the e-signature captured in the "Confirm & sign" step.
     signature: { name: sig.name, kind: sig.kind, value: sig.value },
   };
+}
+
+// Pure once-per-open guard for the `approve_abandoned` event (PostHog Wave 1,
+// extracted for test coverage — same reasoning as buildApprovePayload). The
+// sign modal ("Confirm & sign") and the deposit-checkout modal each need
+// identical semantics: reset when the modal opens, and fire at most once per
+// open — never after a confirmed success/409 in that same open, and never
+// twice for the same open. A plain mutable object (not React state), read and
+// written from event handlers between renders rather than rendered itself.
+export type AbandonGuard = { resolved: boolean };
+
+export function openAbandonGuard(): AbandonGuard {
+  return { resolved: false };
+}
+
+/** Marks the current open as resolved by something other than a close (a
+ *  confirmed approval / already-approved 409) so a later close won't fire. */
+export function resolveAbandonGuard(guard: AbandonGuard): void {
+  guard.resolved = true;
+}
+
+/** True the first time this is consumed after an open (and marks the guard
+ *  resolved so it won't fire again this open); false otherwise. */
+export function consumeAbandonOnClose(guard: AbandonGuard): boolean {
+  if (guard.resolved) return false;
+  guard.resolved = true;
+  return true;
 }
 
 export type StickyBottomBarProps = {
@@ -140,6 +168,12 @@ export function StickyBottomBar({
   const [responseIntent, setResponseIntent] = useState<ResponseIntent | null>(null);
   const router = useRouter();
 
+  // PostHog v1 Wave 1 — once-per-open guards for approve_abandoned. Reset
+  // whenever the corresponding modal opens; resolved by a confirmed
+  // success/409 so closing afterward doesn't count as an abandon.
+  const signAbandonGuard = useRef<AbandonGuard>(openAbandonGuard());
+  const depositAbandonGuard = useRef<AbandonGuard>(openAbandonGuard());
+
   // #93 — a test quote ALWAYS uses the deposit-checkout flow (which posts to
   // /simulate-deposit), even when the real Valor checkout is off. For a real
   // quote this is exactly `checkoutEnabled`, so existing behavior is unchanged.
@@ -190,6 +224,10 @@ export function StickyBottomBar({
     if (!canSubmitApproval(submitting, meetsMinimum)) return;
     setSubmitting(true);
     setErrorMsg(null);
+    // PostHog v1 Wave 1 — the HTTP status of a received response (undefined
+    // means the failure was before any response, i.e. network-level), read by
+    // the catch block below to bucket approve_error's `category`.
+    let failureStatus: number | undefined;
     try {
       const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/approve`, {
         method: 'POST',
@@ -214,12 +252,17 @@ export function StickyBottomBar({
           ),
         ),
       });
+      failureStatus = res.status;
       // 409 = already approved. With checkout ON, open the deposit checkout
       // anyway (/pay routes onward if the deposit is already paid); with it OFF,
       // route straight to the celebration page (today's behavior).
       if (res.status === 409) {
+        // PostHog v1 Wave 1 — resolves the sign-modal guard so this doesn't
+        // read as an abandon; not a fresh approval either, so no quote_approved.
+        resolveAbandonGuard(signAbandonGuard.current);
         setShowSign(false);
         if (depositFlow) {
+          depositAbandonGuard.current = openAbandonGuard();
           setShowCheckout(true);
           setSubmitting(false);
         } else {
@@ -234,12 +277,16 @@ export function StickyBottomBar({
       // Approval recorded. Close the sign step, then deposit flow → open the
       // embedded 50% deposit checkout (real Valor, or simulated for a test
       // quote); otherwise → celebration page (the pre-Valor placeholder flow).
+      // PostHog v1 Wave 1 — resolves the sign-modal guard before it closes, so
+      // the close doesn't read as an abandon.
+      resolveAbandonGuard(signAbandonGuard.current);
       setShowSign(false);
       // PostHog v1 — fires once per confirmed approval (the 409 "already
       // approved" branch above does NOT fire this, since it isn't a fresh
       // approval from this submission).
       track('quote_approved', { quote_id: quoteId, service_type: serviceType, total: currentTotal });
       if (depositFlow) {
+        depositAbandonGuard.current = openAbandonGuard();
         setShowCheckout(true);
         setSubmitting(false);
       } else {
@@ -251,12 +298,32 @@ export function StickyBottomBar({
       // Postgres messages, or "Failed to fetch". Log for debugging, show fixed
       // friendly copy that helps them recover (retry or text us).
       console.error('approve failed', err);
+      // PostHog v1 Wave 1 — category only (never the raw message/err above).
+      track('approve_error', {
+        quote_id: quoteId,
+        service_type: serviceType,
+        stage: 'approve',
+        category: categorizeApproveError(failureStatus, err),
+      });
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
       setErrorMsg(
         `We couldn't record your approval just now — please try again, or text us at ${phone}.`,
       );
       setSubmitting(false);
     }
+  };
+
+  // PostHog v1 Wave 1 — shared close handler for both DepositCheckout render
+  // sites below: fires approve_abandoned (reached_deposit: true) once per open
+  // when the customer backs out before a completed payment. DepositCheckout's
+  // own success paths (redirect to Valor, simulated-deposit booked, already-paid
+  // 409) all navigate away directly and never call onClose, so there's no
+  // "resolve" call to make here — every real invocation of this is an abandon.
+  const closeDepositCheckout = () => {
+    if (consumeAbandonOnClose(depositAbandonGuard.current)) {
+      track('approve_abandoned', { quote_id: quoteId, service_type: serviceType, reached_deposit: true });
+    }
+    setShowCheckout(false);
   };
 
   // #38 — approved but the deposit isn't paid yet (online checkout on). Show a
@@ -274,7 +341,12 @@ export function StickyBottomBar({
     return (
       <>
         {showCheckout && (
-          <DepositCheckout quoteId={quoteId} isTest={isTest} onClose={() => setShowCheckout(false)} />
+          <DepositCheckout
+            quoteId={quoteId}
+            isTest={isTest}
+            serviceType={serviceType}
+            onClose={closeDepositCheckout}
+          />
         )}
         <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
           <div className="flex items-baseline gap-2 min-w-0">
@@ -287,7 +359,13 @@ export function StickyBottomBar({
           </div>
           <button
             type="button"
-            onClick={() => setShowCheckout(true)}
+            onClick={() => {
+              // PostHog v1 Wave 1 — this re-opens the deposit checkout fresh
+              // (e.g. after a page reload), so it's its own "open" for the
+              // abandon-once guard.
+              depositAbandonGuard.current = openAbandonGuard();
+              setShowCheckout(true);
+            }}
             aria-label={isTest ? 'Simulate deposit paid' : 'Complete your deposit'}
             className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 md:px-5 py-2.5 md:py-3 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] md:text-[14px] cursor-pointer transition-[background-color,transform] duration-200 hover:bg-[#D8434F] active:scale-[0.98] shadow-[0_0_22px_rgba(200,49,61,0.35),0_6px_18px_-4px_rgba(200,49,61,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
           >
@@ -389,7 +467,10 @@ export function StickyBottomBar({
         type="button"
         onClick={() => {
           setErrorMsg(null);
+          // PostHog v1 Wave 1 — fresh guard for this open, then the funnel event.
+          signAbandonGuard.current = openAbandonGuard();
           setShowSign(true);
+          track('approve_started', { quote_id: quoteId, service_type: serviceType });
         }}
         disabled={submitting || !meetsMinimum}
         aria-label="Approve quote"
@@ -405,7 +486,12 @@ export function StickyBottomBar({
   return (
     <>
       {showCheckout && (
-        <DepositCheckout quoteId={quoteId} isTest={isTest} onClose={() => setShowCheckout(false)} />
+        <DepositCheckout
+          quoteId={quoteId}
+          isTest={isTest}
+          serviceType={serviceType}
+          onClose={closeDepositCheckout}
+        />
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
           runs the existing approve POST with it. The signature is required
@@ -417,6 +503,16 @@ export function StickyBottomBar({
           signature={signature}
           onSignatureChange={setSignature}
           onCancel={() => {
+            // PostHog v1 Wave 1 — closed without a successful approval this
+            // open → approve_abandoned once; a success/409 already resolved
+            // the guard above, so this is a no-op fire in that case.
+            if (consumeAbandonOnClose(signAbandonGuard.current)) {
+              track('approve_abandoned', {
+                quote_id: quoteId,
+                service_type: serviceType,
+                reached_deposit: false,
+              });
+            }
             setShowSign(false);
             setErrorMsg(null);
           }}
@@ -432,6 +528,7 @@ export function StickyBottomBar({
         <QuoteResponseModal
           quoteId={quoteId}
           intent={responseIntent}
+          serviceType={serviceType}
           onClose={() => setResponseIntent(null)}
         />
       )}

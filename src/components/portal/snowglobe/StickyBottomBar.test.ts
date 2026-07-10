@@ -9,7 +9,13 @@
 // (submitting-in-flight / below-minimum) blocking the fetch from firing.
 
 import { describe, it, expect } from 'vitest';
-import { canSubmitApproval, buildApprovePayload } from './StickyBottomBar';
+import {
+  canSubmitApproval,
+  buildApprovePayload,
+  openAbandonGuard,
+  resolveAbandonGuard,
+  consumeAbandonOnClose,
+} from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
 const SIG: CapturedSignature = { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' };
@@ -82,5 +88,43 @@ describe('buildApprovePayload (W4-031)', () => {
     const drawn: CapturedSignature = { name: 'Jordan Smith', kind: 'drawn', value: 'data:image/png;base64,xyz' };
     const payload = buildApprovePayload(SELECTION, drawn);
     expect(payload.signature).toEqual({ name: 'Jordan Smith', kind: 'drawn', value: 'data:image/png;base64,xyz' });
+  });
+});
+
+// approve_abandoned once-per-open semantics (PostHog Wave 1). These three
+// guard functions are exactly what the sign modal's onCancel and both
+// DepositCheckout onClose sites call — tested here as the pure seam, mirroring
+// buildApprovePayload's extraction, since no component-render test infra exists.
+describe('AbandonGuard (approve_abandoned once-per-open, PostHog Wave 1)', () => {
+  it('open -> close fires once', () => {
+    const guard = openAbandonGuard();
+    expect(consumeAbandonOnClose(guard)).toBe(true);
+  });
+
+  it('a second close in the same open does not fire again', () => {
+    const guard = openAbandonGuard();
+    expect(consumeAbandonOnClose(guard)).toBe(true);
+    expect(consumeAbandonOnClose(guard)).toBe(false);
+  });
+
+  it('open -> approve success (resolve) -> close fires nothing', () => {
+    const guard = openAbandonGuard();
+    resolveAbandonGuard(guard);
+    expect(consumeAbandonOnClose(guard)).toBe(false);
+  });
+
+  it('reopen -> close fires again', () => {
+    let guard = openAbandonGuard();
+    expect(consumeAbandonOnClose(guard)).toBe(true); // first open, closed
+    guard = openAbandonGuard(); // reopened — a fresh guard, as the component does
+    expect(consumeAbandonOnClose(guard)).toBe(true); // fires again
+  });
+
+  it('reopen after a resolved (successful) open also fires again', () => {
+    let guard = openAbandonGuard();
+    resolveAbandonGuard(guard); // e.g. quote_approved / the 409 branch
+    expect(consumeAbandonOnClose(guard)).toBe(false);
+    guard = openAbandonGuard(); // e.g. the "Complete deposit" button reopens it
+    expect(consumeAbandonOnClose(guard)).toBe(true);
   });
 });

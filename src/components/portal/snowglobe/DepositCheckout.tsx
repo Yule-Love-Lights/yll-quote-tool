@@ -14,6 +14,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { friendlyPortalError } from '../friendlyError';
 import { useModalFocus } from '../useModalFocus';
+import type { ServiceType } from '@/lib/serviceType';
+import { track } from '@/lib/analytics/posthog';
+import { categorizeApproveError } from '@/lib/analytics/errorCategory';
 
 type Props = {
   quoteId: string;
@@ -21,11 +24,13 @@ type Props = {
   /** #93 — a TEST quote. POST to /simulate-deposit (no Valor) and route straight
    *  to the booked page instead of redirecting to a hosted payment page. */
   isTest?: boolean;
+  /** PostHog v1 — included on the approve_error event's properties. */
+  serviceType?: ServiceType;
 };
 
 type Phase = 'starting' | 'redirecting' | 'error' | 'unconfigured';
 
-export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
+export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType }: Props) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -42,6 +47,10 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
     if (startedRef.current) return;
     startedRef.current = true;
     let cancelled = false;
+    // PostHog v1 Wave 1 — the HTTP status of a received response (undefined
+    // means the failure was before any response, i.e. network-level), read by
+    // the catch block below to bucket approve_error's `category`.
+    let failureStatus: number | undefined;
 
     (async () => {
       try {
@@ -52,6 +61,7 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
+        failureStatus = res.status;
 
         if (res.status === 409) {
           // Already paid (or already booked) — go straight to the booked page.
@@ -91,6 +101,13 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
         console.error('deposit checkout start failed', err);
         setErrorMsg(friendlyPortalError('start checkout'));
         setPhase('error');
+        // PostHog v1 Wave 1 — category only (never the raw message/err above).
+        track('approve_error', {
+          quote_id: quoteId,
+          service_type: serviceType,
+          stage: 'deposit',
+          category: categorizeApproveError(failureStatus, err),
+        });
       }
     })();
 
@@ -106,7 +123,7 @@ export function DepositCheckout({ quoteId, onClose, isTest = false }: Props) {
       // nothing outside strict mode's double-invoke.
       startedRef.current = false;
     };
-  }, [quoteId, router, isTest, attempt]);
+  }, [quoteId, router, isTest, attempt, serviceType]);
 
   const retry = () => {
     startedRef.current = false;
