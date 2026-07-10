@@ -224,21 +224,46 @@ export async function analyzePermanentSatellite(args: {
     text: `Trace the permanent-lighting roof perimeter for this house as the four side channels.${scaleNote} Respond with JSON only.`,
   });
 
-  const response = await client.messages.create({
+  // #149: request built ONCE so a bounded retry (below) reuses the IDENTICAL
+  // params object — the cached system-prompt prefix hits on the second call
+  // exactly as on any repeat request.
+  const request = {
     model: 'claude-sonnet-4-6',
     max_tokens: 4096,
-    system: [{ type: 'text', text: PERMANENT_SATELLITE_PROMPT, cache_control: { type: 'ephemeral' } }],
-    messages: [...(args.fewShotMessages ?? []), { role: 'user', content }],
-  });
+    system: [{ type: 'text' as const, text: PERMANENT_SATELLITE_PROMPT, cache_control: { type: 'ephemeral' as const } }],
+    messages: [...(args.fewShotMessages ?? []), { role: 'user' as const, content }],
+  };
+  const requestOnce = () => client.messages.create(request);
 
-  if (response.stop_reason === 'max_tokens') {
-    console.warn('[analyzePermanentSatellite] response truncated at max_tokens — JSON may be incomplete');
+  // #149: parse stage pulled out so it can run against the first response
+  // and, on a retry, again against a fresh one — identical logic either time.
+  const parseResponse = (response: Awaited<ReturnType<typeof requestOnce>>): unknown => {
+    if (response.stop_reason === 'max_tokens') {
+      console.warn('[analyzePermanentSatellite] response truncated at max_tokens — JSON may be incomplete');
+    }
+    const textBlock = response.content.find((b) => b.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') {
+      throw new Error('No text response from Claude');
+    }
+    return extractJson(textBlock.text.trim());
+  };
+
+  // The first call stays OUTSIDE the try — an API-call rejection (network,
+  // 5xx, rate limit; the Anthropic SDK already retries those internally)
+  // must propagate immediately and never trigger the #149 retry below.
+  const first = await requestOnce();
+  let parsedRaw: unknown;
+  try {
+    parsedRaw = parseResponse(first);
+  } catch (err) {
+    // #149: one bounded retry on transient unusable model JSON (missing text
+    // block / extractJson throw) — never on an API-call failure (caught
+    // above, outside this try). A second parse failure propagates exactly
+    // like before, so the route's imagery-only fail-safe still fires.
+    console.warn(`[analyzePermanentSatellite] model JSON unusable — retrying once (#149): ${(err as Error).message}`);
+    parsedRaw = parseResponse(await requestOnce());
   }
-  const textBlock = response.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude');
-  }
-  const result = normalizePermanentSatelliteResult(extractJson(textBlock.text.trim()));
+  const result = normalizePermanentSatelliteResult(parsedRaw);
   // S25: enforce the known orientation geometrically — the prompt hint alone
   // still leaves the labels to the model. relabelPermanentSides returns the
   // SAME object when the AI already had them right.

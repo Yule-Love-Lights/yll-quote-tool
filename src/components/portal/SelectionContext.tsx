@@ -139,6 +139,10 @@ type SelectionContextValue = {
   showDaylight: boolean;
   toggleDaylight: () => void;
   daylightAvailable: boolean;
+  /** PostHog v1 — the quote id, threaded through for consumers that fire
+   *  portal analytics events (package_selected, package_viewed) without
+   *  needing their own quoteId prop. Undefined for the mock/dev fallback. */
+  quoteId?: string;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -254,6 +258,10 @@ export type SelectionProviderProps = {
   // from app_settings. Default to the built-ins for callers that don't pass them.
   schemes?: ColorScheme[];
   buildableColorIds?: string[];
+  // PostHog v1 — passed straight through onto the context value (see
+  // SelectionContextValue.quoteId) so package_selected/package_viewed can
+  // read it via useSelection() instead of their own prop.
+  quoteId?: string;
   children: React.ReactNode;
 };
 
@@ -271,6 +279,7 @@ export function SelectionProvider({
   earlyInstallDiscountsHidden = false,
   schemes = DEFAULT_COLOR_SCHEMES,
   buildableColorIds = DEFAULT_BUILDABLE_COLOR_IDS,
+  quoteId,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -510,6 +519,7 @@ export function SelectionProvider({
     showDaylight,
     toggleDaylight,
     daylightAvailable,
+    quoteId,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
