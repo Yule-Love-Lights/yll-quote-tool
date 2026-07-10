@@ -136,7 +136,7 @@ export default async function PortalPage({
   if (quote.lineItems.length === 0) {
     return (
       <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
-        <QuoteViewTracker quoteId={quoteId} />
+        <QuoteViewTracker quoteId={quoteId} serviceType={quote.serviceType} />
         <h1 className="text-2xl font-semibold sm:text-3xl">
           Your quote is being finalized
         </h1>
@@ -197,7 +197,7 @@ export default async function PortalPage({
     const isRevising = quote.quoteStatus === 'changes_requested';
     return (
       <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
-        <QuoteViewTracker quoteId={quoteId} />
+        <QuoteViewTracker quoteId={quoteId} serviceType={quote.serviceType} />
         <h1 className="text-2xl font-semibold sm:text-3xl">
           {isRevising ? 'Your quote is being updated' : 'This quote is no longer available'}
         </h1>
@@ -303,7 +303,7 @@ export default async function PortalPage({
   return (
     <main className="relative w-full">
       {/* #68 — records the customer's open (client-side, fire-and-forget). */}
-      <QuoteViewTracker quoteId={quoteId} />
+      <QuoteViewTracker quoteId={quoteId} serviceType={quote.serviceType} />
       {isBooked && (
         <BookedBanner
           quoteId={quoteId}
@@ -312,6 +312,7 @@ export default async function PortalPage({
         />
       )}
       <SelectionProvider
+        quoteId={quoteId}
         packages={quote.packages}
         lineItems={quote.lineItems}
         roofline={quote.roofline}
@@ -466,6 +467,7 @@ export default async function PortalPage({
           approvedDepositUsd={quote.approval?.depositUsd}
           isTest={quote.isTest}
           quoteStatus={quote.quoteStatus}
+          serviceType={quote.serviceType}
         />
       </SelectionProvider>
     </main>

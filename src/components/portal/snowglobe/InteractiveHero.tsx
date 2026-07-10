@@ -26,6 +26,8 @@ import dynamic from 'next/dynamic';
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { LogoWatermark } from '../LogoWatermark';
+import { PackagesViewTracker } from '../PackagesViewTracker';
+import { track } from '@/lib/analytics/posthog';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
@@ -77,6 +79,7 @@ export function InteractiveHero({
     permanentEffect,
     showDaylight,
     activeName,
+    quoteId,
   } = useSelection();
   // #88 P6b-4 — permanent lights animate the live design per the SEPARATELY-chosen
   // effect (Solid/Chase/Fade), applied to whatever color the customer picked. A
@@ -415,6 +418,9 @@ export function InteractiveHero({
 
             {/* Package selector */}
             <div className="md:col-span-5">
+              {/* PostHog v1 — one-shot "packages scrolled into view" (fires
+                  immediately here since the hero is the first screen). */}
+              <PackagesViewTracker quoteId={quoteId} />
               <p className="text-[10px] md:text-[11px] font-semibold tracking-[0.22em] uppercase text-[#F4ECD8]/70 mb-2.5">
                 {locked ? 'Your selected package' : 'Tap to re-illuminate'}
               </p>
@@ -430,7 +436,10 @@ export function InteractiveHero({
                     type="button"
                     role="radio"
                     aria-checked={packageId === p.id}
-                    onClick={() => selectPackage(p.id)}
+                    onClick={() => {
+                      selectPackage(p.id);
+                      track('package_selected', { quote_id: quoteId, package: p.id });
+                    }}
                     data-active={packageId === p.id}
                     className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
                   >

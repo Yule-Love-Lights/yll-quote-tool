@@ -17,6 +17,8 @@ import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import type { InstallTiming, PackageId } from '../types';
 import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
+import type { ServiceType } from '@/lib/serviceType';
+import { track } from '@/lib/analytics/posthog';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -92,6 +94,8 @@ export type StickyBottomBarProps = {
    *  the only place left to catch "approved, unpaid, then killed". Undefined
    *  is treated as actionable (fail-open — matches isPortalActionable). */
   quoteStatus?: string | null;
+  /** PostHog v1 — included on the quote_approved event's properties. */
+  serviceType?: ServiceType;
 };
 
 export function StickyBottomBar({
@@ -102,6 +106,7 @@ export function StickyBottomBar({
   approvedDepositUsd,
   isTest = false,
   quoteStatus,
+  serviceType,
 }: StickyBottomBarProps) {
   const {
     activeName,
@@ -230,6 +235,10 @@ export function StickyBottomBar({
       // embedded 50% deposit checkout (real Valor, or simulated for a test
       // quote); otherwise → celebration page (the pre-Valor placeholder flow).
       setShowSign(false);
+      // PostHog v1 — fires once per confirmed approval (the 409 "already
+      // approved" branch above does NOT fire this, since it isn't a fresh
+      // approval from this submission).
+      track('quote_approved', { quote_id: quoteId, service_type: serviceType, total: currentTotal });
       if (depositFlow) {
         setShowCheckout(true);
         setSubmitting(false);
