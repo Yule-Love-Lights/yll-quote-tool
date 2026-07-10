@@ -7,41 +7,52 @@ import {
 } from './mockQuote';
 import type { GalleryItem } from './dark/Gallery';
 
-// Ledger #121: the portal's "Completed Work" gallery must be per-service-type
-// with a holiday fallback — never blank for a vertical that has no photos yet.
+// Ledger #121: the portal's "Completed Work" gallery is per-service-type with
+// a holiday fallback — never blank for a vertical whose list is empty. All
+// three lists are populated as of S30 (#121 event/permanent + #122 holiday
+// additions), so the fallback path is exercised by draining a list in-test.
 
 describe('galleryItemsFor', () => {
-  it('returns the full holiday set for holiday', () => {
+  it('returns the full holiday set for holiday (11 originals + 6 #122 additions)', () => {
     expect(galleryItemsFor('holiday')).toBe(MOCK_GALLERY_ITEMS);
-    expect(galleryItemsFor('holiday')).toHaveLength(11);
+    expect(galleryItemsFor('holiday')).toHaveLength(17);
   });
 
-  it('falls back to the holiday set for event while EVENT_GALLERY_ITEMS is empty', () => {
-    expect(EVENT_GALLERY_ITEMS).toHaveLength(0);
-    expect(galleryItemsFor('event')).toBe(MOCK_GALLERY_ITEMS);
+  it('returns the event list for event', () => {
+    expect(EVENT_GALLERY_ITEMS).toHaveLength(12);
+    expect(galleryItemsFor('event')).toBe(EVENT_GALLERY_ITEMS);
+    expect(galleryItemsFor('event')).not.toBe(MOCK_GALLERY_ITEMS);
   });
 
-  it('falls back to the holiday set for permanent while PERMANENT_GALLERY_ITEMS is empty', () => {
-    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(0);
-    expect(galleryItemsFor('permanent')).toBe(MOCK_GALLERY_ITEMS);
+  it('returns the permanent list for permanent', () => {
+    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(3);
+    expect(galleryItemsFor('permanent')).toBe(PERMANENT_GALLERY_ITEMS);
+    expect(galleryItemsFor('permanent')).not.toBe(MOCK_GALLERY_ITEMS);
   });
 
-  describe('once a typed list is populated (e.g. Naldo supplies event photos)', () => {
-    const testItem: GalleryItem = {
-      id: 'e1',
-      neighborhood: 'Test Venue',
-      src: '/references/test.webp',
-      alt: 'test',
-    };
+  it('every entry has a unique id and a /references/ src', () => {
+    const all = [...MOCK_GALLERY_ITEMS, ...EVENT_GALLERY_ITEMS, ...PERMANENT_GALLERY_ITEMS];
+    const ids = new Set(all.map((i) => i.id));
+    expect(ids.size).toBe(all.length);
+    for (const item of all) {
+      expect(item.src).toMatch(/^\/references\/[\w.-]+\.webp$/);
+      expect(item.alt.length).toBeGreaterThan(10);
+      expect(item.neighborhood.length).toBeGreaterThan(0);
+    }
+  });
+
+  describe('holiday fallback when a typed list is empty', () => {
+    let saved: GalleryItem[] = [];
 
     afterEach(() => {
-      EVENT_GALLERY_ITEMS.length = 0;
+      EVENT_GALLERY_ITEMS.push(...saved);
+      saved = [];
     });
 
-    it('returns the typed list itself instead of the holiday fallback', () => {
-      EVENT_GALLERY_ITEMS.push(testItem);
-      expect(galleryItemsFor('event')).toBe(EVENT_GALLERY_ITEMS);
-      expect(galleryItemsFor('event')).not.toBe(MOCK_GALLERY_ITEMS);
+    it('falls back to the holiday set rather than rendering an empty gallery', () => {
+      saved = EVENT_GALLERY_ITEMS.splice(0, EVENT_GALLERY_ITEMS.length);
+      expect(EVENT_GALLERY_ITEMS).toHaveLength(0);
+      expect(galleryItemsFor('event')).toBe(MOCK_GALLERY_ITEMS);
     });
   });
 });

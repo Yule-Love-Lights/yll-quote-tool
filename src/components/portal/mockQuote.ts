@@ -139,19 +139,41 @@ export const MOCK_GALLERY_ITEMS: Array<{
   { id: 'g9',  neighborhood: 'Warm White',     src: '/references/install-wreaths-above-garage.webp',                    alt: 'Home with warm-white roofline, a lit wreath above the garage, illuminated walkway, and snowflake stakes' },
   { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.webp', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
   { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.webp',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
+  // #122 — additional holiday completed-work photos (Naldo, S30).
+  { id: 'g12', neighborhood: 'Candy Cane',     src: '/references/candy-cane-christmas.webp',                            alt: 'Home wrapped in alternating red and white candy-cane roofline bulbs' },
+  { id: 'g13', neighborhood: 'Pure White',     src: '/references/pure-white-christmas.webp',                            alt: 'Two-story home outlined in crisp pure-white roofline bulbs' },
+  { id: 'g14', neighborhood: 'Crisp White',    src: '/references/pure-white-christmas-2.webp',                          alt: 'Home edged in bright pure-white roofline lighting against the night sky' },
+  { id: 'g15', neighborhood: 'Warm White Classic', src: '/references/warm-white-christmas.webp',                        alt: 'Home outlined in classic warm-white roofline bulbs' },
+  { id: 'g16', neighborhood: 'Golden Glow',    src: '/references/warm-white-christmas-2.webp',                          alt: 'Home glowing in warm-white roofline lighting' },
+  { id: 'g17', neighborhood: 'Estate Trees',   src: '/references/holiday-estate-warm-white.webp',                       alt: 'Brick estate with warm-white roofline, fully wrapped trees and driveway pillars, and lit landscape beds' },
 ];
 
 type GalleryItemData = (typeof MOCK_GALLERY_ITEMS)[number];
 
-// Event Lighting (ledger #121) — Naldo will supply real completed-work event
-// photos. Same GalleryItem shape as MOCK_GALLERY_ITEMS above. Empty for now;
-// galleryItemsFor() falls back to the holiday set until these are populated.
-export const EVENT_GALLERY_ITEMS: GalleryItemData[] = [];
+// Event Lighting completed work (ledger #121; photos supplied by Naldo S30).
+export const EVENT_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'e1',  neighborhood: 'Ceremony Canopy',   src: '/references/event-bistro.webp',            alt: 'Backyard wedding ceremony under warm bistro lights radiating from a center pole, with a draped floral arch and a lit aisle' },
+  { id: 'e2',  neighborhood: 'Reception Bistro',  src: '/references/event-bistro-2.webp',          alt: 'Warm bistro string lights strung between the trees over an outdoor evening celebration' },
+  { id: 'e3',  neighborhood: 'Dinner Under Lights', src: '/references/event-bistro-3.webp',        alt: 'Guests dining beneath a canopy of warm bistro lights at an outdoor event' },
+  { id: 'e4',  neighborhood: 'Pond-Edge Party',   src: '/references/event-bistro-stake.webp',      alt: 'Stake lights tracing a backyard pond at night with bistro-lit reception tables under the trees' },
+  { id: 'e5',  neighborhood: 'Lakeside Wedding',  src: '/references/event-backyard-wedding.webp',  alt: 'Backyard wedding reception by a pond at dusk with bistro strings overhead, a glowing dance floor, and a dock in the foreground' },
+  { id: 'e6',  neighborhood: 'Curtain Lights',    src: '/references/event-curtain-lights.webp',    alt: 'Two-story home draped floor-to-roof in warm-white curtain lights for a celebration' },
+  { id: 'e7',  neighborhood: 'Curtain Glow',      src: '/references/event-curtain-lights-2.webp',  alt: 'Warm-white curtain lights falling from the rooflines of a home lit for an event' },
+  { id: 'e8',  neighborhood: 'Curtain Facade',    src: '/references/event-curtain-lights-3.webp',  alt: 'Curtain lights covering the front facade of a home for a special occasion' },
+  { id: 'e9',  neighborhood: 'Curtain Detail',    src: '/references/event-curtain-lights-4.webp',  alt: 'Close view of warm-white curtain lights draping a home for an event' },
+  { id: 'e10', neighborhood: 'Party-Ready Home',  src: '/references/event-install-home.webp',      alt: 'Brick home lit for an event with a warm-white roofline, wrapped evergreens, and glowing stone driveway pillars' },
+  { id: 'e11', neighborhood: 'Mini-Light Trees',  src: '/references/event-mini-lights.webp',       alt: 'Trees and greenery wrapped in warm mini lights for an outdoor event' },
+  { id: 'e12', neighborhood: 'Tent Minis',        src: '/references/event-mini-lights-tent.webp',  alt: 'Event tent trimmed in warm mini lights at night' },
+];
 
-// Permanent Lighting (ledger #121) — Naldo will supply real completed-work
-// permanent photos. Same GalleryItem shape as MOCK_GALLERY_ITEMS above. Empty
-// for now; galleryItemsFor() falls back to the holiday set until populated.
-export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [];
+// Permanent Lighting completed work (ledger #121; photos supplied by Naldo
+// S30) — the same home showing different SCENES, the permanent selling point:
+// one install, every holiday.
+export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'p1', neighborhood: 'Christmas Scene',   src: '/references/perm-christmas.webp',      alt: 'Split-level home with permanent roofline lighting running a red, green, and white Christmas scene' },
+  { id: 'p2', neighborhood: 'July 4th Scene',    src: '/references/perm-fourth-of-july.webp', alt: 'The same permanent roofline lighting switched to a red, white, and blue Independence Day scene' },
+  { id: 'p3', neighborhood: 'Red, White & Blue', src: '/references/perm-patriotic.webp',      alt: 'Permanent puck lights running a patriotic red, white, and blue pattern along the roofline and lower trim' },
+];
 
 // Per-service-type "Completed Work" gallery selector (ledger #121). Positive
 // match on the non-holiday types (never `!== 'holiday'` — see AGENTS.md
