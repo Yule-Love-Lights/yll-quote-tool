@@ -3,6 +3,7 @@
 // All prices in USD.
 
 import type { PortalQuote } from './types';
+import type { ServiceType } from '@/lib/serviceType';
 
 // Placeholder imagery — large suburban home via Unsplash.
 const BEFORE_PHOTO =
@@ -138,7 +139,121 @@ export const MOCK_GALLERY_ITEMS: Array<{
   { id: 'g9',  neighborhood: 'Warm White',     src: '/references/install-wreaths-above-garage.webp',                    alt: 'Home with warm-white roofline, a lit wreath above the garage, illuminated walkway, and snowflake stakes' },
   { id: 'g10', neighborhood: 'Portico',        src: '/references/install-spritzers-wreath-portico-spritzers-flower-bed.webp', alt: 'Home with red and white roofline bulbs, a lit portico wreath, and snowflake stakes in the flower beds' },
   { id: 'g11', neighborhood: 'Chick-fil-A',    src: '/references/Eisenhower.webp',                                      alt: 'Commercial Chick-fil-A restaurant lit by Yule Love Lights with warm-white roofline and wrapped columns at dusk' },
+  // #122 — additional holiday completed-work photos (Naldo, S30).
+  { id: 'g12', neighborhood: 'Candy Cane',     src: '/references/candy-cane-christmas.webp',                            alt: 'Home wrapped in alternating red and white candy-cane roofline bulbs' },
+  { id: 'g13', neighborhood: 'Pure White',     src: '/references/pure-white-christmas.webp',                            alt: 'Two-story home outlined in crisp pure-white roofline bulbs' },
+  { id: 'g14', neighborhood: 'Crisp White',    src: '/references/pure-white-christmas-2.webp',                          alt: 'Home edged in bright pure-white roofline lighting against the night sky' },
+  { id: 'g15', neighborhood: 'Warm White Classic', src: '/references/warm-white-christmas.webp',                        alt: 'Home outlined in classic warm-white roofline bulbs' },
+  { id: 'g16', neighborhood: 'Golden Glow',    src: '/references/warm-white-christmas-2.webp',                          alt: 'Home glowing in warm-white roofline lighting' },
+  { id: 'g17', neighborhood: 'Estate Trees',   src: '/references/holiday-estate-warm-white.webp',                       alt: 'Brick estate with warm-white roofline, fully wrapped trees and driveway pillars, and lit landscape beds' },
 ];
+
+type GalleryItemData = (typeof MOCK_GALLERY_ITEMS)[number];
+
+// Event Lighting completed work (ledger #121; photos supplied by Naldo S30).
+export const EVENT_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'e1',  neighborhood: 'Ceremony Canopy',   src: '/references/event-bistro.webp',            alt: 'Backyard wedding ceremony under warm bistro lights radiating from a center pole, with a draped floral arch and a lit aisle' },
+  { id: 'e2',  neighborhood: 'Reception Bistro',  src: '/references/event-bistro-2.webp',          alt: 'Warm bistro string lights strung between the trees over an outdoor evening celebration' },
+  { id: 'e3',  neighborhood: 'Dinner Under Lights', src: '/references/event-bistro-3.webp',        alt: 'Guests dining beneath a canopy of warm bistro lights at an outdoor event' },
+  { id: 'e4',  neighborhood: 'Pond-Edge Party',   src: '/references/event-bistro-stake.webp',      alt: 'Stake lights tracing a backyard pond at night with bistro-lit reception tables under the trees' },
+  { id: 'e5',  neighborhood: 'Lakeside Wedding',  src: '/references/event-backyard-wedding.webp',  alt: 'Backyard wedding reception by a pond at dusk with bistro strings overhead, a glowing dance floor, and a dock in the foreground' },
+  { id: 'e6',  neighborhood: 'Curtain Lights',    src: '/references/event-curtain-lights.webp',    alt: 'Two-story home draped floor-to-roof in warm-white curtain lights for a celebration' },
+  { id: 'e7',  neighborhood: 'Curtain Glow',      src: '/references/event-curtain-lights-2.webp',  alt: 'Warm-white curtain lights falling from the rooflines of a home lit for an event' },
+  { id: 'e8',  neighborhood: 'Curtain Facade',    src: '/references/event-curtain-lights-3.webp',  alt: 'Curtain lights covering the front facade of a home for a special occasion' },
+  { id: 'e9',  neighborhood: 'Curtain Detail',    src: '/references/event-curtain-lights-4.webp',  alt: 'Close view of warm-white curtain lights draping a home for an event' },
+  { id: 'e10', neighborhood: 'Party-Ready Home',  src: '/references/event-install-home.webp',      alt: 'Brick home lit for an event with a warm-white roofline, wrapped evergreens, and glowing stone driveway pillars' },
+  { id: 'e11', neighborhood: 'Mini-Light Trees',  src: '/references/event-mini-lights.webp',       alt: 'Trees and greenery wrapped in warm mini lights for an outdoor event' },
+  { id: 'e12', neighborhood: 'Tent Minis',        src: '/references/event-mini-lights-tent.webp',  alt: 'Event tent trimmed in warm mini lights at night' },
+];
+
+// Permanent Lighting completed work (ledger #121; photos supplied by Naldo
+// S30) — the same home showing different SCENES, the permanent selling point:
+// one install, every holiday.
+export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'p1', neighborhood: 'Christmas Scene',   src: '/references/perm-christmas.webp',      alt: 'Split-level home with permanent roofline lighting running a red, green, and white Christmas scene' },
+  { id: 'p2', neighborhood: 'July 4th Scene',    src: '/references/perm-fourth-of-july.webp', alt: 'The same permanent roofline lighting switched to a red, white, and blue Independence Day scene' },
+  { id: 'p3', neighborhood: 'Red, White & Blue', src: '/references/perm-patriotic.webp',      alt: 'Permanent puck lights running a patriotic red, white, and blue pattern along the roofline and lower trim' },
+];
+
+// Per-service-type "Completed Work" gallery selector (ledger #121). Positive
+// match on the non-holiday types (never `!== 'holiday'` — see AGENTS.md
+// service-type seam convention); holiday is the default/fallback case, and
+// any type whose own list is still empty (event, permanent today) falls back
+// to it too, so the portal gallery section never renders empty.
+export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
+  switch (serviceType) {
+    case 'event':
+      return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    case 'permanent':
+      return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    case 'holiday':
+    default:
+      return MOCK_GALLERY_ITEMS;
+  }
+}
+
+// Cross-sell strip at the bottom of the Completed Work gallery (ledger #121,
+// S30 extension): show the two OTHER service types so a customer on one
+// vertical's portal sees we also do the other two. Curated (not auto-picked)
+// so the tiles are always a strong showcase, not whatever happens to sort
+// first in each list.
+export type CrossSellBlock = {
+  serviceType: ServiceType;
+  heading: string;
+  items: GalleryItemData[];
+};
+
+const CROSS_SELL_DISPLAY_NAMES: Record<ServiceType, string> = {
+  holiday: 'Holiday Lighting',
+  permanent: 'Permanent Lighting',
+  event: 'Event Lighting',
+};
+
+// Preserves the given id order (rather than the source list's own order) and
+// drops any id that fails to resolve, so a future data edit degrades to a
+// shorter block instead of a crash.
+function pickItems(list: GalleryItemData[], ids: string[]): GalleryItemData[] {
+  return ids
+    .map((id) => list.find((item) => item.id === id))
+    .filter((item): item is GalleryItemData => item !== undefined);
+}
+
+function crossSellBlock(serviceType: ServiceType, items: GalleryItemData[]): CrossSellBlock {
+  return {
+    serviceType,
+    heading: `Light up your life with ${CROSS_SELL_DISPLAY_NAMES[serviceType]}`,
+    items,
+  };
+}
+
+const HOLIDAY_CROSS_SELL_ITEMS = pickItems(MOCK_GALLERY_ITEMS, ['g1', 'g3', 'g12']);
+const PERMANENT_CROSS_SELL_ITEMS = pickItems(PERMANENT_GALLERY_ITEMS, ['p1', 'p2', 'p3']);
+const EVENT_CROSS_SELL_ITEMS = pickItems(EVENT_GALLERY_ITEMS, ['e1', 'e5', 'e6']);
+
+// Ordered per the viewed service type; holiday is the default/fallback case
+// (never a negative `!== 'holiday'` gate — see AGENTS.md seam convention).
+// Blocks whose curated picks resolve empty are skipped (future-proofing; all
+// three are non-empty today).
+export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
+  const holidayBlock = crossSellBlock('holiday', HOLIDAY_CROSS_SELL_ITEMS);
+  const permanentBlock = crossSellBlock('permanent', PERMANENT_CROSS_SELL_ITEMS);
+  const eventBlock = crossSellBlock('event', EVENT_CROSS_SELL_ITEMS);
+
+  let blocks: CrossSellBlock[];
+  switch (serviceType) {
+    case 'event':
+      blocks = [holidayBlock, permanentBlock];
+      break;
+    case 'permanent':
+      blocks = [holidayBlock, eventBlock];
+      break;
+    case 'holiday':
+    default:
+      blocks = [permanentBlock, eventBlock];
+      break;
+  }
+  return blocks.filter((b) => b.items.length > 0);
+}
 
 export const MOCK_REVIEWS = [
   {

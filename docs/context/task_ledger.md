@@ -78,7 +78,7 @@ metadata:
 | # | Task | Size | Notes | Old # |
 |---|------|------|-------|-------|
 | 121 | **Portal completed-work photos / gallery per service_type.** The "Completed work" / "Every angle" gallery should show photos matching the service (event installs for an event quote, permanent for permanent, holiday for holiday) instead of always the holiday set. Jason area (portal gallery / completed-work section). | M | 🟡 backlog · Jason portal | — |
-| 122 | **Add more holiday completed-work photos** to the portal gallery (content/asset expansion — the holiday photo set). Naldo supplies photos; wire into the gallery. Naldo/Jason. | S | 🟡 backlog · content | — |
+| 122 | **Add more completed-work photos to the portal galleries (rolling, Naldo supplies).** First batch LANDED S30 via PR #477: 21 photos wired (6 holiday → 17 tiles, 12 event, 3 permanent) + the per-type galleries + the gold serif cross-sell strip (#121). Naldo will supply MORE photos later (all types welcome; permanent especially thin at 3) — drop them in a folder, convert to 1600px webp under public/references/, append to the lists in mockQuote.ts. STAYS BACKLOG until Naldo says the photo set is complete. | S | 🟡 backlog · content (rolling) | — |
 
 ### ↳ Raised S21 (2026-07-02, Naldo) — found LIVE on prod during the #83 trial walkthrough; NOT yet built (S22 batch)
 *(Numbered #111–#115: Jason concurrently claimed #109/#110 in his S20 audit-plan work — renumbered at the S21 close to avoid the collision.)*
