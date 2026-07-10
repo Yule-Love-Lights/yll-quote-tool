@@ -77,6 +77,12 @@ Default habits to keep sessions cheap (S16 task #94):
 
 **3. Top-tier (Fable 5) = design, danger, or money ONLY** — architecture calls, production debugging, security review, migrations, money-math verdicts. **Never routine coding. ~20% of the work, max.**
 
+**Named Fable-eligible cases (added 2026-07-10, Naldo). All still ask-first; naming them stops them running casually on lower tiers:**
+- **Quoting/analyzer prompt changes count as MONEY.** The quoting SYSTEM_PROMPT and per-vertical analyzer prompts directly shape customer prices and detected footage; a prompt rewrite is a money change unless byte-identity is proven (the S19 substring-move technique). Reason: wrong prompt = silent money drift, same failure class as pricing-engine math.
+- **Golden-number re-anchoring counts as a money-math verdict.** Moving golden-job totals redefines what "correct" means for every future run. Itemize every cent of the delta first (the S25 #144 standard); the go/no-go verdict on the re-anchor is Fable-eligible.
+- **Council chairman verdict may run on Fable.** The council is already ask-first; when it runs, advisors stay on lower tiers per the routing table, but the chairman synthesis is the single highest-leverage output of the run and may take the top tier (one call).
+- **Stuck-escalation (the UP path).** Fallback in rule 5 only covers a tier being DOWN; this covers a tier being BEATEN. When the same problem defeats the seat twice (a fix loop bounces twice, a review keeps missing the root cause, a worker returns garbage twice on a corrected brief), offer Fable for that ONE call, ask first, then drop back to normal tiers. Scoped to the single stuck problem, never the whole session.
+
 **4. Every production change is guarded:** `branch → PR → automated checks (tsc · lint · vitest) → merge → deploy → verify`. **The AI never merges itself** — before any merge it shows the dev a **plain-English summary derived from the ACTUAL code diff** (not from intent) and waits for an explicit "go". (Strengthens the human-merge rule below; Jason-area PRs still carry his review flag.) Post-merge, the deploy is **verified in-browser**, never assumed.
 
 **5. Model fallback:** if a tier's model is down/unavailable, drop **exactly one tier** (Fable → Opus → Sonnet → Haiku) and **say so** in the output. For anything risky (money math, prod migrations, approve/amend paths, security), do NOT silently substitute — **stop and ask** first.
