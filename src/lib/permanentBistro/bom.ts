@@ -122,7 +122,7 @@ export function buildBistroBom(
   if (totalFootage > 0) {
     push(
       '80324',
-      `E26 Bistro Cord 330ft, 24in spacing (covers ${totalFootage} ft needed)`,
+      `E26 Bistro Cord 330ft, 24in spacing (covers ${Math.round(totalFootage * 10) / 10} ft needed)`,
       Math.ceil(totalFootage / 330),
       cost('80324', 0),
       'thunder',
@@ -138,7 +138,7 @@ export function buildBistroBom(
     );
     push(
       '80002',
-      `3/32in Pro Guide Wire (covers ${totalFootage} ft needed)`,
+      `3/32in Pro Guide Wire (covers ${Math.round(totalFootage * 10) / 10} ft needed)`,
       Math.ceil(totalFootage / 250),
       cost('80002', 0),
       'thunder',
