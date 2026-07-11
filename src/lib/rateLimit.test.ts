@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { checkRateLimit, __bucketSize } from './rateLimit';
+import { checkRateLimit, checkRateLimitByKey, __bucketSize } from './rateLimit';
 
 // Minimal NextRequest stand-in: checkRateLimit only reads the x-forwarded-for /
 // x-real-ip headers via req.headers.get(...).
@@ -55,5 +55,33 @@ describe('checkRateLimit — stale-entry eviction (audit #19)', () => {
     // Fourth hit inside the window is blocked.
     vi.setSystemTime(3_000);
     expect(checkRateLimit(reqFromIp('9.9.9.9'), opts).ok).toBe(false);
+  });
+});
+
+describe('checkRateLimitByKey — arbitrary-key variant (#41 V2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('caps by the given key, independent of IP', () => {
+    const opts = { limit: 2, windowMs: 10_000, bucket: 'keyed-test' };
+    expect(checkRateLimitByKey('referral:ABCD', opts).ok).toBe(true);
+    expect(checkRateLimitByKey('referral:ABCD', opts).ok).toBe(true);
+    expect(checkRateLimitByKey('referral:ABCD', opts).ok).toBe(false);
+    // A different key has its own independent budget.
+    expect(checkRateLimitByKey('referral:WXYZ', opts).ok).toBe(true);
+  });
+
+  it('is the same underlying window/eviction logic checkRateLimit(req, opts) delegates to', () => {
+    const opts = { limit: 1, windowMs: 5_000, bucket: 'delegate-test' };
+    expect(checkRateLimit(reqFromIp('3.3.3.3'), opts).ok).toBe(true);
+    // checkRateLimit(req) for the same IP is equivalent to checkRateLimitByKey
+    // keyed on that IP — both share the bucket, so the second hit (by either
+    // API) against the same effective key is blocked.
+    expect(checkRateLimitByKey('3.3.3.3', opts).ok).toBe(false);
   });
 });
