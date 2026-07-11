@@ -442,7 +442,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
     const res = await POST(makeReq({ inputs: validInputs() }));
     expect(res.status).toBe(200);
-    // saveQuote(customer, inputs, result, serviceType, isTest, created_by)
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId)
     expect(save).toHaveBeenCalledWith(
       expect.anything(), // customer
       expect.anything(), // inputs
@@ -450,6 +450,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(), // serviceType
       expect.anything(), // isTest
       'op-1', // created_by
+      null, // referredByCustomerId (#41) — not supplied in this request
     );
   });
 
@@ -463,7 +464,39 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(),
       expect.anything(),
       null,
+      null,
     );
+  });
+});
+
+describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)', () => {
+  it('threads a valid referredByCustomerId to saveQuote', async () => {
+    const referrerId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: referrerId }));
+    expect(res.status).toBe(200);
+    // Note: expect.anything() does NOT match null, so the no-operator-session
+    // created_by arg (position 6) needs the literal `null` here.
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      referrerId,
+    );
+  });
+
+  it('400s when referredByCustomerId is not a valid UUID', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: 'not-a-uuid' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s when referredByCustomerId is not a string', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: 123 }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
   });
 });
 

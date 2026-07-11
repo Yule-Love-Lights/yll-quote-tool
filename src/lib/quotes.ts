@@ -6,6 +6,7 @@ import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
 import { attachQuoteToCustomer } from './customers';
+import { createPendingReferral } from './referrals';
 
 export type QuoteListItem = {
   id: string;
@@ -182,6 +183,11 @@ export async function saveQuote(
   // Actor audit trail (#90): the operator's Supabase user id, or null when the
   // auth gate is dormant (no session). Stamped once, on create.
   createdBy: string | null = null,
+  // Referral program (#41 "mention" attribution): an existing customer picked
+  // as "Referred by" in the builder while creating THIS quote. Only meaningful
+  // on a brand-new save (this quote's id becomes the referee_quote_id) — the
+  // update path (updateQuote) never touches referrals at all.
+  referredByCustomerId: string | null = null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -245,6 +251,23 @@ export async function saveQuote(
       });
     } catch (err) {
       console.warn('saveQuote: attachQuoteToCustomer failed (non-fatal):', err);
+    }
+  }
+
+  // Referral program (#41): staff picked an existing customer as "Referred by"
+  // while building this quote — create the pending 'mention' referral row now,
+  // linking referrer -> this brand-new quote. Same is_test exclusion as the
+  // customer/property link above (a test quote must never create a real
+  // referral). Best-effort: a failure here must not fail the save.
+  if (!isTest && referredByCustomerId) {
+    try {
+      await createPendingReferral({
+        source: 'mention',
+        referrerCustomerId: referredByCustomerId,
+        refereeQuoteId: data.id,
+      });
+    } catch (err) {
+      console.warn('saveQuote: createPendingReferral failed (non-fatal):', err);
     }
   }
 
