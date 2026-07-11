@@ -191,10 +191,19 @@ describe('POST /api/leads — validation (case i)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('400s when consent is not a boolean', async () => {
+  it('400s when consent is not strictly true (truthy string)', async () => {
     sbRef.current = makeSb().client;
     const res = await POST(makeReq(validBody({ consent: 'yes' })));
     expect(res.status).toBe(400);
+  });
+
+  it('400s when consent is false — a non-consenting lead must never reach GHL drips', async () => {
+    sbRef.current = makeSb().client;
+    const res = await POST(makeReq(validBody({ consent: false })));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(typeof json.error).toBe('string');
+    expect(hl.upsertContact).not.toHaveBeenCalled();
   });
 
   it('400s (never 500) on invalid JSON', async () => {
@@ -207,6 +216,75 @@ describe('POST /api/leads — validation (case i)', () => {
     } as unknown as NextRequest;
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['name', 201],
+    ['email', 321],
+    ['phone', 41],
+    ['address', 501],
+    ['notes', 5001],
+    ['formVariant', 51],
+    ['landingUrl', 1001],
+  ])('400s when %s exceeds its max length (%i chars)', async (field, len) => {
+    sbRef.current = makeSb().client;
+    // email needs a syntactically valid over-long value so the length cap (not
+    // the format regex) is what trips; the others can be a plain repeat.
+    const value = field === 'email' ? `${'a'.repeat(len - 12)}@example.com` : 'a'.repeat(len);
+    const res = await POST(makeReq(validBody({ [field]: value })));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(typeof json.error).toBe('string');
+    expect(hl.upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('utm: keeps only the 5 known utm_* keys with string values — junk never reaches the row or the note', async () => {
+    const { client, inserted } = makeSb();
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq(
+        validBody({
+          utm: {
+            utm_source: 'google',
+            utm_campaign: 'fall2026',
+            gclid: 'should-be-dropped',          // not a known utm key
+            utm_medium: { nested: 'object' },    // non-string value
+            utm_term: 42,                        // non-string value
+            utm_content: 'x'.repeat(300),        // over-long string → capped at 200
+          },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const savedUtm = inserted[0]!.utm as Record<string, string>;
+    expect(Object.keys(savedUtm).sort()).toEqual(['utm_campaign', 'utm_content', 'utm_source']);
+    expect(savedUtm.utm_content).toHaveLength(200);
+
+    // The note body must carry only the surviving keys — no "[object Object]",
+    // no dropped keys.
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1);
+    const [, noteBody] = hl.createContactNote.mock.calls[0]!;
+    expect(noteBody).toContain('utm_source=google');
+    expect(noteBody).toContain('utm_campaign=fall2026');
+    expect(noteBody).not.toContain('gclid');
+    expect(noteBody).not.toContain('[object Object]');
+    expect(noteBody).not.toContain('utm_term');
+  });
+
+  it('utm: an all-junk utm object is treated as absent (no UTM line, lead still accepted)', async () => {
+    const { client, inserted } = makeSb();
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq(validBody({ utm: { gclid: 'junk', utm_medium: 42 }, notes: null, landingUrl: null })),
+    );
+
+    expect(res.status).toBe(200);
+    expect(inserted[0]!.utm).toBeNull();
+    // notes/utm/landingUrl all effectively absent → no note at all.
+    expect(hl.createContactNote).not.toHaveBeenCalled();
   });
 });
 
@@ -275,8 +353,7 @@ describe('POST /api/leads — too-fast submit (case e)', () => {
     const { client, inserted } = makeSb();
     sbRef.current = client;
 
-    const renderedAt = new Date(Date.now() - 500).toISOString(); // 0.5s ago
-    const res = await POST(makeReq(validBody({ renderedAt })));
+    const res = await POST(makeReq(validBody({ elapsedMs: 500 }))); // submitted 0.5s after render
     const json = await res.json();
 
     expect(res.status).toBe(200);
@@ -288,8 +365,34 @@ describe('POST /api/leads — too-fast submit (case e)', () => {
 
   it('a normal render-to-submit gap (>3s) is NOT spam', async () => {
     sbRef.current = makeSb().client;
-    const renderedAt = new Date(Date.now() - 10_000).toISOString(); // 10s ago
-    const res = await POST(makeReq(validBody({ renderedAt })));
+    const res = await POST(makeReq(validBody({ elapsedMs: 10_000 }))); // 10s to fill the form
+    expect(res.status).toBe(200);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
+  });
+
+  it('REGRESSION (clock skew): elapsedMs is client-computed on ONE clock, so a client clock ahead of the server can never produce a spam false-positive', async () => {
+    // The old contract compared a client renderedAt timestamp to the SERVER's
+    // Date.now() — a visitor whose device clock ran a few seconds ahead
+    // produced a tiny/negative diff and was silently binned as spam. With
+    // elapsedMs (submit-time minus render-time, both on the client's clock)
+    // there is no cross-clock math at all; a real 30s fill is 30_000 no
+    // matter what either wall clock says.
+    sbRef.current = makeSb().client;
+    const res = await POST(makeReq(validBody({ elapsedMs: 30_000 })));
+    expect(res.status).toBe(200);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
+  });
+
+  it('a negative elapsedMs (broken client) is NOT treated as spam — fail open', async () => {
+    sbRef.current = makeSb().client;
+    const res = await POST(makeReq(validBody({ elapsedMs: -1200 })));
+    expect(res.status).toBe(200);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing elapsedMs is NOT treated as spam', async () => {
+    sbRef.current = makeSb().client;
+    const res = await POST(makeReq(validBody())); // no elapsedMs at all
     expect(res.status).toBe(200);
     expect(hl.upsertContact).toHaveBeenCalledTimes(1);
   });
