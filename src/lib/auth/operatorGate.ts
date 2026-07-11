@@ -79,6 +79,10 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   if (path === '/portal' || path.startsWith('/portal/')) return true;
   if (path.startsWith('/photos/')) return true;
 
+  // Referral landing page (ledger #41) — public, gated only by the referral
+  // code in the URL (a bad/unknown code just 404s inside the page itself).
+  if (path === '/refer' || path.startsWith('/refer/')) return true;
+
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
@@ -97,6 +101,14 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // route ever runs), so #469 alone wasn't sufficient — prod kept 401'ing. GET
   // only; other methods on this exact path stay operator-gated (S26).
   if (method.toUpperCase() === 'GET' && path === '/api/inventory/offered-colors') {
+    return true;
+  }
+
+  // POST /api/referrals/submit is the referral landing page's public lead-
+  // capture form (ledger #41) — rate-limited + code-revalidated in the route
+  // itself. POST only; other methods on this exact path stay operator-gated
+  // (mirrors the offered-colors GET-only carve-out, S26).
+  if (method.toUpperCase() === 'POST' && path === '/api/referrals/submit') {
     return true;
   }
 

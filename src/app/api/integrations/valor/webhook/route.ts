@@ -59,6 +59,7 @@ import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
+import { accrueOnBooking } from '@/lib/referrals';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -414,6 +415,17 @@ export async function POST(req: NextRequest) {
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
     await flagPossibleDuplicatePayment(sb, quote, event, baseUrl);
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
+  }
+
+  // Referral program (#41): if this quote was referred (link or mention), the
+  // booking event is what flips that referral from pending → booked. Best-
+  // effort — accrueOnBooking already fails open internally, but this call is
+  // wrapped too (belt-and-suspenders, mirrors every other side effect on this
+  // path): an accrual hiccup must NEVER break the payment webhook.
+  try {
+    await accrueOnBooking(quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] referral accrual failed:', err);
   }
 
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────

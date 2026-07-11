@@ -23,6 +23,7 @@ const {
   getInvoiceByJob,
   notifyTelegram,
   getJobWorkOrder,
+  accrueOnBooking,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
@@ -53,6 +54,10 @@ const {
       unbound: [], totalLines: 1,
     },
   })),
+  // Referral program (#41): mocked so the webhook test asserts the wiring
+  // (called once per booking) without touching the referrals table. Its OWN
+  // idempotency is covered in src/lib/referrals.test.ts.
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -84,6 +89,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   isHighLevelConfigured: () => hl.configured.value,
   HighLevelError: class HighLevelError extends Error {},
+}));
+
+vi.mock('@/lib/referrals', () => ({
+  accrueOnBooking,
 }));
 
 import { POST, GET } from './route';
@@ -215,6 +224,10 @@ describe('Valor webhook — happy path', () => {
     expect(createJobFromQuote).toHaveBeenCalledTimes(1);
     expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
 
+    // #41 referral program: the booking event fires the accrual exactly once.
+    expect(accrueOnBooking).toHaveBeenCalledTimes(1);
+    expect(accrueOnBooking).toHaveBeenCalledWith('quote-1');
+
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
     expect(notifyTelegram).toHaveBeenCalledTimes(1);
@@ -233,6 +246,18 @@ describe('Valor webhook — happy path', () => {
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true); // payment recorded despite the job failure
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true); // payment recorded despite the accrual failure
   });
 
   it('verifies a signature built with the Stripe-style `${ts}.${body}` fallback base', async () => {
