@@ -20,6 +20,9 @@ import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
 import type { PermanentQuoteFields } from '@/lib/permanent/types';
+import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
+import type { BistroBomLine } from '@/lib/permanentBistro/bom';
+import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
@@ -45,6 +48,18 @@ export function computePurchaseOrder(items: POInput[]): POLine[] {
 
 export type PurchaseOrderLine = POLine & { name: string };
 export type SupplierPurchaseOrder = { lines: PurchaseOrderLine[]; jobCount: number };
+
+// Pure (#117, Naldo 2026-07-11): which of a bistro BOM's lines belong on the
+// pooled THUNDER auto-PO. Thunder-supplier lines only — the Home Depot posts/
+// concrete and the Amazon timer are manual buys on the per-quote order sheet
+// (bistro-bom/print), and the as-needed zip-wire row has no computable qty.
+export function poolableBistroPoLines(
+  lines: readonly Pick<BistroBomLine, 'sku' | 'qty' | 'supplier' | 'asNeeded'>[],
+): { sku: string; qty: number }[] {
+  return lines
+    .filter((l) => l.supplier === 'thunder' && !l.asNeeded && l.qty > 0)
+    .map((l) => ({ sku: l.sku, qty: l.qty }));
+}
 
 /**
  * Build the supplier purchase order from current demand: every active job that
@@ -99,12 +114,27 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
         return [row.id, row.inputs?.permanent] as const;
       }),
   );
+  // #117 (Naldo 2026-07-11): a bistro job's THUNDER items DO auto-send on this
+  // pooled PO; its Home Depot / Amazon items (posts, concrete, timer) are
+  // manual buys on the per-quote order sheet (bistro-bom/print) and must never
+  // reach the Thunder email. poolableBistroPoLines applies that split.
+  const bistroFieldsByQuote = new Map<string, PermanentBistroInputFields | undefined>(
+    (quoteRows ?? [])
+      .filter((r) => (r as { service_type: string | null }).service_type === 'permanent_bistro')
+      .map((r) => {
+        const row = r as { id: string; inputs: { permanentBistro?: PermanentBistroInputFields } | null };
+        return [row.id, row.inputs?.permanentBistro] as const;
+      }),
+  );
   active = active.filter((j) => !testQuoteIds.has(j.quote_id));
   if (!active.length) return { lines: [], jobCount: 0 };
 
-  // Only fetch scenes for the NON-permanent active jobs — a permanent job's
-  // design scene (if any) must never feed the scene projection.
-  const sceneQuoteIds = active.map((j) => j.quote_id).filter((id) => !permanentFieldsByQuote.has(id));
+  // Only fetch scenes for the NON-permanent, NON-bistro active jobs — a
+  // permanent or bistro job's design scene (if any) must never feed the
+  // holiday scene projection.
+  const sceneQuoteIds = active
+    .map((j) => j.quote_id)
+    .filter((id) => !permanentFieldsByQuote.has(id) && !bistroFieldsByQuote.has(id));
   const { data: designs } = sceneQuoteIds.length
     ? await db.from('designs').select('quote_id, scene').in('quote_id', sceneQuoteIds)
     : { data: [] };
@@ -123,6 +153,15 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
       // no costOverrides here (the PO cares about quantities, not costs).
       const bom = permanentBomFromQuote({ permanent: permanentFieldsByQuote.get(j.quote_id) });
       for (const l of bom?.lines ?? []) {
+        needBySku.set(l.sku, (needBySku.get(l.sku) ?? 0) + l.qty);
+      }
+      continue;
+    }
+    if (bistroFieldsByQuote.has(j.quote_id)) {
+      // Bistro (#117): pool ONLY the Thunder-supplier lines (see
+      // poolableBistroPoLines) — quantities only, costs irrelevant here.
+      const bom = bistroBomFromQuote({ permanentBistro: bistroFieldsByQuote.get(j.quote_id) });
+      for (const l of poolableBistroPoLines(bom?.lines ?? [])) {
         needBySku.set(l.sku, (needBySku.get(l.sku) ?? 0) + l.qty);
       }
       continue;
