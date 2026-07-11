@@ -57,7 +57,7 @@
       if (window.posthog && typeof window.posthog.capture === 'function') {
         window.posthog.capture(event, props || {});
       }
-    } catch {
+    } catch (e) {
       /* never let analytics break the form */
     }
   }
@@ -97,7 +97,7 @@
   function hasTestFlag() {
     try {
       return new URLSearchParams(location.search).get('yll_test') === '1';
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -107,7 +107,7 @@
     var existing;
     try {
       existing = sessionStorage.getItem(UTM_STORAGE_KEY);
-    } catch {
+    } catch (e) {
       existing = null;
     }
     if (existing) return; // first touch wins
@@ -115,7 +115,7 @@
     var params;
     try {
       params = new URLSearchParams(location.search);
-    } catch {
+    } catch (e) {
       return;
     }
     var found = {};
@@ -131,7 +131,7 @@
     found.landing = location.href;
     try {
       sessionStorage.setItem(UTM_STORAGE_KEY, JSON.stringify(found));
-    } catch {
+    } catch (e) {
       /* private-mode / storage full — attribution is best-effort */
     }
   }
@@ -140,7 +140,7 @@
     try {
       var raw = sessionStorage.getItem(UTM_STORAGE_KEY);
       return raw ? JSON.parse(raw) : null;
-    } catch {
+    } catch (e) {
       return null;
     }
   }
@@ -282,7 +282,7 @@
   }
 
   function buildTextField(opts) {
-    // opts: { type, name, label, placeholder, autocomplete, hideLabel, required, textarea }
+    // opts: { type, name, label, placeholder, autocomplete, hideLabel, required, textarea, maxLength }
     var id = uid('yll-lf-' + opts.name);
     var input = opts.textarea
       ? h('textarea', {
@@ -291,6 +291,7 @@
           name: opts.name,
           placeholder: opts.placeholder,
           rows: '3',
+          maxlength: opts.maxLength,
         })
       : h('input', {
           id: id,
@@ -299,6 +300,7 @@
           name: opts.name,
           placeholder: opts.placeholder,
           autocomplete: opts.autocomplete,
+          maxlength: opts.maxLength,
         });
     var errorEl = h('div', { class: 'yll-lf-field-error', role: 'alert' });
     var field = h('div', { class: 'yll-lf-field yll-lf-field--' + opts.name }, [
@@ -309,8 +311,13 @@
     return { field: field, input: input, errorEl: errorEl };
   }
 
-  function buildServiceCards(preselected) {
-    var group = h('div', { class: 'yll-lf-cards', role: 'radiogroup', 'aria-label': 'Select a service' });
+  function buildServiceCards(preselected, labelledById) {
+    var group = h('div', {
+      class: 'yll-lf-cards',
+      role: 'radiogroup',
+      'aria-labelledby': labelledById,
+      'aria-required': 'true',
+    });
     var cardEls = [];
     var current = preselected || null;
 
@@ -345,9 +352,13 @@
     });
 
     group.addEventListener('keydown', function (e) {
-      var idx = cardEls.findIndex(function (c) {
-        return c.getAttribute('data-value') === current;
-      });
+      var idx = -1;
+      for (var ci = 0; ci < cardEls.length; ci++) {
+        if (cardEls[ci].getAttribute('data-value') === current) {
+          idx = ci;
+          break;
+        }
+      }
       if (idx === -1) idx = 0;
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault();
@@ -415,7 +426,16 @@
       type: 'text',
       name: 'company',
       tabindex: '-1',
-      autocomplete: 'off',
+      // Chrome/1Password/LastPass address-autofill can fill a hidden
+      // "company" field even though a real visitor never sees or types into
+      // it. autocomplete="off" is WIDELY IGNORED by Chrome for
+      // address-shaped fields, so we use "one-time-code" instead (a token
+      // address-autofill engines don't treat as an address field) plus the
+      // vendor-specific ignore hints below.
+      autocomplete: 'one-time-code',
+      'data-lpignore': 'true',
+      'data-1p-ignore': '',
+      'data-form-type': 'other',
       'aria-hidden': 'true',
     });
   }
@@ -455,6 +475,7 @@
       autocomplete: 'name',
       hideLabel: config.hideLabels,
       required: true,
+      maxLength: 200,
     });
     var emailF = buildTextField({
       type: 'email',
@@ -464,6 +485,7 @@
       autocomplete: 'email',
       hideLabel: config.hideLabels,
       required: true,
+      maxLength: 320,
     });
     var phoneF = buildTextField({
       type: 'tel',
@@ -473,6 +495,7 @@
       autocomplete: 'tel',
       hideLabel: config.hideLabels,
       required: true,
+      maxLength: 40,
     });
     var addressF = config.showAddress
       ? buildTextField({
@@ -483,6 +506,7 @@
           autocomplete: 'street-address',
           hideLabel: config.hideLabels,
           required: config.addressRequired, // visual only — see validate()
+          maxLength: 500,
         })
       : null;
     var notesF = config.showNotes
@@ -492,6 +516,7 @@
           placeholder: 'Tell us about your project',
           hideLabel: config.hideLabels,
           textarea: true,
+          maxLength: 5000,
         })
       : null;
 
@@ -500,11 +525,12 @@
     var serviceField = null;
     if (!config.hidePicker) {
       if (config.serviceControl === 'cards') {
-        var cardsLabel = h('span', { class: 'yll-lf-label' }, [
+        var cardsLabelId = uid('yll-lf-service-label');
+        var cardsLabel = h('span', { id: cardsLabelId, class: 'yll-lf-label' }, [
           'Which service? ',
           h('span', { class: 'yll-lf-required', 'aria-hidden': 'true' }, ['*']),
         ]);
-        serviceCards = buildServiceCards(config.preselectService);
+        serviceCards = buildServiceCards(config.preselectService, cardsLabelId);
         var svcErrorEl = h('div', { class: 'yll-lf-field-error', role: 'alert' });
         serviceField = h('div', { class: 'yll-lf-field yll-lf-field--service' }, [cardsLabel, serviceCards.el, svcErrorEl]);
         serviceField.errorEl = svcErrorEl;
@@ -517,7 +543,10 @@
 
     var consentF = buildConsent(config.compactConsent);
     var honeypot = buildHoneypot();
-    var formErrorEl = h('div', { class: 'yll-lf-formerror', role: 'alert', 'aria-live': 'polite' });
+    // role="alert" already implies an assertive live region — an explicit
+    // aria-live here is redundant (and was conflicting: "polite" vs the
+    // implicit "assertive" from the role).
+    var formErrorEl = h('div', { class: 'yll-lf-formerror', role: 'alert' });
     formErrorEl.style.display = 'none';
 
     var submitBtn = h('button', { type: 'submit', class: 'yll-lf-submit' }, [config.submitLabel]);
@@ -592,7 +621,9 @@
       formErrorEl.style.display = 'block';
     }
 
+    var submitting = false;
     function setSubmitting(isSubmitting) {
+      submitting = isSubmitting;
       submitBtn.disabled = isSubmitting;
       submitBtn.textContent = isSubmitting ? 'Sending...' : config.submitLabel;
     }
@@ -646,6 +677,7 @@
 
     form.addEventListener('submit', function (e) {
       e.preventDefault();
+      if (submitting) return; // guard against a double/rapid-repeat submit
       clearErrors();
       var v = values();
       var errors = validate(v);
@@ -675,7 +707,10 @@
         company: honeypot.value || '',
         elapsedMs: Date.now() - renderedAt,
         utm: buildUtmForPayload(storedUtm),
-        landingUrl: (storedUtm && storedUtm.landing) || location.href,
+        // Truncate to the server's cap (route.ts MAX_LEN.landingUrl) — this
+        // field is auto-populated, never user-typed, and must never fail to
+        // submit because of its own length.
+        landingUrl: ((storedUtm && storedUtm.landing) || location.href).slice(0, 1000),
         isTest: hasTestFlag(),
       };
 
@@ -700,7 +735,14 @@
             track('yll_lead_form_submitted', { variant: config.variant, service: v.service });
             showThankYou();
           } else {
-            var msg = (result.data && result.data.error) || 'Something went wrong - please call 631-517-0186.';
+            // Only surface the server's own message for a client error
+            // (<500, e.g. validation/rate-limit) — a 5xx message can be an
+            // internal detail ("Supabase service role not configured") that
+            // a customer must never read.
+            var msg =
+              result.status < 500 && result.data && result.data.error
+                ? result.data.error
+                : 'Something went wrong - please call 631-517-0186.';
             showFormError(msg);
             track('yll_lead_form_error', { variant: config.variant, kind: 'server' });
           }
@@ -815,7 +857,7 @@
     var dismissed;
     try {
       dismissed = sessionStorage.getItem(STICKY_DISMISS_KEY) === '1';
-    } catch {
+    } catch (e) {
       dismissed = false;
     }
     if (dismissed) return;
@@ -847,7 +889,7 @@
       outer.classList.remove('yll-lf-sticky-visible');
       try {
         sessionStorage.setItem(STICKY_DISMISS_KEY, '1');
-      } catch {
+      } catch (e) {
         /* ignore */
       }
     });
