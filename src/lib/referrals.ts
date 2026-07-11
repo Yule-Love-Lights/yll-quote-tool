@@ -19,14 +19,19 @@
 
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
-import { upsertContactCustomField, isHighLevelConfigured } from './integrations/highlevel';
+import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
 import { appBaseUrl } from './integrations/telegramNotify';
+import { REFERRAL_EARNED_EMAIL_SUBJECT, referralEarnedEmailHtml, referralEarnedSmsBody } from './integrations/quoteMessages';
 import { normalizePhone } from './customers';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Next-season credit a referrer earns per booked friend (USD). */
 export const REFERRAL_CREDIT_USD = 125;
+
+/** A booked credit expires this many years after the friend's booking
+ *  (Naldo locked, #41 follow-up — see migrations/2026-07-11-referral-credit-expiry.sql). */
+export const REFERRAL_CREDIT_EXPIRY_YEARS = 2;
 
 /** What the referred friend gets on their first booked install. */
 export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
@@ -50,6 +55,10 @@ export type ReferralRow = {
   status: ReferralStatus;
   amount_usd: number;
   booked_at: string | null;
+  /** Stamped by accrueOnBooking = booked_at + REFERRAL_CREDIT_EXPIRY_YEARS.
+   *  NULL means non-expiring (grandfathered — booked before this column
+   *  existed, or still 'pending'). See isReferralSpendable. */
+  expires_at: string | null;
   // Redemption (PR 2): when + on which (spending) quote this row's credit was
   // consumed. Both null until status flips to 'credited' (consumeCredits).
   credited_at: string | null;
@@ -321,28 +330,57 @@ export async function hasRecentPendingLinkReferral(
 
 /**
  * Booking event: flip the pending referral for this referee quote to
- * 'booked' + stamp booked_at, exactly once. Conditional UPDATE (.eq('status',
+ * 'booked' + stamp booked_at + expires_at (booked_at + REFERRAL_CREDIT_
+ * EXPIRY_YEARS, #41 follow-up), exactly once. Conditional UPDATE (.eq('status',
  * 'pending')) is the same claim idiom as the reply-route claim in
  * src/app/api/dashboard/reply/route.ts — a concurrent/retried booking call
  * can only ever win this claim once. Never throws: every caller is a
  * money-critical payment path that must fail OPEN on an accrual hiccup, so
  * errors are logged and swallowed here rather than left to every call site.
+ *
+ * On a successful flip, best-effort fires notifyReferrerEarned so the
+ * referrer hears about their new credit — see that function for the
+ * fail-open contract. A notify failure can NEVER flip `accrued` back to
+ * false; it's caught locally, per row, separate from the DB error path.
  */
 export async function accrueOnBooking(quoteId: string): Promise<{ accrued: boolean }> {
   try {
     const sb = svc();
     if (!sb) return { accrued: false };
+    const bookedAt = new Date();
+    const expiresAt = new Date(bookedAt);
+    expiresAt.setFullYear(expiresAt.getFullYear() + REFERRAL_CREDIT_EXPIRY_YEARS);
     const { data, error } = await sb
       .from('referrals')
-      .update({ status: 'booked' satisfies ReferralStatus, booked_at: new Date().toISOString() })
+      .update({
+        status: 'booked' satisfies ReferralStatus,
+        booked_at: bookedAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      })
       .eq('referee_quote_id', quoteId)
       .eq('status', 'pending' satisfies ReferralStatus)
-      .select('id');
+      .select('id, referrer_customer_id');
     if (error) {
       console.error('[referrals] accrueOnBooking failed:', error);
       return { accrued: false };
     }
-    return { accrued: !!data && data.length > 0 };
+    const flipped = (data ?? []) as Array<{ id: string; referrer_customer_id: string | null }>;
+    const accrued = flipped.length > 0;
+    for (const row of flipped) {
+      try {
+        await notifyReferrerEarned({
+          referrerCustomerId: row.referrer_customer_id,
+          refereeQuoteId: quoteId,
+          amountUsd: REFERRAL_CREDIT_USD,
+        });
+      } catch (err) {
+        // Belt-and-suspenders: notifyReferrerEarned already fails open
+        // internally, but this booking path must never surface a notify bug
+        // as an accrual failure either way.
+        console.error('[referrals] notifyReferrerEarned threw (non-fatal):', err);
+      }
+    }
+    return { accrued };
   } catch (err) {
     console.error('[referrals] accrueOnBooking threw:', err);
     return { accrued: false };
@@ -369,7 +407,10 @@ export async function releaseAccrualOnCancel(quoteId: string): Promise<{ release
     if (!sb) return { released: false };
     const { data, error } = await sb
       .from('referrals')
-      .update({ status: 'pending' satisfies ReferralStatus, booked_at: null })
+      // expires_at is cleared with booked_at: it derives FROM booked_at, and a
+      // re-book later re-stamps both (accrueOnBooking) — a pending row must
+      // read as grandfathered-NULL, never carry a stale expiry.
+      .update({ status: 'pending' satisfies ReferralStatus, booked_at: null, expires_at: null })
       .eq('referee_quote_id', quoteId)
       .eq('status', 'booked' satisfies ReferralStatus)
       .select('id');
@@ -385,10 +426,46 @@ export async function releaseAccrualOnCancel(quoteId: string): Promise<{ release
 }
 
 /**
- * A referrer's spendable balance: booked-but-not-yet-credited referrals ×
- * their stored amount. 'credited' rows are EXCLUDED — that status means the
- * credit was already consumed (PR 2's redemption flow), so counting it again
- * here would let a spent credit be "seen" as available twice.
+ * The exact expiry rule (Naldo locked, #41 follow-up): a row is spendable
+ * only when status is 'booked' AND (expires_at is NULL — grandfathered,
+ * pre-expiry-column or still-pending rows — OR expires_at is still in the
+ * future). Pure + exported so every consumer (creditBalanceFor and
+ * consumeCredits' claim filter here, listReferralsFor's display below)
+ * applies the SAME rule instead of re-deriving it.
+ */
+export function isReferralSpendable(
+  row: { status: ReferralStatus; expires_at?: string | null },
+  now: Date = new Date(),
+): boolean {
+  if (row.status !== 'booked') return false;
+  if (!row.expires_at) return true;
+  return new Date(row.expires_at).getTime() > now.getTime();
+}
+
+/** A 'booked' row whose expiry has passed — a DISPLAY-only status; the DB
+ *  status column is never rewritten to 'expired' (we never rewrite history). */
+export function isReferralExpired(
+  row: { status: ReferralStatus; expires_at?: string | null },
+  now: Date = new Date(),
+): boolean {
+  return row.status === 'booked' && !isReferralSpendable(row, now);
+}
+
+/** The PostgREST filter form of isReferralSpendable's expiry half — pass to
+ *  .or() alongside an .eq('status','booked') so DB-side selections and the
+ *  pure helper can never drift apart. */
+function notExpiredOrFilter(nowIso: string): string {
+  return `expires_at.is.null,expires_at.gt.${nowIso}`;
+}
+
+/**
+ * A referrer's spendable balance: booked-but-not-yet-credited, not-yet-
+ * expired referrals × their stored amount. 'credited' rows are EXCLUDED —
+ * that status means the credit was already consumed (PR 2's redemption
+ * flow), so counting it again here would let a spent credit be "seen" as
+ * available twice. A 'booked' row past its expires_at is likewise excluded
+ * (see isReferralSpendable) — expired, not spendable, but the DB status stays
+ * 'booked' (we never rewrite history).
  */
 export async function creditBalanceFor(customerId: string): Promise<number> {
   const sb = svc();
@@ -397,12 +474,106 @@ export async function creditBalanceFor(customerId: string): Promise<number> {
     .from('referrals')
     .select('amount_usd')
     .eq('referrer_customer_id', customerId)
-    .eq('status', 'booked' satisfies ReferralStatus);
+    .eq('status', 'booked' satisfies ReferralStatus)
+    .or(notExpiredOrFilter(new Date().toISOString()));
   if (error) {
     console.error('[referrals] creditBalanceFor failed:', error);
     return 0;
   }
   return (data ?? []).reduce((sum, row) => sum + (Number((row as { amount_usd: number }).amount_usd) || 0), 0);
+}
+
+// ─── Notify (Feature 2, #41 follow-up) ─────────────────────────────────────
+
+export type NotifyReferrerEarnedInput = {
+  referrerCustomerId: string | null;
+  /** The BOOKED friend's quote — used to resolve their first name for the copy. */
+  refereeQuoteId: string | null;
+  amountUsd: number;
+};
+
+/**
+ * Best-effort "you just earned $125" SMS/email to the referrer, fired from
+ * accrueOnBooking's success path so they hear about it once and are nudged
+ * to refer again. Fail-open on every axis — no referrer id, no customer row,
+ * no linked GHL contact, GHL not configured, the friend's-name lookup
+ * failing, or the send itself throwing all resolve to a clean no-op. This
+ * function NEVER throws (mirrors accrueOnBooking's own contract) — every
+ * internal step is individually guarded so one missing piece (e.g. no phone
+ * on file) just skips that channel instead of aborting the whole notify.
+ */
+export async function notifyReferrerEarned(input: NotifyReferrerEarnedInput): Promise<void> {
+  try {
+    if (!input.referrerCustomerId) return;
+    if (!isHighLevelConfigured()) return;
+    const sb = svc();
+    if (!sb) return;
+
+    const { data: customer, error: custErr } = await sb
+      .from('customers')
+      .select('id, name, email, phone, hl_contact_id')
+      .eq('id', input.referrerCustomerId)
+      .maybeSingle<{
+        id: string;
+        name: string | null;
+        email: string | null;
+        phone: string | null;
+        hl_contact_id: string | null;
+      }>();
+    if (custErr) {
+      console.error('[referrals] notifyReferrerEarned customer lookup failed:', custErr);
+      return;
+    }
+    if (!customer || !customer.hl_contact_id) return;
+
+    // Resolve the booked friend's first name for the copy (best-effort — a
+    // lookup miss falls back to generic wording rather than blocking the send).
+    let friendFirstName = 'A friend';
+    if (input.refereeQuoteId) {
+      const { data: refereeQuote } = await sb
+        .from('quotes')
+        .select('customer_name')
+        .eq('id', input.refereeQuoteId)
+        .maybeSingle<{ customer_name: string | null }>();
+      const first = refereeQuote?.customer_name?.trim().split(/\s+/)[0];
+      if (first) friendFirstName = first;
+    }
+
+    const code = await ensureReferralCode(input.referrerCustomerId);
+    const referLink = code ? `${appBaseUrl()}/refer/${code}` : appBaseUrl();
+
+    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+
+    // SMS preferred; email is the fallback channel (no phone on file, or the
+    // SMS send itself failed).
+    if (customer.phone) {
+      try {
+        await sendSms({
+          contactId: customer.hl_contact_id,
+          message: referralEarnedSmsBody(friendFirstName, input.amountUsd, referLink),
+          fromNumber,
+        });
+        return;
+      } catch (err) {
+        console.error('[referrals] notifyReferrerEarned SMS failed, trying email:', err);
+      }
+    }
+    if (customer.email) {
+      try {
+        await sendEmail({
+          contactId: customer.hl_contact_id,
+          subject: REFERRAL_EARNED_EMAIL_SUBJECT,
+          html: referralEarnedEmailHtml(friendFirstName, input.amountUsd, referLink),
+          emailFrom,
+        });
+      } catch (err) {
+        console.error('[referrals] notifyReferrerEarned email failed:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[referrals] notifyReferrerEarned threw (fail-open, no-op):', err);
+  }
 }
 
 // ─── Redemption (PR 2) ──────────────────────────────────────────────────────
@@ -489,15 +660,21 @@ export async function consumeCredits(
   // status='booked' so a concurrent/retried consume can only ever win once.
   // Ordered oldest-first so the reported consumedRowIds are deterministic —
   // functionally every currently-booked row is consumed regardless of order.
+  // The not-expired .or() mirrors creditBalanceFor's filter (#41 expiry):
+  // without it, this claim would flip EXPIRED rows to 'credited' — consuming
+  // credit the balance above never counted, so consumedUsd would exceed the
+  // discount actually billed. Expired rows stay 'booked' forever, unspent.
+  const claimNow = new Date().toISOString();
   const { data: updated, error } = await sb
     .from('referrals')
     .update({
       status: 'credited' satisfies ReferralStatus,
-      credited_at: new Date().toISOString(),
+      credited_at: claimNow,
       credited_quote_id: quoteId,
     })
     .eq('referrer_customer_id', customerId)
     .eq('status', 'booked' satisfies ReferralStatus)
+    .or(notExpiredOrFilter(claimNow))
     // created_at must be IN the returned selection for PostgREST to order a
     // mutation's RETURNING set by it (42703 otherwise — live-E2E-caught S30).
     .select('id, amount_usd, created_at')
@@ -584,13 +761,22 @@ export type ReferralListItem = {
   amountUsd: number;
   createdAt: string;
   bookedAt: string | null;
+  /** booked_at + 2 years (accrueOnBooking); NULL = grandfathered, never expires. */
+  expiresAt: string | null;
+  /** Display-only (#41 expiry): a 'booked' row whose expires_at has passed.
+   *  The DB status stays 'booked' — see isReferralExpired. */
+  expired: boolean;
   creditedAt: string | null;
   creditedQuoteId: string | null;
 };
 
 export type ReferralSummary = {
   pendingCount: number;
+  /** Booked AND still spendable — expired rows are counted separately so
+   *  this stays consistent with spendableUsd (bookedCount × $125). */
   bookedCount: number;
+  /** Booked rows whose credit expired unspent (#41 expiry). */
+  expiredCount: number;
   creditedCount: number;
   /** Reuses creditBalanceFor's own math (booked-not-yet-credited rows) — see
    *  that function's doc comment for why 'credited' rows are excluded. */
@@ -616,7 +802,7 @@ export async function listReferralsFor(
 ): Promise<{ items: ReferralListItem[]; summary: ReferralSummary }> {
   const empty = {
     items: [] as ReferralListItem[],
-    summary: { pendingCount: 0, bookedCount: 0, creditedCount: 0, spendableUsd: 0, lifetimeEarnedUsd: 0 },
+    summary: { pendingCount: 0, bookedCount: 0, expiredCount: 0, creditedCount: 0, spendableUsd: 0, lifetimeEarnedUsd: 0 },
   };
   const sb = svc();
   if (!sb || !customerId) return empty;
@@ -624,7 +810,7 @@ export async function listReferralsFor(
   const { data, error } = await sb
     .from('referrals')
     .select(
-      'id, referee_quote_id, referee_contact_name, source, status, amount_usd, booked_at, credited_at, credited_quote_id, created_at',
+      'id, referee_quote_id, referee_contact_name, source, status, amount_usd, booked_at, expires_at, credited_at, credited_quote_id, created_at',
     )
     .eq('referrer_customer_id', customerId)
     .order('created_at', { ascending: false });
@@ -641,11 +827,15 @@ export async function listReferralsFor(
     status: ReferralStatus;
     amount_usd: number;
     booked_at: string | null;
+    expires_at: string | null;
     credited_at: string | null;
     credited_quote_id: string | null;
     created_at: string;
   };
   const rows = (data ?? []) as ReferralQueryRow[];
+  // One shared instant for every row's expiry check — a list rendered across
+  // a now() boundary must not show one row expired and its twin spendable.
+  const now = new Date();
 
   // Batched name fallback: only the quote ids we actually need (rows with no
   // contact name on file), deduped, fetched in ONE call.
@@ -681,13 +871,16 @@ export async function listReferralsFor(
       amountUsd: Number(r.amount_usd) || 0,
       createdAt: r.created_at,
       bookedAt: r.booked_at,
+      expiresAt: r.expires_at,
+      expired: isReferralExpired(r, now),
       creditedAt: r.credited_at,
       creditedQuoteId: r.credited_quote_id,
     };
   });
 
   const pendingCount = items.filter((i) => i.status === 'pending').length;
-  const bookedCount = items.filter((i) => i.status === 'booked').length;
+  const bookedCount = items.filter((i) => i.status === 'booked' && !i.expired).length;
+  const expiredCount = items.filter((i) => i.expired).length;
   const creditedCount = items.filter((i) => i.status === 'credited').length;
   const lifetimeEarnedUsd = items
     .filter((i) => i.status === 'booked' || i.status === 'credited')
@@ -698,7 +891,7 @@ export async function listReferralsFor(
 
   return {
     items,
-    summary: { pendingCount, bookedCount, creditedCount, spendableUsd, lifetimeEarnedUsd },
+    summary: { pendingCount, bookedCount, expiredCount, creditedCount, spendableUsd, lifetimeEarnedUsd },
   };
 }
 
