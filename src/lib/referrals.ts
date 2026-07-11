@@ -19,13 +19,18 @@
 
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
-import { upsertContactCustomField, isHighLevelConfigured } from './integrations/highlevel';
+import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
 import { appBaseUrl } from './integrations/telegramNotify';
+import { REFERRAL_EARNED_EMAIL_SUBJECT, referralEarnedEmailHtml, referralEarnedSmsBody } from './integrations/quoteMessages';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Next-season credit a referrer earns per booked friend (USD). */
 export const REFERRAL_CREDIT_USD = 125;
+
+/** A booked credit expires this many years after the friend's booking
+ *  (Naldo locked, #41 follow-up — see migrations/2026-07-11-referral-credit-expiry.sql). */
+export const REFERRAL_CREDIT_EXPIRY_YEARS = 2;
 
 /** What the referred friend gets on their first booked install. */
 export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
@@ -49,6 +54,10 @@ export type ReferralRow = {
   status: ReferralStatus;
   amount_usd: number;
   booked_at: string | null;
+  /** Stamped by accrueOnBooking = booked_at + REFERRAL_CREDIT_EXPIRY_YEARS.
+   *  NULL means non-expiring (grandfathered — booked before this column
+   *  existed, or still 'pending'). See isReferralSpendable. */
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -255,28 +264,57 @@ export async function createPendingReferral(
 
 /**
  * Booking event: flip the pending referral for this referee quote to
- * 'booked' + stamp booked_at, exactly once. Conditional UPDATE (.eq('status',
+ * 'booked' + stamp booked_at + expires_at (booked_at + REFERRAL_CREDIT_
+ * EXPIRY_YEARS, #41 follow-up), exactly once. Conditional UPDATE (.eq('status',
  * 'pending')) is the same claim idiom as the reply-route claim in
  * src/app/api/dashboard/reply/route.ts — a concurrent/retried booking call
  * can only ever win this claim once. Never throws: every caller is a
  * money-critical payment path that must fail OPEN on an accrual hiccup, so
  * errors are logged and swallowed here rather than left to every call site.
+ *
+ * On a successful flip, best-effort fires notifyReferrerEarned so the
+ * referrer hears about their new credit — see that function for the
+ * fail-open contract. A notify failure can NEVER flip `accrued` back to
+ * false; it's caught locally, per row, separate from the DB error path.
  */
 export async function accrueOnBooking(quoteId: string): Promise<{ accrued: boolean }> {
   try {
     const sb = svc();
     if (!sb) return { accrued: false };
+    const bookedAt = new Date();
+    const expiresAt = new Date(bookedAt);
+    expiresAt.setFullYear(expiresAt.getFullYear() + REFERRAL_CREDIT_EXPIRY_YEARS);
     const { data, error } = await sb
       .from('referrals')
-      .update({ status: 'booked' satisfies ReferralStatus, booked_at: new Date().toISOString() })
+      .update({
+        status: 'booked' satisfies ReferralStatus,
+        booked_at: bookedAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      })
       .eq('referee_quote_id', quoteId)
       .eq('status', 'pending' satisfies ReferralStatus)
-      .select('id');
+      .select('id, referrer_customer_id');
     if (error) {
       console.error('[referrals] accrueOnBooking failed:', error);
       return { accrued: false };
     }
-    return { accrued: !!data && data.length > 0 };
+    const flipped = (data ?? []) as Array<{ id: string; referrer_customer_id: string | null }>;
+    const accrued = flipped.length > 0;
+    for (const row of flipped) {
+      try {
+        await notifyReferrerEarned({
+          referrerCustomerId: row.referrer_customer_id,
+          refereeQuoteId: quoteId,
+          amountUsd: REFERRAL_CREDIT_USD,
+        });
+      } catch (err) {
+        // Belt-and-suspenders: notifyReferrerEarned already fails open
+        // internally, but this booking path must never surface a notify bug
+        // as an accrual failure either way.
+        console.error('[referrals] notifyReferrerEarned threw (non-fatal):', err);
+      }
+    }
+    return { accrued };
   } catch (err) {
     console.error('[referrals] accrueOnBooking threw:', err);
     return { accrued: false };
@@ -284,22 +322,146 @@ export async function accrueOnBooking(quoteId: string): Promise<{ accrued: boole
 }
 
 /**
- * A referrer's spendable balance: booked-but-not-yet-credited referrals ×
- * their stored amount. 'credited' rows are EXCLUDED — that status means the
- * credit was already consumed (PR 2's redemption flow), so counting it again
- * here would let a spent credit be "seen" as available twice.
+ * The exact expiry rule (Naldo locked, #41 follow-up): a row is spendable
+ * only when status is 'booked' AND (expires_at is NULL — grandfathered,
+ * pre-expiry-column or still-pending rows — OR expires_at is still in the
+ * future). Pure + exported so every consumer (creditBalanceFor here, and PR
+ * 2's consumeCredits/listReferralsFor once that branch lands) applies the
+ * SAME rule instead of re-deriving it.
+ */
+export function isReferralSpendable(
+  row: { status: ReferralStatus; expires_at?: string | null },
+  now: Date = new Date(),
+): boolean {
+  if (row.status !== 'booked') return false;
+  if (!row.expires_at) return true;
+  return new Date(row.expires_at).getTime() > now.getTime();
+}
+
+/** A 'booked' row whose expiry has passed — a DISPLAY-only status; the DB
+ *  status column is never rewritten to 'expired' (we never rewrite history). */
+export function isReferralExpired(
+  row: { status: ReferralStatus; expires_at?: string | null },
+  now: Date = new Date(),
+): boolean {
+  return row.status === 'booked' && !isReferralSpendable(row, now);
+}
+
+/**
+ * A referrer's spendable balance: booked-but-not-yet-credited, not-yet-
+ * expired referrals × their stored amount. 'credited' rows are EXCLUDED —
+ * that status means the credit was already consumed (PR 2's redemption
+ * flow), so counting it again here would let a spent credit be "seen" as
+ * available twice. A 'booked' row past its expires_at is likewise excluded
+ * (see isReferralSpendable) — expired, not spendable, but the DB status stays
+ * 'booked' (we never rewrite history).
  */
 export async function creditBalanceFor(customerId: string): Promise<number> {
   const sb = svc();
   if (!sb) return 0;
+  const nowIso = new Date().toISOString();
   const { data, error } = await sb
     .from('referrals')
     .select('amount_usd')
     .eq('referrer_customer_id', customerId)
-    .eq('status', 'booked' satisfies ReferralStatus);
+    .eq('status', 'booked' satisfies ReferralStatus)
+    .or(`expires_at.is.null,expires_at.gt.${nowIso}`);
   if (error) {
     console.error('[referrals] creditBalanceFor failed:', error);
     return 0;
   }
   return (data ?? []).reduce((sum, row) => sum + (Number((row as { amount_usd: number }).amount_usd) || 0), 0);
+}
+
+// ─── Notify (Feature 2, #41 follow-up) ─────────────────────────────────────
+
+export type NotifyReferrerEarnedInput = {
+  referrerCustomerId: string | null;
+  /** The BOOKED friend's quote — used to resolve their first name for the copy. */
+  refereeQuoteId: string | null;
+  amountUsd: number;
+};
+
+/**
+ * Best-effort "you just earned $125" SMS/email to the referrer, fired from
+ * accrueOnBooking's success path so they hear about it once and are nudged
+ * to refer again. Fail-open on every axis — no referrer id, no customer row,
+ * no linked GHL contact, GHL not configured, the friend's-name lookup
+ * failing, or the send itself throwing all resolve to a clean no-op. This
+ * function NEVER throws (mirrors accrueOnBooking's own contract) — every
+ * internal step is individually guarded so one missing piece (e.g. no phone
+ * on file) just skips that channel instead of aborting the whole notify.
+ */
+export async function notifyReferrerEarned(input: NotifyReferrerEarnedInput): Promise<void> {
+  try {
+    if (!input.referrerCustomerId) return;
+    if (!isHighLevelConfigured()) return;
+    const sb = svc();
+    if (!sb) return;
+
+    const { data: customer, error: custErr } = await sb
+      .from('customers')
+      .select('id, name, email, phone, hl_contact_id')
+      .eq('id', input.referrerCustomerId)
+      .maybeSingle<{
+        id: string;
+        name: string | null;
+        email: string | null;
+        phone: string | null;
+        hl_contact_id: string | null;
+      }>();
+    if (custErr) {
+      console.error('[referrals] notifyReferrerEarned customer lookup failed:', custErr);
+      return;
+    }
+    if (!customer || !customer.hl_contact_id) return;
+
+    // Resolve the booked friend's first name for the copy (best-effort — a
+    // lookup miss falls back to generic wording rather than blocking the send).
+    let friendFirstName = 'A friend';
+    if (input.refereeQuoteId) {
+      const { data: refereeQuote } = await sb
+        .from('quotes')
+        .select('customer_name')
+        .eq('id', input.refereeQuoteId)
+        .maybeSingle<{ customer_name: string | null }>();
+      const first = refereeQuote?.customer_name?.trim().split(/\s+/)[0];
+      if (first) friendFirstName = first;
+    }
+
+    const code = await ensureReferralCode(input.referrerCustomerId);
+    const referLink = code ? `${appBaseUrl()}/refer/${code}` : appBaseUrl();
+
+    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+
+    // SMS preferred; email is the fallback channel (no phone on file, or the
+    // SMS send itself failed).
+    if (customer.phone) {
+      try {
+        await sendSms({
+          contactId: customer.hl_contact_id,
+          message: referralEarnedSmsBody(friendFirstName, input.amountUsd, referLink),
+          fromNumber,
+        });
+        return;
+      } catch (err) {
+        console.error('[referrals] notifyReferrerEarned SMS failed, trying email:', err);
+      }
+    }
+    if (customer.email) {
+      try {
+        await sendEmail({
+          contactId: customer.hl_contact_id,
+          subject: REFERRAL_EARNED_EMAIL_SUBJECT,
+          html: referralEarnedEmailHtml(friendFirstName, input.amountUsd, referLink),
+          emailFrom,
+        });
+      } catch (err) {
+        console.error('[referrals] notifyReferrerEarned email failed:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[referrals] notifyReferrerEarned threw (fail-open, no-op):', err);
+  }
 }

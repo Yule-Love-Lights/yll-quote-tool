@@ -588,6 +588,32 @@ export function refundDueEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── Referral earned notification (ledger #41 follow-up) ────────────────────
+// Fired (best-effort, fail-open — see src/lib/referrals.ts notifyReferrerEarned)
+// when a referrer's friend books and the referrer earns their $125 next-season
+// credit — nudges them to refer again while the win is fresh.
+
+export const REFERRAL_EARNED_EMAIL_SUBJECT = 'You just earned a referral credit! 🎁';
+
+export function referralEarnedSmsBody(friendFirstName: string, amountUsd: number, referLink: string): string {
+  return `Great news! ${friendFirstName} just booked with Yule Love Lights, so you've earned ${usd(
+    amountUsd,
+  )} off next season. Refer another friend anytime: ${referLink}`;
+}
+
+export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: number, referLink: string): string {
+  const friend = escapeHtml(friendFirstName);
+  return [
+    `<p>Great news!</p>`,
+    `<p><strong>${friend}</strong> just booked with Yule Love Lights, so you've earned <strong>${usd(
+      amountUsd,
+    )}</strong> off next season.</p>`,
+    `<p>There's no limit, refer another friend anytime:</p>`,
+    `<p><a href="${escapeHtml(referLink)}">${escapeHtml(referLink)}</a></p>`,
+    `<p>Thank you for spreading the word,<br>Yule Love Lights</p>`,
+  ].join('\n');
+}
+
 // ─── Low-stock alert (#82 stock loop) ────────────────────────────────────────
 // A daily digest emailed to staff/purchasing when SKUs hit their reorder point.
 

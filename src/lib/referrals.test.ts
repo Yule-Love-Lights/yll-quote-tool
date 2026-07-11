@@ -11,6 +11,12 @@ const { sbRef, hl } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     upsertContactCustomField: vi.fn(async () => undefined),
+    sendSms: vi.fn(async (_input: { contactId: string; message: string; fromNumber?: string }) => ({
+      messageId: 'sms-1',
+    })),
+    sendEmail: vi.fn(async (_input: { contactId: string; subject: string; html: string; emailFrom?: string }) => ({
+      messageId: 'email-1',
+    })),
     configured: { value: false },
   },
 }));
@@ -22,6 +28,8 @@ vi.mock('./supabase', () => ({
 
 vi.mock('./integrations/highlevel', () => ({
   upsertContactCustomField: hl.upsertContactCustomField,
+  sendSms: hl.sendSms,
+  sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
 }));
 
@@ -36,7 +44,11 @@ import {
   createPendingReferral,
   accrueOnBooking,
   creditBalanceFor,
+  isReferralSpendable,
+  isReferralExpired,
+  notifyReferrerEarned,
   REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
   REFERRAL_FRIEND_SPRITZERS,
 } from './referrals';
 
@@ -44,10 +56,11 @@ import {
 
 type Row = Record<string, unknown>;
 
-function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}) {
+function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[]; quotes?: Row[] } = {}) {
   const tables: Record<string, Row[]> = {
     customers: initial.customers ? initial.customers.map((r) => ({ ...r })) : [],
     referrals: initial.referrals ? initial.referrals.map((r) => ({ ...r })) : [],
+    quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
   };
   let counter = 0;
 
@@ -92,6 +105,27 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
         state.filters.push((r) => (val === null ? r[col] == null : r[col] === val));
         return builder;
       },
+      // Minimal PostgREST .or() DSL parser (mirrors src/lib/customers.test.ts):
+      // supports the two forms creditBalanceFor's expiry guard needs —
+      // `col.is.null` and `col.gt.<iso-string>` — joined by a plain comma (no
+      // nested parens in our usage, so no need for the paren-aware split).
+      or: (condsStr: string) => {
+        const predicates = condsStr.split(',').map((cond) => {
+          const isNullMatch = cond.match(/^([a-z_]+)\.is\.null$/);
+          if (isNullMatch) {
+            const [, col] = isNullMatch;
+            return (r: Row) => r[col] == null;
+          }
+          const gtMatch = cond.match(/^([a-z_]+)\.gt\.(.+)$/);
+          if (gtMatch) {
+            const [, col, val] = gtMatch;
+            return (r: Row) => r[col] != null && String(r[col]) > val;
+          }
+          throw new Error(`unsupported .or() condition in fake: ${cond}`);
+        });
+        state.filters.push((r) => predicates.some((p) => p(r)));
+        return builder;
+      },
       single: async () => {
         if (state.isInsert) {
           if (violatesUnique(table, state.insertRow!)) {
@@ -119,11 +153,15 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       },
       // Used by accrueOnBooking / creditBalanceFor: array-returning update/select
       // (no single row expected) — thenable so `await` resolves it directly.
+      // The fake doesn't implement real column projection (select() is a
+      // no-op above), so an update's .select(...) here returns the FULL
+      // updated row — accrueOnBooking's `.select('id, referrer_customer_id')`
+      // needs referrer_customer_id back to wire notifyReferrerEarned (#41).
       then: (resolve: (v: unknown) => void) => {
         if (state.isUpdate) {
           const targets = match();
           for (const t of targets) Object.assign(t, state.updateRow);
-          resolve({ data: targets.map((t) => ({ id: t.id })), error: null });
+          resolve({ data: targets.map((t) => ({ ...t })), error: null });
           return;
         }
         resolve({ data: match(), error: null });
@@ -138,6 +176,10 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
 beforeEach(() => {
   sbRef.current = null;
   hl.upsertContactCustomField.mockClear();
+  hl.sendSms.mockClear();
+  hl.sendSms.mockResolvedValue({ messageId: 'sms-1' });
+  hl.sendEmail.mockClear();
+  hl.sendEmail.mockResolvedValue({ messageId: 'email-1' });
   hl.configured.value = false;
 });
 
@@ -298,6 +340,30 @@ describe('accrueOnBooking (idempotency)', () => {
     expect(res).toEqual({ accrued: true });
   });
 
+  it('stamps expires_at = booked_at + 2 years in the SAME update (#41 expiry)', async () => {
+    const sb = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'pending', amount_usd: 125 }],
+    });
+    sbRef.current = sb;
+    const before = Date.now();
+    await accrueOnBooking('q1');
+    const readBack = sb.from('referrals') as unknown as { select: (c: string) => Promise<{ data: Row[] }> };
+    const { data } = await readBack.select('*');
+    const booked = data[0];
+    expect(booked.status).toBe('booked');
+    expect(booked.booked_at).toEqual(expect.any(String));
+    expect(booked.expires_at).toEqual(expect.any(String));
+    const bookedAtMs = new Date(booked.booked_at as string).getTime();
+    const expiresAtMs = new Date(booked.expires_at as string).getTime();
+    expect(bookedAtMs).toBeGreaterThanOrEqual(before);
+    expect(REFERRAL_CREDIT_EXPIRY_YEARS).toBe(2);
+    // 2 years later, allowing for leap-year day-count slop (730-731 days).
+    const twoYearsMs = expiresAtMs - bookedAtMs;
+    const days = twoYearsMs / (24 * 60 * 60 * 1000);
+    expect(days).toBeGreaterThanOrEqual(730);
+    expect(days).toBeLessThanOrEqual(731);
+  });
+
   it('is a no-op the SECOND time — a concurrent/retried booking call cannot double-accrue', async () => {
     sbRef.current = makeFakeSupabase({
       referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'pending', amount_usd: 125 }],
@@ -348,11 +414,215 @@ describe('creditBalanceFor', () => {
     sbRef.current = makeFakeSupabase({ referrals: [] });
     expect(await creditBalanceFor('nobody')).toBe(0);
   });
+
+  it('EXCLUDES a booked-but-EXPIRED row from the spendable balance (#41 expiry)', async () => {
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // yesterday
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, expires_at: past },
+        { id: 'r2', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, expires_at: null },
+      ],
+    });
+    // Only r2 (grandfathered NULL expiry) counts — r1 already expired.
+    expect(await creditBalanceFor('c1')).toBe(125);
+  });
+
+  it('INCLUDES a booked row whose expiry is still in the future (#41 expiry)', async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // tomorrow
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, expires_at: future }],
+    });
+    expect(await creditBalanceFor('c1')).toBe(125);
+  });
+
+  it('treats a NULL expires_at as non-expiring — grandfathered pre-column rows (#41 expiry)', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, expires_at: null }],
+    });
+    expect(await creditBalanceFor('c1')).toBe(125);
+  });
+});
+
+describe('isReferralSpendable / isReferralExpired (#41 expiry rule, pure)', () => {
+  const NOW = new Date('2026-07-11T00:00:00.000Z');
+  const past = '2026-01-01T00:00:00.000Z';
+  const future = '2027-01-01T00:00:00.000Z';
+
+  it('a booked row with NO expires_at is spendable (grandfathered) and not expired', () => {
+    expect(isReferralSpendable({ status: 'booked', expires_at: null }, NOW)).toBe(true);
+    expect(isReferralExpired({ status: 'booked', expires_at: null }, NOW)).toBe(false);
+  });
+
+  it('a booked row expiring in the FUTURE is spendable and not expired', () => {
+    expect(isReferralSpendable({ status: 'booked', expires_at: future }, NOW)).toBe(true);
+    expect(isReferralExpired({ status: 'booked', expires_at: future }, NOW)).toBe(false);
+  });
+
+  it('a booked row whose expires_at is in the PAST is not spendable and shows as expired', () => {
+    expect(isReferralSpendable({ status: 'booked', expires_at: past }, NOW)).toBe(false);
+    expect(isReferralExpired({ status: 'booked', expires_at: past }, NOW)).toBe(true);
+  });
+
+  it('a pending row is never spendable and never "expired" (that display status only applies to booked rows)', () => {
+    expect(isReferralSpendable({ status: 'pending', expires_at: past }, NOW)).toBe(false);
+    expect(isReferralExpired({ status: 'pending', expires_at: past }, NOW)).toBe(false);
+  });
+
+  it('a credited row is never spendable (already consumed) and never shows as "expired"', () => {
+    expect(isReferralSpendable({ status: 'credited', expires_at: past }, NOW)).toBe(false);
+    expect(isReferralExpired({ status: 'credited', expires_at: past }, NOW)).toBe(false);
+  });
+});
+
+describe('notifyReferrerEarned (Feature 2, #41 follow-up)', () => {
+  it('sends an SMS to the referrer when they have a phone + linked GHL contact', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', name: 'Jordan Smith', email: 'jordan@example.com', phone: '5165550100', hl_contact_id: 'contact_1', referral_code: 'ABCD1234' }],
+      quotes: [{ id: 'q1', customer_name: 'Sam Rivera' }],
+    });
+    await notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 });
+    expect(hl.sendSms).toHaveBeenCalledTimes(1);
+    expect(hl.sendSms).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contactId: 'contact_1',
+        message: expect.stringContaining('Sam'),
+      }),
+    );
+    expect(hl.sendSms.mock.calls[0][0].message).toContain('$125');
+    expect(hl.sendSms.mock.calls[0][0].message).toContain('/refer/ABCD1234');
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('falls back to email when the referrer has no phone on file', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', name: 'Jordan Smith', email: 'jordan@example.com', phone: null, hl_contact_id: 'contact_1', referral_code: 'ABCD1234' }],
+      quotes: [{ id: 'q1', customer_name: 'Sam Rivera' }],
+    });
+    await notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 });
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail.mock.calls[0][0]).toMatchObject({ contactId: 'contact_1' });
+  });
+
+  it('falls back to email when the SMS send itself fails', async () => {
+    hl.configured.value = true;
+    hl.sendSms.mockRejectedValueOnce(new Error('GHL 500'));
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', name: 'Jordan Smith', email: 'jordan@example.com', phone: '5165550100', hl_contact_id: 'contact_1', referral_code: 'ABCD1234' }],
+      quotes: [{ id: 'q1', customer_name: 'Sam Rivera' }],
+    });
+    await expect(
+      notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 }),
+    ).resolves.toBeUndefined();
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to generic "A friend" copy when the referee quote lookup misses', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', name: 'Jordan Smith', email: null, phone: '5165550100', hl_contact_id: 'contact_1', referral_code: 'ABCD1234' }],
+      quotes: [],
+    });
+    await notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q-missing', amountUsd: 125 });
+    expect(hl.sendSms.mock.calls[0][0].message).toContain('A friend');
+  });
+
+  it('is a clean no-op when referrerCustomerId is null (nothing accrued)', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase();
+    await notifyReferrerEarned({ referrerCustomerId: null, refereeQuoteId: 'q1', amountUsd: 125 });
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('is a clean no-op when GHL is not configured', async () => {
+    hl.configured.value = false;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', phone: '5165550100', email: 'jordan@example.com', hl_contact_id: 'contact_1' }],
+    });
+    await notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 });
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('is a clean no-op when the referrer customer has no linked GHL contact', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', phone: '5165550100', email: 'jordan@example.com', hl_contact_id: null }],
+    });
+    await notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 });
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never throws even when BOTH sends fail (fail-open, no channel left)', async () => {
+    hl.configured.value = true;
+    hl.sendSms.mockRejectedValueOnce(new Error('GHL 500'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL 500'));
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', phone: '5165550100', email: 'jordan@example.com', hl_contact_id: 'contact_1' }],
+    });
+    await expect(
+      notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('never throws when Supabase is not configured', async () => {
+    hl.configured.value = true;
+    sbRef.current = null;
+    await expect(
+      notifyReferrerEarned({ referrerCustomerId: 'c1', refereeQuoteId: 'q1', amountUsd: 125 }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('accrueOnBooking → notifyReferrerEarned wiring (Feature 2 integration)', () => {
+  it('fires the notify exactly ONCE when a row actually flips pending -> booked', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'pending', amount_usd: 125, referrer_customer_id: 'c1' }],
+      customers: [{ id: 'c1', phone: '5165550100', email: null, hl_contact_id: 'contact_1', referral_code: 'ABCD1234' }],
+      quotes: [{ id: 'q1', customer_name: 'Sam Rivera' }],
+    });
+    await accrueOnBooking('q1');
+    expect(hl.sendSms).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT notify when nothing accrued (already booked / no referral for that quote)', async () => {
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'booked', amount_usd: 125, referrer_customer_id: 'c1' }],
+      customers: [{ id: 'c1', phone: '5165550100', hl_contact_id: 'contact_1' }],
+    });
+    const res = await accrueOnBooking('q1');
+    expect(res).toEqual({ accrued: false });
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a notify failure never flips the accrual result to false (accrued stays true)', async () => {
+    hl.configured.value = true;
+    hl.sendSms.mockRejectedValueOnce(new Error('GHL down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'pending', amount_usd: 125, referrer_customer_id: 'c1' }],
+      customers: [{ id: 'c1', phone: '5165550100', email: 'j@example.com', hl_contact_id: 'contact_1' }],
+      quotes: [{ id: 'q1', customer_name: 'Sam Rivera' }],
+    });
+    const res = await accrueOnBooking('q1');
+    expect(res).toEqual({ accrued: true });
+  });
 });
 
 describe('constants', () => {
   it('locks the product terms (Naldo, S30)', () => {
     expect(REFERRAL_CREDIT_USD).toBe(125);
     expect(REFERRAL_FRIEND_SPRITZERS).toEqual({ count: 2, sizeInches: 16 });
+  });
+
+  it('locks the credit expiry window at 2 years (Naldo, #41 follow-up)', () => {
+    expect(REFERRAL_CREDIT_EXPIRY_YEARS).toBe(2);
   });
 });
