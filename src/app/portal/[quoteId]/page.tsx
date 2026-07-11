@@ -356,8 +356,15 @@ export default async function PortalPage({
         {/* 1.5 Light color picker (#48/#57) — the full picker (presets + palette +
             build-your-own). Permanent (#88 P6b-4) uses the SAME picker over its own
             swatch list, so a permanent customer gets full color control too. Only
-            when a design is linked (recolor needs a live scene). */}
-        {quote.design && <LightColorPicker />}
+            when a design is linked (recolor needs a live scene). Positive list
+            (#117): permanent bistro is EXCLUDED — warm-white Edison bulbs only
+            (its FAQ says so), and holiday Red & Green schemes would contradict
+            it. A future vertical must opt in here, not inherit the picker. */}
+        {quote.design &&
+          (quote.serviceType == null ||
+            quote.serviceType === 'holiday' ||
+            quote.serviceType === 'permanent' ||
+            quote.serviceType === 'event') && <LightColorPicker />}
         {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
             row under the color so any color can play any effect. */}
         {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
