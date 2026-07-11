@@ -113,14 +113,16 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       // line items (#12, Jason S12). Runs after attachSceneLinks so design-driven
       // recommended flags are attached; also covers custom-item recommendations
       // the adapter set. No-op (D stays "Build Your Own") when nothing is flagged.
-      // NOT for permanent (#88 P5) OR event (#96): BOTH repurpose package 'D' as a
-      // real bundle (permanent's "Whole Home" front+sides+back; event's single
-      // "Your event lighting"). applyOurRecommendation assumes 'D' is the empty
-      // holiday recommendation slot and would CLOBBER it — dropping items from the
-      // default selection — if any line item is flagged recommended. Neither
-      // vertical has a roofline-recommendation concept, so run this for holiday
-      // only (a null/legacy service_type reads as holiday — the DEFAULT).
-      if (data.service_type !== 'permanent' && data.service_type !== 'event') {
+      // HOLIDAY ONLY (positive-match, #117 review): permanent (#88 P5), event
+      // (#96), and permanent bistro (#117) ALL repurpose package 'D' as a real
+      // bundle (Whole Home / the single event or bistro package).
+      // applyOurRecommendation assumes 'D' is the empty holiday recommendation
+      // slot and would CLOBBER it — dropping items from the default selection —
+      // if any line item is flagged recommended. The old negative gate
+      // (!== permanent && !== event) silently handed that clobber to bistro,
+      // the exact AGENTS.md negative-gate pitfall. A null/legacy service_type
+      // reads as holiday — the DEFAULT.
+      if (data.service_type == null || data.service_type === 'holiday') {
         portal.packages = applyOurRecommendation(
           portal.packages,
           portal.lineItems,

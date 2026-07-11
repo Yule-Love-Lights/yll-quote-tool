@@ -1537,9 +1537,9 @@ export default function QuoteBuilder({
             );
           }
         } else if (form.serviceType === 'permanent_bistro') {
-          // #117: the analyzer may have run server-side (this route has no
-          // permanent_bistro branch yet), but its result is discarded above —
-          // bistro designs manually, so surface that instead of a false "the
+          // #117: bistro is imagery-only (the analyze-address route returns
+          // photos with no analyzer result for permanent_bistro) — bistro
+          // designs manually, so surface that instead of a false "the
           // analyzer is unavailable" warning.
           setAnalysisNotes(
             'Photos loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.',
@@ -2361,7 +2361,7 @@ export default function QuoteBuilder({
                 })}
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
+                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties) · Bistro = permanent café lights.
               </p>
             </div>
           </Section>

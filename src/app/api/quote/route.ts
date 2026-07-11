@@ -510,7 +510,7 @@ export async function POST(req: NextRequest) {
     if (!isPermanent && isValidDesignId(designId)) {
       const design = await getDesign(designId);
       if (design?.scene) {
-        quoteInputs = applyProjectionToInputs(quoteInputs, design.scene);
+        quoteInputs = applyProjectionToInputs(quoteInputs, design.scene, effectiveServiceType);
       }
     }
 
