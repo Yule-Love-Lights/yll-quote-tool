@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   deriveStatus,
   canTransition,
+  canRevive,
   isQuoteStatus,
   isPortalActionable,
   QUOTE_STATUSES,
@@ -192,5 +193,105 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
     expect(isPortalActionable(null)).toBe(true);
     expect(isPortalActionable(undefined)).toBe(true);
     expect(isPortalActionable('some-future-status')).toBe(true);
+  });
+});
+
+describe('canRevive — #116 re-send half (revive a dead quote in place)', () => {
+  it('is true only for declined and lost', () => {
+    expect(canRevive('declined')).toBe(true);
+    expect(canRevive('lost')).toBe(true);
+  });
+
+  it('is false for cancelled (post-booking — refunds are manual, rebook-only)', () => {
+    expect(canRevive('cancelled')).toBe(false);
+  });
+
+  it('is false for every non-terminal status', () => {
+    for (const s of ['draft', 'sent', 'viewed', 'approved', 'booked', 'changes_requested'] as const) {
+      expect(canRevive(s)).toBe(false);
+    }
+  });
+});
+
+describe('deriveStatus — after a #116 revive write (the resurrection proof)', () => {
+  // The revive write does: quote_sent_at = now, status = 'sent',
+  // customer_approved_at = null, viewed_at = null. `sent` is NOT in
+  // deriveStatus's TERMINAL_OR_BRANCH set, so the persisted status column is
+  // NOT trusted on its own — the timestamp fallback still runs underneath it.
+  // These tests prove that fallback lands on 'sent', not a resurrected
+  // 'approved'/'viewed'/'declined', for every shape a revived row can carry.
+
+  it('a revived declined quote (that was NEVER approved) derives to sent', () => {
+    // Declined straight from sent/viewed — customer_approved_at was never set.
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z', // re-stamped by the revive
+          status: 'sent',
+        }),
+      ),
+    ).toBe('sent');
+  });
+
+  it('a revived declined quote that WAS approved-then-declined (#124) does not resurrect to approved', () => {
+    // #124 lets 'declined' fire from 'approved', so a declined row can carry a
+    // stale customer_approved_at. If the revive write didn't clear it, the
+    // un-guarded timestamp fallback would read 'approved', not 'sent'.
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z',
+          customer_approved_at: null, // revive write clears this
+          status: 'sent',
+        }),
+      ),
+    ).toBe('sent');
+    // Prove the negative: WITHOUT clearing it, the same row resurrects to approved.
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z',
+          customer_approved_at: '2026-06-01T00:00:00Z', // stale, not cleared
+          status: 'sent',
+        }),
+      ),
+    ).toBe('approved');
+  });
+
+  it('a revived quote that was VIEWED before it was declined does not resurrect to viewed', () => {
+    // viewed_at also outranks quote_sent_at in the fallback cascade, so it must
+    // be cleared too, independent of customer_approved_at.
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z',
+          viewed_at: null, // revive write clears this
+          status: 'sent',
+        }),
+      ),
+    ).toBe('sent');
+    // Prove the negative: a stale viewed_at alone resurrects to viewed.
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z',
+          viewed_at: '2026-06-01T00:00:01Z', // stale, not cleared
+          status: 'sent',
+        }),
+      ),
+    ).toBe('viewed');
+  });
+
+  it('a revived lost quote derives to sent the same way (lost and declined share the fix)', () => {
+    expect(
+      deriveStatus(
+        ts({
+          quote_sent_at: '2026-07-11T12:00:00Z',
+          customer_approved_at: null,
+          viewed_at: null,
+          status: 'sent',
+        }),
+      ),
+    ).toBe('sent');
   });
 });

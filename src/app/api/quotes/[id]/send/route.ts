@@ -8,9 +8,15 @@
 // ?retryGhl re-runs ONLY the GHL stage-sync for an already-sent quote whose
 //   pipeline card never advanced (ghl_stage_synced_at IS NULL) — no re-stamp,
 //   no re-message (audit fix: send-route-ghl-sync-state).
+// #116 (re-send half): a DECLINED or LOST quote is revivable — this route
+//   treats it as a fresh send (re-stamp quote_sent_at + status='sent',
+//   re-message the customer, re-advance the GHL card to Bid Sent) instead of
+//   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
+//   (post-booking — refunds are manual, rebook-only). A revive with
+//   deposit_paid_at already set is refused 409 (fail closed).
 // Response:
 //   { ok: true, sentAt: ISO, stageUpdated: boolean, ghlSynced: boolean,
-//     ghlRetry: boolean, alreadySent?: boolean }
+//     ghlRetry: boolean, alreadySent?: boolean, revived?: true }
 //   { error: string, code?: string }
 //
 // What happens:
@@ -46,7 +52,7 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { deriveStatus, canRevive } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -174,6 +180,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     status: (quote.status as import('@/lib/quoteStatus').QuoteStatus | null) ?? null,
   });
   const isResend = currentStatus === 'changes_requested';
+  // #116 (re-send half): declined/lost are REVIVABLE — the operator re-sends
+  // the SAME quote instead of rebooking a new draft. Deliberately a scoped
+  // bypass here (canRevive), NOT a widened ALLOWED_TRANSITIONS entry — see
+  // quoteStatus.ts. 'cancelled' is excluded (post-booking; refunds are
+  // manual, rebook-only).
+  const isRevive = canRevive(currentStatus);
+
+  // Money guard, fail closed: a revivable status shouldn't carry a paid
+  // deposit (the decline routes guard their write on deposit_paid_at IS
+  // NULL), but a data-drifted row must never sneak a paid quote back open.
+  // Checked before any write.
+  if (isRevive && quote.deposit_paid_at) {
+    return NextResponse.json(
+      {
+        error: 'Cannot revive a quote with a deposit already paid — refunds are manual.',
+        code: 'deposit-paid',
+      },
+      { status: 409 },
+    );
+  }
+
   // Bug fix (W1-017): the ?retryGhl reconcile must also check the CURRENT status.
   // ghl_stage_synced_at only tracks the SEND-stage sync, so if the original send's
   // card move failed it stays NULL forever — keeping the retry affordance live even
@@ -187,7 +214,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     retryGhl &&
     quote.ghl_stage_synced_at == null &&
     (currentStatus === 'sent' || currentStatus === 'viewed');
-  if (quote.quote_sent_at && !isGhlRetry && !isResend) {
+  if (quote.quote_sent_at && !isGhlRetry && !isResend && !isRevive) {
     return NextResponse.json({
       ok: true,
       sentAt: quote.quote_sent_at,
@@ -215,8 +242,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // On a GHL-only retry the quote keeps its original sent timestamp.
-  // On a resend (changes_requested → sent) we re-stamp with the current
-  // time so the audit trail reflects when the revised quote was delivered.
+  // On a resend (changes_requested → sent) or a revive (declined/lost → sent)
+  // we re-stamp with the current time so the audit trail reflects when the
+  // quote was (re-)delivered.
   const sentAt = (isGhlRetry && !isResend)
     ? (quote.quote_sent_at ?? new Date().toISOString())
     : new Date().toISOString();
@@ -224,12 +252,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Stamp the DB FIRST (fresh send only), before the HL call, so we don't
   // double-fire the stage move on retries. Same pattern as /approve.
   if (!isGhlRetry) {
+    // Advance the explicit lifecycle status alongside the timestamp (ledger
+    // #83). quote_sent_at stays the idempotency key; status mirrors it so the
+    // explicit-status read path agrees with deriveStatus().
+    const stampPayload: Record<string, unknown> = { quote_sent_at: sentAt, status: 'sent' };
+    if (isRevive) {
+      // #116: force deriveStatus to read 'sent' the moment this row is next
+      // loaded. deriveStatus only trusts a persisted status for the
+      // declined/cancelled/lost/changes_requested branch states — NOT 'sent'
+      // — so writing status='sent' alone falls straight through to the
+      // timestamp fallback underneath it. A declined quote can carry a stale
+      // customer_approved_at (#124 lets decline fire from 'approved') and/or
+      // a stale viewed_at from the ORIGINAL send; either would independently
+      // outrank quote_sent_at in that fallback and resurrect the quote to
+      // 'approved'/'viewed' instead of 'sent'. Clear both. decline_reason /
+      // approval_snapshot are left untouched — they don't feed deriveStatus
+      // and are useful history ("declined once, revived on <date>").
+      stampPayload.customer_approved_at = null;
+      stampPayload.viewed_at = null;
+    }
     const { error: stampErr } = await sb
       .from('quotes')
-      // Advance the explicit lifecycle status alongside the timestamp (ledger
-      // #83). quote_sent_at stays the idempotency key; status mirrors it so the
-      // explicit-status read path agrees with deriveStatus().
-      .update({ quote_sent_at: sentAt, status: 'sent' })
+      .update(stampPayload)
       .eq('id', id);
     if (stampErr) {
       console.error('[api/quotes/:id/send] stamp failed:', stampErr);
@@ -455,5 +499,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     messageError,
     // Task 10 — channel split: echo the resolved channel for observability.
     channel,
+    // #116: flags a revive run (declined/lost → sent on the SAME quote) so
+    // the operator UI can distinguish it from a fresh/first send.
+    ...(isRevive ? { revived: true } : {}),
   });
 }

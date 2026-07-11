@@ -424,6 +424,195 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
   });
 });
 
+describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', () => {
+  it('revives a DECLINED quote: re-stamps status=sent + quote_sent_at, fires messaging, echoes revived:true', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-20T00:00:01Z',
+      status: 'declined',
+      decline_reason: 'Went with a competitor',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.alreadySent).toBeUndefined();
+    expect(json.revived).toBe(true);
+    // status re-stamped to 'sent', quote_sent_at re-stamped to a fresh time
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(stampWrite!.quote_sent_at).not.toBe('2026-06-20T00:00:00Z');
+    // messaging + GHL card move fired, same as any fresh send
+    expect(hl.sendSms).toHaveBeenCalled();
+    expect(hl.sendEmail).toHaveBeenCalled();
+    expect(hl.updateOpportunity).toHaveBeenCalled();
+  });
+
+  it('revives a LOST quote the same way', async () => {
+    const lost = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'lost',
+    };
+    const { client, updatePayloads } = makeSb(lost);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.revived).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(hl.sendSms).toHaveBeenCalled();
+  });
+
+  it('a revive write clears customer_approved_at + viewed_at (the deriveStatus resurrection proof)', async () => {
+    // #124 lets declined fire from 'approved', so a declined row CAN carry a
+    // stale customer_approved_at (and viewed_at, from the original send). If
+    // the revive write didn't clear both, deriveStatus's timestamp fallback
+    // would read 'approved'/'viewed' instead of 'sent' on the very next load
+    // (see quoteStatus.test.ts — deriveStatus only trusts the persisted
+    // status column for declined/cancelled/lost/changes_requested, NOT sent).
+    const approvedThenDeclined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      viewed_at: '2026-06-20T01:00:00Z',
+      customer_approved_at: '2026-06-21T00:00:00Z',
+      status: 'declined',
+    };
+    const { client, updatePayloads } = makeSb(approvedThenDeclined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(stampWrite!.customer_approved_at).toBeNull();
+    expect(stampWrite!.viewed_at).toBeNull();
+  });
+
+  it('refuses to revive a DECLINED quote with a deposit already paid — 409, fail closed, no writes', async () => {
+    // Belt-and-braces: canRevive statuses shouldn't carry a paid deposit (the
+    // decline routes guard on deposit_paid_at IS NULL), but a data-drifted row
+    // must never sneak a paid quote back open.
+    const paidButDeclined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      deposit_paid_at: '2026-06-19T00:00:00Z',
+      status: 'declined',
+    };
+    const { client, updatePayloads } = makeSb(paidButDeclined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(typeof json.error).toBe('string');
+    expect(updatePayloads.length).toBe(0);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a CANCELLED quote does NOT revive — still short-circuits alreadySent (rebook-only, #116)', async () => {
+    const cancelled = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      ghl_stage_synced_at: '2026-06-20T00:00:01Z',
+      status: 'cancelled',
+    };
+    const { client, updatePayloads } = makeSb(cancelled);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.revived).toBeUndefined();
+    expect(updatePayloads.length).toBe(0);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  it('double-click idempotency: a second revive call short-circuits as alreadySent (parity with changes_requested resend)', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+    };
+    const { client } = makeSb(declined);
+    sbRef.current = client;
+
+    const first = await POST(makeReq(), { params });
+    expect((await first.json()).revived).toBe(true);
+
+    // Simulate the row as it reads immediately after the first revive:
+    // status='sent', quote_sent_at re-stamped, customer_approved_at/viewed_at
+    // cleared — a second call against THAT row must behave like any other
+    // already-sent quote, not re-revive or double-message.
+    const nowSent = { ...declined, status: 'sent', customer_approved_at: null, viewed_at: null };
+    const { client: client2 } = makeSb(nowSent);
+    sbRef.current = client2;
+    vi.clearAllMocks();
+    hl.configured.value = true;
+
+    const second = await POST(makeReq(), { params });
+    const json2 = await second.json();
+    expect(json2.alreadySent).toBe(true);
+    expect(hl.sendSms).not.toHaveBeenCalled();
+  });
+
+  it('an is_test declined quote revives like any test send: stamps sent, never messages or moves a real GHL card', async () => {
+    const testDeclined = {
+      ...FRESH_QUOTE,
+      highlevel_contact_id: null,
+      highlevel_opportunity_id: null,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      is_test: true,
+    };
+    const { client, updatePayloads } = makeSb(testDeclined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.revived).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  it('preserves decline_reason / approval_snapshot audit fields — the revive write never touches them', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      decline_reason: 'Too expensive',
+      approval_snapshot: { staffDeclined: { by: 'ops@example.com', at: '2026-06-20T00:00:00Z', reason: null } },
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    // No write ever touches decline_reason or approval_snapshot — they're left
+    // as historical audit trail (the row still HAS them; we just never wrote them).
+    expect(updatePayloads.some((p) => 'decline_reason' in p)).toBe(false);
+    expect(updatePayloads.some((p) => 'approval_snapshot' in p)).toBe(false);
+  });
+});
+
 describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipeline sync)', () => {
   it('a permanent quote moves its card in the PERMANENT pipeline, ignoring the legacy env vars', async () => {
     const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'permanent' });
