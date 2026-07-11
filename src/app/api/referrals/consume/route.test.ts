@@ -40,7 +40,7 @@ function makeReq(body: unknown): NextRequest {
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
-  getQuoteRawMock.mockResolvedValue({ id: QUOTE_ID, result: { subtotalBeforeDiscount: 2000 } });
+  getQuoteRawMock.mockResolvedValue({ id: QUOTE_ID, customer_id: CUSTOMER_ID, is_test: false, result: { subtotalBeforeDiscount: 2000 } });
   creditBalanceForMock.mockResolvedValue(250);
   consumeCreditsMock.mockResolvedValue({
     consumed: true,
@@ -67,6 +67,25 @@ describe('POST /api/referrals/consume', () => {
     expect(res.status).toBe(404);
   });
 
+  // #41 adversarial-review LOW fix: reject before ever touching the balance/
+  // consume paths — a mismatched pair or a test quote must never mutate the
+  // real referral ledger.
+  it('400s when the quote is not linked to that customer — never checks the balance', async () => {
+    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, customer_id: 'a-different-customer', is_test: false, result: { subtotalBeforeDiscount: 2000 } });
+    const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
+    expect(res.status).toBe(400);
+    expect(creditBalanceForMock).not.toHaveBeenCalled();
+    expect(consumeCreditsMock).not.toHaveBeenCalled();
+  });
+
+  it('400s when the quote is a test quote — never checks the balance', async () => {
+    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, customer_id: CUSTOMER_ID, is_test: true, result: { subtotalBeforeDiscount: 2000 } });
+    const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
+    expect(res.status).toBe(400);
+    expect(creditBalanceForMock).not.toHaveBeenCalled();
+    expect(consumeCreditsMock).not.toHaveBeenCalled();
+  });
+
   it('409s (no-credit) when the customer has no balance — never calls consumeCredits', async () => {
     creditBalanceForMock.mockResolvedValueOnce(0);
     const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
@@ -77,7 +96,7 @@ describe('POST /api/referrals/consume', () => {
   });
 
   it('409s (no-subtotal) when the quote has not been Calculated yet (subtotal 0)', async () => {
-    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, result: null });
+    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, customer_id: CUSTOMER_ID, is_test: false, result: null });
     const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
     const json = await res.json();
     expect(res.status).toBe(409);
@@ -86,7 +105,7 @@ describe('POST /api/referrals/consume', () => {
   });
 
   it('applies min(balance, subtotal) — clamps the discount to the CHEAPER quote, not the whole balance', async () => {
-    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, result: { subtotalBeforeDiscount: 80 } });
+    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, customer_id: CUSTOMER_ID, is_test: false, result: { subtotalBeforeDiscount: 80 } });
     creditBalanceForMock.mockResolvedValueOnce(250);
     const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
     const json = await res.json();

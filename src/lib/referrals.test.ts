@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Referral program PR 1 (ledger #41). The pure code generator is tested
 // directly; the DB helpers run against a small in-memory Supabase fake
@@ -35,9 +35,15 @@ import {
   getReferralByCode,
   createPendingReferral,
   accrueOnBooking,
+  releaseAccrualOnCancel,
   creditBalanceFor,
   refereeReferralFor,
   consumeCredits,
+  releaseCredits,
+  listReferralsFor,
+  getReferralPhotoOptout,
+  setReferralPhotoOptout,
+  hasRecentPendingLinkReferral,
   REFERRAL_CREDIT_USD,
   REFERRAL_FRIEND_SPRITZERS,
 } from './referrals';
@@ -46,12 +52,16 @@ import {
 
 type Row = Record<string, unknown>;
 
-function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}) {
+function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[]; quotes?: Row[] } = {}) {
   const tables: Record<string, Row[]> = {
     customers: initial.customers ? initial.customers.map((r) => ({ ...r })) : [],
     referrals: initial.referrals ? initial.referrals.map((r) => ({ ...r })) : [],
+    quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
   };
   let counter = 0;
+  // Query-count proxy for "no N+1" assertions: one `.from(table)` call = one
+  // round-trip query, since every real Supabase query chain starts with it.
+  const fromCalls: Record<string, number> = {};
 
   function violatesUnique(table: string, row: Row): boolean {
     if (table === 'customers' && row.referral_code != null) {
@@ -64,6 +74,7 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
   }
 
   function from(table: string) {
+    fromCalls[table] = (fromCalls[table] ?? 0) + 1;
     const rows = tables[table] ?? (tables[table] = []);
     const state = {
       insertRow: null as Row | null,
@@ -107,6 +118,14 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       },
       is: (col: string, val: null) => {
         state.filters.push((r) => (val === null ? r[col] == null : r[col] === val));
+        return builder;
+      },
+      in: (col: string, vals: unknown[]) => {
+        state.filters.push((r) => vals.includes(r[col]));
+        return builder;
+      },
+      gte: (col: string, val: string) => {
+        state.filters.push((r) => (r[col] as string) >= val);
         return builder;
       },
       order: (col: string, opts?: { ascending?: boolean }) => {
@@ -156,7 +175,7 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
     return builder;
   }
 
-  return { from };
+  return { from, fromCalls };
 }
 
 beforeEach(() => {
@@ -346,6 +365,70 @@ describe('createPendingReferral', () => {
   });
 });
 
+// #41 adversarial-review LOW fix: the submit route's duplicate-submit guard.
+// A resubmitted/refreshed landing-page form (same phone, same referrer)
+// shouldn't mint a second GHL contact + pending referral row.
+describe('hasRecentPendingLinkReferral (submit dedupe)', () => {
+  const NOW = '2026-03-10T12:00:00Z';
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('is true when an identical (normalized) phone already has a pending link row for the SAME referrer, recently', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        {
+          id: 'r1', referrer_customer_id: 'c1', source: 'link', status: 'pending',
+          referee_contact_phone: '(516) 555-0123', created_at: '2026-03-10T10:00:00Z',
+        },
+      ],
+    });
+    // A different formatting of the SAME number — normalizePhone collapses both.
+    expect(await hasRecentPendingLinkReferral('c1', '5165550123')).toBe(true);
+  });
+
+  it('is false when the phone differs', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', source: 'link', status: 'pending', referee_contact_phone: '5165550999', created_at: '2026-03-10T10:00:00Z' },
+      ],
+    });
+    expect(await hasRecentPendingLinkReferral('c1', '5165550123')).toBe(false);
+  });
+
+  it('is false for a DIFFERENT referrer with the same phone', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c-other', source: 'link', status: 'pending', referee_contact_phone: '5165550123', created_at: '2026-03-10T10:00:00Z' },
+      ],
+    });
+    expect(await hasRecentPendingLinkReferral('c1', '5165550123')).toBe(false);
+  });
+
+  it('is false when the matching row is OUTSIDE the recent window', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', source: 'link', status: 'pending', referee_contact_phone: '5165550123', created_at: '2026-03-01T00:00:00Z' },
+      ],
+    });
+    expect(await hasRecentPendingLinkReferral('c1', '5165550123')).toBe(false);
+  });
+
+  it('is false when there is no pending link row at all', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await hasRecentPendingLinkReferral('c1', '5165550123')).toBe(false);
+  });
+
+  it('never throws when Supabase is not configured — fail-open (a lookup hiccup must never block a genuine new lead)', async () => {
+    sbRef.current = null;
+    await expect(hasRecentPendingLinkReferral('c1', '5165550123')).resolves.toBe(false);
+  });
+});
+
 describe('accrueOnBooking (idempotency)', () => {
   it('flips a pending referral for the referee quote to booked + stamps booked_at', async () => {
     sbRef.current = makeFakeSupabase({
@@ -373,6 +456,51 @@ describe('accrueOnBooking (idempotency)', () => {
   it('never throws when Supabase is not configured — fail-open for the payment path', async () => {
     sbRef.current = null;
     await expect(accrueOnBooking('q1')).resolves.toEqual({ accrued: false });
+  });
+});
+
+// #41 adversarial-review fix: a cancelled order never happened, so a
+// referrer must not keep 'booked' credit it earned for it. Mirrors
+// accrueOnBooking's exact fail-open + conditional-claim idiom, just the
+// reverse direction (booked -> pending instead of pending -> booked).
+describe('releaseAccrualOnCancel (cancellation reversal)', () => {
+  it('flips a BOOKED referral for the cancelled quote back to pending + clears booked_at', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'booked', booked_at: '2026-02-01T00:00:00Z', amount_usd: 125 }],
+    });
+    const res = await releaseAccrualOnCancel('q1');
+    expect(res).toEqual({ released: true });
+    const row = await refereeReferralFor('q1');
+    expect(row?.status).toBe('pending');
+  });
+
+  it('leaves a CREDITED row alone — a spent credit is a manual/accounting matter, not auto-reversed', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referee_quote_id: 'q1', status: 'credited', credited_at: '2026-03-01T00:00:00Z', credited_quote_id: 'q-spend', amount_usd: 125 },
+      ],
+    });
+    const res = await releaseAccrualOnCancel('q1');
+    expect(res).toEqual({ released: false });
+    const row = await refereeReferralFor('q1');
+    expect(row?.status).toBe('credited'); // untouched
+  });
+
+  it('is a no-op when no booked referral exists for that quote (most cancellations have none)', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await releaseAccrualOnCancel('q-no-referral')).toEqual({ released: false });
+  });
+
+  it('never throws when Supabase is not configured — fail-open (must never break cancel)', async () => {
+    sbRef.current = null;
+    await expect(releaseAccrualOnCancel('q1')).resolves.toEqual({ released: false });
+  });
+
+  it('fails open when the update call itself throws — must never break the cancel it is called from', async () => {
+    sbRef.current = { from: () => { throw new Error('boom'); } };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(releaseAccrualOnCancel('q1')).resolves.toEqual({ released: false });
+    errSpy.mockRestore();
   });
 });
 
@@ -505,5 +633,278 @@ describe('consumeCredits (redemption, PR 2)', () => {
       consumedUsd: 0,
       newBalanceUsd: 0,
     });
+  });
+});
+
+// #41 adversarial-review MED fix: the "Remove referral credit" undo — the
+// exact atomic-claim idiom as consumeCredits, reversed (credited -> booked
+// instead of booked -> credited), scoped to THIS quote's own credited rows.
+describe('releaseCredits (undo redemption)', () => {
+  it('flips ALL rows this quote credited back to booked, clearing credited_at/credited_quote_id', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'credited', credited_at: '2026-03-01T00:00:00Z', credited_quote_id: 'q-spend', amount_usd: 125 },
+        { id: 'r2', referrer_customer_id: 'c1', status: 'credited', credited_at: '2026-03-01T00:00:00Z', credited_quote_id: 'q-spend', amount_usd: 125 },
+      ],
+    });
+    const res = await releaseCredits('c1', 'q-spend');
+    expect(res.released).toBe(true);
+    expect(res.releasedRowIds.sort()).toEqual(['r1', 'r2']);
+    expect(res.releasedUsd).toBe(250);
+    expect(await creditBalanceFor('c1')).toBe(250); // spendable again
+  });
+
+  it('only touches rows credited to THIS quote — a different quote\'s credited row is untouched', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'credited', credited_quote_id: 'q-spend-A', amount_usd: 125 },
+        { id: 'r2', referrer_customer_id: 'c1', status: 'credited', credited_quote_id: 'q-spend-B', amount_usd: 125 },
+      ],
+    });
+    const res = await releaseCredits('c1', 'q-spend-A');
+    expect(res.released).toBe(true);
+    expect(res.releasedRowIds).toEqual(['r1']);
+    // q-spend-B's row is untouched — still credited, still spent.
+    expect(await creditBalanceFor('c1')).toBe(125); // only r1 became spendable again
+  });
+
+  it('only touches rows for THIS referrer — a different customer\'s row credited to the same quote id is untouched (defense in depth)', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'credited', credited_quote_id: 'q-spend', amount_usd: 125 },
+        { id: 'r2', referrer_customer_id: 'c-other', status: 'credited', credited_quote_id: 'q-spend', amount_usd: 125 },
+      ],
+    });
+    const res = await releaseCredits('c1', 'q-spend');
+    expect(res.releasedRowIds).toEqual(['r1']);
+    expect(await creditBalanceFor('c-other')).toBe(0); // c-other's row untouched
+  });
+
+  it('is idempotent — calling it again after a successful release finds zero credited rows', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referrer_customer_id: 'c1', status: 'credited', credited_quote_id: 'q-spend', amount_usd: 125 }],
+    });
+    const first = await releaseCredits('c1', 'q-spend');
+    const second = await releaseCredits('c1', 'q-spend');
+    expect(first).toEqual({ released: true, releasedRowIds: ['r1'], releasedUsd: 125 });
+    expect(second).toEqual({ released: false, releasedRowIds: [], releasedUsd: 0 });
+  });
+
+  it('is a no-op when this quote never credited anything for this customer', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await releaseCredits('c1', 'q-spend')).toEqual({ released: false, releasedRowIds: [], releasedUsd: 0 });
+  });
+
+  it('never throws when Supabase is not configured — fail-open', async () => {
+    sbRef.current = null;
+    await expect(releaseCredits('c1', 'q-spend')).resolves.toEqual({
+      released: false,
+      releasedRowIds: [],
+      releasedUsd: 0,
+    });
+  });
+});
+
+// ─── Customer profile panel (PR 2) ─────────────────────────────────────────
+
+describe('listReferralsFor', () => {
+  it('returns rows newest-first with a summary rolled up by status', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        {
+          id: 'r1',
+          referrer_customer_id: 'c1',
+          referee_quote_id: null,
+          referee_contact_name: 'Sam Rivera',
+          source: 'link',
+          status: 'pending',
+          amount_usd: 125,
+          booked_at: null,
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 'r2',
+          referrer_customer_id: 'c1',
+          referee_quote_id: 'q2',
+          referee_contact_name: 'Jordan Lee',
+          source: 'mention',
+          status: 'booked',
+          amount_usd: 125,
+          booked_at: '2026-02-15T00:00:00Z',
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-02-01T00:00:00Z',
+        },
+        {
+          id: 'r3',
+          referrer_customer_id: 'c1',
+          referee_quote_id: 'q3',
+          referee_contact_name: 'Alex Chen',
+          source: 'mention',
+          status: 'credited',
+          amount_usd: 125,
+          booked_at: '2026-01-15T00:00:00Z',
+          credited_at: '2026-03-01T00:00:00Z',
+          credited_quote_id: 'q-spend',
+          created_at: '2026-01-05T00:00:00Z',
+        },
+        {
+          id: 'r-other',
+          referrer_customer_id: 'c-someone-else',
+          referee_quote_id: null,
+          referee_contact_name: 'Not This Customer',
+          source: 'link',
+          status: 'pending',
+          amount_usd: 125,
+          booked_at: null,
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-02-10T00:00:00Z',
+        },
+      ],
+    });
+
+    const { items, summary } = await listReferralsFor('c1');
+
+    expect(items.map((i) => i.id)).toEqual(['r2', 'r3', 'r1']); // newest created_at first, other customer excluded
+    expect(items[0]).toMatchObject({ id: 'r2', displayName: 'Jordan Lee', status: 'booked', amountUsd: 125 });
+    expect(summary).toEqual({
+      pendingCount: 1,
+      bookedCount: 1,
+      creditedCount: 1,
+      spendableUsd: 125, // only the 'booked' row (r2) is spendable
+      lifetimeEarnedUsd: 250, // booked (r2) + credited (r3)
+    });
+  });
+
+  it('falls back to the referee quote customer_name in ONE batched lookup when no contact name is on file', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        {
+          id: 'r1',
+          referrer_customer_id: 'c1',
+          referee_quote_id: 'q1',
+          referee_contact_name: null,
+          source: 'mention',
+          status: 'booked',
+          amount_usd: 125,
+          booked_at: '2026-01-02T00:00:00Z',
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 'r2',
+          referrer_customer_id: 'c1',
+          referee_quote_id: 'q2',
+          referee_contact_name: null,
+          source: 'mention',
+          status: 'pending',
+          amount_usd: 125,
+          booked_at: null,
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      quotes: [
+        { id: 'q1', customer_name: 'Taylor from the quote' },
+        { id: 'q2', customer_name: 'Morgan from the quote' },
+      ],
+    });
+
+    const { items } = await listReferralsFor('c1');
+    expect(items.find((i) => i.id === 'r1')?.displayName).toBe('Taylor from the quote');
+    expect(items.find((i) => i.id === 'r2')?.displayName).toBe('Morgan from the quote');
+    // The real no-N+1 assertion: exactly ONE `.from('quotes')` round-trip
+    // covers BOTH rows' name fallback, not one query per row.
+    expect((sbRef.current as { fromCalls: Record<string, number> }).fromCalls.quotes).toBe(1);
+  });
+
+  it('falls back to a plain label when neither a contact name nor a quote name is available', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        {
+          id: 'r1',
+          referrer_customer_id: 'c1',
+          referee_quote_id: null,
+          referee_contact_name: null,
+          source: 'link',
+          status: 'pending',
+          amount_usd: 125,
+          booked_at: null,
+          credited_at: null,
+          credited_quote_id: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    const { items } = await listReferralsFor('c1');
+    expect(items[0].displayName).toBe('Unnamed friend');
+  });
+
+  it('returns an empty result for a customer with no referrals', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await listReferralsFor('c1')).toEqual({
+      items: [],
+      summary: { pendingCount: 0, bookedCount: 0, creditedCount: 0, spendableUsd: 0, lifetimeEarnedUsd: 0 },
+    });
+  });
+
+  it('returns an empty result when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listReferralsFor('c1')).toEqual({
+      items: [],
+      summary: { pendingCount: 0, bookedCount: 0, creditedCount: 0, spendableUsd: 0, lifetimeEarnedUsd: 0 },
+    });
+  });
+});
+
+describe('getReferralPhotoOptout / setReferralPhotoOptout', () => {
+  it('reads the current flag off the customer row (false = use their photo)', async () => {
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: 'ABCD1234', referral_photo_optout: false }],
+    });
+    expect(await getReferralPhotoOptout('c1')).toBe(false);
+  });
+
+  it('reads a true opt-out', async () => {
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: 'ABCD1234', referral_photo_optout: true }],
+    });
+    expect(await getReferralPhotoOptout('c1')).toBe(true);
+  });
+
+  it('defaults to false (use their photo) when the customer row has no flag set', async () => {
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: 'ABCD1234' }],
+    });
+    expect(await getReferralPhotoOptout('c1')).toBe(false);
+  });
+
+  it('defaults to false when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await getReferralPhotoOptout('c1')).toBe(false);
+  });
+
+  it('sets the flag and a subsequent read reflects it', async () => {
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: 'ABCD1234', referral_photo_optout: false }],
+    });
+    const ok = await setReferralPhotoOptout('c1', true);
+    expect(ok).toBe(true);
+    expect(await getReferralPhotoOptout('c1')).toBe(true);
+  });
+
+  it('returns false when the customer row does not exist', async () => {
+    sbRef.current = makeFakeSupabase({ customers: [] });
+    expect(await setReferralPhotoOptout('missing', true)).toBe(false);
+  });
+
+  it('returns false when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await setReferralPhotoOptout('c1', true)).toBe(false);
   });
 });

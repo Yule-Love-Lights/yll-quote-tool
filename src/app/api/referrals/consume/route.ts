@@ -49,6 +49,17 @@ export async function POST(req: NextRequest) {
   if (!quote) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
+  // #41 adversarial-review LOW fix: reject a mismatched customer/quote pair
+  // or a test quote BEFORE touching the balance or consuming anything — a
+  // stale/mistaken pairing must never apply one customer's credit as a
+  // discount on a DIFFERENT customer's quote, and test quotes must never
+  // touch the real referral ledger.
+  if (quote.customer_id !== customerId) {
+    return NextResponse.json({ error: 'This quote is not linked to that customer' }, { status: 400 });
+  }
+  if (quote.is_test) {
+    return NextResponse.json({ error: 'Test quotes cannot redeem referral credit' }, { status: 400 });
+  }
 
   const balance = await creditBalanceFor(customerId);
   if (balance <= 0) {

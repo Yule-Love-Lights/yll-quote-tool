@@ -4,6 +4,10 @@
 // POSTs to /api/referrals/submit (public, rate-limited, re-validates the code
 // server-side). Fires `referral_form_submitted` via the fail-open PostHog
 // track() on a successful submit — mirrors QuoteViewTracker's usage.
+//
+// #41 adversarial-review LOW fix: attribute by `code` alone (see
+// ReferralPageTracker's own note) — the route re-derives the referrer from
+// the code server-side anyway, so the client never needs their customer id.
 
 import { useState, type FormEvent } from 'react';
 import { track } from '@/lib/analytics/posthog';
@@ -12,7 +16,7 @@ const inputClass =
   'w-full rounded-lg bg-[#060B0F] border border-[#1F2A23] px-3.5 py-2.5 text-[15px] text-[#F4ECD8] placeholder:text-[#5A5648] focus:outline-none focus:ring-2 focus:ring-[#FFB744]';
 const labelClass = 'block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#FFB744] mb-1.5';
 
-export function ReferralForm({ code, referrerCustomerId }: { code: string; referrerCustomerId: string }) {
+export function ReferralForm({ code }: { code: string }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
@@ -43,7 +47,7 @@ export function ReferralForm({ code, referrerCustomerId }: { code: string; refer
         setStatus('error');
         return;
       }
-      track('referral_form_submitted', { referrer_customer_id: referrerCustomerId, code });
+      track('referral_form_submitted', { code });
       setStatus('done');
     } catch {
       setErrorMsg('Something went wrong. Please call us instead.');

@@ -305,6 +305,11 @@ export async function updateQuote(
   // Only written when provided — omitting it leaves the stored service_type
   // untouched (so a re-price that doesn't carry it can't reset the column).
   serviceType?: ServiceType,
+  // Referral program (#41 adversarial-review fix): an existing customer
+  // picked as "Referred by" while editing an ALREADY-SAVED quote (e.g. a
+  // reopened quote that never had a referrer picked on its first save). Was
+  // previously ignored entirely on the update path — see the block below.
+  referredByCustomerId?: string | null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90).
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -364,6 +369,42 @@ export async function updateQuote(
     console.error('Supabase updateQuote error:', error);
     return null;
   }
+
+  // Referral program (#41 adversarial-review fix): honor "Referred by" on the
+  // UPDATE path too. A separate pre-read (rather than folding into the
+  // service_type read above) keeps this concern isolated from the GHL-link
+  // logic — it only costs an extra round trip on the uncommon case where
+  // staff pick a referrer while editing an existing quote. Idempotent via
+  // createPendingReferral's own UNIQUE(referee_quote_id) backstop, so a
+  // resave/re-open never duplicates the row — no local guard needed here.
+  // Self-referral guard mirrors saveQuote's: refuse when this quote's OWN
+  // customer is the same one just picked as "Referred by".
+  if (referredByCustomerId) {
+    const { data: quoteRow } = await supabase
+      .from('quotes')
+      .select('customer_id, is_test')
+      .eq('id', id)
+      .maybeSingle<{ customer_id: string | null; is_test: boolean | null }>();
+    if (quoteRow && !quoteRow.is_test) {
+      if (quoteRow.customer_id && quoteRow.customer_id === referredByCustomerId) {
+        console.warn(
+          `updateQuote: refusing self-referral — customer ${referredByCustomerId} cannot refer themselves (quote ${id})`,
+        );
+      } else {
+        try {
+          await createPendingReferral({
+            source: 'mention',
+            referrerCustomerId: referredByCustomerId,
+            refereeQuoteId: id,
+            ...(quoteRow.customer_id ? { refereeCustomerId: quoteRow.customer_id } : {}),
+          });
+        } catch (err) {
+          console.warn('updateQuote: createPendingReferral failed (non-fatal):', err);
+        }
+      }
+    }
+  }
+
   return { id: data.id };
 }
 

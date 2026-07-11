@@ -498,6 +498,16 @@ describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)',
     expect(res.status).toBe(400);
     expect(save).not.toHaveBeenCalled();
   });
+
+  it('also threads referredByCustomerId to updateQuote on the UPDATE path (#41 adversarial-review fix — was previously dropped)', async () => {
+    const referrerId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID, referredByCustomerId: referrerId }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId)
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[5]).toBe(referrerId);
+  });
 });
 
 describe('POST /api/quote — Test Quote flag (#93)', () => {

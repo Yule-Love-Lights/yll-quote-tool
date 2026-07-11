@@ -310,6 +310,107 @@ describe('updateQuote — service_type change clears the GHL opportunity link', 
   });
 });
 
+// ── Referral program (#41 adversarial-review fix) — "mention" attribution on
+// the UPDATE path ──────────────────────────────────────────────────────────
+//
+// Before this fix, updateQuote never looked at referredByCustomerId at all —
+// picking a referrer on a REOPENED quote (no referral row yet) was a silent
+// no-op. Mirrors saveQuote's own create-once + self-referral guard, but reads
+// the quote's OWN customer_id off the row (saveQuote gets it from the
+// attach-on-save it just ran; an update has no such fresh value).
+//
+// Fake tuned to this pre-read: from('quotes').select('customer_id, is_test')
+// .eq().maybeSingle() → storedRow, plus the normal update()...select().single().
+function makeReferralUpdateFake(storedRow: Record<string, unknown> | null) {
+  const updates: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    select: () => builder,
+    eq: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return builder;
+    },
+    maybeSingle: async () => ({ data: storedRow, error: null }),
+    single: async () => ({ data: { id: 'q1' }, error: null }),
+  });
+  return { client: { from: () => builder }, updates };
+}
+
+describe('updateQuote — referral "mention" attribution on the UPDATE path (#41)', () => {
+  it('creates a pending mention referral when referredByCustomerId is set and no row exists yet', async () => {
+    const fake = makeReferralUpdateFake({ customer_id: 'referee-customer-1', is_test: false });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(res).toEqual({ id: 'q1' });
+    expect(createPendingReferralMock).toHaveBeenCalledOnce();
+    expect(createPendingReferralMock).toHaveBeenCalledWith({
+      source: 'mention',
+      referrerCustomerId: 'referrer-customer-1',
+      refereeQuoteId: 'q1',
+      refereeCustomerId: 'referee-customer-1',
+    });
+  });
+
+  it('calls createPendingReferral the same way on a resave — idempotency is delegated to its own UNIQUE(referee_quote_id) backstop, not re-implemented here', async () => {
+    const fake = makeReferralUpdateFake({ customer_id: 'referee-customer-1', is_test: false });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(createPendingReferralMock).toHaveBeenCalledTimes(2);
+    expect(createPendingReferralMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ refereeQuoteId: 'q1' }));
+    expect(createPendingReferralMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ refereeQuoteId: 'q1' }));
+  });
+
+  it('does NOT create a referral when referredByCustomerId is omitted', async () => {
+    const fake = makeReferralUpdateFake({ customer_id: 'referee-customer-1', is_test: false });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT);
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT create a referral for a test quote, even with referredByCustomerId set', async () => {
+    const fake = makeReferralUpdateFake({ customer_id: 'referee-customer-1', is_test: true });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a self-referral: skips creating the referral + warns when the quote resolves to the referrer themselves', async () => {
+    const fake = makeReferralUpdateFake({ customer_id: 'referrer-customer-1', is_test: false });
+    serviceRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(res).toEqual({ id: 'q1' }); // the update itself still succeeds
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('self-referral'));
+    warnSpy.mockRestore();
+  });
+
+  it('still returns the updated id when createPendingReferral throws (best-effort)', async () => {
+    createPendingReferralMock.mockRejectedValueOnce(new Error('referrals table missing'));
+    const fake = makeReferralUpdateFake({ customer_id: 'referee-customer-1', is_test: false });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(res).toEqual({ id: 'q1' }); // update succeeds despite the referral failure
+  });
+
+  it('does NOT create a referral when the quote row cannot be read (fail-open on the pre-read)', async () => {
+    const fake = makeReferralUpdateFake(null);
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, 'referrer-customer-1');
+    expect(res).toEqual({ id: 'q1' });
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+  });
+});
+
 // #90 actor audit trail: saveQuote stamps created_by (the operator's user id).
 describe('saveQuote created_by', () => {
   it('writes the caller id into created_by on insert', async () => {
