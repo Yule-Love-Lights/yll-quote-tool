@@ -1,5 +1,6 @@
 import { DASHBOARD_CONFIG } from './config';
 import type {
+  BistroSummary,
   DashboardQuote,
   EventSummary,
   HolidayBreakdown,
@@ -108,6 +109,26 @@ export function computeEventSummary(quotes: DashboardQuote[]): EventSummary {
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'event') continue;
     if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
+      booked += 1;
+      bookedRevenue += q.total ?? 0;
+    } else if (q.quote_sent_at && !isTerminalStatus(q)) {
+      pending += 1;
+    }
+  }
+
+  return { booked, pending, bookedRevenue };
+}
+
+// Permanent Bistro (#117) — same funnel shape as event: booked (approved,
+// non-terminal), pending (sent, not yet approved), lifetime booked revenue.
+export function computeBistroSummary(quotes: DashboardQuote[]): BistroSummary {
+  let booked = 0;
+  let pending = 0;
+  let bookedRevenue = 0;
+
+  for (const q of quotes) {
+    if (serviceTypeOf(q) !== 'permanent_bistro') continue;
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7: exclude cancelled/declined/lost
       booked += 1;
       bookedRevenue += q.total ?? 0;
     } else if (q.quote_sent_at && !isTerminalStatus(q)) {

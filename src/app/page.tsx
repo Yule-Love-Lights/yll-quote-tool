@@ -11,6 +11,7 @@ import {
   computeHolidayBreakdown,
   computePermanentSummary,
   computeEventSummary,
+  computeBistroSummary,
 } from '@/lib/dashboard/serviceMetrics';
 import { buildNeedsAction } from '@/lib/dashboard/needsAction';
 import { OperatorShell } from '@/components/OperatorShell';
@@ -43,6 +44,7 @@ export default async function DashboardPage() {
   const holiday = computeHolidayBreakdown(quotes);
   const permanent = computePermanentSummary(quotes);
   const event = computeEventSummary(quotes);
+  const bistro = computeBistroSummary(quotes);
 
   // Needs-Action queue: parallel-fetches jobs + invoices (quotes already loaded above).
   const needsActionData = await loadNeedsActionData(quotes);
@@ -58,7 +60,7 @@ export default async function DashboardPage() {
         <Worklist items={worklist} />
         <WorkflowBoard board={workflowBoard} />
         <NeedsActionCard items={needsActionItems} />
-        <ServiceSections holiday={holiday} permanent={permanent} event={event} />
+        <ServiceSections holiday={holiday} permanent={permanent} event={event} bistro={bistro} />
         {analytics && <ResponseAnalytics data={analytics} />}
       </div>
     </OperatorShell>
