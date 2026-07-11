@@ -6,9 +6,12 @@
 //  - syncLeadToGhl composes the HighLevel calls in the right order/shape:
 //    tags are exactly ['new lead', 'web-lead-<service>'] and NEVER the 3
 //    legacy tags that trigger the old Christmas-only workflows; an existing
-//    open opportunity is reused, never duplicated; a GHL failure propagates
-//    (the route is responsible for catching it and keeping the lead row
-//    'pending'); an unconfigured landscape pipeline defers instead of failing.
+//    open opportunity is reused, never duplicated; a failure from
+//    upsertContact itself propagates (the route is responsible for catching
+//    it and keeping the lead row 'pending'); a failure from any LATER step
+//    is caught internally and returned as status 'error' WITH the
+//    ghlContactId already captured (F9); an unconfigured landscape pipeline
+//    defers instead of failing.
 //
 // The HighLevel client is mocked — no live GHL calls. ghlPipelineMap is NOT
 // mocked: christmas/permanent/event-wedding assert against its real,
@@ -28,11 +31,18 @@ const hl = vi.hoisted(() => {
   return {
     HighLevelError: FakeHighLevelError,
     upsertContact: vi.fn(async (_input: unknown) => ({
-      contact: { id: 'contact-1', firstName: 'Mary', email: 'mary@example.com' },
+      contact: { id: 'contact-1', firstName: 'Mary', email: 'mary@example.com' } as {
+        id: string;
+        firstName?: string;
+        email?: string;
+        customFields?: Array<{ id: string; value?: string | string[] }>;
+      },
       new: true,
     })),
     addContactTags: vi.fn(async (_contactId: string, _tags: string[]) => ({})),
-    upsertContactCustomField: vi.fn(async (_contactId: string, _fieldId: string, _value: string) => {}),
+    upsertContactCustomField: vi.fn(
+      async (_contactId: string, _fieldId: string, _value: string | string[]) => {},
+    ),
     createContactNote: vi.fn(async (_contactId: string, _body: string) => ({})),
     findOrCreateOpportunityForContact: vi.fn(async (_input: unknown) => ({
       opportunity: { id: 'opp-1' },
@@ -60,6 +70,7 @@ import {
   splitLeadName,
   SERVICE_FIELD_VALUE,
   syncLeadToGhl,
+  buildLeadNoteBody,
   type LeadInput,
 } from './leadService';
 
@@ -130,6 +141,27 @@ describe('resolveLeadPipeline — per-service pipeline mapping (case a)', () => 
     expect(resolveLeadPipeline('landscape')).toEqual({
       pipelineId: 'pipe-landscape',
       entryStageId: 'stage-landscape-entry',
+    });
+  });
+
+  describe('skips the quote-flow env override (F5)', () => {
+    const savedPipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
+    const savedStageCreated = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+
+    afterEach(() => {
+      if (savedPipelineId === undefined) delete process.env.HIGHLEVEL_PIPELINE_ID;
+      else process.env.HIGHLEVEL_PIPELINE_ID = savedPipelineId;
+      if (savedStageCreated === undefined) delete process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+      else process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = savedStageCreated;
+    });
+
+    it('christmas ignores HIGHLEVEL_PIPELINE_ID/HIGHLEVEL_STAGE_QUOTE_CREATED — a new lead must enter at Open, not the quote-flow "Make Quote" stage', () => {
+      process.env.HIGHLEVEL_PIPELINE_ID = 'env-pipeline-should-not-apply';
+      process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = 'env-stage-should-not-apply';
+
+      const pipeline = resolveLeadPipeline('christmas');
+      expect(pipeline?.pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
+      expect(pipeline?.entryStageId).toBe('478396dd-a052-41ad-ae73-d528909cd5f4');
     });
   });
 });
@@ -207,12 +239,71 @@ describe('syncLeadToGhl — contact.service custom field', () => {
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
   });
 
-  it('writes the field when the env var is set', async () => {
+  it('writes the field as an ARRAY when the env var is set (F4 — contact.service is a GHL CHECKBOX field)', async () => {
     process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE = 'field-123';
     await syncLeadToGhl(baseLead({ service: 'landscape' }));
     // landscape defers (no pipeline env), but the field write happens before
     // pipeline resolution and must still fire.
-    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', 'Landscape');
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', ['Landscape']);
+  });
+});
+
+describe('syncLeadToGhl — contact.service is a CHECKBOX field, so we UNION instead of replace (F4)', () => {
+  it('unions with an existing ARRAY-shaped selection instead of overwriting it', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE = 'field-123';
+    hl.upsertContact.mockResolvedValue({
+      contact: {
+        id: 'contact-1',
+        firstName: 'Jordan',
+        email: 'jordan@example.com',
+        customFields: [{ id: 'field-123', value: ['Christmas'] }],
+      },
+      new: false,
+    });
+
+    await syncLeadToGhl(baseLead({ service: 'permanent' }));
+
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', [
+      'Christmas',
+      'Permanent',
+    ]);
+  });
+
+  it('is defensive about a STRING-shaped existing value (legacy data) — still unions correctly', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE = 'field-123';
+    hl.upsertContact.mockResolvedValue({
+      contact: {
+        id: 'contact-1',
+        firstName: 'Jordan',
+        email: 'jordan@example.com',
+        customFields: [{ id: 'field-123', value: 'Christmas' }],
+      },
+      new: false,
+    });
+
+    await syncLeadToGhl(baseLead({ service: 'permanent' }));
+
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', [
+      'Christmas',
+      'Permanent',
+    ]);
+  });
+
+  it('does not duplicate the label when the same service is submitted twice', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE = 'field-123';
+    hl.upsertContact.mockResolvedValue({
+      contact: {
+        id: 'contact-1',
+        firstName: 'Jordan',
+        email: 'jordan@example.com',
+        customFields: [{ id: 'field-123', value: ['Christmas'] }],
+      },
+      new: false,
+    });
+
+    await syncLeadToGhl(baseLead({ service: 'christmas' }));
+
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', ['Christmas']);
   });
 });
 
@@ -242,6 +333,28 @@ describe('syncLeadToGhl — note (notes/utm/landingUrl present)', () => {
   });
 });
 
+describe('buildLeadNoteBody — note-forgery hardening (F12)', () => {
+  it('strips newlines from landingUrl and utm values so a submitter cannot inject a fake extra line', () => {
+    const body = buildLeadNoteBody(
+      baseLead({
+        notes: 'Line one\nLine two — legit multi-line notes stay intact',
+        utm: { utm_source: 'google\nFAKE: injected line' },
+        landingUrl: 'https://evil.example.com/\nFAKE: injected line',
+      }),
+    );
+
+    // notes is legitimately free text — left alone, still multi-line.
+    expect(body).toContain('Line one\nLine two — legit multi-line notes stay intact');
+
+    // utm value and landingUrl are submitter-controlled raw text — newlines
+    // collapsed to a space so neither can forge a new note line.
+    expect(body).toContain('utm_source=google FAKE: injected line');
+    expect(body).not.toContain('utm_source=google\nFAKE');
+    expect(body).toContain('Landing page: https://evil.example.com/ FAKE: injected line');
+    expect(body).not.toContain('https://evil.example.com/\nFAKE');
+  });
+});
+
 describe('syncLeadToGhl — landscape deferred (case h)', () => {
   it('returns status "deferred" and names the missing env vars, without touching the pipeline', async () => {
     const result = await syncLeadToGhl(baseLead({ service: 'landscape' }));
@@ -256,5 +369,25 @@ describe('syncLeadToGhl — GHL failure propagates (case g wiring)', () => {
   it('a thrown HighLevelError from upsertContact rejects the call', async () => {
     hl.upsertContact.mockRejectedValue(new FakeHighLevelError('GHL is down', 502));
     await expect(syncLeadToGhl(baseLead())).rejects.toThrow('GHL is down');
+  });
+});
+
+describe('syncLeadToGhl — a failure AFTER the contact exists is caught, not thrown (F9)', () => {
+  it('an opportunity-step throw returns status "error" WITH the ghlContactId already captured', async () => {
+    hl.findOrCreateOpportunityForContact.mockRejectedValue(
+      new FakeHighLevelError('opportunity API down', 502),
+    );
+    const result = await syncLeadToGhl(baseLead());
+    expect(result.status).toBe('error');
+    expect(result.ghlContactId).toBe('contact-1');
+    expect(result.syncError).toContain('opportunity API down');
+  });
+
+  it('a tag-step throw also returns status "error" WITH the ghlContactId (not a throw)', async () => {
+    hl.addContactTags.mockRejectedValue(new FakeHighLevelError('tags API down', 502));
+    const result = await syncLeadToGhl(baseLead());
+    expect(result.status).toBe('error');
+    expect(result.ghlContactId).toBe('contact-1');
+    expect(result.syncError).toContain('tags API down');
   });
 });

@@ -110,6 +110,29 @@ describe('resolvePipelineStages', () => {
     });
   });
 
+  it('holiday with opts.envOverrides:false returns the raw map even when legacy env vars are set (F5 — website lead-capture path)', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID = 'env-pipeline';
+    process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = 'env-created';
+    process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'env-sent';
+    process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED = 'env-approved';
+
+    const stages = resolvePipelineStages('holiday', { envOverrides: false });
+    expect(stages).toEqual({
+      pipelineId: 'sC6JEcxlGnNDasanlXDN',
+      entry: '478396dd-a052-41ad-ae73-d528909cd5f4',
+      sent: 'd15bc673-2b97-48a6-8a5c-bdf3b6e4d076',
+      depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9',
+      installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b',
+      declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+    });
+  });
+
+  it('holiday with no opts (default) still honors env overrides — existing quote-flow behavior untouched (F5)', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID = 'env-pipeline';
+    const stages = resolvePipelineStages('holiday');
+    expect(stages.pipelineId).toBe('env-pipeline');
+  });
+
   it('unknown service_type falls back to holiday (the default)', () => {
     const stages = resolvePipelineStages('not-a-real-type');
     expect(stages.pipelineId).toBe('sC6JEcxlGnNDasanlXDN');

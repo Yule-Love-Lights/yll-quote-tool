@@ -38,16 +38,21 @@ export type LeadPipeline = { pipelineId: string; entryStageId: string };
 
 export function resolveLeadPipeline(service: LeadService): LeadPipeline | null {
   switch (service) {
+    // envOverrides:false — a website lead is a BRAND NEW contact with no
+    // card yet, so it must land at the pipeline's own entry stage (📭Open).
+    // The quote-flow env override (HIGHLEVEL_STAGE_QUOTE_CREATED) points at
+    // the mid-pipeline "Make Quote" stage in the live account — right for a
+    // quote created off an EXISTING lead, wrong for a brand-new one.
     case 'christmas': {
-      const stages = resolvePipelineStages('holiday');
+      const stages = resolvePipelineStages('holiday', { envOverrides: false });
       return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
     case 'permanent': {
-      const stages = resolvePipelineStages('permanent');
+      const stages = resolvePipelineStages('permanent', { envOverrides: false });
       return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
     case 'event-wedding': {
-      const stages = resolvePipelineStages('event');
+      const stages = resolvePipelineStages('event', { envOverrides: false });
       return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
     case 'landscape': {
@@ -88,25 +93,43 @@ export function splitLeadName(fullName: string): { firstName: string; lastName: 
 }
 
 // ─── Note body ──────────────────────────────────────────────────────────
+// Strips newlines from the two fields a submitter fully controls the raw
+// text of (landingUrl, each utm value) — without this, a crafted value like
+// "https://x/\nFAKE STATUS: approved" could inject a fake extra line into
+// the note. `notes` is deliberately left alone: it's legitimately free text
+// and is meant to stay multi-line.
+function stripNewlinesForNote(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ');
+}
+
 export function buildLeadNoteBody(lead: LeadInput): string {
   const lines: string[] = [
     `New website lead — ${SERVICE_FIELD_VALUE[lead.service]} — form: ${lead.formVariant}`,
   ];
   if (lead.notes) lines.push(`Notes: ${lead.notes}`);
   if (lead.utm && Object.keys(lead.utm).length > 0) {
-    lines.push(`UTM: ${Object.entries(lead.utm).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+    lines.push(
+      `UTM: ${Object.entries(lead.utm)
+        .map(([k, v]) => `${k}=${stripNewlinesForNote(v)}`)
+        .join(', ')}`,
+    );
   }
-  if (lead.landingUrl) lines.push(`Landing page: ${lead.landingUrl}`);
+  if (lead.landingUrl) lines.push(`Landing page: ${stripNewlinesForNote(lead.landingUrl)}`);
   return lines.join('\n');
 }
 
 // ─── syncLeadToGhl ──────────────────────────────────────────────────────
 // The one GHL round-trip a saved lead goes through: upsert the contact, tag
 // it, stamp the service field, drop a note with the raw context, then
-// find-or-create its opportunity in the right pipeline. Throws on any GHL
-// failure (upsertContact/addContactTags/etc) — the ROUTE is responsible for
-// catching that and leaving the lead row 'pending' for retry; a missing
-// landscape pipeline is NOT an error and returns a 'deferred' result instead.
+// find-or-create its opportunity in the right pipeline.
+//
+// Failure contract: upsertContact is the only call allowed to THROW (no
+// contact yet means nothing partial to report — the ROUTE's own catch is the
+// backstop, leaving the row 'pending' for retry). Every step AFTER the
+// contact exists catches its own failure and returns status 'error' WITH the
+// ghlContactId already captured, so a partial sync never loses the contact
+// id. A missing landscape pipeline is NOT an error and returns 'deferred'
+// instead.
 export type LeadInput = {
   name: string;
   email: string;
@@ -120,15 +143,27 @@ export type LeadInput = {
 };
 
 export type SyncLeadToGhlResult = {
-  status: 'synced' | 'deferred';
+  status: 'synced' | 'deferred' | 'error';
   ghlContactId?: string;
   ghlOpportunityId?: string;
   syncError?: string;
 };
 
+// contact.service is a GHL CHECKBOX-dataType custom field: GHL stores (and
+// expects back) an ARRAY of selected option strings, not a scalar. It may
+// come back off the upsertContact response as a string (older/legacy data)
+// or an array — normalize defensively either way.
+function normalizeCheckboxValue(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  return typeof value === 'string' && value ? [value] : [];
+}
+
 export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResult> {
   const { firstName, lastName } = splitLeadName(lead.name);
 
+  // upsertContact is the one call allowed to throw — with no contact yet,
+  // there's nothing partial to report, so the ROUTE's own catch is the
+  // backstop (keeps the row 'pending' for retry).
   const { contact } = await upsertContact({
     firstName,
     lastName: lastName || undefined,
@@ -138,37 +173,61 @@ export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResul
     source: 'Website Form',
   });
 
-  await addContactTags(contact.id, ['new lead', `web-lead-${lead.service}`]);
+  // Every step from here catches its OWN failure (below) so a partial sync
+  // never loses the contact id — the route needs ghl_contact_id even when a
+  // later step (tag/field/note/opportunity) fails.
+  try {
+    await addContactTags(contact.id, ['new lead', `web-lead-${lead.service}`]);
 
-  const fieldId = process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
-  if (fieldId) {
-    await upsertContactCustomField(contact.id, fieldId, SERVICE_FIELD_VALUE[lead.service]);
-  }
+    const fieldId = process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
+    if (fieldId) {
+      // Checkbox-field updates REPLACE the whole selection set (unlike a
+      // text field's upsert), so we read whatever is already selected on
+      // this contact and UNION in this lead's service label rather than
+      // overwriting. Without this, a contact who already submitted a
+      // Christmas lead would lose that selection the moment they also
+      // submit a Permanent one.
+      const existing = normalizeCheckboxValue(
+        contact.customFields?.find(f => f.id === fieldId)?.value,
+      );
+      const union = Array.from(new Set([...existing, SERVICE_FIELD_VALUE[lead.service]]));
+      await upsertContactCustomField(contact.id, fieldId, union);
+    }
 
-  if (lead.notes || lead.utm || lead.landingUrl) {
-    await createContactNote(contact.id, buildLeadNoteBody(lead));
-  }
+    if (lead.notes || lead.utm || lead.landingUrl) {
+      // A future retry worker must SKIP this call once ghl_contact_id is
+      // already set on the row — createContactNote is NOT idempotent, so
+      // re-running the sync on retry would post a duplicate note.
+      await createContactNote(contact.id, buildLeadNoteBody(lead));
+    }
 
-  const pipeline = resolveLeadPipeline(lead.service);
-  if (!pipeline) {
+    const pipeline = resolveLeadPipeline(lead.service);
+    if (!pipeline) {
+      return {
+        status: 'deferred',
+        ghlContactId: contact.id,
+        syncError: `GHL pipeline not configured for "${lead.service}" — missing env var(s): ${missingLandscapeEnvVars().join(', ')}`,
+      };
+    }
+
+    const { opportunity } = await findOrCreateOpportunityForContact({
+      contactId: contact.id,
+      pipelineId: pipeline.pipelineId,
+      fallbackStageId: pipeline.entryStageId,
+      fallbackName: lead.name,
+      source: 'Website Leads',
+    });
+
     return {
-      status: 'deferred',
+      status: 'synced',
       ghlContactId: contact.id,
-      syncError: `GHL pipeline not configured for "${lead.service}" — missing env var(s): ${missingLandscapeEnvVars().join(', ')}`,
+      ghlOpportunityId: opportunity.id,
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      ghlContactId: contact.id,
+      syncError: err instanceof Error ? err.message : 'Unknown HighLevel error',
     };
   }
-
-  const { opportunity } = await findOrCreateOpportunityForContact({
-    contactId: contact.id,
-    pipelineId: pipeline.pipelineId,
-    fallbackStageId: pipeline.entryStageId,
-    fallbackName: lead.name,
-    source: 'Website Leads',
-  });
-
-  return {
-    status: 'synced',
-    ghlContactId: contact.id,
-    ghlOpportunityId: opportunity.id,
-  };
 }
