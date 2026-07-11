@@ -680,7 +680,7 @@ export default function NewTrainingHousePage() {
 
       if (!address && typeof data.address === 'string') setAddress(data.address);
 
-      setPrefillNote('Pre-filled from the approved design — drag to match this photo.');
+      setPrefillNote('Pre-filled from the approved design. Drag the lines to match this photo.');
     } catch (err) {
       setPrefillError(err instanceof Error ? err.message : 'Pre-fill failed');
     } finally {
@@ -924,7 +924,7 @@ export default function NewTrainingHousePage() {
               </button>
             </div>
             {!activePhoto && (
-              <p className="mt-2 text-xs text-blue-700">Upload a photo first — pre-fill loads onto the active photo.</p>
+              <p className="mt-2 text-xs text-blue-700">Upload a photo first. Pre-fill loads onto the active photo.</p>
             )}
             {prefillError && (
               <div className="mt-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
