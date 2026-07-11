@@ -41,6 +41,15 @@
     { value: 'landscape', label: 'Landscape Lighting' },
   ];
 
+  // photo service cards ("full" variant only) — same 400x400 files the old
+  // Gravity Forms page uses, so they're already in the visitor's cache.
+  var SERVICE_IMAGES = {
+    christmas: 'https://yulelovelights.com/wp-content/uploads/2025/07/Holiday-Lighting-srv-pic-400x400.jpg',
+    permanent: 'https://yulelovelights.com/wp-content/uploads/2025/07/Perm-Lighting-srv-pic-400x400.jpg',
+    'event-wedding': 'https://yulelovelights.com/wp-content/uploads/2025/07/Event-Lights-srv-pic-400x400.jpg',
+    landscape: 'https://yulelovelights.com/wp-content/uploads/2025/07/Landscape-srv-pic-400x400.jpg',
+  };
+
   var uidCounter = 0;
   function uid(prefix) {
     uidCounter += 1;
@@ -174,7 +183,7 @@
       'padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;',
       'white-space:nowrap!important;border:0!important;}',
       '.yll-lf--full{background:var(--yll-lf-bg);border-radius:var(--yll-lf-radius);box-shadow:var(--yll-lf-shadow);',
-      'padding:24px;max-width:560px;}',
+      'padding:24px;max-width:1140px;width:100%;}',
       '.yll-lf--bar{background:var(--yll-lf-bg);border-radius:var(--yll-lf-radius);box-shadow:var(--yll-lf-shadow);padding:20px;}',
       '.yll-lf-heading{margin:0 0 4px;font-size:22px;font-weight:700;color:var(--yll-lf-text);}',
       '.yll-lf-accent{color:var(--yll-lf-red);}',
@@ -191,14 +200,19 @@
       '.yll-lf-formerror{font-size:13px;color:var(--yll-lf-error);background:#fdecea;border-radius:8px;padding:10px 12px;}',
       '.yll-lf-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}',
       '@media(min-width:520px){.yll-lf-cards{grid-template-columns:repeat(4,1fr);}}',
-      '.yll-lf-card{border:1.5px solid var(--yll-lf-border);border-radius:10px;padding:12px 10px;min-height:44px;',
-      'display:flex;align-items:center;justify-content:center;gap:6px;text-align:center;font-size:13px;',
+      '.yll-lf-card{border:1.5px solid var(--yll-lf-border);border-radius:10px;padding:8px;min-height:44px;',
+      'display:flex;flex-direction:column;align-items:stretch;gap:8px;text-align:center;font-size:13px;',
       'font-weight:600;cursor:pointer;position:relative;background:#fff;}',
+      '.yll-lf-card-media{position:relative;width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;background:#f2f1ee;}',
+      '.yll-lf-card-img{width:100%;height:100%;object-fit:cover;display:block;}',
       '.yll-lf-card:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:2px;}',
-      '.yll-lf-card--selected{border-color:var(--yll-lf-green);background:rgba(30,122,66,0.07);color:var(--yll-lf-green-dark);}',
-      '.yll-lf-card-check{display:none;width:10px;height:6px;border-left:2px solid var(--yll-lf-green);',
-      'border-bottom:2px solid var(--yll-lf-green);transform:rotate(-45deg);}',
-      '.yll-lf-card--selected .yll-lf-card-check{display:inline-block;}',
+      '.yll-lf-card--selected{border-color:var(--yll-lf-red);background:rgba(207,3,3,0.06);color:var(--yll-lf-red);}',
+      '.yll-lf-card-check{display:none;position:absolute;top:6px;right:6px;width:20px;height:20px;',
+      'border-radius:50%;background:var(--yll-lf-red);align-items:center;justify-content:center;',
+      'box-shadow:0 1px 3px rgba(0,0,0,0.35);}',
+      '.yll-lf-card-check::after{content:"";width:8px;height:5px;border-left:2px solid #fff;',
+      'border-bottom:2px solid #fff;transform:rotate(-45deg);margin-top:-2px;}',
+      '.yll-lf-card--selected .yll-lf-card-check{display:flex;}',
       '.yll-lf-consent{display:flex;flex-direction:column;gap:6px;}',
       '.yll-lf-consent-row{display:flex;align-items:flex-start;gap:8px;}',
       '.yll-lf-consent-row input{width:20px;height:20px;min-height:20px;flex:none;margin-top:2px;accent-color:var(--yll-lf-green);}',
@@ -214,6 +228,14 @@
       '.yll-lf-thankyou-heading{font-size:17px;font-weight:700;margin:0 0 6px;}',
       '.yll-lf-thankyou-body{font-size:14px;color:var(--yll-lf-muted);margin:0 0 10px;}',
       '.yll-lf-thankyou-tel{font-weight:600;}',
+      // "full" variant desktop layout — 2-col field grid, cards/notes/consent/
+      // submit span the full width. Mobile (<768px) keeps the default
+      // single-column flex form above untouched.
+      '@media(min-width:768px){.yll-lf--full .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:24px;}',
+      '.yll-lf--full .yll-lf-form>.yll-lf-heading,.yll-lf--full .yll-lf-field--service,',
+      '.yll-lf--full .yll-lf-field--notes,.yll-lf--full .yll-lf-field--consent,',
+      '.yll-lf--full .yll-lf-form>.yll-lf-formerror,.yll-lf--full .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
+      '.yll-lf--full .yll-lf-form>.yll-lf-submit{justify-self:center;width:auto;padding-left:48px;padding-right:48px;}}',
       // bar + sticky share the row/stack breakpoint; deltas kept separate
       '.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:column;}',
       '.yll-lf-sticky-outer{position:fixed;left:0;right:0;bottom:0;z-index:999999;',
@@ -331,6 +353,18 @@
     }
 
     SERVICES.forEach(function (svc) {
+      // the media box has a fixed aspect-ratio, so a slow/failed image load
+      // (no onerror handler) never shifts the card's layout or blocks a click.
+      var media = h('div', { class: 'yll-lf-card-media' }, [
+        h('img', {
+          class: 'yll-lf-card-img',
+          src: SERVICE_IMAGES[svc.value],
+          alt: svc.label,
+          loading: 'lazy',
+          draggable: 'false',
+        }),
+        h('span', { class: 'yll-lf-card-check', 'aria-hidden': 'true' }),
+      ]);
       var card = h(
         'div',
         {
@@ -340,7 +374,7 @@
           tabindex: '-1',
           'data-value': svc.value,
         },
-        [h('span', { class: 'yll-lf-card-check', 'aria-hidden': 'true' }), h('span', { class: 'yll-lf-card-label', text: svc.label })]
+        [media, h('span', { class: 'yll-lf-card-label', text: svc.label })]
       );
       card.addEventListener('click', function () {
         current = svc.value;
