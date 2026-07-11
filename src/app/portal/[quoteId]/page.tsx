@@ -315,6 +315,7 @@ export default async function PortalPage({
       )}
       <SelectionProvider
         quoteId={quoteId}
+        serviceType={quote.serviceType}
         packages={quote.packages}
         lineItems={quote.lineItems}
         roofline={quote.roofline}
