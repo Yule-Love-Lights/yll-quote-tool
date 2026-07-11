@@ -3,9 +3,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, creditBalanceForMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   sbRef: { current: null as unknown },
+  creditBalanceForMock: vi.fn(async () => 0),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
@@ -13,6 +14,10 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
 }));
+// Referral program redemption (#41 PR 2): mocked so the route's wiring is
+// testable without a real referrals table. Its OWN math is covered in
+// src/lib/referrals.test.ts.
+vi.mock('@/lib/referrals', () => ({ creditBalanceFor: creditBalanceForMock }));
 
 import { GET } from './route';
 
@@ -22,7 +27,9 @@ function makeReq(query: string): NextRequest {
   } as unknown as NextRequest;
 }
 
-function makeSb(rows: Array<{ id: string; name: string | null; email: string | null; phone: string | null }>) {
+type Row = { id: string; name: string | null; email: string | null; phone: string | null };
+
+function makeSb(rows: Row[]) {
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
     from: () => builder,
@@ -30,6 +37,10 @@ function makeSb(rows: Array<{ id: string; name: string | null; email: string | n
     or: () => builder,
     order: () => builder,
     limit: async () => ({ data: rows, error: null }),
+    eq: (_col: string, val: unknown) => {
+      const hit = rows.find((r) => r.id === val) ?? null;
+      return { maybeSingle: async () => ({ data: hit, error: null }) };
+    },
   });
   return builder;
 }
@@ -37,6 +48,7 @@ function makeSb(rows: Array<{ id: string; name: string | null; email: string | n
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
+  creditBalanceForMock.mockResolvedValue(0);
   sbRef.current = makeSb([{ id: 'c1', name: 'Jordan Smith', email: 'jordan@example.com', phone: '5165550123' }]);
 });
 
@@ -64,6 +76,45 @@ describe('GET /api/customers', () => {
 
   it('refuses a query containing PostgREST .or() filter-injection characters', async () => {
     const res = await GET(makeReq('q=' + encodeURIComponent('a,b(c)')));
+    const json = await res.json();
+    expect(json.customers).toEqual([]);
+  });
+
+  // Redemption (PR 2): each search result carries the customer's referral
+  // credit balance.
+  it('attaches referralCreditUsd to each search result', async () => {
+    creditBalanceForMock.mockResolvedValueOnce(250);
+    const res = await GET(makeReq('q=Jordan'));
+    const json = await res.json();
+    expect(json.customers[0].referralCreditUsd).toBe(250);
+  });
+});
+
+describe('GET /api/customers?id=<uuid> (redemption, PR 2)', () => {
+  const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+  beforeEach(() => {
+    sbRef.current = makeSb([{ id: ID, name: 'Jordan Smith', email: 'jordan@example.com', phone: '5165550123' }]);
+  });
+
+  it('returns the single customer with their referral credit balance', async () => {
+    creditBalanceForMock.mockResolvedValueOnce(125);
+    const res = await GET(makeReq(`id=${ID}`));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.customers).toEqual([
+      { id: ID, name: 'Jordan Smith', email: 'jordan@example.com', phone: '5165550123', referralCreditUsd: 125 },
+    ]);
+  });
+
+  it('returns an empty list for an unknown id', async () => {
+    const res = await GET(makeReq('id=bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'));
+    const json = await res.json();
+    expect(json.customers).toEqual([]);
+  });
+
+  it('returns an empty list for a malformed (non-UUID) id, without querying', async () => {
+    const res = await GET(makeReq('id=not-a-uuid'));
     const json = await res.json();
     expect(json.customers).toEqual([]);
   });

@@ -13,6 +13,7 @@ import { getJob, setJobStatus } from '@/lib/jobs';
 import { getInvoiceByJob, setInvoiceStatus } from '@/lib/invoices';
 import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { refundDueEmailSubject, refundDueEmailHtml } from '@/lib/integrations/quoteMessages';
+import { releaseAccrualOnCancel } from '@/lib/referrals';
 
 export const runtime = 'nodejs';
 
@@ -89,6 +90,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (error) {
       console.error('[api/jobs/:id/cancel] quote cancel failed:', error);
       quoteCancelled = false;
+    }
+
+    // Referral program (#41 adversarial-review MED fix): a cancelled order
+    // never happened, so its referrer shouldn't keep 'booked' credit for it.
+    // Fail-open — releaseAccrualOnCancel already swallows its own errors, but
+    // this is wrapped anyway (matches the refund-due block below) so the
+    // cancel response can never be broken by an accrual-reversal hiccup.
+    try {
+      await releaseAccrualOnCancel(job.quote_id);
+    } catch (err) {
+      console.error('[api/jobs/:id/cancel] referral accrual release failed:', err);
     }
 
     // W1-008: cancelling a deposit-paid order leaves a real refund obligation.

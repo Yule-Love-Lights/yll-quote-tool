@@ -7,9 +7,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
 
-const { getReferralByCode, createPendingReferral, createContact, hlConfigured, ingestTouch, rateLimitedRef } = vi.hoisted(() => ({
+const { getReferralByCode, createPendingReferral, hasRecentPendingLinkReferral, createContact, hlConfigured, ingestTouch, rateLimitedRef } = vi.hoisted(() => ({
   getReferralByCode: vi.fn(async () => null as { customerId: string; name: string | null; photoOptout: boolean } | null),
   createPendingReferral: vi.fn(async () => ({ id: 'referral-1' }) as { id: string } | null),
+  hasRecentPendingLinkReferral: vi.fn(async () => false),
   createContact: vi.fn(async () => ({ id: 'contact-1' })),
   hlConfigured: { value: true },
   ingestTouch: vi.fn(async (_touch: NormalizedTouch, _now: Date) => ({
@@ -24,7 +25,7 @@ vi.mock('@/lib/rateLimit', () => ({
       ? NextResponse.json({ error: 'Too many requests' }, { status: 429 })
       : null,
 }));
-vi.mock('@/lib/referrals', () => ({ getReferralByCode, createPendingReferral }));
+vi.mock('@/lib/referrals', () => ({ getReferralByCode, createPendingReferral, hasRecentPendingLinkReferral }));
 vi.mock('@/lib/integrations/highlevel', () => ({
   createContact,
   isHighLevelConfigured: () => hlConfigured.value,
@@ -54,6 +55,7 @@ beforeEach(() => {
   hlConfigured.value = true;
   getReferralByCode.mockResolvedValue({ customerId: 'cust-1', name: 'Jordan Smith', photoOptout: false });
   createPendingReferral.mockResolvedValue({ id: 'referral-1' });
+  hasRecentPendingLinkReferral.mockResolvedValue(false);
   createContact.mockResolvedValue({ id: 'contact-1' });
 });
 
@@ -152,5 +154,47 @@ describe('POST /api/referrals/submit', () => {
     expect(createPendingReferral).toHaveBeenCalledWith(
       expect.objectContaining({ refereeContactEmail: null }),
     );
+  });
+
+  // #41 adversarial-review LOW fix: a resubmitted/refreshed form (same phone,
+  // same referrer, recently) shouldn't mint a second GHL contact + pending
+  // referral row.
+  describe('duplicate-submit dedupe', () => {
+    it('skips the GHL contact + pending referral when a recent duplicate exists — still 200s with a null referralId', async () => {
+      hasRecentPendingLinkReferral.mockResolvedValueOnce(true);
+      const res = await POST(makeReq(VALID_BODY));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ ok: true, referralId: null });
+      expect(createContact).not.toHaveBeenCalled();
+      expect(createPendingReferral).not.toHaveBeenCalled();
+    });
+
+    it('still creates the inbox item on a duplicate (its own externalId threading handles that concern)', async () => {
+      hasRecentPendingLinkReferral.mockResolvedValueOnce(true);
+      await POST(makeReq(VALID_BODY));
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks the duplicate for the NORMALIZED phone + the resolved referrer id', async () => {
+      await POST(makeReq(VALID_BODY));
+      expect(hasRecentPendingLinkReferral).toHaveBeenCalledWith('cust-1', '5165550123');
+    });
+
+    it('proceeds as new (fail-open) when the duplicate check itself throws', async () => {
+      hasRecentPendingLinkReferral.mockRejectedValueOnce(new Error('referrals table missing'));
+      const res = await POST(makeReq(VALID_BODY));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(createPendingReferral).toHaveBeenCalledOnce();
+    });
+
+    it('creates as normal when there is no recent duplicate', async () => {
+      const res = await POST(makeReq(VALID_BODY));
+      expect(res.status).toBe(200);
+      expect(createContact).toHaveBeenCalledOnce();
+      expect(createPendingReferral).toHaveBeenCalledOnce();
+    });
   });
 });

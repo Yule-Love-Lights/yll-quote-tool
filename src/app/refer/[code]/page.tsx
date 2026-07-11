@@ -4,9 +4,10 @@
 // half is a picker in the quote builder (src/components/quote/QuoteBuilder.tsx).
 //
 // Server component: resolves the code -> referrer, the hero photo (the
-// referrer's own latest booked install, honoring their photo opt-out, else a
-// completed-work gallery photo for their service type), then hands static
-// props to two small client islands (the view-tracker + the lead form).
+// referrer's own latest APPROVED install, honoring their photo opt-out, else
+// a completed-work gallery photo for their service type), then hands static
+// props to small client islands (the view-tracker, the lead form, the hero
+// image's onError fallback).
 
 import { notFound } from 'next/navigation';
 import { Star } from 'lucide-react';
@@ -19,6 +20,12 @@ import { formatUsd } from '@/components/portal/format';
 import { asServiceType, type ServiceType } from '@/lib/serviceType';
 import { ReferralPageTracker } from './ReferralPageTracker';
 import { ReferralForm } from './ReferralForm';
+import { ReferralHeroImage } from './ReferralHeroImage';
+
+// #41 adversarial-review LOW fix: this page is personalized per referral code
+// (a different customer's hero photo + gallery fallback each time) — force
+// dynamic rendering so it's never statically cached/served cross-referrer.
+export const dynamic = 'force-dynamic';
 
 type Params = { code: string };
 
@@ -28,18 +35,21 @@ function firstNameOf(name: string | null): string {
   return first || 'A neighbor';
 }
 
-// The referrer's most recently BOOKED quote (deposit paid) — the source for
-// both the hero photo (their own house) and the fallback gallery's service
-// type when they have no design photo to show.
-async function latestBookedQuote(customerId: string): Promise<{ id: string; serviceType: ServiceType | null } | null> {
+// The referrer's most recently APPROVED quote (customer_approved_at set) —
+// the source for both the hero photo (their own house) and the fallback
+// gallery's service type when they have no design photo to show. Loosened
+// from "booked" (deposit paid) to "approved" (#41 adversarial-review MED fix,
+// Naldo: show the hero as soon as the customer has approved their design —
+// don't make the referral ask wait on a deposit that may be weeks out).
+async function latestApprovedQuote(customerId: string): Promise<{ id: string; serviceType: ServiceType | null } | null> {
   const sb = getSupabaseServiceClient();
   if (!sb) return null;
   const { data, error } = await sb
     .from('quotes')
     .select('id, service_type')
     .eq('customer_id', customerId)
-    .not('deposit_paid_at', 'is', null)
-    .order('deposit_paid_at', { ascending: false })
+    .not('customer_approved_at', 'is', null)
+    .order('customer_approved_at', { ascending: false })
     .limit(1)
     .maybeSingle<{ id: string; service_type: string | null }>();
   if (error || !data) return null;
@@ -49,22 +59,24 @@ async function latestBookedQuote(customerId: string): Promise<{ id: string; serv
 async function resolveHero(
   customerId: string,
   photoOptout: boolean,
-): Promise<{ url: string; alt: string }> {
-  const latest = await latestBookedQuote(customerId);
+): Promise<{ url: string; alt: string; fallbackUrl?: string }> {
+  const latest = await latestApprovedQuote(customerId);
+  // Fallback: a completed-work gallery photo matched to the referrer's latest
+  // service type (undefined/unknown reads as holiday, galleryItemsFor's default).
+  const gallery = galleryItemsFor(latest?.serviceType ?? undefined);
+  const fallback = gallery[0];
   if (!photoOptout && latest) {
     try {
       const design = await getDesignByQuote(latest.id);
       if (design?.photoUrl) {
-        return { url: design.photoUrl, alt: 'A recent Yule Love Lights install' };
+        // #41 adversarial-review LOW fix: fallbackUrl lets the client-side
+        // hero swap to the gallery photo if this private-bucket URL 404s.
+        return { url: design.photoUrl, alt: 'A recent Yule Love Lights install', fallbackUrl: fallback.src };
       }
     } catch (err) {
       console.error('[refer/:code] hero design photo lookup failed:', err);
     }
   }
-  // Fallback: a completed-work gallery photo matched to the referrer's latest
-  // service type (undefined/unknown reads as holiday, galleryItemsFor's default).
-  const gallery = galleryItemsFor(latest?.serviceType ?? undefined);
-  const fallback = gallery[0];
   return { url: fallback.src, alt: fallback.alt };
 }
 
@@ -79,13 +91,12 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
 
   return (
     <main className="relative min-h-screen w-full bg-[#060B0F]">
-      <ReferralPageTracker referrerCustomerId={referrer.customerId} code={code} />
+      <ReferralPageTracker code={code} />
 
       {/* ── Hero ── */}
       <section className="relative w-full">
         <div className="relative w-full h-[56vh] min-h-[340px] md:h-[62vh] overflow-hidden">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={hero.url} alt={hero.alt} className="absolute inset-0 w-full h-full object-cover" />
+          <ReferralHeroImage src={hero.url} alt={hero.alt} fallbackSrc={hero.fallbackUrl} />
           <div className="absolute inset-0 bg-gradient-to-t from-[#060B0F] via-[#060B0F]/60 to-[#060B0F]/10" />
         </div>
         <div className="relative -mt-24 md:-mt-32 max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -143,7 +154,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
           >
             Tell us where to look.
           </h2>
-          <ReferralForm code={code} referrerCustomerId={referrer.customerId} />
+          <ReferralForm code={code} />
         </div>
       </section>
 
