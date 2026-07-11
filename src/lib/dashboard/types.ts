@@ -115,6 +115,17 @@ export type EventSummary = {
   bookedRevenue: number;
 };
 
+/** Bistro section (#117): same simple funnel + revenue shape as event —
+ *  permanent bistro is a one-off install product, not a recurring base. */
+export type BistroSummary = {
+  /** Approved bistro quotes. */
+  booked: number;
+  /** Sent + not-yet-approved bistro quotes. */
+  pending: number;
+  /** Lifetime approved bistro revenue. */
+  bookedRevenue: number;
+};
+
 /** The latest lifecycle state of a customer's most recent quote. Now the FULL
  *  canonical status set (BUG-1, S22): the old draft|sent|approved triple came
  *  from a timestamp-only `statusOf`, so a declined/cancelled/booked quote read
