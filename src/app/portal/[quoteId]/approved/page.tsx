@@ -20,6 +20,7 @@ import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { formatQuoteRef, formatUsd } from '@/components/portal/format';
 import type { PortalQuote } from '@/components/portal/types';
 import { ensureReferralCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import { referralQrSvg } from '@/lib/referralQr';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 
 type Params = { quoteId: string };
@@ -61,6 +62,9 @@ export default async function PortalApprovedPage({
   // dev mode) gets null back and the section renders copy-only, no link.
   const referralCode = quote.customerId ? await ensureReferralCode(quote.customerId) : null;
   const referralLink = referralCode ? `${appBaseUrl()}/refer/${referralCode}` : null;
+  // Growth feature 2: a small server-side QR of the link, "or scan to share"
+  // next to the copy/share controls. Fail-open — null just hides it.
+  const referralQr = referralLink ? await referralQrSvg(referralLink) : null;
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
@@ -286,6 +290,7 @@ export default async function PortalApprovedPage({
         creditUsd={REFERRAL_CREDIT_USD}
         spritzerCount={REFERRAL_FRIEND_SPRITZERS.count}
         spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
+        qrSvg={referralQr}
       />
 
       <section aria-label="Support" className="w-full bg-[#0D1519] border-t border-[#1F2A23]">

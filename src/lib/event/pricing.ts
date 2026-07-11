@@ -191,13 +191,16 @@ function calculateSpritzers(inputs: QuoteInputs, rates: EventRates): LineItem[] 
 
 // Temporary bistro — priced per linear foot. Label avoids the roofline/wonderland/
 // gingerbread/ridge keywords so the portal lineItemKind parser doesn't misfile it.
+// Design-projected footage is a raw polyline float — the LABEL shows it to
+// 1 decimal (#117 fix, same class as permanent bistro); billing keeps the
+// exact value, so amounts are byte-identical to before.
 function calculateBistro(inputs: QuoteInputs, rates: EventRates): LineItem[] {
   const bistro = inputs.event?.bistro;
   if (!Array.isArray(bistro)) return [];
   return bistro
     .filter(b => b && Number.isFinite(b.footage) && b.footage > 0)
     .map(b => ({
-      label: `Bistro Lighting – ${b.footage}ft`,
+      label: `Bistro Lighting – ${Math.round(b.footage * 10) / 10}ft`,
       amount: Math.round(units(b.footage) * rates.bistroPerFt),
       ...withIdentity(b),
     }));

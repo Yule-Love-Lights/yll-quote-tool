@@ -248,3 +248,24 @@ describe('calculatePermanentBistro — $0 guardrail', () => {
     expect(() => calculatePermanentBistro(baseInputs(), { ...R, minimum: NaN })).toThrow();
   });
 });
+
+// #117 live-E2E find: design-projected footage is a raw float (e.g.
+// 9.048375887738986) and leaked into the customer-visible label. Labels show
+// 1 decimal; the billed amount keeps the exact footage.
+describe('calculatePermanentBistro — float footage label formatting', () => {
+  it('rounds the label to 1 decimal while billing the exact footage', () => {
+    const result = calculatePermanentBistro({
+      permanentBistro: { bistro: [{ footage: 9.048375887738986 }] },
+    } as QuoteInputs);
+    const line = result.lineItems[0];
+    expect(line.label).toBe('Permanent Bistro Lighting – 9ft');
+    expect(line.amount).toBe(Math.round(9.048375887738986 * 30)); // 271, exact footage billed
+  });
+
+  it('keeps a meaningful decimal (17.37... shows as 17.4)', () => {
+    const result = calculatePermanentBistro({
+      permanentBistro: { bistro: [{ footage: 17.372831692319867 }] },
+    } as QuoteInputs);
+    expect(result.lineItems[0].label).toBe('Permanent Bistro Lighting – 17.4ft');
+  });
+});
