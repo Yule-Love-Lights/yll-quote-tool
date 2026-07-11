@@ -60,6 +60,21 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     // real Declined stage is added later.
     declined: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
   },
+  // Permanent Bistro Lighting (#117): rides the LANDSCAPE LIGHTING pipeline
+  // (Naldo 2026-07-11 — bistro cards live there, not in Permanent). Stage ids
+  // discovered live from GET /opportunities/pipelines right after Naldo added
+  // Booked/Declined and renamed the rest to mirror event's flow. The pipeline
+  // also has an 'Open' stage (31133c9a-…); entry uses 'New Lead' (the first
+  // stage) because entry is only the fallback landing spot for a contact with
+  // no card yet.
+  permanent_bistro: {
+    pipelineId: 'GTFURwOGzGLBl2zsdl0N', // Landscape Lighting
+    entry: '7e821733-a431-4545-bc65-5e14c5f02877', // New Lead
+    sent: '18205538-0225-451b-aae5-5093de433004', // Bid Sent
+    depositPaid: '8c7765b3-a2ba-4928-8618-5ec5a1182cb2', // Booked
+    installed: 'bf068cce-4d71-480f-9bbc-bab144114e6c', // Installed
+    declined: 'ad2127e1-692f-4d42-aecf-3f381793dfeb', // Declined
+  },
 };
 
 /**
@@ -117,6 +132,11 @@ const QUOTE_LINK_FIELD_ENV: Record<ServiceType, string> = {
   holiday: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
   permanent: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
   event: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
+  // Permanent Bistro Lighting (#117): no dedicated GHL contact field yet —
+  // deliberately REUSES the Permanent quote-link field for v1 (mirrors the
+  // pipeline reuse above). Known edge: a customer holding both a permanent
+  // and a bistro quote shares one link field.
+  permanent_bistro: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
 };
 
 /**

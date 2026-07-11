@@ -141,6 +141,25 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // ── #117: permanent bistro is DESIGN-DRAWN ONLY — no manual footage entry
+  // and no auto-analyzer (the client discards any analyzer result for this
+  // vertical; see QuoteBuilder's handleLookupAddress). Running the full
+  // holiday analyzer here would burn an Anthropic call for a result nobody
+  // reads, so return the same imagery payload with no analysis result.
+  if (body.serviceType === 'permanent_bistro') {
+    return NextResponse.json({
+      result: null,
+      photoBase64: streetView.base64,
+      photoMediaType: streetView.mediaType,
+      satelliteBase64: satellite.base64,
+      satelliteMediaType: satellite.mediaType,
+      satelliteFeetPerPixel,
+      formattedAddress: geo.formattedAddress,
+      lat: geo.lat,
+      lng: geo.lng,
+    });
+  }
+
   // ── 2. Analyze with Claude (#8 few-shot) — FAIL-SAFE ──────────────────────
   // If the analyzer is unavailable (e.g. Claude is down/overloaded) we still
   // return the imagery with result: null so the client can load the photos and

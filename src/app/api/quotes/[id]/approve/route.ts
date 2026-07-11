@@ -373,15 +373,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Permanent (#88 P6) + Event (#96 Phase B): neither vertical carries the holiday
-  // rush / premium-takedown / early-install fees. Force them OFF here so a forged
-  // approve body can't add a holiday fee to such an order — the same guarantee
-  // calculatePermanentQuote / calculateEventQuote make at pricing time. Holiday
-  // quotes use the customer's requested toggles unchanged. These effective values
-  // flow into the recompute AND the frozen approval snapshot below.
+  // Permanent (#88 P6) + Event (#96 Phase B) + Permanent Bistro: none of these
+  // verticals carry the holiday rush / premium-takedown / early-install fees.
+  // Force them OFF here so a forged approve body can't add a holiday fee to such
+  // an order — the same guarantee calculatePermanentQuote / calculateEventQuote /
+  // calculatePermanentBistro make at pricing time. Holiday quotes use the
+  // customer's requested toggles unchanged. These effective values flow into the
+  // recompute AND the frozen approval snapshot below.
   const isPermanent = quote.service_type === 'permanent';
   const isEvent = quote.service_type === 'event';
-  const noHolidayFees = isPermanent || isEvent;
+  const isPermanentBistro = quote.service_type === 'permanent_bistro';
+  const noHolidayFees = isPermanent || isEvent || isPermanentBistro;
   const rushSelected = noHolidayFees ? false : reqRushSelected;
   const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
   // Audit fix (approve-discount-enforce): staff can hide the Sep/Oct early-install
@@ -504,13 +506,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         )
       : lineItems;
     // Permanent (#88 H3): gate on the FROZEN rate-snapshot minimum ($2,500 default),
-    // never live settings — the same threshold the portal adapter uses. Holiday
-    // passes undefined → the $1,000 BUSINESS_RULES default.
+    // never live settings — the same threshold the portal adapter uses. Permanent
+    // bistro mirrors this off its OWN frozen rate-snapshot minimum (default 0 —
+    // gate OFF — never the holiday $1,000). Holiday/event pass undefined → the
+    // $1,000 BUSINESS_RULES default. Must match adapter.ts's approvalGate exactly
+    // (server stricter than portal is the disagreement this mirrors avoid).
     const minimum = quote.inputs?.waiveMinimum
       ? 0
       : minimumOrderSubtotal(
           tierLineItems,
-          isPermanent ? (quote.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+          isPermanent
+            ? (quote.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500)
+            : isPermanentBistro
+              ? (quote.result.permanentBistroRatesSnapshot?.minimum ?? 0)
+              : undefined,
         );
     const { meetsMinimum } = orderMinimumStatus(breakdown, minimum);
     if (!meetsMinimum) {

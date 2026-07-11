@@ -15,6 +15,11 @@ type Props = {
   /** #88: lock the design to permanent pucks only (a permanent-service quote) —
    *  hides holiday bulb types (c9/mini/bistro) + all decor/text/pole tools. */
   permanentOnly?: boolean;
+  /** #117: lock the design to bistro strands only (a permanent-bistro-service
+   *  quote) — hides holiday bulb types (c9/permanent/mini) + all decor/text/pole
+   *  tools. Independent of permanentOnly; if both are set permanentOnly wins
+   *  (defensive — the two service types never coexist on one form). */
+  bistroOnly?: boolean;
   /**
    * Handed a flush() that synchronously persists a pending debounced scene save
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
@@ -52,7 +57,7 @@ function fileToDataUrl(file: File): Promise<string> {
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady, permanentOnly }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, permanentOnly, bistroOnly }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -141,6 +146,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         keymap: km,
         activePhotoId,
         permanentOnly,
+        bistroOnly,
       });
       if (cancelled) {
         handle?.();
@@ -157,7 +163,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       onReadyRef.current?.(null);
       handle?.();
     };
-  }, [designId, activePhotoId, permanentOnly]);
+  }, [designId, activePhotoId, permanentOnly, bistroOnly]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {

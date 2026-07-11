@@ -197,6 +197,11 @@ export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
       return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'permanent':
       return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    // Permanent Bistro Lighting (#117) has no completed-work photos of its own
+    // yet — reuses the Event gallery as a placeholder until real bistro assets
+    // exist (#117 follow-up).
+    case 'permanent_bistro':
+      return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'holiday':
     default:
       return MOCK_GALLERY_ITEMS;
@@ -218,6 +223,7 @@ const CROSS_SELL_DISPLAY_NAMES: Record<ServiceType, string> = {
   holiday: 'Holiday Lighting',
   permanent: 'Permanent Lighting',
   event: 'Event Lighting',
+  permanent_bistro: 'Bistro Lighting',
 };
 
 // Preserves the given id order (rather than the source list's own order) and
@@ -256,6 +262,11 @@ export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
       blocks = [holidayBlock, permanentBlock];
       break;
     case 'permanent':
+      blocks = [holidayBlock, eventBlock];
+      break;
+    // Permanent Bistro Lighting (#117) mirrors permanent's cross-sell choice
+    // (holiday + event) — no dedicated bistro cross-sell block yet.
+    case 'permanent_bistro':
       blocks = [holidayBlock, eventBlock];
       break;
     case 'holiday':
@@ -340,6 +351,27 @@ export const PERMANENT_FAQ = [
     a: 'By the foot — a flat per-foot rate for the front, sides, and back you choose to light. Do the whole home, or start with the front and add on later.' },
   { q: 'How long does installation take?',
     a: 'Most homes are done in a day. We mount the track, set the pucks, wire the transformer and controller, and walk you through the app before we leave.' },
+];
+
+// Permanent Bistro Lighting — the FAQ shown on a bistro quote's portal (draft
+// copy; Naldo can revise). Same { q, a } shape as MOCK_FAQ; the portal page
+// passes this instead of MOCK_FAQ when service_type is 'permanent_bistro'
+// (bistro otherwise inherited the holiday seasonal-install Q&A, which is wrong
+// for a year-round, pole-mounted string-light install). Every answer is
+// grounded in a claim already made for permanent or event — see RiskReversal's
+// BISTRO_GUARANTEES. The color question is answered honestly: these are fixed
+// warm-white bulbs, not a color-changing system like permanent.
+export const BISTRO_FAQ = [
+  { q: 'How long does the install take?',
+    a: 'Most installs are done in a day. We set your poles and string the lights, then walk you through everything before we leave.' },
+  { q: 'Do the lights stay up all year?',
+    a: 'Yes. This is a permanent install, so your lights stay up year-round. There is no takedown.' },
+  { q: 'What if a bulb or strand fails?',
+    a: 'Reach out and we will come service it. We stand behind every install we hang.' },
+  { q: 'Can we change the colors or brightness?',
+    a: 'These are warm white, Edison-style café bulbs; one classic look, with no color-changing or dimming. Ask us about our permanent lighting system if you want color control.' },
+  { q: 'Do you service the lights after install?',
+    a: 'Yes. If anything needs attention down the road, just reach out and we will take care of it.' },
 ];
 
 export const MOCK_TEAM = {

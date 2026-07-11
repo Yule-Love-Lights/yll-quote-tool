@@ -281,6 +281,9 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
 
   // Job type from the quote's service line. Holiday/event = one-off; permanent
   // (Glow365) carries the recurring type now (recurring billing is deferred).
+  // Permanent BISTRO (#117) books as one_off ON PURPOSE for v1: 'permanent'
+  // jobs feed the APL puck/track BOM + Glow365 ops machinery, none of which
+  // applies to café string lights. Revisit if bistro grows its own ops track.
   const type: JobRow['type'] = quote.service_type === 'permanent' ? 'permanent' : 'one_off';
 
   // Sequential display number (Job #1000…). Best-effort, exactly like

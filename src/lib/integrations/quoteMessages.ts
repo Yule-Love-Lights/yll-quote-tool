@@ -15,6 +15,7 @@ const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
   holiday: 'Your Yule Love Lights quote is ready 🎄',
   permanent: 'Your Yule Love Lights Permanent Lighting quote is ready ✨',
   event: 'Your Yule Love Lights Event Lighting quote is ready ✨',
+  permanent_bistro: 'Your Yule Love Lights Bistro Lighting quote is ready ✨',
 };
 
 export function quoteEmailSubject(serviceType?: string | null): string {
@@ -26,6 +27,7 @@ const QUOTE_READY_SMS_INTRO: Record<ServiceType, string> = {
   holiday: '🎄 Your custom Yule Love Lights quote is ready!',
   permanent: '✨ Your custom Yule Love Lights Permanent Lighting quote is ready!',
   event: '✨ Your custom Yule Love Lights Event Lighting quote is ready!',
+  permanent_bistro: '✨ Your custom Yule Love Lights Bistro Lighting quote is ready!',
 };
 
 export function quoteSmsBody(firstName: string, portalUrl: string, serviceType?: string | null): string {
@@ -45,6 +47,7 @@ const QUOTE_READY_EMAIL_COPY: Record<ServiceType, { intro: string; breakdown: st
   holiday: { intro: 'Your custom holiday lighting quote is ready.', breakdown: 'line-item' },
   permanent: { intro: 'Your custom permanent lighting quote is ready.', breakdown: 'item' },
   event: { intro: 'Your custom event lighting quote is ready.', breakdown: 'item' },
+  permanent_bistro: { intro: 'Your custom bistro lighting quote is ready.', breakdown: 'item' },
 };
 
 export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType?: string | null): string {

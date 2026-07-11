@@ -2,7 +2,7 @@
 // desktop with a glowing gold dashed connector. Vertical on mobile.
 // Step circles are gold (the brand's warmth) instead of cream/red.
 
-import { CheckCircle2, MessageSquare, Truck, PackageOpen } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Truck, PackageOpen, Lightbulb } from 'lucide-react';
 import type { ServiceType } from '@/lib/serviceType';
 
 type Step = {
@@ -58,13 +58,41 @@ const EVENT_STEPS: Step[] = [
   },
 ];
 
+// PERMANENT BISTRO service line: approve online, then a professional install
+// on the poles/supports we set, and the lights stay up year-round (no
+// takedown) — mirrors the structure of STEPS/EVENT_STEPS above.
+const BISTRO_STEPS: Step[] = [
+  {
+    icon: CheckCircle2,
+    title: 'Approve your quote',
+    body: 'Approve online, then we collect your 50% deposit and get your install on the schedule.',
+  },
+  {
+    icon: MessageSquare,
+    title: 'We schedule your install',
+    body: 'We text you a 2-hour arrival window the day before.',
+  },
+  {
+    icon: Truck,
+    title: 'Professional install',
+    body: 'Our team sets your poles and supports, then strings your lights. No mess, no disruption.',
+  },
+  {
+    icon: Lightbulb,
+    title: 'Your lights stay up year-round',
+    body: 'No takedown. Your bistro lights stay strung and ready every night.',
+  },
+];
+
 const HOLIDAY_HEADING = 'Four steps from quote to Christmas cheer.';
 const EVENT_HEADING = 'From approval to your big night';
+const BISTRO_HEADING = 'From approval to lights that stay up for good.';
 
 export function WhatHappensNext({ serviceType }: { serviceType?: ServiceType }) {
   const isEvent = serviceType === 'event';
-  const steps = isEvent ? EVENT_STEPS : STEPS;
-  const heading = isEvent ? EVENT_HEADING : HOLIDAY_HEADING;
+  const isPermanentBistro = serviceType === 'permanent_bistro';
+  const steps = isEvent ? EVENT_STEPS : isPermanentBistro ? BISTRO_STEPS : STEPS;
+  const heading = isEvent ? EVENT_HEADING : isPermanentBistro ? BISTRO_HEADING : HOLIDAY_HEADING;
 
   return (
     <section

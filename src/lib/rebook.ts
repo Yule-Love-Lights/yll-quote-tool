@@ -49,6 +49,7 @@ function stripRatesSnapshots(result: RebookSource['result']): RebookSource['resu
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
   delete rest.eventRatesSnapshot;
+  delete rest.permanentBistroRatesSnapshot;
   return rest as RebookSource['result'];
 }
 

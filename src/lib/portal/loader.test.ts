@@ -196,3 +196,48 @@ describe('loadPortalQuote — W4-016 parallel design lookup', () => {
     expect(portal).toBeNull();
   });
 });
+
+// #117 review HIGH — applyOurRecommendation must be HOLIDAY-ONLY (positive
+// gate). Permanent, event, and permanent bistro all repurpose package 'D' as a
+// real bundle; a staff-recommended custom line item must never collapse that
+// bundle into an "Our Recommendation" card that drops the core product.
+describe('loadPortalQuote — applyOurRecommendation gate (#117)', () => {
+  it('permanent_bistro: a recommended custom item does NOT clobber the single bistro package', async () => {
+    const { calculatePermanentBistro } = await import('@/lib/permanentBistro/pricing');
+    const inputs = {
+      ...emptyInputs({ santasFootage: 0 }),
+      permanentBistro: { bistro: [{ id: 'bistro-run-1', footage: 40 }], poles: 2 },
+      customLineItems: [{ id: 'custom-1', label: 'Extra swag', amount: 50, recommended: true }],
+    } as QuoteInputs;
+    const result = calculatePermanentBistro(inputs);
+    sbRef.current = makeSb(baseRow({ service_type: 'permanent_bistro', inputs, result, total: result.total }));
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    const portal = await loadPortalQuote(ID);
+
+    expect(portal).not.toBeNull();
+    expect(portal!.packages).toHaveLength(1);
+    expect(portal!.packages[0].name).toBe('Bistro Lighting');
+    // The bundle keeps EVERY line: the run, the poles, and the custom item.
+    expect(portal!.packages[0].includedItemIds).toHaveLength(3);
+  });
+
+  it('holiday (null service_type): a recommended custom item still populates the D slot', async () => {
+    const inputs = emptyInputs({
+      customLineItems: [{ id: 'custom-1', label: 'Extra swag', amount: 50, recommended: true }],
+    });
+    const result = calculateQuote(inputs);
+    sbRef.current = makeSb(baseRow({ inputs, result, total: result.total }));
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    const portal = await loadPortalQuote(ID);
+
+    expect(portal).not.toBeNull();
+    const d = portal!.packages.find((p) => p.id === 'D');
+    expect(d).toBeDefined();
+    expect(d!.name).toBe('Our Recommendation');
+    expect(d!.includedItemIds).toContain(
+      portal!.lineItems.find((li) => li.label.includes('Extra swag'))!.id,
+    );
+  });
+});
