@@ -60,16 +60,20 @@ export default async function PortalApprovedPage({
   // premium-takedown add-on (premium pulls everything down before Jan 9).
   // Optional-chained so the dev MOCK_QUOTE (no approval) renders the standard
   // windows.
-  // Service line drives the confirmation copy (3-valued — holiday / permanent / event).
+  // Service line drives the confirmation copy (4-valued — holiday / permanent /
+  // event / permanent bistro).
   // Permanent = year-round: no seasonal window, no takedown, track-mounted (not clipped).
   // Event (#96, live) = date-driven + short-term: it DOES take down (but not on the
   // holiday season window) and is clip-installed like holiday. Only holiday gets the
   // seasonal install window + the Jan 9–Feb 3 takedown copy.
+  // Permanent bistro = year-round like permanent: no seasonal window, no takedown row
+  // (poles/supports go up once) — modeled on permanent's handling below.
   const isPermanent = quote.serviceType === 'permanent';
   const isEvent = quote.serviceType === 'event';
-  const headlineEmoji = isPermanent ? '💡' : isEvent ? '🎉' : '🎄';
+  const isPermanentBistro = quote.serviceType === 'permanent_bistro';
+  const headlineEmoji = isPermanent ? '💡' : isEvent ? '🎉' : isPermanentBistro ? '✨' : '🎄';
   const installWindow =
-    isPermanent || isEvent
+    isPermanent || isEvent || isPermanentBistro
       ? "We'll confirm your install date"
       : quote.approval?.installTiming === 'september'
         ? 'Mid-Late September'
@@ -77,14 +81,17 @@ export default async function PortalApprovedPage({
           ? 'October'
           : 'Mid-November – Early December';
   const takedownWindow = quote.approval?.takedownSelected ? 'Starting Jan 1' : 'Jan 9 – Feb 3';
-  // Summary field: permanent = lifetime warranty (no takedown); event = after the
-  // event (no holiday window); holiday = the seasonal window.
-  const takedownFieldLabel = isPermanent ? 'Warranty' : 'Takedown';
+  // Summary field: permanent = lifetime warranty (no takedown); permanent bistro =
+  // workmanship warranty (no takedown); event = after the event (no holiday
+  // window); holiday = the seasonal window.
+  const takedownFieldLabel = isPermanent || isPermanentBistro ? 'Warranty' : 'Takedown';
   const takedownFieldValue = isPermanent
     ? 'Lifetime materials'
-    : isEvent
-      ? 'After your event'
-      : takedownWindow;
+    : isPermanentBistro
+      ? 'Workmanship warranty'
+      : isEvent
+        ? 'After your event'
+        : takedownWindow;
 
   // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
@@ -122,7 +129,9 @@ export default async function PortalApprovedPage({
       title: 'Our team installs',
       body: isPermanent
         ? '2–4 hours on-site. We mount the track to your roofline and set the LED pucks — clean and low-profile. You don\'t need to be home.'
-        : '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
+        : isPermanentBistro
+          ? 'We set your poles and string the lights on-site. Clean install, no mess left behind.'
+          : '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
     },
     isPermanent
       ? {
@@ -130,17 +139,23 @@ export default async function PortalApprovedPage({
           title: 'Lifetime materials warranty',
           body: 'Your lights stay up year-round — no takedown. The LED pucks and track carry a lifetime materials warranty (labor billed separately, non-transferable).',
         }
-      : isEvent
+      : isPermanentBistro
         ? {
             icon: PackageOpen,
-            title: 'We take everything down',
-            body: 'After your event, our team returns to remove everything — lights, clips, extensions — all gone. We confirm the takedown timing with you.',
+            title: 'Your lights stay up for good',
+            body: 'No takedown. Your bistro lights stay strung and ready every night, backed by a workmanship warranty.',
           }
-        : {
-            icon: PackageOpen,
-            title: 'We take everything down',
-            body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
-          },
+        : isEvent
+          ? {
+              icon: PackageOpen,
+              title: 'We take everything down',
+              body: 'After your event, our team returns to remove everything — lights, clips, extensions — all gone. We confirm the takedown timing with you.',
+            }
+          : {
+              icon: PackageOpen,
+              title: 'We take everything down',
+              body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
+            },
   ];
 
   return (

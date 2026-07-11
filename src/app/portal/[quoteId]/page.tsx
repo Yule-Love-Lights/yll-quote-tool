@@ -53,6 +53,7 @@ import {
   MOCK_FAQ,
   EVENT_FAQ,
   PERMANENT_FAQ,
+  BISTRO_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -324,7 +325,9 @@ export default async function PortalPage({
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={
-          quote.serviceType === 'permanent' || quote.serviceType === 'event'
+          quote.serviceType === 'permanent' ||
+          quote.serviceType === 'event' ||
+          quote.serviceType === 'permanent_bistro'
             ? 'none'
             : quote.installTiming
         }
@@ -444,14 +447,16 @@ export default async function PortalPage({
         <Philanthropy />
 
         {/* 10. FAQ — per service_type: event (#96) + permanent (#88, ledger #120)
-             each get their own Q&A; holiday keeps MOCK_FAQ. */}
+             + permanent bistro each get their own Q&A; holiday keeps MOCK_FAQ. */}
         <FAQ
           items={
             quote.serviceType === 'event'
               ? EVENT_FAQ
               : quote.serviceType === 'permanent'
                 ? PERMANENT_FAQ
-                : MOCK_FAQ
+                : quote.serviceType === 'permanent_bistro'
+                  ? BISTRO_FAQ
+                  : MOCK_FAQ
           }
         />
 

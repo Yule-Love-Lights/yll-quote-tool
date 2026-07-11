@@ -3,6 +3,8 @@ import { quoteRowToPortalQuote, BILLED_ROOFLINE_IDS, type QuoteRowForPortal } fr
 import { calculateQuote, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
+import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
+import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
 import type { PortalPhotos } from './photos';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
@@ -652,5 +654,66 @@ describe('quoteRowToPortalQuote — permanent recommended sides (#131)', () => {
       photos: PHOTOS,
     })!;
     expect(portal.lineItems.some((li) => li.recommended)).toBe(false);
+  });
+});
+
+// ── Permanent Bistro Lighting — portal package derivation + own gate ───────
+// (mirrors permanent/event's own-vertical wiring; the seam bug this locks:
+// the approval gate must read the bistro quote's OWN frozen rate-snapshot
+// minimum, never silently fall back to the holiday $1,000 default.)
+describe('quoteRowToPortalQuote — permanent bistro (single package + own gate, never rush/takedown)', () => {
+  function bistroInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
+    return emptyInputs({
+      permanentBistro: { bistro: [{ footage: 40 }], poles: 2 },
+      ...overrides,
+    } as Partial<QuoteInputs>);
+  }
+
+  it("derives a single bundled package (event's model), not the holiday tier ladder", () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.packages).toHaveLength(1);
+    expect(portal.packages[0].id).toBe('D');
+    expect(portal.packages[0].includedItemIds).toHaveLength(portal.lineItems.length);
+  });
+
+  it('approvalGate is 0 (gate off) when the bistro rate snapshot minimum is 0', () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(0);
+  });
+
+  it('approvalGate equals the bistro snapshot minimum when set — never the holiday $1,000 default', () => {
+    // 40ft × $30/ft = $1,200 + 2 poles × $100 = $1,400 — clears a $500 bistro
+    // minimum. Pre-fix, `isPermanent ? … : undefined` made this default to
+    // BUSINESS_RULES.minimumQuoteAmount ($1,000), which would ALSO happen to
+    // read as "met" here — the regression is locked by asserting the exact
+    // gate VALUE the portal shows (500), not just pass/fail.
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 500 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(500);
+  });
+
+  it('carries no rush/takedown charges on the live portal (defense in depth)', () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.charges.rush.amount).toBe(0);
+    expect(portal.charges.takedown.amount).toBe(0);
   });
 });
