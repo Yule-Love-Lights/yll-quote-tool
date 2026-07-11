@@ -458,7 +458,10 @@ export async function upsertContactCustomField(
 // AFTER the upsert so re-submitting a form never wipes a contact's existing
 // tags.
 export type UpsertContactInput = {
-  firstName: string;
+  // Optional so a caller can omit name fields entirely on a household match
+  // (see leadService.syncLeadToGhl) — sending them there would overwrite the
+  // existing contact's name via GHL's email/phone-matched upsert.
+  firstName?: string;
   lastName?: string;
   email: string;
   phone: string;

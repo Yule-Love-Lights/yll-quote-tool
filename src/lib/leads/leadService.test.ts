@@ -49,6 +49,15 @@ const hl = vi.hoisted(() => {
       created: true,
     })),
     createOpportunity: vi.fn(async (_input: unknown) => ({ id: 'opp-should-not-be-called' })),
+    searchContacts: vi.fn(async (_query: string) => [] as Array<{
+      id: string;
+      source: 'highlevel';
+      firstName?: string;
+      lastName?: string;
+      fullName?: string;
+      email?: string;
+      phone?: string;
+    }>),
   };
 });
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -58,6 +67,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   createContactNote: hl.createContactNote,
   findOrCreateOpportunityForContact: hl.findOrCreateOpportunityForContact,
   createOpportunity: hl.createOpportunity,
+  searchContacts: hl.searchContacts,
   HighLevelError: hl.HighLevelError,
 }));
 
@@ -71,6 +81,8 @@ import {
   SERVICE_FIELD_VALUE,
   syncLeadToGhl,
   buildLeadNoteBody,
+  buildHouseholdNoteBody,
+  existingNameDiffers,
   type LeadInput,
 } from './leadService';
 
@@ -91,14 +103,24 @@ function baseLead(overrides: Partial<LeadInput> = {}): LeadInput {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks only wipes call history — a .mockRejectedValue/mockResolvedValue
+  // override set by an earlier test PERSISTS on a plain vi.fn() mock (unlike a
+  // vi.spyOn spy, restoreAllMocks in afterEach doesn't undo it either). Reset
+  // every mock's happy-path implementation here so no test's failure-case
+  // override can leak into a later test.
   hl.upsertContact.mockResolvedValue({
     contact: { id: 'contact-1', firstName: 'Jordan', email: 'jordan@example.com' },
     new: true,
   });
+  hl.addContactTags.mockResolvedValue({});
+  hl.upsertContactCustomField.mockResolvedValue(undefined);
+  hl.createContactNote.mockResolvedValue({});
   hl.findOrCreateOpportunityForContact.mockResolvedValue({
     opportunity: { id: 'opp-1' },
     created: true,
   });
+  hl.createOpportunity.mockResolvedValue({ id: 'opp-should-not-be-called' });
+  hl.searchContacts.mockResolvedValue([]);
   delete process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE;
   delete process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY;
   delete process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
@@ -389,5 +411,223 @@ describe('syncLeadToGhl — a failure AFTER the contact exists is caught, not th
     expect(result.status).toBe('error');
     expect(result.ghlContactId).toBe('contact-1');
     expect(result.syncError).toContain('tags API down');
+  });
+});
+
+describe('existingNameDiffers — household-name compare helper', () => {
+  it('same name, case-insensitive, is NOT differing', () => {
+    expect(existingNameDiffers('Jordan Rivera', 'jordan rivera')).toBe(false);
+    expect(existingNameDiffers('  Jordan Rivera  ', 'Jordan Rivera')).toBe(false);
+  });
+
+  it('a different name IS differing', () => {
+    expect(existingNameDiffers('Jordan Rivera', 'Casey Rivera')).toBe(true);
+  });
+
+  it('an empty/missing existing name is treated as NOT differing', () => {
+    expect(existingNameDiffers(undefined, 'Casey Rivera')).toBe(false);
+    expect(existingNameDiffers('', 'Casey Rivera')).toBe(false);
+    expect(existingNameDiffers('   ', 'Casey Rivera')).toBe(false);
+  });
+});
+
+describe('buildHouseholdNoteBody', () => {
+  it('names the submitter, the service, and the kept contact name, and includes the submitted phone', () => {
+    const body = buildHouseholdNoteBody(
+      baseLead({ name: 'Casey Rivera', phone: '+16315550100', service: 'permanent' }),
+      'Jordan Rivera',
+    );
+    expect(body).toContain('Casey Rivera');
+    expect(body).toContain('Permanent');
+    expect(body).toContain('Jordan Rivera');
+    expect(body).toContain('+16315550100');
+    expect(body).not.toMatch(/—|–/); // never an em/en dash
+  });
+
+  it('strips newlines from the submitted name and phone (note-forgery hardening, matches buildLeadNoteBody)', () => {
+    const body = buildHouseholdNoteBody(
+      baseLead({ name: 'Casey\nFAKE: injected line', phone: '631\n555-0100' }),
+      'Jordan Rivera',
+    );
+    expect(body).not.toContain('Casey\nFAKE');
+    expect(body).not.toContain('631\n555');
+  });
+});
+
+describe('syncLeadToGhl — household/spousal contact handling', () => {
+  it('(a) no existing contact → plain upsert with firstName/lastName, no household tag/note (regression)', async () => {
+    hl.searchContacts.mockResolvedValue([]);
+
+    const result = await syncLeadToGhl(baseLead({ name: 'Jordan Rivera' }));
+
+    expect(result.status).toBe('synced');
+    expect(hl.upsertContact).toHaveBeenCalledWith({
+      firstName: 'Jordan',
+      lastName: 'Rivera',
+      email: 'jordan@example.com',
+      phone: '+16315550100',
+      address1: '123 Main St',
+      source: 'Website Form',
+    });
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).toEqual(['new lead', 'web-lead-christmas']);
+    expect(tags).not.toContain('household-second-contact');
+    expect(hl.createContactNote).not.toHaveBeenCalled();
+  });
+
+  it('(b) existing contact, SAME name (case-insensitive) → plain path, name fields still sent, no household extras', async () => {
+    hl.searchContacts.mockResolvedValue([
+      {
+        id: 'contact-1',
+        source: 'highlevel',
+        firstName: 'Jordan',
+        lastName: 'Rivera',
+        fullName: 'jordan rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+      },
+    ]);
+
+    await syncLeadToGhl(baseLead({ name: 'Jordan Rivera' }));
+
+    expect(hl.upsertContact).toHaveBeenCalledWith({
+      firstName: 'Jordan',
+      lastName: 'Rivera',
+      email: 'jordan@example.com',
+      phone: '+16315550100',
+      address1: '123 Main St',
+      source: 'Website Form',
+    });
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).not.toContain('household-second-contact');
+    expect(hl.createContactNote).not.toHaveBeenCalled();
+  });
+
+  it('(c) existing contact, DIFFERENT name → upsert omits firstName/lastName, tags gain household-second-contact, household note fires, opportunity fallbackName = submitted name', async () => {
+    hl.searchContacts.mockResolvedValue([
+      {
+        id: 'contact-1',
+        source: 'highlevel',
+        firstName: 'Jordan',
+        lastName: 'Rivera',
+        fullName: 'Jordan Rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+      },
+    ]);
+
+    const result = await syncLeadToGhl(
+      baseLead({ name: 'Casey Rivera', service: 'permanent' }),
+    );
+
+    expect(result.status).toBe('synced');
+
+    const upsertCall = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertCall).not.toHaveProperty('firstName');
+    expect(upsertCall).not.toHaveProperty('lastName');
+    expect(upsertCall).toEqual({
+      email: 'jordan@example.com',
+      phone: '+16315550100',
+      address1: '123 Main St',
+      source: 'Website Form',
+    });
+
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).toEqual(['new lead', 'web-lead-permanent', 'household-second-contact']);
+
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1);
+    const [, noteBody] = hl.createContactNote.mock.calls[0]!;
+    expect(noteBody).toContain('Casey Rivera');
+    expect(noteBody).toContain('Jordan Rivera');
+    expect(noteBody).toContain('Permanent');
+
+    expect(hl.findOrCreateOpportunityForContact).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'Casey Rivera' }),
+    );
+  });
+
+  it('(d) searchContacts throws → fail-open, plain path proceeds, lead still syncs', async () => {
+    hl.searchContacts.mockRejectedValue(new Error('search API down'));
+
+    const result = await syncLeadToGhl(baseLead({ name: 'Jordan Rivera' }));
+
+    expect(result.status).toBe('synced');
+    expect(hl.upsertContact).toHaveBeenCalledWith(
+      expect.objectContaining({ firstName: 'Jordan', lastName: 'Rivera' }),
+    );
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).not.toContain('household-second-contact');
+    expect(hl.createContactNote).not.toHaveBeenCalled();
+  });
+
+  it('(e) phone-fallback match works when email search is empty (digits-only compare)', async () => {
+    hl.searchContacts.mockImplementation(async (query: string) => {
+      if (query === 'jordan@example.com') return [];
+      if (query === '(631) 555-0301') {
+        return [
+          {
+            id: 'contact-1',
+            source: 'highlevel' as const,
+            firstName: 'Jordan',
+            lastName: 'Rivera',
+            fullName: 'Jordan Rivera',
+            email: 'someone-else@example.com',
+            phone: '6315550301',
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await syncLeadToGhl(
+      baseLead({ name: 'Casey Rivera', phone: '(631) 555-0301' }),
+    );
+
+    expect(result.status).toBe('synced');
+    expect(hl.searchContacts).toHaveBeenCalledWith('jordan@example.com');
+    expect(hl.searchContacts).toHaveBeenCalledWith('(631) 555-0301');
+
+    const upsertCall = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertCall).not.toHaveProperty('firstName');
+    expect(upsertCall).not.toHaveProperty('lastName');
+
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).toContain('household-second-contact');
+  });
+
+  it('the household note is created even when notes/utm/landingUrl are ALL absent (independent guard)', async () => {
+    hl.searchContacts.mockResolvedValue([
+      {
+        id: 'contact-1',
+        source: 'highlevel',
+        fullName: 'Jordan Rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+      },
+    ]);
+
+    await syncLeadToGhl(
+      baseLead({ name: 'Casey Rivera', notes: null, utm: null, landingUrl: null }),
+    );
+
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('BOTH the household note and the regular note fire when notes/utm/landingUrl are ALSO present', async () => {
+    hl.searchContacts.mockResolvedValue([
+      {
+        id: 'contact-1',
+        source: 'highlevel',
+        fullName: 'Jordan Rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+      },
+    ]);
+
+    await syncLeadToGhl(
+      baseLead({ name: 'Casey Rivera', notes: 'Wants warm white only' }),
+    );
+
+    expect(hl.createContactNote).toHaveBeenCalledTimes(2);
   });
 });

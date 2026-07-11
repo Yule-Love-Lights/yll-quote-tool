@@ -14,8 +14,10 @@ import {
   upsertContactCustomField,
   createContactNote,
   findOrCreateOpportunityForContact,
+  searchContacts,
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import type { CrmContact } from '@/lib/integrations/types';
 
 // ─── Lead service (the website form's own vocabulary — NOT the quote tool's
 // ServiceType) ───────────────────────────────────────────────────────────
@@ -118,6 +120,74 @@ export function buildLeadNoteBody(lead: LeadInput): string {
   return lines.join('\n');
 }
 
+// ─── Household / spousal contact handling ──────────────────────────────
+// Live-proven bug: GHL's /contacts/upsert matches an existing contact by
+// email/phone and OVERWRITES its firstName/lastName. When a second person in
+// the same household (spouse, shared phone) submits the form under a
+// different name, that silently erases the original contact's identity.
+// Fix: search for an existing contact BEFORE the upsert; if one is found
+// under a genuinely different name, upsert WITHOUT name fields (so the
+// original name survives) and record who actually submitted this one.
+
+function normalizeEmailForCompare(email: string | undefined | null): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+function normalizePhoneForCompare(phone: string | undefined | null): string {
+  return (phone ?? '').replace(/\D/g, '');
+}
+
+/**
+ * True when existingName is present and differs (case-insensitively, trimmed)
+ * from submittedName. An empty/missing existingName is treated as NOT
+ * differing — there's no identity to protect yet.
+ */
+export function existingNameDiffers(
+  existingName: string | undefined | null,
+  submittedName: string,
+): boolean {
+  const existing = (existingName ?? '').trim();
+  if (!existing) return false;
+  return existing.toLowerCase() !== submittedName.trim().toLowerCase();
+}
+
+export function buildHouseholdNoteBody(lead: LeadInput, existingName: string): string {
+  const submittedName = stripNewlinesForNote(lead.name);
+  const submittedPhone = stripNewlinesForNote(lead.phone);
+  const safeExistingName = stripNewlinesForNote(existingName);
+  return (
+    `Household note: ${submittedName} submitted a website ${SERVICE_FIELD_VALUE[lead.service]} ` +
+    `request using this contact's email/phone on file. Contact name kept as ${safeExistingName}. ` +
+    `Submitted phone: ${submittedPhone}.`
+  );
+}
+
+// Pre-check: search by email first, falling back to phone when the email
+// search comes up empty, then pick the first result that actually matches
+// the lead's email or phone (defensive — a text-query search can return
+// near-matches, not just exact ones). Fail-open: a search hiccup must never
+// block or lose a lead sync, so any throw here is swallowed and treated as
+// "no existing contact found."
+async function findHouseholdMatch(lead: LeadInput): Promise<CrmContact | null> {
+  try {
+    let results = await searchContacts(lead.email);
+    if (results.length === 0) {
+      results = await searchContacts(lead.phone);
+    }
+    const wantEmail = normalizeEmailForCompare(lead.email);
+    const wantPhone = normalizePhoneForCompare(lead.phone);
+    return (
+      results.find(
+        c =>
+          (!!wantEmail && normalizeEmailForCompare(c.email) === wantEmail) ||
+          (!!wantPhone && normalizePhoneForCompare(c.phone) === wantPhone),
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ─── syncLeadToGhl ──────────────────────────────────────────────────────
 // The one GHL round-trip a saved lead goes through: upsert the contact, tag
 // it, stamp the service field, drop a note with the raw context, then
@@ -161,12 +231,20 @@ function normalizeCheckboxValue(value: unknown): string[] {
 export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResult> {
   const { firstName, lastName } = splitLeadName(lead.name);
 
+  // Household pre-check — one extra read before the upsert, only to decide
+  // whether name fields are safe to send. Fail-open: a search hiccup falls
+  // through to the plain (pre-existing) path below.
+  const householdMatch = await findHouseholdMatch(lead);
+  const isHousehold =
+    householdMatch !== null && existingNameDiffers(householdMatch.fullName, lead.name);
+
   // upsertContact is the one call allowed to throw — with no contact yet,
   // there's nothing partial to report, so the ROUTE's own catch is the
-  // backstop (keeps the row 'pending' for retry).
+  // backstop (keeps the row 'pending' for retry). On the household path we
+  // omit firstName/lastName entirely so the upsert can't overwrite the
+  // original contact's identity.
   const { contact } = await upsertContact({
-    firstName,
-    lastName: lastName || undefined,
+    ...(isHousehold ? {} : { firstName, lastName: lastName || undefined }),
     email: lead.email,
     phone: lead.phone,
     address1: lead.address ?? undefined,
@@ -177,7 +255,10 @@ export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResul
   // never loses the contact id — the route needs ghl_contact_id even when a
   // later step (tag/field/note/opportunity) fails.
   try {
-    await addContactTags(contact.id, ['new lead', `web-lead-${lead.service}`]);
+    const tags = isHousehold
+      ? ['new lead', `web-lead-${lead.service}`, 'household-second-contact']
+      : ['new lead', `web-lead-${lead.service}`];
+    await addContactTags(contact.id, tags);
 
     const fieldId = process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
     if (fieldId) {
@@ -192,6 +273,15 @@ export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResul
       );
       const union = Array.from(new Set([...existing, SERVICE_FIELD_VALUE[lead.service]]));
       await upsertContactCustomField(contact.id, fieldId, union);
+    }
+
+    if (isHousehold) {
+      // Independent of the notes/utm/landingUrl guard below — staff need to
+      // see this even when the submitter left every optional field blank.
+      await createContactNote(
+        contact.id,
+        buildHouseholdNoteBody(lead, householdMatch!.fullName ?? ''),
+      );
     }
 
     if (lead.notes || lead.utm || lead.landingUrl) {
