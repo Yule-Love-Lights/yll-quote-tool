@@ -1,13 +1,38 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { friendlyPortalError } from '@/components/portal/friendlyError';
+import { track } from '@/lib/analytics/posthog';
+import { categorizeApproveError, type ApproveErrorCategory } from '@/lib/analytics/errorCategory';
 
 // Customer-facing remaining-balance checkout (ledger #83 pay-link). Minimal page:
 // the operator sends the customer this link; clicking "Pay balance" starts a Valor
 // hosted-page sale (POST /api/quotes/[id]/pay-balance) and redirects there. The
 // route is public (gated by the quote UUID) and refuses test quotes / zero balance.
+//
+// PostHog Wave 4: this page never loads the quote itself (just the UUID from the
+// URL), so events here carry quote_id only — no service_type is available
+// without a scope-expanding fetch. Observation only: neither event alters the
+// pay flow, and pay_balance_error never fires on the success (redirect) path.
+
+/** Pure `pay_balance_opened` properties builder, extracted for unit coverage
+ * (no component-render test infra exists in this repo). */
+export function buildPayBalanceOpenedProperties(
+  quoteId: string | undefined,
+): { quote_id: string | undefined } {
+  return { quote_id: quoteId };
+}
+
+/** Pure `pay_balance_error` properties builder — same category mapping as
+ * DepositCheckout's approve_error (stage: 'deposit'), here for stage: 'balance'. */
+export function buildPayBalanceErrorProperties(
+  quoteId: string | undefined,
+  status: number | undefined,
+  err: unknown,
+): { quote_id: string | undefined; stage: 'balance'; category: ApproveErrorCategory } {
+  return { quote_id: quoteId, stage: 'balance', category: categorizeApproveError(status, err) };
+}
 
 export default function PayBalancePage() {
   const params = useParams<{ quoteId: string }>();
@@ -15,21 +40,36 @@ export default function PayBalancePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // PostHog Wave 4 — one-shot `pay_balance_opened` on mount (ref-guarded like
+  // QuoteViewTracker, so React strict-mode's double-invoke still fires once).
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (openedRef.current || !quoteId) return;
+    openedRef.current = true;
+    track('pay_balance_opened', buildPayBalanceOpenedProperties(quoteId));
+  }, [quoteId]);
+
   const pay = async () => {
     if (!quoteId) return;
     setBusy(true);
     setError(null);
+    // PostHog Wave 4 — the HTTP status of a received response (undefined means
+    // the failure was before any response), read by the catch block below to
+    // bucket pay_balance_error's `category` (same convention as DepositCheckout).
+    let failureStatus: number | undefined;
     try {
       const res = await fetch(`/api/quotes/${quoteId}/pay-balance`, { method: 'POST' });
+      failureStatus = res.status;
       const body = await res.json();
       if (!res.ok || !body.redirectUrl) throw new Error('unavailable');
       window.location.href = body.redirectUrl as string;
-    } catch {
+    } catch (err) {
       // Consistency fix (audit W4-018): route through the shared friendly-error
       // helper (never surface raw backend errors) so wording/phone can't drift
       // from the rest of the portal's error copy.
       setError(friendlyPortalError('start your payment'));
       setBusy(false);
+      track('pay_balance_error', buildPayBalanceErrorProperties(quoteId, failureStatus, err));
     }
   };
 

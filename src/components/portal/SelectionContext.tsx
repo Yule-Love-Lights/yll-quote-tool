@@ -39,6 +39,7 @@ import {
   type ColorScheme,
 } from '@/lib/design/colorSchemes';
 import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
+import type { ServiceType } from '@/lib/serviceType';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -143,6 +144,11 @@ type SelectionContextValue = {
    *  portal analytics events (package_selected, package_viewed) without
    *  needing their own quoteId prop. Undefined for the mock/dev fallback. */
   quoteId?: string;
+  /** PostHog Wave 4 — the quote's service type, threaded through alongside
+   *  quoteId so SectionViewTracker can fire section_viewed with both
+   *  properties via useSelection() instead of its own props. Undefined for
+   *  the mock/dev fallback. */
+  serviceType?: ServiceType;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -262,6 +268,8 @@ export type SelectionProviderProps = {
   // SelectionContextValue.quoteId) so package_selected/package_viewed can
   // read it via useSelection() instead of their own prop.
   quoteId?: string;
+  // PostHog Wave 4 — same pass-through, for SectionViewTracker's section_viewed.
+  serviceType?: ServiceType;
   children: React.ReactNode;
 };
 
@@ -280,6 +288,7 @@ export function SelectionProvider({
   schemes = DEFAULT_COLOR_SCHEMES,
   buildableColorIds = DEFAULT_BUILDABLE_COLOR_IDS,
   quoteId,
+  serviceType,
   children,
 }: SelectionProviderProps) {
   // Price lookup — stable for the life of the provider.
@@ -520,6 +529,7 @@ export function SelectionProvider({
     toggleDaylight,
     daylightAvailable,
     quoteId,
+    serviceType,
   };
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
