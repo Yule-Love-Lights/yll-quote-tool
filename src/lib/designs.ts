@@ -67,6 +67,11 @@ export type DesignSatelliteLines = {
   left?: { points: [number, number][]; label: string }[];
   right?: { points: [number, number][]; label: string }[];
   back?: { points: [number, number][]; label: string }[];
+  // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
+  // the satellite view — permanent_bistro bills from these (true-scale
+  // feet-per-pixel, no yardstick) and the portal draws them. Optional so
+  // pre-#117 designs still load unchanged.
+  bistro?: { points: [number, number][]; label: string }[];
   santasFootage?: number;
   gingerbreadFootage?: number;
 };

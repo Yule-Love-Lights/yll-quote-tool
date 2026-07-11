@@ -505,9 +505,15 @@ export async function POST(req: NextRequest) {
 
     // If a design is linked AND its scene has projectable per-unit items, the
     // DESIGN is the master list for those items (#27). Holiday + event both use
-    // the design (event reuses the C9/mini/spritzer/curtain items); only permanent
+    // the design (event reuses the C9/mini/spritzer/curtain items); permanent
     // (puck strands) is skipped — projectScene ignores permanent strands.
-    if (!isPermanent && isValidDesignId(designId)) {
+    // Permanent Bistro (#117) is ALSO skipped: bistro footage now bills from the
+    // client-sent satellite-derived inputs.permanentBistro.bistro (true-scale
+    // polylines drawn on the satellite tab), never from the design's street-photo
+    // scene — the Design tab's bistro strand there is visual-only for the portal.
+    // Without this exemption, any leftover bistro strand on the street photo would
+    // silently clobber the satellite footage on every Calculate.
+    if (!isPermanent && !isPermanentBistro && isValidDesignId(designId)) {
       const design = await getDesign(designId);
       if (design?.scene) {
         quoteInputs = applyProjectionToInputs(quoteInputs, design.scene, effectiveServiceType);

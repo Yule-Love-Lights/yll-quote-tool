@@ -7,7 +7,7 @@
 import type { PortalSatelliteLine, PortalSatelliteLines } from '@/components/portal/types';
 
 export type SatelliteLineGroup = {
-  key: 'santas' | 'gingerbread' | 'c9' | 'stake' | 'front' | 'left' | 'right' | 'back';
+  key: 'santas' | 'gingerbread' | 'c9' | 'stake' | 'front' | 'left' | 'right' | 'back' | 'bistro';
   color: string;
   label: string;
   lines: PortalSatelliteLine[];
@@ -36,6 +36,9 @@ export function selectDrawableLineGroups(
     { key: 'left', color: '#3b82f6', label: labelOverrides?.left ?? 'Left Side', lines: lines.left ?? [] },
     { key: 'right', color: '#f59e0b', label: labelOverrides?.right ?? 'Right Side', lines: lines.right ?? [] },
     { key: 'back', color: '#a855f7', label: labelOverrides?.back ?? 'Back of House', lines: lines.back ?? [] },
+    // Permanent Bistro Lighting (#117) — freeform runs traced on the satellite
+    // view, own channel/color (teal, matching the bistro admin badge).
+    { key: 'bistro', color: '#14b8a6', label: labelOverrides?.bistro ?? 'Bistro Lights', lines: lines.bistro ?? [] },
   ];
   const allowedSet = allowedKeys ? new Set(allowedKeys) : null;
   return groups

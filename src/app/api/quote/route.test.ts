@@ -409,6 +409,74 @@ describe('POST /api/quote — permanentBistro block validation (#117)', () => {
   });
 });
 
+// #117 satellite migration: bistro footage now bills from the client-sent
+// satellite-derived inputs.permanentBistro.bistro (true-scale polylines drawn
+// on the Satellite tab), never from a linked design's street-photo scene — the
+// Design tab's bistro strand there is visual-only for the portal. The route's
+// design-projection gate (`!isPermanent && !isPermanentBistro && isValidDesignId`)
+// must skip getDesign/applyProjectionToInputs entirely for permanent_bistro, so
+// a design's projected bistro footage can never clobber the client-sent value.
+describe('POST /api/quote — permanent_bistro design-projection exemption (#117)', () => {
+  const DESIGN_ID = 'ffffffff-2222-4ccc-8ddd-eeeeeeeeeeee';
+  const bistroAmt = (r: { lineItems: Line[] }) =>
+    r.lineItems.find((l) => (l.id ?? '').toString().startsWith('permanent-bistro-') && l.id !== 'permanent-bistro-poles')
+      ?.amount;
+
+  function designSceneWithBistroStrand() {
+    return {
+      yardsticks: [],
+      items: [
+        {
+          id: 'b1',
+          kind: 'strand',
+          yardstickId: null,
+          bulbType: 'bistro',
+          spacingIn: 6,
+          drawingStyle: 'strand',
+          colorPattern: [],
+          // 600px ÷ the 50px/ft no-yardstick fallback = 12ft — a DIFFERENT
+          // number than the client-sent 20ft below, so a passing assertion
+          // proves whichever number wins.
+          points: [0, 0, 600, 0],
+        },
+      ],
+    };
+  }
+
+  it('a bistro quote client-sent inputs.permanentBistro.bistro survives Calculate even when a linked design exists', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designSceneWithBistroStrand() });
+
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ footage: 20 }] } };
+    const res = await POST(makeReq({ designId: DESIGN_ID, serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+
+    // getDesign must never be consulted for permanent_bistro — the gate skips
+    // the whole design-projection branch before it's reached.
+    expect(getDesignMock).not.toHaveBeenCalled();
+
+    // 20ft (client-sent, live settings perFt=$6) = $120 — NOT 12ft/$72 (what the
+    // design's bistro strand would have projected to).
+    expect(bistroAmt(savedResult())).toBe(120);
+  });
+
+  it('event projection behavior is unchanged: a linked design bistro strand STILL projects for an event quote', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designSceneWithBistroStrand() });
+
+    const inputs = validInputs();
+    const res = await POST(makeReq({ designId: DESIGN_ID, serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+
+    // Event still routes through getDesign → applyProjectionToInputs.
+    expect(getDesignMock).toHaveBeenCalledTimes(1);
+    const body = (await res.json()) as { result: { lineItems: Line[] } };
+    const bistroLine = body.result.lineItems.find((l) => (l.id ?? '').toString().startsWith('bistro-'));
+    // 12ft (projected from the 600px strand) * $8/ft (settings eventRates.bistroPerFt) = $96.
+    expect(bistroLine?.amount).toBe(96);
+  });
+});
+
 describe('POST /api/quote — validation hardening', () => {
   it('routes a non-UUID quoteId to insert, not update', async () => {
     // 36 dashes used to slip past the old loose /^[0-9a-f-]{36}$/i regex.

@@ -305,6 +305,12 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene, servi
   // Bistro strands are footage-priced identically either way — only the block
   // they land in differs, so a permanent_bistro quote must NEVER get an
   // inputs.event block created/touched.
+  // #117 satellite migration: the /api/quote route no longer calls
+  // applyProjectionToInputs at all for permanent_bistro (the route's design-
+  // projection gate is `!isPermanent && !isPermanentBistro`) — bistro footage
+  // bills from the client-sent satellite polylines, not the design's street
+  // scene. This isBistroVertical branch is now dead code for that vertical;
+  // event still routes bistro through here, so it stays.
   const isBistroVertical = serviceType === 'permanent_bistro';
   // Audit fix (Finding #103): only fall back to the request's manual per-unit
   // arrays for a TRUE legacy/roofline-only design (no projectable items at all).
