@@ -132,11 +132,12 @@ const QUOTE_LINK_FIELD_ENV: Record<ServiceType, string> = {
   holiday: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
   permanent: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
   event: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
-  // Permanent Bistro Lighting (#117): no dedicated GHL contact field yet —
-  // deliberately REUSES the Permanent quote-link field for v1 (mirrors the
-  // pipeline reuse above). Known edge: a customer holding both a permanent
-  // and a bistro quote shares one link field.
-  permanent_bistro: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
+  // Permanent Bistro Lighting (#117): its OWN "Bistro Quote Link" contact
+  // field as of 2026-07-11 (Naldo created it in the GHL UI). Set the id in
+  // HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO. This supersedes the v1
+  // Perm-field reuse, so a bistro send no longer touches a permanent quote's
+  // link value, and a Landscape-pipeline drip can merge {{contact.bistro_quote_link}}.
+  permanent_bistro: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO',
 };
 
 /**
