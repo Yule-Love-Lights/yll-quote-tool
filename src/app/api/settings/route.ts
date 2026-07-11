@@ -49,8 +49,18 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Body must be an object' }, { status: 400 });
   }
-  const { colors, defaults, render, portal, swatches, eventRates, permanentRates, permanentWarranty, permanentSwatches } =
-    body as Record<string, unknown>;
+  const {
+    colors,
+    defaults,
+    render,
+    portal,
+    swatches,
+    eventRates,
+    permanentBistroRates,
+    permanentRates,
+    permanentWarranty,
+    permanentSwatches,
+  } = body as Record<string, unknown>;
   if (
     colors === undefined &&
     defaults === undefined &&
@@ -58,6 +68,7 @@ export async function PUT(req: NextRequest) {
     portal === undefined &&
     swatches === undefined &&
     eventRates === undefined &&
+    permanentBistroRates === undefined &&
     permanentRates === undefined &&
     permanentWarranty === undefined &&
     permanentSwatches === undefined
@@ -108,6 +119,11 @@ export async function PUT(req: NextRequest) {
   if (eventRates !== undefined && !isPlainObject(eventRates)) {
     return NextResponse.json({ error: 'eventRates must be an object' }, { status: 400 });
   }
+  // Permanent Bistro rates (#117): must be an object; putAppSettings sanitizes
+  // each field (invalid → default) so it always stores a valid table.
+  if (permanentBistroRates !== undefined && !isPlainObject(permanentBistroRates)) {
+    return NextResponse.json({ error: 'permanentBistroRates must be an object' }, { status: 400 });
+  }
   if (permanentRates !== undefined && Object.keys(sanitizePermanentRates(permanentRates)).length === 0) {
     return NextResponse.json(
       { error: 'permanentRates must have at least one valid numeric field (>= 0)' },
@@ -151,6 +167,7 @@ export async function PUT(req: NextRequest) {
       portal: portal as never,
       swatches: swatches as never,
       eventRates: eventRates as never,
+      permanentBistroRates: permanentBistroRates as never,
       permanentRates: permanentRates as never,
       permanentWarranty: permanentWarranty as never,
       permanentSwatches: permanentSwatches as never,

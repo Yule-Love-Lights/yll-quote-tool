@@ -60,6 +60,19 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     // real Declined stage is added later.
     declined: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
   },
+  // Permanent Bistro Lighting (#117): NO dedicated GHL pipeline exists yet —
+  // deliberately REUSES the Permanent pipeline's stage ids for v1 (a pending
+  // product decision to give it its own pipeline later). Known edge: a
+  // customer holding both a permanent and a bistro quote shares one set of
+  // pipeline cards.
+  permanent_bistro: {
+    pipelineId: 'OqpjVflTdgmjmUQmbcSF', // Permanent Lighting
+    entry: 'c052d345-8e95-4716-a7e7-62e63937b5ea', // New Lead
+    sent: '4e507d3d-a939-44c3-a448-250a4b0ed353', // Proposal Sent
+    depositPaid: 'f4bfe29f-5d5a-4725-a6d2-1f5f19ec4010', // Closed
+    installed: 'b2192f2e-eee9-4a1b-9749-4f458f007c55', // Installed
+    declined: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
+  },
 };
 
 /**
@@ -105,6 +118,11 @@ const QUOTE_LINK_FIELD_ENV: Record<ServiceType, string> = {
   holiday: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
   permanent: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
   event: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
+  // Permanent Bistro Lighting (#117): no dedicated GHL contact field yet —
+  // deliberately REUSES the Permanent quote-link field for v1 (mirrors the
+  // pipeline reuse above). Known edge: a customer holding both a permanent
+  // and a bistro quote shares one link field.
+  permanent_bistro: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
 };
 
 /**

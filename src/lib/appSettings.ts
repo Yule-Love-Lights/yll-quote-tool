@@ -20,6 +20,14 @@ import { DEFAULT_PERMANENT_SWATCHES } from './design/permanentScenes';
 // Event Lighting rate table (service_type 'event') — Settings-adjustable, the
 // #101 pattern. sanitizeEventRates always yields a complete valid table.
 import { sanitizeEventRates, DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
+// Permanent Bistro Lighting rate table (service_type 'permanent_bistro', #117)
+// — same Settings-adjustable pattern; sanitizePermanentBistroRates always
+// yields a complete valid table (mirrors sanitizeEventRates).
+import {
+  sanitizePermanentBistroRates,
+  DEFAULT_PERMANENT_BISTRO_RATES,
+  type PermanentBistroRates,
+} from '@/lib/permanentBistro/types';
 import {
   DEFAULT_PERMANENT_RATES,
   type PermanentRates,
@@ -62,6 +70,10 @@ export type AppSettings = {
   // Event Lighting rates (adjustable in Settings → Quotes). The event pricing
   // engine reads these; DEFAULT_EVENT_RATES underneath so a missing key is safe.
   eventRates: EventRates;
+  // Permanent Bistro Lighting rates (#117, adjustable in Settings → Quotes).
+  // The permanentBistro pricing engine reads these; DEFAULT_PERMANENT_BISTRO_RATES
+  // underneath so a missing key is safe.
+  permanentBistroRates: PermanentBistroRates;
   // Permanent Lighting vertical (#88). The adjustable $/ft + minimum + maintenance
   // rate table (Settings → Quotes).
   permanentRates: PermanentRates;
@@ -90,6 +102,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   portal: DEFAULT_PORTAL_SETTINGS,
   swatches: DEFAULT_SWATCH_SETTINGS,
   eventRates: DEFAULT_EVENT_RATES,
+  permanentBistroRates: DEFAULT_PERMANENT_BISTRO_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
   permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
@@ -332,6 +345,7 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       buildableColorIds: storedBuildable ?? DEFAULT_SWATCH_SETTINGS.buildableColorIds,
     },
     eventRates: sanitizeEventRates(map.get('eventRates')),
+    permanentBistroRates: sanitizePermanentBistroRates(map.get('permanentBistroRates')),
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
     permanentWarranty: { ...DEFAULT_PERMANENT_WARRANTY, ...sanitizePermanentWarranty(map.get('permanentWarranty')) },
     permanentSwatches: {
@@ -366,6 +380,7 @@ export async function putAppSettings(patch: {
   portal?: Partial<PortalSettings>;
   swatches?: Partial<SwatchSettings>;
   eventRates?: EventRates;
+  permanentBistroRates?: PermanentBistroRates;
   permanentRates?: Partial<PermanentRates>;
   // Warranty copy patch (#88 P6b-2). Any `version` on the patch is IGNORED —
   // putAppSettings recomputes it (bumps when the copy actually changed).
@@ -430,6 +445,16 @@ export async function putAppSettings(patch: {
     const value = sanitizeEventRates({ ...current.eventRates, ...patch.eventRates });
     rows.push({ key: 'eventRates', value });
     map.set('eventRates', value);
+  }
+
+  if (patch.permanentBistroRates !== undefined) {
+    // Merge over the current stored rates + sanitize, so a partial write keeps
+    // the other fields and any invalid number falls back to the default (never
+    // a $0 perFt/perPole that would trip the engine guardrail; `minimum` stays
+    // a valid gate-off 0 rather than being promoted).
+    const value = sanitizePermanentBistroRates({ ...current.permanentBistroRates, ...patch.permanentBistroRates });
+    rows.push({ key: 'permanentBistroRates', value });
+    map.set('permanentBistroRates', value);
   }
 
   if (patch.permanentRates !== undefined) {

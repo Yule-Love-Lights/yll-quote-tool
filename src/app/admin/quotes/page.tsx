@@ -16,6 +16,7 @@ const SERVICE_TYPE_STYLES: Record<ServiceType, string> = {
   holiday: 'bg-slate-100 text-slate-600',
   permanent: 'bg-indigo-100 text-indigo-700',
   event: 'bg-amber-100 text-amber-800',
+  permanent_bistro: 'bg-teal-100 text-teal-700',
 };
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
