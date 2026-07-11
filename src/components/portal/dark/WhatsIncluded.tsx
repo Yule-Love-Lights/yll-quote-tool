@@ -6,7 +6,7 @@
 // for the sticky bar CTA.
 
 import type { CSSProperties } from 'react';
-import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Check } from 'lucide-react';
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Lamp, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { ServiceType } from '@/lib/serviceType';
@@ -157,6 +157,9 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   railing: Fence,
   curtain: Lightbulb,
   'stake-lighting': Lightbulb,
+  // Bistro Lighting (#117): its own icon — a hanging-lamp glyph reads as
+  // "string/ambient lighting" distinct from the roofline house icon.
+  bistro: Lamp,
   // Permanent Lighting (#88 P5): per-surface line items reuse the house icon;
   // the maintenance add-on reuses the generic bulb icon.
   permanent: Home,

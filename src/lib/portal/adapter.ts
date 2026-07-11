@@ -181,11 +181,23 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // label regex) instead of running them through the holiday parser.
       // The stable id becomes the portal id itself so packages/selection can
       // key on it without a separate lookup.
-      // NOTE (#117): permanent BISTRO ids ('permanent-bistro-*') also match
-      // this prefix and ride through here deliberately (id preserved, label
-      // regex a no-op for them; a dedicated 'bistro' kind is a chipped
-      // follow-up). Any future permanent-only logic keyed on this prefix must
-      // exclude 'permanent-bistro-'.
+      // NOTE (#117): permanent BISTRO ids ('permanent-bistro-*') also match this
+      // prefix (manual/no-scene-link bistro runs + the poles line), so they are
+      // carved out FIRST into their own 'bistro' kind below — id/stableId/label
+      // preserved exactly as the plain permanent branch, detail stays '' (the
+      // label already carries footage). Any future permanent-only logic keyed on
+      // this prefix must still exclude 'permanent-bistro-'.
+      if (typeof raw.id === 'string' && raw.id.startsWith('permanent-bistro')) {
+        const item: PortalLineItem = {
+          id: raw.id,
+          kind: 'bistro',
+          label: raw.label,
+          detail: '',
+          price: raw.amount,
+          stableId: raw.id,
+        };
+        return item;
+      }
       if (typeof raw.id === 'string' && raw.id.startsWith('permanent-')) {
         const isAddon = raw.id === 'permanent-maintenance';
         const item: PortalLineItem = {
