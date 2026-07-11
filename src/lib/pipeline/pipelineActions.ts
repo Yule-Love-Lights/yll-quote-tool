@@ -103,11 +103,20 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
       break;
     }
     case 'declined':
-    case 'cancelled':
     case 'lost':
-      // #116: revive a dead quote — clone it into a fresh, audit-preserving
-      // DRAFT (the original terminal quote stays intact). Rebook-only; re-send
-      // of the same quote is deliberately out of scope (S23 council).
+      // #116 (re-send half): revive the SAME quote — Send re-opens it to
+      // 'sent' (re-stamp, re-message, re-advance the GHL card), guarded in
+      // the /send route by canRevive() + a deposit_paid_at money check. PLUS
+      // rebook, which clones a fresh draft instead and leaves this quote
+      // untouched — the operator picks whichever fits.
+      a.push(...sendActions()); // revive
+      a.push({ kind: 'rebook', label: 'Rebook (new draft)' });
+      break;
+    case 'cancelled':
+      // #116: cancelled is post-booking (a deposit was taken, then the job
+      // was cancelled) — a refund is a manual money conversation, so a quiet
+      // re-send is deliberately NOT offered here. Rebook-only: clone a fresh
+      // draft into a new booking, the original stays intact.
       a.push({ kind: 'rebook', label: 'Rebook (new draft)' });
       break;
   }

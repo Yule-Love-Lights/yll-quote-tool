@@ -137,6 +137,27 @@ export function canTransition(from: QuoteStatus, to: QuoteStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
+/**
+ * Ledger #116 (re-send half) — true for the two terminal statuses a dead
+ * quote can be REVIVED from: 'declined' and 'lost'. Revive re-opens the SAME
+ * quote to 'sent' (re-stamp, re-message, re-advance the GHL card) instead of
+ * cloning a new draft (that's rebook, `rebookFromQuote`).
+ *
+ * Deliberately NOT modeled as a transition in ALLOWED_TRANSITIONS/canTransition
+ * — that table is the general-purpose gate every staff-approve/decline route
+ * shares, and widening it to allow declined/lost → sent would hand every one
+ * of those consumers a move they were never designed for. The /send route
+ * checks canRevive() directly as a narrow, scoped bypass instead.
+ *
+ * 'cancelled' is excluded on purpose: cancelled is post-booking (a deposit
+ * was taken, then the job was cancelled) — a refund is a manual money
+ * conversation, not something a quiet re-send should paper over. Cancelled
+ * quotes stay rebook-only (a fresh draft, the original left intact).
+ */
+export function canRevive(status: QuoteStatus): boolean {
+  return status === 'declined' || status === 'lost';
+}
+
 // Bug fix (B3 UI): the customer portal shows the approve + pay controls only
 // while a quote is still live. A quote in a terminal branch (declined /
 // cancelled / lost) is closed; one in changes_requested is being revised.
