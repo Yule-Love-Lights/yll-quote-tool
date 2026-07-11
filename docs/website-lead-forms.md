@@ -151,3 +151,35 @@ The request contract (exact field names, validation, honeypot, rate
 limiting, GHL pipeline routing) lives in `src/app/api/leads/route.ts` and is
 pinned by its test suite (`route.test.ts`) — this doc is only about placing
 the embed on the WordPress side.
+
+## Cutover record — 2026-07-11 (LIVE, all placements swapped)
+
+The old Gravity Forms were swapped for the embed across the whole site on
+2026-07-11. Verified with a sweep of all 115 published pages: zero stale
+quote forms remain. The old Gravity Form definitions (ids 1, 2, 3) are still
+INSTALLED in the plugin and are the rollback lever — nothing was deleted from
+Gravity Forms itself, only the widgets that displayed them were replaced.
+
+Each swap was done in Elementor by editing the shortcode widget's content
+(the widget id and the exact old shortcode are recorded below so any single
+placement can be reverted in seconds).
+
+| Placement | WordPress location | Elementor widget id | OLD content (paste back to roll back) | NEW content |
+|---|---|---|---|---|
+| Full form | Template **Contact Section** (post **1143**, included on 43 pages) | `69a818a` was **deleted**; embed lives in sibling widget `006ee69` | re-add a shortcode widget: `[gravityform id="1" title="false" ajax="true"]` | `<div data-yll-lead-form="full"></div>` + the script tag |
+| Hero bar | **Homepage** (post **318**) | `c79eba7` | `[gravityform id="2" title="true"]` | `<div data-yll-lead-form="bar"></div>` + script |
+| Hero bar | **Referral Program** page (post **3432**) | `c79eba7` | `[gravityform id="2" title="true"]` | `<div data-yll-lead-form="bar"></div>` + script |
+| Sticky | Template **Sticky Form** (post **2736**, near site-wide) | `9f2ae7f` | `[gravityform id="3" title="true"]` | `<div data-yll-lead-form="sticky"></div>` + script |
+
+The embed script tag used in every placement:
+`<script src="https://quote.yulelovelights.com/lead-form.js" async></script>`
+
+**Left untouched on purpose:** the newsletter subscribe form (Gravity Form
+id **9**, footer) and the "Light Up For Hope" campaign form (id **7**, on
+`/light-up-for-hope/`) are NOT quote forms and were not part of this cutover.
+
+**To fully roll back:** edit each of the four widgets above back to its OLD
+shortcode (and re-add a shortcode widget in template 1143 for the deleted
+full-form widget), then purge the NitroPack cache (WP Admin → NitroPack →
+Purge cache). A cache purge is required after any change here because the
+Contact Section and Sticky templates are cached across many pages.
