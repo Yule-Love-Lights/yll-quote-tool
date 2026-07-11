@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
-import { getReferralByCode, createPendingReferral } from '@/lib/referrals';
+import { getReferralByCode, createPendingReferral, hasRecentPendingLinkReferral } from '@/lib/referrals';
 import { createContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 import { normalizePhone } from '@/lib/customers';
@@ -62,29 +62,47 @@ export async function POST(req: NextRequest) {
   if (!cleanName || !cleanPhone || !cleanAddress) {
     return NextResponse.json({ error: 'Name, phone, and address are required' }, { status: 400 });
   }
+  const normalizedPhone = normalizePhone(cleanPhone);
 
-  // (a) GHL contact — fail-open on every axis (not configured, or the call throws).
+  // #41 adversarial-review LOW fix: skip (a) and (c) below when this exact
+  // phone already has a pending 'link' referral for this SAME referrer,
+  // recently (a refreshed/resubmitted form, or a double-post) — no need for
+  // a second GHL contact or a second pending row for the same lead. Fails
+  // OPEN: a lookup hiccup here must never block a genuine new lead.
+  let isDuplicateSubmission = false;
   try {
-    if (isHighLevelConfigured()) {
-      await createContact({
-        name: cleanName,
-        phone: cleanPhone,
-        email: cleanEmail ?? undefined,
-        address1: cleanAddress,
-        tags: ['referral'],
-        source: 'referral-landing-page',
-      });
+    if (normalizedPhone) {
+      isDuplicateSubmission = await hasRecentPendingLinkReferral(referrer.customerId, normalizedPhone);
     }
   } catch (err) {
-    console.error('[api/referrals/submit] GHL contact create failed:', err);
+    console.error('[api/referrals/submit] duplicate check failed (proceeding as new):', err);
+  }
+
+  // (a) GHL contact — fail-open on every axis (not configured, or the call throws).
+  if (!isDuplicateSubmission) {
+    try {
+      if (isHighLevelConfigured()) {
+        await createContact({
+          name: cleanName,
+          phone: cleanPhone,
+          email: cleanEmail ?? undefined,
+          address1: cleanAddress,
+          tags: ['referral'],
+          source: 'referral-landing-page',
+        });
+      }
+    } catch (err) {
+      console.error('[api/referrals/submit] GHL contact create failed:', err);
+    }
   }
 
   // (b) Inbox item so staff follow up — subject names the referrer. Best-effort:
   // ingestTouch itself resolves to {ok:false} rather than throwing, but this is
   // wrapped anyway (belt-and-suspenders, matches the rest of the app's side-
   // effect call sites) so a genuinely unexpected throw can't break the response.
+  // Always runs, even on a duplicate submission — ingestTouch threads by its
+  // own deterministic externalId, so a resubmission is its own concern there.
   try {
-    const normalizedPhone = normalizePhone(cleanPhone);
     await ingestTouch(
       {
         source: 'quotetool',
@@ -110,13 +128,15 @@ export async function POST(req: NextRequest) {
   // (c) The pending referral row — source 'link'. referee_quote_id is null
   // here (no quote exists yet for this lead); see migrations/2026-07-10-
   // referrals.sql for why that's the correct, safe shape.
-  const referral = await createPendingReferral({
-    source: 'link',
-    referrerCustomerId: referrer.customerId,
-    refereeContactName: cleanName,
-    refereeContactEmail: cleanEmail,
-    refereeContactPhone: cleanPhone,
-  });
+  const referral = isDuplicateSubmission
+    ? null
+    : await createPendingReferral({
+        source: 'link',
+        referrerCustomerId: referrer.customerId,
+        refereeContactName: cleanName,
+        refereeContactEmail: cleanEmail,
+        refereeContactPhone: cleanPhone,
+      });
 
   return NextResponse.json({ ok: true, referralId: referral?.id ?? null });
 }

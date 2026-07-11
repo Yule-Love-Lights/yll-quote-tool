@@ -3,6 +3,7 @@ import QuoteBuilder from '@/components/quote/QuoteBuilder';
 import { getQuoteRaw } from '@/lib/quotes';
 import { getDesignByQuote } from '@/lib/designs';
 import { isValidQuoteId } from '@/lib/portal/loader';
+import { refereeReferralFor } from '@/lib/referrals';
 
 // Edit an existing quote (task #31): reopen a saved quote in the builder with
 // its inputs hydrated and its linked design (if any) mounted in the design
@@ -21,10 +22,20 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
   // the editor loads the scene + photo itself via /api/designs/[id].
   const design = await getDesignByQuote(id);
 
+  // Referral program redemption (#41 PR 2): resolve server-side whether this
+  // quote is a referee (a referrals row exists with it as referee_quote_id),
+  // regardless of status — the client-side "Referred by" picker state only
+  // exists in the session that originally picked it, so a reopened quote
+  // needs this to show the spritzer banner again. Best-effort (refereeReferralFor
+  // already fails open internally on a missing/unconfigured Supabase).
+  const referee = await refereeReferralFor(quote.id);
+
   return (
     <QuoteBuilder
       initialQuote={{
         quoteId: quote.id,
+        customerId: quote.customer_id,
+        isReferee: referee != null,
         customer: {
           name: quote.customer_name,
           address: quote.customer_address,

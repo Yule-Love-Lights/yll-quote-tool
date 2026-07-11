@@ -7,6 +7,7 @@ import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
+import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -212,6 +213,10 @@ export default async function CustomerDetailPage({
             </div>
           )}
         </section>
+
+        {/* Referral program (#41): this customer's own referral link, credit
+            balance, history, and the staff photo opt-out switch. */}
+        <CustomerReferralPanel customerId={customerId} />
 
         {/* Activity timeline: every customer view + each quote's lifecycle. */}
         <CustomerActivityFeed events={activity} />

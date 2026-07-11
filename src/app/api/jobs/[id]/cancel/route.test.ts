@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { getJob, setJobStatus, getInvoiceByJob, setInvoiceStatus, requireOperatorMock, sbRef, hl } =
+const { getJob, setJobStatus, getInvoiceByJob, setInvoiceStatus, requireOperatorMock, sbRef, hl, releaseAccrualOnCancelMock } =
   vi.hoisted(() => ({
     getJob: vi.fn(),
     setJobStatus: vi.fn(),
@@ -13,6 +13,7 @@ const { getJob, setJobStatus, getInvoiceByJob, setInvoiceStatus, requireOperator
     requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
     sbRef: { current: null as unknown },
     hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
+    releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
   }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -26,6 +27,11 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
 }));
+// Referral program (#41 adversarial-review MED fix): mocked so its OWN DB
+// logic (covered in src/lib/referrals.test.ts) doesn't add extra `.update()`
+// calls to this file's shared quote-row fake (which the W1-008 tests below
+// index into positionally) — this file's job is only the wiring + fail-open.
+vi.mock('@/lib/referrals', () => ({ releaseAccrualOnCancel: releaseAccrualOnCancelMock }));
 
 import { POST } from './route';
 
@@ -61,6 +67,7 @@ beforeEach(() => {
   setJobStatus.mockResolvedValue({ id: ID, status: 'cancelled' });
   getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'draft' });
   setInvoiceStatus.mockResolvedValue({ id: 'inv-1', status: 'cancelled' });
+  releaseAccrualOnCancelMock.mockResolvedValue({ released: false });
   sb = fakeSb();
   sbRef.current = sb.client;
 });
@@ -103,6 +110,34 @@ describe('POST /api/jobs/[id]/cancel', () => {
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'cancelled');
     expect(setInvoiceStatus).toHaveBeenCalledWith('inv-1', 'cancelled');
     expect(sb.updates[0]).toMatchObject({ status: 'cancelled' }); // quote
+  });
+
+  // Referral program (#41 adversarial-review MED fix): a cancelled order
+  // never happened, so any 'booked' referral accrual tied to it must reverse.
+  // releaseAccrualOnCancel's OWN state-transition logic is unit-tested in
+  // src/lib/referrals.test.ts; this file only proves the wiring + fail-open.
+  describe('referral accrual reversal wiring (#41)', () => {
+    it('calls releaseAccrualOnCancel with the cancelled quote id after the quote cancel commits', async () => {
+      const res = await POST(req, ctx());
+      expect(res.status).toBe(200);
+      expect(releaseAccrualOnCancelMock).toHaveBeenCalledWith('q1');
+    });
+
+    it('does not call it when the job has no linked quote', async () => {
+      getJob.mockResolvedValueOnce({ id: ID, status: 'to_schedule', quote_id: null });
+      const res = await POST(req, ctx());
+      expect(res.status).toBe(200);
+      expect(releaseAccrualOnCancelMock).not.toHaveBeenCalled();
+    });
+
+    it('fails open — a rejected releaseAccrualOnCancel never breaks the cancel response', async () => {
+      releaseAccrualOnCancelMock.mockRejectedValueOnce(new Error('referrals table missing'));
+      const res = await POST(req, ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.cancelled).toBe(true);
+      expect(json.quoteCancelled).toBe(true);
+    });
   });
 
   it('flags a paid invoice for a manual refund', async () => {

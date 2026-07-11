@@ -207,6 +207,28 @@ describe('buildRebookInsert', () => {
     const row = buildRebookInsert(src);
     expect(row.is_test).toBe(false);
   });
+
+  it('strips discount + referralCredit from inputs — a rebooked quote re-earns/re-applies its own credit, never clones a spent one (#41 adversarial-review fix)', () => {
+    const withCredit = {
+      ...src,
+      inputs: {
+        a: 1,
+        discount: { type: 'flat', amount: 125 },
+        referralCredit: { amount: 125, consumedRowIds: ['r1', 'r2'] },
+      },
+    };
+    const row = buildRebookInsert(withCredit);
+    const inputs = row.inputs as Record<string, unknown>;
+    expect(inputs).not.toHaveProperty('discount');
+    expect(inputs).not.toHaveProperty('referralCredit');
+    // Other input fields survive the strip untouched.
+    expect(inputs.a).toBe(1);
+  });
+
+  it('is a no-op strip when inputs carry no discount/referralCredit', () => {
+    const row = buildRebookInsert(src);
+    expect(row.inputs).toEqual({ a: 1 });
+  });
 });
 
 // ─── DB: rebookLastSeason ───────────────────────────────────────────────────
