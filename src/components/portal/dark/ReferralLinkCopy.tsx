@@ -8,7 +8,17 @@
 import { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 
-export function ReferralLinkCopy({ link }: { link: string }) {
+export function ReferralLinkCopy({
+  link,
+  after,
+}: {
+  link: string;
+  /** Optional extra control rendered in the SAME row, right after the Copy
+   *  button (ledger #41 growth feature 1 — the one-tap Share button sits
+   *  "next to" Copy). Undefined by default so every other caller is
+   *  unaffected. */
+  after?: React.ReactNode;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -38,6 +48,7 @@ export function ReferralLinkCopy({ link }: { link: string }) {
         {copied ? <Check className="w-4 h-4" aria-hidden /> : <Copy className="w-4 h-4" aria-hidden />}
         {copied ? 'Copied' : 'Copy link'}
       </button>
+      {after}
     </div>
   );
 }
