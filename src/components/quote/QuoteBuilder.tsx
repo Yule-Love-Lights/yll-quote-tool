@@ -2347,7 +2347,7 @@ export default function QuoteBuilder({
                 })}
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
+                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties) · Bistro = permanent café lights.
               </p>
             </div>
           </Section>
