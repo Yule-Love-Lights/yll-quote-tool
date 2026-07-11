@@ -106,7 +106,10 @@ export type QuoteFormData = {
   // NOT projected from the design's street-photo scene (that stays visual-only
   // for bistro, mirroring permanent's split). Only the pole count is
   // hand-entered.
-  permanentBistro: { poles: number; bistro: { footage: number }[] };
+  // Each run carries a STABLE id (#117 MED) so a #104 per-line override keyed
+  // on its billed line item id survives a mid-list run delete (a run's id must
+  // not re-index like the old positional permanent-bistro-<index> fallback).
+  permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
 };
 
 export const initialFormData: QuoteFormData = {
@@ -191,7 +194,9 @@ function buildPermanentBistroInputs(form: QuoteFormData): { permanentBistro?: Pe
   if (form.serviceType !== 'permanent_bistro') return {};
   const bistro = (form.permanentBistro.bistro ?? [])
     .filter((b) => b.footage > 0)
-    .map((b) => ({ footage: b.footage }));
+    // #117 MED: carry the run's stable id through so the engine keys the billed
+    // line item on it (not a positional fallback that shifts on run delete).
+    .map((b) => ({ footage: b.footage, ...(b.id ? { id: b.id } : {}) }));
   const pb: PermanentBistroInputFields = {
     ...(form.permanentBistro.poles > 0 ? { poles: form.permanentBistro.poles } : {}),
     ...(bistro.length > 0 ? { bistro } : {}),
@@ -374,11 +379,16 @@ export function inputsToFormData(
     // Referral program redemption (#41 PR 2) — legacy/no-credit rows → null.
     referralCredit: i.referralCredit ?? null,
     // Permanent Bistro Lighting (#117) — hydrate the poles count + the saved
-    // bistro runs (footage only; id/sceneItemIds aren't form-relevant since
-    // #117 moved bistro off the design projection). Legacy/non-bistro rows → 0/[].
+    // bistro runs (footage + the stable run id so a reopened-then-edited quote
+    // keeps #104 overrides attached to the right run; sceneItemIds aren't
+    // form-relevant since #117 moved bistro off the design projection).
+    // Legacy/non-bistro rows → 0/[].
     permanentBistro: {
       poles: i.permanentBistro?.poles ?? 0,
-      bistro: (i.permanentBistro?.bistro ?? []).map((b) => ({ footage: b.footage })),
+      bistro: (i.permanentBistro?.bistro ?? []).map((b) => ({
+        footage: b.footage,
+        ...(b.id ? { id: b.id } : {}),
+      })),
     },
   };
 }

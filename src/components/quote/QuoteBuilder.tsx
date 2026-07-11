@@ -185,7 +185,7 @@ function EditablePrice({
 // #82 2c: `feature` is the AI's per-segment physical roof feature (mirrors
 // photoAnalysis RoofFeatureClass), carried into the seed so roofline strands
 // get a roofFeature for the inventory clip engine.
-type LineSegment = { points: [number, number][]; label: string; feature?: 'gutter' | 'peak' | 'side' | 'ridge' | 'metal' };
+type LineSegment = { points: [number, number][]; label: string; feature?: 'gutter' | 'peak' | 'side' | 'ridge' | 'metal'; id?: string };
 
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
@@ -1019,10 +1019,13 @@ export default function QuoteBuilder({
     if (satelliteFeetPerPixel == null) return; // no known scale — manual typing only
     if (satellitePreview == null) return; // no live satellite session — nothing to derive from
     const hasLines = satelliteBistroLines.length > 0;
+    // Each run carries its stable id (#117 MED) so the billed line item id
+    // follows the run across a mid-list delete, not its position.
     const runs = hasLines
-      ? satelliteBistroLines.map((line) =>
-          roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
-        )
+      ? satelliteBistroLines.map((line) => ({
+          footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
+          id: line.id,
+        }))
       : hadBistroLinesRef.current
         ? [] // had runs, all deleted — reset the billed array to empty
         : null; // never drawn this session — leave the saved array alone
@@ -1031,9 +1034,11 @@ export default function QuoteBuilder({
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent_bistro') return f;
-        const next = runs.map((footage) => ({ footage }));
+        const next = runs.map((r) => ({ footage: r.footage, ...(r.id ? { id: r.id } : {}) }));
         const cur = f.permanentBistro.bistro;
-        const same = cur.length === next.length && cur.every((b, i) => b.footage === next[i].footage);
+        const same =
+          cur.length === next.length &&
+          cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
         if (same) return f;
         return { ...f, permanentBistro: { ...f.permanentBistro, bistro: next } };
       }),
@@ -1155,6 +1160,13 @@ export default function QuoteBuilder({
       label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
         : addMode === 'bistro' ? `Run ${satelliteBistroLines.length + 1}`
         : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      // #117 MED: a bistro run carries a STABLE id so its billed line item id
+      // (and any #104 per-line price/free override keyed on it) survives a
+      // mid-list run delete. Without it, the engine synthesizes POSITIONAL ids
+      // (permanent-bistro-<index>) that re-index on delete, silently
+      // reattaching an override to the wrong run. Other line types derive
+      // footage per-side/per-scene, so they never need this.
+      ...(addMode === 'bistro' ? { id: crypto.randomUUID() } : {}),
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -1223,6 +1235,10 @@ export default function QuoteBuilder({
       setSatelliteGingerbreadLines([]);
       setSatelliteC9Lines([]);
       setSatelliteStakeLines([]);
+      // #117 LOW: a new satellite image invalidates any runs drawn on the old
+      // one — clear so they don't overlay/rescale onto this image.
+      setSatelliteBistroLines([]);
+      hadBistroLinesRef.current = false;
       setSatelliteFeetPerPixel(null); // manual = no known scale
       const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
       // Read the CURRENT design id (L6) — a design may have been created while
@@ -1595,6 +1611,16 @@ export default function QuoteBuilder({
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
+        // #117 LOW: a fresh lookup is a NEW satellite image + scale. Discard any
+        // bistro runs drawn on the PREVIOUS image so they don't silently rescale
+        // into new billing footage — the operator redraws on the new image. Thaw
+        // the rehydrate freeze (fresh live session) and flag hadBistroLines so the
+        // derive resets the billed array to empty; then a redraw bills correctly.
+        if (form.serviceType === 'permanent_bistro') {
+          permDeriveFrozenRef.current = false;
+          hadBistroLinesRef.current = satelliteBistroLines.length > 0;
+          setSatelliteBistroLines([]);
+        }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
         // can show the "Where the lights go" view. Holiday does this in
         // applyAnalysisResult; permanent has no analysis result, so without parking

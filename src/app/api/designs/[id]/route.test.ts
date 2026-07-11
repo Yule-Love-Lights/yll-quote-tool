@@ -153,6 +153,16 @@ describe('PUT /api/designs/[id]', () => {
     expect(updateDesignSatelliteLines).toHaveBeenCalledWith(VALID_ID, permLines);
   });
 
+  // #117: a bistro-only body ({ bistro: [...] }) must validate + persist — the
+  // channel allow-list originally omitted 'bistro', so every satellite-run
+  // write silently 400'd (fire-and-forget on the client), losing all runs.
+  it('saves bistro-only satelliteLines ({ bistro })', async () => {
+    const bistroLines = { bistro: [{ points: [[0.2, 0.4], [0.8, 0.45]], label: 'Run 1' }] };
+    const res = await PUT(makeReq({ satelliteLines: bistroLines }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSatelliteLines).toHaveBeenCalledWith(VALID_ID, bistroLines);
+  });
+
   it('400s an invalid quoteId', async () => {
     const res = await PUT(makeReq({ quoteId: 'not-a-uuid' }), ctx());
     expect(res.status).toBe(400);

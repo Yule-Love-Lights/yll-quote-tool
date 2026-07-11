@@ -7,6 +7,7 @@ import {
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
+import { calculatePermanentBistro } from './permanentBistro/pricing';
 
 const VALID = ['easy', 'medium', 'hard'];
 
@@ -444,11 +445,36 @@ describe('permanentBistro inputs (#117)', () => {
       });
     });
 
-    it('a stored legacy design-projected bistro entry (id/sceneItemIds) still hydrates to footage-only', () => {
+    it('a stored bistro entry keeps its stable id on hydrate (drops only sceneItemIds)', () => {
+      // #117 MED: the run id must survive reopen so a #104 per-line override
+      // stays attached to the right run after a reopen+edit. sceneItemIds are
+      // not form-relevant (bistro is off the design projection) so they drop.
       const restored = inputsToFormData(null, {
-        permanentBistro: { poles: 1, bistro: [{ footage: 12, id: 'bistro-x1', sceneItemIds: ['x1'] }] },
+        permanentBistro: { poles: 1, bistro: [{ footage: 12, id: 'run-x1', sceneItemIds: ['x1'] }] },
       });
-      expect(restored.permanentBistro).toEqual({ poles: 1, bistro: [{ footage: 12 }] });
+      expect(restored.permanentBistro).toEqual({ poles: 1, bistro: [{ footage: 12, id: 'run-x1' }] });
+    });
+
+    it('threads a run stable id through build -> engine so it survives a mid-list delete (#117 MED)', () => {
+      // Two runs with stable ids; the engine keys the billed line on the id,
+      // not position, so deleting the FIRST run leaves the survivor id intact.
+      const twoRuns: QuoteFormData = {
+        ...bistroForm,
+        permanentBistro: { poles: 0, bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }] },
+      };
+      expect(buildQuoteInputs(twoRuns).permanentBistro).toEqual({
+        bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }],
+      });
+      // After the operator deletes run A, only B remains — its id does NOT
+      // re-index to a positional 'permanent-bistro-0'.
+      const afterDelete: QuoteFormData = {
+        ...bistroForm,
+        permanentBistro: { poles: 0, bistro: [{ footage: 30, id: 'B' }] },
+      };
+      const inputs = buildQuoteInputs(afterDelete);
+      const result = calculatePermanentBistro(inputs);
+      const line = result.lineItems.find((l) => l.label.includes('Bistro'));
+      expect(line?.id).toBe('B');
     });
   });
 });
