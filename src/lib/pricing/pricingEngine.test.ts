@@ -621,6 +621,43 @@ describe('calculateQuote — custom / manual line items (#27 escape hatch)', () 
       { label: 'B', amount: 30 },
     ]);
   });
+
+  // Referral program redemption (#41 PR 2): the "2 free spritzers" line the
+  // quote builder appends is an ORDINARY $0 custom item — no special-casing.
+  it('flows a $0 custom item (e.g. free referral spritzers) through as an ordinary line — zero subtotal/tax impact', () => {
+    const withoutFreebie = calculateQuote(emptyInputs({ santasFootage: 50, santasDifficulty: 'medium' }));
+    const withFreebie = calculateQuote(emptyInputs({
+      santasFootage: 50, santasDifficulty: 'medium',
+      customLineItems: [
+        { id: 'referral-spritzers', label: '2 Free 16" Spritzers (referral)', amount: 0, quantity: 1 },
+      ],
+    }));
+    expect(withFreebie.lineItems).toHaveLength(2);
+    expect(withFreebie.lineItems).toContainEqual({
+      label: '2 Free 16" Spritzers (referral)',
+      amount: 0,
+      id: 'referral-spritzers',
+    });
+    // Adding the $0 line changes nothing else — same subtotal, tax, and total.
+    expect(withFreebie.subtotalBeforeDiscount).toBe(withoutFreebie.subtotalBeforeDiscount);
+    expect(withFreebie.taxAmount).toBe(withoutFreebie.taxAmount);
+    expect(withFreebie.total).toBe(withoutFreebie.total);
+  });
+});
+
+// Referral program redemption (#41 PR 2): the builder stores provenance
+// (which rows were spent) additively on inputs.referralCredit. The engine
+// must be completely blind to it — the discount math runs entirely through
+// the existing `discount` field.
+describe('calculateQuote — referral credit provenance (#41 PR2, additive, engine-blind)', () => {
+  it('produces an IDENTICAL result with or without inputs.referralCredit present', () => {
+    const base = emptyInputs({
+      santasFootage: 50, santasDifficulty: 'medium',
+      discount: { type: 'flat', amount: 125 },
+    });
+    const withProvenance = { ...base, referralCredit: { amount: 125, consumedRowIds: ['r1', 'r2'] } };
+    expect(calculateQuote(withProvenance)).toEqual(calculateQuote(base));
+  });
 });
 
 describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2)', () => {

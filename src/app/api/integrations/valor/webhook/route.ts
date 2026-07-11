@@ -59,7 +59,7 @@ import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
-import { accrueOnBooking } from '@/lib/referrals';
+import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -157,6 +157,9 @@ type QuoteRow = {
   // In practice one can't reach here (a test quote has no valor_order_ref — /pay
   // refuses it), but we guard defensively, symmetric with /pay + /simulate-deposit.
   is_test: boolean;
+  // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
+  // this booking can stamp their referral code too (see below).
+  customer_id: string | null;
 };
 
 // GET — a reachability/liveness check (some webhook verifiers probe with GET).
@@ -283,7 +286,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, customer_id',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -426,6 +429,16 @@ export async function POST(req: NextRequest) {
     await accrueOnBooking(quote.id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] referral accrual failed:', err);
+  }
+
+  // Referral program (#41 PR 2): stamp THIS quote's own customer with their
+  // referral code (+ GHL link) at the booking event, not only when they later
+  // view the booked page — so every customer has their link live in GHL by
+  // install day. Fail-open — must never break the payment webhook.
+  try {
+    if (quote.customer_id) await ensureReferralCode(quote.customer_id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] referral code stamp failed:', err);
   }
 
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────

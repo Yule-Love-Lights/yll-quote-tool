@@ -29,6 +29,8 @@ import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
+import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
@@ -257,6 +259,17 @@ export type QuoteBuilderInitial = {
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
+  // Referral program redemption (#41 PR 2): the quote's OWN linked customer
+  // (quotes.customer_id), so the credit banner can resolve identity WITHOUT a
+  // second save (only known once a quote has been saved + reopened — a
+  // brand-new quote in this same session doesn't have it yet, that's fine).
+  customerId?: string | null;
+  // Whether a referrals row exists with THIS quote as the referee (any
+  // status) — resolved server-side (refereeReferralFor) so the spritzer
+  // banner shows on a REOPENED quote even though the client-side "Referred
+  // by" picker state (only set in the session that originally picked it) is
+  // gone by then.
+  isReferee?: boolean;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -333,10 +346,28 @@ export default function QuoteBuilder({
   const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
   // Referral program (#41 "mention" attribution): an existing customer staff
-  // picked as "Referred by" while building THIS quote. Only meaningful on the
-  // FIRST save (the new quote's id becomes the referee) — sent on every
-  // Calculate regardless, since the server only honors it on the insert path.
+  // picked as "Referred by" while building THIS quote. The new quote's id (or,
+  // since the adversarial-review fix, an EXISTING quote's id on an update)
+  // becomes the referee — sent on every Calculate regardless, since the
+  // server creates the pending row idempotently on either path.
   const [referredBy, setReferredBy] = useState<{ id: string; name: string } | null>(null);
+  // Referral program redemption (#41 PR 2). The quote's own linked customer
+  // never changes within a session — only known on a reopened/saved quote
+  // (see QuoteBuilderInitial.customerId). `referralCreditUsd` is fetched
+  // client-side (below) so the banner reflects the LIVE balance, not a
+  // page-load-stale one, and so it updates in place after Apply.
+  const linkedCustomerId = initialQuote?.customerId ?? null;
+  const [referralCreditUsd, setReferralCreditUsd] = useState(0);
+  // Referral program redemption (#41 adversarial-review HIGH fix): true from
+  // the moment Apply (or Remove) changes form.referralCredit until a save
+  // actually persists that change — guards Send so a portal link can never
+  // go out pointing at a quote whose discount doesn't yet match an
+  // already-spent (or already-released) credit. See applyReferralCredit /
+  // handleReferralCreditRemoved / handleSendToCustomer.
+  const [referralCreditUnsaved, setReferralCreditUnsaved] = useState(false);
+  // Loud, blocking message shown ON the credit banner specifically when the
+  // immediate auto-persist right after Apply/Remove fails.
+  const [referralPersistError, setReferralPersistError] = useState<string | null>(null);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -354,6 +385,32 @@ export default function QuoteBuilder({
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
+
+  // Referral program redemption (#41 PR 2): resolve the linked customer's
+  // LIVE credit balance client-side (rather than trusting a page-load-stale
+  // server value) via the /api/customers?id= single-lookup extension. Only
+  // runs when a customer is actually linked (a saved/reopened quote) — a
+  // brand-new quote has none yet. Best-effort: a fetch failure just means the
+  // banner doesn't show, never a builder error.
+  useEffect(() => {
+    if (!linkedCustomerId) return;
+    let stale = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/customers?id=${encodeURIComponent(linkedCustomerId)}`);
+        const data = await res.json();
+        const hit = Array.isArray(data.customers) ? data.customers[0] : null;
+        if (!stale && hit && typeof hit.referralCreditUsd === 'number') {
+          setReferralCreditUsd(hit.referralCreditUsd);
+        }
+      } catch {
+        // best-effort — the banner simply doesn't show
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [linkedCustomerId]);
 
   // Photo analysis (#35: the street photo lives in the DESIGN — only the
   // satellite keeps measurement polylines; street overlays/detections are gone)
@@ -1637,6 +1694,94 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
+  // Credit banner: the button is disabled whenever some OTHER discount (a
+  // manual %/flat entry, or an early-install promo) already occupies the
+  // quote's one discount slot — applying credit never silently merges with
+  // it. `form.referralCredit` marks "occupied by US", so that case alone
+  // stays enabled/shows the applied state instead.
+  const referralDiscountSlotOccupied =
+    (form.discountEnabled || form.installTiming !== 'none') && !form.referralCredit;
+
+  // Referral program redemption (#41 adversarial-review HIGH fix): Apply
+  // already CONSUMED the credit server-side (the banner's own POST to
+  // /api/referrals/consume flipped the referral rows to 'credited' before
+  // this ever runs) — so the discount must land on THIS quote in the SAME
+  // user action, or a Send-without-Calculate would hand the customer a
+  // portal link with no discount for a credit that's already spent. Persists
+  // immediately via the exact save path Calculate uses (runQuote), passing
+  // the just-updated form so buildQuoteInputs picks up discount+referralCredit
+  // without waiting on the async setForm. If that persist fails, the form
+  // KEEPS referralCredit set (re-saving is idempotent — the rows are already
+  // credited) and a loud, blocking message shows on the banner; Send stays
+  // blocked (referralCreditUnsaved) until a Calculate actually saves it.
+  const applyReferralCredit = async (result: { appliedUsd: number; consumedRowIds: string[]; balanceUsd: number }) => {
+    const nextForm: QuoteFormData = {
+      ...form,
+      discountEnabled: true,
+      discountType: 'flat',
+      discountAmount: result.appliedUsd,
+      // Referral credit always wins the one discount slot outright — clears
+      // any early-install promo pick so buildQuoteInputs actually emits the
+      // discount (the two are mutually exclusive; see quoteForm.ts).
+      installTiming: 'none',
+      referralCredit: { amount: result.appliedUsd, consumedRowIds: result.consumedRowIds },
+    };
+    setForm(nextForm);
+    setReferralCreditUsd(result.balanceUsd);
+    setReferralPersistError(null);
+    setReferralCreditUnsaved(true);
+    const persisted = await runQuote(undefined, nextForm);
+    if (persisted) {
+      setReferralCreditUnsaved(false);
+    } else {
+      setReferralPersistError("Credit applied but the quote didn't save. Click Calculate to finish.");
+    }
+  };
+
+  // "Remove referral credit" (#41 adversarial-review MED fix): the banner
+  // already RELEASED the credit server-side (POST /api/referrals/unconsume
+  // flipped the rows back to 'booked') before this runs — clear the form's
+  // discount + referralCredit and persist that removal the same way Apply
+  // persists its own change, for the same reason: leaving THIS quote's saved
+  // discount stale would let the same credit be double-spent (once here,
+  // once wherever it gets applied next) even though it reads "removed" here.
+  const handleReferralCreditRemoved = async (result: { releasedUsd: number }) => {
+    const nextForm: QuoteFormData = {
+      ...form,
+      discountEnabled: false,
+      discountType: 'percentage',
+      discountAmount: 0,
+      referralCredit: null,
+    };
+    setForm(nextForm);
+    setReferralCreditUsd((prev) => prev + result.releasedUsd);
+    setReferralPersistError(null);
+    setReferralCreditUnsaved(true);
+    const persisted = await runQuote(undefined, nextForm);
+    if (persisted) {
+      setReferralCreditUnsaved(false);
+    } else {
+      setReferralPersistError("Removed, but the quote didn't save. Click Calculate to finish.");
+    }
+  };
+
+  // Spritzer banner (referee side): shown when THIS session picked a
+  // referrer (referredBy) OR a saved/reopened quote already has a referral
+  // row with this quote as the referee (initialQuote.isReferee, resolved
+  // server-side since the client-side referredBy state never hydrates from a
+  // saved quote — the relationship lives in the referrals table, not inputs).
+  const isReferralReferee = !!referredBy || !!initialQuote?.isReferee;
+  const REFERRAL_SPRITZER_LINE_ID = 'referral-spritzers';
+  const spritzerLineAlreadyAdded = form.customLineItems.some((item) => item.id === REFERRAL_SPRITZER_LINE_ID);
+  const addReferralSpritzers = () => {
+    if (spritzerLineAlreadyAdded) return;
+    set('customLineItems', [
+      ...form.customLineItems,
+      { id: REFERRAL_SPRITZER_LINE_ID, label: '2 Free 16" Spritzers (referral)', amount: 0, quantity: 1 },
+    ]);
+  };
+
   // #102: difficulty dropdown change. Choosing "Custom…" pre-seeds the $/ft field
   // from the current preset's rate (so staff tweak a real number, not 0) unless a
   // custom rate is already entered; preset choices just set the difficulty.
@@ -1772,6 +1917,12 @@ export default function QuoteBuilder({
   // messaging app) — we don't auto-send yet. Phase 2 could add that.
   const handleSendToCustomer = async () => {
     if (!savedQuoteId) return;
+    // Referral program redemption (#41 adversarial-review HIGH fix): a
+    // referral-credit change (Apply or Remove) that hasn't been confirmed
+    // saved yet must block Send outright — the button is also disabled for
+    // this below, but the handler guards too (belt-and-suspenders for a
+    // money-safety path). The message renders next to the Send button.
+    if (referralCreditUnsaved) return;
     setSendStatus('sending');
     setSendError(null);
     setSendBlockedMsg(null);
@@ -1885,13 +2036,22 @@ export default function QuoteBuilder({
   // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
   // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
   // (#17 Phase 1b) without waiting on the async form-state update.
+  // Returns whether the save actually PERSISTED (data.persisted from
+  // /api/quote — a 200 with quoteId:null / persisted:false means the DB write
+  // itself failed even though pricing succeeded). Referral program (#41
+  // adversarial-review HIGH fix): applyReferralCredit / handleReferralCreditRemoved
+  // await this to know whether their own persist attempt actually landed, so
+  // they can surface a blocking warning instead of assuming success. Existing
+  // callers (the plain Calculate button, commitLinePrice/resetLinePrice) all
+  // call this with `void` and never read the return value — adding it is
+  // purely additive.
   const runQuote = async (
     rooflineChoiceOverride?: RooflineChoice,
     // #104: an explicit form snapshot to price with (bypasses async form state,
     // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place
     // and may also clear the #102 $/ft on that line.
     formOverride?: QuoteFormData,
-  ) => {
+  ): Promise<boolean> => {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -1921,7 +2081,7 @@ export default function QuoteBuilder({
           await editorFlushRef.current();
         } catch {
           setError('Design may not have saved — retry before calculating');
-          return;
+          return false;
         }
       }
       const res = await fetch('/api/quote', {
@@ -1948,14 +2108,21 @@ export default function QuoteBuilder({
           // so a normal edit of an unbooked quote sends nothing and stays locked.
           // `undefined` is dropped by JSON.stringify, so no key ships when not booked.
           amendReprice: savedStatus === 'booked' ? true : undefined,
-          // Referral program (#41): only meaningful on the quote's FIRST save
-          // (saveQuote creates the pending "mention" referral); the server
-          // simply ignores it on an update.
+          // Referral program (#41): sent on every save. The server creates
+          // the pending "mention" referral on a NEW quote's first save
+          // (saveQuote) and ALSO on an update when none exists yet for this
+          // quote (updateQuote) — e.g. staff picking a referrer after
+          // reopening a quote that never had one (adversarial-review fix;
+          // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      // #41 adversarial-review HIGH fix: the real save-succeeded signal — a
+      // 200 with persisted:false means the DB write failed even though
+      // pricing succeeded (see /api/quote's own persisted: saved !== null).
+      const persisted = data.persisted === true;
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
@@ -2011,8 +2178,10 @@ export default function QuoteBuilder({
         setAttachStatus('skipped');
         setAttachError('Quote not persisted — HighLevel link skipped. Check Supabase config.');
       }
+      return persisted;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
+      return false;
     } finally {
       setLoading(false);
     }
@@ -2334,6 +2503,30 @@ export default function QuoteBuilder({
             {/* Referral program (#41 "mention" attribution) — an existing
                 customer staff picks as "Referred by" while building THIS quote. */}
             <ReferredByPicker value={referredBy} onChange={setReferredBy} />
+
+            {/* Referral program redemption (#41 PR 2) — referee side: this
+                customer gets 2 free spritzers on their first quote. Shows once
+                staff pick a referrer this session, OR (on a reopened quote)
+                once the server already knows this quote is a referee. */}
+            {isReferralReferee && (
+              <ReferralSpritzerBanner alreadyAdded={spritzerLineAlreadyAdded} onAdd={addReferralSpritzers} />
+            )}
+
+            {/* Referral program redemption (#41 PR 2) — referrer side: this
+                customer's own spendable credit. Only resolvable once the
+                quote's customer is linked (a saved/reopened quote). */}
+            {linkedCustomerId && savedQuoteId && (
+              <ReferralCreditBanner
+                customerId={linkedCustomerId}
+                quoteId={savedQuoteId}
+                balanceUsd={referralCreditUsd}
+                appliedCredit={form.referralCredit}
+                discountSlotOccupied={referralDiscountSlotOccupied}
+                persistError={referralPersistError}
+                onApplied={applyReferralCredit}
+                onRemoved={handleReferralCreditRemoved}
+              />
+            )}
 
             {/* Service type (#58 Phase 2b) — which line this quote belongs to.
                 Defaults to Holiday; drives the dashboard's per-service sections. */}
@@ -3504,66 +3697,79 @@ export default function QuoteBuilder({
                 all under one "Apply discount" toggle. Pick Percentage / Flat dollar
                 (enter an amount) or a Sep/Oct early-install month (fixed 15% / 10%).
                 Early-install is mutually exclusive with the rush fee, drives the
-                engine discount, and seeds the customer's portal install-timing. */}
+                engine discount, and seeds the customer's portal install-timing.
+                Referral program (#41 adversarial-review MED fix): once a referral
+                credit occupies the slot, these controls LOCK — staff can't quietly
+                drift the discount away from a credit that's already been
+                consumed server-side. Remove lives on the credit banner above
+                (the one place that already owns the consume/unconsume calls). */}
             <div>
-              <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
-                <input type="checkbox" checked={form.discountEnabled}
-                  onChange={e => {
-                    set('discountEnabled', e.target.checked);
-                    // Closing the discount section clears any early-install promo too.
-                    if (!e.target.checked) set('installTiming', 'none');
-                  }} />
-                Apply discount
-              </label>
-              {form.discountEnabled && (
-                <div className="pl-6 space-y-3">
-                  <div className="flex flex-wrap items-center gap-5">
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'none' && form.discountType === 'percentage'}
-                        onChange={() => { set('installTiming', 'none'); set('discountType', 'percentage'); }} />
-                      Percentage
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'none' && form.discountType === 'flat'}
-                        onChange={() => { set('installTiming', 'none'); set('discountType', 'flat'); }} />
-                      Flat dollar
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'september'}
-                        onChange={() => { set('installTiming', 'september'); set('rushFee', false); }} />
-                      September — 15% off
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'october'}
-                        onChange={() => { set('installTiming', 'october'); set('rushFee', false); }} />
-                      October — 10% off
-                    </label>
-                  </div>
-                  {form.installTiming === 'none' ? (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number" min="0"
-                        max={form.discountType === 'percentage' ? '100' : undefined}
-                        step="0.01"
-                        className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
-                        value={form.discountAmount || ''}
-                        placeholder={form.discountType === 'percentage' ? '20' : '100'}
-                        onChange={e => set('discountAmount', Number(e.target.value))}
-                      />
-                      <span className="text-xs text-gray-400">
-                        {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
-                      </span>
+              {form.referralCredit ? (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  Discount locked. A referral credit is applied. Use Remove on the referral banner above to edit it manually.
+                </p>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
+                    <input type="checkbox" checked={form.discountEnabled}
+                      onChange={e => {
+                        set('discountEnabled', e.target.checked);
+                        // Closing the discount section clears any early-install promo too.
+                        if (!e.target.checked) set('installTiming', 'none');
+                      }} />
+                    Apply discount
+                  </label>
+                  {form.discountEnabled && (
+                    <div className="pl-6 space-y-3">
+                      <div className="flex flex-wrap items-center gap-5">
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'none' && form.discountType === 'percentage'}
+                            onChange={() => { set('installTiming', 'none'); set('discountType', 'percentage'); }} />
+                          Percentage
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'none' && form.discountType === 'flat'}
+                            onChange={() => { set('installTiming', 'none'); set('discountType', 'flat'); }} />
+                          Flat dollar
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'september'}
+                            onChange={() => { set('installTiming', 'september'); set('rushFee', false); }} />
+                          September — 15% off
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'october'}
+                            onChange={() => { set('installTiming', 'october'); set('rushFee', false); }} />
+                          October — 10% off
+                        </label>
+                      </div>
+                      {form.installTiming === 'none' ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number" min="0"
+                            max={form.discountType === 'percentage' ? '100' : undefined}
+                            step="0.01"
+                            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
+                            value={form.discountAmount || ''}
+                            placeholder={form.discountType === 'percentage' ? '20' : '100'}
+                            onChange={e => set('discountAmount', Number(e.target.value))}
+                          />
+                          <span className="text-xs text-gray-400">
+                            {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
+                          </span>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-400">
+                          Pre-selects {form.installTiming === 'september' ? 'September' : 'October'} on the customer&apos;s portal; mutually exclusive with the rush fee.
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="text-xs text-gray-400">
-                      Pre-selects {form.installTiming === 'september' ? 'September' : 'October'} on the customer&apos;s portal; mutually exclusive with the rush fee.
-                    </p>
                   )}
-                </div>
+                </>
               )}
             </div>
 
@@ -4017,6 +4223,15 @@ export default function QuoteBuilder({
                 {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
               </p>
             )}
+            {/* Referral program redemption (#41 adversarial-review HIGH fix):
+                a referral-credit change (Apply or Remove) hasn't been
+                confirmed saved on this quote yet — block Send until a
+                Calculate actually persists it. */}
+            {referralCreditUnsaved && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                Referral credit is applied but not saved yet. Click Calculate, then send.
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -4024,11 +4239,13 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending' || hasUnfulfillable || (form.serviceType === 'event' && !eventDatesValid)}
+                disabled={sendStatus === 'sending' || hasUnfulfillable || referralCreditUnsaved || (form.serviceType === 'event' && !eventDatesValid)}
                 title={
-                  form.serviceType === 'event' && !eventDatesValid
-                    ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
-                    : undefined
+                  referralCreditUnsaved
+                    ? 'Click Calculate to save the referral credit change before sending.'
+                    : form.serviceType === 'event' && !eventDatesValid
+                      ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
+                      : undefined
                 }
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >

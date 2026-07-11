@@ -21,6 +21,7 @@ import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
 import { upsertContactCustomField, isHighLevelConfigured } from './integrations/highlevel';
 import { appBaseUrl } from './integrations/telegramNotify';
+import { normalizePhone } from './customers';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -49,6 +50,10 @@ export type ReferralRow = {
   status: ReferralStatus;
   amount_usd: number;
   booked_at: string | null;
+  // Redemption (PR 2): when + on which (spending) quote this row's credit was
+  // consumed. Both null until status flips to 'credited' (consumeCredits).
+  credited_at: string | null;
+  credited_quote_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -196,6 +201,12 @@ export type CreatePendingReferralInput = {
   refereeContactName?: string | null;
   refereeContactEmail?: string | null;
   refereeContactPhone?: string | null;
+  // Self-referral guard (PR 2): when the caller already knows which customer
+  // row the referee resolves to (saveQuote's 'mention' flow does, via
+  // attachQuoteToCustomer), pass it here so this refuses a customer referring
+  // themselves. Omitted/null when unknown (e.g. a 'link' lead-capture row,
+  // which has no quote/customer yet) — the guard simply doesn't run then.
+  refereeCustomerId?: string | null;
 };
 
 /**
@@ -204,12 +215,26 @@ export type CreatePendingReferralInput = {
  * Idempotent when refereeQuoteId is provided: a second call for the same
  * quote returns the EXISTING row instead of erroring on the UNIQUE(referee_
  * quote_id) backstop (handles a resave / concurrent retry).
+ *
+ * Self-referral guard (PR 2): a customer referring themselves would mint a
+ * free $125 credit with no new business behind it. Refused (logged + null)
+ * whenever the caller supplies refereeCustomerId AND it matches the referrer —
+ * saveQuote is the only caller today and ALSO short-circuits before ever
+ * reaching here (see quotes.ts), so this is defense in depth for any future
+ * caller that passes both ids without doing its own pre-check.
  */
 export async function createPendingReferral(
   input: CreatePendingReferralInput,
 ): Promise<{ id: string } | null> {
   const sb = svc();
   if (!sb) return null;
+
+  if (input.refereeCustomerId && input.refereeCustomerId === input.referrerCustomerId) {
+    console.error(
+      `[referrals] createPendingReferral refused: self-referral (customer ${input.referrerCustomerId} referring themselves)`,
+    );
+    return null;
+  }
 
   if (input.refereeQuoteId) {
     const { data: existing } = await sb
@@ -251,6 +276,47 @@ export async function createPendingReferral(
   return { id: data.id as string };
 }
 
+const DUPLICATE_LINK_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+
+/**
+ * Lightweight duplicate-submit guard for the referral landing page (#41
+ * adversarial-review LOW fix): true when this exact (normalized) phone
+ * already has a PENDING 'link' referral for the SAME referrer created within
+ * the last 24h. Lets the submit route skip minting a second GHL contact +
+ * pending referral row when a customer refreshes/resubmits the form (or a
+ * double-post). There's no normalized-phone column to query directly, so
+ * this fetches the small, already-scoped candidate set (this referrer's
+ * recent pending 'link' rows) and normalizes in application code — cheap,
+ * no migration needed.
+ *
+ * Fails OPEN (false = "no duplicate found") on any read error or when
+ * Supabase isn't configured — a transient lookup hiccup must never block a
+ * genuine new lead from being captured.
+ */
+export async function hasRecentPendingLinkReferral(
+  referrerCustomerId: string,
+  normalizedPhone: string,
+  windowMs: number = DUPLICATE_LINK_WINDOW_MS,
+): Promise<boolean> {
+  const sb = svc();
+  if (!sb || !referrerCustomerId || !normalizedPhone) return false;
+  const since = new Date(Date.now() - windowMs).toISOString();
+  const { data, error } = await sb
+    .from('referrals')
+    .select('referee_contact_phone')
+    .eq('referrer_customer_id', referrerCustomerId)
+    .eq('source', 'link' satisfies ReferralSource)
+    .eq('status', 'pending' satisfies ReferralStatus)
+    .gte('created_at', since);
+  if (error) {
+    console.error('[referrals] hasRecentPendingLinkReferral failed:', error);
+    return false;
+  }
+  return (data ?? []).some(
+    (row) => normalizePhone((row as { referee_contact_phone: string | null }).referee_contact_phone) === normalizedPhone,
+  );
+}
+
 // ─── Accrual ────────────────────────────────────────────────────────────────
 
 /**
@@ -284,6 +350,41 @@ export async function accrueOnBooking(quoteId: string): Promise<{ accrued: boole
 }
 
 /**
+ * Cancellation reversal (#41 adversarial-review fix): flip a 'booked' (NOT
+ * 'credited') referral whose referee_quote_id is the CANCELLED quote back to
+ * 'pending', clearing booked_at. A cancelled order never happened, so its
+ * referrer shouldn't keep the credit it earned. A 'credited' row is left
+ * ALONE on purpose — that credit may already be spent as a discount on a
+ * DIFFERENT quote (consumeCredits doesn't know or care which quote earned
+ * the credit it's spending), so unwinding it automatically here could rip a
+ * discount out from under some other customer's already-approved order;
+ * that's a manual/accounting call, not this function's job. Same fail-open
+ * contract as accrueOnBooking (its mirror-image sibling): every caller is a
+ * cancellation path that must complete regardless of an accrual hiccup, so
+ * errors are logged and swallowed here rather than left to the call site.
+ */
+export async function releaseAccrualOnCancel(quoteId: string): Promise<{ released: boolean }> {
+  try {
+    const sb = svc();
+    if (!sb) return { released: false };
+    const { data, error } = await sb
+      .from('referrals')
+      .update({ status: 'pending' satisfies ReferralStatus, booked_at: null })
+      .eq('referee_quote_id', quoteId)
+      .eq('status', 'booked' satisfies ReferralStatus)
+      .select('id');
+    if (error) {
+      console.error('[referrals] releaseAccrualOnCancel failed:', error);
+      return { released: false };
+    }
+    return { released: !!data && data.length > 0 };
+  } catch (err) {
+    console.error('[referrals] releaseAccrualOnCancel threw:', err);
+    return { released: false };
+  }
+}
+
+/**
  * A referrer's spendable balance: booked-but-not-yet-credited referrals ×
  * their stored amount. 'credited' rows are EXCLUDED — that status means the
  * credit was already consumed (PR 2's redemption flow), so counting it again
@@ -302,4 +403,339 @@ export async function creditBalanceFor(customerId: string): Promise<number> {
     return 0;
   }
   return (data ?? []).reduce((sum, row) => sum + (Number((row as { amount_usd: number }).amount_usd) || 0), 0);
+}
+
+// ─── Redemption (PR 2) ──────────────────────────────────────────────────────
+
+/**
+ * The referral row where this quote is the REFEREE (the friend's first
+ * quote) — regardless of status (pending/booked/credited). Used by the quote
+ * builder's spritzer banner to show "this customer gets 2 free spritzers" on
+ * a REOPENED quote, where the client-side "Referred by" picker state (only
+ * set in the session that originally picked it) is gone.
+ */
+export async function refereeReferralFor(
+  quoteId: string,
+): Promise<{ id: string; status: ReferralStatus } | null> {
+  const sb = svc();
+  if (!sb || !quoteId) return null;
+  const { data, error } = await sb
+    .from('referrals')
+    .select('id, status')
+    .eq('referee_quote_id', quoteId)
+    .maybeSingle<{ id: string; status: ReferralStatus }>();
+  if (error) {
+    console.error('[referrals] refereeReferralFor failed:', error);
+    return null;
+  }
+  return data ?? null;
+}
+
+export type ConsumeCreditsResult = {
+  consumed: boolean;
+  consumedRowIds: string[];
+  consumedUsd: number;
+  newBalanceUsd: number;
+};
+
+/**
+ * Spend a referrer's credit balance on a quote — the redemption half of the
+ * program (accrueOnBooking above is the earning half).
+ *
+ * LOCKED, SIMPLIFIED SEMANTICS: a credit is a whole $125 unit, never partial.
+ * Applying the balance to a quote consumes ALL of that referrer's currently-
+ * 'booked' rows in one shot, flipping every one to 'credited' — regardless of
+ * whether the quote's subtotal was big enough to use the full sum. The
+ * alternative (bank the unused fraction for a later quote) needs a
+ * fractional-credit concept the product never asked for; this keeps the row
+ * model simple (a row is either spendable or spent, no in-between). The
+ * discount actually BILLED is min(balance, quote subtotal) — computed by the
+ * caller (see /api/referrals/consume) — so a cheap quote against a big
+ * balance loses the excess above the subtotal. That trade is deliberate and
+ * small (it only bites a referrer with several stacked credits applying them
+ * to one modest quote); the banner shows the balance BEFORE staff click
+ * Apply, so it's a seen trade, not a silent one.
+ *
+ * `amountUsd` is the amount the caller is about to bill as the quote's
+ * discount (always server-computed as min(live balance, quote subtotal) —
+ * see the route; never a client-supplied number for a money mutation). It is
+ * NOT used to pick which/how many rows to flip (that's always "all of them"
+ * per above) — it's a defensive check: if it exceeds the CURRENT live
+ * balance, the caller's figure is stale (e.g. a concurrent consume already
+ * ran between showing the banner and this click), and this refuses rather
+ * than flip rows for a number that no longer reflects reality.
+ *
+ * Idempotent-ish under a double click: the conditional UPDATE only matches
+ * rows still 'booked', so a second call for the same customer (genuine
+ * double-click or retry) finds zero rows and returns consumed:false.
+ */
+export async function consumeCredits(
+  customerId: string,
+  quoteId: string,
+  amountUsd: number,
+): Promise<ConsumeCreditsResult> {
+  const sb = svc();
+  if (!sb) return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 };
+
+  const liveBalance = await creditBalanceFor(customerId);
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > liveBalance) {
+    console.error(
+      `[referrals] consumeCredits refused: amountUsd ${amountUsd} exceeds live balance ${liveBalance} for customer ${customerId}`,
+    );
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: liveBalance };
+  }
+
+  // The atomic claim (same idiom as accrueOnBooking above): conditional on
+  // status='booked' so a concurrent/retried consume can only ever win once.
+  // Ordered oldest-first so the reported consumedRowIds are deterministic —
+  // functionally every currently-booked row is consumed regardless of order.
+  const { data: updated, error } = await sb
+    .from('referrals')
+    .update({
+      status: 'credited' satisfies ReferralStatus,
+      credited_at: new Date().toISOString(),
+      credited_quote_id: quoteId,
+    })
+    .eq('referrer_customer_id', customerId)
+    .eq('status', 'booked' satisfies ReferralStatus)
+    // created_at must be IN the returned selection for PostgREST to order a
+    // mutation's RETURNING set by it (42703 otherwise — live-E2E-caught S30).
+    .select('id, amount_usd, created_at')
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.error('[referrals] consumeCredits update failed:', error);
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: liveBalance };
+  }
+
+  const rows = (updated ?? []) as { id: string; amount_usd: number }[];
+  if (rows.length === 0) {
+    // Lost the race — a concurrent consume already spent the balance between
+    // our read above and this claim (e.g. a genuine double click).
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 };
+  }
+
+  const consumedUsd = rows.reduce((sum, r) => sum + (Number(r.amount_usd) || 0), 0);
+  const newBalanceUsd = await creditBalanceFor(customerId);
+  return { consumed: true, consumedRowIds: rows.map((r) => r.id), consumedUsd, newBalanceUsd };
+}
+
+export type ReleaseCreditsResult = {
+  released: boolean;
+  releasedRowIds: string[];
+  releasedUsd: number;
+};
+
+/**
+ * "Remove referral credit" (#41 adversarial-review MED fix) — the undo half
+ * of redemption. Flips every row THIS quote credited (credited_quote_id =
+ * quoteId, for this referrer) back to 'booked', clearing credited_at/
+ * credited_quote_id so the balance is spendable again elsewhere. Same atomic
+ * conditional-claim idiom as consumeCredits, reversed: the `.eq('status',
+ * 'credited')` filter means a double-call (retry, or a genuine second click
+ * after the first already released) finds zero rows the second time —
+ * idempotent by construction, no separate guard needed.
+ *
+ * Scoped to BOTH referrer_customer_id AND credited_quote_id so this can never
+ * touch a different quote's spent credit, or a different customer's row —
+ * even if a caller passed a mismatched pair (defense in depth; the route
+ * layer also validates the quote actually belongs to this customer before
+ * calling in).
+ */
+export async function releaseCredits(customerId: string, quoteId: string): Promise<ReleaseCreditsResult> {
+  const sb = svc();
+  if (!sb) return { released: false, releasedRowIds: [], releasedUsd: 0 };
+
+  const { data: updated, error } = await sb
+    .from('referrals')
+    .update({
+      status: 'booked' satisfies ReferralStatus,
+      credited_at: null,
+      credited_quote_id: null,
+    })
+    .eq('referrer_customer_id', customerId)
+    .eq('credited_quote_id', quoteId)
+    .eq('status', 'credited' satisfies ReferralStatus)
+    .select('id, amount_usd');
+
+  if (error) {
+    console.error('[referrals] releaseCredits update failed:', error);
+    return { released: false, releasedRowIds: [], releasedUsd: 0 };
+  }
+
+  const rows = (updated ?? []) as { id: string; amount_usd: number }[];
+  if (rows.length === 0) {
+    return { released: false, releasedRowIds: [], releasedUsd: 0 };
+  }
+
+  const releasedUsd = rows.reduce((sum, r) => sum + (Number(r.amount_usd) || 0), 0);
+  return { released: true, releasedRowIds: rows.map((r) => r.id), releasedUsd };
+}
+
+// ─── Customer profile panel (PR 2) ─────────────────────────────────────────
+
+export type ReferralListItem = {
+  id: string;
+  /** referee_contact_name, else the name on their quote (batched lookup),
+   *  else a plain fallback — never blank. */
+  displayName: string;
+  source: ReferralSource;
+  status: ReferralStatus;
+  amountUsd: number;
+  createdAt: string;
+  bookedAt: string | null;
+  creditedAt: string | null;
+  creditedQuoteId: string | null;
+};
+
+export type ReferralSummary = {
+  pendingCount: number;
+  bookedCount: number;
+  creditedCount: number;
+  /** Reuses creditBalanceFor's own math (booked-not-yet-credited rows) — see
+   *  that function's doc comment for why 'credited' rows are excluded. */
+  spendableUsd: number;
+  /** Every dollar this referrer has actually earned so far: booked + credited
+   *  rows' amounts, regardless of whether the booked half has been spent. */
+  lifetimeEarnedUsd: number;
+};
+
+/**
+ * A referrer's referral history for the customer profile panel: every row
+ * they've generated (either source), newest first, with a display name per
+ * row and a rollup summary.
+ *
+ * Display name: the referee's own contact name when known ('link' leads
+ * always have one; a 'mention' row's referee is named on their own quote
+ * instead), else the name on their referee quote, else a plain fallback.
+ * The quote-name fallback is ONE batched `.in('id', ids)` lookup for every
+ * row that needs it — never a per-row query.
+ */
+export async function listReferralsFor(
+  customerId: string,
+): Promise<{ items: ReferralListItem[]; summary: ReferralSummary }> {
+  const empty = {
+    items: [] as ReferralListItem[],
+    summary: { pendingCount: 0, bookedCount: 0, creditedCount: 0, spendableUsd: 0, lifetimeEarnedUsd: 0 },
+  };
+  const sb = svc();
+  if (!sb || !customerId) return empty;
+
+  const { data, error } = await sb
+    .from('referrals')
+    .select(
+      'id, referee_quote_id, referee_contact_name, source, status, amount_usd, booked_at, credited_at, credited_quote_id, created_at',
+    )
+    .eq('referrer_customer_id', customerId)
+    .order('created_at', { ascending: false });
+  if (error) {
+    console.error('[referrals] listReferralsFor failed:', error);
+    return empty;
+  }
+
+  type ReferralQueryRow = {
+    id: string;
+    referee_quote_id: string | null;
+    referee_contact_name: string | null;
+    source: ReferralSource;
+    status: ReferralStatus;
+    amount_usd: number;
+    booked_at: string | null;
+    credited_at: string | null;
+    credited_quote_id: string | null;
+    created_at: string;
+  };
+  const rows = (data ?? []) as ReferralQueryRow[];
+
+  // Batched name fallback: only the quote ids we actually need (rows with no
+  // contact name on file), deduped, fetched in ONE call.
+  const quoteIdsNeedingName = Array.from(
+    new Set(
+      rows
+        .filter((r) => !r.referee_contact_name?.trim() && r.referee_quote_id)
+        .map((r) => r.referee_quote_id as string),
+    ),
+  );
+  const nameByQuoteId = new Map<string, string | null>();
+  if (quoteIdsNeedingName.length > 0) {
+    const { data: quoteRows, error: quoteErr } = await sb
+      .from('quotes')
+      .select('id, customer_name')
+      .in('id', quoteIdsNeedingName);
+    if (quoteErr) {
+      console.error('[referrals] listReferralsFor quote name lookup failed:', quoteErr);
+    } else {
+      for (const q of (quoteRows ?? []) as { id: string; customer_name: string | null }[]) {
+        nameByQuoteId.set(q.id, q.customer_name);
+      }
+    }
+  }
+
+  const items: ReferralListItem[] = rows.map((r) => {
+    const fallbackName = r.referee_quote_id ? nameByQuoteId.get(r.referee_quote_id) : null;
+    return {
+      id: r.id,
+      displayName: r.referee_contact_name?.trim() || fallbackName?.trim() || 'Unnamed friend',
+      source: r.source,
+      status: r.status,
+      amountUsd: Number(r.amount_usd) || 0,
+      createdAt: r.created_at,
+      bookedAt: r.booked_at,
+      creditedAt: r.credited_at,
+      creditedQuoteId: r.credited_quote_id,
+    };
+  });
+
+  const pendingCount = items.filter((i) => i.status === 'pending').length;
+  const bookedCount = items.filter((i) => i.status === 'booked').length;
+  const creditedCount = items.filter((i) => i.status === 'credited').length;
+  const lifetimeEarnedUsd = items
+    .filter((i) => i.status === 'booked' || i.status === 'credited')
+    .reduce((sum, i) => sum + i.amountUsd, 0);
+  // Reused, not recomputed — creditBalanceFor stays the single source of
+  // truth for "spendable" (see its doc comment on excluding 'credited' rows).
+  const spendableUsd = await creditBalanceFor(customerId);
+
+  return {
+    items,
+    summary: { pendingCount, bookedCount, creditedCount, spendableUsd, lifetimeEarnedUsd },
+  };
+}
+
+// ─── Photo opt-out (PR 1 promised the column; first UI lands in PR 2) ──────
+
+/** Current photo opt-out flag for a customer's /refer/<code> page. False
+ *  ("use their photo") when Supabase isn't configured or the row can't be
+ *  read — mirrors getReferralByCode's own fail-open default. */
+export async function getReferralPhotoOptout(customerId: string): Promise<boolean> {
+  const sb = svc();
+  if (!sb) return false;
+  const { data, error } = await sb
+    .from('customers')
+    .select('referral_photo_optout')
+    .eq('id', customerId)
+    .maybeSingle<{ referral_photo_optout: boolean | null }>();
+  if (error) {
+    console.error('[referrals] getReferralPhotoOptout failed:', error);
+    return false;
+  }
+  return data?.referral_photo_optout ?? false;
+}
+
+/** Staff-facing toggle: does this customer's own house photo appear on their
+ *  /refer/<code> referral page. Returns false on any failure so the route
+ *  can report the save as unsuccessful rather than assume it landed. */
+export async function setReferralPhotoOptout(customerId: string, optout: boolean): Promise<boolean> {
+  const sb = svc();
+  if (!sb) return false;
+  const { data, error } = await sb
+    .from('customers')
+    .update({ referral_photo_optout: optout })
+    .eq('id', customerId)
+    .select('id');
+  if (error) {
+    console.error('[referrals] setReferralPhotoOptout failed:', error);
+    return false;
+  }
+  return !!data && data.length > 0;
 }

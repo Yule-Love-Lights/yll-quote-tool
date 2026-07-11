@@ -564,6 +564,10 @@ export async function POST(req: NextRequest) {
           customer ? safeCustomer : undefined,
           // Keep the stored service_type consistent with what we priced (H2).
           effectiveServiceType,
+          // Referral program (#41 adversarial-review fix): updateQuote now
+          // honors this too (create-once, idempotent) — see its own doc
+          // comment for why an update needs a fresh pre-read of its own.
+          referredByCustomerId,
         )
       : await saveQuote(
           safeCustomer,
