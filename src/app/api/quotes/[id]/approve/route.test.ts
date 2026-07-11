@@ -100,6 +100,22 @@ const PERM_RESULT = {
   permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
 };
 
+// A PERMANENT BISTRO QuoteResult: a $700 run + a $200 poles line (stable ids,
+// mirroring calculatePermanentBistro's own id shapes). $700 is ABOVE the
+// bistro rate's own $500 gate but BELOW the holiday $1,000 default — the
+// exact value that distinguishes the fixed gate (reads the bistro snapshot)
+// from the pre-fix bug (silently fell back to the $1,000 holiday default).
+const BISTRO_RESULT = {
+  ...RESULT,
+  lineItems: [
+    { label: 'Permanent Bistro Lighting – 23ft', amount: 700, id: 'permanent-bistro-0' },
+    { label: 'Poles (2)', amount: 200, id: 'permanent-bistro-poles' },
+  ],
+  rooflineChoice: 'none',
+  rooflineOptions: { santas: null, gingerbread: null },
+  permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 500 },
+};
+
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function baseQuote(overrides: Record<string, unknown> = {}) {
@@ -816,5 +832,70 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     expect(res.status).toBe(200);
     const snap = updatePayloads[0].approval_snapshot as { permanentWarranty: unknown };
     expect(snap.permanentWarranty).toBeNull();
+  });
+});
+
+describe('POST /api/quotes/[id]/approve — permanent bistro', () => {
+  it('forces holiday fees OFF even if the body toggles rush/takedown/early-install', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: BISTRO_RESULT, service_type: 'permanent_bistro' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({
+        ...validBody,
+        selectedItemIds: ['permanent-bistro-0'], // $700
+        rushSelected: true,
+        takedownSelected: true,
+        installTiming: 'september',
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { rushSelected: boolean; takedownSelected: boolean; installTiming: string };
+    };
+    expect(snap.customerSelection.rushSelected).toBe(false);
+    expect(snap.customerSelection.takedownSelected).toBe(false);
+    expect(snap.customerSelection.installTiming).toBe('none');
+  });
+
+  it('gates on the bistro snapshot minimum ($500): a $200 poles-only selection is rejected', async () => {
+    const { client } = makeSb(baseQuote({ result: BISTRO_RESULT, service_type: 'permanent_bistro' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-poles'] }), // $200 < $500
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('below-minimum');
+  });
+
+  // REGRESSION lock: pre-fix, `isPermanent ? … : undefined` made the gate fall
+  // back to BUSINESS_RULES.minimumQuoteAmount ($1,000) for every non-permanent
+  // service type, INCLUDING bistro — so a $700 selection (above the bistro
+  // quote's own $500 gate) would have been wrongly rejected as below-minimum.
+  it('REGRESSION: approves a $700 selection — above its own $500 gate, below the old $1,000 holiday default', async () => {
+    const { client } = makeSb(baseQuote({ result: BISTRO_RESULT, service_type: 'permanent_bistro' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-0'] }), // $700
+      { params },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('gate 0 (no snapshot minimum set) approves any priced selection', async () => {
+    const noMinResult = {
+      ...BISTRO_RESULT,
+      permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 0 },
+    };
+    const { client } = makeSb(baseQuote({ result: noMinResult, service_type: 'permanent_bistro' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-poles'] }), // $200
+      { params },
+    );
+    expect(res.status).toBe(200);
   });
 });

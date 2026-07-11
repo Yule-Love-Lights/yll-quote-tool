@@ -3,6 +3,7 @@
 
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
 import type { EventRates, EventInputFields } from '@/lib/event/types';
+import type { PermanentBistroRates, PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -271,6 +272,11 @@ export interface QuoteInputs {
   // referral rows were consumed and for how much, for support/audit lookups.
   // Optional/additive — absent means no referral credit was applied.
   referralCredit?: { amount: number; consumedRowIds: string[] };
+  // Permanent Bistro Lighting vertical. Present ONLY when service_type is
+  // 'permanent_bistro'. The permanent-bistro engine (calculatePermanentBistro in
+  // lib/permanentBistro/pricing.ts) reads bistro runs + poles. Every other
+  // vertical ignores it.
+  permanentBistro?: PermanentBistroInputFields;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -347,6 +353,9 @@ export interface QuoteResult {
   // rate-drift guard as permanent (approve/amend re-price from this, not live
   // settings). Present only on event quotes.
   eventRatesSnapshot?: EventRates;
+  // Permanent Bistro Lighting: the rate table frozen at calc time — the same
+  // rate-drift guard as permanent/event. Present only on permanent-bistro quotes.
+  permanentBistroRatesSnapshot?: PermanentBistroRates;
 }
 
 // ─────────────────────────────────────────────────────────

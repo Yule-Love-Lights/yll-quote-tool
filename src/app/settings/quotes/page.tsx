@@ -9,6 +9,7 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
 import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
+import { PermanentBistroRatesSettings } from '@/components/settings/PermanentBistroRatesSettings';
 import { PermanentWarrantySettings } from '@/components/settings/PermanentWarrantySettings';
 import { PortalSwatchEditor } from '@/components/settings/PortalSwatchEditor';
 
@@ -47,6 +48,10 @@ export default async function QuotesSettingsPage() {
 
         <div className="mt-6">
           <PermanentRatesSettings />
+        </div>
+
+        <div className="mt-6">
+          <PermanentBistroRatesSettings />
         </div>
 
         <div className="mt-6">

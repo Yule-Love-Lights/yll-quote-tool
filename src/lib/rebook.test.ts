@@ -163,7 +163,7 @@ describe('buildRebookInsert', () => {
     expect(row).not.toHaveProperty('service_type');
   });
 
-  it('strips BOTH frozen rate snapshots (permanent + event) so the rebooked draft re-prices at live rates', () => {
+  it('strips ALL frozen rate snapshots (permanent + event + permanent bistro) so the rebooked draft re-prices at live rates', () => {
     const withSnaps = {
       ...src,
       result: {
@@ -171,11 +171,13 @@ describe('buildRebookInsert', () => {
         lineItems: [{ id: 'permanent-front', amount: 2000 }],
         permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
         eventRatesSnapshot: { rooflinePerFt: 8 },
+        permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 0 },
       },
     } as unknown as Parameters<typeof buildRebookInsert>[0];
     const result = buildRebookInsert(withSnaps).result as Record<string, unknown>;
     expect(result).not.toHaveProperty('permanentRatesSnapshot');
     expect(result).not.toHaveProperty('eventRatesSnapshot');
+    expect(result).not.toHaveProperty('permanentBistroRatesSnapshot');
     // Other priced fields survive the strip; total still derives from the source.
     expect(result.total).toBe(4200);
     expect(result.lineItems).toEqual([{ id: 'permanent-front', amount: 2000 }]);

@@ -494,10 +494,11 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </dl>
           {minimumOrderSubtotal > 0 && !meetsMinimum && (
             <p className="mt-4 border-t border-[#243029] pt-3 text-[13px] text-[#E8B862]">
-              {/* "season minimum" is holiday-only copy. Permanent (year-round) and
-                  event (date-driven) are not seasonal → neutral "minimum". Only
-                  holiday/undefined keeps "season minimum". */}
-              {serviceType === 'permanent' || serviceType === 'event'
+              {/* "season minimum" is holiday-only copy. Permanent (year-round),
+                  event (date-driven), and permanent bistro (year-round) are not
+                  seasonal → neutral "minimum". Only holiday/undefined keeps
+                  "season minimum". */}
+              {serviceType === 'permanent' || serviceType === 'event' || serviceType === 'permanent_bistro'
                 ? currentSubtotal <= 0
                   ? `Our minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
                   : `Our minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`

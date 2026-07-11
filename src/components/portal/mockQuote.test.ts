@@ -26,9 +26,13 @@ describe('galleryItemsFor', () => {
   });
 
   it('returns the permanent list for permanent', () => {
-    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(3);
+    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(10);
     expect(galleryItemsFor('permanent')).toBe(PERMANENT_GALLERY_ITEMS);
     expect(galleryItemsFor('permanent')).not.toBe(MOCK_GALLERY_ITEMS);
+  });
+
+  it('returns the event list as a placeholder for permanent_bistro (#117 — no bistro photos yet)', () => {
+    expect(galleryItemsFor('permanent_bistro')).toBe(EVENT_GALLERY_ITEMS);
   });
 
   it('every entry has a unique id and a /references/ src', () => {
@@ -78,6 +82,11 @@ describe('crossSellFor', () => {
 
   it('undefined serviceType behaves like holiday', () => {
     expect(crossSellFor(undefined)).toEqual(crossSellFor('holiday'));
+  });
+
+  it('viewing permanent_bistro mirrors permanent (holiday then event)', () => {
+    const blocks = crossSellFor('permanent_bistro');
+    expect(blocks.map((b) => b.serviceType)).toEqual(['holiday', 'event']);
   });
 
   it('every block has exactly 3 items', () => {

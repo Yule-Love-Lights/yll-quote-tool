@@ -13,6 +13,8 @@ import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from './design/col
 import { DEFAULT_EVENT_RATES } from './event/types';
 // permanent/types is client-safe (zero imports) — the permanent-rates + warranty fallback.
 import { DEFAULT_PERMANENT_RATES, DEFAULT_PERMANENT_WARRANTY } from './permanent/types';
+// permanentBistro/types is client-safe (zero imports) — the permanent-bistro-rates fallback.
+import { DEFAULT_PERMANENT_BISTRO_RATES } from './permanentBistro/types';
 // permanentScenes is client-safe — the permanent-swatches fallback.
 import { DEFAULT_PERMANENT_SWATCHES } from './design/permanentScenes';
 // Type only — never import a runtime value from appSettings here (it pulls the
@@ -29,6 +31,7 @@ const FALLBACK: AppSettings = {
   portal: { hideEarlyInstallDiscounts: false },
   swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
   eventRates: DEFAULT_EVENT_RATES,
+  permanentBistroRates: DEFAULT_PERMANENT_BISTRO_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
   permanentSwatches: DEFAULT_PERMANENT_SWATCHES,

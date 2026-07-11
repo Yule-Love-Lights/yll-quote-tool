@@ -112,5 +112,16 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
     return true;
   }
 
+  // /api/leads is the WordPress site's public lead-capture endpoint (#leads) —
+  // honeypot + rate-limited + strictly validated in the route itself. POST is
+  // the submission; OPTIONS must also pass because the browser sends a CORS
+  // preflight for the cross-origin JSON POST from yulelovelights.com (the
+  // referrals carve-out above never needed this — its form is same-origin).
+  // All other methods on this path stay operator-gated.
+  if (path === '/api/leads') {
+    const m = method.toUpperCase();
+    if (m === 'POST' || m === 'OPTIONS') return true;
+  }
+
   return false;
 }

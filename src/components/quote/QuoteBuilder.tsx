@@ -1310,8 +1310,14 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      if (data.result) {
+      // #88/#117: only holiday + event seed from the holiday analyzer — permanent
+      // and permanent bistro design manually, so an analyzer result here (this
+      // route carries no serviceType gate of its own) is intentionally discarded
+      // rather than seeded onto their designs (mirrors handleLookupAddress below).
+      if (data.result && (form.serviceType === 'holiday' || form.serviceType === 'event')) {
         applyAnalysisResult(data);
+      } else if (data.result) {
+        setAnalysisNotes('Re-analyzed, but this quote type designs manually — nothing was auto-seeded.');
       } else {
         // FAIL-SAFE: analyzer unavailable on re-analyze — keep the existing photo
         // + design intact and just surface the notice (nothing to re-seed).
@@ -1495,11 +1501,15 @@ export default function QuoteBuilder({
       setSvHeading(null);
       setSvPitch(0);
       setSvFov(80);
-      if (data.result) {
+      // #88/#117: only holiday + event seed from the holiday analyzer result —
+      // permanent designs from its own satellite analyzer (permanentImageryOnly
+      // below) and permanent bistro designs manually, so a result here is
+      // intentionally discarded for both rather than seeded onto their designs.
+      if (data.result && (form.serviceType === 'holiday' || form.serviceType === 'event')) {
         applyAnalysisResult(data);
       } else {
-        // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
-        // holiday analyzer by design) or the fail-safe (analyzer down). The street
+        // Imagery loaded WITHOUT a holiday seed: permanent/bistro (which skip the
+        // holiday analyzer/seed by design) or the fail-safe (analyzer down). The street
         // photo creates the design; the satellite + its scale stay for measuring.
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
@@ -1583,6 +1593,14 @@ export default function QuoteBuilder({
                 'Photos loaded. Draw each side of the roofline on the Satellite tab (front/left/right/back) — footage, corners, and extensions fill in from the drawing.',
             );
           }
+        } else if (form.serviceType === 'permanent_bistro') {
+          // #117: bistro is imagery-only (the analyze-address route returns
+          // photos with no analyzer result for permanent_bistro) — bistro
+          // designs manually, so surface that instead of a false "the
+          // analyzer is unavailable" warning.
+          setAnalysisNotes(
+            'Photos loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.',
+          );
         } else {
           setAnalysisWarning(
             data.analysisError ??
@@ -1599,11 +1617,11 @@ export default function QuoteBuilder({
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
-    // #88: permanent lighting designs MANUALLY — no holiday auto-measure/seed.
-    // Load the uploaded photo into a bare design (no Anthropic call, no
-    // santas/gingerbread roofline drawn) so the operator draws the permanent
-    // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
-    if (form.serviceType === 'permanent') {
+    // #88/#117: permanent + permanent bistro design MANUALLY — no holiday
+    // auto-measure/seed. Load the uploaded photo into a bare design (no
+    // Anthropic call, no santas/gingerbread roofline drawn) so the operator
+    // draws the runs themselves. Mirrors the analyzer-outage fail-safe below.
+    if (form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro') {
       // Read the base64 from the File itself — photoPreview is a blob: object URL
       // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
       const base64 = await new Promise<string | null>((resolve) => {
@@ -1628,7 +1646,9 @@ export default function QuoteBuilder({
       setFewShotCount(0);
       setViewMode('design');
       setAnalysisNotes(
-        'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
+        form.serviceType === 'permanent_bistro'
+          ? 'Photo loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.'
+          : 'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
       );
       return;
     }
@@ -1976,10 +1996,12 @@ export default function QuoteBuilder({
       // is right, so the staff-final state becomes a training example
       // (replaces this quote's previous auto snapshot on a re-send).
       // Best-effort. Positive gate: permanent quotes teach the SEPARATE
-      // permanent-analyzer library, never the holiday one.
+      // permanent-analyzer library, holiday + event teach the holiday one, and
+      // permanent bistro teaches NEITHER (#117 — no analyzer, nothing to train;
+      // a bistro photo must never pollute either library).
       if (form.serviceType === 'permanent') {
         void capturePermanentExample('auto-send');
-      } else {
+      } else if (form.serviceType === 'holiday' || form.serviceType === 'event') {
         void captureExample('auto-send');
       }
     } catch (err) {
@@ -2281,11 +2303,16 @@ export default function QuoteBuilder({
     breakdownLinked.reduce((s, li) => (li.recommended ? s + li.price : s), 0) +
     recommendedRooflineAmount;
   // #131: the summary below gates against the RIGHT minimum — a permanent quote
-  // gates at its frozen snapshot minimumJobAmount, not the holiday $1,000.
+  // gates at its frozen snapshot minimumJobAmount, and a permanent bistro quote
+  // at its own frozen snapshot minimum (#117 — 0 is a valid "gate off" value,
+  // which the >= / < comparisons below already treat as "always clears").
+  // Neither is the holiday $1,000.
   const breakdownMinimum =
     form.serviceType === 'permanent'
       ? result?.permanentRatesSnapshot?.minimumJobAmount ?? 2500
-      : BUSINESS_RULES.minimumQuoteAmount;
+      : form.serviceType === 'permanent_bistro'
+        ? result?.permanentBistroRatesSnapshot?.minimum ?? 0
+        : BUSINESS_RULES.minimumQuoteAmount;
 
   // The engine emits one row per VALID custom line item, last, in order, with a
   // deterministic label. Map each to its index in form.customLineItems so a
@@ -2527,7 +2554,7 @@ export default function QuoteBuilder({
                 })}
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
+                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties) · Bistro = permanent café lights.
               </p>
             </div>
           </Section>
@@ -2547,7 +2574,9 @@ export default function QuoteBuilder({
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
-                : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
+                : form.serviceType === 'permanent_bistro'
+                  ? 'Look up the address on Google Maps for Street View + satellite imagery, or upload a photo. There is no auto-trace for bistro — draw the light runs and set the pole count below.'
+                  : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
             {/* Google lookup — pulls Street View + satellite. Permanent skips the
@@ -2567,7 +2596,9 @@ export default function QuoteBuilder({
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
                   ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
-                  : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
+                  : form.serviceType === 'permanent_bistro'
+                    ? 'Uses the Property Address above. Fetches Street View + satellite imagery so you draw the bistro light runs on a real photo.'
+                    : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -2614,7 +2645,11 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
+                    {analyzing
+                      ? 'Analyzing…'
+                      : form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro'
+                        ? 'Load photo to design'
+                        : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2647,7 +2682,7 @@ export default function QuoteBuilder({
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
-                    {form.serviceType === 'permanent'
+                    {form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro'
                       ? 'Photo loaded for the design canvas.'
                       : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
@@ -2711,7 +2746,11 @@ export default function QuoteBuilder({
                     Satellite (top-down)
                   </button>
                 </div>
-                {form.serviceType !== 'permanent' && satelliteFeetPerPixel != null && (
+                {/* Santa's/Gingerbread roofline footage — holiday + event only
+                    (the same engines that price those two fields; permanent and
+                    permanent bistro don't). Positive list so a future type
+                    defaults to hidden, not shown. */}
+                {(form.serviceType === 'holiday' || form.serviceType === 'event') && satelliteFeetPerPixel != null && (
                   <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
                     Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
                   </div>
@@ -2843,6 +2882,7 @@ export default function QuoteBuilder({
                       designId={designId}
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
+                      bistroOnly={form.serviceType === 'permanent_bistro'}
                       onReady={(flush) => { editorFlushRef.current = flush; }}
                     />
                     {form.serviceType === 'permanent' ? (
@@ -2851,6 +2891,12 @@ export default function QuoteBuilder({
                         &amp; extensions come from the Satellite tab&apos;s side lines — auto-traced on address
                         lookup, hand-editable. Saves automatically and attaches to this quote on Calculate.
                       </p>
+                    ) : form.serviceType === 'permanent_bistro' ? (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw the bistro light runs on the photo. Footage bills from what you draw here; set
+                        the pole count in the Permanent poles &amp; supports section below. Saves
+                        automatically and attaches to this quote on Calculate.
+                      </p>
                     ) : (
                       <p className="text-xs text-gray-400 mt-2">
                         Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
@@ -2858,10 +2904,15 @@ export default function QuoteBuilder({
                         represent). Saves automatically and attaches to this quote on Calculate.
                       </p>
                     )}
-                    {/* #88: the "From your design" billable-items summary (minis/
-                        spritzers/wreaths/garland/bows) is holiday/event only — a
-                        permanent quote bills from the Permanent section, not drawn items. */}
-                    {form.serviceType !== 'permanent' && (
+                    {/* #88/#117: the "From your design" billable-items summary
+                        (minis/spritzers/wreaths/garland/bows) is holiday/event
+                        only — permanent bills from the Permanent section and
+                        permanent bistro from its own poles section + the design's
+                        bistro lines, neither of which this preview panel prices
+                        (it calls the generic holiday engine, which ignores bistro
+                        runs — see permanentBistro/types.ts), so showing it here
+                        would misreport a bistro quote as having 0 billable items. */}
+                    {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
                       <DesignSummary designId={designId} refreshKey={designEditorKey} />
                     )}
                   </>
@@ -2879,7 +2930,10 @@ export default function QuoteBuilder({
               <div className={viewMode === 'satellite' ? '' : 'hidden'}>
                 {satellitePreview ? (
                   <>
-                    {form.serviceType !== 'permanent' && (
+                    {/* This warns about the Claude-traced santas/gingerbread roofline
+                        lines below — holiday + event only; permanent and permanent
+                        bistro don't get an AI-traced roofline to verify. */}
+                    {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
                       <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
                         <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
                       </div>
@@ -3153,6 +3207,15 @@ export default function QuoteBuilder({
                           </button>
                         </div>
                       </div>
+                    ) : form.serviceType === 'permanent_bistro' ? (
+                      // #117: bistro doesn't measure from the satellite view — its
+                      // footage projects from the light runs drawn on the Design
+                      // tab, so the santas/gingerbread line-drawing tools below
+                      // (holiday + event only) don't apply here.
+                      <p className="mt-3 text-sm text-gray-500">
+                        Bistro doesn&apos;t measure from the satellite view — footage comes from the light
+                        runs you draw on the Design tab.
+                      </p>
                     ) : (
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
@@ -3355,7 +3418,12 @@ export default function QuoteBuilder({
             />
           )}
 
-          {form.serviceType !== 'permanent' && (
+          {/* Santa's/Gingerbread (+ holiday-only C9/Stake below) price only on the
+              holiday and event engines (event's roofline allow-list is santas +
+              gingerbread only). Positive list, not "!== permanent": permanent
+              bistro's engine prices none of this, and a new future type should
+              default to hidden too, not inherit it. */}
+          {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
           <>
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
@@ -3532,6 +3600,22 @@ export default function QuoteBuilder({
             </Section>
           )}
 
+          {/* Permanent Bistro Lighting (#117) — poles/supports, the one form
+              input bistro carries (footage is design-drawn, projected server-side). */}
+          {form.serviceType === 'permanent_bistro' && (
+            <Section title="Permanent poles & supports">
+              <input
+                type="number"
+                min={0}
+                step="1"
+                className="border border-gray-300 rounded px-2 py-1 text-sm w-24 text-right"
+                value={form.permanentBistro.poles || ''}
+                onChange={ev => setForm(f => ({ ...f, permanentBistro: { ...f.permanentBistro, poles: Math.max(0, Math.floor(Number(ev.target.value) || 0)) } }))}
+              />
+              <span className="ml-2 text-xs text-gray-400">$ each (rate in Settings)</span>
+            </Section>
+          )}
+
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
             <p className="text-xs text-gray-400 mb-3">
@@ -3567,13 +3651,16 @@ export default function QuoteBuilder({
             </button>
           </Section>
 
-          {/* ── Options ── holiday-only (takedown / rush / early-install). BOTH
-              permanent AND event force these off in pricing (permanent uses the
-              $2,500 gate, event carries no seasonal fees), so the whole section is
-              hidden for either — event has its own dates in EventSection. Per-quote
-              discount for permanent is a fast-follow (custom $/ft + custom line
-              items cover v1 price flexibility). */}
-          {form.serviceType !== 'permanent' && form.serviceType !== 'event' && (
+          {/* ── Options ── holiday-only (takedown / rush / early-install / the
+              $1,000-minimum waiver). Permanent, event, and permanent bistro all
+              force these off in pricing (permanent uses its own $2,500 gate,
+              event carries no seasonal fees, bistro uses its own Settings-editable
+              minimum), so the whole section is hidden for all three — event has
+              its own dates in EventSection. Positive list (holiday only), not a
+              negative one, so a future type defaults to hidden too. Per-quote
+              discount for permanent/bistro is a fast-follow (custom $/ft + custom
+              line items cover v1 price flexibility). */}
+          {form.serviceType === 'holiday' && (
           <Section title="Options">
 
             {/* Takedown */}
@@ -4208,7 +4295,11 @@ export default function QuoteBuilder({
               </div>
             )}
 
-            {/* ── Training capture (#8 Stage A / #141 permanent) ── */}
+            {/* ── Training capture (#8 Stage A / #141 permanent) — no analyzer
+                for permanent bistro (#117), so hide the whole block: there's
+                nothing to teach, and the button would otherwise silently
+                write a bistro photo into the holiday library. ── */}
+            {(form.serviceType === 'holiday' || form.serviceType === 'event' || form.serviceType === 'permanent') && (
             <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 {form.serviceType === 'permanent'
@@ -4232,6 +4323,7 @@ export default function QuoteBuilder({
                 {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
               </button>
             </div>
+            )}
           </div>
         )}
 
