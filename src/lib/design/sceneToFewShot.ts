@@ -58,8 +58,10 @@ function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
 }
 
-// Flat photo-pixel points [x0,y0,x1,y1,…] → normalized [[x,y],…].
-function normalizePoints(points: number[], w: number, h: number): [number, number][] {
+// Flat photo-pixel points [x0,y0,x1,y1,…] → normalized [[x,y],…]. Exported for
+// sceneAuxiliaryC9Lines below (#109) — same photo-pixel → 0-1 conversion, just
+// applied to the two C9 surfaces sceneToFewShotPieces intentionally skips.
+export function normalizePoints(points: number[], w: number, h: number): [number, number][] {
   const out: [number, number][] = [];
   for (let i = 0; i + 1 < points.length; i += 2) {
     out.push([round4(clamp01(points[i] / w)), round4(clamp01(points[i + 1] / h))]);
@@ -290,5 +292,37 @@ export function sceneToFewShotPieces(
     // Bows, text, custom graphics, poles, mini groups: no analyzer vocabulary — skip.
   }
 
+  return out;
+}
+
+// #109 Phase 1: winter-wonderland + stake-lighting C9 runs are intentionally
+// skipped by sceneToFewShotPieces above (they're manual-only categories, not
+// AI-trained — see the comment on the `c9` branch). But the /training/new
+// "pre-fill from quote" affordance still wants them: the operator drew this
+// geometry by hand on the approved design, and it's real information to
+// reconcile against the completed-install photo, same as the roofline lines.
+// Kept as a SEPARATE export (not folded into sceneToFewShotPieces) so the
+// analyzer's few-shot vocabulary is untouched by this training-capture-only
+// addition.
+export function sceneAuxiliaryC9Lines(
+  scene: Scene,
+  photoW: number,
+  photoH: number,
+): { c9Lines: LineSegment[]; stakeLines: LineSegment[] } {
+  const out = { c9Lines: [] as LineSegment[], stakeLines: [] as LineSegment[] };
+  if (!Number.isFinite(photoW) || !Number.isFinite(photoH) || photoW <= 0 || photoH <= 0) {
+    return out;
+  }
+  const items: SceneItem[] = Array.isArray(scene?.items) ? scene.items : [];
+  for (const item of items) {
+    if (!isStrand(item) || item.bulbType !== 'c9') continue;
+    if (item.surface === 'winter-wonderland') {
+      const pts = normalizePoints(item.points, photoW, photoH);
+      if (pts.length >= 2) out.c9Lines.push({ points: pts, label: 'C9 run (staff-confirmed)' });
+    } else if (item.surface === 'stake-lighting') {
+      const pts = normalizePoints(item.points, photoW, photoH);
+      if (pts.length >= 2) out.stakeLines.push({ points: pts, label: 'stake lighting run (staff-confirmed)' });
+    }
+  }
   return out;
 }
