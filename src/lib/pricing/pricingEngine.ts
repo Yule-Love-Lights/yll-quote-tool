@@ -3,6 +3,7 @@
 
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
 import type { EventRates, EventInputFields } from '@/lib/event/types';
+import type { PermanentBistroRates, PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -262,6 +263,11 @@ export interface QuoteInputs {
   // The event engine (calculateEventQuote in lib/event/pricing.ts) reads bistro +
   // barrel/box supports; the dates are portal metadata. Holiday/permanent ignore it.
   event?: EventInputFields;
+  // Permanent Bistro Lighting vertical. Present ONLY when service_type is
+  // 'permanent_bistro'. The permanent-bistro engine (calculatePermanentBistro in
+  // lib/permanentBistro/pricing.ts) reads bistro runs + poles. Every other
+  // vertical ignores it.
+  permanentBistro?: PermanentBistroInputFields;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -338,6 +344,9 @@ export interface QuoteResult {
   // rate-drift guard as permanent (approve/amend re-price from this, not live
   // settings). Present only on event quotes.
   eventRatesSnapshot?: EventRates;
+  // Permanent Bistro Lighting: the rate table frozen at calc time — the same
+  // rate-drift guard as permanent/event. Present only on permanent-bistro quotes.
+  permanentBistroRatesSnapshot?: PermanentBistroRates;
 }
 
 // ─────────────────────────────────────────────────────────
