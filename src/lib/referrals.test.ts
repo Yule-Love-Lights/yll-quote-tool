@@ -36,6 +36,8 @@ import {
   createPendingReferral,
   accrueOnBooking,
   creditBalanceFor,
+  refereeReferralFor,
+  consumeCredits,
   REFERRAL_CREDIT_USD,
   REFERRAL_FRIEND_SPRITZERS,
 } from './referrals';
@@ -69,8 +71,23 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       filters: [] as Array<(r: Row) => boolean>,
       isUpdate: false,
       isInsert: false,
+      // PR 2: consumeCredits orders its update-return oldest-first. Only the
+      // `then()` array-returning path honors it (see below) — real Postgres
+      // ordering of a single-row maybeSingle()/single() result is moot.
+      orderCol: null as string | null,
+      orderAsc: true,
     };
     const match = () => rows.filter((r) => state.filters.every((f) => f(r)));
+    const sorted = (arr: Row[]) => {
+      if (!state.orderCol) return arr;
+      const col = state.orderCol;
+      const dir = state.orderAsc ? 1 : -1;
+      return [...arr].sort((a, b) => {
+        const av = a[col] as string | number;
+        const bv = b[col] as string | number;
+        return av > bv ? dir : av < bv ? -dir : 0;
+      });
+    };
 
     const builder: Record<string, unknown> = {
       select: () => builder,
@@ -90,6 +107,11 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       },
       is: (col: string, val: null) => {
         state.filters.push((r) => (val === null ? r[col] == null : r[col] === val));
+        return builder;
+      },
+      order: (col: string, opts?: { ascending?: boolean }) => {
+        state.orderCol = col;
+        state.orderAsc = opts?.ascending !== false;
         return builder;
       },
       single: async () => {
@@ -117,16 +139,18 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
         const found = match();
         return { data: found[0] ?? null, error: null };
       },
-      // Used by accrueOnBooking / creditBalanceFor: array-returning update/select
-      // (no single row expected) — thenable so `await` resolves it directly.
+      // Used by accrueOnBooking / creditBalanceFor / consumeCredits: array-
+      // returning update/select (no single row expected) — thenable so `await`
+      // resolves it directly. Full row spread (not just {id}) so a caller that
+      // selected extra columns (e.g. consumeCredits' amount_usd) sees them.
       then: (resolve: (v: unknown) => void) => {
         if (state.isUpdate) {
-          const targets = match();
+          const targets = sorted(match());
           for (const t of targets) Object.assign(t, state.updateRow);
-          resolve({ data: targets.map((t) => ({ id: t.id })), error: null });
+          resolve({ data: targets.map((t) => ({ ...t })), error: null });
           return;
         }
-        resolve({ data: match(), error: null });
+        resolve({ data: sorted(match()), error: null });
       },
     };
     return builder;
@@ -287,6 +311,39 @@ describe('createPendingReferral', () => {
     expect(b).not.toBeNull();
     expect(a!.id).not.toBe(b!.id);
   });
+
+  // Self-referral guard (PR 2): a customer referring themselves would mint a
+  // free $125 credit with no new business behind it.
+  it('refuses (logs + returns null) when refereeCustomerId equals the referrer — no row created', async () => {
+    sbRef.current = makeFakeSupabase();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await createPendingReferral({
+      source: 'mention',
+      referrerCustomerId: 'c1',
+      refereeQuoteId: 'q1',
+      refereeCustomerId: 'c1',
+    });
+    expect(res).toBeNull();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('self-referral'));
+    errSpy.mockRestore();
+  });
+
+  it('still creates the referral when refereeCustomerId is a DIFFERENT customer', async () => {
+    sbRef.current = makeFakeSupabase();
+    const res = await createPendingReferral({
+      source: 'mention',
+      referrerCustomerId: 'c1',
+      refereeQuoteId: 'q1',
+      refereeCustomerId: 'c2',
+    });
+    expect(res).not.toBeNull();
+  });
+
+  it('does not run the guard when refereeCustomerId is omitted (unknown, e.g. a "link" row)', async () => {
+    sbRef.current = makeFakeSupabase();
+    const res = await createPendingReferral({ source: 'link', referrerCustomerId: 'c1' });
+    expect(res).not.toBeNull();
+  });
 });
 
 describe('accrueOnBooking (idempotency)', () => {
@@ -354,5 +411,99 @@ describe('constants', () => {
   it('locks the product terms (Naldo, S30)', () => {
     expect(REFERRAL_CREDIT_USD).toBe(125);
     expect(REFERRAL_FRIEND_SPRITZERS).toEqual({ count: 2, sizeInches: 16 });
+  });
+});
+
+// ─── Redemption (PR 2) ──────────────────────────────────────────────────────
+
+describe('refereeReferralFor', () => {
+  it('returns the referral row where this quote is the referee, regardless of status', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referee_quote_id: 'q1', status: 'booked', amount_usd: 125 }],
+    });
+    // toMatchObject, not toEqual: the fake doesn't model real Postgres column
+    // projection (a real .select('id, status') would return ONLY those two).
+    expect(await refereeReferralFor('q1')).toMatchObject({ id: 'r1', status: 'booked' });
+  });
+
+  it('returns null when this quote is not a referee on any row', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await refereeReferralFor('q-no-referral')).toBeNull();
+  });
+
+  it('returns null when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await refereeReferralFor('q1')).toBeNull();
+  });
+});
+
+describe('consumeCredits (redemption, PR 2)', () => {
+  it('consumes ALL booked rows for the referrer, oldest first, and drains the balance to 0', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r2', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-02-01T00:00:00Z' },
+        { id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    const res = await consumeCredits('c1', 'q1', 250);
+    expect(res.consumed).toBe(true);
+    expect(res.consumedRowIds).toEqual(['r1', 'r2']); // oldest (r1) first, regardless of insertion order
+    expect(res.consumedUsd).toBe(250);
+    expect(res.newBalanceUsd).toBe(0);
+  });
+
+  it('clamp math: applying a smaller amountUsd than the balance still consumes the WHOLE balance (locked simplification)', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-01-01T00:00:00Z' },
+        { id: 'r2', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-02-01T00:00:00Z' },
+      ],
+    });
+    // e.g. an $80 quote subtotal clamps the discount below the $250 balance —
+    // the excess is lost, not banked (see consumeCredits' doc comment).
+    const res = await consumeCredits('c1', 'q1', 80);
+    expect(res.consumed).toBe(true);
+    expect(res.consumedRowIds).toEqual(['r1', 'r2']); // still ALL rows, not "enough for $80"
+    expect(res.newBalanceUsd).toBe(0);
+  });
+
+  it('is idempotent-ish under a double click — the second call finds zero booked rows', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-01-01T00:00:00Z' }],
+    });
+    const first = await consumeCredits('c1', 'q1', 125);
+    const second = await consumeCredits('c1', 'q1', 125);
+    expect(first).toEqual({ consumed: true, consumedRowIds: ['r1'], consumedUsd: 125, newBalanceUsd: 0 });
+    expect(second).toEqual({ consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 });
+  });
+
+  it('refuses when amountUsd exceeds the live balance (a stale client figure) — no rows touched', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [{ id: 'r1', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-01-01T00:00:00Z' }],
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await consumeCredits('c1', 'q1', 250); // balance is only 125
+    expect(res.consumed).toBe(false);
+    expect(res.newBalanceUsd).toBe(125); // untouched
+    expect(await creditBalanceFor('c1')).toBe(125); // still spendable — nothing flipped
+    errSpy.mockRestore();
+  });
+
+  it('is a no-op when the referrer has no booked credit', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await consumeCredits('c1', 'q1', 125);
+    expect(res).toEqual({ consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 });
+    errSpy.mockRestore();
+  });
+
+  it('never throws when Supabase is not configured — fail-open', async () => {
+    sbRef.current = null;
+    await expect(consumeCredits('c1', 'q1', 125)).resolves.toEqual({
+      consumed: false,
+      consumedRowIds: [],
+      consumedUsd: 0,
+      newBalanceUsd: 0,
+    });
   });
 });

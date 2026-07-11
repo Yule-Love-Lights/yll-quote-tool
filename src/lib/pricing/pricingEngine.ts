@@ -262,6 +262,15 @@ export interface QuoteInputs {
   // The event engine (calculateEventQuote in lib/event/pricing.ts) reads bistro +
   // barrel/box supports; the dates are portal metadata. Holiday/permanent ignore it.
   event?: EventInputFields;
+  // Referral program redemption (#41 PR 2): PROVENANCE ONLY for a referral-
+  // credit discount application — which rows were spent and the amount. The
+  // engine does NOT read this field; the actual discount math runs through
+  // the existing `discount` field above (type:'flat', amount = min(balance,
+  // subtotal), set by the quote builder alongside this one). Carried here
+  // purely so the snapshot freeze (the saved inputs jsonb) remembers which
+  // referral rows were consumed and for how much, for support/audit lookups.
+  // Optional/additive — absent means no referral credit was applied.
+  referralCredit?: { amount: number; consumedRowIds: string[] };
 }
 
 // ─────────────────────────────────────────────────────────

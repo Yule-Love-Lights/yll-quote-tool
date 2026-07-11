@@ -588,4 +588,41 @@ describe('saveQuote — referral "mention" attribution (#41)', () => {
     );
     expect(res).toEqual({ id: 'new-id' }); // save succeeds despite the referral failure
   });
+
+  it('passes the resolved customer id through as refereeCustomerId (for createPendingReferral\'s own guard)', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'referee-customer-9', propertyId: 'p1' });
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Sam' }, INPUTS, RESULT, undefined, false, null, 'referrer-customer-1');
+    expect(createPendingReferralMock).toHaveBeenCalledWith({
+      source: 'mention',
+      referrerCustomerId: 'referrer-customer-1',
+      refereeQuoteId: 'new-id',
+      refereeCustomerId: 'referee-customer-9',
+    });
+  });
+
+  // Self-referral guard (PR 2): a customer referring themselves would mint a
+  // free $125 credit with no new business behind it.
+  it('refuses a self-referral: skips creating the referral + warns when the quote resolves to the referrer themselves', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'referrer-customer-1', propertyId: 'p1' });
+    const service = makeFake();
+    serviceRef.current = service.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await saveQuote(
+      { name: 'Sam' },
+      INPUTS,
+      RESULT,
+      undefined,
+      false,
+      null,
+      'referrer-customer-1',
+    );
+    expect(res).toEqual({ id: 'new-id' }); // save still succeeds
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('self-referral'));
+    warnSpy.mockRestore();
+  });
 });

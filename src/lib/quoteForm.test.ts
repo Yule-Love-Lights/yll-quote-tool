@@ -45,6 +45,7 @@ const fullForm: QuoteFormData = {
   stakeLightingRecommended: false,
   event: { barrelBoxes: 3, installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
   permanent: makeDefaultPermanentFields(),
+  referralCredit: null,
 };
 
 describe('buildQuoteInputs', () => {
@@ -209,6 +210,15 @@ describe('buildQuoteInputs', () => {
     const inputs = buildQuoteInputs({ ...fullForm, discountEnabled: true, installTiming: 'september' });
     expect(inputs.installTiming).toBe('september');
     expect('discount' in inputs).toBe(false);
+  });
+
+  it('sends referralCredit provenance only when applied; round-trips it (#41 PR2)', () => {
+    const withCredit = { ...fullForm, referralCredit: { amount: 125, consumedRowIds: ['r1', 'r2'] } };
+    const inputs = buildQuoteInputs(withCredit);
+    expect(inputs.referralCredit).toEqual({ amount: 125, consumedRowIds: ['r1', 'r2'] });
+    expect('referralCredit' in buildQuoteInputs(fullForm)).toBe(false); // null → omitted
+    const restored = inputsToFormData(withCredit.customer, inputs, withCredit.serviceType);
+    expect(restored.referralCredit).toEqual({ amount: 125, consumedRowIds: ['r1', 'r2'] });
   });
 });
 

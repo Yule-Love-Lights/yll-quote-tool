@@ -29,6 +29,8 @@ import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
+import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
@@ -257,6 +259,17 @@ export type QuoteBuilderInitial = {
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
+  // Referral program redemption (#41 PR 2): the quote's OWN linked customer
+  // (quotes.customer_id), so the credit banner can resolve identity WITHOUT a
+  // second save (only known once a quote has been saved + reopened — a
+  // brand-new quote in this same session doesn't have it yet, that's fine).
+  customerId?: string | null;
+  // Whether a referrals row exists with THIS quote as the referee (any
+  // status) — resolved server-side (refereeReferralFor) so the spritzer
+  // banner shows on a REOPENED quote even though the client-side "Referred
+  // by" picker state (only set in the session that originally picked it) is
+  // gone by then.
+  isReferee?: boolean;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -337,6 +350,13 @@ export default function QuoteBuilder({
   // FIRST save (the new quote's id becomes the referee) — sent on every
   // Calculate regardless, since the server only honors it on the insert path.
   const [referredBy, setReferredBy] = useState<{ id: string; name: string } | null>(null);
+  // Referral program redemption (#41 PR 2). The quote's own linked customer
+  // never changes within a session — only known on a reopened/saved quote
+  // (see QuoteBuilderInitial.customerId). `referralCreditUsd` is fetched
+  // client-side (below) so the banner reflects the LIVE balance, not a
+  // page-load-stale one, and so it updates in place after Apply.
+  const linkedCustomerId = initialQuote?.customerId ?? null;
+  const [referralCreditUsd, setReferralCreditUsd] = useState(0);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -354,6 +374,32 @@ export default function QuoteBuilder({
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
+
+  // Referral program redemption (#41 PR 2): resolve the linked customer's
+  // LIVE credit balance client-side (rather than trusting a page-load-stale
+  // server value) via the /api/customers?id= single-lookup extension. Only
+  // runs when a customer is actually linked (a saved/reopened quote) — a
+  // brand-new quote has none yet. Best-effort: a fetch failure just means the
+  // banner doesn't show, never a builder error.
+  useEffect(() => {
+    if (!linkedCustomerId) return;
+    let stale = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/customers?id=${encodeURIComponent(linkedCustomerId)}`);
+        const data = await res.json();
+        const hit = Array.isArray(data.customers) ? data.customers[0] : null;
+        if (!stale && hit && typeof hit.referralCreditUsd === 'number') {
+          setReferralCreditUsd(hit.referralCreditUsd);
+        }
+      } catch {
+        // best-effort — the banner simply doesn't show
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [linkedCustomerId]);
 
   // Photo analysis (#35: the street photo lives in the DESIGN — only the
   // satellite keeps measurement polylines; street overlays/detections are gone)
@@ -1617,6 +1663,46 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
+  // Credit banner: the button is disabled whenever some OTHER discount (a
+  // manual %/flat entry, or an early-install promo) already occupies the
+  // quote's one discount slot — applying credit never silently merges with
+  // it. `form.referralCredit` marks "occupied by US", so that case alone
+  // stays enabled/shows the applied state instead.
+  const referralDiscountSlotOccupied =
+    (form.discountEnabled || form.installTiming !== 'none') && !form.referralCredit;
+
+  const applyReferralCredit = (result: { appliedUsd: number; consumedRowIds: string[]; balanceUsd: number }) => {
+    setForm(f => ({
+      ...f,
+      discountEnabled: true,
+      discountType: 'flat',
+      discountAmount: result.appliedUsd,
+      // Referral credit always wins the one discount slot outright — clears
+      // any early-install promo pick so buildQuoteInputs actually emits the
+      // discount (the two are mutually exclusive; see quoteForm.ts).
+      installTiming: 'none',
+      referralCredit: { amount: result.appliedUsd, consumedRowIds: result.consumedRowIds },
+    }));
+    setReferralCreditUsd(result.balanceUsd);
+  };
+
+  // Spritzer banner (referee side): shown when THIS session picked a
+  // referrer (referredBy) OR a saved/reopened quote already has a referral
+  // row with this quote as the referee (initialQuote.isReferee, resolved
+  // server-side since the client-side referredBy state never hydrates from a
+  // saved quote — the relationship lives in the referrals table, not inputs).
+  const isReferralReferee = !!referredBy || !!initialQuote?.isReferee;
+  const REFERRAL_SPRITZER_LINE_ID = 'referral-spritzers';
+  const spritzerLineAlreadyAdded = form.customLineItems.some((item) => item.id === REFERRAL_SPRITZER_LINE_ID);
+  const addReferralSpritzers = () => {
+    if (spritzerLineAlreadyAdded) return;
+    set('customLineItems', [
+      ...form.customLineItems,
+      { id: REFERRAL_SPRITZER_LINE_ID, label: '2 Free 16" Spritzers (referral)', amount: 0, quantity: 1 },
+    ]);
+  };
+
   // #102: difficulty dropdown change. Choosing "Custom…" pre-seeds the $/ft field
   // from the current preset's rate (so staff tweak a real number, not 0) unless a
   // custom rate is already entered; preset choices just set the difficulty.
@@ -2307,6 +2393,28 @@ export default function QuoteBuilder({
             {/* Referral program (#41 "mention" attribution) — an existing
                 customer staff picks as "Referred by" while building THIS quote. */}
             <ReferredByPicker value={referredBy} onChange={setReferredBy} />
+
+            {/* Referral program redemption (#41 PR 2) — referee side: this
+                customer gets 2 free spritzers on their first quote. Shows once
+                staff pick a referrer this session, OR (on a reopened quote)
+                once the server already knows this quote is a referee. */}
+            {isReferralReferee && (
+              <ReferralSpritzerBanner alreadyAdded={spritzerLineAlreadyAdded} onAdd={addReferralSpritzers} />
+            )}
+
+            {/* Referral program redemption (#41 PR 2) — referrer side: this
+                customer's own spendable credit. Only resolvable once the
+                quote's customer is linked (a saved/reopened quote). */}
+            {linkedCustomerId && savedQuoteId && (
+              <ReferralCreditBanner
+                customerId={linkedCustomerId}
+                quoteId={savedQuoteId}
+                balanceUsd={referralCreditUsd}
+                appliedCredit={form.referralCredit}
+                discountSlotOccupied={referralDiscountSlotOccupied}
+                onApplied={applyReferralCredit}
+              />
+            )}
 
             {/* Service type (#58 Phase 2b) — which line this quote belongs to.
                 Defaults to Holiday; drives the dashboard's per-service sections. */}

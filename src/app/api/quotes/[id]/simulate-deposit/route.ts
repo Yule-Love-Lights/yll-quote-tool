@@ -27,7 +27,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createJobFromQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
-import { accrueOnBooking } from '@/lib/referrals';
+import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 
 export const runtime = 'nodejs';
 
@@ -43,6 +43,12 @@ type QuoteRow = {
   deposit_paid_at: string | null;
   deposit_amount_usd: number | null;
   approval_snapshot: { customerSelection?: { currentDepositUsd?: number } } | null;
+  // Referral program (#41): the quote's OWN linked customer (if any), so a
+  // booking here can stamp their referral code (see the ensureReferralCode
+  // call below). Always null in practice for a TEST quote — saveQuote never
+  // links a test quote's customer_id — but selected + guarded anyway for
+  // consistency with the other two booking sites.
+  customer_id: string | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -58,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, is_test, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, approval_snapshot')
+    .select('id, is_test, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, approval_snapshot, customer_id')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -155,6 +161,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await accrueOnBooking(id);
   } catch (err) {
     console.error('[api/quotes/:id/simulate-deposit] referral accrual failed:', err);
+  }
+
+  // Referral program (#41 PR 2): stamp THIS quote's own customer with their
+  // referral code (+ GHL link) at the booking event, not only when they later
+  // view the booked page — so every customer has their link live by install
+  // day. Fail-open (ensureReferralCode already tolerates a missing customer/
+  // config internally); wrapped anyway to match this route's belt-and-
+  // suspenders style for every booking side effect.
+  try {
+    if (quote.customer_id) await ensureReferralCode(quote.customer_id);
+  } catch (err) {
+    console.error('[api/quotes/:id/simulate-deposit] referral code stamp failed:', err);
   }
 
   // Auto-create the (test) Job — the SAME idempotent path the Valor webhook uses,

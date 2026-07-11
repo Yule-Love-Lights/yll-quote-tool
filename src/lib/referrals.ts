@@ -49,6 +49,10 @@ export type ReferralRow = {
   status: ReferralStatus;
   amount_usd: number;
   booked_at: string | null;
+  // Redemption (PR 2): when + on which (spending) quote this row's credit was
+  // consumed. Both null until status flips to 'credited' (consumeCredits).
+  credited_at: string | null;
+  credited_quote_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -196,6 +200,12 @@ export type CreatePendingReferralInput = {
   refereeContactName?: string | null;
   refereeContactEmail?: string | null;
   refereeContactPhone?: string | null;
+  // Self-referral guard (PR 2): when the caller already knows which customer
+  // row the referee resolves to (saveQuote's 'mention' flow does, via
+  // attachQuoteToCustomer), pass it here so this refuses a customer referring
+  // themselves. Omitted/null when unknown (e.g. a 'link' lead-capture row,
+  // which has no quote/customer yet) — the guard simply doesn't run then.
+  refereeCustomerId?: string | null;
 };
 
 /**
@@ -204,12 +214,26 @@ export type CreatePendingReferralInput = {
  * Idempotent when refereeQuoteId is provided: a second call for the same
  * quote returns the EXISTING row instead of erroring on the UNIQUE(referee_
  * quote_id) backstop (handles a resave / concurrent retry).
+ *
+ * Self-referral guard (PR 2): a customer referring themselves would mint a
+ * free $125 credit with no new business behind it. Refused (logged + null)
+ * whenever the caller supplies refereeCustomerId AND it matches the referrer —
+ * saveQuote is the only caller today and ALSO short-circuits before ever
+ * reaching here (see quotes.ts), so this is defense in depth for any future
+ * caller that passes both ids without doing its own pre-check.
  */
 export async function createPendingReferral(
   input: CreatePendingReferralInput,
 ): Promise<{ id: string } | null> {
   const sb = svc();
   if (!sb) return null;
+
+  if (input.refereeCustomerId && input.refereeCustomerId === input.referrerCustomerId) {
+    console.error(
+      `[referrals] createPendingReferral refused: self-referral (customer ${input.referrerCustomerId} referring themselves)`,
+    );
+    return null;
+  }
 
   if (input.refereeQuoteId) {
     const { data: existing } = await sb
@@ -302,4 +326,119 @@ export async function creditBalanceFor(customerId: string): Promise<number> {
     return 0;
   }
   return (data ?? []).reduce((sum, row) => sum + (Number((row as { amount_usd: number }).amount_usd) || 0), 0);
+}
+
+// ─── Redemption (PR 2) ──────────────────────────────────────────────────────
+
+/**
+ * The referral row where this quote is the REFEREE (the friend's first
+ * quote) — regardless of status (pending/booked/credited). Used by the quote
+ * builder's spritzer banner to show "this customer gets 2 free spritzers" on
+ * a REOPENED quote, where the client-side "Referred by" picker state (only
+ * set in the session that originally picked it) is gone.
+ */
+export async function refereeReferralFor(
+  quoteId: string,
+): Promise<{ id: string; status: ReferralStatus } | null> {
+  const sb = svc();
+  if (!sb || !quoteId) return null;
+  const { data, error } = await sb
+    .from('referrals')
+    .select('id, status')
+    .eq('referee_quote_id', quoteId)
+    .maybeSingle<{ id: string; status: ReferralStatus }>();
+  if (error) {
+    console.error('[referrals] refereeReferralFor failed:', error);
+    return null;
+  }
+  return data ?? null;
+}
+
+export type ConsumeCreditsResult = {
+  consumed: boolean;
+  consumedRowIds: string[];
+  consumedUsd: number;
+  newBalanceUsd: number;
+};
+
+/**
+ * Spend a referrer's credit balance on a quote — the redemption half of the
+ * program (accrueOnBooking above is the earning half).
+ *
+ * LOCKED, SIMPLIFIED SEMANTICS: a credit is a whole $125 unit, never partial.
+ * Applying the balance to a quote consumes ALL of that referrer's currently-
+ * 'booked' rows in one shot, flipping every one to 'credited' — regardless of
+ * whether the quote's subtotal was big enough to use the full sum. The
+ * alternative (bank the unused fraction for a later quote) needs a
+ * fractional-credit concept the product never asked for; this keeps the row
+ * model simple (a row is either spendable or spent, no in-between). The
+ * discount actually BILLED is min(balance, quote subtotal) — computed by the
+ * caller (see /api/referrals/consume) — so a cheap quote against a big
+ * balance loses the excess above the subtotal. That trade is deliberate and
+ * small (it only bites a referrer with several stacked credits applying them
+ * to one modest quote); the banner shows the balance BEFORE staff click
+ * Apply, so it's a seen trade, not a silent one.
+ *
+ * `amountUsd` is the amount the caller is about to bill as the quote's
+ * discount (always server-computed as min(live balance, quote subtotal) —
+ * see the route; never a client-supplied number for a money mutation). It is
+ * NOT used to pick which/how many rows to flip (that's always "all of them"
+ * per above) — it's a defensive check: if it exceeds the CURRENT live
+ * balance, the caller's figure is stale (e.g. a concurrent consume already
+ * ran between showing the banner and this click), and this refuses rather
+ * than flip rows for a number that no longer reflects reality.
+ *
+ * Idempotent-ish under a double click: the conditional UPDATE only matches
+ * rows still 'booked', so a second call for the same customer (genuine
+ * double-click or retry) finds zero rows and returns consumed:false.
+ */
+export async function consumeCredits(
+  customerId: string,
+  quoteId: string,
+  amountUsd: number,
+): Promise<ConsumeCreditsResult> {
+  const sb = svc();
+  if (!sb) return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 };
+
+  const liveBalance = await creditBalanceFor(customerId);
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > liveBalance) {
+    console.error(
+      `[referrals] consumeCredits refused: amountUsd ${amountUsd} exceeds live balance ${liveBalance} for customer ${customerId}`,
+    );
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: liveBalance };
+  }
+
+  // The atomic claim (same idiom as accrueOnBooking above): conditional on
+  // status='booked' so a concurrent/retried consume can only ever win once.
+  // Ordered oldest-first so the reported consumedRowIds are deterministic —
+  // functionally every currently-booked row is consumed regardless of order.
+  const { data: updated, error } = await sb
+    .from('referrals')
+    .update({
+      status: 'credited' satisfies ReferralStatus,
+      credited_at: new Date().toISOString(),
+      credited_quote_id: quoteId,
+    })
+    .eq('referrer_customer_id', customerId)
+    .eq('status', 'booked' satisfies ReferralStatus)
+    // created_at must be IN the returned selection for PostgREST to order a
+    // mutation's RETURNING set by it (42703 otherwise — live-E2E-caught S30).
+    .select('id, amount_usd, created_at')
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.error('[referrals] consumeCredits update failed:', error);
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: liveBalance };
+  }
+
+  const rows = (updated ?? []) as { id: string; amount_usd: number }[];
+  if (rows.length === 0) {
+    // Lost the race — a concurrent consume already spent the balance between
+    // our read above and this claim (e.g. a genuine double click).
+    return { consumed: false, consumedRowIds: [], consumedUsd: 0, newBalanceUsd: 0 };
+  }
+
+  const consumedUsd = rows.reduce((sum, r) => sum + (Number(r.amount_usd) || 0), 0);
+  const newBalanceUsd = await creditBalanceFor(customerId);
+  return { consumed: true, consumedRowIds: rows.map((r) => r.id), consumedUsd, newBalanceUsd };
 }

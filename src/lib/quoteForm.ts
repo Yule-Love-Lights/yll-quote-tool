@@ -91,6 +91,13 @@ export type QuoteFormData = {
   // 'permanent'; only sent to the engine (via buildQuoteInputs) for permanent
   // quotes. Always present in the form so the picker can switch to it cleanly.
   permanent: PermanentQuoteFields;
+  // Referral program redemption (#41 PR 2): provenance for a referral-credit
+  // discount application — set when staff clicks "Apply as discount" on the
+  // credit banner (which ALSO sets discountEnabled/discountType/discountAmount
+  // above). null = no referral credit applied. Purely additive/display —
+  // ridden through to inputs.referralCredit so the snapshot freeze remembers
+  // which rows were spent (see pricingEngine.ts QuoteInputs.referralCredit).
+  referralCredit: { amount: number; consumedRowIds: string[] } | null;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -126,6 +133,7 @@ export const initialFormData: QuoteFormData = {
   stakeLightingRecommended: false,
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
   permanent: makeDefaultPermanentFields(),
+  referralCredit: null,
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -230,6 +238,9 @@ export function buildQuoteInputs(
             : form.discountAmount,
       },
     }),
+    // Referral program redemption (#41 PR 2) — provenance only, only sent
+    // when a referral credit was actually applied (legacy-clean jsonb).
+    ...(form.referralCredit ? { referralCredit: form.referralCredit } : {}),
   };
 }
 
@@ -330,5 +341,7 @@ export function inputsToFormData(
     permanent: i.permanent
       ? { ...makeDefaultPermanentFields(), ...i.permanent }
       : makeDefaultPermanentFields(),
+    // Referral program redemption (#41 PR 2) — legacy/no-credit rows → null.
+    referralCredit: i.referralCredit ?? null,
   };
 }
