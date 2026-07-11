@@ -100,6 +100,41 @@ export async function getContact(contactId: string): Promise<CrmContact> {
   return toCrmContact(json.contact);
 }
 
+// ─── Contact create ───────────────────────────────────────────────────────
+// Creates a brand-new GHL contact — used by the referral landing page (#41
+// /refer/<code> submit) to get a referred lead into HighLevel immediately, so
+// staff can follow up from the CRM they already work out of. Mirrors
+// createOpportunity's request shape (locationId + POST /contacts/, default
+// Version header). Unlike searchContacts/getContact this WRITES — callers
+// should only invoke it when they actually mean to create a new record (no
+// dedupe/search-first here; that's the caller's job if it matters for them).
+export type CreateContactInput = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address1?: string;
+  tags?: string[];
+  source?: string;
+};
+
+export async function createContact(input: CreateContactInput): Promise<CrmContact> {
+  const { locationId } = requireConfig();
+  const body = {
+    locationId,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.email ? { email: input.email } : {}),
+    ...(input.phone ? { phone: input.phone } : {}),
+    ...(input.address1 ? { address1: input.address1 } : {}),
+    tags: input.tags ?? [],
+    source: input.source ?? 'ai-quote-tool',
+  };
+  const json = await ghlFetch<{ contact: HighLevelContact }>('/contacts/', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  return toCrmContact(json.contact);
+}
+
 // ─── Opportunity search (by contact) ──────────────────────────────────────
 // Customers exist in HighLevel BEFORE they hit our quote tool — they were
 // captured via lead forms or manual entry and already have an opportunity

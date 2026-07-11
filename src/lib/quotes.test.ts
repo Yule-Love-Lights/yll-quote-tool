@@ -36,6 +36,15 @@ const { attachQuoteToCustomerMock } = vi.hoisted(() => ({
 }));
 vi.mock('./customers', () => ({ attachQuoteToCustomer: attachQuoteToCustomerMock }));
 
+// Referral program (#41 "mention" attribution): mock so the wiring (called
+// once per new save with a referrer picked, never on an update) is testable
+// without a real referrals table. Its OWN idempotency is covered in
+// src/lib/referrals.test.ts.
+const { createPendingReferralMock } = vi.hoisted(() => ({
+  createPendingReferralMock: vi.fn(async () => ({ id: 'referral-1' }) as { id: string } | null),
+}));
+vi.mock('./referrals', () => ({ createPendingReferral: createPendingReferralMock }));
+
 import { saveQuote, updateQuote, deleteTestQuotes, deleteAllQuotes } from './quotes';
 
 // ── Fake A (#90): records which CLIENT a write goes through (service vs anon),
@@ -515,5 +524,68 @@ describe('saveQuote — attach-on-save (rebook Part A)', () => {
 
     const res = await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
     expect(res).toEqual({ id: 'new-id' }); // save succeeds despite attach failure
+  });
+});
+
+// ── Referral program (#41 "mention" attribution) ────────────────────────────
+//
+// saveQuote creates a pending 'mention' referral when staff picked an existing
+// customer as "Referred by" while building THIS quote. createPendingReferralMock
+// lets us assert on the call.
+
+describe('saveQuote — referral "mention" attribution (#41)', () => {
+  it('creates a pending mention referral linking the referrer to the new quote id', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    const res = await saveQuote(
+      { name: 'Sam' },
+      INPUTS,
+      RESULT,
+      undefined,
+      false,
+      null,
+      'referrer-customer-1',
+    );
+    expect(res).toEqual({ id: 'new-id' });
+    expect(createPendingReferralMock).toHaveBeenCalledOnce();
+    expect(createPendingReferralMock).toHaveBeenCalledWith({
+      source: 'mention',
+      referrerCustomerId: 'referrer-customer-1',
+      refereeQuoteId: 'new-id',
+    });
+  });
+
+  it('does NOT create a referral when no referrer was picked', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Sam' }, INPUTS, RESULT);
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT create a referral for a test quote, even with a referrer picked', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Sam' }, INPUTS, RESULT, undefined, true, null, 'referrer-customer-1');
+    expect(createPendingReferralMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns the saved id when createPendingReferral throws (best-effort)', async () => {
+    createPendingReferralMock.mockRejectedValueOnce(new Error('referrals table missing'));
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    const res = await saveQuote(
+      { name: 'Sam' },
+      INPUTS,
+      RESULT,
+      undefined,
+      false,
+      null,
+      'referrer-customer-1',
+    );
+    expect(res).toEqual({ id: 'new-id' }); // save succeeds despite the referral failure
   });
 });

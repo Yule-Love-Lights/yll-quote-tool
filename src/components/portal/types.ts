@@ -213,6 +213,12 @@ export type PortalDesign = {
 
 export type PortalQuote = {
   id: string;
+  // The stable customers.id this quote is linked to (ledger #83 Phase 5
+  // identity), when the quote has one. Referral program (#41): the booked-page
+  // referral section needs this to ensure/read the customer's referral code.
+  // Undefined for a quote with no customer link (walk-in/test data) — the
+  // referral section renders copy-only, no link, when absent.
+  customerId?: string | null;
   customer: {
     firstName: string;
     fullName: string;

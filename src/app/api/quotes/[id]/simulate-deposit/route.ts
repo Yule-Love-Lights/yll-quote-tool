@@ -27,6 +27,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { createJobFromQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { accrueOnBooking } from '@/lib/referrals';
 
 export const runtime = 'nodejs';
 
@@ -145,6 +146,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!claimed || claimed.length === 0) {
     // Lost the race to a concurrent click — already booked.
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true, simulated: true });
+  }
+
+  // Referral program (#41): same booking-event accrual the real Valor webhook
+  // fires — mirrors this route's own "SAME path" contract. Best-effort (belt-
+  // and-suspenders; accrueOnBooking already fails open internally).
+  try {
+    await accrueOnBooking(id);
+  } catch (err) {
+    console.error('[api/quotes/:id/simulate-deposit] referral accrual failed:', err);
   }
 
   // Auto-create the (test) Job — the SAME idempotent path the Valor webhook uses,
