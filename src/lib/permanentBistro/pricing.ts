@@ -66,6 +66,12 @@ function withIdentity(
   };
 }
 
+// Design-projected footage is a raw polyline float (e.g. 9.048375887738986) —
+// LABELS show it to 1 decimal; billing keeps the exact value.
+function fmtFt(n: number): string {
+  return String(Math.round(n * 10) / 10);
+}
+
 // Permanent bistro runs — priced per linear foot. One line per run; a run
 // with no input id gets a synthesized 'permanent-bistro-<index>' id so it can
 // still be targeted by a #104 override / portal toggle.
@@ -75,7 +81,7 @@ function calculateBistroLines(inputs: QuoteInputs, rates: PermanentBistroRates):
   return bistro
     .filter((b) => b && Number.isFinite(b.footage) && b.footage > 0)
     .map((b, i) => ({
-      label: `Permanent Bistro Lighting – ${b.footage}ft`,
+      label: `Permanent Bistro Lighting – ${fmtFt(b.footage)}ft`,
       amount: Math.round(units(b.footage) * rates.perFt),
       ...withIdentity(b, `permanent-bistro-${i}`),
     }));
