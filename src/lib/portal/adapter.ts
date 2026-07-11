@@ -24,6 +24,7 @@ import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
+import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -501,28 +502,41 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // whole-home) instead of the holiday roofline/spritzer tier ladder.
   // Event Lighting (#96 Phase B): ONE "what's included" package (all line items
   // bundled) instead of the holiday tier ladder / permanent surface packages.
+  // Permanent Bistro Lighting: ONE "what's included" package too (event's model —
+  // see derivePackagesPermanentBistro), never the holiday tier ladder or
+  // permanent's per-surface packages.
   const isPermanent = row.service_type === 'permanent';
   const isEvent = row.service_type === 'event';
+  const isPermanentBistro = row.service_type === 'permanent_bistro';
   const allPackages = isPermanent
     ? derivePackagesPermanent(lineItems, row.result)
     : isEvent
       ? derivePackagesEvent(lineItems, row.result)
-      : derivePackages(lineItems, row.result, roofline);
+      : isPermanentBistro
+        ? derivePackagesPermanentBistro(lineItems, row.result)
+        : derivePackages(lineItems, row.result, roofline);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
-  // $1,000 for holiday/event, or the permanent quote's FROZEN rate-snapshot
+  // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
   // minimumJobAmount (#88 — never live app_settings, the rate-drift guard;
   // falls back to the canonical $2,500 default if a permanent result somehow
-  // lacks a snapshot). 0 when EITHER (a) staff checked "waive the minimum" on
-  // this quote (#59 — inputs.waiveMinimum), or (b) the quote's items already
-  // total under the minimum (the existing auto-waive in minimumOrderSubtotal()).
-  // Enforced on the portal, not in pricing. Uses tierLineItems so a
-  // two-roofline quote isn't double-counted.
+  // lacks a snapshot), or the permanent bistro quote's FROZEN rate-snapshot
+  // minimum (same rate-drift guard; falls back to 0 — gate OFF — if a bistro
+  // result somehow lacks a snapshot, never the holiday $1,000 default).
+  // 0 when EITHER (a) staff checked "waive the minimum" on this quote (#59 —
+  // inputs.waiveMinimum), or (b) the quote's items already total under the
+  // minimum (the existing auto-waive in minimumOrderSubtotal()). Enforced on
+  // the portal, not in pricing. Uses tierLineItems so a two-roofline quote
+  // isn't double-counted.
   const approvalGate = row.inputs?.waiveMinimum
     ? 0
     : minimumOrderSubtotal(
         tierLineItems,
-        isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+        isPermanent
+          ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500)
+          : isPermanentBistro
+            ? (row.result.permanentBistroRatesSnapshot?.minimum ?? 0)
+            : undefined,
       );
   // #134 (Jason S24): hide any package tile the customer can't approve AS
   // TAPPED — its selection basis (pre-tax items + the default-ON rush/takedown

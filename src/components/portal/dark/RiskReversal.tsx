@@ -3,7 +3,7 @@
 // for the selection state). Evergreen-tinted backgrounds keep it
 // distinct from the "What's Included" band.
 
-import { Wrench, Lightbulb, Calendar, Home, ShieldCheck } from 'lucide-react';
+import { Wrench, Lightbulb, Calendar, Home, ShieldCheck, CreditCard } from 'lucide-react';
 import type { ServiceType } from '@/lib/serviceType';
 
 type Guarantee = { icon: React.ComponentType<{ className?: string }>; label: string };
@@ -25,8 +25,24 @@ const EVENT_GUARANTEES: Guarantee[] = [
   { icon: ShieldCheck,   label: 'Fully insured. Licensed and insured, so you and your venue are covered.' },
 ];
 
+// PERMANENT BISTRO service line: same icons/skin, bistro-voiced copy. A
+// year-round product (poles/supports we set, no seasonal wording), so these
+// reuse claim TYPES already made for permanent (a workmanship warranty) and
+// event (we fix a dark bulb or strand fast) without inventing new promises.
+const BISTRO_GUARANTEES: Guarantee[] = [
+  { icon: ShieldCheck,   label: 'Every install backed by a workmanship warranty.' },
+  { icon: Lightbulb,     label: 'Commercial-grade, weather-rated hardware built to stay outside year-round.' },
+  { icon: Wrench,        label: 'Something goes dark? We come fix it. We service everything we hang.' },
+  { icon: CreditCard,    label: 'Nothing is charged until you approve your quote.' },
+];
+
 export function RiskReversal({ serviceType }: { serviceType?: ServiceType }) {
-  const guarantees = serviceType === 'event' ? EVENT_GUARANTEES : GUARANTEES;
+  const guarantees =
+    serviceType === 'event'
+      ? EVENT_GUARANTEES
+      : serviceType === 'permanent_bistro'
+        ? BISTRO_GUARANTEES
+        : GUARANTEES;
   return (
     <section
       aria-labelledby="portal-dark-risk-heading"
