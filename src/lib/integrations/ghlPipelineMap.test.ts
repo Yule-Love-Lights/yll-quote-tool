@@ -110,9 +110,21 @@ describe('resolvePipelineStages', () => {
     });
   });
 
-  it('permanent_bistro reuses the Permanent pipeline/stages (#117 v1 — no dedicated pipeline yet)', () => {
+  it('permanent_bistro rides the Landscape Lighting pipeline (#117, Naldo 2026-07-11) — legacy env vars never apply', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID = 'env-pipeline';
+    process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'env-sent';
+
     const stages = resolvePipelineStages('permanent_bistro');
-    expect(stages).toEqual(resolvePipelineStages('permanent'));
+    expect(stages).toEqual({
+      pipelineId: 'GTFURwOGzGLBl2zsdl0N', // Landscape Lighting
+      entry: '7e821733-a431-4545-bc65-5e14c5f02877', // New Lead
+      sent: '18205538-0225-451b-aae5-5093de433004', // Bid Sent
+      depositPaid: '8c7765b3-a2ba-4928-8618-5ec5a1182cb2', // Booked
+      installed: 'bf068cce-4d71-480f-9bbc-bab144114e6c', // Installed
+      declined: 'ad2127e1-692f-4d42-aecf-3f381793dfeb', // Declined
+    });
+    // Never the permanent pipeline (the v1 reuse this replaced).
+    expect(stages.pipelineId).not.toBe(resolvePipelineStages('permanent').pipelineId);
   });
 
   it('unknown service_type falls back to holiday (the default)', () => {
