@@ -57,20 +57,28 @@ vi.mock('@/lib/supabase', () => ({
 import { POST, OPTIONS } from './route';
 
 // ── Fake Supabase query builder ─────────────────────────────────────────────
-// Three call shapes the route makes:
-//   count:  from('website_leads').select('id',{count,head}).eq().not().gte()  → awaited directly → { count, error }
-//   insert: from('website_leads').insert(row).select('id').single()          → { data:{id}, error }
-//           (the spam path insert()s without select/single — awaited directly)
-//   update: from('website_leads').update(payload).eq('id', id)               → awaited directly → { error }
+// Four call shapes the route makes (in this order per request):
+//   count (dedupe):     .select('id',{count,head}).eq().eq().in().gte()  → { count: opts.dedupeCount, error }
+//   count (rate limit): .select('id',{count,head}).eq().gte()            → { count: opts.leadCount, error }
+//   insert:              .insert(row).select('id').single()              → { data:{id}, error }
+//           (the spam / rate-limited paths insert() without select/single — awaited directly)
+//   update:              .update(payload).eq('id', id)                   → { error }
+// The two count-mode queries are distinguished by CALL ORDER (dedupe always
+// runs first — see route.ts), not by any argument inspection.
 function makeSb(opts: {
   leadCount?: number;
   countError?: { message: string } | null;
+  dedupeCount?: number;
+  dedupeError?: { message: string } | null;
   insertError?: { message: string } | null;
   updateError?: { message: string } | null;
 } = {}) {
   const inserted: Array<Record<string, unknown>> = [];
   const updated: Array<Record<string, unknown>> = [];
+  const eqCalls: Array<[string, unknown]> = [];
+  const notCalls: Array<[string, string, unknown]> = [];
   let mode: 'count' | 'insert' | 'update' | null = null;
+  let countCallIndex = 0;
 
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -89,8 +97,15 @@ function makeSb(opts: {
       updated.push(payload);
       return builder;
     },
-    eq: () => builder,
-    not: () => builder,
+    eq: (col: string, val: unknown) => {
+      eqCalls.push([col, val]);
+      return builder;
+    },
+    not: (col: string, op: string, val: unknown) => {
+      notCalls.push([col, op, val]);
+      return builder;
+    },
+    in: () => builder,
     gte: () => builder,
     single: async () => ({
       data: { id: 'lead-1' },
@@ -98,7 +113,13 @@ function makeSb(opts: {
     }),
     then: (resolve: (v: unknown) => void) => {
       if (mode === 'count') {
-        resolve({ data: null, count: opts.leadCount ?? 0, error: opts.countError ?? null });
+        const isDedupeCall = countCallIndex === 0;
+        countCallIndex += 1;
+        resolve(
+          isDedupeCall
+            ? { data: null, count: opts.dedupeCount ?? 0, error: opts.dedupeError ?? null }
+            : { data: null, count: opts.leadCount ?? 0, error: opts.countError ?? null },
+        );
       } else if (mode === 'update') {
         resolve({ error: opts.updateError ?? null });
       } else {
@@ -107,19 +128,21 @@ function makeSb(opts: {
       mode = null;
     },
   });
-  return { client: builder, inserted, updated };
+  return { client: builder, inserted, updated, eqCalls, notCalls };
 }
 
 function makeReq(
   body: unknown,
-  opts: { origin?: string | null; ip?: string | null } = {},
+  opts: { origin?: string | null; ip?: string | null; realIp?: string | null } = {},
 ): NextRequest {
   return {
     json: async () => body,
     headers: {
       get: (name: string) => {
-        if (name.toLowerCase() === 'origin') return opts.origin ?? null;
-        if (name.toLowerCase() === 'x-forwarded-for') return opts.ip ?? '203.0.113.5';
+        const n = name.toLowerCase();
+        if (n === 'origin') return opts.origin ?? null;
+        if (n === 'x-forwarded-for') return opts.ip ?? '203.0.113.5';
+        if (n === 'x-real-ip') return opts.realIp ?? null;
         return null;
       },
     },
@@ -225,7 +248,9 @@ describe('POST /api/leads — validation (case i)', () => {
     ['address', 501],
     ['notes', 5001],
     ['formVariant', 51],
-    ['landingUrl', 1001],
+    // landingUrl is deliberately NOT in this list (F6) — it's auto-populated
+    // by the client, so an over-long value is truncated, not rejected; see
+    // the dedicated test below.
   ])('400s when %s exceeds its max length (%i chars)', async (field, len) => {
     sbRef.current = makeSb().client;
     // email needs a syntactically valid over-long value so the length cap (not
@@ -236,6 +261,17 @@ describe('POST /api/leads — validation (case i)', () => {
     const json = await res.json();
     expect(typeof json.error).toBe('string');
     expect(hl.upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('a landingUrl over 1000 chars is TRUNCATED, not rejected — an auto-populated field must never block a lead (F6)', async () => {
+    const { client, inserted } = makeSb();
+    sbRef.current = client;
+    const longUrl = 'https://example.com/' + 'a'.repeat(1000);
+    const res = await POST(makeReq(validBody({ landingUrl: longUrl })));
+    expect(res.status).toBe(200);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]!.landing_url).toBe(longUrl.slice(0, 1000));
+    expect((inserted[0]!.landing_url as string).length).toBe(1000);
   });
 
   it('utm: keeps only the 5 known utm_* keys with string values — junk never reaches the row or the note', async () => {
@@ -331,7 +367,7 @@ describe('POST /api/leads — existing open opportunity (case c)', () => {
 });
 
 describe('POST /api/leads — honeypot (case d)', () => {
-  it('returns 200 ok, saves the row as spam, makes zero GHL calls', async () => {
+  it('returns 200 ok, saves the row as spam with sync_error "honeypot" (F8), makes zero GHL calls', async () => {
     const { client, inserted } = makeSb();
     sbRef.current = client;
 
@@ -342,6 +378,7 @@ describe('POST /api/leads — honeypot (case d)', () => {
     expect(json.ok).toBe(true);
     expect(inserted).toHaveLength(1);
     expect(inserted[0]!.sync_status).toBe('spam');
+    expect(inserted[0]!.sync_error).toBe('honeypot');
     expect(hl.upsertContact).not.toHaveBeenCalled();
     expect(hl.addContactTags).not.toHaveBeenCalled();
     expect(hl.findOrCreateOpportunityForContact).not.toHaveBeenCalled();
@@ -349,7 +386,7 @@ describe('POST /api/leads — honeypot (case d)', () => {
 });
 
 describe('POST /api/leads — too-fast submit (case e)', () => {
-  it('returns 200 ok, saves the row as spam, makes zero GHL calls', async () => {
+  it('returns 200 ok, saves the row as spam with sync_error "too_fast" (F8), makes zero GHL calls', async () => {
     const { client, inserted } = makeSb();
     sbRef.current = client;
 
@@ -360,10 +397,11 @@ describe('POST /api/leads — too-fast submit (case e)', () => {
     expect(json.ok).toBe(true);
     expect(inserted).toHaveLength(1);
     expect(inserted[0]!.sync_status).toBe('spam');
+    expect(inserted[0]!.sync_error).toBe('too_fast');
     expect(hl.upsertContact).not.toHaveBeenCalled();
   });
 
-  it('a normal render-to-submit gap (>3s) is NOT spam', async () => {
+  it('a normal render-to-submit gap (>2s, the lowered F8 threshold) is NOT spam', async () => {
     sbRef.current = makeSb().client;
     const res = await POST(makeReq(validBody({ elapsedMs: 10_000 }))); // 10s to fill the form
     expect(res.status).toBe(200);
@@ -399,19 +437,101 @@ describe('POST /api/leads — too-fast submit (case e)', () => {
 });
 
 describe('POST /api/leads — rate limit (case f)', () => {
-  it('the 6th lead from one IP in an hour → 429 (5 already exist)', async () => {
-    sbRef.current = makeSb({ leadCount: 5 }).client;
+  it('the 6th lead from one IP in an hour → 429 (5 already exist), and the row is saved as rate_limited for forensics (F3)', async () => {
+    const { client, inserted } = makeSb({ leadCount: 5 });
+    sbRef.current = client;
     const res = await POST(makeReq(validBody(), { ip: '198.51.100.9' }));
     expect(res.status).toBe(429);
     const json = await res.json();
     expect(typeof json.error).toBe('string');
     expect(hl.upsertContact).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]!.sync_status).toBe('rate_limited');
   });
 
   it('the 5th lead still goes through (only 4 already exist)', async () => {
     sbRef.current = makeSb({ leadCount: 4 }).client;
     const res = await POST(makeReq(validBody(), { ip: '198.51.100.9' }));
     expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /api/leads — isTest counts toward the rate limit (F1)', () => {
+  it('an isTest:true submission still 429s once the cap is hit — isTest is not a rate-limit exemption', async () => {
+    sbRef.current = makeSb({ leadCount: 5 }).client;
+    const res = await POST(makeReq(validBody({ isTest: true }), { ip: '198.51.100.9' }));
+    expect(res.status).toBe(429);
+  });
+
+  it('the rate-limit count query no longer excludes is_test rows (the .not() call is gone)', async () => {
+    const { client, notCalls } = makeSb({ leadCount: 0 });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody({ isTest: true }), { ip: '198.51.100.9' }));
+    expect(res.status).toBe(200);
+    expect(notCalls.some(([col]) => col === 'is_test')).toBe(false);
+  });
+
+  it('isTest:true still sets is_test on the row AND still syncs to GHL (the real round trip is intentional)', async () => {
+    const { client, inserted } = makeSb();
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody({ isTest: true })));
+    expect(res.status).toBe(200);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]!.is_test).toBe(true);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/leads — rate-limit IP key prefers x-real-ip (F2)', () => {
+  it('uses x-real-ip over a client-spoofable x-forwarded-for for the rate-limit key', async () => {
+    const { client, eqCalls } = makeSb({ leadCount: 0 });
+    sbRef.current = client;
+    const res = await POST(
+      makeReq(validBody(), { realIp: '198.51.100.9', ip: '1.2.3.4, 5.6.7.8' }),
+    );
+    expect(res.status).toBe(200);
+    const ipEq = eqCalls.find(([col]) => col === 'ip');
+    expect(ipEq?.[1]).toBe('198.51.100.9');
+  });
+
+  it('falls back to the leftmost x-forwarded-for entry when x-real-ip is absent (local dev)', async () => {
+    const { client, eqCalls } = makeSb({ leadCount: 0 });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody(), { ip: '9.9.9.9, 8.8.8.8' }));
+    expect(res.status).toBe(200);
+    const ipEq = eqCalls.find(([col]) => col === 'ip');
+    expect(ipEq?.[1]).toBe('9.9.9.9');
+  });
+});
+
+describe('POST /api/leads — duplicate-submit dedupe (F10)', () => {
+  it('a second submit with the same email + service within the window → 200, no new row, zero GHL calls', async () => {
+    const { client, inserted } = makeSb({ dedupeCount: 1 });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody()));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(inserted).toHaveLength(0);
+    expect(hl.upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('a different service from the same email is NOT deduped — proceeds normally', async () => {
+    const { client, inserted } = makeSb({ dedupeCount: 0 });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody({ service: 'permanent' })));
+    expect(res.status).toBe(200);
+    expect(inserted).toHaveLength(1);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dedupe-query failure fails OPEN — the lead still gets saved and synced', async () => {
+    const { client, inserted } = makeSb({ dedupeError: { message: 'db down' } });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody()));
+    expect(res.status).toBe(200);
+    expect(inserted).toHaveLength(1);
+    expect(hl.upsertContact).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -429,6 +549,26 @@ describe('POST /api/leads — GHL failure fail-open (case g)', () => {
     expect(updated).toHaveLength(1);
     expect(updated[0]!.sync_status).toBeUndefined(); // never touched — stays 'pending' from the insert
     expect(updated[0]!.sync_error).toContain('GHL is down');
+  });
+});
+
+describe('POST /api/leads — partial GHL sync keeps the contact id (F9)', () => {
+  it('a failure AFTER the contact is created (e.g. the opportunity step) leaves the row pending with sync_error + ghl_contact_id set, and never 500s', async () => {
+    hl.findOrCreateOpportunityForContact.mockRejectedValue(
+      new hl.HighLevelError('opportunity API down', 502),
+    );
+    const { client, updated } = makeSb();
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody()));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(updated).toHaveLength(1);
+    expect(updated[0]!.sync_status).toBeUndefined(); // never touched — stays 'pending' from the insert
+    expect(updated[0]!.sync_error).toContain('opportunity API down');
+    expect(updated[0]!.ghl_contact_id).toBe('contact-1');
   });
 });
 

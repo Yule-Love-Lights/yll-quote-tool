@@ -17,7 +17,7 @@
 //   company?    — honeypot: real visitors never fill this hidden field
 //   elapsedMs?  — CLIENT-computed milliseconds from form render to submit
 //                 (both timestamps read off the SAME clock, on the client).
-//                 Under 3s = bot-fast. Never a raw client timestamp compared
+//                 Under 2s = bot-fast. Never a raw client timestamp compared
 //                 against the server clock — device-clock skew of a few
 //                 seconds would silently bin real visitors as spam.
 // }
@@ -47,11 +47,18 @@ import { asLeadService, syncLeadToGhl, LEAD_SERVICES, type LeadService } from '@
 export const runtime = 'nodejs';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const TOO_FAST_MS = 3000;
+// Lowered from 3000 → 2000 (F8): Chrome/password-manager autofill can fill
+// the whole form in under 3s for a REAL visitor, which was tripping the
+// too-fast spam check as a false positive. 2s still catches scripted bots
+// (which submit near-instantly) with more margin for legitimate autofill.
+const TOO_FAST_MS = 2000;
 const RATE_LIMIT_MAX_PER_HOUR = 5;
 
 // Max lengths per field — anything over is a 400 (a real form never produces
 // these; only scripted junk does). Email's 320 is the RFC-side ceiling.
+// landingUrl is the one exception: it's auto-populated by the CLIENT (never
+// user-typed), so an over-long value is TRUNCATED below instead of 400ing —
+// an auto-populated field must never be able to block a real lead.
 const MAX_LEN = {
   name: 200,
   email: 320,
@@ -96,6 +103,15 @@ function jsonResponse(origin: string | null, body: unknown, status = 200): NextR
 }
 
 function getIp(req: NextRequest): string | null {
+  // Prefer x-real-ip: it's set by our own edge (Vercel), so a client can't
+  // spoof it. x-forwarded-for's LEFTMOST entry, by contrast, is whatever the
+  // ORIGINAL client sent — every proxy in the chain only APPENDS, never
+  // overwrites it — so a request can arrive as
+  // "x-forwarded-for: 1.2.3.4, <real proxy ip>" and the spoofed 1.2.3.4
+  // would win if we trusted it. Fall back to the leftmost XFF entry only
+  // when x-real-ip is absent (e.g. local dev with no reverse proxy).
+  const realIp = req.headers.get('x-real-ip');
+  if (realIp && realIp.trim()) return realIp.trim();
   const xff = req.headers.get('x-forwarded-for');
   if (xff) return xff.split(',')[0]!.trim() || null;
   return null;
@@ -107,6 +123,19 @@ function hlErrorMessage(err: unknown): string {
     : err instanceof Error
       ? err.message
       : 'Unknown HighLevel error';
+}
+
+// Redacted for LOGS ONLY (never for the row's sync_error column, which keeps
+// full fidelity via hlErrorMessage above). A HighLevelError's message embeds
+// GHL's raw response body, which can echo the lead's PII (email/phone/name)
+// straight back to us — that must never land in Vercel's logs. Keep only the
+// method/path/status portion, before the body.
+function redactedHlErrorSummary(err: unknown): string {
+  if (err instanceof HighLevelError) {
+    const sepIdx = err.message.indexOf(': ');
+    return sepIdx === -1 ? err.message : err.message.slice(0, sepIdx);
+  }
+  return err instanceof Error ? `${err.name}: sync failed` : 'Unknown HighLevel error';
 }
 
 export async function OPTIONS(req: NextRequest) {
@@ -194,14 +223,10 @@ export async function POST(req: NextRequest) {
     return jsonResponse(origin, { error: `notes must be at most ${MAX_LEN.notes} characters` }, 400);
   }
   const utm = sanitizeUtm(body.utm);
-  const landingUrl = typeof body.landingUrl === 'string' && body.landingUrl ? body.landingUrl : null;
-  if (landingUrl && landingUrl.length > MAX_LEN.landingUrl) {
-    return jsonResponse(
-      origin,
-      { error: `landingUrl must be at most ${MAX_LEN.landingUrl} characters` },
-      400,
-    );
-  }
+  const landingUrlRaw = typeof body.landingUrl === 'string' && body.landingUrl ? body.landingUrl : null;
+  // Auto-populated by the client, never user-typed — truncate, don't 400 (see
+  // the MAX_LEN comment above).
+  const landingUrl = landingUrlRaw ? landingUrlRaw.slice(0, MAX_LEN.landingUrl) : null;
   const isTest = body.isTest === true;
   const ip = getIp(req);
 
@@ -232,30 +257,70 @@ export async function POST(req: NextRequest) {
 
   // Honeypot / too-fast: save for visibility, answer exactly like success,
   // never touch GHL — a bot must not be able to distinguish this from a real
-  // submission.
+  // submission. sync_error records WHY it was flagged (forensics — lets us
+  // tell a real false-positive apart from actual bot traffic later).
   if (isSpam) {
+    const spamReason = isHoneypot ? 'honeypot' : 'too_fast';
     const { error: spamErr } = await sb
       .from('website_leads')
-      .insert({ ...baseRow, sync_status: 'spam' });
+      .insert({ ...baseRow, sync_status: 'spam', sync_error: spamReason });
     if (spamErr) console.error('[api/leads] spam-row insert failed:', spamErr.message);
     return jsonResponse(origin, { ok: true }, 200);
   }
 
+  // Duplicate-submit dedupe: kills double-tab / network-retry dupes (a
+  // visitor double-clicking submit, or a flaky connection making the client
+  // retry) — the same email + service submitted again within the window is
+  // answered exactly like a fresh success, without a second row or a second
+  // GHL round-trip. A true millisecond-level concurrent race (two requests
+  // in flight at once) is NOT closed by this check — only a DB unique index
+  // would close that — accepted as rare enough not to justify a migration
+  // here. Runs AFTER spam handling (spam rows must still be recorded for
+  // forensics) and BEFORE rate limiting (a dedupe hit shouldn't burn the
+  // submitter's rate-limit budget).
+  {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { count: dupeCount, error: dupeErr } = await sb
+      .from('website_leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('email', email)
+      .eq('service', service)
+      .in('sync_status', ['pending', 'synced'])
+      .gte('created_at', tenMinutesAgo);
+    if (dupeErr) {
+      console.warn('[api/leads] dedupe check failed (failing open):', dupeErr.message);
+    } else if ((dupeCount ?? 0) > 0) {
+      return jsonResponse(origin, { ok: true }, 200);
+    }
+  }
+
   // Rate limit: cap at 5 leads per IP per hour — the 6th submission (once 5
-  // already exist) is rejected. Test rows excluded, mirroring the is_test
-  // exclusion pattern in customers.ts. Same >= "at limit" convention as
-  // checkRateLimit in rateLimit.ts.
+  // already exist) is rejected. isTest rows COUNT toward this cap — isTest
+  // only marks a row for reporting/GHL-sync purposes, not a rate-limit
+  // exemption; excluding it would let a live end-to-end test loop (or an
+  // attacker setting isTest:true) submit past the cap for free. Same >=
+  // "at limit" convention as checkRateLimit in rateLimit.ts.
   if (ip) {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { count, error: countErr } = await sb
       .from('website_leads')
       .select('id', { count: 'exact', head: true })
       .eq('ip', ip)
-      .not('is_test', 'is', true)
       .gte('created_at', oneHourAgo);
     if (countErr) {
       console.warn('[api/leads] rate-limit count query failed (failing open):', countErr.message);
     } else if ((count ?? 0) >= RATE_LIMIT_MAX_PER_HOUR) {
+      // A real lead caught by a shared-IP false positive (office wifi, a
+      // cell carrier CGNAT) must not vanish without a trace — insert it
+      // (best-effort; an insert failure still 429s) so it's recoverable.
+      // This row itself counts toward FUTURE rate-limit checks (same query
+      // above), so it can't be used to farm extra submissions.
+      const { error: rlInsertErr } = await sb
+        .from('website_leads')
+        .insert({ ...baseRow, sync_status: 'rate_limited' });
+      if (rlInsertErr) {
+        console.error('[api/leads] rate-limited row insert failed:', rlInsertErr.message);
+      }
       return jsonResponse(origin, { error: 'Too many requests — try again later.' }, 429);
     }
   }
@@ -285,21 +350,34 @@ export async function POST(req: NextRequest) {
       landingUrl,
       formVariant,
     });
+    const updatePayload: Record<string, unknown> = {
+      sync_error: result.syncError ?? null,
+      ghl_contact_id: result.ghlContactId ?? null,
+      ghl_opportunity_id: result.ghlOpportunityId ?? null,
+    };
+    // status 'error' means a step AFTER the contact was created failed
+    // (syncLeadToGhl caught it itself so we still have ghlContactId) — leave
+    // sync_status alone so it stays 'pending' from the insert above, same as
+    // the exception path below; only the forensic fields get written.
+    if (result.status !== 'error') {
+      updatePayload.sync_status = result.status;
+    }
     const { error: updateErr } = await sb
       .from('website_leads')
-      .update({
-        sync_status: result.status,
-        sync_error: result.syncError ?? null,
-        ghl_contact_id: result.ghlContactId ?? null,
-        ghl_opportunity_id: result.ghlOpportunityId ?? null,
-      })
+      .update(updatePayload)
       .eq('id', inserted.id);
     if (updateErr) {
       console.error('[api/leads] sync-result write-back failed:', updateErr.message);
     }
   } catch (err) {
     const message = hlErrorMessage(err);
-    console.error('[api/leads] GHL sync failed — row stays pending for retry:', message);
+    // Redacted log line — see redactedHlErrorSummary's comment above. The
+    // full message (which may embed GHL's raw response body / lead PII)
+    // goes ONLY into sync_error, an RLS-locked column, never into logs.
+    console.error(
+      '[api/leads] GHL sync failed — row stays pending for retry:',
+      redactedHlErrorSummary(err),
+    );
     const { error: updateErr } = await sb
       .from('website_leads')
       .update({ sync_error: message })
