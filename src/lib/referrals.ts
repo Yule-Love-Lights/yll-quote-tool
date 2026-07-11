@@ -289,6 +289,31 @@ export async function accrueOnBooking(quoteId: string): Promise<{ accrued: boole
  * credit was already consumed (PR 2's redemption flow), so counting it again
  * here would let a spent credit be "seen" as available twice.
  */
+/**
+ * All referrals a customer has generated as the REFERRER, newest first.
+ * Read-only (growth feature 2 — the operator's CustomerReferralPanel lists
+ * these so staff can see who a customer has referred and each one's status).
+ * Fail-open: [] when Supabase isn't configured or the read errors, mirroring
+ * every other read in this file.
+ */
+export async function listReferralsFor(customerId: string): Promise<ReferralRow[]> {
+  const sb = svc();
+  if (!sb || !customerId) return [];
+  const { data, error } = await sb
+    .from('referrals')
+    .select(
+      'id, referrer_customer_id, referee_quote_id, referee_contact_name, referee_contact_email, ' +
+        'referee_contact_phone, source, status, amount_usd, booked_at, created_at, updated_at',
+    )
+    .eq('referrer_customer_id', customerId)
+    .order('created_at', { ascending: false });
+  if (error) {
+    console.error('[referrals] listReferralsFor failed:', error);
+    return [];
+  }
+  return (data ?? []) as unknown as ReferralRow[];
+}
+
 export async function creditBalanceFor(customerId: string): Promise<number> {
   const sb = svc();
   if (!sb) return 0;

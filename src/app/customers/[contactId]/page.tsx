@@ -9,9 +9,13 @@ import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge'
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
+import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
+import { ensureReferralCode, creditBalanceFor, listReferralsFor, type ReferralRow } from '@/lib/referrals';
+import { referralQrSvg } from '@/lib/referralQr';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,6 +112,21 @@ export default async function CustomerDetailPage({
   // backfill. If none is populated yet (pre-backfill), the button is hidden.
   const customerId: string | null =
     quotes.find(q => q.customer_id)?.customer_id ?? null;
+
+  // Referral program growth feature 2: the operator's printable referral panel.
+  // ensureReferralCode is the same idempotent, race-safe create-if-missing path
+  // the booked page already uses — safe to call on every profile view since it
+  // only WRITES on a customer's very first code (a read thereafter). Hidden
+  // entirely pre-backfill (no customerId), same guard as RebookButton above.
+  const referralCode = customerId ? await ensureReferralCode(customerId) : null;
+  const referralLink = referralCode ? `${appBaseUrl()}/refer/${referralCode}` : null;
+  const [creditBalanceUsd, referrals, referralQr]: [number, ReferralRow[], string | null] = customerId
+    ? await Promise.all([
+        creditBalanceFor(customerId),
+        listReferralsFor(customerId),
+        referralLink ? referralQrSvg(referralLink) : Promise.resolve(null),
+      ])
+    : [0, [], null];
 
   return (
     <OperatorShell active="customers">
@@ -212,6 +231,17 @@ export default async function CustomerDetailPage({
             </div>
           )}
         </section>
+
+        {/* Referral program (growth feature 2): hidden pre-backfill, same
+            guard as the Rebook button above. */}
+        {customerId && (
+          <CustomerReferralPanel
+            referralLink={referralLink}
+            creditBalanceUsd={creditBalanceUsd}
+            referrals={referrals}
+            qrSvg={referralQr}
+          />
+        )}
 
         {/* Activity timeline: every customer view + each quote's lifecycle. */}
         <CustomerActivityFeed events={activity} />

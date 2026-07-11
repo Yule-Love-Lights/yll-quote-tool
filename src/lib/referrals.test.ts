@@ -36,6 +36,7 @@ import {
   createPendingReferral,
   accrueOnBooking,
   creditBalanceFor,
+  listReferralsFor,
   REFERRAL_CREDIT_USD,
   REFERRAL_FRIEND_SPRITZERS,
 } from './referrals';
@@ -69,6 +70,7 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       filters: [] as Array<(r: Row) => boolean>,
       isUpdate: false,
       isInsert: false,
+      sort: null as null | { col: string; ascending: boolean },
     };
     const match = () => rows.filter((r) => state.filters.every((f) => f(r)));
 
@@ -90,6 +92,10 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
       },
       is: (col: string, val: null) => {
         state.filters.push((r) => (val === null ? r[col] == null : r[col] === val));
+        return builder;
+      },
+      order: (col: string, opts?: { ascending?: boolean }) => {
+        state.sort = { col, ascending: !!opts?.ascending };
         return builder;
       },
       single: async () => {
@@ -126,7 +132,17 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[] } = {}
           resolve({ data: targets.map((t) => ({ id: t.id })), error: null });
           return;
         }
-        resolve({ data: match(), error: null });
+        let out = match();
+        if (state.sort) {
+          const { col, ascending } = state.sort;
+          out = out.slice().sort((a, b) => {
+            const av = String(a[col] ?? '');
+            const bv = String(b[col] ?? '');
+            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+            return ascending ? cmp : -cmp;
+          });
+        }
+        resolve({ data: out, error: null });
       },
     };
     return builder;
@@ -347,6 +363,35 @@ describe('creditBalanceFor', () => {
   it('returns 0 for a customer with no referrals', async () => {
     sbRef.current = makeFakeSupabase({ referrals: [] });
     expect(await creditBalanceFor('nobody')).toBe(0);
+  });
+});
+
+describe('listReferralsFor', () => {
+  it('returns only this referrer\'s referrals, newest first', async () => {
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        { id: 'r1', referrer_customer_id: 'c1', status: 'pending', amount_usd: 125, created_at: '2026-01-01' },
+        { id: 'r2', referrer_customer_id: 'c1', status: 'booked', amount_usd: 125, created_at: '2026-03-01' },
+        { id: 'r3', referrer_customer_id: 'c2', status: 'booked', amount_usd: 125, created_at: '2026-02-01' },
+      ],
+    });
+    const rows = await listReferralsFor('c1');
+    expect(rows.map((r) => r.id)).toEqual(['r2', 'r1']);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listReferralsFor('c1')).toEqual([]);
+  });
+
+  it('returns [] for a customer with no referrals', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [] });
+    expect(await listReferralsFor('nobody')).toEqual([]);
+  });
+
+  it('returns [] for an empty customer id without querying', async () => {
+    sbRef.current = makeFakeSupabase({ referrals: [{ id: 'r1', referrer_customer_id: 'c1' }] });
+    expect(await listReferralsFor('')).toEqual([]);
   });
 });
 
