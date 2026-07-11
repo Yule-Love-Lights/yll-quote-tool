@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { projectScene, applyProjectionToInputs } from './projectScene';
 import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
+import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
 import type {
   Scene,
   SceneItem,
@@ -573,5 +575,58 @@ describe('applyProjectionToInputs — Fix #4: a detected bistro run must not wip
       { type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-bush1', sceneItemIds: ['bush1'] },
     ]);
     expect(out.event?.bistro).toHaveLength(1);
+  });
+});
+
+// ─── Permanent Bistro (#117) — the bistro TARGET block is serviceType-aware:
+// 'permanent_bistro' routes drawn bistro strands to inputs.permanentBistro.bistro
+// (calculatePermanentBistro's own input) instead of inputs.event.bistro. Every
+// other serviceType (or omitted) keeps the original event target — the whole
+// point of this PR is that this widening must NOT change event/holiday behavior
+// one bit (every test above this block proves that byte-for-byte). ─────────────
+describe('applyProjectionToInputs — serviceType-aware bistro target (#117)', () => {
+  it("serviceType 'permanent_bistro' routes drawn bistro strands into inputs.permanentBistro.bistro, leaving inputs.event untouched", () => {
+    const s = scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] })]);
+    const out = applyProjectionToInputs(baseInputs(), s, 'permanent_bistro');
+    expect(out.permanentBistro?.bistro).toHaveLength(1);
+    expect(out.permanentBistro?.bistro?.[0].footage).toBeCloseTo(12, 5);
+    expect(out.permanentBistro?.bistro?.[0].sceneItemIds).toEqual(['b1']);
+    expect(out.event).toBeUndefined();
+  });
+
+  it('omitted serviceType still targets inputs.event.bistro (explicit regression lock)', () => {
+    const s = scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] })]);
+    const out = applyProjectionToInputs(baseInputs(), s);
+    expect(out.event?.bistro).toHaveLength(1);
+    expect(out.permanentBistro).toBeUndefined();
+  });
+
+  it("serviceType 'event' explicitly targets inputs.event.bistro (same as omitted)", () => {
+    const s = scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 600, 0] })]);
+    const out = applyProjectionToInputs(baseInputs(), s, 'event');
+    expect(out.event?.bistro).toHaveLength(1);
+    expect(out.permanentBistro).toBeUndefined();
+  });
+
+  it('a bistro quote reopened with strands deleted clears permanentBistro.bistro, preserving poles — parity with the event bistro-clear semantics', () => {
+    // A remaining projectable item (unrelated to bistro) pushes this through the
+    // REPLACE branch (mirrors the existing "control" test above), where the
+    // presence-gated clear lives.
+    const s = scene([wreath({ id: 'w1', quoteSize: '24noble', tier: 'bow' })]); // no bistro strand anymore
+    const inputs = baseInputs({
+      permanentBistro: { bistro: [{ footage: 20, id: 'bistro-old', sceneItemIds: ['old'] }], poles: 3 },
+    });
+    const out = applyProjectionToInputs(inputs, s, 'permanent_bistro');
+    expect(out.permanentBistro?.bistro).toEqual([]); // stale run cleared
+    expect(out.permanentBistro?.poles).toBe(3); // preserved, mirrors event's barrel/date preserve
+    expect(out.event).toBeUndefined();
+  });
+
+  it('end-to-end: a drawn bistro strand prices at $30/ft through calculatePermanentBistro', () => {
+    const s = scene([strand({ id: 'b1', bulbType: 'bistro', points: [0, 0, 1500, 0] })]); // 1500px ÷ 50px/ft fallback = 30ft
+    const inputs = applyProjectionToInputs(baseInputs(), s, 'permanent_bistro');
+    const result = calculatePermanentBistro(inputs, DEFAULT_PERMANENT_BISTRO_RATES);
+    expect(result.lineItems).toHaveLength(1);
+    expect(result.subtotalBeforeDiscount).toBe(900); // 30ft × $30/ft
   });
 });
