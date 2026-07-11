@@ -7,7 +7,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
 
-const { getReferralByCode, createPendingReferral, hasRecentPendingLinkReferral, createContact, hlConfigured, ingestTouch, rateLimitedRef } = vi.hoisted(() => ({
+const {
+  getReferralByCode,
+  createPendingReferral,
+  hasRecentPendingLinkReferral,
+  createContact,
+  hlConfigured,
+  ingestTouch,
+  rateLimitedRef,
+  maybeRunReferralAutoAnalyze,
+} = vi.hoisted(() => ({
   getReferralByCode: vi.fn(async () => null as { customerId: string; name: string | null; photoOptout: boolean } | null),
   createPendingReferral: vi.fn(async () => ({ id: 'referral-1' }) as { id: string } | null),
   hasRecentPendingLinkReferral: vi.fn(async () => false),
@@ -17,6 +26,7 @@ const { getReferralByCode, createPendingReferral, hasRecentPendingLinkReferral, 
     ok: true, skipped: false, itemId: 'item-1', contactId: null, autoResolved: false, reopened: false, ambiguous: false,
   })),
   rateLimitedRef: { current: false },
+  maybeRunReferralAutoAnalyze: vi.fn(async () => null as unknown),
 }));
 
 vi.mock('@/lib/rateLimit', () => ({
@@ -31,6 +41,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hlConfigured.value,
 }));
 vi.mock('@/lib/dashboard/inbox/store', () => ({ ingestTouch }));
+vi.mock('@/lib/referralAutoAnalyze', () => ({ maybeRunReferralAutoAnalyze }));
 
 import { POST } from './route';
 
@@ -57,6 +68,7 @@ beforeEach(() => {
   createPendingReferral.mockResolvedValue({ id: 'referral-1' });
   hasRecentPendingLinkReferral.mockResolvedValue(false);
   createContact.mockResolvedValue({ id: 'contact-1' });
+  maybeRunReferralAutoAnalyze.mockResolvedValue(null);
 });
 
 describe('POST /api/referrals/submit', () => {
@@ -196,5 +208,58 @@ describe('POST /api/referrals/submit', () => {
       expect(createContact).toHaveBeenCalledOnce();
       expect(createPendingReferral).toHaveBeenCalledOnce();
     });
+  });
+});
+
+// #41 V2 — the response is byte-identical to the pre-auto-analyze shape
+// whenever there's no preview (the flag off, capped, deduped, or failed —
+// maybeRunReferralAutoAnalyze collapses all of those to null itself; this
+// route only cares whether it got a preview back or not).
+describe('POST /api/referrals/submit — #41 V2 auto-analyze preview', () => {
+  it('calls the auto-analyze AFTER the lead is persisted, with the re-validated code and cleaned address', async () => {
+    const res = await POST(makeReq(VALID_BODY));
+    expect(res.status).toBe(200);
+    expect(maybeRunReferralAutoAnalyze).toHaveBeenCalledWith(
+      expect.anything(),
+      'ABCD1234',
+      '123 Main St, Smithtown, NY',
+    );
+    // createPendingReferral (the lead persistence) is called before the
+    // auto-analyze mock — assert ordering via call order on a shared spy log.
+    const referralCallOrder = createPendingReferral.mock.invocationCallOrder[0];
+    const analyzeCallOrder = maybeRunReferralAutoAnalyze.mock.invocationCallOrder[0];
+    expect(referralCallOrder).toBeLessThan(analyzeCallOrder);
+  });
+
+  it('response has NO preview key and is byte-identical to the pre-#41-V2 shape when auto-analyze returns null (flag off / capped / deduped / failed)', async () => {
+    maybeRunReferralAutoAnalyze.mockResolvedValue(null);
+    const res = await POST(makeReq(VALID_BODY));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, referralId: 'referral-1' });
+    expect('preview' in json).toBe(false);
+    expect(JSON.stringify(json)).toBe(JSON.stringify({ ok: true, referralId: 'referral-1' }));
+  });
+
+  it('response includes the preview when auto-analyze produces one', async () => {
+    const preview = {
+      photoDataUrl: 'data:image/jpeg;base64,abc',
+      formattedAddress: '123 Main St, Smithtown, NY 11787',
+      footageEstimate: 42,
+      lines: [{ points: [[0.1, 0.2], [0.3, 0.4]], label: 'front roofline ~42ft' }],
+    };
+    maybeRunReferralAutoAnalyze.mockResolvedValue(preview);
+    const res = await POST(makeReq(VALID_BODY));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, referralId: 'referral-1', preview });
+  });
+
+  it('still succeeds (fail-open) when the auto-analyze call itself throws unexpectedly', async () => {
+    maybeRunReferralAutoAnalyze.mockRejectedValueOnce(new Error('boom'));
+    const res = await POST(makeReq(VALID_BODY));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, referralId: 'referral-1' });
   });
 });
