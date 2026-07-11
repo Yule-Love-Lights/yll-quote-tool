@@ -8,10 +8,19 @@
 // move, so on a solid color every effect looks the same (still) — that's expected.
 
 import { useSelection } from '../SelectionContext';
-import { PERMANENT_EFFECTS } from '@/lib/design/permanentScenes';
+import { PERMANENT_EFFECTS, type SceneEffect } from '@/lib/design/permanentScenes';
+import { track } from '@/lib/analytics/posthog';
+import type { ServiceType } from '@/lib/serviceType';
+
+// PostHog Wave 2 — property builder for effect_changed, extracted as a pure
+// function (no jsdom component-test infra in this repo) so the event-name/
+// property-shape contract is covered without rendering the component.
+export function effectChangedProps(quoteId: string | undefined, serviceType: ServiceType | undefined, effect: SceneEffect) {
+  return { quote_id: quoteId, service_type: serviceType, effect };
+}
 
 export function PermanentEffectPicker() {
-  const { permanentEffect, setPermanentEffect, locked } = useSelection();
+  const { permanentEffect, setPermanentEffect, locked, quoteId, serviceType } = useSelection();
 
   return (
     <section
@@ -42,7 +51,10 @@ export function PermanentEffectPicker() {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                onClick={() => setPermanentEffect(e.effect)}
+                onClick={() => {
+                  setPermanentEffect(e.effect);
+                  track('effect_changed', effectChangedProps(quoteId, serviceType, e.effect));
+                }}
                 // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum.
                 className={`inline-flex items-center gap-1.5 rounded-full border min-h-[44px] px-4 py-2 text-[13px] md:text-[14px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
                   active

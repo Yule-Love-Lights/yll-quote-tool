@@ -88,9 +88,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The billed discount derives from what the claim ACTUALLY consumed, not
+  // the pre-claim balance read (#41 expiry): a row expiring between the two
+  // shrinks the claim, and returning the stale figure would bill a discount
+  // bigger than the credit spent. min(consumedUsd, subtotal) equals the old
+  // min(balance, subtotal) whenever nothing raced.
+  const finalAppliedUsd = Math.min(result.consumedUsd, subtotal);
+
   return NextResponse.json({
     ok: true,
-    appliedUsd,
+    appliedUsd: finalAppliedUsd,
     consumedRowIds: result.consumedRowIds,
     balanceUsd: result.newBalanceUsd,
   });
