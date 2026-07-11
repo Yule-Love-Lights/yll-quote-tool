@@ -181,6 +181,7 @@ export async function findOrCreateOpportunityForContact(input: {
   fallbackStageId: string;   // HIGHLEVEL_STAGE_QUOTE_CREATED — the ENTRY stage (e.g. Open), never Make Quote
   fallbackName: string;       // used only if we create
   monetaryValue?: number;
+  source?: string;            // used only if we create; falls through to createOpportunity's own default ('ai-quote-tool') when omitted
 }): Promise<{ opportunity: HighLevelOpportunity; created: boolean }> {
   const existing = await findOpportunityForContact(input.contactId, input.pipelineId);
   if (existing) return { opportunity: existing, created: false };
@@ -190,6 +191,7 @@ export async function findOrCreateOpportunityForContact(input: {
     pipelineStageId: input.fallbackStageId,
     name: input.fallbackName,
     monetaryValue: input.monetaryValue,
+    source: input.source,
   });
   return { opportunity: fresh, created: true };
 }
@@ -401,6 +403,59 @@ export async function upsertContactCustomField(
   await ghlFetch(`/contacts/${encodeURIComponent(contactId)}`, {
     method: 'PUT',
     body: JSON.stringify({ customFields: [{ id: fieldId, value }] }),
+  });
+}
+
+// ─── Contact upsert (website lead capture) ─────────────────────────────────
+// POST /contacts/upsert — the v2 LeadConnector endpoint that creates a NEW
+// contact or updates the existing match (by email/phone) and reports which
+// via `new`. Used by the website lead-capture route (src/app/api/leads) instead
+// of a search-then-create/update round trip.
+//
+// Deliberately does NOT accept tags. GHL's upsert has replace-ish tag
+// semantics on some payload shapes, while addContactTags's POST
+// /contacts/{id}/tags is confirmed ADDITIVE (see the merge-vs-replace note on
+// upsertContactCustomField below) — callers add tags via addContactTags
+// AFTER the upsert so re-submitting a form never wipes a contact's existing
+// tags.
+export type UpsertContactInput = {
+  firstName: string;
+  lastName?: string;
+  email: string;
+  phone: string;
+  address1?: string;
+  source?: string;
+};
+
+export async function upsertContact(
+  input: UpsertContactInput,
+): Promise<{ contact: HighLevelContact; new: boolean }> {
+  const { locationId } = requireConfig();
+  const body = {
+    locationId,
+    firstName: input.firstName,
+    lastName: input.lastName,
+    email: input.email,
+    phone: input.phone,
+    address1: input.address1,
+    source: input.source,
+  };
+  return ghlFetch<{ contact: HighLevelContact; new: boolean }>('/contacts/upsert', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── Contact note create ────────────────────────────────────────────────
+// POST /contacts/{contactId}/notes — attaches a free-text note to the
+// contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
+// context, which don't fit any existing custom field).
+type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+
+export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
+  return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
   });
 }
 
