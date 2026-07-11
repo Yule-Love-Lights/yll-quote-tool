@@ -74,9 +74,9 @@ describe('revenueByService', () => {
     expect(byKey.event).toBe(4800);
   });
 
-  it('always returns all three services in canonical order, even at 0', () => {
+  it('always returns all four services in canonical order, even at 0', () => {
     const out = revenueByService([]);
-    expect(out.map(s => s.service)).toEqual(['holiday', 'permanent', 'event']);
+    expect(out.map(s => s.service)).toEqual(['holiday', 'permanent', 'event', 'permanent_bistro']);
     expect(out.every(s => s.revenue === 0)).toBe(true);
   });
 });

@@ -74,16 +74,23 @@ function effectiveTaxRate(_result: QuoteResult): number {
 // what toggle state reaches it. Detected via `eventRatesSnapshot`'s presence
 // (frozen on the result only for event quotes — see QuoteResult) rather than
 // threading `serviceType` through every caller of this function.
+//
+// Permanent Bistro Lighting: same fix, same reasoning — a permanent bistro
+// install never carries a rush/takedown fee (it goes up once, no seasonal
+// takedown), so `permanentBistroRatesSnapshot`'s presence zeroes the amounts
+// here too.
 export function chargesFromResult(result: QuoteResult): PortalCharges {
   const isEvent = !!result.eventRatesSnapshot;
+  const isPermanentBistro = !!result.permanentBistroRatesSnapshot;
+  const noHolidayFees = isEvent || isPermanentBistro;
   return {
     taxRate: effectiveTaxRate(result),
     rush: {
-      amount: isEvent ? 0 : BUSINESS_RULES.rushFeeAmount,
+      amount: noHolidayFees ? 0 : BUSINESS_RULES.rushFeeAmount,
       defaultOn: (typeof result.rushFeeAmount === 'number' ? result.rushFeeAmount : 0) > 0,
     },
     takedown: {
-      amount: isEvent ? 0 : BUSINESS_RULES.premiumTakedownFee,
+      amount: noHolidayFees ? 0 : BUSINESS_RULES.premiumTakedownFee,
       defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
     },
   };

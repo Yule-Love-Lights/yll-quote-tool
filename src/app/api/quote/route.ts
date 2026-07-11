@@ -7,6 +7,7 @@ import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { calculateEventQuote } from '@/lib/event/pricing';
+import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 
@@ -90,8 +91,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest, amendReprice: rawAmendReprice } =
-    body as Record<string, unknown>;
+  const {
+    customer,
+    inputs,
+    quoteId,
+    designId,
+    serviceType: rawServiceType,
+    isTest: rawIsTest,
+    amendReprice: rawAmendReprice,
+    referredByCustomerId: rawReferredByCustomerId,
+  } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
   // Only an exact `true` enables it; any other value falls through to the normal
@@ -112,10 +121,21 @@ export async function POST(req: NextRequest) {
   const serviceType = asServiceType(rawServiceType);
   if (rawServiceType !== undefined && serviceType === null) {
     return NextResponse.json(
-      { error: "serviceType must be 'holiday', 'permanent', or 'event'" },
+      { error: "serviceType must be 'holiday', 'permanent', 'event', or 'permanent_bistro'" },
       { status: 400 },
     );
   }
+
+  // Referral program (#41 "mention" attribution): an existing customer picked
+  // as "Referred by" in the builder. Optional; only honored on a NEW save
+  // (saveQuote) — an update never re-attributes a referral.
+  if (rawReferredByCustomerId !== undefined && typeof rawReferredByCustomerId !== 'string') {
+    return NextResponse.json({ error: 'referredByCustomerId must be a string if provided' }, { status: 400 });
+  }
+  if (typeof rawReferredByCustomerId === 'string' && !UUID_RE.test(rawReferredByCustomerId)) {
+    return NextResponse.json({ error: 'referredByCustomerId must be a valid UUID' }, { status: 400 });
+  }
+  const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -384,6 +404,40 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Permanent Bistro Lighting (#117) — validate the optional permanentBistro
+  // block at the boundary, mirroring the permanent/event blocks above.
+  // Validated whenever present (independent of serviceType) — a malformed
+  // bistro entry or negative pole count should be a clean 400, not a bad
+  // downstream result.
+  if (q.permanentBistro !== undefined) {
+    if (!isObj(q.permanentBistro)) {
+      return NextResponse.json({ error: 'permanentBistro must be an object if provided' }, { status: 400 });
+    }
+    const pb = q.permanentBistro;
+    if (pb.bistro !== undefined) {
+      if (!Array.isArray(pb.bistro)) {
+        return NextResponse.json({ error: 'permanentBistro.bistro must be an array if provided' }, { status: 400 });
+      }
+      if (pb.bistro.length > MAX_ARRAY_LEN) {
+        return NextResponse.json({ error: `permanentBistro.bistro exceeds the ${MAX_ARRAY_LEN}-item limit` }, { status: 400 });
+      }
+      for (const b of pb.bistro as unknown[]) {
+        if (!isObj(b) || !isNonNegNumber(b.footage)) {
+          return NextResponse.json(
+            { error: 'Invalid permanentBistro.bistro element (footage must be a non-negative number)' },
+            { status: 400 },
+          );
+        }
+      }
+    }
+    if (pb.poles !== undefined && !isNonNegNumber(pb.poles)) {
+      return NextResponse.json(
+        { error: 'permanentBistro.poles must be a non-negative number if provided' },
+        { status: 400 },
+      );
+    }
+  }
+
   try {
     let quoteInputs = inputs as QuoteInputs;
     // A valid quoteId means re-price that existing quote in place (the builder's
@@ -447,6 +501,7 @@ export async function POST(req: NextRequest) {
       serviceType ?? (existing ? asServiceType(existing.service_type) : null) ?? DEFAULT_SERVICE_TYPE;
     const isPermanent = effectiveServiceType === 'permanent';
     const isEvent = effectiveServiceType === 'event';
+    const isPermanentBistro = effectiveServiceType === 'permanent_bistro';
 
     // If a design is linked AND its scene has projectable per-unit items, the
     // DESIGN is the master list for those items (#27). Holiday + event both use
@@ -455,7 +510,7 @@ export async function POST(req: NextRequest) {
     if (!isPermanent && isValidDesignId(designId)) {
       const design = await getDesign(designId);
       if (design?.scene) {
-        quoteInputs = applyProjectionToInputs(quoteInputs, design.scene);
+        quoteInputs = applyProjectionToInputs(quoteInputs, design.scene, effectiveServiceType);
       }
     }
 
@@ -471,12 +526,20 @@ export async function POST(req: NextRequest) {
     const eventRates = isEvent
       ? existing?.result?.eventRatesSnapshot ?? (await getAppSettings()).eventRates
       : undefined;
+    // Permanent Bistro rate table — same rate-drift guard as permanent/event:
+    // re-price an EXISTING permanent_bistro quote from its FROZEN snapshot; a
+    // NEW one reads live settings.
+    const bistroRates = isPermanentBistro
+      ? existing?.result?.permanentBistroRatesSnapshot ?? (await getAppSettings()).permanentBistroRates
+      : undefined;
     const price = (i: QuoteInputs) =>
       isPermanent
         ? calculatePermanentQuote(i, permRates)
         : isEvent
           ? calculateEventQuote(i, eventRates)
-          : calculateQuote(i);
+          : isPermanentBistro
+            ? calculatePermanentBistro(i, bistroRates)
+            : calculateQuote(i);
 
     const result = price(quoteInputs);
     // #104: a baseline result with the per-quote price overrides STRIPPED, so the
@@ -501,6 +564,10 @@ export async function POST(req: NextRequest) {
           customer ? safeCustomer : undefined,
           // Keep the stored service_type consistent with what we priced (H2).
           effectiveServiceType,
+          // Referral program (#41 adversarial-review fix): updateQuote now
+          // honors this too (create-once, idempotent) — see its own doc
+          // comment for why an update needs a fresh pre-read of its own.
+          referredByCustomerId,
         )
       : await saveQuote(
           safeCustomer,
@@ -509,6 +576,7 @@ export async function POST(req: NextRequest) {
           effectiveServiceType,
           isTest,
           operator?.id ?? null,
+          referredByCustomerId,
         );
     return NextResponse.json({
       customer: safeCustomer,

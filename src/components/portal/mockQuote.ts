@@ -173,19 +173,46 @@ export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
   { id: 'p1', neighborhood: 'Christmas Scene',   src: '/references/perm-christmas.webp',      alt: 'Split-level home with permanent roofline lighting running a red, green, and white Christmas scene' },
   { id: 'p2', neighborhood: 'July 4th Scene',    src: '/references/perm-fourth-of-july.webp', alt: 'The same permanent roofline lighting switched to a red, white, and blue Independence Day scene' },
   { id: 'p3', neighborhood: 'Red, White & Blue', src: '/references/perm-patriotic.webp',      alt: 'Permanent puck lights running a patriotic red, white, and blue pattern along the roofline and lower trim' },
+  // More permanent completed-work photos (Naldo, S31). p4 and p10 are fourth
+  // and fifth scenes on the p1–p3 split-level (p10 sits here, out of id order,
+  // to keep that home's scenes adjacent in the grid); p5–p7 are one colonial
+  // in three scenes; p8 and p9 are new properties (p9 = first commercial tile).
+  { id: 'p4', neighborhood: 'Blue & Purple',      src: '/references/perm-blue-purple.webp',         alt: 'The same split-level home washed in blues and purples from its permanent roofline and lower-trim lighting' },
+  { id: 'p10', neighborhood: 'Teal Scene',        src: '/references/perm-teal-scene.webp',          alt: 'The same split-level home again, running an everyday teal scene on its permanent roofline and trim lights' },
+  { id: 'p5', neighborhood: 'Spring Scene',       src: '/references/perm-spring-scene.webp',        alt: 'Colonial home with permanent lights split into soft blue, warm yellow, and green zones across its three gables' },
+  { id: 'p6', neighborhood: 'Patriotic Colonial', src: '/references/perm-patriotic-colonial.webp',  alt: 'Two-story colonial running a red, white, and blue patriotic scene on its permanent roofline lights' },
+  { id: 'p7', neighborhood: 'Rainbow Scene',      src: '/references/perm-rainbow.webp',             alt: 'Colonial home running a full rainbow scene, each gable a different color from one permanent install' },
+  { id: 'p8', neighborhood: 'Teal Dusk',          src: '/references/perm-teal-dusk.webp',           alt: 'White brick home at dusk with permanent roofline lighting glowing teal across the gables and garage' },
+  { id: 'p9', neighborhood: 'Commercial',         src: '/references/perm-commercial.webp',          alt: 'Commercial storefront with permanent blue and white roofline lighting shining over the parking lot' },
+];
+
+// Permanent Bistro Lighting completed work (#117; photos supplied by Naldo
+// this session): four commercial street-span installs from the Langdon LI
+// downtown job plus two residential backyard patios.
+export const BISTRO_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'b1', neighborhood: 'Main Street Glow',   src: '/references/bistro-street-van.webp',       alt: 'Warm bistro string lights spanning a downtown street at night, with the Yule Love Lights install van parked below' },
+  { id: 'b2', neighborhood: 'Downtown Canopy',    src: '/references/bistro-downtown-canopy.webp',  alt: 'Rows of warm bistro lights strung from a brick apartment building across the street, glowing against the night sky' },
+  { id: 'b3', neighborhood: 'Evening Stroll',     src: '/references/bistro-evening-stroll.webp',   alt: 'A couple walking beneath permanent bistro lights strung along a lit brick building at night' },
+  { id: 'b4', neighborhood: 'Corner to Corner',   src: '/references/bistro-corner-span.webp',      alt: 'Bistro string lights crossing a downtown intersection from a brick building, lighting the sidewalk below' },
+  { id: 'b5', neighborhood: 'Patio Fire Pit',     src: '/references/bistro-patio-firepit.webp',    alt: 'Backyard paver patio with a stone fire pit under a canopy of warm Edison bistro lights on poles' },
+  { id: 'b6', neighborhood: 'Backyard Nights',    src: '/references/bistro-backyard-nights.webp',  alt: 'Bistro lights strung on poles across a backyard lawn, glowing over the covered patio' },
 ];
 
 // Per-service-type "Completed Work" gallery selector (ledger #121). Positive
 // match on the non-holiday types (never `!== 'holiday'` — see AGENTS.md
 // service-type seam convention); holiday is the default/fallback case, and
-// any type whose own list is still empty (event, permanent today) falls back
-// to it too, so the portal gallery section never renders empty.
+// any type whose own list is still empty falls back to it too, so the portal
+// gallery section never renders empty.
 export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
   switch (serviceType) {
     case 'event':
       return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'permanent':
       return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    // Permanent Bistro Lighting (#117): its own completed-work photos as of
+    // this session (previously the Event gallery stood in as a placeholder).
+    case 'permanent_bistro':
+      return BISTRO_GALLERY_ITEMS.length > 0 ? BISTRO_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'holiday':
     default:
       return MOCK_GALLERY_ITEMS;
@@ -207,6 +234,7 @@ const CROSS_SELL_DISPLAY_NAMES: Record<ServiceType, string> = {
   holiday: 'Holiday Lighting',
   permanent: 'Permanent Lighting',
   event: 'Event Lighting',
+  permanent_bistro: 'Bistro Lighting',
 };
 
 // Preserves the given id order (rather than the source list's own order) and
@@ -246,6 +274,12 @@ export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
       break;
     case 'permanent':
       blocks = [holidayBlock, eventBlock];
+      break;
+    // Permanent Bistro Lighting (#117): permanent leads (the natural upsell —
+    // bistro's own FAQ points color-control shoppers at the permanent system),
+    // then holiday and event. All three other verticals show, with photos.
+    case 'permanent_bistro':
+      blocks = [permanentBlock, holidayBlock, eventBlock];
       break;
     case 'holiday':
     default:
@@ -329,6 +363,27 @@ export const PERMANENT_FAQ = [
     a: 'By the foot — a flat per-foot rate for the front, sides, and back you choose to light. Do the whole home, or start with the front and add on later.' },
   { q: 'How long does installation take?',
     a: 'Most homes are done in a day. We mount the track, set the pucks, wire the transformer and controller, and walk you through the app before we leave.' },
+];
+
+// Permanent Bistro Lighting — the FAQ shown on a bistro quote's portal (draft
+// copy; Naldo can revise). Same { q, a } shape as MOCK_FAQ; the portal page
+// passes this instead of MOCK_FAQ when service_type is 'permanent_bistro'
+// (bistro otherwise inherited the holiday seasonal-install Q&A, which is wrong
+// for a year-round, pole-mounted string-light install). Every answer is
+// grounded in a claim already made for permanent or event — see RiskReversal's
+// BISTRO_GUARANTEES. The color question is answered honestly: these are fixed
+// warm-white bulbs, not a color-changing system like permanent.
+export const BISTRO_FAQ = [
+  { q: 'How long does the install take?',
+    a: 'Most installs are done in a day. We set your poles and string the lights, then walk you through everything before we leave.' },
+  { q: 'Do the lights stay up all year?',
+    a: 'Yes. This is a permanent install, so your lights stay up year-round. There is no takedown.' },
+  { q: 'What if a bulb or strand fails?',
+    a: 'Reach out and we will come service it. We stand behind every install we hang.' },
+  { q: 'Can we change the colors or brightness?',
+    a: 'These are warm white, Edison-style café bulbs; one classic look, with no color-changing or dimming. Ask us about our permanent lighting system if you want color control.' },
+  { q: 'Do you service the lights after install?',
+    a: 'Yes. If anything needs attention down the road, just reach out and we will take care of it.' },
 ];
 
 export const MOCK_TEAM = {

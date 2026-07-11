@@ -33,6 +33,7 @@ import { requireOperator } from '@/lib/auth/supabaseServer';
 import { createJobFromQuote } from '@/lib/jobs';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 
 export const runtime = 'nodejs';
 
@@ -55,6 +56,9 @@ type QuoteForBooking = {
   // initiated, BEFORE deposit_paid_at is stamped by the webhook. A non-null
   // value with deposit_paid_at still null means a card payment is in flight.
   valor_order_ref: string | null;
+  // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
+  // this manual booking can stamp their referral code too (see below).
+  customer_id: string | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -86,7 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, status, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref')
+    .select('id, status, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref, customer_id')
     .eq('id', id)
     .maybeSingle<QuoteForBooking>();
 
@@ -189,6 +193,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Race loser: another concurrent request already booked this quote.
     const job = await createJobFromQuote(id); // idempotent — return the existing job
     return NextResponse.json({ ok: true, alreadyBooked: true, jobId: job?.id ?? null });
+  }
+
+  // Referral program (#41): this manual/operator booking write is a THIRD
+  // deposit-paid write site (found by reconciling every writer of deposit_paid_at
+  // — see AGENTS.md pitfall on cross-cutting seams), so it needs the same
+  // accrual the Valor webhook + simulate-deposit fire. Best-effort — must never
+  // block an operator's manual booking.
+  try {
+    await accrueOnBooking(id);
+  } catch (err) {
+    console.error('[api/quotes/:id/convert-to-job] referral accrual failed:', err);
+  }
+
+  // Referral program (#41 PR 2): stamp THIS quote's own customer with their
+  // referral code (+ GHL link) at the booking event, not only when they later
+  // view the booked page — so every customer has their link live by install
+  // day. Fail-open — must never block an operator's manual booking.
+  try {
+    if (quote.customer_id) await ensureReferralCode(quote.customer_id);
+  } catch (err) {
+    console.error('[api/quotes/:id/convert-to-job] referral code stamp failed:', err);
   }
 
   // We won the race. Create the job (idempotent on quote_id — a test job for a

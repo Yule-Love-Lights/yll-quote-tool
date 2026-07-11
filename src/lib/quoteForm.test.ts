@@ -45,6 +45,8 @@ const fullForm: QuoteFormData = {
   stakeLightingRecommended: false,
   event: { barrelBoxes: 3, installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
   permanent: makeDefaultPermanentFields(),
+  referralCredit: null,
+  permanentBistro: { poles: 0 },
 };
 
 describe('buildQuoteInputs', () => {
@@ -210,6 +212,15 @@ describe('buildQuoteInputs', () => {
     expect(inputs.installTiming).toBe('september');
     expect('discount' in inputs).toBe(false);
   });
+
+  it('sends referralCredit provenance only when applied; round-trips it (#41 PR2)', () => {
+    const withCredit = { ...fullForm, referralCredit: { amount: 125, consumedRowIds: ['r1', 'r2'] } };
+    const inputs = buildQuoteInputs(withCredit);
+    expect(inputs.referralCredit).toEqual({ amount: 125, consumedRowIds: ['r1', 'r2'] });
+    expect('referralCredit' in buildQuoteInputs(fullForm)).toBe(false); // null → omitted
+    const restored = inputsToFormData(withCredit.customer, inputs, withCredit.serviceType);
+    expect(restored.referralCredit).toEqual({ amount: 125, consumedRowIds: ['r1', 'r2'] });
+  });
 });
 
 describe('inputsToFormData', () => {
@@ -362,5 +373,35 @@ describe('event inputs (#96)', () => {
       eventDate: '',
       takedownDate: '',
     });
+  });
+});
+
+describe('permanentBistro inputs (#117)', () => {
+  const bistroForm: QuoteFormData = {
+    ...fullForm,
+    serviceType: 'permanent_bistro',
+    permanentBistro: { poles: 4 },
+  };
+
+  it('builds inputs.permanentBistro (poles only) for a permanent_bistro quote', () => {
+    expect(buildQuoteInputs(bistroForm).permanentBistro).toEqual({ poles: 4 });
+  });
+
+  it('does NOT emit inputs.permanentBistro for a holiday quote', () => {
+    expect('permanentBistro' in buildQuoteInputs({ ...fullForm, serviceType: 'holiday' })).toBe(false);
+  });
+
+  it('omits the permanentBistro block entirely when poles is 0', () => {
+    const inputs = buildQuoteInputs({ ...bistroForm, permanentBistro: { poles: 0 } });
+    expect('permanentBistro' in inputs).toBe(false);
+  });
+
+  it('round-trips the permanentBistro block through inputsToFormData', () => {
+    const restored = inputsToFormData(bistroForm.customer, buildQuoteInputs(bistroForm), 'permanent_bistro');
+    expect(restored.permanentBistro).toEqual(bistroForm.permanentBistro);
+  });
+
+  it('a legacy/non-bistro row hydrates a blank permanentBistro block', () => {
+    expect(inputsToFormData(null, {}).permanentBistro).toEqual({ poles: 0 });
   });
 });

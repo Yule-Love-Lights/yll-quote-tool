@@ -28,6 +28,9 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
+import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
+import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
@@ -256,6 +259,17 @@ export type QuoteBuilderInitial = {
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
+  // Referral program redemption (#41 PR 2): the quote's OWN linked customer
+  // (quotes.customer_id), so the credit banner can resolve identity WITHOUT a
+  // second save (only known once a quote has been saved + reopened — a
+  // brand-new quote in this same session doesn't have it yet, that's fine).
+  customerId?: string | null;
+  // Whether a referrals row exists with THIS quote as the referee (any
+  // status) — resolved server-side (refereeReferralFor) so the spritzer
+  // banner shows on a REOPENED quote even though the client-side "Referred
+  // by" picker state (only set in the session that originally picked it) is
+  // gone by then.
+  isReferee?: boolean;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -331,6 +345,29 @@ export default function QuoteBuilder({
   // status line so the operator knows whether the GHL side is in sync.
   const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
+  // Referral program (#41 "mention" attribution): an existing customer staff
+  // picked as "Referred by" while building THIS quote. The new quote's id (or,
+  // since the adversarial-review fix, an EXISTING quote's id on an update)
+  // becomes the referee — sent on every Calculate regardless, since the
+  // server creates the pending row idempotently on either path.
+  const [referredBy, setReferredBy] = useState<{ id: string; name: string } | null>(null);
+  // Referral program redemption (#41 PR 2). The quote's own linked customer
+  // never changes within a session — only known on a reopened/saved quote
+  // (see QuoteBuilderInitial.customerId). `referralCreditUsd` is fetched
+  // client-side (below) so the banner reflects the LIVE balance, not a
+  // page-load-stale one, and so it updates in place after Apply.
+  const linkedCustomerId = initialQuote?.customerId ?? null;
+  const [referralCreditUsd, setReferralCreditUsd] = useState(0);
+  // Referral program redemption (#41 adversarial-review HIGH fix): true from
+  // the moment Apply (or Remove) changes form.referralCredit until a save
+  // actually persists that change — guards Send so a portal link can never
+  // go out pointing at a quote whose discount doesn't yet match an
+  // already-spent (or already-released) credit. See applyReferralCredit /
+  // handleReferralCreditRemoved / handleSendToCustomer.
+  const [referralCreditUnsaved, setReferralCreditUnsaved] = useState(false);
+  // Loud, blocking message shown ON the credit banner specifically when the
+  // immediate auto-persist right after Apply/Remove fails.
+  const [referralPersistError, setReferralPersistError] = useState<string | null>(null);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -348,6 +385,32 @@ export default function QuoteBuilder({
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
+
+  // Referral program redemption (#41 PR 2): resolve the linked customer's
+  // LIVE credit balance client-side (rather than trusting a page-load-stale
+  // server value) via the /api/customers?id= single-lookup extension. Only
+  // runs when a customer is actually linked (a saved/reopened quote) — a
+  // brand-new quote has none yet. Best-effort: a fetch failure just means the
+  // banner doesn't show, never a builder error.
+  useEffect(() => {
+    if (!linkedCustomerId) return;
+    let stale = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/customers?id=${encodeURIComponent(linkedCustomerId)}`);
+        const data = await res.json();
+        const hit = Array.isArray(data.customers) ? data.customers[0] : null;
+        if (!stale && hit && typeof hit.referralCreditUsd === 'number') {
+          setReferralCreditUsd(hit.referralCreditUsd);
+        }
+      } catch {
+        // best-effort — the banner simply doesn't show
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [linkedCustomerId]);
 
   // Photo analysis (#35: the street photo lives in the DESIGN — only the
   // satellite keeps measurement polylines; street overlays/detections are gone)
@@ -1247,8 +1310,14 @@ export default function QuoteBuilder({
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
-      if (data.result) {
+      // #88/#117: only holiday + event seed from the holiday analyzer — permanent
+      // and permanent bistro design manually, so an analyzer result here (this
+      // route carries no serviceType gate of its own) is intentionally discarded
+      // rather than seeded onto their designs (mirrors handleLookupAddress below).
+      if (data.result && (form.serviceType === 'holiday' || form.serviceType === 'event')) {
         applyAnalysisResult(data);
+      } else if (data.result) {
+        setAnalysisNotes('Re-analyzed, but this quote type designs manually — nothing was auto-seeded.');
       } else {
         // FAIL-SAFE: analyzer unavailable on re-analyze — keep the existing photo
         // + design intact and just surface the notice (nothing to re-seed).
@@ -1432,11 +1501,15 @@ export default function QuoteBuilder({
       setSvHeading(null);
       setSvPitch(0);
       setSvFov(80);
-      if (data.result) {
+      // #88/#117: only holiday + event seed from the holiday analyzer result —
+      // permanent designs from its own satellite analyzer (permanentImageryOnly
+      // below) and permanent bistro designs manually, so a result here is
+      // intentionally discarded for both rather than seeded onto their designs.
+      if (data.result && (form.serviceType === 'holiday' || form.serviceType === 'event')) {
         applyAnalysisResult(data);
       } else {
-        // Imagery loaded WITHOUT a holiday seed: either permanent (which skips the
-        // holiday analyzer by design) or the fail-safe (analyzer down). The street
+        // Imagery loaded WITHOUT a holiday seed: permanent/bistro (which skip the
+        // holiday analyzer/seed by design) or the fail-safe (analyzer down). The street
         // photo creates the design; the satellite + its scale stay for measuring.
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
@@ -1520,6 +1593,14 @@ export default function QuoteBuilder({
                 'Photos loaded. Draw each side of the roofline on the Satellite tab (front/left/right/back) — footage, corners, and extensions fill in from the drawing.',
             );
           }
+        } else if (form.serviceType === 'permanent_bistro') {
+          // #117: bistro is imagery-only (the analyze-address route returns
+          // photos with no analyzer result for permanent_bistro) — bistro
+          // designs manually, so surface that instead of a false "the
+          // analyzer is unavailable" warning.
+          setAnalysisNotes(
+            'Photos loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.',
+          );
         } else {
           setAnalysisWarning(
             data.analysisError ??
@@ -1536,11 +1617,11 @@ export default function QuoteBuilder({
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
-    // #88: permanent lighting designs MANUALLY — no holiday auto-measure/seed.
-    // Load the uploaded photo into a bare design (no Anthropic call, no
-    // santas/gingerbread roofline drawn) so the operator draws the permanent
-    // roofline runs themselves. Mirrors the analyzer-outage fail-safe below.
-    if (form.serviceType === 'permanent') {
+    // #88/#117: permanent + permanent bistro design MANUALLY — no holiday
+    // auto-measure/seed. Load the uploaded photo into a bare design (no
+    // Anthropic call, no santas/gingerbread roofline drawn) so the operator
+    // draws the runs themselves. Mirrors the analyzer-outage fail-safe below.
+    if (form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro') {
       // Read the base64 from the File itself — photoPreview is a blob: object URL
       // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
       const base64 = await new Promise<string | null>((resolve) => {
@@ -1565,7 +1646,9 @@ export default function QuoteBuilder({
       setFewShotCount(0);
       setViewMode('design');
       setAnalysisNotes(
-        'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
+        form.serviceType === 'permanent_bistro'
+          ? 'Photo loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.'
+          : 'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
       );
       return;
     }
@@ -1610,6 +1693,94 @@ export default function QuoteBuilder({
 
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
+
+  // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
+  // Credit banner: the button is disabled whenever some OTHER discount (a
+  // manual %/flat entry, or an early-install promo) already occupies the
+  // quote's one discount slot — applying credit never silently merges with
+  // it. `form.referralCredit` marks "occupied by US", so that case alone
+  // stays enabled/shows the applied state instead.
+  const referralDiscountSlotOccupied =
+    (form.discountEnabled || form.installTiming !== 'none') && !form.referralCredit;
+
+  // Referral program redemption (#41 adversarial-review HIGH fix): Apply
+  // already CONSUMED the credit server-side (the banner's own POST to
+  // /api/referrals/consume flipped the referral rows to 'credited' before
+  // this ever runs) — so the discount must land on THIS quote in the SAME
+  // user action, or a Send-without-Calculate would hand the customer a
+  // portal link with no discount for a credit that's already spent. Persists
+  // immediately via the exact save path Calculate uses (runQuote), passing
+  // the just-updated form so buildQuoteInputs picks up discount+referralCredit
+  // without waiting on the async setForm. If that persist fails, the form
+  // KEEPS referralCredit set (re-saving is idempotent — the rows are already
+  // credited) and a loud, blocking message shows on the banner; Send stays
+  // blocked (referralCreditUnsaved) until a Calculate actually saves it.
+  const applyReferralCredit = async (result: { appliedUsd: number; consumedRowIds: string[]; balanceUsd: number }) => {
+    const nextForm: QuoteFormData = {
+      ...form,
+      discountEnabled: true,
+      discountType: 'flat',
+      discountAmount: result.appliedUsd,
+      // Referral credit always wins the one discount slot outright — clears
+      // any early-install promo pick so buildQuoteInputs actually emits the
+      // discount (the two are mutually exclusive; see quoteForm.ts).
+      installTiming: 'none',
+      referralCredit: { amount: result.appliedUsd, consumedRowIds: result.consumedRowIds },
+    };
+    setForm(nextForm);
+    setReferralCreditUsd(result.balanceUsd);
+    setReferralPersistError(null);
+    setReferralCreditUnsaved(true);
+    const persisted = await runQuote(undefined, nextForm);
+    if (persisted) {
+      setReferralCreditUnsaved(false);
+    } else {
+      setReferralPersistError("Credit applied but the quote didn't save. Click Calculate to finish.");
+    }
+  };
+
+  // "Remove referral credit" (#41 adversarial-review MED fix): the banner
+  // already RELEASED the credit server-side (POST /api/referrals/unconsume
+  // flipped the rows back to 'booked') before this runs — clear the form's
+  // discount + referralCredit and persist that removal the same way Apply
+  // persists its own change, for the same reason: leaving THIS quote's saved
+  // discount stale would let the same credit be double-spent (once here,
+  // once wherever it gets applied next) even though it reads "removed" here.
+  const handleReferralCreditRemoved = async (result: { releasedUsd: number }) => {
+    const nextForm: QuoteFormData = {
+      ...form,
+      discountEnabled: false,
+      discountType: 'percentage',
+      discountAmount: 0,
+      referralCredit: null,
+    };
+    setForm(nextForm);
+    setReferralCreditUsd((prev) => prev + result.releasedUsd);
+    setReferralPersistError(null);
+    setReferralCreditUnsaved(true);
+    const persisted = await runQuote(undefined, nextForm);
+    if (persisted) {
+      setReferralCreditUnsaved(false);
+    } else {
+      setReferralPersistError("Removed, but the quote didn't save. Click Calculate to finish.");
+    }
+  };
+
+  // Spritzer banner (referee side): shown when THIS session picked a
+  // referrer (referredBy) OR a saved/reopened quote already has a referral
+  // row with this quote as the referee (initialQuote.isReferee, resolved
+  // server-side since the client-side referredBy state never hydrates from a
+  // saved quote — the relationship lives in the referrals table, not inputs).
+  const isReferralReferee = !!referredBy || !!initialQuote?.isReferee;
+  const REFERRAL_SPRITZER_LINE_ID = 'referral-spritzers';
+  const spritzerLineAlreadyAdded = form.customLineItems.some((item) => item.id === REFERRAL_SPRITZER_LINE_ID);
+  const addReferralSpritzers = () => {
+    if (spritzerLineAlreadyAdded) return;
+    set('customLineItems', [
+      ...form.customLineItems,
+      { id: REFERRAL_SPRITZER_LINE_ID, label: '2 Free 16" Spritzers (referral)', amount: 0, quantity: 1 },
+    ]);
+  };
 
   // #102: difficulty dropdown change. Choosing "Custom…" pre-seeds the $/ft field
   // from the current preset's rate (so staff tweak a real number, not 0) unless a
@@ -1746,6 +1917,12 @@ export default function QuoteBuilder({
   // messaging app) — we don't auto-send yet. Phase 2 could add that.
   const handleSendToCustomer = async () => {
     if (!savedQuoteId) return;
+    // Referral program redemption (#41 adversarial-review HIGH fix): a
+    // referral-credit change (Apply or Remove) that hasn't been confirmed
+    // saved yet must block Send outright — the button is also disabled for
+    // this below, but the handler guards too (belt-and-suspenders for a
+    // money-safety path). The message renders next to the Send button.
+    if (referralCreditUnsaved) return;
     setSendStatus('sending');
     setSendError(null);
     setSendBlockedMsg(null);
@@ -1819,10 +1996,12 @@ export default function QuoteBuilder({
       // is right, so the staff-final state becomes a training example
       // (replaces this quote's previous auto snapshot on a re-send).
       // Best-effort. Positive gate: permanent quotes teach the SEPARATE
-      // permanent-analyzer library, never the holiday one.
+      // permanent-analyzer library, holiday + event teach the holiday one, and
+      // permanent bistro teaches NEITHER (#117 — no analyzer, nothing to train;
+      // a bistro photo must never pollute either library).
       if (form.serviceType === 'permanent') {
         void capturePermanentExample('auto-send');
-      } else {
+      } else if (form.serviceType === 'holiday' || form.serviceType === 'event') {
         void captureExample('auto-send');
       }
     } catch (err) {
@@ -1857,13 +2036,22 @@ export default function QuoteBuilder({
   // Run the quote calculation. `rooflineChoiceOverride` lets the breakdown's
   // staff-pick radios re-quote with a specific Santa's/Gingerbread choice
   // (#17 Phase 1b) without waiting on the async form-state update.
+  // Returns whether the save actually PERSISTED (data.persisted from
+  // /api/quote — a 200 with quoteId:null / persisted:false means the DB write
+  // itself failed even though pricing succeeded). Referral program (#41
+  // adversarial-review HIGH fix): applyReferralCredit / handleReferralCreditRemoved
+  // await this to know whether their own persist attempt actually landed, so
+  // they can surface a blocking warning instead of assuming success. Existing
+  // callers (the plain Calculate button, commitLinePrice/resetLinePrice) all
+  // call this with `void` and never read the return value — adding it is
+  // purely additive.
   const runQuote = async (
     rooflineChoiceOverride?: RooflineChoice,
     // #104: an explicit form snapshot to price with (bypasses async form state,
     // like rooflineChoiceOverride) when a click-to-edit commit re-prices in place
     // and may also clear the #102 $/ft on that line.
     formOverride?: QuoteFormData,
-  ) => {
+  ): Promise<boolean> => {
     setLoading(true);
     setError(null);
     setResult(null);
@@ -1893,7 +2081,7 @@ export default function QuoteBuilder({
           await editorFlushRef.current();
         } catch {
           setError('Design may not have saved — retry before calculating');
-          return;
+          return false;
         }
       }
       const res = await fetch('/api/quote', {
@@ -1920,10 +2108,21 @@ export default function QuoteBuilder({
           // so a normal edit of an unbooked quote sends nothing and stays locked.
           // `undefined` is dropped by JSON.stringify, so no key ships when not booked.
           amendReprice: savedStatus === 'booked' ? true : undefined,
+          // Referral program (#41): sent on every save. The server creates
+          // the pending "mention" referral on a NEW quote's first save
+          // (saveQuote) and ALSO on an update when none exists yet for this
+          // quote (updateQuote) — e.g. staff picking a referrer after
+          // reopening a quote that never had one (adversarial-review fix;
+          // both paths are idempotent, so a resave never duplicates it).
+          referredByCustomerId: referredBy?.id ?? undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      // #41 adversarial-review HIGH fix: the real save-succeeded signal — a
+      // 200 with persisted:false means the DB write failed even though
+      // pricing succeeded (see /api/quote's own persisted: saved !== null).
+      const persisted = data.persisted === true;
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
@@ -1979,8 +2178,10 @@ export default function QuoteBuilder({
         setAttachStatus('skipped');
         setAttachError('Quote not persisted — HighLevel link skipped. Check Supabase config.');
       }
+      return persisted;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
+      return false;
     } finally {
       setLoading(false);
     }
@@ -2102,11 +2303,16 @@ export default function QuoteBuilder({
     breakdownLinked.reduce((s, li) => (li.recommended ? s + li.price : s), 0) +
     recommendedRooflineAmount;
   // #131: the summary below gates against the RIGHT minimum — a permanent quote
-  // gates at its frozen snapshot minimumJobAmount, not the holiday $1,000.
+  // gates at its frozen snapshot minimumJobAmount, and a permanent bistro quote
+  // at its own frozen snapshot minimum (#117 — 0 is a valid "gate off" value,
+  // which the >= / < comparisons below already treat as "always clears").
+  // Neither is the holiday $1,000.
   const breakdownMinimum =
     form.serviceType === 'permanent'
       ? result?.permanentRatesSnapshot?.minimumJobAmount ?? 2500
-      : BUSINESS_RULES.minimumQuoteAmount;
+      : form.serviceType === 'permanent_bistro'
+        ? result?.permanentBistroRatesSnapshot?.minimum ?? 0
+        : BUSINESS_RULES.minimumQuoteAmount;
 
   // The engine emits one row per VALID custom line item, last, in order, with a
   // deterministic label. Map each to its index in form.customLineItems so a
@@ -2294,6 +2500,34 @@ export default function QuoteBuilder({
               </div>
             </div>
 
+            {/* Referral program (#41 "mention" attribution) — an existing
+                customer staff picks as "Referred by" while building THIS quote. */}
+            <ReferredByPicker value={referredBy} onChange={setReferredBy} />
+
+            {/* Referral program redemption (#41 PR 2) — referee side: this
+                customer gets 2 free spritzers on their first quote. Shows once
+                staff pick a referrer this session, OR (on a reopened quote)
+                once the server already knows this quote is a referee. */}
+            {isReferralReferee && (
+              <ReferralSpritzerBanner alreadyAdded={spritzerLineAlreadyAdded} onAdd={addReferralSpritzers} />
+            )}
+
+            {/* Referral program redemption (#41 PR 2) — referrer side: this
+                customer's own spendable credit. Only resolvable once the
+                quote's customer is linked (a saved/reopened quote). */}
+            {linkedCustomerId && savedQuoteId && (
+              <ReferralCreditBanner
+                customerId={linkedCustomerId}
+                quoteId={savedQuoteId}
+                balanceUsd={referralCreditUsd}
+                appliedCredit={form.referralCredit}
+                discountSlotOccupied={referralDiscountSlotOccupied}
+                persistError={referralPersistError}
+                onApplied={applyReferralCredit}
+                onRemoved={handleReferralCreditRemoved}
+              />
+            )}
+
             {/* Service type (#58 Phase 2b) — which line this quote belongs to.
                 Defaults to Holiday; drives the dashboard's per-service sections. */}
             <div className="mt-4">
@@ -2320,7 +2554,7 @@ export default function QuoteBuilder({
                 })}
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties).
+                Holiday = seasonal install + takedown · Permanent = year-round · Event = date-driven (weddings, parties) · Bistro = permanent café lights.
               </p>
             </div>
           </Section>
@@ -2340,7 +2574,9 @@ export default function QuoteBuilder({
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
-                : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
+                : form.serviceType === 'permanent_bistro'
+                  ? 'Look up the address on Google Maps for Street View + satellite imagery, or upload a photo. There is no auto-trace for bistro — draw the light runs and set the pole count below.'
+                  : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
             {/* Google lookup — pulls Street View + satellite. Permanent skips the
@@ -2360,7 +2596,9 @@ export default function QuoteBuilder({
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
                   ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
-                  : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
+                  : form.serviceType === 'permanent_bistro'
+                    ? 'Uses the Property Address above. Fetches Street View + satellite imagery so you draw the bistro light runs on a real photo.'
+                    : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -2407,7 +2645,11 @@ export default function QuoteBuilder({
                     disabled={analyzing}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
-                    {analyzing ? 'Analyzing…' : form.serviceType === 'permanent' ? 'Load photo to design' : 'Analyze with Claude'}
+                    {analyzing
+                      ? 'Analyzing…'
+                      : form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro'
+                        ? 'Load photo to design'
+                        : 'Analyze with Claude'}
                   </button>
                 </div>
               )}
@@ -2440,7 +2682,7 @@ export default function QuoteBuilder({
               {analysisNotes && (
                 <div className="bg-green-50 border border-green-200 rounded-md p-3 text-sm text-green-800">
                   <strong className="block mb-1">
-                    {form.serviceType === 'permanent'
+                    {form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro'
                       ? 'Photo loaded for the design canvas.'
                       : 'Analysis complete — measurements auto-filled, roofline drawn on the design.'}
                     {fewShotCount > 0 && (
@@ -2504,7 +2746,11 @@ export default function QuoteBuilder({
                     Satellite (top-down)
                   </button>
                 </div>
-                {form.serviceType !== 'permanent' && satelliteFeetPerPixel != null && (
+                {/* Santa's/Gingerbread roofline footage — holiday + event only
+                    (the same engines that price those two fields; permanent and
+                    permanent bistro don't). Positive list so a future type
+                    defaults to hidden, not shown. */}
+                {(form.serviceType === 'holiday' || form.serviceType === 'event') && satelliteFeetPerPixel != null && (
                   <div className="text-xs rounded border border-green-200 bg-green-50 px-2 py-1.5 font-semibold text-gray-700">
                     Satellite: front {satFootage.santas ?? '—'}ft · ridge+sides {satFootage.ginger ?? '—'}ft
                   </div>
@@ -2636,6 +2882,7 @@ export default function QuoteBuilder({
                       designId={designId}
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
+                      bistroOnly={form.serviceType === 'permanent_bistro'}
                       onReady={(flush) => { editorFlushRef.current = flush; }}
                     />
                     {form.serviceType === 'permanent' ? (
@@ -2644,6 +2891,12 @@ export default function QuoteBuilder({
                         &amp; extensions come from the Satellite tab&apos;s side lines — auto-traced on address
                         lookup, hand-editable. Saves automatically and attaches to this quote on Calculate.
                       </p>
+                    ) : form.serviceType === 'permanent_bistro' ? (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Draw the bistro light runs on the photo. Footage bills from what you draw here; set
+                        the pole count in the Permanent poles &amp; supports section below. Saves
+                        automatically and attaches to this quote on Calculate.
+                      </p>
                     ) : (
                       <p className="text-xs text-gray-400 mt-2">
                         Draw the install on the photo — roofline, minis, wreaths, garland, bows. The design IS the
@@ -2651,10 +2904,15 @@ export default function QuoteBuilder({
                         represent). Saves automatically and attaches to this quote on Calculate.
                       </p>
                     )}
-                    {/* #88: the "From your design" billable-items summary (minis/
-                        spritzers/wreaths/garland/bows) is holiday/event only — a
-                        permanent quote bills from the Permanent section, not drawn items. */}
-                    {form.serviceType !== 'permanent' && (
+                    {/* #88/#117: the "From your design" billable-items summary
+                        (minis/spritzers/wreaths/garland/bows) is holiday/event
+                        only — permanent bills from the Permanent section and
+                        permanent bistro from its own poles section + the design's
+                        bistro lines, neither of which this preview panel prices
+                        (it calls the generic holiday engine, which ignores bistro
+                        runs — see permanentBistro/types.ts), so showing it here
+                        would misreport a bistro quote as having 0 billable items. */}
+                    {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
                       <DesignSummary designId={designId} refreshKey={designEditorKey} />
                     )}
                   </>
@@ -2672,7 +2930,10 @@ export default function QuoteBuilder({
               <div className={viewMode === 'satellite' ? '' : 'hidden'}>
                 {satellitePreview ? (
                   <>
-                    {form.serviceType !== 'permanent' && (
+                    {/* This warns about the Claude-traced santas/gingerbread roofline
+                        lines below — holiday + event only; permanent and permanent
+                        bistro don't get an AI-traced roofline to verify. */}
+                    {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
                       <div className="mb-3 bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-900">
                         <strong>Verify the roof outline.</strong> Claude often traces the property edge or driveway instead of the actual roof. Drag points or re-draw the lines to hug the real shingle/ridge edges — footage auto-updates from what you draw.
                       </div>
@@ -2946,6 +3207,15 @@ export default function QuoteBuilder({
                           </button>
                         </div>
                       </div>
+                    ) : form.serviceType === 'permanent_bistro' ? (
+                      // #117: bistro doesn't measure from the satellite view — its
+                      // footage projects from the light runs drawn on the Design
+                      // tab, so the santas/gingerbread line-drawing tools below
+                      // (holiday + event only) don't apply here.
+                      <p className="mt-3 text-sm text-gray-500">
+                        Bistro doesn&apos;t measure from the satellite view — footage comes from the light
+                        runs you draw on the Design tab.
+                      </p>
                     ) : (
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
@@ -3148,7 +3418,12 @@ export default function QuoteBuilder({
             />
           )}
 
-          {form.serviceType !== 'permanent' && (
+          {/* Santa's/Gingerbread (+ holiday-only C9/Stake below) price only on the
+              holiday and event engines (event's roofline allow-list is santas +
+              gingerbread only). Positive list, not "!== permanent": permanent
+              bistro's engine prices none of this, and a new future type should
+              default to hidden too, not inherit it. */}
+          {(form.serviceType === 'holiday' || form.serviceType === 'event') && (
           <>
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
@@ -3325,6 +3600,22 @@ export default function QuoteBuilder({
             </Section>
           )}
 
+          {/* Permanent Bistro Lighting (#117) — poles/supports, the one form
+              input bistro carries (footage is design-drawn, projected server-side). */}
+          {form.serviceType === 'permanent_bistro' && (
+            <Section title="Permanent poles & supports">
+              <input
+                type="number"
+                min={0}
+                step="1"
+                className="border border-gray-300 rounded px-2 py-1 text-sm w-24 text-right"
+                value={form.permanentBistro.poles || ''}
+                onChange={ev => setForm(f => ({ ...f, permanentBistro: { ...f.permanentBistro, poles: Math.max(0, Math.floor(Number(ev.target.value) || 0)) } }))}
+              />
+              <span className="ml-2 text-xs text-gray-400">$ each (rate in Settings)</span>
+            </Section>
+          )}
+
           {/* ── Custom / manual line items (#27 escape hatch) ── */}
           <Section title="Custom / manual line items">
             <p className="text-xs text-gray-400 mb-3">
@@ -3360,13 +3651,16 @@ export default function QuoteBuilder({
             </button>
           </Section>
 
-          {/* ── Options ── holiday-only (takedown / rush / early-install). BOTH
-              permanent AND event force these off in pricing (permanent uses the
-              $2,500 gate, event carries no seasonal fees), so the whole section is
-              hidden for either — event has its own dates in EventSection. Per-quote
-              discount for permanent is a fast-follow (custom $/ft + custom line
-              items cover v1 price flexibility). */}
-          {form.serviceType !== 'permanent' && form.serviceType !== 'event' && (
+          {/* ── Options ── holiday-only (takedown / rush / early-install / the
+              $1,000-minimum waiver). Permanent, event, and permanent bistro all
+              force these off in pricing (permanent uses its own $2,500 gate,
+              event carries no seasonal fees, bistro uses its own Settings-editable
+              minimum), so the whole section is hidden for all three — event has
+              its own dates in EventSection. Positive list (holiday only), not a
+              negative one, so a future type defaults to hidden too. Per-quote
+              discount for permanent/bistro is a fast-follow (custom $/ft + custom
+              line items cover v1 price flexibility). */}
+          {form.serviceType === 'holiday' && (
           <Section title="Options">
 
             {/* Takedown */}
@@ -3403,66 +3697,79 @@ export default function QuoteBuilder({
                 all under one "Apply discount" toggle. Pick Percentage / Flat dollar
                 (enter an amount) or a Sep/Oct early-install month (fixed 15% / 10%).
                 Early-install is mutually exclusive with the rush fee, drives the
-                engine discount, and seeds the customer's portal install-timing. */}
+                engine discount, and seeds the customer's portal install-timing.
+                Referral program (#41 adversarial-review MED fix): once a referral
+                credit occupies the slot, these controls LOCK — staff can't quietly
+                drift the discount away from a credit that's already been
+                consumed server-side. Remove lives on the credit banner above
+                (the one place that already owns the consume/unconsume calls). */}
             <div>
-              <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
-                <input type="checkbox" checked={form.discountEnabled}
-                  onChange={e => {
-                    set('discountEnabled', e.target.checked);
-                    // Closing the discount section clears any early-install promo too.
-                    if (!e.target.checked) set('installTiming', 'none');
-                  }} />
-                Apply discount
-              </label>
-              {form.discountEnabled && (
-                <div className="pl-6 space-y-3">
-                  <div className="flex flex-wrap items-center gap-5">
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'none' && form.discountType === 'percentage'}
-                        onChange={() => { set('installTiming', 'none'); set('discountType', 'percentage'); }} />
-                      Percentage
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'none' && form.discountType === 'flat'}
-                        onChange={() => { set('installTiming', 'none'); set('discountType', 'flat'); }} />
-                      Flat dollar
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'september'}
-                        onChange={() => { set('installTiming', 'september'); set('rushFee', false); }} />
-                      September — 15% off
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name="discountKind"
-                        checked={form.installTiming === 'october'}
-                        onChange={() => { set('installTiming', 'october'); set('rushFee', false); }} />
-                      October — 10% off
-                    </label>
-                  </div>
-                  {form.installTiming === 'none' ? (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number" min="0"
-                        max={form.discountType === 'percentage' ? '100' : undefined}
-                        step="0.01"
-                        className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
-                        value={form.discountAmount || ''}
-                        placeholder={form.discountType === 'percentage' ? '20' : '100'}
-                        onChange={e => set('discountAmount', Number(e.target.value))}
-                      />
-                      <span className="text-xs text-gray-400">
-                        {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
-                      </span>
+              {form.referralCredit ? (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  Discount locked. A referral credit is applied. Use Remove on the referral banner above to edit it manually.
+                </p>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
+                    <input type="checkbox" checked={form.discountEnabled}
+                      onChange={e => {
+                        set('discountEnabled', e.target.checked);
+                        // Closing the discount section clears any early-install promo too.
+                        if (!e.target.checked) set('installTiming', 'none');
+                      }} />
+                    Apply discount
+                  </label>
+                  {form.discountEnabled && (
+                    <div className="pl-6 space-y-3">
+                      <div className="flex flex-wrap items-center gap-5">
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'none' && form.discountType === 'percentage'}
+                            onChange={() => { set('installTiming', 'none'); set('discountType', 'percentage'); }} />
+                          Percentage
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'none' && form.discountType === 'flat'}
+                            onChange={() => { set('installTiming', 'none'); set('discountType', 'flat'); }} />
+                          Flat dollar
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'september'}
+                            onChange={() => { set('installTiming', 'september'); set('rushFee', false); }} />
+                          September — 15% off
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="radio" name="discountKind"
+                            checked={form.installTiming === 'october'}
+                            onChange={() => { set('installTiming', 'october'); set('rushFee', false); }} />
+                          October — 10% off
+                        </label>
+                      </div>
+                      {form.installTiming === 'none' ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number" min="0"
+                            max={form.discountType === 'percentage' ? '100' : undefined}
+                            step="0.01"
+                            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
+                            value={form.discountAmount || ''}
+                            placeholder={form.discountType === 'percentage' ? '20' : '100'}
+                            onChange={e => set('discountAmount', Number(e.target.value))}
+                          />
+                          <span className="text-xs text-gray-400">
+                            {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
+                          </span>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-400">
+                          Pre-selects {form.installTiming === 'september' ? 'September' : 'October'} on the customer&apos;s portal; mutually exclusive with the rush fee.
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="text-xs text-gray-400">
-                      Pre-selects {form.installTiming === 'september' ? 'September' : 'October'} on the customer&apos;s portal; mutually exclusive with the rush fee.
-                    </p>
                   )}
-                </div>
+                </>
               )}
             </div>
 
@@ -3916,6 +4223,15 @@ export default function QuoteBuilder({
                 {` above. Recolor or remove ${unfulfillable.length === 1 ? 'it' : 'them'} before sending.`}
               </p>
             )}
+            {/* Referral program redemption (#41 adversarial-review HIGH fix):
+                a referral-credit change (Apply or Remove) hasn't been
+                confirmed saved on this quote yet — block Send until a
+                Calculate actually persists it. */}
+            {referralCreditUnsaved && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                Referral credit is applied but not saved yet. Click Calculate, then send.
+              </p>
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 Click to copy the link AND move this quote to &ldquo;Bid Sent&rdquo; in HighLevel. Then paste the URL into your email / text to the customer.
@@ -3923,11 +4239,13 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending' || hasUnfulfillable || (form.serviceType === 'event' && !eventDatesValid)}
+                disabled={sendStatus === 'sending' || hasUnfulfillable || referralCreditUnsaved || (form.serviceType === 'event' && !eventDatesValid)}
                 title={
-                  form.serviceType === 'event' && !eventDatesValid
-                    ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
-                    : undefined
+                  referralCreditUnsaved
+                    ? 'Click Calculate to save the referral credit change before sending.'
+                    : form.serviceType === 'event' && !eventDatesValid
+                      ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
+                      : undefined
                 }
                 className="shrink-0 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium text-sm px-5 py-2.5 rounded-md whitespace-nowrap"
               >
@@ -3977,7 +4295,11 @@ export default function QuoteBuilder({
               </div>
             )}
 
-            {/* ── Training capture (#8 Stage A / #141 permanent) ── */}
+            {/* ── Training capture (#8 Stage A / #141 permanent) — no analyzer
+                for permanent bistro (#117), so hide the whole block: there's
+                nothing to teach, and the button would otherwise silently
+                write a bistro photo into the holiday library. ── */}
+            {(form.serviceType === 'holiday' || form.serviceType === 'event' || form.serviceType === 'permanent') && (
             <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
               <p className="text-xs text-gray-500 flex-1">
                 {form.serviceType === 'permanent'
@@ -4001,6 +4323,7 @@ export default function QuoteBuilder({
                 {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
               </button>
             </div>
+            )}
           </div>
         )}
 

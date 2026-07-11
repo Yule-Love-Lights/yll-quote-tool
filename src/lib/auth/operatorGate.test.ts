@@ -113,4 +113,28 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p, 'POST')).toBe(false);
     expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
   });
+
+  it('treats the referral landing page as public (ledger #41)', () => {
+    for (const p of ['/refer', '/refer/ABCD1234', '/refer/not-a-real-code']) {
+      expect(isPublicPath(p), p).toBe(true);
+    }
+  });
+
+  it('allows POST /api/referrals/submit (referral landing page lead form) but keeps other methods operator-only (#41)', () => {
+    const p = '/api/referrals/submit';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('allows POST + OPTIONS /api/leads (website lead form, cross-origin) but keeps other methods operator-only (#leads)', () => {
+    const p = '/api/leads';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'OPTIONS')).toBe(true); // CORS preflight from yulelovelights.com
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
+  });
 });

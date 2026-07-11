@@ -15,9 +15,12 @@ import { notFound } from 'next/navigation';
 import { Truck, MessageSquare, PackageOpen, Phone, CreditCard, ArrowRight } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/dark/ApprovalCelebration';
+import { ReferralSection } from '@/components/portal/dark/ReferralSection';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { formatQuoteRef, formatUsd } from '@/components/portal/format';
 import type { PortalQuote } from '@/components/portal/types';
+import { ensureReferralCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 
 type Params = { quoteId: string };
 
@@ -52,6 +55,12 @@ export default async function PortalApprovedPage({
   const { balance } = await searchParams;
   const balancePaid = balance === 'paid';
   const quote = await resolveQuote(quoteId);
+  // Referral program (#41): ensure this customer's referral code server-side
+  // so the section below can show their personal link. Best-effort — a quote
+  // with no linked customer row (walk-in/test data, or Supabase unconfigured
+  // dev mode) gets null back and the section renders copy-only, no link.
+  const referralCode = quote.customerId ? await ensureReferralCode(quote.customerId) : null;
+  const referralLink = referralCode ? `${appBaseUrl()}/refer/${referralCode}` : null;
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
@@ -60,16 +69,20 @@ export default async function PortalApprovedPage({
   // premium-takedown add-on (premium pulls everything down before Jan 9).
   // Optional-chained so the dev MOCK_QUOTE (no approval) renders the standard
   // windows.
-  // Service line drives the confirmation copy (3-valued — holiday / permanent / event).
+  // Service line drives the confirmation copy (4-valued — holiday / permanent /
+  // event / permanent bistro).
   // Permanent = year-round: no seasonal window, no takedown, track-mounted (not clipped).
   // Event (#96, live) = date-driven + short-term: it DOES take down (but not on the
   // holiday season window) and is clip-installed like holiday. Only holiday gets the
   // seasonal install window + the Jan 9–Feb 3 takedown copy.
+  // Permanent bistro = year-round like permanent: no seasonal window, no takedown row
+  // (poles/supports go up once) — modeled on permanent's handling below.
   const isPermanent = quote.serviceType === 'permanent';
   const isEvent = quote.serviceType === 'event';
-  const headlineEmoji = isPermanent ? '💡' : isEvent ? '🎉' : '🎄';
+  const isPermanentBistro = quote.serviceType === 'permanent_bistro';
+  const headlineEmoji = isPermanent ? '💡' : isEvent ? '🎉' : isPermanentBistro ? '✨' : '🎄';
   const installWindow =
-    isPermanent || isEvent
+    isPermanent || isEvent || isPermanentBistro
       ? "We'll confirm your install date"
       : quote.approval?.installTiming === 'september'
         ? 'Mid-Late September'
@@ -77,14 +90,17 @@ export default async function PortalApprovedPage({
           ? 'October'
           : 'Mid-November – Early December';
   const takedownWindow = quote.approval?.takedownSelected ? 'Starting Jan 1' : 'Jan 9 – Feb 3';
-  // Summary field: permanent = lifetime warranty (no takedown); event = after the
-  // event (no holiday window); holiday = the seasonal window.
-  const takedownFieldLabel = isPermanent ? 'Warranty' : 'Takedown';
+  // Summary field: permanent = lifetime warranty (no takedown); permanent bistro =
+  // workmanship warranty (no takedown); event = after the event (no holiday
+  // window); holiday = the seasonal window.
+  const takedownFieldLabel = isPermanent || isPermanentBistro ? 'Warranty' : 'Takedown';
   const takedownFieldValue = isPermanent
     ? 'Lifetime materials'
-    : isEvent
-      ? 'After your event'
-      : takedownWindow;
+    : isPermanentBistro
+      ? 'Workmanship warranty'
+      : isEvent
+        ? 'After your event'
+        : takedownWindow;
 
   // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
@@ -122,7 +138,9 @@ export default async function PortalApprovedPage({
       title: 'Our team installs',
       body: isPermanent
         ? '2–4 hours on-site. We mount the track to your roofline and set the LED pucks — clean and low-profile. You don\'t need to be home.'
-        : '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
+        : isPermanentBistro
+          ? 'We set your poles and string the lights on-site. Clean install, no mess left behind.'
+          : '2–4 hours on-site. Clips only — no nails, no staples, no damage. You don\'t need to be home.',
     },
     isPermanent
       ? {
@@ -130,17 +148,23 @@ export default async function PortalApprovedPage({
           title: 'Lifetime materials warranty',
           body: 'Your lights stay up year-round — no takedown. The LED pucks and track carry a lifetime materials warranty (labor billed separately, non-transferable).',
         }
-      : isEvent
+      : isPermanentBistro
         ? {
             icon: PackageOpen,
-            title: 'We take everything down',
-            body: 'After your event, our team returns to remove everything — lights, clips, extensions — all gone. We confirm the takedown timing with you.',
+            title: 'Your lights stay up for good',
+            body: 'No takedown. Your bistro lights stay strung and ready every night, backed by a workmanship warranty.',
           }
-        : {
-            icon: PackageOpen,
-            title: 'We take everything down',
-            body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
-          },
+        : isEvent
+          ? {
+              icon: PackageOpen,
+              title: 'We take everything down',
+              body: 'After your event, our team returns to remove everything — lights, clips, extensions — all gone. We confirm the takedown timing with you.',
+            }
+          : {
+              icon: PackageOpen,
+              title: 'We take everything down',
+              body: `Takedown ${quote.approval?.takedownSelected ? 'starts Jan 1' : 'runs Jan 9 – Feb 3'}. Lights, clips, extensions — all gone.`,
+            },
   ];
 
   return (
@@ -257,29 +281,12 @@ export default async function PortalApprovedPage({
         </div>
       </section>
 
-      <section aria-labelledby="snow-approved-referral" className="w-full bg-[#060B0F]">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
-          <div className="max-w-2xl">
-            <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-3">
-              Want to help a neighbor?
-            </p>
-            <h2
-              id="snow-approved-referral"
-              className="font-display text-[28px] md:text-[42px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
-            >
-              Refer a neighbor, get{' '}
-              <span className="text-[#FFB744]" style={{ textShadow: '0 0 22px rgba(255,183,68,0.35)' }}>
-                $150 off
-              </span>{' '}
-              next year.
-            </h2>
-            <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
-              Tell them to mention you when they call us! When they book an install, we&apos;ll
-              credit your account automatically, stackable for every friend who joins.
-            </p>
-          </div>
-        </div>
-      </section>
+      <ReferralSection
+        referralLink={referralLink}
+        creditUsd={REFERRAL_CREDIT_USD}
+        spritzerCount={REFERRAL_FRIEND_SPRITZERS.count}
+        spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
+      />
 
       <section aria-label="Support" className="w-full bg-[#0D1519] border-t border-[#1F2A23]">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-20 text-center">

@@ -14,6 +14,7 @@ import type {
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
+import type { PermanentBistroInputFields } from './permanentBistro/types';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -91,6 +92,18 @@ export type QuoteFormData = {
   // 'permanent'; only sent to the engine (via buildQuoteInputs) for permanent
   // quotes. Always present in the form so the picker can switch to it cleanly.
   permanent: PermanentQuoteFields;
+  // Referral program redemption (#41 PR 2): provenance for a referral-credit
+  // discount application — set when staff clicks "Apply as discount" on the
+  // credit banner (which ALSO sets discountEnabled/discountType/discountAmount
+  // above). null = no referral credit applied. Purely additive/display —
+  // ridden through to inputs.referralCredit so the snapshot freeze remembers
+  // which rows were spent (see pricingEngine.ts QuoteInputs.referralCredit).
+  referralCredit: { amount: number; consumedRowIds: string[] } | null;
+  // Permanent Bistro Lighting (#117) — permanent_bistro-only inputs, edited
+  // only when serviceType === 'permanent_bistro'. Bistro FOOTAGE is
+  // design-driven (projected from the drawn scene, mirrors event's bistro),
+  // so only the pole count lives on the form.
+  permanentBistro: { poles: number };
 };
 
 export const initialFormData: QuoteFormData = {
@@ -126,6 +139,8 @@ export const initialFormData: QuoteFormData = {
   stakeLightingRecommended: false,
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
   permanent: makeDefaultPermanentFields(),
+  referralCredit: null,
+  permanentBistro: { poles: 0 },
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -162,6 +177,18 @@ function buildEventInputs(form: QuoteFormData): { event?: EventInputFields } {
     ...(form.event.takedownDate ? { takedownDate: form.event.takedownDate } : {}),
   };
   return Object.keys(e).length > 0 ? { event: e } : {};
+}
+
+// Permanent Bistro Lighting (#117): the permanentBistro-only inputs block,
+// only for permanent_bistro quotes and only the fields staff set. Bistro
+// FOOTAGE is NOT here — it's design-driven and merged in by
+// applyProjectionToInputs (route side) from the drawn scene, mirroring event.
+function buildPermanentBistroInputs(form: QuoteFormData): { permanentBistro?: PermanentBistroInputFields } {
+  if (form.serviceType !== 'permanent_bistro') return {};
+  const pb: PermanentBistroInputFields = {
+    ...(form.permanentBistro.poles > 0 ? { poles: form.permanentBistro.poles } : {}),
+  };
+  return Object.keys(pb).length > 0 ? { permanentBistro: pb } : {};
 }
 
 export function buildQuoteInputs(
@@ -216,6 +243,9 @@ export function buildQuoteInputs(
     // #88 Permanent: send the permanent block ONLY for permanent quotes, so a
     // holiday quote's inputs jsonb stays clean and the holiday engine never sees it.
     ...(form.serviceType === 'permanent' ? { permanent: form.permanent } : {}),
+    // Permanent Bistro Lighting (#117) — permanentBistro-only inputs (poles),
+    // permanent_bistro quotes only.
+    ...buildPermanentBistroInputs(form),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -230,6 +260,9 @@ export function buildQuoteInputs(
             : form.discountAmount,
       },
     }),
+    // Referral program redemption (#41 PR 2) — provenance only, only sent
+    // when a referral credit was actually applied (legacy-clean jsonb).
+    ...(form.referralCredit ? { referralCredit: form.referralCredit } : {}),
   };
 }
 
@@ -330,5 +363,10 @@ export function inputsToFormData(
     permanent: i.permanent
       ? { ...makeDefaultPermanentFields(), ...i.permanent }
       : makeDefaultPermanentFields(),
+    // Referral program redemption (#41 PR 2) — legacy/no-credit rows → null.
+    referralCredit: i.referralCredit ?? null,
+    // Permanent Bistro Lighting (#117) — hydrate the poles count; bistro
+    // footage is design-driven, not a form field. Legacy/non-bistro rows → 0.
+    permanentBistro: { poles: i.permanentBistro?.poles ?? 0 },
   };
 }

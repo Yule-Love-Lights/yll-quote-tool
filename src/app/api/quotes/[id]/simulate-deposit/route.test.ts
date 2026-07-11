@@ -10,8 +10,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { type NextRequest } from 'next/server';
 
-const { createJobFromQuote } = vi.hoisted(() => ({
+const { createJobFromQuote, accrueOnBooking, ensureReferralCode } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
+  ensureReferralCode: vi.fn(async () => 'CODE1234'),
 }));
 
 let quoteRow: Record<string, unknown> | null = null;
@@ -48,6 +50,7 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => makeSb(),
 }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
+vi.mock('@/lib/referrals', () => ({ accrueOnBooking, ensureReferralCode }));
 
 import { POST } from './route';
 
@@ -70,6 +73,7 @@ beforeEach(() => {
     deposit_paid_at: null,
     deposit_amount_usd: 500,
     approval_snapshot: { customerSelection: { currentDepositUsd: 500 } },
+    customer_id: null,
   };
 });
 
@@ -109,6 +113,42 @@ describe('POST /api/quotes/[id]/simulate-deposit (#93)', () => {
     expect(res.status).toBe(200);
     expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
     expect(createJobFromQuote).toHaveBeenCalledWith(ID);
+    // #41 referral program: the simulated booking event fires the accrual too
+    // (mirrors the real Valor webhook path this route is built to mirror).
+    expect(accrueOnBooking).toHaveBeenCalledWith(ID);
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
+  });
+
+  // #41 PR 2: stamp-at-booking — every future customer gets their referral
+  // link live in GHL from the moment they book, not only when they later
+  // view the booked page.
+  it('stamps the referral code for the quote\'s OWN linked customer on booking', async () => {
+    quoteRow = { ...quoteRow, customer_id: 'cust-1' };
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the referral code stamp when the quote has no linked customer (typical for a test quote)', async () => {
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {
+    quoteRow = { ...quoteRow, customer_id: 'cust-1' };
+    ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
   });
 
   it('is idempotent — already paid returns alreadyPaid and creates no new job', async () => {

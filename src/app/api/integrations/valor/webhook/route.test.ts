@@ -23,6 +23,8 @@ const {
   getInvoiceByJob,
   notifyTelegram,
   getJobWorkOrder,
+  accrueOnBooking,
+  ensureReferralCode,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
@@ -53,6 +55,12 @@ const {
       unbound: [], totalLines: 1,
     },
   })),
+  // Referral program (#41): mocked so the webhook test asserts the wiring
+  // (called once per booking) without touching the referrals table. Its OWN
+  // idempotency is covered in src/lib/referrals.test.ts.
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
+  // Referral program (#41 PR 2): stamp-at-booking — mocked the same way.
+  ensureReferralCode: vi.fn(async () => 'CODE1234'),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -84,6 +92,11 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   isHighLevelConfigured: () => hl.configured.value,
   HighLevelError: class HighLevelError extends Error {},
+}));
+
+vi.mock('@/lib/referrals', () => ({
+  accrueOnBooking,
+  ensureReferralCode,
 }));
 
 import { POST, GET } from './route';
@@ -170,6 +183,7 @@ const QUOTE = {
   deposit_amount_usd: 1350,
   valor_txn_id: null,
   approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 1350 } },
+  customer_id: null,
 };
 
 beforeEach(() => {
@@ -215,6 +229,10 @@ describe('Valor webhook — happy path', () => {
     expect(createJobFromQuote).toHaveBeenCalledTimes(1);
     expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
 
+    // #41 referral program: the booking event fires the accrual exactly once.
+    expect(accrueOnBooking).toHaveBeenCalledTimes(1);
+    expect(accrueOnBooking).toHaveBeenCalledWith('quote-1');
+
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
     expect(notifyTelegram).toHaveBeenCalledTimes(1);
@@ -233,6 +251,50 @@ describe('Valor webhook — happy path', () => {
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true); // payment recorded despite the job failure
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true); // payment recorded despite the accrual failure
+  });
+
+  // #41 PR 2: stamp-at-booking — every future customer gets their referral
+  // link live in GHL from the moment they're booked via a real Valor payment.
+  it('stamps the referral code for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the referral code stamp when the quote has no linked customer', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
   });
 
   it('verifies a signature built with the Stripe-style `${ts}.${body}` fallback base', async () => {

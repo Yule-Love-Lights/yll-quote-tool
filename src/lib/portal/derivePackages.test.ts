@@ -440,6 +440,31 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
     const priced = priceSelection(1000, effectiveCharges(charges, false, false));
     expect(priced.tax).toBe(Math.round(1000 * BUSINESS_RULES.taxRate * 100) / 100);
   });
+
+  // Permanent Bistro Lighting: mirrors the event zeroing above — a permanent
+  // bistro install never carries a rush/takedown fee (it goes up once), so a
+  // stray/forged toggle on the live portal must still price to $0.
+  it('zeroes rush/takedown amounts for a permanent bistro result (defense in depth)', () => {
+    const charges = chargesFromResult(
+      resultWith({
+        rushFeeAmount: 0,
+        takedownAmount: 0,
+        taxableAmount: 100,
+        taxAmount: 8.63,
+        permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 0 },
+      }),
+    );
+    expect(charges.rush.amount).toBe(0);
+    expect(charges.takedown.amount).toBe(0);
+    // Toggling "on" a zero-amount fee still adds nothing.
+    expect(effectiveCharges(charges, true, true)).toEqual({
+      rushFee: 0,
+      takedown: 0,
+      taxRate: charges.taxRate,
+      discountRate: 0,
+      discountFlat: 0,
+    });
+  });
 });
 
 describe('effectiveCharges — toggle state → priceSelection input (#4)', () => {
