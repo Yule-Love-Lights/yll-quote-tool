@@ -87,9 +87,9 @@ describe('crossSellFor', () => {
     expect(crossSellFor(undefined)).toEqual(crossSellFor('holiday'));
   });
 
-  it('viewing permanent_bistro mirrors permanent (holiday then event)', () => {
+  it('viewing permanent_bistro shows all three others, permanent first (the color-control upsell)', () => {
     const blocks = crossSellFor('permanent_bistro');
-    expect(blocks.map((b) => b.serviceType)).toEqual(['holiday', 'event']);
+    expect(blocks.map((b) => b.serviceType)).toEqual(['permanent', 'holiday', 'event']);
   });
 
   it('every block has exactly 3 items', () => {

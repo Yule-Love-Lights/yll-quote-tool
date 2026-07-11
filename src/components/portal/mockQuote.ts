@@ -275,10 +275,11 @@ export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
     case 'permanent':
       blocks = [holidayBlock, eventBlock];
       break;
-    // Permanent Bistro Lighting (#117) mirrors permanent's cross-sell choice
-    // (holiday + event) — no dedicated bistro cross-sell block yet.
+    // Permanent Bistro Lighting (#117): permanent leads (the natural upsell —
+    // bistro's own FAQ points color-control shoppers at the permanent system),
+    // then holiday and event. All three other verticals show, with photos.
     case 'permanent_bistro':
-      blocks = [holidayBlock, eventBlock];
+      blocks = [permanentBlock, holidayBlock, eventBlock];
       break;
     case 'holiday':
     default:
