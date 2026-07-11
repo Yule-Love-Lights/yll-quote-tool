@@ -59,15 +59,29 @@ describe('pipelineActions', () => {
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'done' } })).toEqual(['details']);
     expect(kinds({ ...base, quoteStatus: 'booked', depositPaid: true, job: { id: 'j', status: 'cancelled' } })).toEqual(['details']);
   });
-  it('declined/cancelled/lost → rebook + details (revive a dead quote, #116)', () => {
-    for (const s of ['declined', 'cancelled', 'lost'] as const)
-      expect(kinds({ ...base, quoteStatus: s })).toEqual(['rebook', 'details']);
+  it('declined/lost → send channels + rebook + details (revive in place OR clone fresh, #116)', () => {
+    // #116 re-send half: declined/lost get the same three send descriptors as
+    // any other pre-terminal status (Send route treats declined/lost as a
+    // revive — re-open the SAME quote to 'sent') PLUS rebook (clone a new
+    // draft) — the operator's choice.
+    for (const s of ['declined', 'lost'] as const)
+      expect(kinds({ ...base, quoteStatus: s })).toEqual(['send', 'send', 'send', 'rebook', 'details']);
+  });
+  it('cancelled → rebook + details ONLY (no revive — post-booking, refunds are manual)', () => {
+    // Cancelled means a deposit was taken and the job cancelled; re-sending
+    // the same quote would paper over a refund conversation. Rebook-only.
+    expect(kinds({ ...base, quoteStatus: 'cancelled' })).toEqual(['rebook', 'details']);
   });
   it('offers rebook only from the terminal states (declined/cancelled/lost), never from a live one', () => {
     for (const s of ['declined', 'cancelled', 'lost'] as const)
       expect(kinds({ ...base, quoteStatus: s })).toContain('rebook');
     for (const s of ['draft', 'sent', 'viewed', 'changes_requested', 'approved', 'booked'] as const)
       expect(kinds({ ...base, quoteStatus: s })).not.toContain('rebook');
+  });
+  it('offers send (revive) from declined/lost but NOT cancelled', () => {
+    for (const s of ['declined', 'lost'] as const)
+      expect(kinds({ ...base, quoteStatus: s })).toContain('send');
+    expect(kinds({ ...base, quoteStatus: 'cancelled' })).not.toContain('send');
   });
   it('offers staff-decline exactly from the states a decline is legal FROM (#124: draft/sent/viewed/approved/changes_requested)', () => {
     // Mirror quoteStatus.ts canTransition(from, "declined") = {draft, sent, viewed,
