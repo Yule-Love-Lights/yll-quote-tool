@@ -32,8 +32,12 @@ const STATUS_STYLE: Record<ReferralStatus, { label: string; bg: string; fg: stri
   credited: { label: 'Credited', bg: '#6b7280', fg: 'var(--brand-cream)' },
 };
 
-function ReferralStatusPill({ status }: { status: ReferralStatus }) {
-  const s = STATUS_STYLE[status];
+// Display-only (#41 expiry): a 'booked' row whose credit lapsed — the DB
+// status stays 'booked', so this overrides the pill, not the status.
+const EXPIRED_STYLE = { label: 'Expired', bg: '#57534e', fg: 'var(--brand-cream)' };
+
+function ReferralStatusPill({ status, expired }: { status: ReferralStatus; expired?: boolean }) {
+  const s = expired ? EXPIRED_STYLE : STATUS_STYLE[status];
   return (
     <span
       className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded"
@@ -88,6 +92,7 @@ export async function CustomerReferralPanel({ customerId }: { customerId: string
           <span style={{ color: 'var(--op-text-dim)' }}> · {fmtMoney(summary.lifetimeEarnedUsd)} lifetime earned</span>
           <span style={{ color: 'var(--op-text-dim)' }}>
             {' '}· {summary.pendingCount} pending · {summary.bookedCount} booked · {summary.creditedCount} credited
+            {summary.expiredCount > 0 ? ` · ${summary.expiredCount} expired` : ''}
           </span>
         </p>
 
@@ -123,7 +128,7 @@ export async function CustomerReferralPanel({ customerId }: { customerId: string
                   <tr key={item.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                     <td className="px-4 py-2.5" style={{ color: 'var(--op-text)' }}>{item.displayName}</td>
                     <td className="px-3 py-2.5" style={{ color: 'var(--op-text-2)' }}>{SOURCE_LABEL[item.source]}</td>
-                    <td className="px-3 py-2.5"><ReferralStatusPill status={item.status} /></td>
+                    <td className="px-3 py-2.5"><ReferralStatusPill status={item.status} expired={item.expired} /></td>
                     <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>
                       {date ? fmtDate(date) : '—'}
                     </td>

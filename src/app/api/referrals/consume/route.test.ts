@@ -114,6 +114,38 @@ describe('POST /api/referrals/consume', () => {
     expect(consumeCreditsMock).toHaveBeenCalledWith(CUSTOMER_ID, QUOTE_ID, 80);
   });
 
+  it('returns the CONSUMED amount when the claim flipped less than the balance read (#41 expiry race) — the billed discount must never exceed the credit actually consumed', async () => {
+    // A row expires between the route's balance read (250) and consumeCredits'
+    // claim: only the still-live 125 row flips. The response must report 125,
+    // not the stale 250 — otherwise the builder bills a $250 discount for
+    // $125 of consumed credit.
+    creditBalanceForMock.mockResolvedValueOnce(250);
+    consumeCreditsMock.mockResolvedValueOnce({
+      consumed: true,
+      consumedRowIds: ['r-live'],
+      consumedUsd: 125,
+      newBalanceUsd: 0,
+    });
+    const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.appliedUsd).toBe(125);
+  });
+
+  it('still clamps to the subtotal when consumedUsd exceeds it (whole-balance consumption on a cheap quote)', async () => {
+    getQuoteRawMock.mockResolvedValueOnce({ id: QUOTE_ID, customer_id: CUSTOMER_ID, is_test: false, result: { subtotalBeforeDiscount: 80 } });
+    creditBalanceForMock.mockResolvedValueOnce(250);
+    consumeCreditsMock.mockResolvedValueOnce({
+      consumed: true,
+      consumedRowIds: ['r1', 'r2'],
+      consumedUsd: 250,
+      newBalanceUsd: 0,
+    });
+    const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
+    const json = await res.json();
+    expect(json.appliedUsd).toBe(80);
+  });
+
   it('applies the full balance when the quote subtotal is bigger', async () => {
     const res = await POST(makeReq({ customerId: CUSTOMER_ID, quoteId: QUOTE_ID }));
     const json = await res.json();
