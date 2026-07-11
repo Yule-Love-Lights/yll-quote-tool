@@ -72,10 +72,12 @@ describe('buildBistroBom — worked example (runs=[40,35,25], poles=2)', () => {
     expect(concrete.extCost).toBe(12);
   });
 
-  it('timer (B0F5M2S8VJ): 1 per job', () => {
+  it('timer (B0F5M2S8VJ): 1 per job at the confirmed $24', () => {
     const l = line(bom, 'B0F5M2S8VJ')!;
     expect(l.qty).toBe(1);
     expect(l.supplier).toBe('amazon');
+    expect(l.unitCost).toBe(24);
+    expect(l.extCost).toBe(24);
   });
 
   it('every line has a matching extCost = round(qty*unitCost)', () => {
@@ -85,13 +87,13 @@ describe('buildBistroBom — worked example (runs=[40,35,25], poles=2)', () => {
   });
 
   it('totals: unitsBySupplier + extCostTotal', () => {
-    expect(bom.totals.unitsBySupplier).toEqual({ thunder: 5.94, 'home-depot': 124, amazon: 0 });
-    expect(bom.totals.extCostTotal).toBe(129.94);
+    expect(bom.totals.unitsBySupplier).toEqual({ thunder: 5.94, 'home-depot': 124, amazon: 24 });
+    expect(bom.totals.extCostTotal).toBe(153.94);
   });
 
-  it('flags the unconfirmed Thunder/Amazon costs', () => {
+  it('flags the unconfirmed Thunder costs (timer confirmed at $24, no longer flagged)', () => {
     expect(bom.flags).toContain(
-      'Thunder + Amazon unit costs not confirmed yet — quantities are exact, costs show $0 until set.',
+      'Thunder unit costs not confirmed yet — quantities are exact, costs show $0 until set.',
     );
   });
 });
@@ -183,14 +185,14 @@ describe('buildBistroBom — costOverrides', () => {
     expect(cord.extCost).toBe(3.25); // qty 1
     // Every other Thunder SKU is still unconfirmed ($0) → the flag still fires.
     expect(bom.flags).toContain(
-      'Thunder + Amazon unit costs not confirmed yet — quantities are exact, costs show $0 until set.',
+      'Thunder unit costs not confirmed yet — quantities are exact, costs show $0 until set.',
     );
   });
 
   it('overriding EVERY unconfirmed SKU clears the flag', () => {
     const overrides = new Map([
       ['80324', 1], ['80011', 1], ['80002', 1], ['80005', 1], ['80004', 1],
-      ['80308', 1], ['80307', 1], ['80305', 1], ['B0F5M2S8VJ', 1],
+      ['80308', 1], ['80307', 1], ['80305', 1],
     ]);
     const bom = buildBistroBom(input({ runs: WORKED_RUNS, poles: 2 }), overrides);
     expect(bom.flags).toEqual([]);

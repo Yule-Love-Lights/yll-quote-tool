@@ -66,15 +66,16 @@ const HD_POST_URL =
 const HD_CONCRETE_URL = 'https://www.homedepot.com/p/SAKRETE-60-lb-Gray-Concrete-Mix-65200940/100321247';
 const AMAZON_TIMER_URL = 'https://www.amazon.com/dp/B0F5M2S8VJ';
 
-// Every Thunder SKU except the eye screw, plus the Amazon timer, has no
-// confirmed wholesale cost yet (Naldo 2026-07-11) — their fallback is $0 and
-// the BOM carries ONE flag warning about it (mirrors the #144 provisional-
-// flag pattern; flags[] renders as an amber warning on the print sheet).
+// Every Thunder SKU except the eye screw has no confirmed wholesale cost yet
+// (Naldo 2026-07-11; the Amazon timer was confirmed at $24 the same day) —
+// their fallback is $0 and the BOM carries ONE flag warning about it (mirrors
+// the #144 provisional-flag pattern; flags[] renders as an amber warning on
+// the print sheet).
 const UNCONFIRMED_COST_SKUS = new Set([
-  '80324', '80011', '80002', '80005', '80004', '80308', '80307', '80305', 'B0F5M2S8VJ',
+  '80324', '80011', '80002', '80005', '80004', '80308', '80307', '80305',
 ]);
 const UNCONFIRMED_COST_FLAG =
-  'Thunder + Amazon unit costs not confirmed yet — quantities are exact, costs show $0 until set.';
+  'Thunder unit costs not confirmed yet — quantities are exact, costs show $0 until set.';
 
 /**
  * Build the full permanent-bistro BOM. `costOverrides` (SKU → wholesale) lets
@@ -170,7 +171,7 @@ export function buildBistroBom(
       'B0F5M2S8VJ',
       'Tapo P430M Smart Outdoor Plug (timer)',
       1,
-      cost('B0F5M2S8VJ', 0),
+      cost('B0F5M2S8VJ', 24),
       'amazon',
       AMAZON_TIMER_URL,
     );

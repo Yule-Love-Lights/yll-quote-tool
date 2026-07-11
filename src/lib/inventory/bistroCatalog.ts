@@ -48,7 +48,7 @@ export const BISTRO_CATALOG: BistroCatalogItem[] = [
   { sku: '80305', name: 'SPT-2 Zip Wire 500ft Black', supplier: 'thunder', url: THUNDER_URL, driver: 'as needed (power feed to the outlet)', unitCost: 0 },
   { sku: '100010238', name: '6x6x12ft Pressure-Treated Post', supplier: 'home-depot', url: HD_POST_URL, driver: '1 per pole', unitCost: 56 },
   { sku: '100321247', name: 'SAKRETE 60 lb Gray Concrete Mix', supplier: 'home-depot', url: HD_CONCRETE_URL, driver: '1 per pole', unitCost: 6 },
-  { sku: 'B0F5M2S8VJ', name: 'Tapo P430M Smart Outdoor Plug (timer)', supplier: 'amazon', url: AMAZON_TIMER_URL, driver: '1 per job', unitCost: 0 },
+  { sku: 'B0F5M2S8VJ', name: 'Tapo P430M Smart Outdoor Plug (timer)', supplier: 'amazon', url: AMAZON_TIMER_URL, driver: '1 per job', unitCost: 24 },
 ];
 
 /**
