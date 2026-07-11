@@ -191,11 +191,11 @@
       '.yll-lf-field{display:flex;flex-direction:column;gap:6px;}',
       '.yll-lf-label{font-size:13px;font-weight:600;color:var(--yll-lf-text);}',
       '.yll-lf-required{color:var(--yll-lf-red);margin-left:2px;}',
-      '.yll-lf-input,.yll-lf-select,.yll-lf-textarea{font:inherit;font-size:15px;color:var(--yll-lf-text);',
+      '.yll-lf-input,.yll-lf-textarea{font:inherit;font-size:15px;color:var(--yll-lf-text);',
       'background:#fff;border:1px solid var(--yll-lf-border);border-radius:8px;padding:10px 12px;min-height:44px;width:100%;outline:none;}',
       '.yll-lf-textarea{min-height:80px;resize:vertical;}',
-      '.yll-lf-input:focus-visible,.yll-lf-select:focus-visible,.yll-lf-textarea:focus-visible{border-color:var(--yll-lf-green);outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
-      '.yll-lf-input--error,.yll-lf-select--error{border-color:var(--yll-lf-error);}',
+      '.yll-lf-input:focus-visible,.yll-lf-textarea:focus-visible{border-color:var(--yll-lf-green);outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
+      '.yll-lf-input--error{border-color:var(--yll-lf-error);}',
       '.yll-lf-field-error{font-size:12px;color:var(--yll-lf-error);min-height:14px;}',
       '.yll-lf-formerror{font-size:13px;color:var(--yll-lf-error);background:#fdecea;border-radius:8px;padding:10px 12px;}',
       '.yll-lf-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}',
@@ -213,6 +213,15 @@
       '.yll-lf-card-check::after{content:"";width:8px;height:5px;border-left:2px solid #fff;',
       'border-bottom:2px solid #fff;transform:rotate(-45deg);margin-top:-2px;}',
       '.yll-lf-card--selected .yll-lf-card-check{display:flex;}',
+      // text-only pill radiogroup ("bar"/"sticky" service picker) — same
+      // radio semantics as the photo cards above, no checkmark badge.
+      '.yll-lf-pills{display:flex;flex-wrap:wrap;gap:8px;}',
+      '.yll-lf-pill{border:1.5px solid var(--yll-lf-border);border-radius:var(--yll-lf-radius-pill);',
+      'padding:10px 16px;min-height:44px;display:flex;align-items:center;justify-content:center;',
+      'font-size:14px;font-weight:600;cursor:pointer;background:#fff;color:var(--yll-lf-text);text-align:center;}',
+      '.yll-lf-pill:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:2px;}',
+      '.yll-lf-pill--selected{border-color:var(--yll-lf-red);border-width:2px;padding:9px 15px;',
+      'background:rgba(207,3,3,0.06);color:var(--yll-lf-red);font-weight:700;}',
       '.yll-lf-consent{display:flex;flex-direction:column;gap:6px;}',
       '.yll-lf-consent-row{display:flex;align-items:flex-start;gap:8px;}',
       '.yll-lf-consent-row input{width:20px;height:20px;min-height:20px;flex:none;margin-top:2px;accent-color:var(--yll-lf-green);}',
@@ -241,11 +250,17 @@
       '.yll-lf-sticky-outer{position:fixed;left:0;right:0;bottom:0;z-index:999999;',
       'transform:translateY(100%);transition:transform 0.25s ease;pointer-events:none;}',
       '.yll-lf-sticky-outer.yll-lf-sticky-visible{transform:translateY(0);pointer-events:auto;}',
-      '.yll-lf-sticky{background:var(--yll-lf-bg);box-shadow:0 -2px 14px rgba(0,0,0,0.14);',
+      // fully solid, high-contrast backdrop so the bar reads clearly over
+      // any page section (light or dark) — no rgba/translucent background.
+      '.yll-lf-sticky{background:#fff;border-top:1px solid var(--yll-lf-border);',
+      'box-shadow:0 -4px 20px rgba(0,0,0,0.25);',
       'padding:14px 16px;max-height:40vh;overflow-y:auto;position:relative;}',
       '.yll-lf-sticky .yll-lf-form{gap:8px;}',
       '.yll-lf-sticky .yll-lf-field{gap:3px;}',
-      '.yll-lf-sticky .yll-lf-input,.yll-lf-sticky .yll-lf-select{min-height:40px;padding:8px 10px;}',
+      '.yll-lf-sticky .yll-lf-input{min-height:40px;padding:8px 10px;}',
+      '.yll-lf-sticky .yll-lf-pills{gap:6px;}',
+      '.yll-lf-sticky .yll-lf-pill{min-height:34px;padding:6px 12px;font-size:12px;}',
+      '.yll-lf-sticky .yll-lf-pill--selected{padding:5px 11px;}',
       '.yll-lf-sticky .yll-lf-submit{padding:10px 20px;min-height:44px;}',
       '.yll-lf-sticky .yll-lf-consent-row input{width:16px;height:16px;min-height:16px;}',
       '.yll-lf-sticky .yll-lf-consent-text{font-size:12px;}',
@@ -256,7 +271,9 @@
       '.yll-lf--bar .yll-lf-field,.yll-lf-sticky .yll-lf-field{min-width:110px;}',
       '.yll-lf--bar .yll-lf-field{flex:1 1 140px;}',
       '.yll-lf-sticky .yll-lf-field{flex:1 1 130px;}',
+      '.yll-lf--bar .yll-lf-field--service{flex-basis:100%;}',
       '.yll-lf--bar .yll-lf-field--consent{flex-basis:100%;order:5;}',
+      '.yll-lf-sticky .yll-lf-field--service{flex-basis:100%;}',
       '.yll-lf-sticky .yll-lf-field--consent{flex-basis:220px;}',
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
       '.yll-lf-sticky{max-height:none;}',
@@ -333,62 +350,84 @@
     return { field: field, input: input, errorEl: errorEl };
   }
 
-  function buildServiceCards(preselected, labelledById) {
+  // Shared single-select radiogroup builder for the service picker.
+  // mode: 'cards' (photo cards, "full" variant) | 'pills' (text-only pills,
+  // "bar"/"sticky" variants). Both modes share identical a11y behavior:
+  // role=radiogroup labelled by the visible/visually-hidden label, role=radio
+  // items, aria-checked, roving tabindex, arrow-key + Space/Enter selection,
+  // focus-visible outline.
+  function buildServiceGroup(mode, preselected, hideLabel) {
+    var itemClass = mode === 'cards' ? 'yll-lf-card' : 'yll-lf-pill';
+    var labelId = uid('yll-lf-service-label');
+    var labelText = mode === 'cards' ? 'Which service? ' : 'Service ';
+    var labelEl = h('span', { id: labelId, class: 'yll-lf-label' + (hideLabel ? ' yll-lf-visually-hidden' : '') }, [
+      labelText,
+      h('span', { class: 'yll-lf-required', 'aria-hidden': 'true' }, ['*']),
+    ]);
+
     var group = h('div', {
-      class: 'yll-lf-cards',
+      class: mode === 'cards' ? 'yll-lf-cards' : 'yll-lf-pills',
       role: 'radiogroup',
-      'aria-labelledby': labelledById,
+      'aria-labelledby': labelId,
       'aria-required': 'true',
     });
-    var cardEls = [];
+    var itemEls = [];
     var current = preselected || null;
 
     function paint() {
-      cardEls.forEach(function (c) {
-        var selected = c.getAttribute('data-value') === current;
-        c.classList.toggle('yll-lf-card--selected', selected);
-        c.setAttribute('aria-checked', selected ? 'true' : 'false');
-        c.setAttribute('tabindex', selected || (!current && c === cardEls[0]) ? '0' : '-1');
+      itemEls.forEach(function (item) {
+        var selected = item.getAttribute('data-value') === current;
+        item.classList.toggle(itemClass + '--selected', selected);
+        item.setAttribute('aria-checked', selected ? 'true' : 'false');
+        item.setAttribute('tabindex', selected || (!current && item === itemEls[0]) ? '0' : '-1');
       });
     }
 
+    function selectValue(value) {
+      current = value;
+      paint();
+      group.dispatchEvent(new CustomEvent('yll-lf-service-change', { detail: current }));
+    }
+
     SERVICES.forEach(function (svc) {
-      // the media box has a fixed aspect-ratio, so a slow/failed image load
-      // (no onerror handler) never shifts the card's layout or blocks a click.
-      var media = h('div', { class: 'yll-lf-card-media' }, [
-        h('img', {
-          class: 'yll-lf-card-img',
-          src: SERVICE_IMAGES[svc.value],
-          alt: svc.label,
-          loading: 'lazy',
-          draggable: 'false',
-        }),
-        h('span', { class: 'yll-lf-card-check', 'aria-hidden': 'true' }),
-      ]);
-      var card = h(
-        'div',
-        {
-          class: 'yll-lf-card',
-          role: 'radio',
-          'aria-checked': 'false',
-          tabindex: '-1',
-          'data-value': svc.value,
-        },
-        [media, h('span', { class: 'yll-lf-card-label', text: svc.label })]
-      );
-      card.addEventListener('click', function () {
-        current = svc.value;
-        paint();
-        group.dispatchEvent(new CustomEvent('yll-lf-service-change', { detail: current }));
+      var item;
+      if (mode === 'cards') {
+        // the media box has a fixed aspect-ratio, so a slow/failed image
+        // load (no onerror handler) never shifts the card's layout or
+        // blocks a click.
+        var media = h('div', { class: 'yll-lf-card-media' }, [
+          h('img', {
+            class: 'yll-lf-card-img',
+            src: SERVICE_IMAGES[svc.value],
+            alt: svc.label,
+            loading: 'lazy',
+            draggable: 'false',
+          }),
+          h('span', { class: 'yll-lf-card-check', 'aria-hidden': 'true' }),
+        ]);
+        item = h(
+          'div',
+          { class: itemClass, role: 'radio', 'aria-checked': 'false', tabindex: '-1', 'data-value': svc.value },
+          [media, h('span', { class: 'yll-lf-card-label', text: svc.label })]
+        );
+      } else {
+        item = h(
+          'div',
+          { class: itemClass, role: 'radio', 'aria-checked': 'false', tabindex: '-1', 'data-value': svc.value },
+          [h('span', { class: 'yll-lf-pill-label', text: svc.label })]
+        );
+      }
+      item.addEventListener('click', function () {
+        selectValue(svc.value);
       });
-      cardEls.push(card);
-      group.appendChild(card);
+      itemEls.push(item);
+      group.appendChild(item);
     });
 
     group.addEventListener('keydown', function (e) {
       var idx = -1;
-      for (var ci = 0; ci < cardEls.length; ci++) {
-        if (cardEls[ci].getAttribute('data-value') === current) {
+      for (var ci = 0; ci < itemEls.length; ci++) {
+        if (itemEls[ci].getAttribute('data-value') === current) {
           idx = ci;
           break;
         }
@@ -396,44 +435,34 @@
       if (idx === -1) idx = 0;
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault();
-        idx = (idx + 1) % cardEls.length;
+        idx = (idx + 1) % itemEls.length;
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault();
-        idx = (idx - 1 + cardEls.length) % cardEls.length;
+        idx = (idx - 1 + itemEls.length) % itemEls.length;
+      } else if (e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter') {
+        e.preventDefault();
+        selectValue(itemEls[idx].getAttribute('data-value'));
+        return;
       } else {
         return;
       }
-      current = cardEls[idx].getAttribute('data-value');
-      paint();
-      cardEls[idx].focus();
-      group.dispatchEvent(new CustomEvent('yll-lf-service-change', { detail: current }));
+      selectValue(itemEls[idx].getAttribute('data-value'));
+      itemEls[idx].focus();
     });
 
     paint();
+
+    var errorEl = h('div', { class: 'yll-lf-field-error', role: 'alert' });
+    var field = h('div', { class: 'yll-lf-field yll-lf-field--service' }, [labelEl, group, errorEl]);
+
     return {
+      field: field,
       el: group,
+      errorEl: errorEl,
       getValue: function () {
         return current;
       },
     };
-  }
-
-  function buildServiceSelect(preselected, hideLabel) {
-    var id = uid('yll-lf-service');
-    var select = h('select', { id: id, class: 'yll-lf-select', name: 'service' });
-    select.appendChild(h('option', { value: '', disabled: 'disabled', selected: 'selected' }, ['Choose a service']));
-    SERVICES.forEach(function (svc) {
-      var opt = h('option', { value: svc.value }, [svc.label]);
-      if (svc.value === preselected) opt.selected = true;
-      select.appendChild(opt);
-    });
-    var errorEl = h('div', { class: 'yll-lf-field-error', role: 'alert' });
-    var field = h('div', { class: 'yll-lf-field yll-lf-field--service' }, [
-      buildLabel(id, 'Service', { hidden: hideLabel, required: true }),
-      select,
-      errorEl,
-    ]);
-    return { field: field, select: select, errorEl: errorEl };
   }
 
   function buildConsent(hideDisclosure) {
@@ -495,7 +524,7 @@
   // the shared form builder
   // config: { variant, apiBase, heading (Node|null), submitLabel,
   //           hideLabels, showAddress, addressRequired (visual only),
-  //           showNotes, serviceControl: 'cards'|'select', preselectService,
+  //           showNotes, serviceControl: 'cards'|'pills', preselectService,
   //           hidePicker, compactConsent }
   function buildForm(config) {
     var renderedAt = Date.now();
@@ -554,25 +583,11 @@
         })
       : null;
 
-    var serviceCards = null;
-    var serviceSelect = null;
+    var serviceGroup = null;
     var serviceField = null;
     if (!config.hidePicker) {
-      if (config.serviceControl === 'cards') {
-        var cardsLabelId = uid('yll-lf-service-label');
-        var cardsLabel = h('span', { id: cardsLabelId, class: 'yll-lf-label' }, [
-          'Which service? ',
-          h('span', { class: 'yll-lf-required', 'aria-hidden': 'true' }, ['*']),
-        ]);
-        serviceCards = buildServiceCards(config.preselectService, cardsLabelId);
-        var svcErrorEl = h('div', { class: 'yll-lf-field-error', role: 'alert' });
-        serviceField = h('div', { class: 'yll-lf-field yll-lf-field--service' }, [cardsLabel, serviceCards.el, svcErrorEl]);
-        serviceField.errorEl = svcErrorEl;
-      } else {
-        serviceSelect = buildServiceSelect(config.preselectService, config.hideLabels);
-        serviceField = serviceSelect.field;
-        serviceField.errorEl = serviceSelect.errorEl;
-      }
+      serviceGroup = buildServiceGroup(config.serviceControl, config.preselectService, config.hideLabels);
+      serviceField = serviceGroup.field;
     }
 
     var consentF = buildConsent(config.compactConsent);
@@ -604,11 +619,7 @@
         phone: phoneF.input.value,
         address: addressF ? addressF.input.value : '',
         notes: notesF ? notesF.input.value : '',
-        service: config.hidePicker
-          ? config.preselectService
-          : serviceCards
-            ? serviceCards.getValue()
-            : serviceSelect.select.value,
+        service: config.hidePicker ? config.preselectService : serviceGroup.getValue(),
         consent: consentF.checkbox.checked,
       };
     }
@@ -619,9 +630,8 @@
         f.input.classList.remove('yll-lf-input--error');
         f.errorEl.textContent = '';
       });
-      if (serviceField) {
-        if (serviceSelect) serviceSelect.select.classList.remove('yll-lf-select--error');
-        serviceField.errorEl.textContent = '';
+      if (serviceGroup) {
+        serviceGroup.errorEl.textContent = '';
       }
       consentF.errorEl.textContent = '';
       formErrorEl.style.display = 'none';
@@ -638,10 +648,9 @@
           if (!firstInvalid) firstInvalid = map[key].input;
         }
       });
-      if (errors.service && serviceField) {
-        serviceField.errorEl.textContent = errors.service;
-        if (serviceSelect) serviceSelect.select.classList.add('yll-lf-select--error');
-        if (!firstInvalid) firstInvalid = serviceSelect ? serviceSelect.select : serviceCards.el;
+      if (errors.service && serviceGroup) {
+        serviceGroup.errorEl.textContent = errors.service;
+        if (!firstInvalid) firstInvalid = serviceGroup.el;
       }
       if (errors.consent) {
         consentF.errorEl.textContent = errors.consent;
@@ -694,15 +703,9 @@
         f.errorEl.textContent = '';
       });
     });
-    if (serviceCards) {
-      serviceCards.el.addEventListener('yll-lf-service-change', function () {
-        if (serviceField) serviceField.errorEl.textContent = '';
-      });
-    }
-    if (serviceSelect) {
-      serviceSelect.select.addEventListener('change', function () {
-        serviceSelect.select.classList.remove('yll-lf-select--error');
-        serviceField.errorEl.textContent = '';
+    if (serviceGroup) {
+      serviceGroup.el.addEventListener('yll-lf-service-change', function () {
+        serviceGroup.errorEl.textContent = '';
       });
     }
     consentF.checkbox.addEventListener('change', function () {
@@ -872,7 +875,7 @@
       showAddress: true,
       addressRequired: false,
       showNotes: false,
-      serviceControl: 'select',
+      serviceControl: 'pills',
       preselectService: pre.value,
       hidePicker: pre.hide,
       compactConsent: false,
@@ -905,7 +908,7 @@
       showAddress: false,
       addressRequired: false,
       showNotes: false,
-      serviceControl: 'select',
+      serviceControl: 'pills',
       preselectService: pre.value,
       hidePicker: pre.hide,
       compactConsent: true,
