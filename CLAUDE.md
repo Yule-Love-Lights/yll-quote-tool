@@ -18,6 +18,7 @@
 ## Running scorecard (cumulative — skim before starting work)
 
 **Keep doing (these worked):**
+- **[S31] Third-party UI writes need a POSITIVE persistence check, not a click** -- PostHog insight saves are real only when the URL flips off /insights/new; Elementor code-UPDATEs silently revert (create a new entry). Verify the artifact, then move on.
 - Branch off **FRESH `origin/master`**, never the worktree's stale base — first confirm the spec/plan commits are actually present (mine weren't until I rebased).
 - Re-ground the exact lines before planning, **then independently verify the recon** — a fast read-agent missed a real data leak and cited a stale file; my own grep caught both.
 - TDD + run all three gates (`tsc · lint · vitest`) **after every phase**, not just at the end.
@@ -45,6 +46,7 @@
 - **[S25] Verify-before-build, 3-for-3.** #125, #111, #112 were all ALREADY DONE (built by Naldo's concurrent sessions; the shared ledger rows never flipped). Grep the live code + probe prod before building any ledgered task — cross-machine ledger drift is now a proven recurring class.
 
 **Fix going forward (mistakes I've made):**
+- **[S31] A generic merge-go does NOT authorize prod-data writes** -- the auto-mode classifier rightly blocked a test-quote INSERT under "Merge it"; get the explicitly named action ("seed the test quote") before touching prod rows, and script the write.
 - **[S25] NEVER `;`-chain a file WRITE after a fallible statement.** A failed emoji cast left the variable null and the chained WriteAllText ran anyway — wiped the local task_ledger.md (restored from the repo canonical + the conversation). Memory-doc surgery goes through SCRIPT FILES (python) only.
 - **[S25] Vercel deploys: verify the SHA by API, never trust "a deploy went READY".** One master webhook silently never spawned a deployment, and a dashboard Redeploy rebuilt the OLD commit — it looked live while prod served stale code. Dashboard Create-Deployment (from ref master) is the recovery lever; env-var changes need a fresh deploy to apply.
 - **[S24] `gh pr merge --delete-branch` on a STACK BASE hard-closes the stacked PR — unrecoverable** (GitHub can't retarget or reopen once the base ref is gone; #451 had to be recreated as #456). Retarget the remaining stacked PRs to master BEFORE merging their base, or merge without `--delete-branch` until the stack is flat.
@@ -60,17 +62,17 @@
 
 ## Sessions (newest first)
 
+### S31 (Naldo) -- 2026-07-10/11 -- PostHog analytics full arc: v1+W1 LIVE both properties (#479/#480) - W2 #481 + W4 #482 awaiting Jason - surveys + split dashboards -- master `af5b9b3`->`6dfa4c3`
+**One conversation (across a PC restart): account -> instrument -> verify -> iterate in waves.** Sonnet built all 3 code waves from seat-recon briefs; seat adversarial review caught a REAL v1 bug pre-merge (React child-effects-before-parent dropped portal_opened; fixed w/ lazy init + regression test). Every deploy SHA-verified; every event class live-proven on prod (incl. masked-replay eyeball + cross-site person stitching); WP snippets live-verified with no fake lead.
+- **Did right:** prompt-first waves w/ 2-question rounds; explicit-model on every spawn (Fable seat, Sonnet builders); classifier-blocked prod DB write handled by ASKING (seed OK'd, then scripted); decline-409 correctly withheld quote_declined (intent gate worked); memory file kept current all session.
+- **Friction:** PostHog UI save/dialog flakiness (save real only on URL flip; dashboard-side picker reliable); Elementor code-UPDATE silently reverts (new entry works); Chrome window minimized = 0x0 viewport = silent no-op saves; event-name ingestion lag ~15 min.
+- **NEXT:** Jason reviews #481/#482 -> merge-gos -> fresh-seed prod verify of W2/W4 events.
+
+
 ### S26 (Jason) — 2026-07-10 — backlog blitz: GHL pipeline-sync arc LIVE (#471/#472/#473 + rollout) · color-picker 2-layer 401 fix (#469/#470) · wave-1 UI (#468) · 6 PRs — master `8c825ce` (+Naldo #474/#475 → `4101f6c`)
 **Feed-me-the-backlog format worked:** Jason dictated 9 items with per-item clarifying Q&A, then waves: UI batch → bug root-cause → GHL cluster. All 6 PRs seat-reviewed + deploy-SHA-verified; GHL cluster got a 3-lens Opus adversarial review (1 HIGH fixed pre-merge, 1 MED closed by a live API probe, legacy data probed = zero rows). Live round verified all 3 pipelines end-to-end; Jason hand-edited the drip workflows (browser-drive failed — GHL SPA rendered blank in MCP tabs).
 - **Did right:** premise-vs-prod verify (the "Firefox bug" was a 2-layer anonymous 401 hitting every customer — found by probing prod, not by trusting the report); prod re-probe AFTER deploy caught that fix #1 of 2 wasn't sufficient; per-type field design caught by JASON pre-launch (single field = cross-pipeline drip collision) — present designs early enough for the dev's domain eye; merge-vs-replace semantics settled by a throwaway-contact probe instead of trusting docs/comments; every worker deviation flagged→dispositioned (2 accepted as correct, 2 became correction rounds).
 - **Friction / incidents:** my wave-1 brief cited wrong line numbers → builder edited the wrong cards (its own deviation flag caught it — verify brief cites before spawning); GHL token scopes live at the SUB-ACCOUNT Private Integrations page (agency API-keys page is a Pro-plan red herring); GHL workflow builder resists automation (canvas-rendered inputs invisible to a11y tree, blank SPA on hard reload) — hand the dev merge tags instead; carrier SMS dedup likely ate byte-identical perm/event sends (distinct per-type copy fixed).
 - **NEXT (S27):** #149 analyze retry · #150 analyzer scrap/build (Naldo) · watch the first real drip sends carry links.
 
-### S25 (Jason) — 2026-07-09 — #140 VERIFIED+MERGED (+3 accuracy fixes) · #141 training loop LIVE (+psql migration) · #142 rehydrate · #144 BOM reconcile vs the real estimator · #143 spinner · #125/#111/#112 already-done · 12 PRs — master `3f5f536`→`296942c`
-**One conversation: verification round → fix loop → ship → pivot to inventory groundwork.** #140 stack merged bottom-up after Jason's device round drove 3 accuracy fixes (default-yardstick seed regression · deterministic orientation from the Street View pano bearing — geometry relabels the AI's channels, live-proven correcting the model · L/R convention flip to HOMEOWNER-left, superseding the S24 road-viewer wording). #141 training loop v1 built (Sonnet builder + seat review) + prod migration applied via the NEW psql path; Voyage key found invalid (401) → refreshed → similarity live for both loops. #142 rehydrate with the derive-freeze (loads never move saved numbers — proven byte-for-byte). #144: Jason's real OMNI estimator sheet vs the engine on identical inputs → 5 rule gaps built (wire! controller-feed extensions, per-side packing, injector spare w/ PO-netting, lights waste), goldens re-anchored with every cent itemized, order sheet now byte-matches the estimator. #143 = dev-only strict-mode swallow of router.push (1 line). Gates 2417→2477.
-- **Did right:** device-round feedback treated as the domain truth (the written S24 L/R rule was wrong); deterministic-geometry-over-AI where geodata exists; verify-before-build killed 3 ledgered tasks already done (#125/#111/#112 — cross-machine drift, browser/prod-proven); every merge re-fetched + re-gated; every deploy verified by API (caught a redeploy of the WRONG sha being mistaken for "it's up"); parked inventory counts the moment Jason said so instead of building on top.
-- **Friction / incidents:** wiped the local task_ledger.md via a `;`-chained write after a failed cast (restored from repo canonical + conversation — scripts-only rule adopted); PS here-string quirk twice (use `-F`/`--body-file`); Vercel dropped one master webhook (#462) + queued 18 min (dashboard Create-Deployment recovered).
-- **NEXT (S26):** event/highlighting analyzer (Q&A-first like #140) · Naldo: wire-SKU confirm + #117/#41/#85/#72/#121/#122/#114 · parked: P8 counts, #141 v2.
-
-
-*(S24 and older: `docs/context/assistant_journal_archive.md`.)*
+*(S25 and older: `docs/context/assistant_journal_archive.md`.)*
