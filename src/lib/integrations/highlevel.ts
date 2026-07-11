@@ -433,8 +433,12 @@ export async function addContactTags(contactId: string, tags: string[]): Promise
 export async function upsertContactCustomField(
   contactId: string,
   fieldId: string,
-  value: string,
+  value: string | string[],
 ): Promise<void> {
+  // value is string[] for CHECKBOX-dataType fields (GHL expects an array of
+  // selected option strings there — a scalar string silently fails to land)
+  // and a plain string for TEXT-dataType fields. Callers know which shape
+  // their field expects; this function just passes it through untouched.
   await ghlFetch(`/contacts/${encodeURIComponent(contactId)}`, {
     method: 'PUT',
     body: JSON.stringify({ customFields: [{ id: fieldId, value }] }),

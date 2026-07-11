@@ -91,12 +91,24 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
  * Permanent and Event always use their own map entries — no env override.
  * An unknown/missing service_type falls back to the default (holiday), same
  * as DEFAULT_SERVICE_TYPE elsewhere in the app.
+ *
+ * opts.envOverrides (default true) — set false to skip the holiday env-
+ * override block above and always return the raw map values. Added for the
+ * website lead-capture path (src/lib/leads/leadService.ts): a brand-new lead
+ * has no card yet and must enter at the map's own entry stage (📭Open), but
+ * HIGHLEVEL_STAGE_QUOTE_CREATED is configured in prod to point at the
+ * mid-pipeline "Make Quote" stage (right for the quote-send flow, wrong for
+ * a fresh lead).
  */
-export function resolvePipelineStages(serviceType?: string | null): PipelineStages {
+export function resolvePipelineStages(
+  serviceType?: string | null,
+  opts?: { envOverrides?: boolean },
+): PipelineStages {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   const base = PIPELINE_MAP[type];
 
-  if (type !== 'holiday') return base;
+  const envOverrides = opts?.envOverrides ?? true;
+  if (type !== 'holiday' || !envOverrides) return base;
 
   const approvedStage =
     process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED || process.env.HIGHLEVEL_STAGE_QUOTE_SIGNED;

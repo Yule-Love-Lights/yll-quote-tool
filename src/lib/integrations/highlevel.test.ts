@@ -11,6 +11,7 @@ import {
   findOpportunityForContact,
   searchContacts,
   upsertContact,
+  upsertContactCustomField,
   createContactNote,
   createContact,
 } from './highlevel';
@@ -140,6 +141,31 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(body.phone).toBe('+16315550100');
       expect(body.source).toBe('Website Form');
       expect(body).not.toHaveProperty('tags');
+    });
+  });
+
+  describe('upsertContactCustomField (F4 — CHECKBOX fields expect an array)', () => {
+    it('PUTs customFields with an ARRAY value when given an array', async () => {
+      const fetchMock = mockFetchCapture({ contact: { id: 'c1' } });
+
+      await upsertContactCustomField('c1', 'field-123', ['Christmas', 'Permanent']);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/contacts/c1');
+      expect((init as RequestInit).method).toBe('PUT');
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.customFields).toEqual([{ id: 'field-123', value: ['Christmas', 'Permanent'] }]);
+    });
+
+    it('still PUTs a plain string value for a TEXT field (existing callers unaffected)', async () => {
+      const fetchMock = mockFetchCapture({ contact: { id: 'c1' } });
+
+      await upsertContactCustomField('c1', 'field-456', 'some text value');
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.customFields).toEqual([{ id: 'field-456', value: 'some text value' }]);
     });
   });
 

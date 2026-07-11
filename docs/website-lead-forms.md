@@ -130,6 +130,21 @@ rendering (the container div stays empty) rather than breaking the page —
 but leads stop being captured on that placement until it's fixed, so treat a
 `lead-form.js` outage as urgent.
 
+### Overlap window
+
+While a page still has the OLD Gravity Form live at the same time the NEW
+embed is also live elsewhere on the site (mid-swap, or intentionally kept as
+a fallback), a visitor who fills out BOTH ends up with two separate
+opportunity cards in GHL — the old form's own tag-triggered workflows still
+create their Christmas-pipeline card exactly as before, independent of
+anything this embed does. Neither system knows about the other's
+submission, and nothing here dedupes across them.
+
+Keep the side-by-side window as short as possible and swap **page by
+page** (remove the old widget the same time you add the new one) rather
+than running both indefinitely — the longer both stay live, the more
+duplicate cards pile up for staff to notice and merge by hand.
+
 ## What's NOT in this file
 
 The request contract (exact field names, validation, honeypot, rate
