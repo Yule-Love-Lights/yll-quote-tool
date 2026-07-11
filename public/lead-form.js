@@ -47,7 +47,9 @@
     christmas: 'https://yulelovelights.com/wp-content/uploads/2025/07/Holiday-Lighting-srv-pic-400x400.jpg',
     permanent: 'https://yulelovelights.com/wp-content/uploads/2025/07/Perm-Lighting-srv-pic-400x400.jpg',
     'event-wedding': 'https://yulelovelights.com/wp-content/uploads/2025/07/Event-Lights-srv-pic-400x400.jpg',
-    landscape: 'https://yulelovelights.com/wp-content/uploads/2025/07/Landscape-srv-pic-400x400.jpg',
+    // Owner-supplied shot (Langdon LI street-span job), served from the quote
+    // tool itself; the other three still come from the WP media library.
+    landscape: 'https://quote.yulelovelights.com/lead-card-landscape.jpg',
   };
 
   var uidCounter = 0;
