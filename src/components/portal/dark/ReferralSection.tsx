@@ -5,6 +5,8 @@
 // renders and is unit-testable without the surrounding page shell.
 
 import { ReferralLinkCopy } from './ReferralLinkCopy';
+import { ReferralShareButton } from './ReferralShareButton';
+import { QrSvg } from '@/components/QrSvg';
 import { formatUsd } from '@/components/portal/format';
 
 export function ReferralSection({
@@ -12,6 +14,7 @@ export function ReferralSection({
   creditUsd,
   spritzerCount,
   spritzerSizeInches,
+  qrSvg,
 }: {
   /** The referrer's personal /refer/<code> link, or null when this quote has
    *  no linked customer row — the section falls back to copy-only. */
@@ -19,6 +22,10 @@ export function ReferralSection({
   creditUsd: number;
   spritzerCount: number;
   spritzerSizeInches: number;
+  /** Server-generated inline QR SVG for `referralLink` (growth feature 2),
+   *  or null when it wasn't generated (no link, or generation failed —
+   *  fail-open, the link + copy + share still work without it). */
+  qrSvg?: string | null;
 }) {
   return (
     <section aria-labelledby="snow-approved-referral" className="w-full bg-[#060B0F]">
@@ -48,7 +55,22 @@ export function ReferralSection({
               <p className="mt-6 text-[13px] md:text-[14px] font-semibold text-[#E0D7C1]">
                 Share your personal link:
               </p>
-              <ReferralLinkCopy link={referralLink} />
+              <ReferralLinkCopy
+                link={referralLink}
+                after={
+                  <ReferralShareButton
+                    link={referralLink}
+                    spritzerCount={spritzerCount}
+                    spritzerSizeInches={spritzerSizeInches}
+                  />
+                }
+              />
+              {qrSvg && (
+                <div className="mt-4 flex items-center gap-3">
+                  <QrSvg svg={qrSvg} className="w-16 h-16" />
+                  <p className="text-[12px] text-[#7B7361]">or scan to share</p>
+                </div>
+              )}
             </>
           ) : (
             <p className="mt-6 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
