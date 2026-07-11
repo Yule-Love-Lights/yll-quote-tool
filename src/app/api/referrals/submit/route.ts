@@ -6,9 +6,15 @@
 //   (b) an inbox item so the team follows up (source 'quotetool')
 //   (c) the pending referral row (source 'link') — the accrual data PR 2 reads
 //
+// Then, LAST and best-effort (ledger #41 V2): an optional "see your house in
+// lights instantly" AI preview — DORMANT unless REFERRAL_AUTO_ANALYZE_ENABLED
+// is 'true' (see src/lib/referralAutoAnalyze.ts for the flag + guards). When
+// it doesn't run or doesn't return a preview, the response is byte-identical
+// to the pre-#41-V2 shape below.
+//
 // POST /api/referrals/submit
 //   Body: { code, name, phone, address, email? }
-//   Response: { ok: true, referralId } | { error }
+//   Response: { ok: true, referralId, preview? } | { error }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -16,6 +22,7 @@ import { getReferralByCode, createPendingReferral } from '@/lib/referrals';
 import { createContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 import { normalizePhone } from '@/lib/customers';
+import { maybeRunReferralAutoAnalyze, type ReferralAutoAnalyzePreview } from '@/lib/referralAutoAnalyze';
 
 export const runtime = 'nodejs';
 
@@ -118,5 +125,23 @@ export async function POST(req: NextRequest) {
     refereeContactPhone: cleanPhone,
   });
 
-  return NextResponse.json({ ok: true, referralId: referral?.id ?? null });
+  // (d) #41 V2 auto-analyze preview — runs LAST, after the lead is fully
+  // persisted above. maybeRunReferralAutoAnalyze already fails open (never
+  // throws); this try/catch is belt-and-suspenders, matching (a)/(b) above,
+  // so a genuinely unexpected throw still can't break the customer's response.
+  let preview: ReferralAutoAnalyzePreview | null = null;
+  try {
+    preview = await maybeRunReferralAutoAnalyze(req, cleanCode, cleanAddress);
+  } catch (err) {
+    console.error('[api/referrals/submit] auto-analyze failed:', err);
+  }
+
+  // `preview` is only ever spread in when truthy, so the response is
+  // byte-identical to the pre-#41-V2 shape whenever the flag is off, the
+  // analyze was skipped/capped/deduped, or it failed.
+  return NextResponse.json({
+    ok: true,
+    referralId: referral?.id ?? null,
+    ...(preview ? { preview } : {}),
+  });
 }

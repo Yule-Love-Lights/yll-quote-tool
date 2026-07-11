@@ -143,7 +143,11 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
           >
             Tell us where to look.
           </h2>
-          <ReferralForm code={code} referrerCustomerId={referrer.customerId} />
+          <ReferralForm
+            code={code}
+            referrerCustomerId={referrer.customerId}
+            friendSpritzers={REFERRAL_FRIEND_SPRITZERS}
+          />
         </div>
       </section>
 

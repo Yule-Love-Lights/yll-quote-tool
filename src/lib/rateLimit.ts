@@ -44,7 +44,17 @@ export type RateLimitResult = {
 };
 
 export function checkRateLimit(req: NextRequest, opts: RateLimitOpts): RateLimitResult {
-  const ip = getIp(req);
+  return checkRateLimitByKey(getIp(req), opts);
+}
+
+// Same sliding-window logic as checkRateLimit, keyed on an arbitrary
+// caller-supplied string instead of the request's IP. Extracted (#41 V2) so a
+// caller can cap by something other than IP — e.g. a per-referral-code daily
+// cap alongside the per-IP one — while sharing the exact same windowing +
+// eviction behavior instead of a second hand-rolled copy. checkRateLimit(req,
+// opts) is just checkRateLimitByKey(getIp(req), opts); existing callers are
+// unaffected.
+export function checkRateLimitByKey(key: string, opts: RateLimitOpts): RateLimitResult {
   const now = Date.now();
   const cutoff = now - opts.windowMs;
 
@@ -54,20 +64,20 @@ export function checkRateLimit(req: NextRequest, opts: RateLimitOpts): RateLimit
     buckets.set(opts.bucket, bucket);
   }
 
-  // Audit fix (#19): evict per-IP keys whose timestamps have all aged out, so
-  // the Map stays bounded to currently-active IPs. Without this, every IP that
-  // ever made a request leaves a permanent entry (an attacker rotating keys
-  // grows the Map unboundedly within a warm lambda). Pure hardening — no
-  // behavior change for real, in-window traffic.
-  for (const [bucketIp, bucketEntry] of bucket) {
+  // Audit fix (#19): evict per-key entries whose timestamps have all aged
+  // out, so the Map stays bounded to currently-active keys. Without this,
+  // every key that ever made a request leaves a permanent entry (an attacker
+  // rotating keys grows the Map unboundedly within a warm lambda). Pure
+  // hardening — no behavior change for real, in-window traffic.
+  for (const [bucketKey, bucketEntry] of bucket) {
     bucketEntry.timestamps = bucketEntry.timestamps.filter(t => t > cutoff);
-    if (bucketEntry.timestamps.length === 0) bucket.delete(bucketIp);
+    if (bucketEntry.timestamps.length === 0) bucket.delete(bucketKey);
   }
 
-  const entry = bucket.get(ip) ?? { timestamps: [] };
+  const entry = bucket.get(key) ?? { timestamps: [] };
 
   if (entry.timestamps.length >= opts.limit) {
-    bucket.set(ip, entry);
+    bucket.set(key, entry);
     const oldest = entry.timestamps[0] ?? now;
     return {
       ok: false,
@@ -77,7 +87,7 @@ export function checkRateLimit(req: NextRequest, opts: RateLimitOpts): RateLimit
   }
 
   entry.timestamps.push(now);
-  bucket.set(ip, entry);
+  bucket.set(key, entry);
 
   return {
     ok: true,
