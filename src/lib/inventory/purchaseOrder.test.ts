@@ -199,3 +199,41 @@ describe('emailSupplierPurchaseOrder — on-order ledger (P8, folds in #110 W7-0
     expect(cancelOrder).not.toHaveBeenCalled();
   });
 });
+
+// #117 (Naldo 2026-07-11): bistro's THUNDER lines auto-send on the pooled PO;
+// Home Depot (posts, concrete) + Amazon (timer) are manual buys, and the
+// as-needed zip wire has no computable quantity. Locked against the real BOM
+// engine's output so a catalog/engine change can't silently leak a manual-buy
+// SKU into the Thunder email.
+describe('poolableBistroPoLines (#117 Thunder-only pooling)', () => {
+  it('keeps every Thunder line with the engine quantities and drops HD/Amazon/zip', async () => {
+    const { bistroBomFromQuote } = await import('@/lib/permanentBistro/bomFromQuote');
+    const { poolableBistroPoLines } = await import('./purchaseOrder');
+    const bom = bistroBomFromQuote({
+      permanentBistro: { bistro: [{ footage: 40 }, { footage: 35 }, { footage: 25 }], poles: 2 },
+    });
+    const pooled = poolableBistroPoLines(bom!.lines);
+    const bySku = Object.fromEntries(pooled.map((l) => [l.sku, l.qty]));
+    expect(bySku).toEqual({
+      '80324': 1,  // cord, 330 ft section covers 100 ft
+      '80011': 53, // bulbs: ceil((100/2) * 1.06)
+      '80002': 1,  // guide wire, 250 ft spool
+      '93571': 6,  // eye screws: 2 per strand
+      '80005': 6,  // quick links
+      '80004': 6,  // looping grippers
+      '80308': 3,  // male plugs: 1 per strand
+      '80307': 3,  // female plugs
+    });
+    const pooledSkus = pooled.map((l) => l.sku);
+    for (const manual of ['100010238', '100321247', 'B0F5M2S8VJ', '80305']) {
+      expect(pooledSkus).not.toContain(manual);
+    }
+  });
+
+  it('a poles-only bistro job pools NOTHING (all its needs are manual buys)', async () => {
+    const { bistroBomFromQuote } = await import('@/lib/permanentBistro/bomFromQuote');
+    const { poolableBistroPoLines } = await import('./purchaseOrder');
+    const bom = bistroBomFromQuote({ permanentBistro: { bistro: [], poles: 3 } });
+    expect(poolableBistroPoLines(bom!.lines)).toEqual([]);
+  });
+});

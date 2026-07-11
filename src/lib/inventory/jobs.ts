@@ -16,6 +16,9 @@ import { projectMaterials, buildMaterialsView, type MaterialLine, type Materials
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
 import type { PermanentQuoteFields } from '@/lib/permanent/types';
+import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
+import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
+import { BISTRO_CATALOG, costOverridesFromBistroCatalog } from './bistroCatalog';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -164,6 +167,25 @@ function materialLinesFromBom(lines: { sku: string; qty: number }[]): MaterialLi
   }));
 }
 
+// #117: a bistro job's work order the same way — but BistroBomLine's shape
+// differs from BomLine (supplier/url/asNeeded instead of category), so this is
+// a sibling helper, not a reuse of materialLinesFromBom. The as-needed
+// zip-wire row (qty 0 by definition — Naldo: "no way for you to calculate
+// this") has nothing to pick/prep, so it's excluded here; the order sheet
+// still lists it via bistroBomFromQuote directly.
+function materialLinesFromBistroBom(lines: { sku: string; qty: number; asNeeded?: boolean }[]): MaterialLine[] {
+  return lines
+    .filter((l) => !l.asNeeded)
+    .map((l): MaterialLine => ({
+      sku: l.sku,
+      qty: l.qty,
+      category: 'mini',
+      conceptKey: l.sku,
+      label: l.sku,
+      sceneItemId: '',
+    }));
+}
+
 export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   const db = getSupabaseServiceClient();
   if (!db) return null;
@@ -180,7 +202,9 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   let customerAddress: string | null = null;
   let isTest = false;
   let isPermanent = false;
+  let isPermanentBistro = false;
   let permanentFields: PermanentQuoteFields | undefined;
+  let bistroFields: PermanentBistroInputFields | undefined;
   let colorChoice: string[] | null = null; // #92 — the customer's approved color pick
   if (job.quote_id) {
     const [{ data: design }, { data: quote }] = await Promise.all([
@@ -199,13 +223,15 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
         is_test: boolean | null;
         approval_snapshot: unknown;
         service_type: string | null;
-        inputs: { permanent?: PermanentQuoteFields } | null;
+        inputs: { permanent?: PermanentQuoteFields; permanentBistro?: PermanentBistroInputFields } | null;
       };
       customerName = q.customer_name ?? null;
       customerAddress = q.customer_address ?? null;
       isTest = !!q.is_test;
       isPermanent = q.service_type === 'permanent';
+      isPermanentBistro = q.service_type === 'permanent_bistro';
       permanentFields = q.inputs?.permanent;
+      bistroFields = q.inputs?.permanentBistro;
       colorChoice = colorChoiceFromSnapshot(q.approval_snapshot);
     }
   }
@@ -217,13 +243,33 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   // the scene projection — a permanent job's design scene (if any) must not
   // feed holiday materials. Positive `=== 'permanent'` gate; holiday/event jobs
   // keep the scene-projection path exactly as before.
+  // Permanent Bistro (#117): same principle, its own BOM engine — a bistro
+  // job's design scene (if any) must not feed holiday materials either.
+  // Positive `=== 'permanent_bistro'` gate, checked AFTER permanent (the two
+  // service types are mutually exclusive, so order doesn't matter functionally,
+  // but this reads as the natural "which BOM engine" ladder).
   const lines = isPermanent
     ? materialLinesFromBom(
         permanentBomFromQuote({ permanent: permanentFields }, await catalogCostOverrides())?.lines ?? [],
       )
-    : projectMaterials(scene, bindings, clipRules, colorChoice);
+    : isPermanentBistro
+      ? materialLinesFromBistroBom(
+          bistroBomFromQuote(
+            { permanentBistro: bistroFields },
+            costOverridesFromBistroCatalog(await listCatalog()),
+          )?.lines ?? [],
+        )
+      : projectMaterials(scene, bindings, clipRules, colorChoice);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
+  // #117: bistro's SKUs live in the STATIC bistro catalog (no inventory_catalog
+  // rows exist for them), so backfill their display names; a DB row with the
+  // same SKU still wins above.
+  if (isPermanentBistro) {
+    for (const item of BISTRO_CATALOG) {
+      if (!nameOf.has(item.sku)) nameOf.set(item.sku, item.name);
+    }
+  }
   const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
   const materials = buildMaterialsView(
     lines,
