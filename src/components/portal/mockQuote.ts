@@ -173,10 +173,12 @@ export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
   { id: 'p1', neighborhood: 'Christmas Scene',   src: '/references/perm-christmas.webp',      alt: 'Split-level home with permanent roofline lighting running a red, green, and white Christmas scene' },
   { id: 'p2', neighborhood: 'July 4th Scene',    src: '/references/perm-fourth-of-july.webp', alt: 'The same permanent roofline lighting switched to a red, white, and blue Independence Day scene' },
   { id: 'p3', neighborhood: 'Red, White & Blue', src: '/references/perm-patriotic.webp',      alt: 'Permanent puck lights running a patriotic red, white, and blue pattern along the roofline and lower trim' },
-  // More permanent completed-work photos (Naldo, S31). p4 is a fourth scene on
-  // the p1–p3 split-level; p5–p7 are one colonial in three scenes; p8 and p9
-  // are new properties (p9 = first commercial permanent tile).
+  // More permanent completed-work photos (Naldo, S31). p4 and p10 are fourth
+  // and fifth scenes on the p1–p3 split-level (p10 sits here, out of id order,
+  // to keep that home's scenes adjacent in the grid); p5–p7 are one colonial
+  // in three scenes; p8 and p9 are new properties (p9 = first commercial tile).
   { id: 'p4', neighborhood: 'Blue & Purple',      src: '/references/perm-blue-purple.webp',         alt: 'The same split-level home washed in blues and purples from its permanent roofline and lower-trim lighting' },
+  { id: 'p10', neighborhood: 'Teal Scene',        src: '/references/perm-teal-scene.webp',          alt: 'The same split-level home again, running an everyday teal scene on its permanent roofline and trim lights' },
   { id: 'p5', neighborhood: 'Spring Scene',       src: '/references/perm-spring-scene.webp',        alt: 'Colonial home with permanent lights split into soft blue, warm yellow, and green zones across its three gables' },
   { id: 'p6', neighborhood: 'Patriotic Colonial', src: '/references/perm-patriotic-colonial.webp',  alt: 'Two-story colonial running a red, white, and blue patriotic scene on its permanent roofline lights' },
   { id: 'p7', neighborhood: 'Rainbow Scene',      src: '/references/perm-rainbow.webp',             alt: 'Colonial home running a full rainbow scene, each gable a different color from one permanent install' },
