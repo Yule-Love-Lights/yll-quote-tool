@@ -33,6 +33,7 @@ export type PortalLineItemKind =
   | 'railing'
   | 'curtain'
   | 'stake-lighting'
+  | 'bistro'
   | 'permanent'
   | 'permanent-addon';
 

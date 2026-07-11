@@ -32,3 +32,17 @@ describe('parseLineItem — custom $/ft labels (#102)', () => {
     expect(parseLineItem('Stake Lighting – 50ft ($6.5/ft)').kind).toBe('stake-lighting');
   });
 });
+
+describe('parseLineItem — Bistro (#117)', () => {
+  it('classifies event Bistro Lighting as its own kind', () => {
+    const parsed = parseLineItem('Bistro Lighting – 40ft');
+    expect(parsed.kind).toBe('bistro');
+    expect(parsed.detail).toBe('40 ft');
+  });
+
+  it('classifies design-projected Permanent Bistro Lighting as the same kind, not roofline', () => {
+    const parsed = parseLineItem('Permanent Bistro Lighting – 30ft');
+    expect(parsed.kind).toBe('bistro');
+    expect(parsed.detail).toBe('30 ft');
+  });
+});

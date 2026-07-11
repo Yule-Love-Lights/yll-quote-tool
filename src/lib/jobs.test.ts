@@ -473,6 +473,18 @@ describe('getJobDetail', () => {
     expect(detail?.isTest).toBe(true);
   });
 
+  it('carries the linked quote service_type (#117 — a one_off job can be Bistro, not just Seasonal)', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule', type: 'one_off' } },
+      quotes: { read: { customer_name: 'Carol', service_type: 'permanent_bistro' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.quoteServiceType).toBe('permanent_bistro');
+  });
+
   it('returns null when the job does not exist', async () => {
     const { client } = makeSb({ jobs: { read: null } });
     sbRef.current = client;

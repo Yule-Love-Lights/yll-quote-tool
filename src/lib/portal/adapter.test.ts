@@ -681,6 +681,19 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     expect(portal.packages[0].includedItemIds).toHaveLength(portal.lineItems.length);
   });
 
+  it('gives the bistro run + poles their own dedicated bistro kind (#117), not the plain permanent kind', () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.lineItems.map((li) => li.kind)).toEqual(['bistro', 'bistro']);
+    // ids stay exactly what the pricing engine stamped — selection/approval
+    // snapshots key on these, so they must NOT change with the kind.
+    expect(portal.lineItems.map((li) => li.id)).toEqual(['permanent-bistro-0', 'permanent-bistro-poles']);
+  });
+
   it('approvalGate is 0 (gate off) when the bistro rate snapshot minimum is 0', () => {
     const inputs = bistroInputs();
     const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });

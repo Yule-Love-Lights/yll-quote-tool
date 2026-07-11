@@ -2507,8 +2507,12 @@ export default function QuoteBuilder({
             {/* Referral program redemption (#41 PR 2) — referee side: this
                 customer gets 2 free spritzers on their first quote. Shows once
                 staff pick a referrer this session, OR (on a reopened quote)
-                once the server already knows this quote is a referee. */}
-            {isReferralReferee && (
+                once the server already knows this quote is a referee.
+                #117 review: positive service-type gate — spritzers are a
+                product only on holiday and event; a permanent or bistro
+                referee quote must not offer holiday stake decor as its reward. */}
+            {isReferralReferee &&
+              (form.serviceType === 'holiday' || form.serviceType === 'event') && (
               <ReferralSpritzerBanner alreadyAdded={spritzerLineAlreadyAdded} onAdd={addReferralSpritzers} />
             )}
 
