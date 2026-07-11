@@ -173,6 +173,15 @@ export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
   { id: 'p1', neighborhood: 'Christmas Scene',   src: '/references/perm-christmas.webp',      alt: 'Split-level home with permanent roofline lighting running a red, green, and white Christmas scene' },
   { id: 'p2', neighborhood: 'July 4th Scene',    src: '/references/perm-fourth-of-july.webp', alt: 'The same permanent roofline lighting switched to a red, white, and blue Independence Day scene' },
   { id: 'p3', neighborhood: 'Red, White & Blue', src: '/references/perm-patriotic.webp',      alt: 'Permanent puck lights running a patriotic red, white, and blue pattern along the roofline and lower trim' },
+  // More permanent completed-work photos (Naldo, S31). p4 is a fourth scene on
+  // the p1–p3 split-level; p5–p7 are one colonial in three scenes; p8 and p9
+  // are new properties (p9 = first commercial permanent tile).
+  { id: 'p4', neighborhood: 'Blue & Purple',      src: '/references/perm-blue-purple.webp',         alt: 'The same split-level home washed in blues and purples from its permanent roofline and lower-trim lighting' },
+  { id: 'p5', neighborhood: 'Spring Scene',       src: '/references/perm-spring-scene.webp',        alt: 'Colonial home with permanent lights split into soft blue, warm yellow, and green zones across its three gables' },
+  { id: 'p6', neighborhood: 'Patriotic Colonial', src: '/references/perm-patriotic-colonial.webp',  alt: 'Two-story colonial running a red, white, and blue patriotic scene on its permanent roofline lights' },
+  { id: 'p7', neighborhood: 'Rainbow Scene',      src: '/references/perm-rainbow.webp',             alt: 'Colonial home running a full rainbow scene, each gable a different color from one permanent install' },
+  { id: 'p8', neighborhood: 'Teal Dusk',          src: '/references/perm-teal-dusk.webp',           alt: 'White brick home at dusk with permanent roofline lighting glowing teal across the gables and garage' },
+  { id: 'p9', neighborhood: 'Commercial',         src: '/references/perm-commercial.webp',          alt: 'Commercial storefront with permanent blue and white roofline lighting shining over the parking lot' },
 ];
 
 // Per-service-type "Completed Work" gallery selector (ledger #121). Positive

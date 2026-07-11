@@ -26,7 +26,7 @@ describe('galleryItemsFor', () => {
   });
 
   it('returns the permanent list for permanent', () => {
-    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(3);
+    expect(PERMANENT_GALLERY_ITEMS).toHaveLength(9);
     expect(galleryItemsFor('permanent')).toBe(PERMANENT_GALLERY_ITEMS);
     expect(galleryItemsFor('permanent')).not.toBe(MOCK_GALLERY_ITEMS);
   });
