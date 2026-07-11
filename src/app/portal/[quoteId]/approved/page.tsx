@@ -15,9 +15,12 @@ import { notFound } from 'next/navigation';
 import { Truck, MessageSquare, PackageOpen, Phone, CreditCard, ArrowRight } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/dark/ApprovalCelebration';
+import { ReferralSection } from '@/components/portal/dark/ReferralSection';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { formatQuoteRef, formatUsd } from '@/components/portal/format';
 import type { PortalQuote } from '@/components/portal/types';
+import { ensureReferralCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 
 type Params = { quoteId: string };
 
@@ -52,6 +55,12 @@ export default async function PortalApprovedPage({
   const { balance } = await searchParams;
   const balancePaid = balance === 'paid';
   const quote = await resolveQuote(quoteId);
+  // Referral program (#41): ensure this customer's referral code server-side
+  // so the section below can show their personal link. Best-effort — a quote
+  // with no linked customer row (walk-in/test data, or Supabase unconfigured
+  // dev mode) gets null back and the section renders copy-only, no link.
+  const referralCode = quote.customerId ? await ensureReferralCode(quote.customerId) : null;
+  const referralLink = referralCode ? `${appBaseUrl()}/refer/${referralCode}` : null;
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
@@ -272,29 +281,12 @@ export default async function PortalApprovedPage({
         </div>
       </section>
 
-      <section aria-labelledby="snow-approved-referral" className="w-full bg-[#060B0F]">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
-          <div className="max-w-2xl">
-            <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-3">
-              Want to help a neighbor?
-            </p>
-            <h2
-              id="snow-approved-referral"
-              className="font-display text-[28px] md:text-[42px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
-            >
-              Refer a neighbor, get{' '}
-              <span className="text-[#FFB744]" style={{ textShadow: '0 0 22px rgba(255,183,68,0.35)' }}>
-                $150 off
-              </span>{' '}
-              next year.
-            </h2>
-            <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
-              Tell them to mention you when they call us! When they book an install, we&apos;ll
-              credit your account automatically, stackable for every friend who joins.
-            </p>
-          </div>
-        </div>
-      </section>
+      <ReferralSection
+        referralLink={referralLink}
+        creditUsd={REFERRAL_CREDIT_USD}
+        spritzerCount={REFERRAL_FRIEND_SPRITZERS.count}
+        spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
+      />
 
       <section aria-label="Support" className="w-full bg-[#0D1519] border-t border-[#1F2A23]">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-20 text-center">

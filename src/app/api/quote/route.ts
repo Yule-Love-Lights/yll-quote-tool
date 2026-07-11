@@ -91,8 +91,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { customer, inputs, quoteId, designId, serviceType: rawServiceType, isTest: rawIsTest, amendReprice: rawAmendReprice } =
-    body as Record<string, unknown>;
+  const {
+    customer,
+    inputs,
+    quoteId,
+    designId,
+    serviceType: rawServiceType,
+    isTest: rawIsTest,
+    amendReprice: rawAmendReprice,
+    referredByCustomerId: rawReferredByCustomerId,
+  } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
   // Only an exact `true` enables it; any other value falls through to the normal
@@ -117,6 +125,17 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
+
+  // Referral program (#41 "mention" attribution): an existing customer picked
+  // as "Referred by" in the builder. Optional; only honored on a NEW save
+  // (saveQuote) — an update never re-attributes a referral.
+  if (rawReferredByCustomerId !== undefined && typeof rawReferredByCustomerId !== 'string') {
+    return NextResponse.json({ error: 'referredByCustomerId must be a string if provided' }, { status: 400 });
+  }
+  if (typeof rawReferredByCustomerId === 'string' && !UUID_RE.test(rawReferredByCustomerId)) {
+    return NextResponse.json({ error: 'referredByCustomerId must be a valid UUID' }, { status: 400 });
+  }
+  const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -553,6 +572,7 @@ export async function POST(req: NextRequest) {
           effectiveServiceType,
           isTest,
           operator?.id ?? null,
+          referredByCustomerId,
         );
     return NextResponse.json({
       customer: safeCustomer,

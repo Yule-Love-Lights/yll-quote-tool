@@ -7,19 +7,37 @@
 // We mock global fetch + the required env vars; no live HighLevel calls.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { findOpportunityForContact, searchContacts } from './highlevel';
+import {
+  findOpportunityForContact,
+  searchContacts,
+  upsertContact,
+  createContactNote,
+  createContact,
+} from './highlevel';
 import type { HighLevelContact, HighLevelOpportunity } from './types';
 
 function mockFetchOnce(json: unknown) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => json,
-      text: async () => JSON.stringify(json),
-    })),
-  );
+  const fetchMock = vi.fn(async (_url?: string, _init?: RequestInit) => ({
+    ok: true,
+    status: 200,
+    json: async () => json,
+    text: async () => JSON.stringify(json),
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+// Like mockFetchOnce but returns the mock so callers can inspect the actual
+// request (url + init) — needed to assert the endpoint/method/body shape.
+function mockFetchCapture(json: unknown) {
+  const fn = vi.fn(async (_url: string, _init?: RequestInit) => ({
+    ok: true,
+    status: 200,
+    json: async () => json,
+    text: async () => JSON.stringify(json),
+  }));
+  vi.stubGlobal('fetch', fn);
+  return fn;
 }
 
 describe('HighLevel client (audit fix g19-highlevel)', () => {
@@ -87,6 +105,96 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(contact).toBeDefined();
       expect(contact.firstName).toBe('Jordan');
       expect('raw' in contact).toBe(false);
+    });
+  });
+
+  // ─── #leads website lead capture — the two new client functions ─────────
+  describe('upsertContact', () => {
+    it('POSTs /contacts/upsert with locationId + the given fields, and never sends tags', async () => {
+      const fetchMock = mockFetchCapture({
+        contact: { id: 'c1', firstName: 'Jordan', email: 'jordan@example.com' },
+        new: true,
+      });
+
+      const result = await upsertContact({
+        firstName: 'Jordan',
+        lastName: 'Rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+        address1: '123 Main St',
+        source: 'Website Form',
+      });
+
+      expect(result.contact.id).toBe('c1');
+      expect(result.new).toBe(true);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/contacts/upsert');
+      expect((init as RequestInit).method).toBe('POST');
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.locationId).toBe('loc_1');
+      expect(body.firstName).toBe('Jordan');
+      expect(body.lastName).toBe('Rivera');
+      expect(body.email).toBe('jordan@example.com');
+      expect(body.phone).toBe('+16315550100');
+      expect(body.source).toBe('Website Form');
+      expect(body).not.toHaveProperty('tags');
+    });
+  });
+
+  describe('createContactNote', () => {
+    it('POSTs /contacts/{contactId}/notes with { body }', async () => {
+      const fetchMock = mockFetchCapture({ id: 'note-1', body: 'hello world' });
+
+      await createContactNote('c1', 'hello world');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/contacts/c1/notes');
+      expect((init as RequestInit).method).toBe('POST');
+      expect(JSON.parse((init as RequestInit).body as string)).toEqual({ body: 'hello world' });
+    });
+  });
+
+  describe('createContact (#41 referral landing page)', () => {
+    it('POSTs /contacts/ with locationId + the referral tag, and returns the redacted contact', async () => {
+      const created: HighLevelContact = {
+        id: 'c_new',
+        name: 'Sam Rivera',
+        phone: '5165550123',
+        tags: ['referral'],
+      } as HighLevelContact;
+      const fetchMock = mockFetchOnce({ contact: created });
+
+      const contact = await createContact({
+        name: 'Sam Rivera',
+        phone: '5165550123',
+        tags: ['referral'],
+        source: 'referral-landing-page',
+      });
+
+      expect(contact.id).toBe('c_new');
+      expect('raw' in contact).toBe(false); // redaction is the default (mirrors toCrmContact)
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(init.method).toBe('POST');
+      const body = JSON.parse(init.body as string);
+      expect(body).toMatchObject({
+        locationId: 'loc_1',
+        name: 'Sam Rivera',
+        phone: '5165550123',
+        tags: ['referral'],
+        source: 'referral-landing-page',
+      });
+    });
+
+    it('defaults source to ai-quote-tool and tags to [] when not provided', async () => {
+      const fetchMock = mockFetchOnce({ contact: { id: 'c_new' } as HighLevelContact });
+      await createContact({ email: 'sam@example.com' });
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string);
+      expect(body).toMatchObject({ source: 'ai-quote-tool', tags: [] });
     });
   });
 });

@@ -28,6 +28,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
+import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
@@ -331,6 +332,11 @@ export default function QuoteBuilder({
   // status line so the operator knows whether the GHL side is in sync.
   const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
+  // Referral program (#41 "mention" attribution): an existing customer staff
+  // picked as "Referred by" while building THIS quote. Only meaningful on the
+  // FIRST save (the new quote's id becomes the referee) — sent on every
+  // Calculate regardless, since the server only honors it on the insert path.
+  const [referredBy, setReferredBy] = useState<{ id: string; name: string } | null>(null);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -1942,6 +1948,10 @@ export default function QuoteBuilder({
           // so a normal edit of an unbooked quote sends nothing and stays locked.
           // `undefined` is dropped by JSON.stringify, so no key ships when not booked.
           amendReprice: savedStatus === 'booked' ? true : undefined,
+          // Referral program (#41): only meaningful on the quote's FIRST save
+          // (saveQuote creates the pending "mention" referral); the server
+          // simply ignores it on an update.
+          referredByCustomerId: referredBy?.id ?? undefined,
         }),
       });
       const data = await res.json();
@@ -2320,6 +2330,10 @@ export default function QuoteBuilder({
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
             </div>
+
+            {/* Referral program (#41 "mention" attribution) — an existing
+                customer staff picks as "Referred by" while building THIS quote. */}
+            <ReferredByPicker value={referredBy} onChange={setReferredBy} />
 
             {/* Service type (#58 Phase 2b) — which line this quote belongs to.
                 Defaults to Holiday; drives the dashboard's per-service sections. */}

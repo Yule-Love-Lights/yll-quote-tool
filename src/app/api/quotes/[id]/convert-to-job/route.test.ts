@@ -13,10 +13,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { createJobFromQuote, requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { createJobFromQuote, requireOperatorMock, sbRef, accrueOnBooking } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   sbRef: { current: null as unknown },
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -25,6 +26,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
+vi.mock('@/lib/referrals', () => ({ accrueOnBooking }));
 
 import { POST } from './route';
 
@@ -234,6 +236,22 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
 
     expect(createJobFromQuote).toHaveBeenCalledOnce();
     expect(createJobFromQuote).toHaveBeenCalledWith(ID);
+
+    // #41 referral program: this manual booking write is a third deposit-paid
+    // write site (reconciled against the Valor webhook + simulate-deposit) and
+    // must fire the same accrual.
+    expect(accrueOnBooking).toHaveBeenCalledWith(ID);
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    const { client } = makeSb(BASE_QUOTE);
+    sbRef.current = client;
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
   });
 
   it('clamps depositUsd to quote.total when it exceeds it', async () => {

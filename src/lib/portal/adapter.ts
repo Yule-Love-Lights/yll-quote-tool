@@ -68,6 +68,9 @@ type ApprovalSnapshotJson = {
 // Kept narrow so callers can SELECT only what they need.
 export type QuoteRowForPortal = {
   id: string;
+  // Referral program (#41): the stable customers.id link (ledger #83 Phase 5).
+  // Optional for back-compat with older callers/tests that don't select it.
+  customer_id?: string | null;
   customer_name: string | null;
   customer_address: string | null;
   customer_phone: string | null;
@@ -603,6 +606,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
 
   return {
     id: row.id,
+    customerId: row.customer_id ?? undefined,
     customer: {
       firstName: deriveFirstName(row.customer_name),
       fullName: row.customer_name ?? 'Anonymous',

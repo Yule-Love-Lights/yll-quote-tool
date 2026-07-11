@@ -10,8 +10,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { type NextRequest } from 'next/server';
 
-const { createJobFromQuote } = vi.hoisted(() => ({
+const { createJobFromQuote, accrueOnBooking } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
 }));
 
 let quoteRow: Record<string, unknown> | null = null;
@@ -48,6 +49,7 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => makeSb(),
 }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
+vi.mock('@/lib/referrals', () => ({ accrueOnBooking }));
 
 import { POST } from './route';
 
@@ -109,6 +111,17 @@ describe('POST /api/quotes/[id]/simulate-deposit (#93)', () => {
     expect(res.status).toBe(200);
     expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
     expect(createJobFromQuote).toHaveBeenCalledWith(ID);
+    // #41 referral program: the simulated booking event fires the accrual too
+    // (mirrors the real Valor webhook path this route is built to mirror).
+    expect(accrueOnBooking).toHaveBeenCalledWith(ID);
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
   });
 
   it('is idempotent — already paid returns alreadyPaid and creates no new job', async () => {

@@ -33,6 +33,7 @@ import { requireOperator } from '@/lib/auth/supabaseServer';
 import { createJobFromQuote } from '@/lib/jobs';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { accrueOnBooking } from '@/lib/referrals';
 
 export const runtime = 'nodejs';
 
@@ -189,6 +190,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Race loser: another concurrent request already booked this quote.
     const job = await createJobFromQuote(id); // idempotent — return the existing job
     return NextResponse.json({ ok: true, alreadyBooked: true, jobId: job?.id ?? null });
+  }
+
+  // Referral program (#41): this manual/operator booking write is a THIRD
+  // deposit-paid write site (found by reconciling every writer of deposit_paid_at
+  // — see AGENTS.md pitfall on cross-cutting seams), so it needs the same
+  // accrual the Valor webhook + simulate-deposit fire. Best-effort — must never
+  // block an operator's manual booking.
+  try {
+    await accrueOnBooking(id);
+  } catch (err) {
+    console.error('[api/quotes/:id/convert-to-job] referral accrual failed:', err);
   }
 
   // We won the race. Create the job (idempotent on quote_id — a test job for a
