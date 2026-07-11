@@ -7,6 +7,7 @@ import {
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
+import { calculatePermanentBistro } from './permanentBistro/pricing';
 
 const VALID = ['easy', 'medium', 'hard'];
 
@@ -46,7 +47,9 @@ const fullForm: QuoteFormData = {
   event: { barrelBoxes: 3, installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
   permanent: makeDefaultPermanentFields(),
   referralCredit: null,
-  permanentBistro: { poles: 0 },
+  // #117: permanentBistro grew a `bistro` array (satellite-derived footage) —
+  // [] here so the pre-existing full-payload assertions are unaffected.
+  permanentBistro: { poles: 0, bistro: [] },
 };
 
 describe('buildQuoteInputs', () => {
@@ -380,7 +383,7 @@ describe('permanentBistro inputs (#117)', () => {
   const bistroForm: QuoteFormData = {
     ...fullForm,
     serviceType: 'permanent_bistro',
-    permanentBistro: { poles: 4 },
+    permanentBistro: { poles: 4, bistro: [] },
   };
 
   it('builds inputs.permanentBistro (poles only) for a permanent_bistro quote', () => {
@@ -391,17 +394,87 @@ describe('permanentBistro inputs (#117)', () => {
     expect('permanentBistro' in buildQuoteInputs({ ...fullForm, serviceType: 'holiday' })).toBe(false);
   });
 
-  it('omits the permanentBistro block entirely when poles is 0', () => {
-    const inputs = buildQuoteInputs({ ...bistroForm, permanentBistro: { poles: 0 } });
+  it('omits the permanentBistro block entirely when poles is 0 and no bistro runs', () => {
+    const inputs = buildQuoteInputs({ ...bistroForm, permanentBistro: { poles: 0, bistro: [] } });
     expect('permanentBistro' in inputs).toBe(false);
   });
 
-  it('round-trips the permanentBistro block through inputsToFormData', () => {
+  it('round-trips the poles-only permanentBistro block through inputsToFormData', () => {
     const restored = inputsToFormData(bistroForm.customer, buildQuoteInputs(bistroForm), 'permanent_bistro');
     expect(restored.permanentBistro).toEqual(bistroForm.permanentBistro);
   });
 
   it('a legacy/non-bistro row hydrates a blank permanentBistro block', () => {
-    expect(inputsToFormData(null, {}).permanentBistro).toEqual({ poles: 0 });
+    expect(inputsToFormData(null, {}).permanentBistro).toEqual({ poles: 0, bistro: [] });
+  });
+
+  // #117: satellite-derived bistro runs (form.permanentBistro.bistro) — the
+  // billing source, replacing the old design-projected footage.
+  describe('bistro runs (satellite-derived footage, #117)', () => {
+    const withRuns: QuoteFormData = {
+      ...bistroForm,
+      permanentBistro: { poles: 2, bistro: [{ footage: 45 }, { footage: 30 }] },
+    };
+
+    it('sends only positive-footage bistro entries', () => {
+      const inputs = buildQuoteInputs(withRuns);
+      expect(inputs.permanentBistro).toEqual({
+        poles: 2,
+        bistro: [{ footage: 45 }, { footage: 30 }],
+      });
+    });
+
+    it('drops zero/negative-footage entries but keeps the block for the rest', () => {
+      const form = {
+        ...withRuns,
+        permanentBistro: { poles: 0, bistro: [{ footage: 45 }, { footage: 0 }, { footage: -5 }] },
+      };
+      expect(buildQuoteInputs(form).permanentBistro).toEqual({ bistro: [{ footage: 45 }] });
+    });
+
+    it('omits the permanentBistro block when poles is 0 AND every run is 0-footage', () => {
+      const form = { ...withRuns, permanentBistro: { poles: 0, bistro: [{ footage: 0 }] } };
+      expect('permanentBistro' in buildQuoteInputs(form)).toBe(false);
+    });
+
+    it('round-trips bistro runs (footage only) through inputsToFormData', () => {
+      const restored = inputsToFormData(withRuns.customer, buildQuoteInputs(withRuns), 'permanent_bistro');
+      expect(restored.permanentBistro).toEqual({
+        poles: 2,
+        bistro: [{ footage: 45 }, { footage: 30 }],
+      });
+    });
+
+    it('a stored bistro entry keeps its stable id on hydrate (drops only sceneItemIds)', () => {
+      // #117 MED: the run id must survive reopen so a #104 per-line override
+      // stays attached to the right run after a reopen+edit. sceneItemIds are
+      // not form-relevant (bistro is off the design projection) so they drop.
+      const restored = inputsToFormData(null, {
+        permanentBistro: { poles: 1, bistro: [{ footage: 12, id: 'run-x1', sceneItemIds: ['x1'] }] },
+      });
+      expect(restored.permanentBistro).toEqual({ poles: 1, bistro: [{ footage: 12, id: 'run-x1' }] });
+    });
+
+    it('threads a run stable id through build -> engine so it survives a mid-list delete (#117 MED)', () => {
+      // Two runs with stable ids; the engine keys the billed line on the id,
+      // not position, so deleting the FIRST run leaves the survivor id intact.
+      const twoRuns: QuoteFormData = {
+        ...bistroForm,
+        permanentBistro: { poles: 0, bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }] },
+      };
+      expect(buildQuoteInputs(twoRuns).permanentBistro).toEqual({
+        bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }],
+      });
+      // After the operator deletes run A, only B remains — its id does NOT
+      // re-index to a positional 'permanent-bistro-0'.
+      const afterDelete: QuoteFormData = {
+        ...bistroForm,
+        permanentBistro: { poles: 0, bistro: [{ footage: 30, id: 'B' }] },
+      };
+      const inputs = buildQuoteInputs(afterDelete);
+      const result = calculatePermanentBistro(inputs);
+      const line = result.lineItems.find((l) => l.label.includes('Bistro'));
+      expect(line?.id).toBe('B');
+    });
   });
 });

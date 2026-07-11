@@ -15,7 +15,7 @@ import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
-import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS } from '@/lib/portal/satelliteLines';
+import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -193,10 +193,16 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // (a straight #443-regression fix; those quotes used the holiday channels).
   // selectDrawableLineGroups hides empty channels, so old + new never collide.
   // undefined for holiday/event so their satellite view is unchanged.
+  // Permanent Bistro Lighting (#117): its own single 'bistro' channel — a
+  // POSITIVE match (never `!== 'permanent'`), so it never inherits permanent's
+  // side channels or the legacy santas/gingerbread trace (the file's own
+  // stated principle — see AGENTS.md seam-gate rule).
   const allowedSatelliteKeys =
     serviceType === 'permanent'
       ? [...PERMANENT_SIDE_SATELLITE_KEYS, 'santas' as const, 'gingerbread' as const]
-      : undefined;
+      : serviceType === 'permanent_bistro'
+        ? (['bistro'] as SatelliteLineGroup['key'][])
+        : undefined;
   const satelliteLabelOverrides =
     serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
   const {

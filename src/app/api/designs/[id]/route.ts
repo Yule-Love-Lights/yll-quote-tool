@@ -41,11 +41,12 @@ function isSatelliteLinesShape(v: unknown): v is DesignSatelliteLines {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
   // Every channel is checked ONLY when present (type-tolerant): holiday sends
-  // santas/gingerbread/c9; permanent (#88/S23) sends front/left/right/back; a
-  // client from before either still validates. At least one line channel must
-  // be an array so a truly empty/garbage body is still rejected.
+  // santas/gingerbread/c9; permanent (#88/S23) sends front/left/right/back;
+  // permanent bistro (#117) sends bistro; a client from before any of these
+  // still validates. At least one line channel must be an array so a truly
+  // empty/garbage body is still rejected.
   const optArr = (x: unknown) => x === undefined || Array.isArray(x);
-  const channels = [o.santas, o.gingerbread, o.c9, o.stake, o.front, o.left, o.right, o.back];
+  const channels = [o.santas, o.gingerbread, o.c9, o.stake, o.front, o.left, o.right, o.back, o.bistro];
   return channels.every(optArr) && channels.some((c) => Array.isArray(c));
 }
 
@@ -102,7 +103,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   if (satelliteLines !== undefined && !isSatelliteLinesShape(satelliteLines)) {
     return NextResponse.json(
-      { error: 'satelliteLines must be an object with line arrays for at least one channel (santas/gingerbread/c9/stake or front/left/right/back)' },
+      { error: 'satelliteLines must be an object with line arrays for at least one channel (santas/gingerbread/c9/stake, front/left/right/back, or bistro)' },
       { status: 400 },
     );
   }

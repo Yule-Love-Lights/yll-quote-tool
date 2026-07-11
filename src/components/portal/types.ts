@@ -191,6 +191,9 @@ export type PortalSatelliteLines = {
   left?: PortalSatelliteLine[];
   right?: PortalSatelliteLine[];
   back?: PortalSatelliteLine[];
+  // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
+  // the satellite view — optional (non-bistro designs lack it).
+  bistro?: PortalSatelliteLine[];
 };
 
 export type PortalDesign = {

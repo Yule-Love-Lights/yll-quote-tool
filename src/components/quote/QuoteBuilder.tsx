@@ -37,6 +37,7 @@ import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
+import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
@@ -184,7 +185,7 @@ function EditablePrice({
 // #82 2c: `feature` is the AI's per-segment physical roof feature (mirrors
 // photoAnalysis RoofFeatureClass), carried into the seed so roofline strands
 // get a roofFeature for the inventory clip engine.
-type LineSegment = { points: [number, number][]; label: string; feature?: 'gutter' | 'peak' | 'side' | 'ridge' | 'metal' };
+type LineSegment = { points: [number, number][]; label: string; feature?: 'gutter' | 'peak' | 'side' | 'ridge' | 'metal'; id?: string };
 
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
@@ -749,6 +750,12 @@ export default function QuoteBuilder({
   const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
     front: false, left: false, right: false, back: false,
   });
+  // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
+  // the satellite view — the BILLING source (true-scale feet-per-pixel, no
+  // yardstick). One flat array of runs (not per-side, unlike permanent's four
+  // sides) since a bistro run isn't tied to a house side. The Design tab's
+  // bistro strand stays visual-only for the portal, mirroring permanent's split.
+  const [satelliteBistroLines, setSatelliteBistroLines] = useState<LineSegment[]>([]);
   // #140 P3: the analyzer's jump/splitter detections — what pure geometry can't
   // see. Session-scoped extras for the Extensions/Splitters derive; the DERIVED
   // counts persist on form.permanent (saved on Calculate), so nothing is lost
@@ -776,7 +783,7 @@ export default function QuoteBuilder({
   const [viewMode, setViewMode] = useState<'design' | 'satellite'>('design');
 
   // Drag state for editing satellite polyline points
-  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake' | PermanentSideKey;
+  type LineType = 'santas' | 'gingerbread' | 'c9' | 'stake' | 'bistro' | PermanentSideKey;
   const [dragging, setDragging] = useState<{ type: LineType; lineIdx: number; ptIdx: number } | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
@@ -793,6 +800,9 @@ export default function QuoteBuilder({
   const hadStakeLinesRef = useRef(false);
   const hadSantasLinesRef = useRef(false);
   const hadGingerbreadLinesRef = useRef(false);
+  // Permanent Bistro Lighting (#117): mirrors hadC9LinesRef — deleting the last
+  // bistro run resets the billed array to [] instead of leaving a stale value.
+  const hadBistroLinesRef = useRef(false);
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -851,12 +861,30 @@ export default function QuoteBuilder({
     ginger: satelliteFeetPerPixel != null ? Math.round(polylineLength(satelliteGingerbreadLines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5 : null,
   };
 
+  // Permanent Bistro Lighting (#117): one run's OWN footage (never summed with
+  // others), same math as the billing-derive effect below — used for the
+  // Satellite tab's read-only per-run list so what the operator sees always
+  // matches what gets billed.
+  const bistroRunFootage = (line: LineSegment): number | null =>
+    satelliteFeetPerPixel != null
+      ? roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel)
+      : null;
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
     if (type === 'santas') return setSatelliteSantasLines;
     if (type === 'gingerbread') return setSatelliteGingerbreadLines;
     if (type === 'stake') return setSatelliteStakeLines;
+    if (type === 'bistro') {
+      return (updater) => {
+        // #142 thaw: the operator touched the lines — footage follows the
+        // visible geometry again (live-session rules), mirroring the
+        // permanent-side branch below.
+        permDeriveFrozenRef.current = false;
+        setSatelliteBistroLines(updater);
+      };
+    }
     if (isPermanentSide(type)) {
       return (updater) => {
         // #142: the operator touched the lines — thaw the rehydrate freeze so
@@ -976,14 +1004,59 @@ export default function QuoteBuilder({
     form.permanent?.accessoriesSource,
   ]);
 
-  // #142: REHYDRATE the satellite tab on a reopened permanent quote. The design
-  // row persists everything the tab needs (image path → signed URL, the four
-  // side traces, the pull scale), so a saved quote's lines come back EDITABLE
-  // instead of a blank tab that needed a fresh (billable) address re-pull.
-  // Derives stay FROZEN until the operator actually edits (see
-  // permDeriveFrozenRef above) — loading a quote must never move its numbers.
+  // Permanent Bistro Lighting (#117): derive each drawn run's OWN footage (per
+  // run — never summed into one side total, unlike permanent) from its
+  // satellite trace, and write the array straight onto form.permanentBistro.bistro
+  // — the BILLING source (the Design tab's bistro strand there stays visual-only,
+  // mirroring permanent's split; see the route's design-projection exemption).
+  // Guard chain: NOT frozen (#142 rehydrate) AND a known satellite scale AND a
+  // LIVE satellite session (satellitePreview != null — the S24/S25 clobber-class
+  // guard: a reopened-but-untouched quote must never have its saved footage
+  // overwritten by "nothing drawn this session" math).
   useEffect(() => {
-    if (!editMode || form.serviceType !== 'permanent') return;
+    if (form.serviceType !== 'permanent_bistro') return;
+    if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
+    if (satelliteFeetPerPixel == null) return; // no known scale — manual typing only
+    if (satellitePreview == null) return; // no live satellite session — nothing to derive from
+    const hasLines = satelliteBistroLines.length > 0;
+    // Each run carries its stable id (#117 MED) so the billed line item id
+    // follows the run across a mid-list delete, not its position.
+    const runs = hasLines
+      ? satelliteBistroLines.map((line) => ({
+          footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
+          id: line.id,
+        }))
+      : hadBistroLinesRef.current
+        ? [] // had runs, all deleted — reset the billed array to empty
+        : null; // never drawn this session — leave the saved array alone
+    hadBistroLinesRef.current = hasLines;
+    if (runs == null) return;
+    queueMicrotask(() =>
+      setForm((f) => {
+        if (f.serviceType !== 'permanent_bistro') return f;
+        const next = runs.map((r) => ({ footage: r.footage, ...(r.id ? { id: r.id } : {}) }));
+        const cur = f.permanentBistro.bistro;
+        const same =
+          cur.length === next.length &&
+          cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
+        if (same) return f;
+        return { ...f, permanentBistro: { ...f.permanentBistro, bistro: next } };
+      }),
+    );
+  }, [satelliteBistroLines, satelliteFeetPerPixel, satelliteAspect, satellitePreview, form.serviceType]);
+
+  // #142: REHYDRATE the satellite tab on a reopened permanent (or, #117,
+  // permanent_bistro) quote. The design row persists everything the tab needs
+  // (image path → signed URL, the traced lines, the pull scale), so a saved
+  // quote's lines come back EDITABLE instead of a blank tab that needed a
+  // fresh (billable) address re-pull. Derives stay FROZEN until the operator
+  // actually edits (see permDeriveFrozenRef above) — loading a quote must
+  // never move its numbers. The freeze is set BEFORE the hydrating setState
+  // calls below (both branches) — that ordering is the entire point: a
+  // reopened quote's saved billing numbers must never move on load.
+  useEffect(() => {
+    const isPermanentBistro = form.serviceType === 'permanent_bistro';
+    if (!editMode || (form.serviceType !== 'permanent' && !isPermanentBistro)) return;
     if (!designId || satellitePreview != null) return; // live session already
     let stale = false;
     (async () => {
@@ -994,6 +1067,16 @@ export default function QuoteBuilder({
         const d = data?.design;
         if (stale || !d?.satelliteUrl) return;
         const sl = d.satelliteLines ?? {};
+        if (isPermanentBistro) {
+          const bistroLines: LineSegment[] = sl.bistro ?? [];
+          if (bistroLines.length === 0) return; // nothing traced — keep the old blank-tab behavior
+          permDeriveFrozenRef.current = true; // freeze BEFORE hydrating (see comment above)
+          hadBistroLinesRef.current = true;
+          setSatelliteBistroLines(bistroLines);
+          setSatelliteFeetPerPixel(d.satelliteFeetPerPixel ?? null);
+          setSatellitePreview(d.satelliteUrl);
+          return;
+        }
         const lines: Record<PermanentSideKey, LineSegment[]> = {
           front: sl.front ?? [],
           left: sl.left ?? [],
@@ -1001,7 +1084,7 @@ export default function QuoteBuilder({
           back: sl.back ?? [],
         };
         if (!PERMANENT_SIDES.some((s) => lines[s].length > 0)) return; // nothing traced — keep the old blank-tab behavior
-        permDeriveFrozenRef.current = true;
+        permDeriveFrozenRef.current = true; // freeze BEFORE hydrating (see comment above)
         for (const side of PERMANENT_SIDES) hadPermLinesRef.current[side] = lines[side].length > 0;
         setPermanentSatLines(lines);
         setSatelliteFeetPerPixel(d.satelliteFeetPerPixel ?? null);
@@ -1075,7 +1158,15 @@ export default function QuoteBuilder({
     const newLine: LineSegment = {
       points: pendingPoints,
       label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
+        : addMode === 'bistro' ? `Run ${satelliteBistroLines.length + 1}`
         : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      // #117 MED: a bistro run carries a STABLE id so its billed line item id
+      // (and any #104 per-line price/free override keyed on it) survives a
+      // mid-list run delete. Without it, the engine synthesizes POSITIONAL ids
+      // (permanent-bistro-<index>) that re-index on delete, silently
+      // reattaching an override to the wrong run. Other line types derive
+      // footage per-side/per-scene, so they never need this.
+      ...(addMode === 'bistro' ? { id: crypto.randomUUID() } : {}),
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -1144,6 +1235,10 @@ export default function QuoteBuilder({
       setSatelliteGingerbreadLines([]);
       setSatelliteC9Lines([]);
       setSatelliteStakeLines([]);
+      // #117 LOW: a new satellite image invalidates any runs drawn on the old
+      // one — clear so they don't overlay/rescale onto this image.
+      setSatelliteBistroLines([]);
+      hadBistroLinesRef.current = false;
       setSatelliteFeetPerPixel(null); // manual = no known scale
       const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
       // Read the CURRENT design id (L6) — a design may have been created while
@@ -1516,6 +1611,16 @@ export default function QuoteBuilder({
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
         setFewShotCount(0);
         setViewMode('design');
+        // #117 LOW: a fresh lookup is a NEW satellite image + scale. Discard any
+        // bistro runs drawn on the PREVIOUS image so they don't silently rescale
+        // into new billing footage — the operator redraws on the new image. Thaw
+        // the rehydrate freeze (fresh live session) and flag hadBistroLines so the
+        // derive resets the billed array to empty; then a redraw bills correctly.
+        if (form.serviceType === 'permanent_bistro') {
+          permDeriveFrozenRef.current = false;
+          hadBistroLinesRef.current = satelliteBistroLines.length > 0;
+          setSatelliteBistroLines([]);
+        }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
         // can show the "Where the lights go" view. Holiday does this in
         // applyAnalysisResult; permanent has no analysis result, so without parking
@@ -1599,7 +1704,7 @@ export default function QuoteBuilder({
           // designs manually, so surface that instead of a false "the
           // analyzer is unavailable" warning.
           setAnalysisNotes(
-            'Photos loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.',
+            'Photos loaded. Draw the bistro light runs on the Satellite tab (billing) and set the pole count below — there is no auto-trace for bistro.',
           );
         } else {
           setAnalysisWarning(
@@ -1647,7 +1752,7 @@ export default function QuoteBuilder({
       setViewMode('design');
       setAnalysisNotes(
         form.serviceType === 'permanent_bistro'
-          ? 'Photo loaded. Draw the bistro light runs on the design and set the pole count below — there is no auto-trace for bistro.'
+          ? 'Photo loaded. Draw the bistro light runs on the Satellite tab (billing) and set the pole count below — there is no auto-trace for bistro.'
           : 'Photo loaded. Billing footage comes from the Satellite tab draw (front/left/right/back) — an uploaded photo has no satellite, so use "Look up on Google Maps" for the auto-trace, or type the footage manually.',
       );
       return;
@@ -2143,7 +2248,12 @@ export default function QuoteBuilder({
       // Permanent (#88/S23): persist the four side traces so the portal draws them.
       const permanentSatelliteActive =
         form.serviceType === 'permanent' && PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
-      if (designId && (holidaySatelliteActive || permanentSatelliteActive)) {
+      // Permanent Bistro Lighting (#117): persist the bistro runs so the portal
+      // draws them (the drawn geometry, not the derived footage — the design's
+      // satelliteLines mirror the builder's own line shape, same as permanent).
+      const bistroSatelliteActive =
+        form.serviceType === 'permanent_bistro' && satelliteBistroLines.length > 0;
+      if (designId && (holidaySatelliteActive || permanentSatelliteActive || bistroSatelliteActive)) {
         const satelliteLines = permanentSatelliteActive
           ? {
               front: permanentSatLines.front,
@@ -2151,14 +2261,16 @@ export default function QuoteBuilder({
               right: permanentSatLines.right,
               back: permanentSatLines.back,
             }
-          : {
-              santas: satelliteSantasLines,
-              gingerbread: satelliteGingerbreadLines,
-              c9: satelliteC9Lines,
-              stake: satelliteStakeLines,
-              ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
-              ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
-            };
+          : bistroSatelliteActive
+            ? { bistro: satelliteBistroLines }
+            : {
+                santas: satelliteSantasLines,
+                gingerbread: satelliteGingerbreadLines,
+                c9: satelliteC9Lines,
+                stake: satelliteStakeLines,
+                ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
+                ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
+              };
         void fetch(`/api/designs/${designId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -2579,7 +2691,7 @@ export default function QuoteBuilder({
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
                 : form.serviceType === 'permanent_bistro'
-                  ? 'Look up the address on Google Maps for Street View + satellite imagery, or upload a photo. There is no auto-trace for bistro — draw the light runs and set the pole count below.'
+                  ? 'Look up the address on Google Maps for Street View + satellite imagery, or upload a photo. There is no auto-trace for bistro — draw the light runs on the Satellite tab (billing) and set the pole count below.'
                   : 'Look up the address on Google Maps (Street View + satellite) or upload a photo. Claude will estimate front gutterline, ridge + sides, bushes, trees, and columns.'}
             </p>
 
@@ -2601,7 +2713,7 @@ export default function QuoteBuilder({
                 {form.serviceType === 'permanent'
                   ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the permanent roofline on a real photo.'
                   : form.serviceType === 'permanent_bistro'
-                    ? 'Uses the Property Address above. Fetches Street View + satellite imagery so you draw the bistro light runs on a real photo.'
+                    ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
@@ -2897,9 +3009,9 @@ export default function QuoteBuilder({
                       </p>
                     ) : form.serviceType === 'permanent_bistro' ? (
                       <p className="text-xs text-gray-400 mt-2">
-                        Draw the bistro light runs on the photo. Footage bills from what you draw here; set
-                        the pole count in the Permanent poles &amp; supports section below. Saves
-                        automatically and attaches to this quote on Calculate.
+                        Drawing here is VISUAL (the portal shows these runs lit). Billing footage comes from
+                        the Satellite tab&apos;s bistro runs — draw them there (true-scale, no yardstick
+                        needed). Saves automatically and attaches to this quote on Calculate.
                       </p>
                     ) : (
                       <p className="text-xs text-gray-400 mt-2">
@@ -2911,8 +3023,8 @@ export default function QuoteBuilder({
                     {/* #88/#117: the "From your design" billable-items summary
                         (minis/spritzers/wreaths/garland/bows) is holiday/event
                         only — permanent bills from the Permanent section and
-                        permanent bistro from its own poles section + the design's
-                        bistro lines, neither of which this preview panel prices
+                        permanent bistro from its own poles section + the Satellite
+                        tab's bistro runs, neither of which this preview panel prices
                         (it calls the generic holiday engine, which ignores bistro
                         runs — see permanentBistro/types.ts), so showing it here
                         would misreport a bistro quote as having 0 billable items. */}
@@ -3043,11 +3155,23 @@ export default function QuoteBuilder({
                             />
                           )),
                         )}
+                        {form.serviceType === 'permanent_bistro' && satelliteBistroLines.map((line, i) => (
+                          <polyline
+                            key={`bistro-${i}`}
+                            points={line.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                            fill="none"
+                            stroke="#14b8a6"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
                         {pendingPoints.length > 0 && (
                           <polyline
                             points={pendingPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                             fill="none"
-                            stroke={isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
+                            stroke={isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'bistro' ? '#14b8a6' : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981'}
                             strokeWidth="3"
                             strokeDasharray="6 4"
                             vectorEffect="non-scaling-stroke"
@@ -3107,11 +3231,21 @@ export default function QuoteBuilder({
                           />
                         ))),
                       )}
+                      {!addMode && form.serviceType === 'permanent_bistro' && satelliteBistroLines.flatMap((line, li) => line.points.map(([x, y], pi) => (
+                        <div
+                          key={`bistro-h-${li}-${pi}`}
+                          className="absolute w-5 h-5 rounded-full border-2 border-white shadow cursor-move hover:scale-125 transition-transform touch-none"
+                          style={{ left: `calc(${x * 100}% - 10px)`, top: `calc(${y * 100}% - 10px)`, backgroundColor: '#14b8a6' }}
+                          onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragging({ type: 'bistro', lineIdx: li, ptIdx: pi }); }}
+                          onDoubleClick={() => deletePoint('bistro', li, pi)}
+                          title="Drag to move • Double-click to delete"
+                        />
+                      )))}
                       {pendingPoints.map(([x, y], i) => (
                         <div
                           key={`pp-${i}`}
                           className="absolute w-3 h-3 rounded-full border-2 border-white shadow"
-                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)`, backgroundColor: isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981' }}
+                          style={{ left: `calc(${x * 100}% - 6px)`, top: `calc(${y * 100}% - 6px)`, backgroundColor: isPermanentSide(addMode ?? '') ? PERMANENT_SIDE_META[addMode as PermanentSideKey].color : addMode === 'bistro' ? '#14b8a6' : addMode === 'santas' ? '#ef4444' : addMode === 'gingerbread' ? '#3b82f6' : addMode === 'stake' ? '#a855f7' : '#10b981' }}
                         />
                       ))}
                     </div>
@@ -3192,6 +3326,77 @@ export default function QuoteBuilder({
                           })}
                         </div>
                       </>
+                    ) : form.serviceType === 'permanent_bistro' ? (
+                      // #117: bistro measures HERE, on the satellite view — each
+                      // freeform run's true-scale footage (no yardstick) is the
+                      // BILLING source (form.permanentBistro.bistro). The Design
+                      // tab's bistro strand stays visual-only for the portal.
+                      <>
+                        <p className="mt-3 text-sm text-gray-500">
+                          Draw each bistro light run on the satellite view. Footage fills in automatically
+                          below — this is the billing source.
+                          {satelliteFeetPerPixel == null && (
+                            <span className="text-amber-600">
+                              {' '}No satellite scale on this photo — type the footage manually once a
+                              scaled address lookup restores it.
+                            </span>
+                          )}
+                        </p>
+                        {addMode === 'bistro' ? (
+                          <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3 flex items-center justify-between">
+                            <span className="text-sm text-yellow-900">
+                              Adding new Bistro Run — click on the photo to add points ({pendingPoints.length} placed).
+                            </span>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={finishAddingLine} disabled={pendingPoints.length < 2}
+                                className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded">
+                                Done
+                              </button>
+                              <button type="button" onClick={cancelAdd}
+                                className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button type="button" onClick={() => { setAddMode('bistro'); setPendingPoints([]); }}
+                              className="text-xs font-medium border rounded px-3 py-1.5 hover:opacity-70"
+                              style={{ color: '#14b8a6', borderColor: '#14b8a6' }}>
+                              + Add Bistro Run
+                            </button>
+                          </div>
+                        )}
+                        <div className="mt-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="w-4 h-1 rounded" style={{ backgroundColor: '#14b8a6' }}></span>
+                            <span className="text-sm font-semibold text-gray-800">
+                              Bistro Runs — {satelliteBistroLines.reduce(
+                                (sum, line) => sum + (bistroRunFootage(line) ?? 0),
+                                0,
+                              )}ft total
+                            </span>
+                          </div>
+                          {satelliteBistroLines.length > 0 ? (
+                            <ul className="space-y-1 ml-6">
+                              {satelliteBistroLines.map((line, i) => {
+                                const ft = bistroRunFootage(line);
+                                return (
+                                  <li key={`bistro-${i}`} className="flex items-center gap-2 text-xs">
+                                    <span className="flex-1 text-gray-500">
+                                      Run {i + 1} — {ft != null ? `${ft} ft` : 'no scale'} ({line.points.length} pts)
+                                    </span>
+                                    <button type="button" onClick={() => deleteLine('bistro', i)}
+                                      className="text-red-400 hover:text-red-600 font-bold">×</button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          ) : (
+                            <p className="text-xs text-gray-400 ml-6">No runs drawn</p>
+                          )}
+                        </div>
+                      </>
                     ) : (
                     <>
                     {/* Add-line controls */}
@@ -3211,15 +3416,6 @@ export default function QuoteBuilder({
                           </button>
                         </div>
                       </div>
-                    ) : form.serviceType === 'permanent_bistro' ? (
-                      // #117: bistro doesn't measure from the satellite view — its
-                      // footage projects from the light runs drawn on the Design
-                      // tab, so the santas/gingerbread line-drawing tools below
-                      // (holiday + event only) don't apply here.
-                      <p className="mt-3 text-sm text-gray-500">
-                        Bistro doesn&apos;t measure from the satellite view — footage comes from the light
-                        runs you draw on the Design tab.
-                      </p>
                     ) : (
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button type="button" onClick={() => { setAddMode('santas'); setPendingPoints([]); }}
@@ -3605,7 +3801,8 @@ export default function QuoteBuilder({
           )}
 
           {/* Permanent Bistro Lighting (#117) — poles/supports, the one form
-              input bistro carries (footage is design-drawn, projected server-side). */}
+              input bistro carries (footage comes from the Satellite tab's
+              drawn runs, written straight onto form.permanentBistro.bistro). */}
           {form.serviceType === 'permanent_bistro' && (
             <Section title="Permanent poles & supports">
               <input
