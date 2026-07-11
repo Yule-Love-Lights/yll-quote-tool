@@ -5,6 +5,7 @@ import {
   MOCK_GALLERY_ITEMS,
   EVENT_GALLERY_ITEMS,
   PERMANENT_GALLERY_ITEMS,
+  BISTRO_GALLERY_ITEMS,
 } from './mockQuote';
 import type { GalleryItem } from './dark/Gallery';
 
@@ -31,12 +32,14 @@ describe('galleryItemsFor', () => {
     expect(galleryItemsFor('permanent')).not.toBe(MOCK_GALLERY_ITEMS);
   });
 
-  it('returns the event list as a placeholder for permanent_bistro (#117 — no bistro photos yet)', () => {
-    expect(galleryItemsFor('permanent_bistro')).toBe(EVENT_GALLERY_ITEMS);
+  it('returns its OWN list for permanent_bistro (#117 — bistro photos landed this session)', () => {
+    expect(BISTRO_GALLERY_ITEMS).toHaveLength(6);
+    expect(galleryItemsFor('permanent_bistro')).toBe(BISTRO_GALLERY_ITEMS);
+    expect(galleryItemsFor('permanent_bistro')).not.toBe(EVENT_GALLERY_ITEMS);
   });
 
   it('every entry has a unique id and a /references/ src', () => {
-    const all = [...MOCK_GALLERY_ITEMS, ...EVENT_GALLERY_ITEMS, ...PERMANENT_GALLERY_ITEMS];
+    const all = [...MOCK_GALLERY_ITEMS, ...EVENT_GALLERY_ITEMS, ...PERMANENT_GALLERY_ITEMS, ...BISTRO_GALLERY_ITEMS];
     const ids = new Set(all.map((i) => i.id));
     expect(ids.size).toBe(all.length);
     for (const item of all) {

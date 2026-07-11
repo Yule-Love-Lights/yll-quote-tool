@@ -186,22 +186,33 @@ export const PERMANENT_GALLERY_ITEMS: GalleryItemData[] = [
   { id: 'p9', neighborhood: 'Commercial',         src: '/references/perm-commercial.webp',          alt: 'Commercial storefront with permanent blue and white roofline lighting shining over the parking lot' },
 ];
 
+// Permanent Bistro Lighting completed work (#117; photos supplied by Naldo
+// this session): four commercial street-span installs from the Langdon LI
+// downtown job plus two residential backyard patios.
+export const BISTRO_GALLERY_ITEMS: GalleryItemData[] = [
+  { id: 'b1', neighborhood: 'Main Street Glow',   src: '/references/bistro-street-van.webp',       alt: 'Warm bistro string lights spanning a downtown street at night, with the Yule Love Lights install van parked below' },
+  { id: 'b2', neighborhood: 'Downtown Canopy',    src: '/references/bistro-downtown-canopy.webp',  alt: 'Rows of warm bistro lights strung from a brick apartment building across the street, glowing against the night sky' },
+  { id: 'b3', neighborhood: 'Evening Stroll',     src: '/references/bistro-evening-stroll.webp',   alt: 'A couple walking beneath permanent bistro lights strung along a lit brick building at night' },
+  { id: 'b4', neighborhood: 'Corner to Corner',   src: '/references/bistro-corner-span.webp',      alt: 'Bistro string lights crossing a downtown intersection from a brick building, lighting the sidewalk below' },
+  { id: 'b5', neighborhood: 'Patio Fire Pit',     src: '/references/bistro-patio-firepit.webp',    alt: 'Backyard paver patio with a stone fire pit under a canopy of warm Edison bistro lights on poles' },
+  { id: 'b6', neighborhood: 'Backyard Nights',    src: '/references/bistro-backyard-nights.webp',  alt: 'Bistro lights strung on poles across a backyard lawn, glowing over the covered patio' },
+];
+
 // Per-service-type "Completed Work" gallery selector (ledger #121). Positive
 // match on the non-holiday types (never `!== 'holiday'` — see AGENTS.md
 // service-type seam convention); holiday is the default/fallback case, and
-// any type whose own list is still empty (event, permanent today) falls back
-// to it too, so the portal gallery section never renders empty.
+// any type whose own list is still empty falls back to it too, so the portal
+// gallery section never renders empty.
 export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
   switch (serviceType) {
     case 'event':
       return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'permanent':
       return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
-    // Permanent Bistro Lighting (#117) has no completed-work photos of its own
-    // yet — reuses the Event gallery as a placeholder until real bistro assets
-    // exist (#117 follow-up).
+    // Permanent Bistro Lighting (#117): its own completed-work photos as of
+    // this session (previously the Event gallery stood in as a placeholder).
     case 'permanent_bistro':
-      return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+      return BISTRO_GALLERY_ITEMS.length > 0 ? BISTRO_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'holiday':
     default:
       return MOCK_GALLERY_ITEMS;
