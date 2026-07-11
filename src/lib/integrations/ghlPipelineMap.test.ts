@@ -20,6 +20,7 @@ const ENV_KEYS = [
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY',
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
+  'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO',
 ] as const;
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -173,10 +174,14 @@ describe('quoteLinkFieldId', () => {
     expect(quoteLinkFieldId('event')).toBe('field_event');
   });
 
-  it('permanent_bistro reuses the PERMANENT env var (#117 v1 — no dedicated field yet)', () => {
+  it('permanent_bistro uses its OWN Bistro field, never the Permanent one (#117, 2026-07-11)', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO = 'field_bistro';
     process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT = 'field_permanent';
-    expect(quoteLinkFieldId('permanent_bistro')).toBe('field_permanent');
-    expect(quoteLinkFieldEnvVar('permanent_bistro')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT');
+    expect(quoteLinkFieldId('permanent_bistro')).toBe('field_bistro');
+    expect(quoteLinkFieldEnvVar('permanent_bistro')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO');
+    // Never Permanent's field — a bistro send/decline must not touch a
+    // permanent quote's link value for a dual-quote customer.
+    expect(quoteLinkFieldId('permanent_bistro')).not.toBe(quoteLinkFieldId('permanent'));
   });
 
   it('returns undefined when the type\'s env var is unset', () => {
