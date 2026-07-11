@@ -31,6 +31,32 @@ describe('ReferralSection', () => {
     expect(html).toContain('Copy link');
   });
 
+  it('renders the Share button next to the copy button (growth feature 1)', () => {
+    const html = renderToStaticMarkup(
+      <ReferralSection referralLink="https://quote.yulelovelights.com/refer/ABCD1234" {...PROPS} />,
+    );
+    expect(html).toContain('Share');
+  });
+
+  it('renders the QR code when an svg is supplied, subordinate to the link+share (growth feature 2)', () => {
+    const html = renderToStaticMarkup(
+      <ReferralSection
+        referralLink="https://quote.yulelovelights.com/refer/ABCD1234"
+        qrSvg={'<svg><path d="M0 0h1v1H0z" /></svg>'}
+        {...PROPS}
+      />,
+    );
+    expect(html).toContain('or scan to share');
+    expect(html).toContain('<svg>');
+  });
+
+  it('omits the QR block entirely when no svg is supplied (fail-open)', () => {
+    const html = renderToStaticMarkup(
+      <ReferralSection referralLink="https://quote.yulelovelights.com/refer/ABCD1234" {...PROPS} />,
+    );
+    expect(html).not.toContain('or scan to share');
+  });
+
   it('falls back to copy-only (no link, no copy button) when the quote has no customer row', () => {
     const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
     expect(html).not.toContain('Copy link');
