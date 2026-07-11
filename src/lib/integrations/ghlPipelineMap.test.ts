@@ -110,6 +110,11 @@ describe('resolvePipelineStages', () => {
     });
   });
 
+  it('permanent_bistro reuses the Permanent pipeline/stages (#117 v1 — no dedicated pipeline yet)', () => {
+    const stages = resolvePipelineStages('permanent_bistro');
+    expect(stages).toEqual(resolvePipelineStages('permanent'));
+  });
+
   it('unknown service_type falls back to holiday (the default)', () => {
     const stages = resolvePipelineStages('not-a-real-type');
     expect(stages.pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
@@ -131,6 +136,12 @@ describe('quoteLinkFieldId', () => {
     expect(quoteLinkFieldId('holiday')).toBe('field_holiday');
     expect(quoteLinkFieldId('permanent')).toBe('field_permanent');
     expect(quoteLinkFieldId('event')).toBe('field_event');
+  });
+
+  it('permanent_bistro reuses the PERMANENT env var (#117 v1 — no dedicated field yet)', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT = 'field_permanent';
+    expect(quoteLinkFieldId('permanent_bistro')).toBe('field_permanent');
+    expect(quoteLinkFieldEnvVar('permanent_bistro')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT');
   });
 
   it('returns undefined when the type\'s env var is unset', () => {

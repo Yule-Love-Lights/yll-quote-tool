@@ -9,14 +9,15 @@
 // the dashboard and this builder change are on master, point that module at
 // this one (re-export) so there is a single source of truth.
 
-export type ServiceType = 'holiday' | 'permanent' | 'event';
+export type ServiceType = 'holiday' | 'permanent' | 'event' | 'permanent_bistro';
 
-export const SERVICE_TYPES: readonly ServiceType[] = ['holiday', 'permanent', 'event'] as const;
+export const SERVICE_TYPES: readonly ServiceType[] = ['holiday', 'permanent', 'event', 'permanent_bistro'] as const;
 
 export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
   holiday: 'Holiday',
   permanent: 'Permanent',
   event: 'Event',
+  permanent_bistro: 'Bistro',
 };
 
 /** The default for any quote that hasn't been explicitly categorized. Matches

@@ -137,6 +137,19 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
     expect(putSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Permanent Bistro rates (#117) — mirrors the eventRates boundary check.
+  it('400s when permanentBistroRates is not an object', async () => {
+    const res = await PUT(makeReq({ permanentBistroRates: 'nope' }));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('persists a valid permanentBistroRates patch (200, putAppSettings called)', async () => {
+    const res = await PUT(makeReq({ permanentBistroRates: { perFt: 35 } }));
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledOnce();
+  });
+
   // keep the import referenced so tsc/lint don't flag it
   it('exposes factory defaults', () => {
     expect(DEFAULT_APP_SETTINGS.colors.length).toBeGreaterThan(0);

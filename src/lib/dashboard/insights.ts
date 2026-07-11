@@ -8,6 +8,7 @@ const SERVICE_LABEL: Record<ServiceType, string> = {
   holiday: 'Holiday',
   permanent: 'Permanent',
   event: 'Event',
+  permanent_bistro: 'Bistro',
 };
 
 function monthKey(iso: string): string {
@@ -46,7 +47,7 @@ export type ServiceRevenueSlice = { service: ServiceType; label: string; revenue
 /** Booked revenue split by service line (NULL service_type → holiday). Always
  *  returns all three services in canonical order (0 when none). */
 export function revenueByService(quotes: DashboardQuote[]): ServiceRevenueSlice[] {
-  const totals: Record<ServiceType, number> = { holiday: 0, permanent: 0, event: 0 };
+  const totals: Record<ServiceType, number> = { holiday: 0, permanent: 0, event: 0, permanent_bistro: 0 };
   for (const q of quotes) {
     if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/lost
     totals[serviceTypeOf(q)] += q.total ?? 0;

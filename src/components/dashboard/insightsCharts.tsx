@@ -74,6 +74,9 @@ const SERVICE_COLOR: Record<ServiceType, string> = {
   holiday: 'var(--brand-evergreen)',
   permanent: 'var(--brand-gold)',
   event: 'var(--brand-red)',
+  // No dedicated brand CSS var yet for a 4th service color — a literal teal,
+  // consistent with the admin quotes-list badge's teal pick for this type.
+  permanent_bistro: '#0d9488',
 };
 
 /** Booked revenue split by service line, as a donut + legend. */

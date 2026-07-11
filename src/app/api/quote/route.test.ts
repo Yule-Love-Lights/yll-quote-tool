@@ -24,7 +24,11 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       viewed_at?: string | null;
       status?: string | null;
       service_type?: string | null;
-      result?: { permanentRatesSnapshot?: unknown; eventRatesSnapshot?: unknown } | null;
+      result?: {
+        permanentRatesSnapshot?: unknown;
+        eventRatesSnapshot?: unknown;
+        permanentBistroRatesSnapshot?: unknown;
+      } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -70,6 +74,10 @@ vi.mock('@/lib/appSettings', () => ({
       bistroPerFt: 8,
       barrelBoxPrice: 100,
     },
+    // Distinct permanent-bistro rates (perFt $6) so a test can prove the route
+    // reads settings.permanentBistroRates, not the engine's compiled default
+    // (perFt $30).
+    permanentBistroRates: { perFt: 6, perPole: 20, minimum: 0 },
   }),
 }));
 
@@ -331,6 +339,72 @@ describe('POST /api/quote — event block validation (#96 audit fixes #9 / #5)',
   it('accepts an event quote with no event block at all (still optional)', async () => {
     const inputs = validInputs();
     const res = await POST(makeReq({ serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+  });
+});
+
+const bistroPoleAmt = (r: { lineItems: Line[] }) =>
+  r.lineItems.find((l) => l.id === 'permanent-bistro-poles')?.amount;
+
+describe('POST /api/quote — permanent_bistro dispatch (#117)', () => {
+  it('a NEW permanent_bistro quote is priced by the bistro engine at live settings rates + saved as permanent_bistro, snapshot frozen', async () => {
+    const inputs = { ...validInputs(), permanentBistro: { poles: 2 } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(bistroPoleAmt(savedResult())).toBe(40); // 2 * $20 (settings rate, not $100 default)
+    expect((savedResult() as { permanentBistroRatesSnapshot?: unknown }).permanentBistroRatesSnapshot).toBeTruthy();
+    expect(save.mock.calls[0]?.[3]).toBe('permanent_bistro'); // saved as permanent_bistro
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('H1: an UPDATE of an existing permanent_bistro quote prices from the FROZEN snapshot, not live settings', async () => {
+    rawRef.current!.service_type = 'permanent_bistro';
+    rawRef.current!.result = {
+      permanentBistroRatesSnapshot: { perFt: 30, perPole: 99, minimum: 0 },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { poles: 2 } };
+    await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'permanent_bistro', inputs }));
+    expect(bistroPoleAmt(updatedResult())).toBe(198); // 2 * $99 (snapshot) — NOT 2 * $20 (live)
+    expect(update.mock.calls[0]?.[4]).toBe('permanent_bistro'); // stored type written back
+  });
+});
+
+describe('POST /api/quote — permanentBistro block validation (#117)', () => {
+  it('rejects an over-cap permanentBistro.bistro array (length 501) with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: Array.from({ length: 501 }, () => ({ footage: 10 })) };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed bistro element (non-numeric footage) with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: [{ footage: 'ten' }] };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a negative poles with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { poles: -1 };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a well-formed permanentBistro block with bistro + poles', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: [{ footage: 20 }], poles: 2 };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a permanent_bistro quote with no permanentBistro block at all (still optional)', async () => {
+    const inputs = validInputs();
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
     expect(res.status).toBe(200);
   });
 });

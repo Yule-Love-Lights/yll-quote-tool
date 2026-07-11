@@ -56,6 +56,14 @@ describe('quote-ready notifications, per service type (S26)', () => {
     expect(quoteEmailSubject('holiday')).toBe('Your Yule Love Lights quote is ready 🎄');
     expect(quoteEmailSubject('permanent')).toBe('Your Yule Love Lights Permanent Lighting quote is ready ✨');
     expect(quoteEmailSubject('event')).toBe('Your Yule Love Lights Event Lighting quote is ready ✨');
+    expect(quoteEmailSubject('permanent_bistro')).toBe('Your Yule Love Lights Bistro Lighting quote is ready ✨');
+  });
+
+  it('permanent_bistro gets its own distinct copy (not byte-identical to any other type, S26 carrier-dedup lesson)', () => {
+    const subjects = ['holiday', 'permanent', 'event', 'permanent_bistro'].map((t) => quoteEmailSubject(t));
+    expect(new Set(subjects).size).toBe(subjects.length);
+    const sms = ['holiday', 'permanent', 'event', 'permanent_bistro'].map((t) => quoteSmsBody('Jordan', PORTAL_URL, t));
+    expect(new Set(sms).size).toBe(sms.length);
   });
 
   it('defaults to holiday for an unknown/missing service_type', () => {

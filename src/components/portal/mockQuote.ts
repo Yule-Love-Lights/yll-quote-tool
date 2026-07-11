@@ -186,6 +186,11 @@ export function galleryItemsFor(serviceType?: ServiceType): GalleryItemData[] {
       return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'permanent':
       return PERMANENT_GALLERY_ITEMS.length > 0 ? PERMANENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
+    // Permanent Bistro Lighting (#117) has no completed-work photos of its own
+    // yet — reuses the Event gallery as a placeholder until real bistro assets
+    // exist (#117 follow-up).
+    case 'permanent_bistro':
+      return EVENT_GALLERY_ITEMS.length > 0 ? EVENT_GALLERY_ITEMS : MOCK_GALLERY_ITEMS;
     case 'holiday':
     default:
       return MOCK_GALLERY_ITEMS;
@@ -207,6 +212,7 @@ const CROSS_SELL_DISPLAY_NAMES: Record<ServiceType, string> = {
   holiday: 'Holiday Lighting',
   permanent: 'Permanent Lighting',
   event: 'Event Lighting',
+  permanent_bistro: 'Bistro Lighting',
 };
 
 // Preserves the given id order (rather than the source list's own order) and
@@ -245,6 +251,11 @@ export function crossSellFor(serviceType?: ServiceType): CrossSellBlock[] {
       blocks = [holidayBlock, permanentBlock];
       break;
     case 'permanent':
+      blocks = [holidayBlock, eventBlock];
+      break;
+    // Permanent Bistro Lighting (#117) mirrors permanent's cross-sell choice
+    // (holiday + event) — no dedicated bistro cross-sell block yet.
+    case 'permanent_bistro':
       blocks = [holidayBlock, eventBlock];
       break;
     case 'holiday':
