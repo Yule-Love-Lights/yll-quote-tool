@@ -249,34 +249,44 @@
       '.yll-lf--full .yll-lf-form>.yll-lf-submit{justify-self:center;width:auto;padding-left:48px;padding-right:48px;}}',
       // bar + sticky share the row/stack breakpoint; deltas kept separate
       '.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:column;}',
-      '.yll-lf-sticky-outer{position:fixed;left:0;right:0;bottom:0;z-index:999999;',
-      'transform:translateY(100%);transition:transform 0.25s ease;pointer-events:none;}',
+      // sticky-top: pinned just below the host page's own fixed header (JS
+      // sets `top` on every reveal — see resolveTopOffset/detectHeaderHeight
+      // in renderSticky), slides DOWN into view from above the viewport.
+      '.yll-lf-sticky-outer{position:fixed;left:0;right:0;top:0;z-index:999999;',
+      'transform:translateY(-100%);transition:transform 0.25s ease;pointer-events:none;}',
       '.yll-lf-sticky-outer.yll-lf-sticky-visible{transform:translateY(0);pointer-events:auto;}',
       // fully solid, high-contrast backdrop so the bar reads clearly over
       // any page section (light or dark) — no rgba/translucent background.
-      '.yll-lf-sticky{background:#fff;border-top:1px solid var(--yll-lf-border);',
-      'box-shadow:0 -4px 20px rgba(0,0,0,0.25);',
-      'padding:14px 16px;max-height:40vh;overflow-y:auto;position:relative;}',
-      '.yll-lf-sticky .yll-lf-form{gap:8px;}',
-      '.yll-lf-sticky .yll-lf-field{gap:3px;}',
-      '.yll-lf-sticky .yll-lf-input{min-height:40px;padding:8px 10px;}',
-      '.yll-lf-sticky .yll-lf-pills{gap:6px;}',
-      '.yll-lf-sticky .yll-lf-pill{min-height:34px;padding:6px 12px;font-size:12px;}',
-      '.yll-lf-sticky .yll-lf-pill--selected{padding:5px 11px;}',
-      '.yll-lf-sticky .yll-lf-submit{padding:10px 20px;min-height:44px;}',
-      '.yll-lf-sticky .yll-lf-consent-row input{width:16px;height:16px;min-height:16px;}',
-      '.yll-lf-sticky .yll-lf-consent-text{font-size:12px;}',
-      '.yll-lf-sticky-dismiss{position:absolute;top:6px;right:8px;background:transparent;border:none;',
-      'font-size:18px;line-height:1;color:var(--yll-lf-muted);cursor:pointer;padding:8px;min-width:32px;min-height:32px;}',
+      // Compact slim toolbar (owner: the old bottom bar ate too much of the
+      // page) — tight padding, small controls, capped mobile height.
+      '.yll-lf-sticky{background:#fff;border-bottom:1px solid var(--yll-lf-border);',
+      'box-shadow:0 4px 20px rgba(0,0,0,0.25);',
+      'padding:8px 14px;max-height:36vh;overflow-y:auto;position:relative;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email,.yll-lf-sticky .yll-lf-form>.yll-lf-field--service,',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent,.yll-lf-sticky .yll-lf-form>.yll-lf-formerror,',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
+      '.yll-lf-sticky .yll-lf-field{gap:2px;}',
+      '.yll-lf-sticky .yll-lf-field-error{min-height:0;}',
+      '.yll-lf-sticky .yll-lf-input{min-height:34px;padding:6px 10px;font-size:13px;}',
+      '.yll-lf-sticky .yll-lf-pills{gap:5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}',
+      '.yll-lf-sticky .yll-lf-pill{min-height:28px;padding:4px 9px;font-size:11px;flex:0 0 auto;white-space:nowrap;}',
+      '.yll-lf-sticky .yll-lf-pill--selected{padding:3px 8px;}',
+      '.yll-lf-sticky .yll-lf-submit{padding:7px 16px;min-height:32px;font-size:13px;justify-self:center;}',
+      '.yll-lf-sticky .yll-lf-consent-row input{width:14px;height:14px;min-height:14px;}',
+      '.yll-lf-sticky .yll-lf-consent-text{font-size:11px;line-height:1.25;}',
+      '.yll-lf-sticky-dismiss{position:absolute;top:2px;right:4px;background:transparent;border:none;',
+      'font-size:16px;line-height:1;color:var(--yll-lf-muted);cursor:pointer;padding:6px;min-width:26px;min-height:26px;}',
       '.yll-lf-sticky-dismiss:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
       '@media(min-width:760px){.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px;}',
       '.yll-lf--bar .yll-lf-field,.yll-lf-sticky .yll-lf-field{min-width:110px;}',
       '.yll-lf--bar .yll-lf-field{flex:1 1 140px;}',
-      '.yll-lf-sticky .yll-lf-field{flex:1 1 130px;}',
+      '.yll-lf-sticky .yll-lf-form{display:flex;}',
+      '.yll-lf-sticky .yll-lf-field{flex:1 1 100px;min-width:80px;}',
       '.yll-lf--bar .yll-lf-field--service{flex-basis:100%;}',
       '.yll-lf--bar .yll-lf-field--consent{flex-basis:100%;order:5;}',
-      '.yll-lf-sticky .yll-lf-field--service{flex-basis:100%;}',
-      '.yll-lf-sticky .yll-lf-field--consent{flex-basis:220px;}',
+      '.yll-lf-sticky .yll-lf-field--service{flex:2 1 380px;}',
+      '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 200px;}',
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
       '.yll-lf-sticky{max-height:none;}',
       '.yll-lf-sticky .yll-lf-form{padding-right:24px;}}',
@@ -889,6 +899,11 @@
 
   // variant: sticky — appended to <body> (not the container) so an
   // Elementor ancestor with a CSS transform can't break position:fixed.
+  // Renders as a slim bar pinned just below the host page's own fixed
+  // header, sliding DOWN into view once the visitor scrolls past
+  // STICKY_REVEAL_PX (and hiding again if they scroll back up) — it never
+  // shows at the very top, where the page's own "bar" variant already lives
+  // in the hero.
   function renderSticky(container) {
     var pre = resolvePreselect(container);
     container.style.display = 'none'; // the container is just the placement marker
@@ -924,7 +939,14 @@
     if (nameField && phoneField && emailField) built.form.insertBefore(phoneField, emailField);
 
     var dismissBtn = h('button', { type: 'button', class: 'yll-lf-sticky-dismiss', 'aria-label': 'Dismiss', text: '×' });
+
+    var inner = h('div', { class: 'yll-lf-sticky' }, [dismissBtn, built.root]);
+    var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
+    document.body.appendChild(outer);
+
+    var dismissedThisView = false;
     dismissBtn.addEventListener('click', function () {
+      dismissedThisView = true;
       outer.classList.remove('yll-lf-sticky-visible');
       try {
         sessionStorage.setItem(STICKY_DISMISS_KEY, '1');
@@ -933,23 +955,69 @@
       }
     });
 
-    var inner = h('div', { class: 'yll-lf-sticky' }, [dismissBtn, built.root]);
-    var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
-    document.body.appendChild(outer);
-
     trackViewedOnce(outer, 'sticky');
 
-    var revealed = false;
-    function onScroll() {
-      if (revealed) return;
-      if (window.scrollY > STICKY_REVEAL_PX) {
-        revealed = true;
+    // Detect the host page's own fixed/sticky header (if any) so the bar
+    // sits just below it instead of covering the logo/nav. `data-top-offset`
+    // on the placement container is a manual override (px) for when
+    // detection guesses wrong; otherwise this is recomputed on every reveal
+    // since the header's height can differ between desktop and mobile.
+    function resolveTopOffset() {
+      var raw = container.getAttribute('data-top-offset');
+      if (raw !== null && raw !== '') {
+        var manual = parseInt(raw, 10);
+        if (!isNaN(manual) && manual >= 0) return manual;
+      }
+      return null;
+    }
+
+    function detectHeaderHeight() {
+      var maxBottom = 0;
+      var all;
+      try {
+        all = document.querySelectorAll('*');
+      } catch (e) {
+        return 0;
+      }
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (el === outer || outer.contains(el)) continue;
+        var style;
+        try {
+          style = window.getComputedStyle(el);
+        } catch (e2) {
+          continue;
+        }
+        if (!style || (style.position !== 'fixed' && style.position !== 'sticky')) continue;
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        var rect = el.getBoundingClientRect();
+        if (rect.height <= 0 || rect.height > 300) continue;
+        if (rect.width < window.innerWidth * 0.5) continue; // header-like, not a small widget
+        if (rect.top > 4 || rect.bottom < 0) continue; // pinned at/near the top right now
+        if (rect.bottom > maxBottom) maxBottom = rect.bottom;
+      }
+      return maxBottom > 0 ? Math.round(maxBottom) : 0;
+    }
+
+    function applyTopOffset() {
+      var offset = resolveTopOffset();
+      if (offset === null) offset = detectHeaderHeight();
+      outer.style.top = offset + 'px';
+    }
+
+    function updateVisibility() {
+      if (dismissedThisView) return;
+      var shouldShow = window.scrollY > STICKY_REVEAL_PX;
+      var isVisible = outer.classList.contains('yll-lf-sticky-visible');
+      if (shouldShow && !isVisible) {
+        applyTopOffset(); // recompute each reveal — header height can differ
         outer.classList.add('yll-lf-sticky-visible');
-        window.removeEventListener('scroll', onScroll);
+      } else if (!shouldShow && isVisible) {
+        outer.classList.remove('yll-lf-sticky-visible');
       }
     }
-    window.addEventListener('scroll', onScroll, { passive: true });
-    onScroll(); // in case the page loads already scrolled
+    window.addEventListener('scroll', updateVisibility, { passive: true });
+    updateVisibility(); // in case the page loads already scrolled
   }
 
   // init
