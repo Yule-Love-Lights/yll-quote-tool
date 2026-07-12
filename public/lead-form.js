@@ -248,7 +248,8 @@
       '.yll-lf--full .yll-lf-form>.yll-lf-formerror,.yll-lf--full .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
       '.yll-lf--full .yll-lf-form>.yll-lf-submit{justify-self:center;width:auto;padding-left:48px;padding-right:48px;}}',
       // full-only: center the heading (sticky renders no heading; bar has none)
-      '.yll-lf--full .yll-lf-heading{text-align:center;}',
+      // and give it real header weight (owner: base 22px "looked like a subheader")
+      '.yll-lf--full .yll-lf-heading{text-align:center;font-size:32px;font-weight:800;}',
       // bar + sticky share the row/stack breakpoint; deltas kept separate
       '.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:column;}',
       // sticky-top: pinned just below the host page's own fixed header (JS
@@ -261,37 +262,49 @@
       // any page section (light or dark) — no rgba/translucent background.
       // Compact slim toolbar (owner: the old bottom bar ate too much of the
       // page) — tight padding, small controls, capped mobile height.
-      '.yll-lf-sticky{background:#fff;border-bottom:1px solid var(--yll-lf-border);',
+      // owner: dark bar (harder to miss, matches brand) — everything on it
+      // below is re-colored/re-sized for legibility + bigger touch targets.
+      '.yll-lf-sticky{background:#1B1B1B;border-bottom:1px solid rgba(255,255,255,0.15);',
       'box-shadow:0 4px 20px rgba(0,0,0,0.25);',
-      'padding:8px 14px;max-height:36vh;overflow-y:auto;position:relative;}',
-      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px;}',
+      'padding:12px 21px;max-height:36vh;overflow-y:auto;position:relative;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;}',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email,.yll-lf-sticky .yll-lf-form>.yll-lf-field--service,',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent,.yll-lf-sticky .yll-lf-form>.yll-lf-formerror,',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
-      '.yll-lf-sticky .yll-lf-field{gap:2px;}',
+      '.yll-lf-sticky .yll-lf-field{gap:3px;}',
       '.yll-lf-sticky .yll-lf-field-error{min-height:0;}',
-      '.yll-lf-sticky .yll-lf-input{min-height:34px;padding:6px 10px;font-size:13px;}',
-      '.yll-lf-sticky .yll-lf-pills{gap:5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}',
-      '.yll-lf-sticky .yll-lf-pill{min-height:28px;padding:4px 9px;font-size:11px;flex:0 0 auto;white-space:nowrap;}',
-      '.yll-lf-sticky .yll-lf-pill--selected{padding:3px 8px;}',
-      '.yll-lf-sticky .yll-lf-submit{padding:7px 16px;min-height:32px;font-size:13px;justify-self:center;}',
-      '.yll-lf-sticky .yll-lf-consent-row input{width:14px;height:14px;min-height:14px;}',
-      '.yll-lf-sticky .yll-lf-consent-text{font-size:11px;line-height:1.25;}',
+      // input stays light (white bg + dark text + light border) so it pops
+      // against the dark bar behind it — only its size is scaled up here.
+      '.yll-lf-sticky .yll-lf-input{min-height:51px;padding:9px 15px;font-size:20px;}',
+      '.yll-lf-sticky .yll-lf-pills{gap:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}',
+      '.yll-lf-sticky .yll-lf-pill{min-height:42px;padding:6px 14px;font-size:17px;flex:0 0 auto;white-space:nowrap;}',
+      '.yll-lf-sticky .yll-lf-pill--selected{padding:5px 13px;}',
+      '.yll-lf-sticky .yll-lf-submit{padding:11px 24px;min-height:48px;font-size:20px;justify-self:center;}',
+      '.yll-lf-sticky .yll-lf-consent-row input{width:21px;height:21px;min-height:21px;}',
+      '.yll-lf-sticky .yll-lf-consent-text{font-size:17px;line-height:1.25;color:#f0f0f0;}',
       '.yll-lf-sticky-dismiss{position:absolute;top:2px;right:4px;background:transparent;border:none;',
-      'font-size:16px;line-height:1;color:var(--yll-lf-muted);cursor:pointer;padding:6px;min-width:26px;min-height:26px;}',
+      'font-size:24px;line-height:1;color:#f0f0f0;cursor:pointer;padding:9px;min-width:39px;min-height:39px;}',
       '.yll-lf-sticky-dismiss:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
       '@media(min-width:760px){.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px;}',
       '.yll-lf--bar .yll-lf-field,.yll-lf-sticky .yll-lf-field{min-width:110px;}',
       '.yll-lf--bar .yll-lf-field{flex:1 1 140px;}',
       '.yll-lf-sticky .yll-lf-form{display:flex;}',
-      '.yll-lf-sticky .yll-lf-field{flex:1 1 100px;min-width:80px;}',
+      '.yll-lf-sticky .yll-lf-field{flex:1 1 100px;min-width:90px;}',
       '.yll-lf--bar .yll-lf-field--service{flex-basis:100%;}',
       '.yll-lf--bar .yll-lf-field--consent{flex-basis:100%;order:5;}',
-      '.yll-lf-sticky .yll-lf-field--service{flex:2 1 380px;}',
-      '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 200px;}',
+      // service pills can scroll internally (overflow-x:auto above), so the
+      // field itself doesn't need to reserve room for every pill at once —
+      // keeping its basis modest is what keeps row 1 a single row at
+      // desktop widths despite the bigger fonts/controls elsewhere.
+      '.yll-lf-sticky .yll-lf-field--service{flex:1 1 140px;}',
+      // consent gets most of the remaining row width — it's the longest
+      // piece of text on the bar, so it needs the most room to stay
+      // readable without wrapping into a wall of lines, while still
+      // leaving room for the submit button on the same row.
+      '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 290px;}',
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
       '.yll-lf-sticky{max-height:none;}',
-      '.yll-lf-sticky .yll-lf-form{padding-right:24px;}}',
+      '.yll-lf-sticky .yll-lf-form{padding-right:36px;gap:15px;}}',
       // bar-only centering (heading removed; row/pills/submit centered on
       // both mobile + desktop breakpoints) — additive only, sticky untouched
       '.yll-lf--bar .yll-lf-input{text-align:center;}',
@@ -303,24 +316,26 @@
       // heading + two buttons (Call Us / Get a Quote), no form fields.
       // Additive only — bar/full rules above are untouched.
       '.yll-lf-sticky-desktop{display:none;}',
-      '.yll-lf-sticky-mobile{display:flex;align-items:center;gap:8px;}',
-      '.yll-lf-sticky-mobile-heading{flex:none;line-height:1.15;max-width:60px;}',
-      '.yll-lf-sticky-mobile-btns{display:flex;flex:1 1 auto;gap:8px;}',
+      '.yll-lf-sticky-mobile{display:flex;align-items:center;gap:12px;}',
+      '.yll-lf-sticky-mobile-heading{flex:none;line-height:1.15;max-width:90px;}',
+      '.yll-lf-sticky-mobile-btns{display:flex;flex:1 1 auto;gap:12px;}',
       '.yll-lf-sticky-heading{flex:none;line-height:1.2;white-space:nowrap;}',
       '.yll-lf-sticky-heading-line{display:block;}',
-      '.yll-lf-sticky-heading-green{font-size:12px;font-weight:700;color:var(--yll-lf-green);}',
-      '.yll-lf-sticky-heading-red{font-size:11px;font-weight:700;color:var(--yll-lf-red);}',
-      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:10px;}',
+      '.yll-lf-sticky-heading-green{font-size:18px;font-weight:700;color:var(--yll-lf-green);}',
+      '.yll-lf-sticky-heading-red{font-size:17px;font-weight:700;color:var(--yll-lf-red);}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:15px;}',
       '.yll-lf-sticky-callbtn,.yll-lf-sticky-quotebtn{flex:1 1 0;display:flex;align-items:center;',
-      'justify-content:center;gap:6px;min-height:40px;border-radius:var(--yll-lf-radius-pill);',
-      'font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;border:none;}',
-      '.yll-lf-sticky-callbtn{background:var(--yll-lf-green);color:#fff;}',
+      'justify-content:center;gap:9px;min-height:60px;border-radius:var(--yll-lf-radius-pill);',
+      'font-size:20px;font-weight:700;text-decoration:none;cursor:pointer;border:none;}',
+      // "a." tag-qualified so this ties (not loses) the specificity fight
+      // with the base `.yll-lf a{color:green}` link rule above — without it
+      // the callbtn's own <a> tag rendered its label in green-on-green.
+      'a.yll-lf-sticky-callbtn{background:var(--yll-lf-green);color:#fff;}',
       '.yll-lf-sticky-callbtn:hover{background:var(--yll-lf-green-dark);}',
       '.yll-lf-sticky-quotebtn{background:var(--yll-lf-red);color:#fff;}',
       '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
       'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
-      '.yll-lf-sticky-phone-icon{font-size:13px;}',
-      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:12px;}',
+      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:18px;}',
       '.yll-lf-sticky-mobile{display:none;}',
       '.yll-lf-sticky-desktop>.yll-lf--sticky{flex:1 1 auto;min-width:0;}}',
     ].join('');
@@ -995,7 +1010,7 @@
     var callBtn = h(
       'a',
       { class: 'yll-lf-sticky-callbtn', href: 'tel:6315170186', 'aria-label': 'Call us at 631-517-0186' },
-      [h('span', { class: 'yll-lf-sticky-phone-icon', 'aria-hidden': 'true', text: '📞' }), h('span', { text: 'Call Us' })]
+      [h('span', { text: '631-517-0186' })]
     );
 
     var quoteBtn = h('button', { type: 'button', class: 'yll-lf-sticky-quotebtn', text: 'Get a Quote' });
