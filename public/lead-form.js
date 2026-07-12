@@ -298,6 +298,31 @@
       '.yll-lf--bar .yll-lf-pills{justify-content:center;}',
       '.yll-lf--bar .yll-lf-submit{align-self:center;}',
       '@media(min-width:760px){.yll-lf--bar .yll-lf-form{justify-content:center;}}',
+      // sticky-only: desktop (>=768px) shows a branded heading inline with
+      // the full compact form on one row; mobile (<768px) swaps in a tiny
+      // heading + two buttons (Call Us / Get a Quote), no form fields.
+      // Additive only — bar/full rules above are untouched.
+      '.yll-lf-sticky-desktop{display:none;}',
+      '.yll-lf-sticky-mobile{display:flex;align-items:center;gap:8px;}',
+      '.yll-lf-sticky-mobile-heading{flex:none;line-height:1.15;max-width:60px;}',
+      '.yll-lf-sticky-mobile-btns{display:flex;flex:1 1 auto;gap:8px;}',
+      '.yll-lf-sticky-heading{flex:none;line-height:1.2;white-space:nowrap;}',
+      '.yll-lf-sticky-heading-line{display:block;}',
+      '.yll-lf-sticky-heading-green{font-size:12px;font-weight:700;color:var(--yll-lf-green);}',
+      '.yll-lf-sticky-heading-red{font-size:11px;font-weight:700;color:var(--yll-lf-red);}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:10px;}',
+      '.yll-lf-sticky-callbtn,.yll-lf-sticky-quotebtn{flex:1 1 0;display:flex;align-items:center;',
+      'justify-content:center;gap:6px;min-height:40px;border-radius:var(--yll-lf-radius-pill);',
+      'font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;border:none;}',
+      '.yll-lf-sticky-callbtn{background:var(--yll-lf-green);color:#fff;}',
+      '.yll-lf-sticky-callbtn:hover{background:var(--yll-lf-green-dark);}',
+      '.yll-lf-sticky-quotebtn{background:var(--yll-lf-red);color:#fff;}',
+      '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
+      'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
+      '.yll-lf-sticky-phone-icon{font-size:13px;}',
+      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:12px;}',
+      '.yll-lf-sticky-mobile{display:none;}',
+      '.yll-lf-sticky-desktop>.yll-lf--sticky{flex:1 1 auto;min-width:0;}}',
     ].join('');
     var style = document.createElement('style');
     style.id = 'yll-lf-styles';
@@ -907,7 +932,20 @@
   // header, sliding DOWN into view once the visitor scrolls past
   // STICKY_REVEAL_PX (and hiding again if they scroll back up) — it never
   // shows at the very top, where the page's own "bar" variant already lives
-  // in the hero.
+  // in the hero. Only ONE ever renders per page (see the `stickyRendered`
+  // dedupe guard in init()).
+  //
+  // Desktop (>=768px) and mobile (<768px) show different content, both
+  // built up front and toggled with CSS (`.yll-lf-sticky-desktop` /
+  // `.yll-lf-sticky-mobile`) so there's no resize/rebuild logic:
+  //   - desktop: a branded "Get A Fast Quote / Takes Only 5 Seconds"
+  //     heading inline at the left of the same row as the full compact
+  //     form (fields/pills/consent/submit) — unchanged POST /api/leads
+  //     contract.
+  //   - mobile: no form fields at all — just a tiny heading and two
+  //     buttons, "Call Us" (a real tel: link) and "Get a Quote" (scrolls to
+  //     the page's `.yll-lf--full` form if present, else navigates to the
+  //     homepage where the full form lives). Nothing here posts.
   function renderSticky(container) {
     var pre = resolvePreselect(container);
     container.style.display = 'none'; // the container is just the placement marker
@@ -920,6 +958,7 @@
     }
     if (dismissed) return;
 
+    // ---- desktop: branded heading + the full compact form ----
     var built = buildForm({
       variant: 'sticky',
       apiBase: resolveApiBase(container),
@@ -942,9 +981,54 @@
     var emailField = built.form.querySelector('.yll-lf-field--email');
     if (nameField && phoneField && emailField) built.form.insertBefore(phoneField, emailField);
 
+    var desktopHeading = h('div', { class: 'yll-lf-sticky-heading' }, [
+      h('span', { class: 'yll-lf-sticky-heading-line' }, [
+        h('span', { class: 'yll-lf-sticky-heading-green', text: 'Get A Fast Quote' }),
+      ]),
+      h('span', { class: 'yll-lf-sticky-heading-line' }, [
+        h('span', { class: 'yll-lf-sticky-heading-red', text: 'Takes Only 5 Seconds' }),
+      ]),
+    ]);
+    var desktopRow = h('div', { class: 'yll-lf-sticky-desktop' }, [desktopHeading, built.root]);
+
+    // ---- mobile: tiny heading + two buttons, no fields, no POST ----
+    var callBtn = h(
+      'a',
+      { class: 'yll-lf-sticky-callbtn', href: 'tel:6315170186', 'aria-label': 'Call us at 631-517-0186' },
+      [h('span', { class: 'yll-lf-sticky-phone-icon', 'aria-hidden': 'true', text: '📞' }), h('span', { text: 'Call Us' })]
+    );
+
+    var quoteBtn = h('button', { type: 'button', class: 'yll-lf-sticky-quotebtn', text: 'Get a Quote' });
+    quoteBtn.addEventListener('click', function () {
+      var fullEl = document.querySelector('.yll-lf--full');
+      if (fullEl) {
+        if (typeof fullEl.scrollIntoView === 'function') {
+          try {
+            fullEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } catch (e) {
+            fullEl.scrollIntoView();
+          }
+        }
+        var firstField = fullEl.querySelector('input,textarea,select');
+        if (firstField && typeof firstField.focus === 'function') firstField.focus();
+      } else {
+        window.location.href = 'https://yulelovelights.com/';
+      }
+    });
+
+    var mobileHeading = h('div', { class: 'yll-lf-sticky-mobile-heading' }, [
+      h('span', { class: 'yll-lf-sticky-heading-green', text: 'Get A Fast Quote' }),
+    ]);
+    var mobileBtns = h('div', { class: 'yll-lf-sticky-mobile-btns' }, [callBtn, quoteBtn]);
+    var mobileRow = h('div', { class: 'yll-lf-sticky-mobile' }, [mobileHeading, mobileBtns]);
+
     var dismissBtn = h('button', { type: 'button', class: 'yll-lf-sticky-dismiss', 'aria-label': 'Dismiss', text: '×' });
 
-    var inner = h('div', { class: 'yll-lf-sticky' }, [dismissBtn, built.root]);
+    // `yll-lf` (not just `yll-lf-sticky`) so the --yll-lf-green/--yll-lf-red
+    // custom properties (scoped to `.yll-lf` descendants — see injectStyles)
+    // reach the heading/buttons, which sit as siblings of the `.yll-lf--sticky`
+    // form wrapper, not inside it.
+    var inner = h('div', { class: 'yll-lf yll-lf-sticky' }, [dismissBtn, desktopRow, mobileRow]);
     var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
     document.body.appendChild(outer);
 
@@ -1025,6 +1109,13 @@
   }
 
   // init
+  // dedupe guard: a WordPress page can include the sticky template twice
+  // (e.g. a site-wide footer template plus a stray per-page paste) — only
+  // the FIRST [data-yll-lead-form="sticky"] marker ever builds a bar; any
+  // later ones are hidden and skipped so a visitor never sees two stacked
+  // sticky bars.
+  var stickyRendered = false;
+
   function init() {
     injectStyles();
     captureUtmFirstTouch();
@@ -1033,8 +1124,14 @@
       var container = containers[i];
       var variant = container.getAttribute('data-yll-lead-form');
       if (variant === 'bar') renderBar(container);
-      else if (variant === 'sticky') renderSticky(container);
-      else renderFull(container); // default / unknown -> full
+      else if (variant === 'sticky') {
+        if (stickyRendered) {
+          container.style.display = 'none'; // duplicate marker — never a second bar
+          continue;
+        }
+        stickyRendered = true;
+        renderSticky(container);
+      } else renderFull(container); // default / unknown -> full
     }
   }
 
