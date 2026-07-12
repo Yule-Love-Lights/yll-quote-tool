@@ -299,7 +299,9 @@
       // leaving room for the submit button on the same row.
       '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 290px;}',
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
-      '.yll-lf-sticky{max-height:none;}',
+      // desktop: no scroll container anywhere on the sticky (the mobile
+      // max-height:36vh/overflow-y:auto from the base rule is dropped here).
+      '.yll-lf-sticky{max-height:none;overflow:visible;}',
       '.yll-lf-sticky .yll-lf-form{padding-right:36px;gap:15px;}}',
       // bar-only centering (heading removed; row/pills/submit centered on
       // both mobile + desktop breakpoints) — additive only, sticky untouched
@@ -339,9 +341,30 @@
       '.yll-lf-sticky-quotebtn{background:var(--yll-lf-red);color:#fff;}',
       '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
       'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
-      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:18px;}',
+      // desktop (>=768px): the sticky is a compact PANEL, not a slim scroll
+      // row. Branded heading on the left, the form as a capped, centered
+      // 3-col grid on the right — row 1 the three inputs, row 2 the 2x2
+      // service grid beside the consent, row 3 the submit. Content is capped
+      // + centered so it never sprawls on ultra-wide (the dark bar itself
+      // still spans edge-to-edge). No overflow/scrollbar anywhere.
+      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:24px;',
+      'max-width:1080px;margin:0 auto;}',
       '.yll-lf-sticky-mobile{display:none;}',
-      '.yll-lf-sticky-desktop>.yll-lf--sticky{flex:1 1 auto;min-width:0;}}',
+      '.yll-lf-sticky-desktop>.yll-lf--sticky{flex:1 1 auto;min-width:0;}',
+      '.yll-lf-sticky-heading .yll-lf-sticky-heading-green{font-size:22px;}',
+      '.yll-lf-sticky-heading .yll-lf-sticky-heading-red{font-size:18px;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr 1fr;',
+      'gap:12px 16px;align-items:start;padding-right:0;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--name{grid-column:1;grid-row:1;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--phone{grid-column:2;grid-row:1;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email{grid-column:3;grid-row:1;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--service{grid-column:1/3;grid-row:2;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent{grid-column:3;grid-row:2;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:3;grid-row:3;justify-self:stretch;}',
+      // the 4 service options as a real 2x2 grid — NO overflow/scrollbar
+      // (overrides the base flex-nowrap/overflow-x:auto pill strip).
+      '.yll-lf-sticky .yll-lf-pills{display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:visible;}',
+      '.yll-lf-sticky .yll-lf-pill{width:100%;white-space:normal;}}',
     ].join('');
     var style = document.createElement('style');
     style.id = 'yll-lf-styles';
