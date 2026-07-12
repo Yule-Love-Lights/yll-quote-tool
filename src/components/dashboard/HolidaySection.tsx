@@ -13,9 +13,14 @@ export function HolidaySection({ data }: { data: HolidayBreakdown }) {
     >
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>Holiday</h3>
-        <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
-          Season goal {data.goal.booked}/{data.goal.goal} homes
-        </span>
+        <div className="flex items-baseline gap-3">
+          <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+            {data.pending} pending
+          </span>
+          <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+            Season goal {data.goal.booked}/{data.goal.goal} homes
+          </span>
+        </div>
       </div>
 
       {/* Goal bar */}

@@ -214,12 +214,12 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseClient: () => null,
 }));
 
-import { listOpenItems, listEscalatableItems } from './store';
+import { ensureFollowUp, listOpenItems, listEscalatableItems, markFollowUpDone } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
  *  All intermediate chaining methods (select, eq, order, limit, in, or, is) return
  *  `self` so callers can chain freely. The spy arrays let us assert on what was called. */
-function makeBuilder(result: { data: unknown; error: null | { message: string } }) {
+function makeBuilder(result: { data: unknown; error: null | { message: string }; count?: number | null }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
   for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is']) {
@@ -346,6 +346,187 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(isCall).toBeDefined();
     expect(isCall!.args[0]).toBe('followed_up_at');
     expect(isCall!.args[1]).toBeNull();
+  });
+});
+
+// ─── listOpenItems — truncation signal (WT-41) ───────────────────────────────
+//
+// Above the page cap, listOpenItems returns only the oldest `limit` items (by
+// design — they're the longest-waiting), but the "Open leads" count must not
+// silently under-report. `totalOpen` comes from Postgrest's exact count (via
+// { count: 'exact' } on .select()), which is NOT affected by .limit().
+
+describe('listOpenItems — truncation signal (WT-41)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('passes { count: "exact" } as select options so Postgrest returns the untruncated total', async () => {
+    const { builder, calls } = makeBuilder({ data: [], error: null, count: 0 });
+    sbRef.current = { from: (_table: string) => builder };
+
+    await listOpenItems(50);
+
+    const selectCall = calls.find((c) => c.method === 'select');
+    expect(selectCall).toBeDefined();
+    expect(selectCall!.args[1]).toEqual({ count: 'exact' });
+  });
+
+  it('reports truncated=true and the real total when the fetched page is smaller than the total open count', async () => {
+    const row = (id: string) => ({
+      id,
+      source: 'ghl',
+      channel: 'sms',
+      direction: 'inbound',
+      last_message_at: '2026-06-28T10:00:00Z',
+      preview: null,
+      subject: null,
+      escalation_level: 0,
+      contact_id: null,
+      lead_kind: null,
+      quote_value: null,
+      dashboard_contacts: null,
+    });
+    const { builder } = makeBuilder({ data: [row('a'), row('b')], error: null, count: 150 });
+    sbRef.current = { from: (_table: string) => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items).toHaveLength(2);
+    expect(result.totalOpen).toBe(150);
+    expect(result.truncated).toBe(true); // 148 more open items not shown
+  });
+
+  it('reports truncated=false when the fetched page covers every open item', async () => {
+    const { builder } = makeBuilder({ data: [], error: null, count: 0 });
+    sbRef.current = { from: (_table: string) => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.totalOpen).toBe(0);
+    expect(result.truncated).toBe(false);
+  });
+});
+
+// ─── ensureFollowUp — idempotency scoped to pending only (WT-43) ────────────
+//
+// A quotetool item's id is stable, so the OLD "any status" idempotency check
+// meant clicking Done once permanently killed the "sent, no reply" nudge for
+// that (item, reason) forever — the reconcile cron never recreated it, even
+// weeks later while the quote was still unapproved. Scoping the check to
+// status='pending' lets a fresh nudge fire after a prior one was closed.
+
+describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
+  type FollowUpRow = {
+    id: string;
+    inbox_item_id: string;
+    reason: string;
+    status: string;
+    [key: string]: unknown;
+  };
+
+  /** Minimal stateful fake for the follow_ups table: supports the
+   *  select().eq().eq().eq().limit() idempotency check, the plain insert()
+   *  ensureFollowUp issues, and the update().eq('id', ...) markFollowUpDone
+   *  issues — enough to exercise the real create → done → recreate lifecycle. */
+  function makeFollowUpsFake(seed: FollowUpRow[]) {
+    const rows: FollowUpRow[] = seed.map((r) => ({ ...r }));
+    let nextId = rows.length + 1;
+    function table() {
+      const filters: Record<string, unknown> = {};
+      let mode: 'select' | 'insert' | 'update' | null = null;
+      let insertRow: Record<string, unknown> | undefined;
+      let updateFields: Record<string, unknown> | undefined;
+      const self: Record<string, unknown> = {};
+      self.select = () => {
+        mode = 'select';
+        return self;
+      };
+      self.eq = (col: string, val: unknown) => {
+        filters[col] = val;
+        return self;
+      };
+      self.limit = () => self;
+      self.insert = (row: Record<string, unknown>) => {
+        mode = 'insert';
+        insertRow = row;
+        return self;
+      };
+      self.update = (fields: Record<string, unknown>) => {
+        mode = 'update';
+        updateFields = fields;
+        return self;
+      };
+      self.then = (resolve: (v: unknown) => void) => {
+        if (mode === 'insert') {
+          const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
+          rows.push(row);
+          resolve({ data: [row], error: null });
+        } else if (mode === 'update') {
+          for (const r of rows) {
+            if (Object.entries(filters).every(([k, v]) => r[k] === v)) Object.assign(r, updateFields);
+          }
+          resolve({ data: null, error: null });
+        } else {
+          const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
+          resolve({ data: matched, error: null });
+        }
+      };
+      return self;
+    }
+    return { rows, table };
+  }
+
+  /** Swallows any non-follow_ups table (dashboard_activity) with a no-op stub. */
+  function genericTable() {
+    const self: Record<string, unknown> = {};
+    self.select = () => self;
+    self.eq = () => self;
+    self.insert = () => self;
+    self.update = () => self;
+    self.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null });
+    return self;
+  }
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('does not duplicate while a PENDING follow-up for the same (item, reason) exists', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+    expect(fake.rows).toHaveLength(1); // no new insert — the pending row already covers it
+  });
+
+  it('creates a FRESH pending follow-up after a prior one for the same (item, reason) was marked done', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    // Operator (or an auto-close) marks the existing follow-up done...
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+    expect(done.ok).toBe(true);
+    expect(fake.rows[0].status).toBe('done');
+
+    // ...weeks later, a second "quote sent, no reply" cycle fires for the SAME
+    // still-unapproved item. Without the WT-43 fix this would silently no-op.
+    await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+    expect(fake.rows).toHaveLength(2); // the done row persists + a fresh pending row
+    const fresh = fake.rows.find((r) => r.status === 'pending');
+    expect(fresh).toBeDefined();
+    expect(fresh?.inbox_item_id).toBe('item-1');
+    expect(fresh?.reason).toBe('quote_sent_no_reply');
   });
 });
 

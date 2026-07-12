@@ -2,11 +2,16 @@
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
-// ⚠️ NOT YET WIRED (#58 gap): these helpers + the follow_ups table exist, but
-// nothing creates follow-ups yet and the /inbox UI has no "due today" strip. That
-// wiring depends on the Quote-Tool ingestion (fold new quotes/leads into the
-// reconcile cron + call quoteSentNoReplyFollowUp on quote-sent), which was not
-// built this session. Tracked in the handoff "next" list.
+// WIRED: runQuoteToolReconcile (sync.ts) calls quoteFollowUpDecision then
+// store.ts's ensureFollowUp, which calls quoteSentNoReplyFollowUp below.
+//
+// ⚠️ WT-44 (partial): the /inbox "Follow-up reminder (days)" setting
+// (getFollowUpDays, settings.ts) is NOT yet threaded into that chain —
+// store.ts's ensureFollowUp doesn't accept an afterDays override, so every
+// created follow-up still uses DEFAULT_FOLLOW_UP_DAYS below regardless of the
+// setting. Closing this needs a small additive change to ensureFollowUp
+// (accept `afterDays?: number`, forward it here) — out of scope for a
+// sync.ts/followups.ts-only fix since store.ts is owned by another task.
 
 import type { NewFollowUp } from './types';
 import { etDayKey } from './normalize';
@@ -15,6 +20,10 @@ import { etDayKey } from './normalize';
 export const FOLLOWUP_REASONS = {
   quoteSentNoReply: 'quote_sent_no_reply',
 } as const;
+
+/** Fallback cadence when no explicit `afterDays` is given (matches the /inbox
+ *  "Follow-up reminder (days)" setting's own fallback — see settings.ts). */
+export const DEFAULT_FOLLOW_UP_DAYS = 3;
 
 /**
  * True when a follow-up should appear in today's strip: its due date is the
@@ -40,7 +49,7 @@ export function quoteSentNoReplyFollowUp(input: {
   sentAt: Date;
   afterDays?: number;
 }): NewFollowUp {
-  const afterDays = input.afterDays ?? 3;
+  const afterDays = input.afterDays ?? DEFAULT_FOLLOW_UP_DAYS;
   return {
     contactId: input.contactId,
     inboxItemId: input.inboxItemId,

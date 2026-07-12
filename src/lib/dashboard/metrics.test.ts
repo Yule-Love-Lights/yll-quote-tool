@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKpis } from './metrics';
+import { computeKpis, reached } from './metrics';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
 
@@ -226,5 +226,45 @@ describe('computeKpis — turnaround + conversion', () => {
   it('conversion is null when no quote has reached a customer', () => {
     const k = computeKpis([makeQuote({ quote_sent_at: null })], NOW);
     expect(k.conversionRate).toBeNull();
+  });
+
+  it('WT-48: an approved-but-terminal quote that was never sent is NOT counted as reached', () => {
+    // Before WT-48, computeKpis counted `customer_approved_at` alone as
+    // reached with no terminal check, while Insights' computeInsightStats
+    // required (approved && !terminal) — same quote, two different "reached"
+    // answers. The shared `reached()` helper (also used by
+    // computeInsightStats in insights.ts) makes both surfaces agree.
+    const k = computeKpis(
+      [makeQuote({ quote_sent_at: null, customer_approved_at: '2026-02-01T00:00:00Z', status: 'cancelled' })],
+      NOW,
+    );
+    expect(k.conversionRate).toBeNull(); // 0 reached — nothing to divide
+  });
+});
+
+describe('reached — shared conversion-denominator rule (WT-48)', () => {
+  it('true when sent, regardless of terminal status', () => {
+    expect(reached(makeQuote({ quote_sent_at: '2026-01-01T00:00:00Z' }))).toBe(true);
+    expect(
+      reached(makeQuote({ quote_sent_at: '2026-01-01T00:00:00Z', status: 'cancelled' })),
+    ).toBe(true);
+  });
+
+  it('true when approved and not terminal, even if never sent (offline close)', () => {
+    expect(
+      reached(makeQuote({ quote_sent_at: null, customer_approved_at: '2026-01-01T00:00:00Z' })),
+    ).toBe(true);
+  });
+
+  it('false when approved but terminal and never sent', () => {
+    expect(
+      reached(
+        makeQuote({ quote_sent_at: null, customer_approved_at: '2026-01-01T00:00:00Z', status: 'cancelled' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('false when neither sent nor approved', () => {
+    expect(reached(makeQuote())).toBe(false);
   });
 });

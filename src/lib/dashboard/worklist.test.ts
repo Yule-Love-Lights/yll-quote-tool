@@ -156,6 +156,46 @@ describe('computeWorklist — terminal statuses never nag (#110 W7-007, B7 class
   });
 });
 
+describe('computeWorklist — quote_number + service_type carried onto rows (WT-40)', () => {
+  it('carries quote_number + service_type onto a draft-stale item', () => {
+    const old = new Date(
+      NOW.getTime() - (DASHBOARD_CONFIG.draftStaleDays + 2) * 86400_000,
+    ).toISOString();
+    const out = computeWorklist(
+      [makeQuote({ id: 'q1', created_at: old, quote_number: 1042, service_type: 'permanent' })],
+      NOW,
+    );
+    expect(out[0].quoteNumber).toBe(1042);
+    expect(out[0].serviceType).toBe('permanent');
+  });
+
+  it('carries quote_number + service_type onto a sent-no-reply item', () => {
+    const old = new Date(
+      NOW.getTime() - (DASHBOARD_CONFIG.sentNoReplyStaleDays + 2) * 86400_000,
+    ).toISOString();
+    const out = computeWorklist(
+      [makeQuote({
+        id: 'q2',
+        created_at: '2026-06-01T00:00:00Z',
+        quote_sent_at: old,
+        quote_number: 2077,
+        service_type: 'event',
+      })],
+      NOW,
+    );
+    expect(out[0].quoteNumber).toBe(2077);
+    expect(out[0].serviceType).toBe('event');
+  });
+
+  it('quoteNumber is null when the row has no allocated number (legacy row)', () => {
+    const old = new Date(
+      NOW.getTime() - (DASHBOARD_CONFIG.draftStaleDays + 2) * 86400_000,
+    ).toISOString();
+    const out = computeWorklist([makeQuote({ id: 'q3', created_at: old })], NOW);
+    expect(out[0].quoteNumber).toBeNull();
+  });
+});
+
 describe('computeWorklist — sorting + cap', () => {
   it('sorts oldest-stale first (most overdue at the top)', () => {
     const aDay = 86400_000;
