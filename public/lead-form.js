@@ -28,7 +28,6 @@
 
   var DEFAULT_API_BASE = 'https://quote.yulelovelights.com';
   var UTM_STORAGE_KEY = 'yll_lf_utm';
-  var STICKY_DISMISS_KEY = 'yll_lf_sticky_dismissed';
   var STICKY_REVEAL_PX = 600;
   var EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   var PHONE_MIN_DIGITS = 7;
@@ -282,9 +281,6 @@
       '.yll-lf-sticky .yll-lf-submit{padding:11px 24px;min-height:48px;font-size:20px;justify-self:center;}',
       '.yll-lf-sticky .yll-lf-consent-row input{width:21px;height:21px;min-height:21px;}',
       '.yll-lf-sticky .yll-lf-consent-text{font-size:17px;line-height:1.25;color:#f0f0f0;}',
-      '.yll-lf-sticky-dismiss{position:absolute;top:2px;right:4px;background:transparent;border:none;',
-      'font-size:24px;line-height:1;color:#f0f0f0;cursor:pointer;padding:9px;min-width:39px;min-height:39px;}',
-      '.yll-lf-sticky-dismiss:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
       '@media(min-width:760px){.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px;}',
       '.yll-lf--bar .yll-lf-field,.yll-lf-sticky .yll-lf-field{min-width:110px;}',
       '.yll-lf--bar .yll-lf-field{flex:1 1 140px;}',
@@ -316,17 +312,25 @@
       // heading + two buttons (Call Us / Get a Quote), no form fields.
       // Additive only — bar/full rules above are untouched.
       '.yll-lf-sticky-desktop{display:none;}',
-      '.yll-lf-sticky-mobile{display:flex;align-items:center;gap:12px;}',
-      '.yll-lf-sticky-mobile-heading{flex:none;line-height:1.15;max-width:90px;}',
-      '.yll-lf-sticky-mobile-btns{display:flex;flex:1 1 auto;gap:12px;}',
+      // mobile: heading stacked on its OWN centered line ABOVE the two
+      // buttons (owner: the old side-column crammed/wrapped the heading and
+      // shoved the buttons to the screen edges). column layout, everything
+      // centered, buttons share a full-width row below.
+      '.yll-lf-sticky-mobile{display:flex;flex-direction:column;align-items:center;gap:8px;}',
+      '.yll-lf-sticky-mobile-heading{width:100%;text-align:center;line-height:1.15;}',
+      '.yll-lf-sticky-mobile-btns{display:flex;width:100%;gap:12px;}',
       '.yll-lf-sticky-heading{flex:none;line-height:1.2;white-space:nowrap;}',
       '.yll-lf-sticky-heading-line{display:block;}',
       '.yll-lf-sticky-heading-green{font-size:18px;font-weight:700;color:var(--yll-lf-green);}',
       '.yll-lf-sticky-heading-red{font-size:17px;font-weight:700;color:var(--yll-lf-red);}',
-      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:15px;}',
-      '.yll-lf-sticky-callbtn,.yll-lf-sticky-quotebtn{flex:1 1 0;display:flex;align-items:center;',
-      'justify-content:center;gap:9px;min-height:60px;border-radius:var(--yll-lf-radius-pill);',
-      'font-size:20px;font-weight:700;text-decoration:none;cursor:pointer;border:none;}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:16px;}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-red{font-size:15px;margin-left:6px;}',
+      // buttons: half the row each (min-width:0 lets them shrink so the
+      // text never forces overflow), generous inner padding so the label
+      // sits inside with clear margin on both sides, never touching an edge.
+      '.yll-lf-sticky-callbtn,.yll-lf-sticky-quotebtn{flex:1 1 0;min-width:0;display:flex;align-items:center;',
+      'justify-content:center;gap:9px;min-height:58px;padding:0 14px;border-radius:var(--yll-lf-radius-pill);',
+      'font-size:18px;font-weight:700;white-space:nowrap;text-decoration:none;cursor:pointer;border:none;}',
       // "a." tag-qualified so this ties (not loses) the specificity fight
       // with the base `.yll-lf a{color:green}` link rule above — without it
       // the callbtn's own <a> tag rendered its label in green-on-green.
@@ -965,14 +969,6 @@
     var pre = resolvePreselect(container);
     container.style.display = 'none'; // the container is just the placement marker
 
-    var dismissed;
-    try {
-      dismissed = sessionStorage.getItem(STICKY_DISMISS_KEY) === '1';
-    } catch (e) {
-      dismissed = false;
-    }
-    if (dismissed) return;
-
     // ---- desktop: branded heading + the full compact form ----
     var built = buildForm({
       variant: 'sticky',
@@ -1033,30 +1029,18 @@
 
     var mobileHeading = h('div', { class: 'yll-lf-sticky-mobile-heading' }, [
       h('span', { class: 'yll-lf-sticky-heading-green', text: 'Get A Fast Quote' }),
+      h('span', { class: 'yll-lf-sticky-heading-red', text: 'Takes Only 5 Seconds' }),
     ]);
     var mobileBtns = h('div', { class: 'yll-lf-sticky-mobile-btns' }, [callBtn, quoteBtn]);
     var mobileRow = h('div', { class: 'yll-lf-sticky-mobile' }, [mobileHeading, mobileBtns]);
-
-    var dismissBtn = h('button', { type: 'button', class: 'yll-lf-sticky-dismiss', 'aria-label': 'Dismiss', text: '×' });
 
     // `yll-lf` (not just `yll-lf-sticky`) so the --yll-lf-green/--yll-lf-red
     // custom properties (scoped to `.yll-lf` descendants — see injectStyles)
     // reach the heading/buttons, which sit as siblings of the `.yll-lf--sticky`
     // form wrapper, not inside it.
-    var inner = h('div', { class: 'yll-lf yll-lf-sticky' }, [dismissBtn, desktopRow, mobileRow]);
+    var inner = h('div', { class: 'yll-lf yll-lf-sticky' }, [desktopRow, mobileRow]);
     var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
     document.body.appendChild(outer);
-
-    var dismissedThisView = false;
-    dismissBtn.addEventListener('click', function () {
-      dismissedThisView = true;
-      outer.classList.remove('yll-lf-sticky-visible');
-      try {
-        sessionStorage.setItem(STICKY_DISMISS_KEY, '1');
-      } catch (e) {
-        /* ignore */
-      }
-    });
 
     trackViewedOnce(outer, 'sticky');
 
@@ -1109,7 +1093,6 @@
     }
 
     function updateVisibility() {
-      if (dismissedThisView) return;
       var shouldShow = window.scrollY > STICKY_REVEAL_PX;
       var isVisible = outer.classList.contains('yll-lf-sticky-visible');
       if (shouldShow && !isVisible) {
