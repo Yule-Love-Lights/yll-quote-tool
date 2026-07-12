@@ -32,6 +32,7 @@ import {
 } from './trainingExamples';
 import { editableItems, applyItemCorrections } from './design/sceneCorrections';
 import type { Scene } from './design/sceneTypes';
+import { MIN_STATS_PAIRS } from './seedFinalStats';
 
 // A minimal scene: one tagged front-roofline C9 strand across a 1000×500 photo.
 const SCENE: Scene = {
@@ -418,14 +419,20 @@ describe('getCorpusBiasNote memoization (W2-035)', () => {
     invalidateBiasNoteCache();
   });
 
-  it('reuses the memoized note across back-to-back calls (one query, not two)', async () => {
+  // #109 Phase 2: computeCorpusBiasNote now issues TWO selects per computation
+  // (training_examples, then the training_houses ground-truth fold-in via
+  // getTrainingHouseGroundTruthPairs) — makeTrainingExamplesSb's `from` is
+  // table-agnostic (same shared builder for every table), so both land on the
+  // same counter. The memoization contract under test is unchanged: back-to-
+  // back calls still reuse ONE computation (2 selects, not 4).
+  it('reuses the memoized note across back-to-back calls (one computation, not two)', async () => {
     const { client, getSelectCount } = makeTrainingExamplesSb();
     sbRef.current = client;
 
     await getCorpusBiasNote();
     await getCorpusBiasNote();
 
-    expect(getSelectCount()).toBe(1);
+    expect(getSelectCount()).toBe(2);
   });
 
   it('re-queries after updateTrainingExample invalidates the cache', async () => {
@@ -433,12 +440,12 @@ describe('getCorpusBiasNote memoization (W2-035)', () => {
     sbRef.current = client;
 
     await getCorpusBiasNote();
-    expect(getSelectCount()).toBe(1);
+    expect(getSelectCount()).toBe(2);
 
     await updateTrainingExample('ex-1', { excluded: true });
     await getCorpusBiasNote();
 
-    expect(getSelectCount()).toBe(2);
+    expect(getSelectCount()).toBe(4);
   });
 
   it('re-queries after deleteTrainingExample invalidates the cache', async () => {
@@ -446,11 +453,82 @@ describe('getCorpusBiasNote memoization (W2-035)', () => {
     sbRef.current = client;
 
     await getCorpusBiasNote();
-    expect(getSelectCount()).toBe(1);
+    expect(getSelectCount()).toBe(2);
 
     await deleteTrainingExample('ex-1');
     await getCorpusBiasNote();
 
-    expect(getSelectCount()).toBe(2);
+    expect(getSelectCount()).toBe(4);
+  });
+});
+
+// ─── #109 Phase 2: training_houses ground-truth fold-in ─────────────────────
+// training_houses rows that recorded BOTH operator ground truth AND an AI
+// snapshot contribute an additional (ai, truth) pair to the SAME corpus-wide
+// average training_examples pairs already feed; a row missing either side
+// contributes nothing (mirrors "a house without operator truth contributes
+// nothing new").
+
+function makeFoldInSb(houseRows: Record<string, unknown>[]) {
+  const examplesBuilder: Record<string, unknown> = {};
+  for (const m of ['eq', 'not', 'order', 'limit']) examplesBuilder[m] = () => examplesBuilder;
+  examplesBuilder.select = () => examplesBuilder;
+  examplesBuilder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+
+  const housesBuilder: Record<string, unknown> = {};
+  for (const m of ['not', 'order', 'limit']) housesBuilder[m] = () => housesBuilder;
+  housesBuilder.select = () => housesBuilder;
+  housesBuilder.then = (resolve: (v: unknown) => void) => resolve({ data: houseRows, error: null });
+
+  return { from: (table: string) => (table === 'training_houses' ? housesBuilder : examplesBuilder) };
+}
+
+const FOLD_IN_AI = { miniLights: 5, wreaths: 2, spritzers: 1, garland: 0, santasFootage: 40, gingerbreadFootage: 20 };
+
+describe('getCorpusBiasNote training_houses ground-truth fold-in (#109 Phase 2)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+    invalidateBiasNoteCache();
+  });
+
+  it('folds rows with BOTH known + aiSnapshot into the corpus average', async () => {
+    const rows = Array.from({ length: MIN_STATS_PAIRS }, () => ({
+      operator_known_numbers: { known: { miniLights: FOLD_IN_AI.miniLights + 4 }, aiSnapshot: FOLD_IN_AI },
+    }));
+    sbRef.current = makeFoldInSb(rows);
+
+    const note = await getCorpusBiasNote();
+
+    expect(note).not.toBeNull();
+    expect(note).toContain('MISS ~4.0 mini-light items');
+  });
+
+  it('a row missing known, missing aiSnapshot, or with a null column contributes nothing', async () => {
+    const rows = [
+      { operator_known_numbers: { aiSnapshot: FOLD_IN_AI } }, // no known
+      { operator_known_numbers: { known: { wreaths: 3 } } }, // no aiSnapshot
+      { operator_known_numbers: null },
+    ];
+    sbRef.current = makeFoldInSb(rows);
+
+    // None of these rows produce a usable pair, so the corpus stays at 0
+    // seeded pairs (below MIN_STATS_PAIRS) — no note, exactly as if
+    // training_houses had no ground truth at all.
+    expect(await getCorpusBiasNote()).toBeNull();
+  });
+
+  it('fails open (contributes nothing, no thrown error) when the column is not migrated yet', async () => {
+    const housesBuilder: Record<string, unknown> = {};
+    for (const m of ['not', 'order', 'limit']) housesBuilder[m] = () => housesBuilder;
+    housesBuilder.select = () => housesBuilder;
+    housesBuilder.then = (resolve: (v: unknown) => void) =>
+      resolve({ data: null, error: { code: '42703', message: 'column training_houses.operator_known_numbers does not exist' } });
+    const examplesBuilder: Record<string, unknown> = {};
+    for (const m of ['eq', 'not', 'order', 'limit']) examplesBuilder[m] = () => examplesBuilder;
+    examplesBuilder.select = () => examplesBuilder;
+    examplesBuilder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+    sbRef.current = { from: (table: string) => (table === 'training_houses' ? housesBuilder : examplesBuilder) };
+
+    await expect(getCorpusBiasNote()).resolves.toBeNull();
   });
 });

@@ -29,6 +29,13 @@ import { embedImage } from './embeddings';
 import { summarizeSeedFinalDiff } from './seedFinalDiff';
 import { computeBiasSummary, formatBiasNote, type SeedFinalPair } from './seedFinalStats';
 import type { FewShotExample, TrainingExamplePhoto } from './photoAnalysis';
+import { getTrainingHouseGroundTruthPairs } from './training';
+import { knownAiPairToSeedFinal } from './training/knownVsAi';
+import { readBiasNoteCache, writeBiasNoteCache, invalidateBiasNoteCache } from './biasNoteCache';
+
+// Re-exported for backward compatibility — every existing caller (this
+// module's own writes, trainingExamples.test.ts) imports it from here.
+export { invalidateBiasNoteCache };
 
 export type TrainingExampleSource = 'auto-send' | 'manual';
 
@@ -255,18 +262,6 @@ export async function getSimilarTrainingExamples(
 // training_examples write in this module, so a burst of analyzes reuses one
 // computation instead of re-querying/re-projecting the whole corpus each time.
 const BIAS_SAMPLE_CAP = 200;
-const BIAS_NOTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let biasNoteCache: { note: string | null; expiresAt: number } | null = null;
-
-// Drop the memoized note so the next getCorpusBiasNote() call recomputes from
-// fresh rows. Called after every write to training_examples (capture/update/
-// correct/delete) so the note never lags a real corpus change by more than
-// one write; the TTL above is just the belt-and-suspenders fallback. Also
-// exported test-only (mirrors rateLimit.ts's __bucketSize) so each test can
-// start from a clean cache instead of leaking state across test files.
-export function invalidateBiasNoteCache(): void {
-  biasNoteCache = null;
-}
 
 async function computeCorpusBiasNote(): Promise<string | null> {
   const sb = getSb();
@@ -302,14 +297,29 @@ async function computeCorpusBiasNote(): Promise<string | null> {
       },
     });
   }
+
+  // #109 Phase 2 — fold in operator ground truth captured on /training/new:
+  // training_houses rows that recorded BOTH what the operator actually
+  // installed AND the AI's own snapshot at Auto-Analyze time contribute an
+  // ADDITIONAL (ai=aiSnapshot, truth=known) pair, exactly like a staff-
+  // corrected design example. A house with no operator ground truth
+  // contributes nothing new — getTrainingHouseGroundTruthPairs already
+  // filters those out (and fails open to [] if the column isn't migrated
+  // yet), so this never changes behavior for the existing example-only math.
+  const groundTruthPairs = await getTrainingHouseGroundTruthPairs();
+  for (const { known, aiSnapshot } of groundTruthPairs) {
+    pairs.push(knownAiPairToSeedFinal(known, aiSnapshot));
+  }
+
   return formatBiasNote(computeBiasSummary(pairs));
 }
 
 export async function getCorpusBiasNote(): Promise<string | null> {
   const now = Date.now();
-  if (biasNoteCache && biasNoteCache.expiresAt > now) return biasNoteCache.note;
+  const cached = readBiasNoteCache(now);
+  if (cached) return cached.note;
   const note = await computeCorpusBiasNote();
-  biasNoteCache = { note, expiresAt: now + BIAS_NOTE_TTL_MS };
+  writeBiasNoteCache(note, now);
   return note;
 }
 

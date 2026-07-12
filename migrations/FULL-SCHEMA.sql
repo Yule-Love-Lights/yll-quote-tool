@@ -324,6 +324,12 @@ alter table training_houses
   add column if not exists stake_lighting_difficulty text,
   add column if not exists stake_lines               jsonb;
 
+-- Ground truth vs AI snapshot (2026-07-12, #109 Phase 2) — operator-recorded
+-- install counts + the AI's Auto-Analyze snapshot + computed misses[]. See
+-- migrations/2026-07-12-training-operator-known-numbers.sql.
+alter table training_houses
+  add column if not exists operator_known_numbers jsonb;
+
 -- Not migration-tracked — see the table-header note. Idempotent guard so this
 -- file stays safe to re-run even though no dated migration owns these.
 alter table training_houses

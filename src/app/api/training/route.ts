@@ -5,6 +5,7 @@ import {
   TrainingHousePayload,
 } from '@/lib/training';
 import type { LineSegment, MiniLightDetection, WreathDetection, SpritzerDetection, GarlandDetection } from '@/lib/photoAnalysis';
+import type { KnownNumbers, AiSnapshot } from '@/lib/training/knownVsAi';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 // #110 W5-005 (security, reopens #80-036): mirror the same allowed-value sets
@@ -100,6 +101,72 @@ function sanitizeSpritzerDetections(v: unknown): SpritzerDetection[] {
   return out;
 }
 
+// #109 Phase 2 — the ground-truth counts (known) and the AI's own snapshot
+// (aiSnapshot) are operator/client-submitted numbers that flow into the
+// corpus-wide bias note, so they get the same drop-garbage treatment as the
+// rest of this route: negative/NaN/non-finite → dropped, not clamped to 0
+// (a dropped field is simply "the operator didn't tell us", which is exactly
+// what compareKnownVsAi already treats an absent field as — clamping to 0
+// would instead assert "the operator says zero", a different claim).
+const MAX_KNOWN_COUNT = 10_000; // generous upper bound; blocks a crafted absurd value
+
+function asNonNegNumber(v: unknown, max: number): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : undefined;
+}
+
+function sanitizeKnownNumbers(v: unknown): KnownNumbers | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const obj = v as Record<string, unknown>;
+  const out: KnownNumbers = {};
+  for (const key of ['miniLights', 'wreaths', 'spritzers', 'garland'] as const) {
+    const n = asNonNegNumber(obj[key], MAX_KNOWN_COUNT);
+    if (n !== undefined) out[key] = n;
+  }
+  for (const key of ['santasFootage', 'gingerbreadFootage', 'wwFootage', 'stakeFootage'] as const) {
+    const n = asNonNegNumber(obj[key], MAX_FOOTAGE);
+    if (n !== undefined) out[key] = n;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// A partial/corrupt aiSnapshot teaches nothing reliable — the required
+// fields (the big four counts + the two footages the analyzer actually
+// returns) must ALL be present and valid, or the whole snapshot is dropped
+// rather than persisting a snapshot with silently-zeroed fields.
+function sanitizeAiSnapshot(v: unknown): AiSnapshot | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const obj = v as Record<string, unknown>;
+  const miniLights = asNonNegNumber(obj.miniLights, MAX_KNOWN_COUNT);
+  const wreaths = asNonNegNumber(obj.wreaths, MAX_KNOWN_COUNT);
+  const spritzers = asNonNegNumber(obj.spritzers, MAX_KNOWN_COUNT);
+  const garland = asNonNegNumber(obj.garland, MAX_KNOWN_COUNT);
+  const santasFootage = asNonNegNumber(obj.santasFootage, MAX_FOOTAGE);
+  const gingerbreadFootage = asNonNegNumber(obj.gingerbreadFootage, MAX_FOOTAGE);
+  if ([miniLights, wreaths, spritzers, garland, santasFootage, gingerbreadFootage].some((n) => n === undefined)) {
+    return undefined;
+  }
+  const wwFootage = asNonNegNumber(obj.wwFootage, MAX_FOOTAGE);
+  const stakeFootage = asNonNegNumber(obj.stakeFootage, MAX_FOOTAGE);
+  return {
+    miniLights: miniLights!, wreaths: wreaths!, spritzers: spritzers!, garland: garland!,
+    santasFootage: santasFootage!, gingerbreadFootage: gingerbreadFootage!,
+    ...(wwFootage !== undefined ? { wwFootage } : {}),
+    ...(stakeFootage !== undefined ? { stakeFootage } : {}),
+  };
+}
+
+// Never trust a client-sent `misses` — saveTrainingHouse always recomputes it
+// server-side from the sanitized known/aiSnapshot, so only known/aiSnapshot
+// are extracted here.
+function sanitizeOperatorKnownNumbers(v: unknown): { known?: KnownNumbers; aiSnapshot?: AiSnapshot } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const obj = v as Record<string, unknown>;
+  const known = sanitizeKnownNumbers(obj.known);
+  const aiSnapshot = sanitizeAiSnapshot(obj.aiSnapshot);
+  if (!known && !aiSnapshot) return undefined;
+  return { ...(known ? { known } : {}), ...(aiSnapshot ? { aiSnapshot } : {}) };
+}
+
 function sanitizeGarlandDetections(v: unknown): GarlandDetection[] {
   if (!Array.isArray(v)) return [];
   const out: GarlandDetection[] = [];
@@ -138,6 +205,7 @@ function sanitizeTrainingPayload(body: TrainingHousePayload): TrainingHousePaylo
     wreathDetections: body.wreathDetections ? sanitizeWreathDetections(body.wreathDetections) : body.wreathDetections,
     spritzerDetections: body.spritzerDetections ? sanitizeSpritzerDetections(body.spritzerDetections) : body.spritzerDetections,
     garlandDetections: body.garlandDetections ? sanitizeGarlandDetections(body.garlandDetections) : body.garlandDetections,
+    operatorKnownNumbers: sanitizeOperatorKnownNumbers(body.operatorKnownNumbers),
   };
 }
 
@@ -179,5 +247,8 @@ export async function POST(req: NextRequest) {
   if (!saved) {
     return NextResponse.json({ error: 'Failed to save training house — check server logs' }, { status: 500 });
   }
-  return NextResponse.json({ id: saved.id });
+  // #109 Phase 2 — `misses` is only present when the save carried BOTH
+  // ground truth and an AI snapshot; the page uses its presence to decide
+  // whether to show the save-time readout.
+  return NextResponse.json('misses' in saved ? { id: saved.id, misses: saved.misses } : { id: saved.id });
 }

@@ -16,6 +16,7 @@ import type {
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import type { LineSegment } from '@/lib/photoAnalysis';
+import type { AiSnapshot, KnownNumbers, KnownVsAiMiss } from '@/lib/training/knownVsAi';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type MiniLightDetection = {
@@ -54,6 +55,19 @@ const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-
 
 const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
 const PLANT_PERSPECTIVE_FACTOR = 0.4;
+
+// #109 Phase 2 — ground truth vs AI snapshot readout labels.
+const KNOWN_FIELD_LABELS: Record<keyof KnownNumbers, string> = {
+  miniLights: 'Mini-light items',
+  wreaths: 'Wreaths',
+  spritzers: 'Spritzers',
+  garland: 'Garland runs',
+  santasFootage: 'Gutterline footage',
+  gingerbreadFootage: 'Ridgeline footage',
+  wwFootage: 'C9 footage',
+  stakeFootage: 'Stake footage',
+};
+const KNOWN_FOOTAGE_FIELDS = new Set<keyof KnownNumbers>(['santasFootage', 'gingerbreadFootage', 'wwFootage', 'stakeFootage']);
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -145,6 +159,23 @@ export default function NewTrainingHousePage() {
   const [stakeFootage, setStakeFootage] = useState<number | ''>('');
   const [stakeDifficulty, setStakeDifficulty] = useState<'easy'|'medium'|'hard'>('easy');
   const [stakeLines, setStakeLines] = useState<LineSegment[]>([]);
+
+  // #109 Phase 2 — ground truth: what the operator actually installed on
+  // this job. The big four counts are the recommended ones; footage is
+  // optional. aiSnapshot is captured once (from the most recent Auto-Analyze
+  // call) so it can be scored against whatever the operator records here.
+  const [knownMiniLights, setKnownMiniLights] = useState<number | ''>('');
+  const [knownWreaths, setKnownWreaths] = useState<number | ''>('');
+  const [knownSpritzers, setKnownSpritzers] = useState<number | ''>('');
+  const [knownGarland, setKnownGarland] = useState<number | ''>('');
+  const [knownSantasFootage, setKnownSantasFootage] = useState<number | ''>('');
+  const [knownGingerbreadFootage, setKnownGingerbreadFootage] = useState<number | ''>('');
+  const [knownWwFootage, setKnownWwFootage] = useState<number | ''>('');
+  const [knownStakeFootage, setKnownStakeFootage] = useState<number | ''>('');
+  const [aiSnapshot, setAiSnapshot] = useState<AiSnapshot | null>(null);
+  // Set after a save that carried both known + aiSnapshot — replaces the
+  // save buttons with the AI-vs-installed readout instead of navigating away.
+  const [saveReadout, setSaveReadout] = useState<KnownVsAiMiss[] | null>(null);
 
   // Detections
   const [miniLightDetections, setMiniLightDetections] = useState<MiniLightDetection[]>([]);
@@ -592,6 +623,20 @@ export default function NewTrainingHousePage() {
       setSpritzerDetections(r.spritzerDetections ?? []);
       setGarlandDetections(r.garlandDetections ?? []);
 
+      // #109 Phase 2 — capture the AI's own counts at this moment, so they
+      // can be scored against whatever the operator later records as ground
+      // truth. wwFootage/stakeFootage are omitted: the analyzer doesn't
+      // currently detect Winter Wonderland/Stake runs, so there's no AI
+      // guess for those two to snapshot.
+      setAiSnapshot({
+        miniLights: detections.length,
+        wreaths: (r.wreathDetections ?? []).length,
+        spritzers: (r.spritzerDetections ?? []).length,
+        garland: (r.garlandDetections ?? []).length,
+        santasFootage: r.santasFootage,
+        gingerbreadFootage: r.gingerbreadFootage,
+      });
+
       const santasLen = polylineLength(newSantasLines, imgAspect);
       const ridgeLen = polylineLength(newGingerLines, imgAspect);
       let scale: number | null = null;
@@ -689,11 +734,41 @@ export default function NewTrainingHousePage() {
   };
 
   // ─── Save ───
+  // #109 Phase 2 — the ground-truth counts the operator actually typed in,
+  // or undefined when none were filled. Object.keys() length gate keeps
+  // "nothing filled in" indistinguishable from "feature untouched" (an empty
+  // {} is never sent — see saveTrainingHouse's byte-for-byte guarantee).
+  const buildKnownNumbers = (): KnownNumbers | undefined => {
+    const out: KnownNumbers = {};
+    if (knownMiniLights !== '') out.miniLights = knownMiniLights;
+    if (knownWreaths !== '') out.wreaths = knownWreaths;
+    if (knownSpritzers !== '') out.spritzers = knownSpritzers;
+    if (knownGarland !== '') out.garland = knownGarland;
+    if (knownSantasFootage !== '') out.santasFootage = knownSantasFootage;
+    if (knownGingerbreadFootage !== '') out.gingerbreadFootage = knownGingerbreadFootage;
+    if (knownWwFootage !== '') out.wwFootage = knownWwFootage;
+    if (knownStakeFootage !== '') out.stakeFootage = knownStakeFootage;
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+
   const handleSave = async () => {
     if (photos.length === 0) {
       setSaveError('Upload at least one photo before saving.');
       return;
     }
+
+    // #109 Phase 2 — soft nudge only: never a hard block. If the operator is
+    // about to save a job that has drawn/detected items but recorded none of
+    // the recommended big-four counts, confirm they meant to skip it.
+    const bigFourBlank = knownMiniLights === '' && knownWreaths === '' && knownSpritzers === '' && knownGarland === '';
+    const hasAnyDetections =
+      miniLightDetections.length > 0 || wreathDetections.length > 0 || spritzerDetections.length > 0 || garlandDetections.length > 0 ||
+      photoMarkup.some(m => m.miniLightDetections.length > 0 || m.wreathDetections.length > 0 || m.spritzerDetections.length > 0 || m.garlandDetections.length > 0);
+    if (bigFourBlank && hasAnyDetections) {
+      const proceed = window.confirm('Save without recording your install counts? They train the AI.');
+      if (!proceed) return;
+    }
+
     setSaving(true);
     setSaveError(null);
     try {
@@ -769,11 +844,22 @@ export default function NewTrainingHousePage() {
           costMaterials: costMaterials === '' ? null : costMaterials,
           costLaborHours: costLaborHours === '' ? null : costLaborHours,
           revenue: revenue === '' ? null : revenue,
+          operatorKnownNumbers: (() => {
+            const known = buildKnownNumbers();
+            return (known || aiSnapshot) ? { known, aiSnapshot: aiSnapshot ?? undefined } : undefined;
+          })(),
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
-      router.push('/training');
+      // #109 Phase 2 — `misses` is only present when the save carried BOTH
+      // ground truth and an AI snapshot; show the readout instead of
+      // navigating away so the operator sees how the AI did on this house.
+      if (Array.isArray(data.misses)) {
+        setSaveReadout(data.misses as KnownVsAiMiss[]);
+      } else {
+        router.push('/training');
+      }
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -1655,28 +1741,119 @@ export default function NewTrainingHousePage() {
           </div>
         </Section>
 
-        {saveError && (
-          <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700 mb-4">
-            {saveError}
+        {/* #109 Phase 2 — ground truth: what the operator actually installed. */}
+        <details className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
+          <summary className="text-sm font-semibold text-gray-800 uppercase tracking-wide cursor-pointer select-none">
+            What you actually installed (ground truth)
+          </summary>
+          <p className="text-xs text-gray-500 mt-2 mb-4">
+            The real counts from this job, used to score the AI&apos;s guesses over time. Fill in only what you know.
+          </p>
+          <div className="mb-4">
+            <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2">Recommended</p>
+            <div className="grid grid-cols-4 gap-3 bg-green-50 border border-green-200 rounded-md p-3">
+              <div>
+                <label className={lbl}>Mini-Light Items</label>
+                <input className={inp} type="number" min="0" value={knownMiniLights}
+                  onChange={e => setKnownMiniLights(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>Wreaths</label>
+                <input className={inp} type="number" min="0" value={knownWreaths}
+                  onChange={e => setKnownWreaths(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>Spritzers</label>
+                <input className={inp} type="number" min="0" value={knownSpritzers}
+                  onChange={e => setKnownSpritzers(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>Garland Runs</label>
+                <input className={inp} type="number" min="0" value={knownGarland}
+                  onChange={e => setKnownGarland(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+            </div>
           </div>
-        )}
+          <div>
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Footage (optional)</p>
+            <div className="grid grid-cols-4 gap-3">
+              <div>
+                <label className={lbl}>Gutterline ft</label>
+                <input className={inp} type="number" min="0" value={knownSantasFootage}
+                  onChange={e => setKnownSantasFootage(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>Ridgeline ft</label>
+                <input className={inp} type="number" min="0" value={knownGingerbreadFootage}
+                  onChange={e => setKnownGingerbreadFootage(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>C9s ft</label>
+                <input className={inp} type="number" min="0" value={knownWwFootage}
+                  onChange={e => setKnownWwFootage(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+              <div>
+                <label className={lbl}>Stake ft</label>
+                <input className={inp} type="number" min="0" value={knownStakeFootage}
+                  onChange={e => setKnownStakeFootage(e.target.value ? Number(e.target.value) : '')} />
+              </div>
+            </div>
+          </div>
+        </details>
 
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving || photos.length === 0}
-            className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold py-3 px-6 rounded-lg"
-          >
-            {saving ? 'Saving…' : 'Save Training Record'}
-          </button>
-          <Link
-            href="/training"
-            className="px-6 py-3 text-gray-700 border border-gray-300 hover:border-gray-500 rounded-lg font-medium"
-          >
-            Cancel
-          </Link>
-        </div>
+        {saveReadout ? (
+          <Section title="Saved: AI vs. your install counts">
+            {saveReadout.length === 0 ? (
+              <p className="text-sm text-gray-500">Your counts matched the AI&apos;s guesses closely. Nothing to flag.</p>
+            ) : (
+              <ul className="space-y-2">
+                {saveReadout.map(m => (
+                  <li
+                    key={m.type}
+                    className={`text-sm rounded-md px-3 py-2 border ${m.big ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                  >
+                    <span className="font-semibold">{KNOWN_FIELD_LABELS[m.type]}:</span>{' '}
+                    AI guessed {m.ai}{KNOWN_FOOTAGE_FIELDS.has(m.type) ? 'ft' : ''}, you installed {m.known}{KNOWN_FOOTAGE_FIELDS.has(m.type) ? 'ft' : ''}
+                    {' '}(off by {Math.abs(m.ai - m.known)}{KNOWN_FOOTAGE_FIELDS.has(m.type) ? 'ft' : ''}).
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-4">
+              <Link
+                href="/training"
+                className="inline-block bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-5 rounded-lg text-sm"
+              >
+                Continue to Training Database
+              </Link>
+            </div>
+          </Section>
+        ) : (
+          <>
+            {saveError && (
+              <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700 mb-4">
+                {saveError}
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving || photos.length === 0}
+                className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold py-3 px-6 rounded-lg"
+              >
+                {saving ? 'Saving…' : 'Save Training Record'}
+              </button>
+              <Link
+                href="/training"
+                className="px-6 py-3 text-gray-700 border border-gray-300 hover:border-gray-500 rounded-lg font-medium"
+              >
+                Cancel
+              </Link>
+            </div>
+          </>
+        )}
       </div>
     </OperatorShell>
   );

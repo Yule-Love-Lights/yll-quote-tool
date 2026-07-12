@@ -16,9 +16,12 @@ import type { SeedFinalFinal } from './seedFinalDiff';
 export const MIN_STATS_PAIRS = 5;
 
 // Below these absolute mean deltas, a metric is treated as "no systematic bias"
-// and produces no guidance line. Tunable.
-const FT_THRESHOLD = 3; // feet
-const COUNT_THRESHOLD = 0.5; // items per house
+// and produces no guidance line. Tunable. Exported — #109 Phase 2's per-house
+// knownVsAi comparator reuses the SAME "does this count as a miss" bars so a
+// "miss" means one consistent thing whether it's the corpus-wide bias note or
+// a single house's save-time readout.
+export const FT_THRESHOLD = 3; // feet
+export const COUNT_THRESHOLD = 0.5; // items per house
 const STRING_THRESHOLD = 1; // strands per house
 
 type Metrics = {

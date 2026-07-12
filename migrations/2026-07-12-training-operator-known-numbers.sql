@@ -1,0 +1,13 @@
+-- Ground truth vs AI snapshot on training_houses (#109 Phase 2).
+-- operator_known_numbers stores what the operator says they actually
+-- installed on /training/new (verified counts/footage), a snapshot of the
+-- AI's own counts at Auto-Analyze time, and the misses[] computed between
+-- the two — the raw material for the save-time readout and for folding
+-- operator ground truth into the corpus-wide bias note
+-- (getCorpusBiasNote, src/lib/trainingExamples.ts).
+--
+-- Additive + idempotent + nullable. DO NOT rely on this having been applied —
+-- the code fails open (treats the column as absent, degrading to null/[])
+-- until this is run on the live Supabase project. Apply via the Chrome ext +
+-- SQL editor after review (mirrors the stake-lighting migration, 2026-06-26).
+ALTER TABLE training_houses ADD COLUMN IF NOT EXISTS operator_known_numbers jsonb;
