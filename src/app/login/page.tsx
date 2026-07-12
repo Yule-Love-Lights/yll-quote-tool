@@ -8,6 +8,15 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+// WT-61: `from.startsWith('/')` alone lets a protocol-relative value like
+// `//evil.com/x` through — the browser treats a leading `//` as "same scheme,
+// different host", so `router.replace` navigates off-origin (open redirect /
+// phishing). Require a single leading slash: same-origin path, not a
+// scheme-relative host.
+export function safeRedirectTarget(target: string): string {
+  return target.startsWith('/') && !target.startsWith('//') ? target : '/';
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -31,7 +40,7 @@ function LoginForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? 'Login failed');
       }
-      router.replace(from.startsWith('/') ? from : '/');
+      router.replace(safeRedirectTarget(from));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

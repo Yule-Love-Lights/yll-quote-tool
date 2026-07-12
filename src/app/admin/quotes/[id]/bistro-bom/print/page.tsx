@@ -8,7 +8,8 @@
 // order → no BOM).
 
 import type { CSSProperties } from 'react';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { getQuoteRaw } from '@/lib/quotes';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { listCatalog } from '@/lib/inventory/catalog';
@@ -29,6 +30,13 @@ const money = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default async function BistroBomPrintPage({ params }: { params: Promise<{ id: string }> }) {
+  // Defense in depth behind the middleware perimeter — re-check at render so this
+  // staff order sheet (customer PII) never serves anonymously even if the
+  // perimeter is bypassed. Dormant until the auth gate is live (matches the
+  // #81 operator-page pattern).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/admin/quotes');
+  }
   const { id } = await params;
   const quote = await getQuoteRaw(id);
   if (!quote) notFound();

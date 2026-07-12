@@ -4,17 +4,29 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { getJob, setJobStatus, getInvoiceByJob, setInvoiceStatus, requireOperatorMock, sbRef, hl, releaseAccrualOnCancelMock } =
-  vi.hoisted(() => ({
-    getJob: vi.fn(),
-    setJobStatus: vi.fn(),
-    getInvoiceByJob: vi.fn(),
-    setInvoiceStatus: vi.fn(),
-    requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
-    sbRef: { current: null as unknown },
-    hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
-    releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
-  }));
+const {
+  getJob,
+  setJobStatus,
+  getInvoiceByJob,
+  setInvoiceStatus,
+  requireOperatorMock,
+  sbRef,
+  hl,
+  releaseAccrualOnCancelMock,
+  getJobWorkOrderMock,
+  adjustOnHandAtomicMock,
+} = vi.hoisted(() => ({
+  getJob: vi.fn(),
+  setJobStatus: vi.fn(),
+  getInvoiceByJob: vi.fn(),
+  setInvoiceStatus: vi.fn(),
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+  sbRef: { current: null as unknown },
+  hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
+  releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
+  getJobWorkOrderMock: vi.fn(),
+  adjustOnHandAtomicMock: vi.fn(async () => {}),
+}));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
@@ -32,6 +44,15 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 // calls to this file's shared quote-row fake (which the W1-008 tests below
 // index into positionally) — this file's job is only the wiring + fail-open.
 vi.mock('@/lib/referrals', () => ({ releaseAccrualOnCancel: releaseAccrualOnCancelMock }));
+// WT-31: only stub getJobWorkOrder (its own projection/BOM machinery is
+// covered elsewhere — jobsPrepare.test.ts et al.); keep the REAL
+// computeStockDeductions so the reversal math under test is the genuine
+// prepare-path math, not a re-implemented double.
+vi.mock('@/lib/inventory/jobs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inventory/jobs')>();
+  return { ...actual, getJobWorkOrder: getJobWorkOrderMock };
+});
+vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
 
 import { POST } from './route';
 
@@ -68,6 +89,12 @@ beforeEach(() => {
   getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'draft' });
   setInvoiceStatus.mockResolvedValue({ id: 'inv-1', status: 'cancelled' });
   releaseAccrualOnCancelMock.mockResolvedValue({ released: false });
+  // WT-31: not-prepped by default — the stock-reversal block below no-ops
+  // unless a test opts a job into stockDecrementedAt.
+  getJobWorkOrderMock.mockResolvedValue({
+    job: { stockDecrementedAt: null, isTest: false },
+    materials: { materials: [], unbound: [], totalLines: 0 },
+  });
   sb = fakeSb();
   sbRef.current = sb.client;
 });
@@ -267,5 +294,163 @@ describe('POST /api/jobs/[id]/cancel', () => {
     expect(json.ok).toBe(true);
     expect(json.quoteCancelled).toBe(false);
     expect(json.note).toMatch(/could not be updated/i);
+  });
+
+  // WT-17: a completed-then-cancelled order already collected the FULL balance
+  // (deposit + remaining balance), not just the deposit — the refund owed +
+  // durable record + staff alert must reflect the whole invoice total.
+  describe('WT-17 — full-order refund when the invoice was already paid in full', () => {
+    it('uses invoice.total (not the deposit) as the refund amount, and stamps + emails a full-order refund', async () => {
+      sb = fakeSb({
+        deposit_paid_at: '2026-01-01T00:00:00Z',
+        deposit_amount_usd: 1467, // the original deposit — must NOT be used once paid in full
+        customer_name: 'Jordan Smith',
+        approval_snapshot: { customerSelection: { currentTotalUsd: 2934 } },
+      });
+      sbRef.current = sb.client;
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'paid', total: 3200 });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.refundedInvoice).toBe(true);
+      expect(json.refundedDeposit).toBe(true);
+      expect(setInvoiceStatus).toHaveBeenCalledWith('inv-1', 'cancelled');
+
+      // updates[0] = quote status cancel; updates[1] = the refundDue snapshot merge.
+      expect(sb.updates[1]).toMatchObject({
+        approval_snapshot: {
+          customerSelection: { currentTotalUsd: 2934 }, // existing keys preserved
+          refundDue: { reason: 'cancelled-paid-in-full', amountUsd: 3200 },
+        },
+      });
+
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      const args = hl.sendEmail.mock.calls[0] as unknown as [{ html: string }];
+      expect(args[0].html).toContain('$3,200.00');
+      expect(args[0].html).toContain('the full order balance was already collected');
+      expect(args[0].html).not.toContain('Deposit to refund');
+    });
+
+    it('still refunds the full invoice total even when no deposit was ever recorded on the quote', async () => {
+      sb = fakeSb({ deposit_paid_at: null, customer_name: 'No Deposit On File' });
+      sbRef.current = sb.client;
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'paid', total: 1500 });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(json.refundedInvoice).toBe(true);
+      expect(json.refundedDeposit).toBe(false);
+      expect(json.refundNeeded).toBe(true);
+      expect(sb.updates[1]).toMatchObject({
+        approval_snapshot: { refundDue: { reason: 'cancelled-paid-in-full', amountUsd: 1500 } },
+      });
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // WT-31: a job whose materials were already prepped (stock decremented at
+  // prep — #82 Phase 2) must have that deduction reversed on cancel, or at
+  // least a note if nothing trackable was found to reverse.
+  describe('WT-31 — stock reversal on cancel', () => {
+    it('reverses the on-hand deduction for a prepped job (stock_decremented_at set)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
+        materials: {
+          materials: [
+            { sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false },
+            { sku: 'SKU-B', name: 'Item B', qty: 3, onHand: 1, short: true },
+            { sku: 'SKU-UNTRACKED', name: 'Item C', qty: 2, onHand: null, short: false },
+          ],
+          unbound: [],
+          totalLines: 3,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      // Positive delta = return to stock; the untracked SKU is never touched.
+      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-A', 5);
+      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-B', 1);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'SKU-UNTRACKED',
+        expect.anything(),
+      );
+      expect(json.stockReturned).toEqual(
+        expect.arrayContaining([
+          { sku: 'SKU-A', qty: 5 },
+          { sku: 'SKU-B', qty: 1 },
+        ]),
+      );
+      expect(json.note).toMatch(/Returned to stock/);
+    });
+
+    it('is a no-op when the job was never prepped (stock_decremented_at null)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: null, isTest: false },
+        materials: {
+          materials: [{ sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+      expect(json.stockReturned).toEqual([]);
+    });
+
+    it('skips the real reversal for a TEST job even if it was marked prepped (never touched real stock)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: true },
+        materials: {
+          materials: [{ sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+      expect(json.stockReturned).toEqual([]);
+    });
+
+    it('falls back to a note when a prepped job has nothing trackable to reverse', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
+        materials: {
+          materials: [{ sku: 'SKU-UNTRACKED', name: 'Item C', qty: 2, onHand: null, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+      expect(json.stockReturned).toEqual([]);
+      expect(json.note).toMatch(/no trackable on-hand stock/i);
+    });
+
+    it('does not fail the cancel when the work-order read throws (best-effort)', async () => {
+      getJobWorkOrderMock.mockRejectedValueOnce(new Error('read failed'));
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.stockReturned).toEqual([]);
+    });
   });
 });

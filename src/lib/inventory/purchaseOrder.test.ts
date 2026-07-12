@@ -23,7 +23,70 @@ vi.mock('@/lib/integrations/telegramNotify', () => ({
 }));
 vi.mock('./orders', () => ({ recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder }));
 
-import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder } from './purchaseOrder';
+// WT-27: buildSupplierPurchaseOrder mocks (mirrors purchaseOrderBuild.test.ts /
+// purchaseOrderPermanent.test.ts). listCatalog deliberately omits bistro SKUs so
+// the fix's BISTRO_CATALOG backfill is the only thing that can resolve their name.
+let currentDb: unknown = null;
+vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
+vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: {}, clipRules: {} })) }));
+vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => [{ sku: 'SKU-A', name: 'Holiday Widget' }]) }));
+vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []) }));
+
+import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder, buildSupplierPurchaseOrder } from './purchaseOrder';
+
+// A single active permanent-bistro job with a 40ft run — real bistroBomFromQuote
+// produces a Thunder-supplier cord line (sku 80324, qty 1) among others.
+const BISTRO_QUOTE_ID = 'BIS';
+function makeBistroDb() {
+  return {
+    from(table: string) {
+      const b = {
+        select: () => b,
+        is: () => b,
+        eq: () => b,
+        in: () => b,
+        then: (resolve: (v: unknown) => void) => {
+          if (table === 'jobs') {
+            return resolve({
+              data: [{ quote_id: BISTRO_QUOTE_ID, status: 'to_schedule', stock_decremented_at: null }],
+              error: null,
+            });
+          }
+          if (table === 'quotes') {
+            return resolve({
+              data: [
+                {
+                  id: BISTRO_QUOTE_ID,
+                  is_test: false,
+                  approval_snapshot: null,
+                  service_type: 'permanent_bistro',
+                  inputs: { permanentBistro: { bistro: [{ footage: 40 }], poles: 0 } },
+                },
+              ],
+              error: null,
+            });
+          }
+          return resolve({ data: [], error: null });
+        },
+      };
+      return b;
+    },
+  };
+}
+
+describe('buildSupplierPurchaseOrder — bistro Thunder SKU names (WT-27)', () => {
+  beforeEach(() => {
+    currentDb = makeBistroDb();
+  });
+
+  it('resolves the real product name for a pooled bistro Thunder SKU, not "(not in catalog)"', async () => {
+    const po = await buildSupplierPurchaseOrder();
+    const cordLine = po.lines.find((l) => l.sku === '80324');
+    expect(cordLine).toBeTruthy();
+    expect(cordLine!.name).toBe('E26 Bistro Cord 330ft, 24in spacing');
+    expect(cordLine!.name).not.toBe('(not in catalog)');
+  });
+});
 
 describe('purchaseOrderSignature (auto-send dedup)', () => {
   it('is stable regardless of line order', () => {

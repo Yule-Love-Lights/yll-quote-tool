@@ -298,6 +298,9 @@ export function orderEmailHtml(input: {
   installDate: string | null;
   materials: OrderEmailLine[];
   unbound: OrderEmailUnbound[];
+  // Test Quote (ledger #93) — when true, a loud banner up top so this can never
+  // be mistaken for a real order to forward/pull stock against.
+  isTest?: boolean;
 }): string {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
@@ -312,6 +315,11 @@ export function orderEmailHtml(input: {
     })
     .join('\n');
   const out = [
+    ...(input.isTest
+      ? [
+          `<p style="background:#fef3c7;color:#92400e;border:2px solid #b45309;border-radius:6px;padding:8px 12px;font-weight:bold;text-transform:uppercase;letter-spacing:0.04em;">TEST — do not pull real stock</p>`,
+        ]
+      : []),
     `<p>Materials order for <strong>Job #${input.jobNumber ?? '—'}</strong> — staff-only. Forward to the supplier or use to pull stock.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin-bottom:12px;">`,
     row('Customer', escapeHtml(input.customerName || '—')),
@@ -571,18 +579,27 @@ export function refundDueEmailHtml(input: {
   customerName: string | null;
   amountUsd: number;
   adminUrl: string;
+  // WT-17: true when the invoice was already paid IN FULL (deposit + balance
+  // both collected — e.g. a completed-then-cancelled order), so the refund
+  // owed is the whole order, not just the deposit. Defaults to the original
+  // deposit-only copy when omitted.
+  full?: boolean;
 }): string {
   const name = escapeHtml(input.customerName?.trim() || 'Unknown');
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  const collectedPhrase = input.full
+    ? 'the full order balance was already collected'
+    : 'a deposit was already charged';
+  const rowLabel = input.full ? 'Full order refund' : 'Deposit to refund';
   return [
-    `<p><strong>${name}</strong>'s booked order was cancelled after a deposit was already charged.</p>`,
+    `<p><strong>${name}</strong>'s booked order was cancelled after ${collectedPhrase}.</p>`,
     `<p><strong>Action needed:</strong> issue the refund (${usdExact(
       input.amountUsd,
     )}) manually in the Valor portal.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;">`,
     row('Customer', name),
-    row('Deposit to refund', usdExact(input.amountUsd)),
+    row(rowLabel, usdExact(input.amountUsd)),
     `</table>`,
     `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');

@@ -23,6 +23,7 @@ import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { BistroBomLine } from '@/lib/permanentBistro/bom';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
+import { BISTRO_CATALOG } from './bistroCatalog';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
@@ -186,6 +187,14 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   );
 
   const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
+  // #117 follow-up (WT-27): bistro's SKUs live in the STATIC bistro catalog (no
+  // inventory_catalog rows exist for them), so backfill their display names —
+  // mirrors jobs.ts's same backfill — before this map fed the real supplier PO
+  // email, every pooled bistro SKU fell to '(not in catalog)'. A DB row with the
+  // same SKU still wins (only set when not already present).
+  for (const item of BISTRO_CATALOG) {
+    if (!nameBySku.has(item.sku)) nameBySku.set(item.sku, item.name);
+  }
   return {
     lines: po.map((l) => ({ ...l, name: nameBySku.get(l.sku) ?? '(not in catalog)' })),
     jobCount: active.length,
