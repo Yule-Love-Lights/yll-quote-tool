@@ -247,6 +247,8 @@
       '.yll-lf--full .yll-lf-field--notes,.yll-lf--full .yll-lf-field--consent,',
       '.yll-lf--full .yll-lf-form>.yll-lf-formerror,.yll-lf--full .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
       '.yll-lf--full .yll-lf-form>.yll-lf-submit{justify-self:center;width:auto;padding-left:48px;padding-right:48px;}}',
+      // full-only: center the heading (sticky renders no heading; bar has none)
+      '.yll-lf--full .yll-lf-heading{text-align:center;}',
       // bar + sticky share the row/stack breakpoint; deltas kept separate
       '.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:column;}',
       // sticky-top: pinned just below the host page's own fixed header (JS
@@ -290,6 +292,12 @@
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
       '.yll-lf-sticky{max-height:none;}',
       '.yll-lf-sticky .yll-lf-form{padding-right:24px;}}',
+      // bar-only centering (heading removed; row/pills/submit centered on
+      // both mobile + desktop breakpoints) — additive only, sticky untouched
+      '.yll-lf--bar .yll-lf-input{text-align:center;}',
+      '.yll-lf--bar .yll-lf-pills{justify-content:center;}',
+      '.yll-lf--bar .yll-lf-submit{align-self:center;}',
+      '@media(min-width:760px){.yll-lf--bar .yll-lf-form{justify-content:center;}}',
     ].join('');
     var style = document.createElement('style');
     style.id = 'yll-lf-styles';
@@ -874,14 +882,10 @@
   // variant: bar
   function renderBar(container) {
     var pre = resolvePreselect(container);
-    var heading = h('h2', { class: 'yll-lf-heading' }, [
-      'Get A Fast Quote - ',
-      h('span', { class: 'yll-lf-accent' }, ['Takes Only 5 Seconds']),
-    ]);
     var built = buildForm({
       variant: 'bar',
       apiBase: resolveApiBase(container),
-      heading: heading,
+      heading: null, // no heading — the WP page already shows this copy in its own Elementor heading section right above the embed
       submitLabel: 'Get My Fast Quote',
       hideLabels: true,
       showAddress: true,
