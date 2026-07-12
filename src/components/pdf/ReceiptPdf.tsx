@@ -15,10 +15,26 @@ type Props = {
 };
 
 export function ReceiptPdf({ model, logo }: Props) {
+  const cancelled = model.status === 'cancelled';
+
   return (
     <Document title={`Yule Love Lights Receipt ${model.receiptNumber}`}>
       <Page size="LETTER" style={pdfStyles.page}>
-        <PdfHeader logo={logo} docTitle="Receipt" docNumber={`#${model.receiptNumber}`} />
+        <PdfHeader
+          logo={logo}
+          docTitle="Receipt"
+          docNumber={`#${model.receiptNumber}`}
+          statusLabel={cancelled ? 'CANCELLED' : null}
+        />
+
+        {/* #87(a) fix-batch MED #4 — a cancelled order's receipt must never
+            look like a valid record of a payable/current document. */}
+        {cancelled && (
+          <View style={pdfStyles.cancelledBanner}>
+            <Text style={pdfStyles.cancelledLabel}>This order was cancelled</Text>
+            <Text style={pdfStyles.cancelledText}>Reference only</Text>
+          </View>
+        )}
 
         <View style={pdfStyles.section}>
           <Text style={pdfStyles.sectionLabel}>Received from</Text>

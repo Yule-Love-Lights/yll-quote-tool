@@ -61,6 +61,23 @@ const BASE_PORTAL_QUOTE = {
   minimumOrderSubtotal: 1000,
 };
 
+// Fix-batch #87a HIGH #1 — the quote PDF is approved-only.
+const APPROVED_PORTAL_QUOTE = {
+  ...BASE_PORTAL_QUOTE,
+  approval: {
+    approvedAt: '2026-06-01T10:00:00Z',
+    packageId: 'C',
+    packageName: 'Full House',
+    totalUsd: 2000,
+    depositUsd: 1000,
+    selectedItemCount: 1,
+    selectedItemIds: ['tree-l'],
+    installTiming: 'none',
+    rushSelected: false,
+    takedownSelected: false,
+  },
+};
+
 const BASE_INVOICE_ROW = {
   id: 'inv-1',
   invoice_number: 1042,
@@ -96,7 +113,7 @@ const BASE_INVOICE_DETAIL = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  loadPortalQuoteMock.mockResolvedValue(BASE_PORTAL_QUOTE);
+  loadPortalQuoteMock.mockResolvedValue(APPROVED_PORTAL_QUOTE);
   getInvoiceByQuoteMock.mockResolvedValue(BASE_INVOICE_ROW);
   getInvoiceDetailMock.mockResolvedValue(BASE_INVOICE_DETAIL);
   getQuoteRawMock.mockResolvedValue({ deposit_paid_at: '2026-06-10T08:00:00Z' });
@@ -127,7 +144,19 @@ describe('GET /api/quotes/[id]/pdf', () => {
       expect(body.error).toMatch(/not found/i);
     });
 
-    it('renders a PDF and never touches the invoice tables', async () => {
+    // Fix-batch #87a HIGH #1 — approved-only. An unapproved quote has no
+    // persisted "current" selection; the old fallback rendered the WRONG
+    // package/total on verticals with no .recommended package.
+    it('404s cleanly when the quote has not been approved yet', async () => {
+      loadPortalQuoteMock.mockResolvedValueOnce(BASE_PORTAL_QUOTE); // no .approval
+      const res = await GET(makeReq(ID, 'quote'), ctx());
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toMatch(/available after approval/i);
+      expect(renderToBufferMock).not.toHaveBeenCalled();
+    });
+
+    it('renders a PDF and never touches the invoice tables (approved quote)', async () => {
       const res = await GET(makeReq(ID, 'quote'), ctx());
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toBe('application/pdf');
@@ -188,5 +217,15 @@ describe('GET /api/quotes/[id]/pdf', () => {
     loadPortalQuoteMock.mockRejectedValueOnce(new PortalConfigError('Supabase service role not configured'));
     const res = await GET(makeReq(ID, 'quote'), ctx());
     expect(res.status).toBe(503);
+  });
+
+  // Fix-batch #87a LOW #5 — the route's catch-all was never exercised (every
+  // other test stubs renderToBuffer to succeed).
+  it('returns a clean 500 (not an unhandled crash) when PDF rendering fails', async () => {
+    renderToBufferMock.mockRejectedValueOnce(new Error('renderToBuffer boom'));
+    const res = await GET(makeReq(ID, 'invoice'), ctx());
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe('renderToBuffer boom');
   });
 });

@@ -14,10 +14,27 @@ type Props = {
 };
 
 export function InvoicePdf({ model, logo }: Props) {
+  const cancelled = model.status === 'cancelled';
+
   return (
     <Document title={`Yule Love Lights Invoice ${model.invoiceNumber}`}>
       <Page size="LETTER" style={pdfStyles.page}>
-        <PdfHeader logo={logo} docTitle="Invoice" docNumber={`#${model.invoiceNumber}`} docDate={model.date} />
+        <PdfHeader
+          logo={logo}
+          docTitle="Invoice"
+          docNumber={`#${model.invoiceNumber}`}
+          docDate={model.date}
+          statusLabel={cancelled ? 'CANCELLED' : null}
+        />
+
+        {/* #87(a) fix-batch MED #4 — a cancelled invoice must never look
+            like a valid, payable document. */}
+        {cancelled && (
+          <View style={pdfStyles.cancelledBanner}>
+            <Text style={pdfStyles.cancelledLabel}>This order was cancelled</Text>
+            <Text style={pdfStyles.cancelledText}>Not payable</Text>
+          </View>
+        )}
 
         <View style={pdfStyles.section}>
           <Text style={pdfStyles.sectionLabel}>Billed to</Text>

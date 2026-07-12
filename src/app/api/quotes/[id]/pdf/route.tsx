@@ -12,7 +12,9 @@
 // recomputation). This route only resolves which source to load and hands
 // the resulting doc-model to a React-PDF component.
 //
-//   doc=quote   — always available once the quote loads (portal-availability).
+//   doc=quote   — 404 until the quote is APPROVED (fix-batch #87a HIGH #1):
+//                 an unapproved quote has no persisted "current" selection to
+//                 render, so there is nothing correct to generate.
 //   doc=invoice — 404 (clean JSON) until a job → invoice exists for this quote.
 //   doc=receipt — 404 until a payment has posted (deposit_applied > 0 or paid_at).
 
@@ -80,6 +82,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (doc === 'quote') {
       const portal = await loadPortalQuote(id);
       if (!portal) return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+      // Fix-batch #87a HIGH #1 — approved-only. buildQuoteDocModel throws for
+      // an unapproved quote; gate here first so that's never reached.
+      if (!portal.approval) {
+        return NextResponse.json({ error: 'Quote PDF is available after approval' }, { status: 404 });
+      }
       const model = buildQuoteDocModel(portal);
       const buffer = await renderToBuffer(<QuotePdf model={model} logo={logo} />);
       const ref = model.quoteNumber.replace(/^YLL-/, '');

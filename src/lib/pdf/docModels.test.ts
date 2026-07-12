@@ -42,17 +42,13 @@ const BASE_QUOTE: PortalQuote = {
 };
 
 describe('buildQuoteDocModel', () => {
-  it('unapproved quote: falls back to the recommended package, pulling its stored total/deposit verbatim', () => {
-    const model = buildQuoteDocModel(BASE_QUOTE, new Date('2026-07-12T12:00:00Z'));
-    expect(model.isApproved).toBe(false);
-    expect(model.packageName).toBe('Full House');
-    // Byte-match: no recomputation, straight from packages[1].total/.deposit.
-    expect(model.total).toBe('$3,389.06');
-    expect(model.depositDue).toBe('$1,694.53');
-    expect(model.lineItems.map((li) => li.label)).toEqual(["Santa's Roofline", 'Front-left tree', '24" Spritzers']);
-    expect(model.quoteNumber).toBe('YLL-A1B2C3D4');
-    expect(model.customerName).toBe('Jasmine Smith');
-    expect(model.customerAddress).toBe(BASE_QUOTE.customer.address);
+  // #87a fix-batch HIGH finding #1: the quote PDF is approved-only — before
+  // approval there's no persisted "current" selection to render, and the old
+  // unapproved fallback (first .recommended package) rendered the WRONG
+  // package/total on verticals (permanent/event) where no package is ever
+  // .recommended. buildQuoteDocModel must never guess.
+  it('throws when the quote has not been approved — must never render an unapproved guess', () => {
+    expect(() => buildQuoteDocModel(BASE_QUOTE)).toThrow(/not approved/i);
   });
 
   it('approved quote: uses the FROZEN approval snapshot figures, not the live packages', () => {
@@ -71,8 +67,7 @@ describe('buildQuoteDocModel', () => {
         takedownSelected: false,
       },
     };
-    const model = buildQuoteDocModel(approved, new Date('2026-07-12T12:00:00Z'));
-    expect(model.isApproved).toBe(true);
+    const model = buildQuoteDocModel(approved);
     expect(model.packageName).toBe('Classic Glow');
     expect(model.total).toBe('$1,254.62');
     expect(model.depositDue).toBe('$627.31');
@@ -80,16 +75,31 @@ describe('buildQuoteDocModel', () => {
     expect(model.lineItems.map((li) => li.label)).toEqual(["Santa's Roofline", '24" Spritzers']);
     // Approved quotes date the document with the approval timestamp.
     expect(model.date).toBe('Jun 1, 2026');
+    expect(model.quoteNumber).toBe('YLL-A1B2C3D4');
+    expect(model.customerName).toBe('Jasmine Smith');
+    expect(model.customerAddress).toBe(BASE_QUOTE.customer.address);
   });
 
-  it('unapproved quote with no recommended tier falls back to the first non-empty package', () => {
-    const noRec: PortalQuote = {
+  it('a divergent (Build Your Own / "D") approval restores the exact frozen item set even with no matching package', () => {
+    const divergent: PortalQuote = {
       ...BASE_QUOTE,
-      packages: BASE_QUOTE.packages.map((p) => ({ ...p, recommended: false })),
+      approval: {
+        approvedAt: '2026-06-01T10:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: 900,
+        depositUsd: 450,
+        selectedItemCount: 1,
+        selectedItemIds: ['roofline-santas'],
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
     };
-    const model = buildQuoteDocModel(noRec, new Date('2026-07-12T12:00:00Z'));
-    expect(model.packageName).toBe('Classic Glow');
-    expect(model.total).toBe('$1,254.62');
+    const model = buildQuoteDocModel(divergent);
+    expect(model.packageName).toBe('Build Your Own');
+    expect(model.total).toBe('$900');
+    expect(model.lineItems.map((li) => li.label)).toEqual(["Santa's Roofline"]);
   });
 });
 
@@ -134,50 +144,83 @@ function makeDetail(invoiceOverrides: Partial<InvoiceRow> = {}, detailOverrides:
   };
 }
 
+// Parse a formatted money string ("$4,320.00" / "−$2,160.00") back to a signed number.
+function parseMoney(s: string): number {
+  const negative = s.startsWith('−') || s.startsWith('-');
+  const n = Number(s.replace(/[−$,]/g, '').replace(/^-/, ''));
+  return negative ? -n : n;
+}
+
 describe('buildInvoiceDocModel', () => {
-  it('reproduces the exact stored totals, no recomputation of the headline figures', () => {
+  it('reproduces the exact stored headline totals, no recomputation', () => {
     const detail = makeDetail();
     const model = buildInvoiceDocModel(detail);
     expect(model.invoiceNumber).toBe('1042');
     expect(model.total).toBe('$4,893.75');
     expect(model.balanceDue).toBe('$2,446.87');
-    expect(model.lines).toEqual(
-      expect.arrayContaining([
-        { label: 'Subtotal', amount: '$5,000.00' },
-        { label: 'Discount', amount: '−$500.00' },
-        { label: 'Tax', amount: '$393.75' },
-        { label: 'Total', amount: '$4,893.75' },
-        { label: 'Deposit applied', amount: '−$2,446.88' },
-        { label: 'Balance due', amount: '$2,446.87' },
-      ]),
-    );
+    expect(model.lines).toEqual([
+      { label: 'Total', amount: '$4,893.75' },
+      { label: 'Deposit applied', amount: '−$2,446.88' },
+      { label: 'Balance due', amount: '$2,446.87' },
+    ]);
     expect(model.creditNote).toBeNull();
+    expect(model.status).toBe('awaiting_payment');
   });
 
-  it('shows the rush/takedown fees line using the same derivation as the admin invoice page', () => {
-    // subtotal 5000, discount 0, tax 429, total 5679 (250 in fees embedded:
-    // total = subtotal - discount + tax + fees)
-    const detail = makeDetail({ subtotal: 5000, discount: 0, tax: 429, total: 5679, deposit_applied: 2839.5, balance: 2839.5 });
+  // #87a fix-batch MED finding #2 — the HARD REQUIREMENT: printed money lines
+  // must reconcile. createInvoiceFromJob stores the FULL quote subtotal but
+  // the AGREED (possibly partial) total/tax; permanent per-side packages make
+  // a partial approval the DEFAULT, so this is not an edge case. Total −
+  // Deposit applied === Balance due always (computeInvoiceTotals clamps
+  // balance to max(0, total − deposit_applied) from already-cents-rounded
+  // figures), and no Subtotal/Discount/Fees line is printed to contradict it.
+  it('partial-approval invoice: money lines reconcile to the printed Total, with no Subtotal-exceeds-Total contradiction', () => {
+    const detail = makeDetail({
+      subtotal: 5000, // FULL quote subtotal — unscaled, would exceed the agreed total below
+      discount: 0,
+      tax: 320, // scaled to the agreed (partial) selection
+      total: 4320, // the AGREED total, well below the full-quote subtotal
+      deposit_applied: 2160,
+      balance: 2160,
+      credit_note: 0,
+    });
     const model = buildInvoiceDocModel(detail);
-    expect(model.lines).toContainEqual({ label: 'Rush / takedown fees', amount: '$250.00' });
+
+    // No Subtotal/Discount/Fees/Tax line — those don't reconcile on a partial approval.
+    expect(model.lines.map((l) => l.label)).toEqual(['Total', 'Deposit applied', 'Balance due']);
+
+    const total = parseMoney(model.total);
+    const depositLine = parseMoney(model.lines.find((l) => l.label === 'Deposit applied')!.amount);
+    const balanceLine = parseMoney(model.lines.find((l) => l.label === 'Balance due')!.amount);
+    // The reconciling identity: Total − Deposit applied === Balance due (exact).
+    expect(Math.round((total + depositLine) * 100) / 100).toBe(balanceLine);
+    // And the printed money lines (Total, −Deposit, +Balance) sum to the
+    // printed Total for this fixture (deposit === balance, a 50/50 split).
+    const sum = model.lines.reduce((acc, l) => acc + parseMoney(l.amount), 0);
+    expect(sum).toBe(4320);
+    expect(model.total).toBe('$4,320.00');
   });
 
-  it('surfaces a credit note when the deposit overpaid the (amended-down) total', () => {
+  it('surfaces a credit note line + field when the deposit overpaid the (amended-down) total', () => {
     const detail = makeDetail({ total: 1000, deposit_applied: 1200, balance: 0, credit_note: 200 });
     const model = buildInvoiceDocModel(detail);
     expect(model.creditNote).toBe('$200.00');
-  });
-
-  it('labels an overridden tax line', () => {
-    const detail = makeDetail({ tax_overridden: true, tax: 0 });
-    const model = buildInvoiceDocModel(detail);
-    expect(model.lines).toContainEqual({ label: 'Tax (overridden)', amount: '$0.00' });
+    expect(model.lines).toContainEqual({ label: 'Credit (overpaid — manual refund)', amount: '$200.00' });
   });
 
   it('falls back to a short id when invoice_number is null', () => {
     const detail = makeDetail({ invoice_number: null, id: 'abcdef12-3456' });
     const model = buildInvoiceDocModel(detail);
     expect(model.invoiceNumber).toBe('ABCDEF12');
+  });
+
+  // #87a fix-batch MED finding #4: a cancelled invoice must carry its status
+  // so the PDF can render a clear banner and never look like a valid/payable
+  // document.
+  it('threads status through so a cancelled invoice can never look valid', () => {
+    const detail = makeDetail({ status: 'cancelled' });
+    const model = buildInvoiceDocModel(detail);
+    expect(model.status).toBe('cancelled');
   });
 });
 
@@ -217,5 +260,30 @@ describe('buildReceiptDocModel', () => {
     const detail = makeDetail({ deposit_applied: 500 });
     const model = buildReceiptDocModel(detail, { deposit_paid_at: null });
     expect(model.depositPaid).toBeNull();
+  });
+
+  // #87a fix-batch MED finding #3: totalPaid must be the SUM of the actual
+  // collected pieces (deposit + balance), never `status==='paid' ? total : …`.
+  // An amend-down that auto-promotes an invoice to 'paid' with deposit_applied
+  // already ≥ the reduced total means the customer only ever paid the deposit
+  // — totalPaid must equal deposit_applied, NOT the (smaller) total.
+  it('amend-down-to-paid: deposit_applied exceeds the reduced total — totalPaid equals deposit_applied, not total', () => {
+    const detail = makeDetail({
+      status: 'paid',
+      deposit_applied: 1200,
+      total: 1000, // amended down after the deposit was collected
+      balance: 0,
+      credit_note: 200,
+      paid_at: '2026-07-01T09:00:00Z',
+    });
+    const model = buildReceiptDocModel(detail, { deposit_paid_at: '2026-06-01T00:00:00Z' });
+    expect(model.balancePaid).toBeNull(); // no balance was ever collected
+    expect(model.totalPaid).toBe('$1,200.00'); // the deposit, not the (smaller) total
+  });
+
+  it('threads status through so a cancelled receipt can never look valid', () => {
+    const detail = makeDetail({ status: 'cancelled' });
+    const model = buildReceiptDocModel(detail, { deposit_paid_at: null });
+    expect(model.status).toBe('cancelled');
   });
 });

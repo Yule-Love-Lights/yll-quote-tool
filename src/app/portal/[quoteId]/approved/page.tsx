@@ -326,31 +326,39 @@ export default async function PortalApprovedPage({
             </Link>
           </div>
 
-          {/* #87(a) — PDF downloads. Invoice/receipt only once available. */}
-          {(invoicePdfAvailable || receiptPdfAvailable) && (
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
-              {invoicePdfAvailable && (
-                <a
-                  href={`/api/quotes/${quoteId}/pdf?doc=invoice`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
-                >
-                  Download invoice PDF ↓
-                </a>
-              )}
-              {receiptPdfAvailable && (
-                <a
-                  href={`/api/quotes/${quoteId}/pdf?doc=receipt`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
-                >
-                  Download receipt PDF ↓
-                </a>
-              )}
-            </div>
-          )}
+          {/* #87(a) fix-batch HIGH #1 — the quote PDF is approved-only, so it
+              only ever belongs on this (already-approved) page, never the
+              pre-approval portal. Invoice/receipt only once available. */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+            <a
+              href={`/api/quotes/${quoteId}/pdf?doc=quote`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+            >
+              Download quote PDF ↓
+            </a>
+            {invoicePdfAvailable && (
+              <a
+                href={`/api/quotes/${quoteId}/pdf?doc=invoice`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+              >
+                Download invoice PDF ↓
+              </a>
+            )}
+            {receiptPdfAvailable && (
+              <a
+                href={`/api/quotes/${quoteId}/pdf?doc=receipt`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+              >
+                Download receipt PDF ↓
+              </a>
+            )}
+          </div>
         </div>
       </section>
 

@@ -9,6 +9,7 @@ import { StyleSheet } from '@react-pdf/renderer';
 
 export const BRAND_GREEN = '#1f6f43';
 export const BRAND_AMBER = '#c8860a';
+export const BRAND_RED = '#b91c1c';
 export const TEXT_DARK = '#1a1a1a';
 export const TEXT_GRAY = '#6b7280';
 export const BORDER_GRAY = '#e5e7eb';
@@ -119,6 +120,18 @@ export const pdfStyles = StyleSheet.create({
   paidLabel: { fontSize: 9, color: BRAND_GREEN, textTransform: 'uppercase', letterSpacing: 0.5 },
   paidAmount: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: BRAND_GREEN, marginTop: 2 },
   paidDate: { fontSize: 9, color: TEXT_GRAY, marginTop: 2 },
+  // #87(a) fix-batch MED #4 — a cancelled invoice/receipt must never look
+  // like a valid, payable document.
+  cancelledBanner: {
+    marginBottom: 18,
+    padding: 12,
+    backgroundColor: '#fef2f2',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  cancelledLabel: { fontSize: 9, color: BRAND_RED, textTransform: 'uppercase', letterSpacing: 0.5 },
+  cancelledText: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: BRAND_RED, marginTop: 2 },
   footer: {
     position: 'absolute',
     bottom: 24,

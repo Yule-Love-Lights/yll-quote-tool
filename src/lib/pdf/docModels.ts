@@ -15,6 +15,7 @@
 import { formatUsd, formatQuoteRef } from '@/components/portal/format';
 import type { PortalQuote } from '@/components/portal/types';
 import type { InvoiceDetail } from '@/lib/invoices';
+import type { InvoiceStatus } from '@/lib/invoiceStatus';
 
 function formatDate(d: Date): string {
   return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(d);
@@ -34,33 +35,33 @@ export type QuoteDocModel = {
   lineItems: PdfLineItem[];
   total: string;
   depositDue: string;
-  isApproved: boolean;
 };
 
 /**
  * Build the customer Quote PDF's doc model.
  *
- * An APPROVED quote has a single frozen figure (quote.approval) — the exact
- * package/total/deposit/selection the customer signed — and that wins.
- *
- * A quote the customer hasn't approved yet has no persisted "current"
- * total: their live package pick on the portal is client-side session state
- * that's never written back until Approve. So an unapproved quote's PDF
- * mirrors what the portal itself opens on by default: the staff "Our
- * Recommendation" pick (packages[].recommended), falling back to the first
- * non-empty tier. Either way every dollar figure below (PortalPackage.total/
- * .deposit, or PortalApproval.totalUsd/.depositUsd) is read straight off
- * PortalQuote — nothing here is recomputed.
+ * APPROVED-ONLY (adversarial review #87a fix-batch, HIGH finding #1): before
+ * approval the customer's live package pick is client-side session state
+ * that's never written back to the DB, so there is no persisted "current"
+ * total to read — the old unapproved fallback (first .recommended package,
+ * else first non-empty tier) guessed a package/total that's flat-out WRONG
+ * on permanent/event quotes, where no package is ever .recommended. An
+ * approved quote has a single frozen figure (quote.approval) — the exact
+ * package/total/deposit/selection the customer signed — and that's the ONLY
+ * source this function will ever render from. Throws if the quote isn't
+ * approved; the route (src/app/api/quotes/[id]/pdf/route.tsx) already gates
+ * on `quote.approval` before calling this, so the throw is a defense-in-depth
+ * backstop, not a normal-path outcome — it can never emit a wrong document.
  */
-export function buildQuoteDocModel(quote: PortalQuote, now: Date = new Date()): QuoteDocModel {
+export function buildQuoteDocModel(quote: PortalQuote): QuoteDocModel {
   const approval = quote.approval;
-  const fallbackPackage =
-    quote.packages.find((p) => p.recommended) ??
-    quote.packages.find((p) => p.includedItemIds.length > 0);
-  const selectedPackage = approval ? quote.packages.find((p) => p.id === approval.packageId) : fallbackPackage;
+  if (!approval) {
+    throw new Error('buildQuoteDocModel: quote is not approved — the Quote PDF is approved-only');
+  }
 
+  const selectedPackage = quote.packages.find((p) => p.id === approval.packageId);
   const includedIds =
-    approval && approval.selectedItemIds.length > 0
+    approval.selectedItemIds.length > 0
       ? new Set(approval.selectedItemIds)
       : selectedPackage
         ? new Set(selectedPackage.includedItemIds)
@@ -70,19 +71,15 @@ export function buildQuoteDocModel(quote: PortalQuote, now: Date = new Date()): 
     (li) => ({ label: li.label, detail: li.detail, amount: formatUsd(li.price) }),
   );
 
-  const total = approval ? approval.totalUsd : (selectedPackage?.total ?? 0);
-  const depositDue = approval ? approval.depositUsd : (selectedPackage?.deposit ?? 0);
-
   return {
     quoteNumber: formatQuoteRef(quote.id),
-    date: formatDate(approval?.approvedAt ? new Date(approval.approvedAt) : now),
+    date: formatDate(new Date(approval.approvedAt)),
     customerName: quote.customer.fullName,
     customerAddress: quote.customer.address,
-    packageName: approval?.packageName ?? selectedPackage?.name ?? 'Custom',
+    packageName: approval.packageName,
     lineItems: items,
-    total: formatUsd(total),
-    depositDue: formatUsd(depositDue),
-    isApproved: !!approval,
+    total: formatUsd(approval.totalUsd),
+    depositDue: formatUsd(approval.depositUsd),
   };
 }
 
@@ -98,25 +95,40 @@ export type InvoiceDocModel = {
   total: string;
   balanceDue: string;
   creditNote: string | null;
+  status: InvoiceStatus;
 };
 
-/** Build the customer/operator Invoice PDF's doc model from getInvoiceDetail. */
+/**
+ * Build the customer/operator Invoice PDF's doc model from getInvoiceDetail.
+ *
+ * Fix-batch #87a MED finding #2: createInvoiceFromJob (src/lib/invoices.ts)
+ * stores the FULL quote subtotal/discount/fees alongside the AGREED
+ * (possibly partial) total/tax — on a partial approval (the DEFAULT for
+ * permanent per-side packages) `total` is scaled down but `subtotal` isn't,
+ * so a Subtotal/Discount/Fees/Tax itemization built from those columns
+ * doesn't reconcile: the old "Rush/takedown fees" reconstruction
+ * (total − (subtotal − discount + tax)) goes negative and gets silently
+ * dropped, leaving a printed Subtotal that exceeds the printed Total with no
+ * line explaining the gap. Don't print that itemization at all. Total,
+ * Deposit applied, and Balance due always reconcile exactly — balance is
+ * defined as round(max(0, total − deposit_applied)) from already-cents-
+ * rounded figures (computeInvoiceTotals), so total − deposit_applied ===
+ * balance to the cent, no rounding surprises — so those three (plus a
+ * credit-note line for the rare overpayment case) are the only money lines
+ * printed.
+ */
 export function buildInvoiceDocModel(detail: InvoiceDetail): InvoiceDocModel {
   const inv = detail.invoice;
   const money = (n: number) => formatUsd(n, { fraction: true });
 
-  const lines: PdfMoneyLine[] = [{ label: 'Subtotal', amount: money(inv.subtotal) }];
-  if (inv.discount > 0) lines.push({ label: 'Discount', amount: `−${money(inv.discount)}` });
-  // Rush/takedown fees aren't a stored column on the invoice — reconstructed
-  // with the SAME formula the operator invoice page already displays
-  // (src/app/admin/invoices/[id]/page.tsx:244: total − (subtotal − discount +
-  // tax)). Not new money math, just the existing display derivation reused.
-  const fees = Math.round((inv.total - (inv.subtotal - inv.discount + inv.tax)) * 100) / 100;
-  if (fees > 0) lines.push({ label: 'Rush / takedown fees', amount: money(fees) });
-  lines.push({ label: inv.tax_overridden ? 'Tax (overridden)' : 'Tax', amount: money(inv.tax) });
-  lines.push({ label: 'Total', amount: money(inv.total) });
-  lines.push({ label: 'Deposit applied', amount: `−${money(inv.deposit_applied)}` });
-  lines.push({ label: 'Balance due', amount: money(inv.balance) });
+  const lines: PdfMoneyLine[] = [
+    { label: 'Total', amount: money(inv.total) },
+    { label: 'Deposit applied', amount: `−${money(inv.deposit_applied)}` },
+    { label: 'Balance due', amount: money(inv.balance) },
+  ];
+  if (inv.credit_note > 0) {
+    lines.push({ label: 'Credit (overpaid — manual refund)', amount: money(inv.credit_note) });
+  }
 
   return {
     invoiceNumber: inv.invoice_number != null ? String(inv.invoice_number) : inv.id.slice(0, 8).toUpperCase(),
@@ -128,6 +140,7 @@ export function buildInvoiceDocModel(detail: InvoiceDetail): InvoiceDocModel {
     total: money(inv.total),
     balanceDue: money(inv.balance),
     creditNote: inv.credit_note > 0 ? money(inv.credit_note) : null,
+    status: inv.status,
   };
 }
 
@@ -141,6 +154,7 @@ export type ReceiptDocModel = {
   balancePaid: { amount: string; date: string } | null;
   totalPaid: string;
   valorReceiptUrl: string | null;
+  status: InvoiceStatus;
 };
 
 /**
@@ -172,11 +186,15 @@ export function buildReceiptDocModel(
       ? { amount: money(balanceAmount), date: formatDate(new Date(inv.paid_at)) }
       : null;
 
-  // This system never accepts a partial balance payment (the balance is
-  // collected in one shot — a Valor charge or an operator mark-paid), so a
-  // paid invoice's total collected is the full total; short of that, only
-  // the deposit has moved.
-  const totalPaid = inv.status === 'paid' ? inv.total : inv.deposit_applied;
+  // Fix-batch #87a MED finding #3: totalPaid must be the SUM of the actual
+  // collected pieces above, never a status-derived shortcut. The old
+  // `status === 'paid' ? total : deposit_applied` over/under-stated whenever
+  // an amend-down auto-promotes an invoice to 'paid' with no balance ever
+  // collected (deposit_applied ≥ the reduced total — the customer only ever
+  // paid the deposit). depositPaid/balancePaid above are already the exact
+  // collected pieces; balancePaid contributes 0 when null.
+  const totalPaid =
+    Math.round(((depositPaid ? inv.deposit_applied : 0) + (balancePaid ? balanceAmount : 0)) * 100) / 100;
 
   return {
     receiptNumber: inv.invoice_number != null ? String(inv.invoice_number) : inv.id.slice(0, 8).toUpperCase(),
@@ -186,5 +204,6 @@ export function buildReceiptDocModel(
     balancePaid,
     totalPaid: money(totalPaid),
     valorReceiptUrl: inv.valor_receipt_url ?? null,
+    status: inv.status,
   };
 }

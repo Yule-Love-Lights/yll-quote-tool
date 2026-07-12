@@ -122,15 +122,20 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </span>
           )}
           <div className="ml-auto flex items-center gap-3">
-            {/* #87(a) — the branded customer Quote PDF, generated on-demand. */}
-            <Link
-              href={`/api/quotes/${id}/pdf?doc=quote`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-blue-700 hover:underline"
-            >
-              Download PDF ↓
-            </Link>
+            {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
+                unapproved quote has no persisted "current" selection to
+                render), so only offer the link once the quote has actually
+                been approved. */}
+            {(status === 'approved' || status === 'booked') && (
+              <Link
+                href={`/api/quotes/${id}/pdf?doc=quote`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Download PDF ↓
+              </Link>
+            )}
             <Link
               href={`/portal/${id}`}
               target="_blank"

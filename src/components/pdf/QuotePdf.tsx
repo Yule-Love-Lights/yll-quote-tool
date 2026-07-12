@@ -17,12 +17,7 @@ export function QuotePdf({ model, logo }: Props) {
   return (
     <Document title={`Yule Love Lights Quote ${model.quoteNumber}`}>
       <Page size="LETTER" style={pdfStyles.page}>
-        <PdfHeader
-          logo={logo}
-          docTitle={model.isApproved ? 'Quote (Approved)' : 'Quote'}
-          docNumber={model.quoteNumber}
-          docDate={model.date}
-        />
+        <PdfHeader logo={logo} docTitle="Quote (Approved)" docNumber={model.quoteNumber} docDate={model.date} />
 
         <View style={pdfStyles.section}>
           <Text style={pdfStyles.sectionLabel}>Prepared for</Text>
@@ -64,7 +59,7 @@ export function QuotePdf({ model, logo }: Props) {
         </View>
 
         <View style={pdfStyles.depositBanner}>
-          <Text style={pdfStyles.depositLabel}>{model.isApproved ? 'Deposit paid at approval' : 'Deposit due to book'}</Text>
+          <Text style={pdfStyles.depositLabel}>Deposit paid at approval</Text>
           <Text style={pdfStyles.depositAmount}>{model.depositDue}</Text>
         </View>
 
