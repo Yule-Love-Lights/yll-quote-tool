@@ -475,6 +475,20 @@ export default async function PortalPage({
           phone={team.phone}
         />
 
+        {/* 11.5 #87(a) — download a branded PDF copy of this quote. */}
+        <section aria-label="Download quote" className="w-full bg-[#060B0F]">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pb-10 text-center">
+            <a
+              href={`/api/quotes/${quoteId}/pdf?doc=quote`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 font-display text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F] rounded-sm"
+            >
+              Download this quote as a PDF ↓
+            </a>
+          </div>
+        </section>
+
         {/* 12. Disclaimer */}
         <Disclaimer />
 

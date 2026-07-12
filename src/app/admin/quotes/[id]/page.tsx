@@ -121,14 +121,25 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Test
             </span>
           )}
-          <Link
-            href={`/portal/${id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-auto text-sm text-blue-700 hover:underline"
-          >
-            Portal ↗
-          </Link>
+          <div className="ml-auto flex items-center gap-3">
+            {/* #87(a) — the branded customer Quote PDF, generated on-demand. */}
+            <Link
+              href={`/api/quotes/${id}/pdf?doc=quote`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Download PDF ↓
+            </Link>
+            <Link
+              href={`/portal/${id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Portal ↗
+            </Link>
+          </div>
         </div>
 
         {/* Customer */}
