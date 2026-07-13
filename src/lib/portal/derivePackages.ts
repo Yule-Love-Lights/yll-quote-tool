@@ -11,7 +11,7 @@
 //                            the Gingerbread roofline (front + ridge + sides).
 //   C "The Full Yule"      → everything, on the Gingerbread roofline (never
 //                            Santa's, never both — they're mutually exclusive).
-//   D "Our Recommendation" → the staff-recommended items (#12) + recommended
+//   D "Recommended Design" → the staff-recommended items (#12) + recommended
 //                            roofline; populated by applyOurRecommendation once
 //                            the recommended flags are attached (loader). Falls
 //                            back to an empty "Build Your Own" when staff
@@ -79,10 +79,21 @@ function effectiveTaxRate(_result: QuoteResult): number {
 // install never carries a rush/takedown fee (it goes up once, no seasonal
 // takedown), so `permanentBistroRatesSnapshot`'s presence zeroes the amounts
 // here too.
+//
+// Permanent Lighting (#88): same fix, same reasoning — a permanent install
+// never carries a rush/takedown fee either (derivePackagesPermanent already
+// forces both toggles off for the package-card totals), but the LIVE portal
+// (SelectionContext) prices from the customer's own toggle state, so without
+// this the `.amount` fields would stay nonzero and a UI regression could let
+// a stray/forged toggle bill a phantom $150 rush/takedown on a permanent
+// portal the server never charges. Zero the amounts here too (defense in
+// depth), detected via `permanentRatesSnapshot`'s presence (frozen on the
+// result only for permanent quotes — see QuoteResult).
 export function chargesFromResult(result: QuoteResult): PortalCharges {
   const isEvent = !!result.eventRatesSnapshot;
   const isPermanentBistro = !!result.permanentBistroRatesSnapshot;
-  const noHolidayFees = isEvent || isPermanentBistro;
+  const isPermanent = !!result.permanentRatesSnapshot;
+  const noHolidayFees = isEvent || isPermanentBistro || isPermanent;
   return {
     taxRate: effectiveTaxRate(result),
     rush: {
@@ -304,17 +315,6 @@ export function derivePackages(
   const b = totalsFor(idsForTierB, lineItems, charges);
   const c = totalsFor(idsForTierC, lineItems, charges);
 
-  // Tier 3 "à la carte" reference — what the bundle WOULD cost individually.
-  // Bug fix (audit W4-034): this must be priced through the SAME priceSelection
-  // pipeline (fees + tax) as the bundle `total` above — comparing the raw
-  // pre-tax/pre-fee item subtotal against the tax-inclusive bundle total mixed
-  // two different bases and could show a wrong (or negative) "you save $X".
-  // Same as the bundle until bundle discounts land (then the portal shows "you
-  // save $X" when aLaCarteTotal > total).
-  const tierCPrice = new Map(lineItems.map((li) => [li.id, li.price]));
-  const tierCSubtotal = idsForTierC.reduce((s, id) => s + (tierCPrice.get(id) ?? 0), 0);
-  const aLaCarteTotal = tierCSubtotal > 0 ? priceSelection(tierCSubtotal, charges).total : undefined;
-
   // Tier 2 only exists when there's a distinct Gingerbread roofline to upgrade
   // to. On a Santa's-only (or roofline-less) quote it would byte-duplicate Tier 1
   // while its name promises a Gingerbread upgrade — so we omit it and the portal
@@ -325,7 +325,6 @@ export function derivePackages(
   const tierA: PortalPackage = {
     id: 'A',
     name: 'Classic Glow',
-    tagline: "Santa's roofline + the essentials. Clean, simple, elegant.",
     total: a.total,
     deposit: a.deposit,
     includedItemIds: idsForTierA,
@@ -333,16 +332,13 @@ export function derivePackages(
   const tierC: PortalPackage = {
     id: 'C',
     name: 'The Full Yule',
-    tagline: 'Everything — Gingerbread roofline, trees, wreaths, garland and more.',
     total: c.total,
     deposit: c.deposit,
     includedItemIds: idsForTierC,
-    aLaCarteTotal,
   };
   const tierD: PortalPackage = {
     id: 'D',
     name: 'Build Your Own',
-    tagline: 'Custom — toggle anything.',
     total: 0, // populated by applyOurRecommendation when staff recommended items
     deposit: 0,
     includedItemIds: [],
@@ -355,7 +351,6 @@ export function derivePackages(
     {
       id: 'B',
       name: 'Full Festive',
-      tagline: 'Gingerbread roofline + the essentials. The fuller look.',
       total: b.total,
       deposit: b.deposit,
       includedItemIds: idsForTierB,
@@ -365,7 +360,7 @@ export function derivePackages(
   ];
 }
 
-// Populate the 4th "Our Recommendation" (D) card from the staff-recommended line
+// Populate the 4th "Recommended Design" (D) card from the staff-recommended line
 // items (#12). Runs in the loader AFTER attachSceneLinks, because design-driven
 // `recommended` flags are only attached there; it also picks up custom-item
 // recommendations the adapter sets. When nothing is recommended, D stays the
@@ -392,8 +387,7 @@ export function applyOurRecommendation(
     p.id === 'D'
       ? {
           ...p,
-          name: 'Our Recommendation',
-          tagline: 'Hand-picked by our team for your home.',
+          name: 'Recommended Design',
           total,
           deposit,
           includedItemIds: ids,
@@ -405,7 +399,7 @@ export function applyOurRecommendation(
 
 // Pick a sensible initial package for the portal's DEFAULT (fallback) selection,
 // used only when staff recommended nothing (otherwise the portal opens on the
-// "Our Recommendation" set — see applyOurRecommendation + the portal page).
+// "Recommended Design" set — see applyOurRecommendation + the portal page).
 //
 // Preference order is Tier 1 → Tier 2 → Tier 3 (A → B → C), skipping empty
 // packages, so a no-recommendation quote defaults to Classic Glow (Jason S12).

@@ -43,7 +43,7 @@ const ROOFLINE_GROUP: PortalRoofline = {
 };
 
 function pkg(id: PortalPackage['id'], includedItemIds: string[], total: number): PortalPackage {
-  return { id, name: id, tagline: '', total, deposit: total / 2, includedItemIds };
+  return { id, name: id, total, deposit: total / 2, includedItemIds };
 }
 
 describe('pickInitialPackageId — fallback default clears the $1,000 minimum (#12)', () => {
@@ -164,34 +164,7 @@ describe('derivePackages — tier composition (Jason S12)', () => {
   });
 });
 
-describe('derivePackages — Package C aLaCarteTotal basis (audit W4-034)', () => {
-  it('aLaCarteTotal is on the SAME tax-inclusive basis as Package C total (no phantom savings)', () => {
-    // A quote with a real rush fee + non-zero tax so pre-tax vs tax-inclusive
-    // actually differ — this is the exact condition that exposed the bug (a
-    // pre-tax aLaCarteTotal compared against a tax+fee-inclusive total).
-    const result = resultWith({ rushFeeAmount: 150 });
-    const lineItems = [
-      li('roofline-santas', 'roofline', 600),
-      li('roofline-gingerbread', 'ridge', 900),
-      li('spritzer-0', 'spritzer', 150),
-      li('wreath-0', 'wreath', 300),
-    ];
-    const packageC = derivePackages(lineItems, result, ROOFLINE_GROUP).find((p) => p.id === 'C')!;
-    // No bundle-discount feature exists yet, so today the honest "à la carte"
-    // reference is identical to the bundle total — savings should be exactly 0,
-    // not a phantom positive (or negative) number from mismatched bases.
-    expect(packageC.aLaCarteTotal).toBe(packageC.total);
-  });
-
-  it('aLaCarteTotal is undefined for an empty Package C (no phantom $0 vs. $0 "savings")', () => {
-    const result = resultWith({});
-    const lineItems: PortalLineItem[] = [];
-    const packageC = derivePackages(lineItems, result, ROOFLINE_GROUP).find((p) => p.id === 'C')!;
-    expect(packageC.aLaCarteTotal).toBeUndefined();
-  });
-});
-
-describe('applyOurRecommendation — the "Our Recommendation" (D) card (#12, Jason S12)', () => {
+describe('applyOurRecommendation — the "Recommended Design" (D) card (#12, Jason S12)', () => {
   const charges: PortalCharges = {
     taxRate: 0, // keep the math simple — total === subtotal
     rush: { amount: 150, defaultOn: false },
@@ -211,7 +184,7 @@ describe('applyOurRecommendation — the "Our Recommendation" (D) card (#12, Jas
       li('bush-0', 'bush', 100),
     ];
     const D = applyOurRecommendation(basePackages, lineItems, ROOFLINE_GROUP, charges).find((p) => p.id === 'D')!;
-    expect(D.name).toBe('Our Recommendation');
+    expect(D.name).toBe('Recommended Design');
     expect(D.recommended).toBe(true);
     expect(new Set(D.includedItemIds)).toEqual(new Set(['wreath-0', 'roofline-santas']));
     expect(D.total).toBe(900); // 300 + 600, taxRate 0
@@ -452,6 +425,38 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
         taxableAmount: 100,
         taxAmount: 8.63,
         permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 0 },
+      }),
+    );
+    expect(charges.rush.amount).toBe(0);
+    expect(charges.takedown.amount).toBe(0);
+    // Toggling "on" a zero-amount fee still adds nothing.
+    expect(effectiveCharges(charges, true, true)).toEqual({
+      rushFee: 0,
+      takedown: 0,
+      taxRate: charges.taxRate,
+      discountRate: 0,
+      discountFlat: 0,
+    });
+  });
+
+  // Permanent Lighting (WT-06 defense-in-depth): mirrors the bistro/event
+  // zeroing above — a permanent install never carries a rush/takedown fee, so
+  // a stray/forged toggle on the live portal must still price to $0 (the gap
+  // this closes: `noHolidayFees` previously omitted plain permanent).
+  it('zeroes rush/takedown amounts for a permanent result (defense in depth)', () => {
+    const charges = chargesFromResult(
+      resultWith({
+        rushFeeAmount: 0,
+        takedownAmount: 0,
+        taxableAmount: 100,
+        taxAmount: 8.63,
+        permanentRatesSnapshot: {
+          frontPerFt: 40,
+          sidesPerFt: 35,
+          backPerFt: 35,
+          minimumJobAmount: 2500,
+          maintenancePrice: 0,
+        },
       }),
     );
     expect(charges.rush.amount).toBe(0);

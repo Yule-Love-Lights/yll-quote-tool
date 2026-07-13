@@ -55,7 +55,6 @@ export const MOCK_QUOTE: PortalQuote = {
     {
       id: 'A',
       name: 'Classic Glow',
-      tagline: "Santa's roofline + spritzers. Clean, simple, elegant.",
       total: 1254.62, // (900 + 255) * 1.08625
       deposit: 627.31,
       includedItemIds: ['roofline-santas', 'spritzers'],
@@ -63,7 +62,6 @@ export const MOCK_QUOTE: PortalQuote = {
     {
       id: 'B',
       name: 'Full Festive',
-      tagline: 'Gingerbread roofline + spritzers. The fuller look.',
       total: 1841.19, // (1440 + 255) * 1.08625
       deposit: 920.6,
       includedItemIds: ['roofline-gingerbread', 'spritzers'],
@@ -71,10 +69,8 @@ export const MOCK_QUOTE: PortalQuote = {
     {
       id: 'C',
       name: 'The Full Yule',
-      tagline: 'Everything — Gingerbread roofline, trees, wreaths, garland and more.',
       total: 3139.26, // 2890 * 1.08625, rounded to cents
       deposit: 1569.63,
-      aLaCarteTotal: 2890,
       includedItemIds: [
         'roofline-gingerbread',
         'tree-l',
@@ -89,7 +85,6 @@ export const MOCK_QUOTE: PortalQuote = {
     {
       id: 'D',
       name: 'Build Your Own',
-      tagline: 'Custom — toggle anything.',
       total: 0, // populated by applyOurRecommendation when staff recommend items
       deposit: 0,
       includedItemIds: [],

@@ -200,7 +200,7 @@ describe('loadPortalQuote — W4-016 parallel design lookup', () => {
 // #117 review HIGH — applyOurRecommendation must be HOLIDAY-ONLY (positive
 // gate). Permanent, event, and permanent bistro all repurpose package 'D' as a
 // real bundle; a staff-recommended custom line item must never collapse that
-// bundle into an "Our Recommendation" card that drops the core product.
+// bundle into a "Recommended Design" card that drops the core product.
 describe('loadPortalQuote — applyOurRecommendation gate (#117)', () => {
   it('permanent_bistro: a recommended custom item does NOT clobber the single bistro package', async () => {
     const { calculatePermanentBistro } = await import('@/lib/permanentBistro/pricing');
@@ -235,7 +235,7 @@ describe('loadPortalQuote — applyOurRecommendation gate (#117)', () => {
     expect(portal).not.toBeNull();
     const d = portal!.packages.find((p) => p.id === 'D');
     expect(d).toBeDefined();
-    expect(d!.name).toBe('Our Recommendation');
+    expect(d!.name).toBe('Recommended Design');
     expect(d!.includedItemIds).toContain(
       portal!.lineItems.find((li) => li.label.includes('Extra swag'))!.id,
     );

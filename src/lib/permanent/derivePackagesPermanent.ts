@@ -69,7 +69,6 @@ export function derivePackagesPermanent(
     packages.push({
       id: 'A',
       name: 'Front of Home',
-      tagline: 'The front of your home.',
       total: p.total,
       deposit: p.deposit,
       includedItemIds: [FRONT_ID],
@@ -85,7 +84,6 @@ export function derivePackagesPermanent(
     packages.push({
       id: 'B',
       name: hasFront ? 'Front & Sides' : 'Both Sides',
-      tagline: hasFront ? 'The front plus both sides.' : 'Left + right sides.',
       total: p.total,
       deposit: p.deposit,
       includedItemIds: bIds,
@@ -97,7 +95,6 @@ export function derivePackagesPermanent(
     packages.push({
       id: 'C',
       name: 'Back of Home',
-      tagline: 'The back of your home.',
       total: p.total,
       deposit: p.deposit,
       includedItemIds: [BACK_ID],
@@ -125,7 +122,6 @@ export function derivePackagesPermanent(
     packages.push({
       id: 'D',
       name: 'Whole Home',
-      tagline: 'Every side we can light.',
       total: p.total,
       deposit: p.deposit,
       includedItemIds: wholeHomeIds,
