@@ -11,6 +11,7 @@
 // Dark portal theme, mobile-first, 44px tap targets, 16px+ inputs.
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useModalFocus } from '../useModalFocus';
 import type { ServiceType } from '@/lib/serviceType';
 import { track } from '@/lib/analytics/posthog';
@@ -107,6 +108,7 @@ const MAX = 2000;
 
 export function QuoteResponseModal({ quoteId, intent, onClose, serviceType }: Props) {
   const copy = COPY[intent];
+  const router = useRouter();
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
@@ -157,6 +159,16 @@ export function QuoteResponseModal({ quoteId, intent, onClose, serviceType }: Pr
           has_text: trimmed.length > 0,
         });
       }
+      // Bug fix (PS-D2): the quote's live status just moved server-side
+      // (declined / changes_requested), but this modal sits on top of the
+      // server-rendered portal page, which won't re-derive on its own. Without
+      // this, the sticky Approve/Decline bar behind the modal stays fully
+      // interactive after the customer closes this confirmation, feeding the
+      // PS-D1 409 dead-end. router.refresh() re-runs the page's server
+      // component so it re-reads quoteStatus and swaps to its own non-
+      // actionable "no longer available" / "being updated" state (mirrors the
+      // page's existing dead-approval gate).
+      router.refresh();
     } catch (err) {
       // Friendly-error convention (audit fix g10): never surface raw internals.
       console.error(`${copy.endpoint} failed`, err);
