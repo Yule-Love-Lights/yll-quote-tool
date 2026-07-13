@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { OperatorArea } from '@/components/OperatorShell';
 
 type NavItem = { label: string; href: string; match: OperatorArea[] };
@@ -24,12 +25,28 @@ const ITEMS: NavItem[] = [
 
 export function OperatorNav({ active }: { active: OperatorArea }) {
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
 
   const linkStyle = (item: NavItem) =>
     isActive(item)
       ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
       : { color: 'var(--op-text-2)' };
+
+  // WT-60: there was no logout control anywhere in the operator UI — once
+  // AUTH_GATE_ENABLED flips on, an operator could never end their session
+  // from the UI. POST the existing /api/auth/logout then bounce to /login.
+  const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      router.push('/login');
+      router.refresh();
+    }
+  };
 
   return (
     <nav
@@ -57,6 +74,17 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              disabled={signingOut}
+              className="px-3 py-1.5 rounded-md transition-colors disabled:opacity-60"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              {signingOut ? 'Signing out…' : 'Sign out'}
+            </button>
+          </li>
         </ul>
 
         {/* Mobile + tablet-portrait: hamburger toggle (shown below lg / 1024px) */}
@@ -97,6 +125,20 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                void signOut();
+              }}
+              disabled={signingOut}
+              className="block w-full text-left px-4 py-3 text-sm font-medium disabled:opacity-60"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              {signingOut ? 'Signing out…' : 'Sign out'}
+            </button>
+          </li>
         </ul>
       )}
     </nav>
