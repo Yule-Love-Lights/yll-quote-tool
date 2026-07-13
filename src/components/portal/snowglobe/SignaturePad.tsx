@@ -27,13 +27,17 @@ type Props = {
   onChange: (sig: CapturedSignature | null) => void;
 };
 
+// Bug fix (PS-D6): a single character was accepted as a legal e-signature.
+// Mirrors the server-side minimum in approve/route.ts's parseSignature.
+const SIGNATURE_NAME_MIN = 2;
+
 export function SignaturePad({ onChange }: Props) {
   const [name, setName] = useState('');
 
-  // Emit the typed signature (or null while the name is empty) on every change.
+  // Emit the typed signature (or null while the name is too short) on every change.
   useEffect(() => {
     const trimmed = name.trim();
-    onChange(trimmed ? { name: trimmed, kind: 'typed', value: trimmed } : null);
+    onChange(trimmed.length >= SIGNATURE_NAME_MIN ? { name: trimmed, kind: 'typed', value: trimmed } : null);
   }, [name, onChange]);
 
   return (

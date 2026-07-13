@@ -15,6 +15,7 @@ import {
   openAbandonGuard,
   resolveAbandonGuard,
   consumeAbandonOnClose,
+  isAlreadyApprovedCode,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
@@ -33,6 +34,21 @@ const SELECTION = {
   installTiming: 'october' as const,
   breakdown: { discount: 150 },
 };
+
+describe('isAlreadyApprovedCode (PS-D1)', () => {
+  it('is true only for the already-approved 409 code', () => {
+    expect(isAlreadyApprovedCode('already-approved')).toBe(true);
+  });
+
+  it('is false for illegal-transition (a declined/changes-requested quote) — must not navigate forward', () => {
+    expect(isAlreadyApprovedCode('illegal-transition')).toBe(false);
+  });
+
+  it('is false for an unknown/missing code (defensive default)', () => {
+    expect(isAlreadyApprovedCode(undefined)).toBe(false);
+    expect(isAlreadyApprovedCode('some-other-code')).toBe(false);
+  });
+});
 
 describe('canSubmitApproval (W4-031)', () => {
   it('blocks when a submit is already in flight', () => {

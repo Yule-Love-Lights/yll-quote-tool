@@ -96,6 +96,17 @@ export function consumeAbandonOnClose(guard: AbandonGuard): boolean {
   return true;
 }
 
+// Bug fix (PS-D1, extracted for test coverage): a 409 from POST /approve
+// covers two different server states (approve/route.ts) — 'already-approved'
+// (idempotent re-click, a genuine success case) and 'illegal-transition' (the
+// quote moved to declined/cancelled/changes_requested since the page loaded).
+// Only the former should navigate the customer forward; treating every 409 as
+// success dead-ended a declined/changes-requested customer on /approved with
+// no approval on record.
+export function isAlreadyApprovedCode(code: unknown): boolean {
+  return code === 'already-approved';
+}
+
 export type StickyBottomBarProps = {
   quoteId: string;
   /** #43 — the customer has approved (the snapshot is frozen). When checkout is
@@ -253,22 +264,31 @@ export function StickyBottomBar({
         ),
       });
       failureStatus = res.status;
-      // 409 = already approved. With checkout ON, open the deposit checkout
-      // anyway (/pay routes onward if the deposit is already paid); with it OFF,
-      // route straight to the celebration page (today's behavior).
+      // 409 covers two different server states (approve/route.ts): 'already-approved'
+      // (idempotent re-click — the customer really did already approve this
+      // selection) and 'illegal-transition' (the quote moved to declined/
+      // cancelled/changes_requested since the page loaded). Only the former is a
+      // success case; treating every 409 as "already approved" and navigating
+      // forward dead-ended a declined/changes-requested customer on /approved
+      // with no approval on record (PS-D1). Fall through to the generic error
+      // handling below for any other code.
       if (res.status === 409) {
-        // PostHog v1 Wave 1 — resolves the sign-modal guard so this doesn't
-        // read as an abandon; not a fresh approval either, so no quote_approved.
-        resolveAbandonGuard(signAbandonGuard.current);
-        setShowSign(false);
-        if (depositFlow) {
-          depositAbandonGuard.current = openAbandonGuard();
-          setShowCheckout(true);
-          setSubmitting(false);
-        } else {
-          router.push(`/portal/${quoteId}/approved`);
+        const body409 = await res.json().catch(() => ({}) as { code?: string; error?: string });
+        if (isAlreadyApprovedCode(body409.code)) {
+          // PostHog v1 Wave 1 — resolves the sign-modal guard so this doesn't
+          // read as an abandon; not a fresh approval either, so no quote_approved.
+          resolveAbandonGuard(signAbandonGuard.current);
+          setShowSign(false);
+          if (depositFlow) {
+            depositAbandonGuard.current = openAbandonGuard();
+            setShowCheckout(true);
+            setSubmitting(false);
+          } else {
+            router.push(`/portal/${quoteId}/approved`);
+          }
+          return;
         }
-        return;
+        throw new Error(body409.error ?? `Request failed: ${res.status}`);
       }
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));

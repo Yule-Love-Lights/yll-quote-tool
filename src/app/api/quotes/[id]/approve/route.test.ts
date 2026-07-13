@@ -537,6 +537,33 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
     );
     expect(res.status).toBe(400);
   });
+
+  // PS-D6: a single character was accepted as a legal e-signature.
+  it('rejects a single-character signature name → 400 bad-signature', async () => {
+    const { client } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, signature: { name: 'J', kind: 'typed', value: 'J' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('bad-signature');
+  });
+
+  it('accepts a two-character signature name (the minimum)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({ ...validBody, signature: { name: 'Jo', kind: 'typed', value: 'Jo' } }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as { signature: { name: string } | null };
+    expect(snap.signature!.name).toBe('Jo');
+  });
 });
 
 describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {

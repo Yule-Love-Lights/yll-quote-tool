@@ -16,6 +16,7 @@ import type {
   PortalApproval,
   PortalLineItem,
   PortalLineItemKind,
+  PortalPackage,
   PortalQuote,
   PortalRoofline,
   PortalVideo,
@@ -352,6 +353,46 @@ export function buildPortalLineItems(result: QuoteResult, inputs: QuoteInputs | 
   };
 }
 
+// The billable set of line-item ids for a quote "as sent" — every line item,
+// EXCEPT that when a mutually-exclusive roofline group exists (#17 Phase 2)
+// only the recommended/billed option counts (selecting BOTH Santa's AND
+// Gingerbread would double-bill the front). Mirrors the `tierLineItems` gate
+// filter in quoteRowToPortalQuote below. Exported so the staff-approve route
+// (PS-C1/WT-L1) can freeze "the whole quote, as billed" into an approval
+// snapshot's customerSelection without duplicating the roofline-exclusivity
+// rule or risking a double-select.
+export function billableLineItemIds(lineItems: PortalLineItem[], roofline?: PortalRoofline): string[] {
+  if (!roofline) return lineItems.map((li) => li.id);
+  return lineItems
+    .filter((li) => !roofline.itemIds.includes(li.id) || li.id === roofline.recommendedItemId)
+    .map((li) => li.id);
+}
+
+// Approved-quote fallback packageId for a snapshot with no customerSelection
+// (the pre-fix staff-approve path — see the route's header comment) or a
+// corrupted/legacy one missing packageId: resolve to an id that ACTUALLY
+// EXISTS among this quote's derived packages, so the downstream seed
+// (resolveApprovalSelectionSeed → computeInitialSelection in
+// SelectionContext) never comes up empty. Hardcoding the holiday-only 'C'
+// (the old behavior) rendered a $0 portal with every item OFF for any
+// staff-approved event/bistro/no-back-permanent quote, because those
+// verticals have no 'C' tier (PS-C1/WT-L1).
+//
+// Preference order: holiday's "everything" tier 'C' (byte-identical to the
+// old default for holiday quotes) → 'D' (event/bistro's only tier, or
+// permanent's Whole Home when present) → the package with the most included
+// items (e.g. a no-back permanent quote offering only Front/Sides, where 'D'
+// is intentionally omitted as redundant — see derivePackagesPermanent).
+function pickFallbackApprovalPackageId(packages: PortalPackage[]): PackageId {
+  if (packages.some((p) => p.id === 'C')) return 'C';
+  if (packages.some((p) => p.id === 'D')) return 'D';
+  if (packages.length > 0) {
+    return packages.reduce((best, p) => (p.includedItemIds.length > best.includedItemIds.length ? p : best))
+      .id;
+  }
+  return 'D';
+}
+
 // Translate the jsonb approval snapshot into the camelCase PortalApproval
 // the frontend consumes. Returns undefined when the customer hasn't
 // approved yet (or when the snapshot is malformed beyond rescue) — the
@@ -371,13 +412,23 @@ function frozenWarranty(
   };
 }
 
-function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
+function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): PortalApproval | undefined {
   if (!row.customer_approved_at) return undefined;
   const snap = row.approval_snapshot;
   // Even without a snapshot we know they approved — fall back to row.total
   // so the page still works for any old rows missing the snapshot column.
   const sel = snap?.customerSelection;
-  const packageId = (sel?.packageId ?? 'C') as PackageId;
+  if (!sel?.packageId) {
+    // Regression tripwire (PS-C1/WT-L1): every approved quote should carry a
+    // real customerSelection now that the staff-approve route freezes one.
+    // Hitting this path means either an OLD pre-fix staff approval, or a
+    // future regression that omits it again — log so it surfaces before a
+    // customer sees a $0 portal.
+    console.error(
+      `[portal/adapter] approved quote ${row.id} has no customerSelection.packageId in its approval_snapshot — falling back to a derived package id`,
+    );
+  }
+  const packageId = (sel?.packageId ?? pickFallbackApprovalPackageId(packages)) as PackageId;
   const totalUsd =
     typeof sel?.currentTotalUsd === 'number'
       ? sel.currentTotalUsd
@@ -591,7 +642,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
   // than what the customer actually confirmed.
-  const approval = buildApproval(row);
+  const approval = buildApproval(row, packages);
   // Staff "Apply discount" from the builder → flowed to the live portal price so
   // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
   // flat as dollars. Mutually exclusive with the early-install promo (one per quote).

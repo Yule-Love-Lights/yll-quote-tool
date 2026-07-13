@@ -9,12 +9,41 @@ const money = (n: number) =>
 async function run(action: PipelineAction, rec: PipelineRecord): Promise<Response | null> {
   const q = rec.quoteId;
   switch (action.kind) {
-    case 'send':
-      return fetch(`/api/quotes/${q}/send`, {
+    case 'send': {
+      // PS-G4: this is now the ONE way to send a quote (the admin quotes list's
+      // inline Send/Resend button was dropped as a duplicate that offered no
+      // channel choice). Carries over that button's UX — copy the portal URL to
+      // the clipboard and confirm what happened, including the HighLevel stage —
+      // so picking a channel here doesn't feel like a silent action.
+      const portalUrl = `${window.location.origin}/portal/${q}`;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(portalUrl);
+        copied = true;
+      } catch {
+        // Some browsers block clipboard outside HTTPS — fall through.
+      }
+      const res = await fetch(`/api/quotes/${q}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ channel: action.channel }),
       });
+      if (res.ok) {
+        const body = (await res.clone().json().catch(() => ({}))) as {
+          stageUpdated?: boolean;
+          stageError?: string;
+          alreadySent?: boolean;
+        };
+        const stage = body.stageUpdated
+          ? '\nHighLevel: card moved to Bid Sent.'
+          : body.stageError
+            ? `\nHighLevel: ${body.stageError}`
+            : '';
+        const already = body.alreadySent ? ' (already sent earlier)' : '';
+        alert(`Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}`);
+      }
+      return res;
+    }
     case 'mark-approved':
       return fetch(`/api/quotes/${q}/staff-approve`, { method: 'POST' });
     case 'staff-decline': {

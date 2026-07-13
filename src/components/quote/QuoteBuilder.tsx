@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import type {
   QuoteResult,
   QuoteInputs,
@@ -271,6 +272,12 @@ export type QuoteBuilderInitial = {
   // by" picker state (only set in the session that originally picked it) is
   // gone by then.
   isReferee?: boolean;
+  // PS-G2: the id of the job created when this quote was booked, if any —
+  // lets the booked banner link straight to that job's "Amend order" section
+  // (src/app/admin/jobs/[id]/page.tsx), which is the only place a re-price
+  // done here actually gets recorded (reason + balance re-sync + audit trail
+  // + customer notice). Null pre-booking or if job auto-create hasn't run yet.
+  jobId?: string | null;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -318,6 +325,10 @@ export default function QuoteBuilder({
       })
     : null;
   const quoteNumber = initialQuote?.quoteNumber ?? null;
+  // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
+  // order" banner below, which links to the job page's Record-amendment
+  // control instead of leaving a re-price here as a dead end.
+  const savedJobId = initialQuote?.jobId ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -755,6 +766,13 @@ export default function QuoteBuilder({
   const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
     front: false, left: false, right: false, back: false,
   });
+  // PS-B1: whether permanentSatLines reflects a settled trace state, so the
+  // billed-but-untraced warning (below) doesn't flash true for every reopened
+  // permanent quote while the #142 rehydrate fetch is still in flight. A new
+  // (non-edit) quote has nothing to hydrate, so it's ready immediately; an
+  // edit-mode quote flips ready once the rehydrate effect settles (found
+  // lines, found none, or errored — any outcome still means "now accurate").
+  const [permTraceHydrated, setPermTraceHydrated] = useState(!editMode);
   // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
   // the satellite view — the BILLING source (true-scale feet-per-pixel, no
   // yardstick). One flat array of runs (not per-side, unlike permanent's four
@@ -1062,9 +1080,16 @@ export default function QuoteBuilder({
   useEffect(() => {
     const isPermanentBistro = form.serviceType === 'permanent_bistro';
     if (!editMode || (form.serviceType !== 'permanent' && !isPermanentBistro)) return;
-    if (!designId || satellitePreview != null) return; // live session already
     let stale = false;
     (async () => {
+      if (!designId || satellitePreview != null) {
+        // Nothing to hydrate (no design yet) or already hydrated/live this
+        // session — either way permanentSatLines is already accurate, so the
+        // PS-B1 billed-but-untraced warning can trust it now. Set inside the
+        // async body (not synchronously in the effect) to avoid cascading renders.
+        if (!stale) setPermTraceHydrated(true);
+        return;
+      }
       try {
         const res = await fetch(`/api/designs/${designId}`);
         if (!res.ok) return;
@@ -1097,6 +1122,11 @@ export default function QuoteBuilder({
       } catch (err) {
         // Best-effort: a failed rehydrate just leaves the pre-#142 blank tab.
         console.error('[QuoteBuilder] satellite rehydrate failed:', err);
+      } finally {
+        // PS-B1: this rehydrate attempt is settled (found lines, found none,
+        // 404'd, or errored) — permanentSatLines now reflects the real trace
+        // state either way, so the billed-but-untraced warning can trust it.
+        if (!stale) setPermTraceHydrated(true);
       }
     })();
     return () => {
@@ -2553,6 +2583,22 @@ export default function QuoteBuilder({
           </div>
         )}
 
+        {/* PS-G2: booked-order banner — persistent so it's visible whether the
+            operator arrives here to re-price or just to look. Re-pricing here
+            (Calculate) only updates the number; it does NOT record the
+            amendment (reason, balance re-sync, audit trail, customer notice).
+            That control lives only on the job page, which the builder
+            otherwise never links to — this closes that dead end. */}
+        {savedStatus === 'booked' && savedJobId && (
+          <div className="mb-6 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            This order is booked. Calculate here to re-price, then{' '}
+            <Link href={`/admin/jobs/${savedJobId}`} className="font-semibold underline hover:no-underline">
+              open the job to record the amendment
+            </Link>{' '}
+            — that is what updates the balance, audit trail, and customer notice.
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--brand-evergreen-3)' }}>
@@ -2612,9 +2658,22 @@ export default function QuoteBuilder({
               onPick={pickHighLevelContact}
               onClear={clearHighLevelContact}
             />
-            <p className="text-xs text-amber-600 mb-3">
-              Testing mode — name / phone / email are optional. Address is optional too, but helps if you want to tie the quote to a real property.
+            <p className="text-xs text-gray-500 mb-1">
+              Name, phone, and email are optional here. The quote still saves. Address is optional too, and it
+              helps if you want to tie the quote to a real property.
             </p>
+            {/* PS-F4: the send route requires a linked HighLevel contact for any
+                real (non-test) quote (no contact = the customer never gets
+                texted/emailed and the pipeline card never moves) — say so up
+                front instead of letting the operator fill in manual fields and
+                only discover the block when Send 400s. Test quotes are exempt
+                (the send route skips this check for them), so hide it there. */}
+            {!isTest && !highlevelContact && (
+              <p className="text-xs text-amber-600 mb-3">
+                A HighLevel contact is required before this quote can be sent. Pick one above, or fill in the
+                fields below and link a contact before sending.
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={lbl}>Name</label>
@@ -3650,6 +3709,16 @@ export default function QuoteBuilder({
               onRecount={() => {
                 permDeriveFrozenRef.current = false; // #142: Recount = explicit re-derive
               }}
+              // PS-B1: a billed side (footage > 0) with no drawn satellite trace
+              // never shows on the portal's roof map — surface that mismatch
+              // inline so the operator draws it or knowingly proceeds.
+              tracedSides={{
+                front: permanentSatLines.front.length > 0,
+                left: permanentSatLines.left.length > 0,
+                right: permanentSatLines.right.length > 0,
+                back: permanentSatLines.back.length > 0,
+              }}
+              tracedReady={permTraceHydrated}
             />
           )}
 

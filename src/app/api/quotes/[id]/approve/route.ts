@@ -157,6 +157,9 @@ type SignatureSnapshot = {
   ip: string | null; // from x-forwarded-for / x-real-ip, best-effort
 };
 
+// Bug fix (PS-D6): a single character was accepted as a legal e-signature.
+// Mirrors the client-side minimum in SignaturePad.tsx.
+const SIGNATURE_NAME_MIN = 2;
 const SIGNATURE_NAME_MAX = 200;
 // A drawn signature is a base64 PNG/JPEG data-URL; a typed one is just the name.
 // Cap the value so a giant canvas export can't bloat the row (a normal small
@@ -181,7 +184,7 @@ function parseSignature(
   const name = typeof s.name === 'string' ? s.name.trim() : '';
   const kind = s.kind;
   const value = typeof s.value === 'string' ? s.value.trim() : '';
-  if (!name || name.length > SIGNATURE_NAME_MAX) return { ok: false };
+  if (!name || name.length < SIGNATURE_NAME_MIN || name.length > SIGNATURE_NAME_MAX) return { ok: false };
   if (kind !== 'typed' && kind !== 'drawn') return { ok: false };
   if (!value || value.length > SIGNATURE_VALUE_MAX) return { ok: false };
   return {

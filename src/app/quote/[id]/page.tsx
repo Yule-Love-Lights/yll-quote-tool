@@ -4,6 +4,7 @@ import { getQuoteRaw } from '@/lib/quotes';
 import { getDesignByQuote } from '@/lib/designs';
 import { isValidQuoteId } from '@/lib/portal/loader';
 import { refereeReferralFor } from '@/lib/referrals';
+import { getJobByQuote } from '@/lib/jobs';
 
 // Edit an existing quote (task #31): reopen a saved quote in the builder with
 // its inputs hydrated and its linked design (if any) mounted in the design
@@ -30,12 +31,19 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
   // already fails open internally on a missing/unconfigured Supabase).
   const referee = await refereeReferralFor(quote.id);
 
+  // PS-G2: a booked quote's job carries the "Amend order" recording control
+  // (reason + balance re-sync + audit trail + customer notice), which lives
+  // ONLY on the job page. The builder needs the job id to link there so a
+  // re-price here doesn't dead-end (see the booked banner below).
+  const job = await getJobByQuote(quote.id);
+
   return (
     <QuoteBuilder
       initialQuote={{
         quoteId: quote.id,
         customerId: quote.customer_id,
         isReferee: referee != null,
+        jobId: job?.id ?? null,
         customer: {
           name: quote.customer_name,
           address: quote.customer_address,

@@ -1,4 +1,4 @@
-// Follow-up logic — "due today" (pinned in the top strip) and the system-created
+// Follow-up logic: "due today" (pinned in the top strip) and the system-created
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
