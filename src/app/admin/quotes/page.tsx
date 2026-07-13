@@ -119,50 +119,21 @@ export default function QuotesAdminPage() {
     setBusy(id);
     try {
       const res = await adminFetch(`/api/quotes/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        // PS-G3: the API blocks deleting a booked/approved quote with a 428 that
+        // tells a developer which header would force it through. An operator
+        // should never see that raw instruction — translate it to plain English.
+        if (res.status === 428 && body.code === 'confirm-required') {
+          throw new Error(
+            'This quote is booked — cancel its job/invoice first, or contact the owner to force-delete.',
+          );
+        }
+        throw new Error(body.error ?? 'Delete failed');
+      }
       await refresh();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Delete failed');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  // "Send to customer" — copies the portal URL to clipboard + stamps
-  // quote_sent_at + advances the HighLevel pipeline card to "Bid Sent".
-  // Naldo then pastes the URL into iMessage / email / wherever.
-  const sendToCustomer = async (id: string) => {
-    const portalUrl = `${window.location.origin}/portal/${id}`;
-
-    // Copy first — if Zapier is down we still want Naldo to have the URL.
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(portalUrl);
-      copied = true;
-    } catch {
-      // Some browsers block clipboard outside HTTPS — fall through.
-    }
-
-    setBusy(id);
-    try {
-      const res = await fetch(`/api/quotes/${id}/send`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Send failed');
-      const stage = data.stageUpdated
-        ? '\nHighLevel: card moved to Bid Sent.'
-        : data.stageError
-          ? `\nHighLevel: ${data.stageError}`
-          : '';
-      const already = data.alreadySent ? ' (already sent earlier)' : '';
-      alert(
-        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}`,
-      );
-      await refresh();
-    } catch (err) {
-      alert(
-        `${err instanceof Error ? err.message : 'Send failed'}\n\n` +
-          `Portal URL${copied ? ' (copied)' : ''}: ${portalUrl}`,
-      );
     } finally {
       setBusy(null);
     }
@@ -350,20 +321,11 @@ export default function QuotesAdminPage() {
                         >
                           Portal ↗
                         </Link>
-                        <button
-                          disabled={busy === q.id || !!q.customer_approved_at}
-                          onClick={() => sendToCustomer(q.id)}
-                          title={
-                            q.customer_approved_at
-                              ? 'Already approved — cannot resend'
-                              : q.quote_sent_at
-                                ? 'Already sent — clicking copies the URL again'
-                                : 'Copy portal URL and mark as sent'
-                          }
-                          className="text-blue-700 hover:bg-blue-50 disabled:opacity-50 text-xs px-2 py-1 rounded mr-1"
-                        >
-                          {q.quote_sent_at ? 'Resend' : 'Send'}
-                        </button>
+                        {/* PS-G4: Send/Resend used to live here as a second,
+                            channel-less way to do what the Options menu's
+                            Send (email + text) / Send email / Send text
+                            already does — dropped as a duplicate. The menu
+                            is now the one place to send a quote. */}
                         <button
                           disabled={busy === q.id}
                           onClick={() => remove(q.id)}
