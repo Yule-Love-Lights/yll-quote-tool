@@ -344,6 +344,7 @@ export default async function PortalPage({
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
           firstName={quote.customer.firstName}
+          address={quote.customer.address}
           afterUrl={heroAfter}
           alt={heroAlt}
           packages={quote.packages}

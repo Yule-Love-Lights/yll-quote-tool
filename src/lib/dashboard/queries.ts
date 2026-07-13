@@ -25,6 +25,9 @@ const DASHBOARD_QUOTES_SELECT =
   'created_at, quote_sent_at, customer_approved_at, deposit_paid_at, ' +
   'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
   'service_type, ' +
+  // WT-52: the customer detail page's quote-history table groups by property
+  // for a multi-address (commercial) customer. Needs each quote's address.
+  'customer_address, ' +
   // B7 fix: status + viewed_at are required so deriveStatus can identify
   // terminal states (cancelled/declined/lost) that timestamps alone can't
   // express. Without status, a cancelled-but-deposited order falls through

@@ -40,6 +40,11 @@ const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: f
 
 export type InteractiveHeroProps = {
   firstName: string;
+  // WT-12: the property address (or a short site label), shown as a muted
+  // line under the greeting so a commercial buyer with several open portal
+  // links can tell which property THIS one is for without opening the photo.
+  // Empty/undefined hides the line (no address on file).
+  address?: string;
   afterUrl: string;
   alt: string;
   packages: PortalPackage[];
@@ -58,6 +63,7 @@ export type InteractiveHeroProps = {
 
 export function InteractiveHero({
   firstName,
+  address,
   afterUrl,
   alt,
   packages,
@@ -351,6 +357,18 @@ export function InteractiveHero({
               "Here's your home."
             )}
           </h1>
+          {/* WT-12: site label, a muted subtle line so a commercial buyer
+              juggling several open portal links (one per property) can tell
+              which property this one is for, pre-approval, without needing
+              the photo. Hidden when the quote has no address on file. */}
+          {address && address.trim() && (
+            <p
+              className="mt-1.5 md:mt-2 text-[12px] md:text-[13px] font-medium text-[#F4ECD8]/65 tracking-wide"
+              style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}
+            >
+              {address}
+            </p>
+          )}
         </div>
       </div>
       </div>{/* /.portal-snow-stage-media */}

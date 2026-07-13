@@ -23,6 +23,10 @@ export type DashboardQuote = {
   homeworks_sent_at: string | null;
   homeworks_signed_at: string | null;
   highlevel_contact_id: string | null;
+  /** Property address for this quote. Optional: not every surface selects it;
+   *  the customer detail page adds it via DASHBOARD_QUOTES_SELECT (WT-52) to
+   *  show + group a multi-property customer's history by address. */
+  customer_address?: string | null;
   /** Holiday/permanent/event. NULL on legacy rows; treat NULL as 'holiday'. */
   service_type: ServiceType | null;
   /**
