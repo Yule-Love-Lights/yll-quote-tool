@@ -147,11 +147,22 @@ export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): 
   const orderedSkus = new Set(order.lines.map((l) => l.sku));
   let effective: ReceivedLine[];
   if (receivedLines) {
+    // WT-25: reject a duplicated SKU line up front — the apply loop below calls
+    // adjustOnHandAtomic once per entry, so a repeated line (client bug, a
+    // duplicated form row) would double-count that SKU's stock. Fail loud like
+    // the other override-validation rejections below, rather than silently
+    // guessing whether "sum" or "last wins" was intended.
+    const seenSkus = new Set<string>();
     for (const l of receivedLines) {
       if (!orderedSkus.has(l.sku)) {
         console.error(`receiveOrder: rejected unknown SKU "${l.sku}" not on order ${id}`);
         return null;
       }
+      if (seenSkus.has(l.sku)) {
+        console.error(`receiveOrder: rejected duplicate SKU "${l.sku}" in override for order ${id}`);
+        return null;
+      }
+      seenSkus.add(l.sku);
     }
     const overrideSkus = new Set(receivedLines.map((l) => l.sku));
     for (const sku of orderedSkus) {

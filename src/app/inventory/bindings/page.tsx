@@ -43,6 +43,7 @@ export default function BindingsPage() {
   const [bindings, setBindings] = useState<Bindings>({});
   const [clipRules, setClipRules] = useState<ClipRules>({});
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [hiddenCategories, setHiddenCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -59,9 +60,10 @@ export default function BindingsPage() {
       let savedB: Bindings = {};
       let savedC: ClipRules = {};
       try {
-        const [bRes, cRes] = await Promise.all([
+        const [bRes, cRes, hRes] = await Promise.all([
           fetch('/api/inventory/bindings'),
           fetch('/api/inventory/catalog'),
+          fetch('/api/inventory/categories'),
         ]);
         if (bRes.ok) {
           const b = (await bRes.json()) as InventoryBindings;
@@ -71,6 +73,10 @@ export default function BindingsPage() {
         if (cRes.ok) {
           const c = (await cRes.json()) as CatalogItem[];
           if (!cancelled) setCatalog(Array.isArray(c) ? c : []);
+        }
+        if (hRes.ok) {
+          const h = (await hRes.json()) as { hiddenCategories?: string[] };
+          if (!cancelled) setHiddenCategories(Array.isArray(h.hiddenCategories) ? h.hiddenCategories : []);
         }
       } catch {
         // keep the seeds; staff can still save
@@ -158,13 +164,15 @@ export default function BindingsPage() {
     }
   }, [bindings, clipRules]);
 
-  // One bound picker for a string-valued concept row.
+  // One bound picker for a string-valued concept row. WT-23: scope out any
+  // categories the operator hid on the Overrides tab.
   const pick = (key: string, cat: CatalogItem[], aria: string) => (
     <SkuPicker
       catalog={cat}
       value={strVal(bindings, key)}
       onChange={(s) => setBinding(key, s)}
       ariaLabel={aria}
+      hiddenCategories={hiddenCategories}
     />
   );
 
@@ -259,6 +267,7 @@ export default function BindingsPage() {
                           value={sku}
                           onChange={(s) => setClipSku(f.id, s)}
                           ariaLabel={`${f.label} clip SKU`}
+                          hiddenCategories={hiddenCategories}
                         />
                         <label className="flex items-center gap-1 text-xs text-gray-500">
                           clips/ft

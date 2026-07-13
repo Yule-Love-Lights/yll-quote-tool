@@ -37,8 +37,12 @@ describe('projectClips', () => {
     expect(projectClips('peak', 10, { peak: { perFt: 2 } })).toEqual({ sku: null, qty: 20 });
   });
 
-  it('a non-positive perFt falls back to the default', () => {
+  it('an explicit 0 perFt is honored — no clips for this feature, NOT coerced to the default', () => {
     expect(DEFAULT_CLIP_PER_FT).toBe(1);
-    expect(projectClips('gutter', 5, { gutter: { sku: 'x', perFt: 0 } })).toEqual({ sku: 'x', qty: 5 });
+    expect(projectClips('gutter', 5, { gutter: { sku: 'x', perFt: 0 } })).toBeNull();
+  });
+
+  it('a stored non-finite perFt (corrupt data) falls back to the default', () => {
+    expect(projectClips('gutter', 5, { gutter: { sku: 'x', perFt: Number.NaN } })).toEqual({ sku: 'x', qty: 5 });
   });
 });

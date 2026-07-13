@@ -91,6 +91,14 @@ export async function updateCatalogItem(
   if (error) throw new Error(`updateCatalogItem: ${error.message}`);
 }
 
+// Effective category name — the operator's yll_category override wins over the
+// vendor category. hiddenCategories stores THESE names (see the note on
+// getHiddenCategories below), so any hide-category filter (searchCatalog,
+// WT-23) must key off this same formula or the hide will silently miss.
+export function effectiveCategory(item: Pick<CatalogItem, 'category' | 'yll_category'>): string {
+  return item.yll_category ?? item.category;
+}
+
 // Category show/hide list (Q6.3) — an app_settings key, parallel to bindings.
 export function normalizeHiddenCategories(v: unknown): string[] {
   if (!Array.isArray(v)) return [];

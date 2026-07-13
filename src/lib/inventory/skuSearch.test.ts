@@ -28,4 +28,26 @@ describe('searchCatalog', () => {
   it('respects the result limit', () => {
     expect(searchCatalog(CATALOG, 'c9', 1)).toHaveLength(1);
   });
+
+  // WT-23: a hidden category (the operator's Overrides toggle) drops out of
+  // search results entirely — a picker should never surface a SKU staff
+  // deliberately hid.
+  it('excludes items whose EFFECTIVE category is hidden', () => {
+    expect(searchCatalog(CATALOG, '', 10, ['Hardware']).map((i) => i.sku)).toEqual(['20009-SPK']);
+    expect(searchCatalog(CATALOG, 'c9', 10, ['Hardware']).map((i) => i.sku)).toEqual(['20009-SPK']);
+  });
+
+  it('hidden-category filtering respects the yll_category override, not just the vendor category', () => {
+    const regrouped = [
+      ...CATALOG,
+      item({ sku: '99999', name: 'Regrouped Clip', category: 'Hardware', yll_category: 'Clips' }),
+    ];
+    // Hiding the EFFECTIVE category "Clips" only drops the regrouped item, not
+    // the rest of "Hardware".
+    expect(searchCatalog(regrouped, '', 10, ['Clips']).map((i) => i.sku)).toEqual(['20009-SPK', '14147', '14148']);
+  });
+
+  it('an empty hiddenCategories list filters nothing (default, backward compatible)', () => {
+    expect(searchCatalog(CATALOG, '', 10, [])).toHaveLength(3);
+  });
 });
