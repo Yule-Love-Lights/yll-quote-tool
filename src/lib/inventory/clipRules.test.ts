@@ -37,8 +37,8 @@ describe('projectClips', () => {
     expect(projectClips('peak', 10, { peak: { perFt: 2 } })).toEqual({ sku: null, qty: 20 });
   });
 
-  it('a non-positive perFt falls back to the default', () => {
+  it('an explicit perFt: 0 is honored as zero clips — NOT coerced to the 1/ft default (WT-24)', () => {
     expect(DEFAULT_CLIP_PER_FT).toBe(1);
-    expect(projectClips('gutter', 5, { gutter: { sku: 'x', perFt: 0 } })).toEqual({ sku: 'x', qty: 5 });
+    expect(projectClips('gutter', 5, { gutter: { sku: 'x', perFt: 0 } })).toBeNull();
   });
 });

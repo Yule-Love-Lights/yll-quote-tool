@@ -23,9 +23,6 @@ type WorkOrder = {
   materials: { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
 };
 
-const fmtDate = (iso: string | null) =>
-  iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
-
 export default function JobsBoardPage() {
   const [cards, setCards] = useState<FulfillmentCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,34 +123,29 @@ export default function JobsBoardPage() {
 }
 
 function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id: string, s: FulfillmentStage) => void; onOpen: () => void }) {
-  const install = fmtDate(card.installDate);
   return (
     <div className="rounded-md border p-2.5 text-sm" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <button type="button" onClick={onOpen} className="font-semibold hover:underline" style={{ color: 'var(--op-primary)' }}>
-            Job #{card.jobNumber ?? '—'}
-          </button>
-          {/* Test Quote (ledger #93) — VISIBLE on the Kanban, badged so a test
-              job is obvious. It moves through stages but never deducts real
-              on-hand or hits the supplier PO. */}
-          {card.isTest && (
-            <span
-              className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
-              style={{ background: '#ede9fe', color: '#6d28d9' }}
-              title="Simulated test job — no real stock or supplier order"
-            >
-              Test
-            </span>
-          )}
-        </div>
-        <span className="text-[11px]" style={{ color: 'var(--op-text-dim)' }}>{card.status === 'scheduled' ? 'Scheduled' : 'Awaiting schedule'}</span>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <button type="button" onClick={onOpen} className="font-semibold hover:underline" style={{ color: 'var(--op-primary)' }}>
+          Job #{card.jobNumber ?? '—'}
+        </button>
+        {/* Test Quote (ledger #93) — VISIBLE on the Kanban, badged so a test
+            job is obvious. It moves through stages but never deducts real
+            on-hand or hits the supplier PO. */}
+        {card.isTest && (
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+            style={{ background: '#ede9fe', color: '#6d28d9' }}
+            title="Simulated test job — no real stock or supplier order"
+          >
+            Test
+          </span>
+        )}
       </div>
       <div className="mt-0.5 truncate" style={{ color: 'var(--op-text)' }}>{card.customerName ?? 'Customer'}</div>
       {card.customerAddress && <div className="text-[11px] truncate" style={{ color: 'var(--op-text-dim)' }}>{card.customerAddress}</div>}
       <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--op-text-dim)' }}>
         <span>{card.itemCount} item{card.itemCount === 1 ? '' : 's'}</span>
-        {install && <span>· install {install}</span>}
       </div>
       <label className="mt-2 block">
         <span className="sr-only">Move job to stage</span>

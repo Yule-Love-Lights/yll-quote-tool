@@ -175,7 +175,16 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   }
   if (!needBySku.size) return { lines: [], jobCount: active.length };
 
-  const [onHandRows, onOrderBySku] = await Promise.all([listOnHand(), sumOpenOnOrder()]);
+  const [onHandRows, onOrderBySku, catalog] = await Promise.all([listOnHand(), sumOpenOnOrder(), listCatalog()]);
+
+  // WT-22(b): a locked (sold-out) sku must NEVER reach the supplier PO, no matter
+  // which demand source produced it (holiday scene projection, permanent BOM, or
+  // pooled bistro BOM) — the Overrides "lock" toggle was previously read only by
+  // the catalog + a display badge, never by ordering.
+  const lockedSkus = new Set(catalog.filter((c) => c.locked).map((c) => c.sku));
+  for (const sku of lockedSkus) needBySku.delete(sku);
+  if (!needBySku.size) return { lines: [], jobCount: active.length };
+
   const onHandBySku = new Map(onHandRows.map((r) => [r.sku, r.on_hand_qty]));
   const po = computePurchaseOrder(
     [...needBySku].map(([sku, needed]) => ({
@@ -186,7 +195,7 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
     })),
   );
 
-  const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
+  const nameBySku = new Map(catalog.map((c) => [c.sku, c.name]));
   // #117 follow-up (WT-27): bistro's SKUs live in the STATIC bistro catalog (no
   // inventory_catalog rows exist for them), so backfill their display names —
   // mirrors jobs.ts's same backfill — before this map fed the real supplier PO

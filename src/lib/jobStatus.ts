@@ -7,6 +7,17 @@
 // and lives in its own column. Keep the two independent.
 //
 // Pure module (no Supabase) so both the data layer and any UI can import it.
+//
+// WT-19 audit note: no code path ever WRITES a job into 'scheduled' — jobs jump
+// straight from 'to_schedule' to 'installed' (see setJobStatus callers). The
+// value is kept here (not removed) because src/lib/pipeline/pipelineActions.ts,
+// src/lib/inventory/jobs.ts (isActiveFulfillment), and the
+// /api/jobs/[id]/complete + /close routes all still compare against it as a
+// legal pre-install state, and src/components/admin/JobStatusBadge.tsx types its
+// label/style maps as Record<JobStatus, ...> (removing the member would break
+// those maps). The dead UI surfaces that PROMISED this status was reachable
+// (the dashboard Workflow board bucket, the admin status filter, the inventory
+// Kanban's Scheduled/Awaiting-schedule badge) were removed instead.
 
 export type JobStatus =
   | 'to_schedule'

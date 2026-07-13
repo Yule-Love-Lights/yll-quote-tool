@@ -49,13 +49,21 @@ export type OfferedColors = {
   spritzerHas: (paletteId: string, size: QuoteSpritzerSize) => boolean;
 };
 
-const bound = (b: Bindings, key: string) => typeof b[key] === 'string' && (b[key] as string).length > 0;
+// WT-22(a): a bound-but-LOCKED (sold-out) sku is treated as NOT bound, so it's
+// never "offered" — detectUnfulfillable flags the design item and the portal
+// color picker / round-robin never selects it. `lockedSkus` is the set of
+// catalog skus with `locked: true` (the caller reads the catalog); omitting it
+// preserves the old "bound = offered" behavior.
+const bound = (b: Bindings, key: string, lockedSkus?: Set<string>) => {
+  const v = b[key];
+  return typeof v === 'string' && v.length > 0 && !lockedSkus?.has(v);
+};
 
-export function offeredFromBindings(bindings: Bindings | null | undefined): OfferedColors {
+export function offeredFromBindings(bindings: Bindings | null | undefined, lockedSkus?: Set<string>): OfferedColors {
   const b = bindings ?? {};
   return {
-    miniHas: (id) => bound(b, miniKey(colorLabel(id))),
-    spritzerHas: (id, size) => bound(b, spritzerKey(id, size)),
+    miniHas: (id) => bound(b, miniKey(colorLabel(id)), lockedSkus),
+    spritzerHas: (id, size) => bound(b, spritzerKey(id, size), lockedSkus),
   };
 }
 
@@ -67,8 +75,8 @@ export type OfferedColorLists = { mini: string[]; spritzer: Partial<Record<Quote
 const PALETTE_IDS = DEFAULT_COLORS.filter((c) => c.id !== 'black').map((c) => c.id);
 const SPRITZER_SIZES: QuoteSpritzerSize[] = ['16', '24', '32'];
 
-export function offeredColorLists(bindings: Bindings | null | undefined): OfferedColorLists {
-  const o = offeredFromBindings(bindings);
+export function offeredColorLists(bindings: Bindings | null | undefined, lockedSkus?: Set<string>): OfferedColorLists {
+  const o = offeredFromBindings(bindings, lockedSkus);
   return {
     mini: PALETTE_IDS.filter((id) => o.miniHas(id)),
     spritzer: Object.fromEntries(SPRITZER_SIZES.map((s) => [s, PALETTE_IDS.filter((id) => o.spritzerHas(id, s))])),

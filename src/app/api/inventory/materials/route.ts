@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getInventoryBindings } from '@/lib/inventory/bindings';
-import { listCatalog } from '@/lib/inventory/catalog';
+import { listCatalog, getHiddenCategories } from '@/lib/inventory/catalog';
 import { listOnHand } from '@/lib/inventory/onHand';
 import { projectMaterials, buildMaterialsView } from '@/lib/inventory/materialsProjection';
 import { colorChoiceFromSnapshot } from '@/lib/inventory/resolveInstalls';
@@ -47,11 +47,20 @@ export async function GET(req: NextRequest) {
     const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
     const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
     const onHandOf = new Map(onHand.map((r) => [r.sku, r.on_hand_qty]));
+    // WT-22/23: flag sold-out (locked) skus and drop hidden-category skus so the
+    // materials view honors the two Overrides settings instead of ignoring them.
+    const hiddenCats = new Set(await getHiddenCategories());
+    const lockedSkus = new Set(catalog.filter((c) => c.locked).map((c) => c.sku));
+    const hiddenSkus = new Set(
+      catalog.filter((c) => hiddenCats.has(c.yll_category ?? c.category)).map((c) => c.sku),
+    );
 
     const view = buildMaterialsView(
       lines,
       (sku) => nameOf.get(sku),
       (sku) => (onHandOf.has(sku) ? (onHandOf.get(sku) as number) : null),
+      lockedSkus,
+      hiddenSkus,
     );
     return NextResponse.json({ hasDesign: !!design, ...view });
   } catch (err) {

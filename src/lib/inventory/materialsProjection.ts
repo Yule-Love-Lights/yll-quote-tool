@@ -252,10 +252,14 @@ export function projectMaterials(
 }
 
 // Aggregate to orderable {sku, qty} totals: sum by sku, drop unbound (null), sort.
-export function aggregateMaterials(lines: MaterialLine[]): { sku: string; qty: number }[] {
+// WT-22(c): also drop a LOCKED (sold-out) sku — it must never be counted as
+// orderable demand, however it was projected. `lockedSkus` is optional so
+// existing callers that don't care about locks are unaffected.
+export function aggregateMaterials(lines: MaterialLine[], lockedSkus?: Set<string>): { sku: string; qty: number }[] {
   const sums = new Map<string, number>();
   for (const l of lines) {
     if (!l.sku) continue;
+    if (lockedSkus?.has(l.sku)) continue;
     sums.set(l.sku, (sums.get(l.sku) ?? 0) + l.qty);
   }
   return [...sums.entries()]
@@ -268,7 +272,17 @@ export function aggregateMaterials(lines: MaterialLine[]): { sku: string; qty: n
 // shape the materials view + the Slice-3 job pull list consume. Pure: the caller
 // supplies the lookups (nameOf, onHandOf — onHandOf returns null when a SKU isn't
 // stocked, NOT 0). `short` only when stocked AND below the needed quantity.
-export type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
+//
+// WT-22(c) / WT-23: `lockedSkus` / `hiddenSkus` are the catalog's operator
+// overrides (locked = sold-out, hidden = the sku's effective category is
+// hidden), pre-computed by the caller from listCatalog() + getHiddenCategories()
+// (catalog.ts's own comment: "the Slice 2 materials engine must compute the same
+// effective category to honor hides"). A LOCKED material still needs a job —
+// it's flagged (`locked: true`) rather than dropped, so staff see it needs
+// manual sourcing instead of the demand silently vanishing. A HIDDEN-category
+// sku means the operator no longer uses it at all, so it's dropped entirely —
+// same treatment as the picker/search views (skuSearch.ts).
+export type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean; locked: boolean };
 export type UnboundConcept = { conceptKey: string; label: string; qty: number };
 export type MaterialsView = { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
 
@@ -276,17 +290,22 @@ export function buildMaterialsView(
   lines: MaterialLine[],
   nameOf: (sku: string) => string | undefined,
   onHandOf: (sku: string) => number | null,
+  lockedSkus: Set<string> = new Set(),
+  hiddenSkus: Set<string> = new Set(),
 ): MaterialsView {
-  const materials: MaterialRow[] = aggregateMaterials(lines).map((a) => {
-    const onHand = onHandOf(a.sku);
-    return {
-      sku: a.sku,
-      name: nameOf(a.sku) ?? '(not in catalog)',
-      qty: a.qty,
-      onHand,
-      short: onHand !== null && onHand < a.qty,
-    };
-  });
+  const materials: MaterialRow[] = aggregateMaterials(lines)
+    .filter((a) => !hiddenSkus.has(a.sku))
+    .map((a) => {
+      const onHand = onHandOf(a.sku);
+      return {
+        sku: a.sku,
+        name: nameOf(a.sku) ?? '(not in catalog)',
+        qty: a.qty,
+        onHand,
+        short: onHand !== null && onHand < a.qty,
+        locked: lockedSkus.has(a.sku),
+      };
+    });
   // Unbound concepts: group the null-sku lines by conceptKey (summed qty).
   const unboundMap = new Map<string, UnboundConcept>();
   for (const l of lines) {
