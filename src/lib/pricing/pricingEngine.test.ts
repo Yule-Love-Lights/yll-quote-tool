@@ -144,6 +144,47 @@ describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)',
     });
   });
 
+  it('WT-01: a stale "gingerbread" choice falls through to auto (Santa\'s) instead of billing $0 when Gingerbread footage is zeroed out', () => {
+    // Repro: staff picks Gingerbread while both footages are entered, then
+    // corrects Gingerbread footage to 0 and recalculates. rooflineChoice is
+    // never cleared, so it's still 'gingerbread' — but options.gingerbread is
+    // now null. Before the fix, both branches of rooflineLineItem fell
+    // through and the whole roofline line silently billed $0 despite 100ft
+    // of Santa's footage still being present.
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // Santa's 1000
+      gingerbreadFootage: 0, gingerbreadDifficulty: 'medium', // corrected to 0
+      rooflineChoice: 'gingerbread', // stale — set before the footage correction
+    }));
+    expect(r.rooflineChoice).toBe('santas'); // falls through to auto, not the stale dead choice
+    expect(r.lineItems).toHaveLength(1);
+    expect(r.lineItems[0].label).toContain("Santa's Roofline");
+    expect(r.lineItems[0].amount).toBe(1000); // NOT $0
+    expect(r.subtotalBeforeDiscount).toBe(1000);
+  });
+
+  it('WT-01: a stale "santas" choice falls through to auto (Gingerbread) instead of billing $0 when Santa\'s footage is zeroed out', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 0, santasDifficulty: 'medium', // corrected to 0
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 400
+      rooflineChoice: 'santas', // stale
+    }));
+    expect(r.rooflineChoice).toBe('gingerbread');
+    expect(r.lineItems).toHaveLength(1);
+    expect(r.lineItems[0].label).toContain('Gingerbread');
+    expect(r.lineItems[0].amount).toBe(400); // NOT $0
+  });
+
+  it('WT-01: a stale choice with BOTH footages zeroed resolves to "none" (no options left)', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 0,
+      gingerbreadFootage: 0,
+      rooflineChoice: 'gingerbread', // stale, nothing left to fall back to
+    }));
+    expect(r.rooflineChoice).toBe('none');
+    expect(r.lineItems).toHaveLength(0);
+  });
+
   it('rooflineChoice "none" bills no roofline even with footage (options still exposed)', () => {
     const r = calculateQuote(emptyInputs({
       santasFootage: 100, santasDifficulty: 'medium',
