@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import type {
   QuoteResult,
   QuoteInputs,
@@ -271,6 +272,12 @@ export type QuoteBuilderInitial = {
   // by" picker state (only set in the session that originally picked it) is
   // gone by then.
   isReferee?: boolean;
+  // PS-G2: the id of the job created when this quote was booked, if any —
+  // lets the booked banner link straight to that job's "Amend order" section
+  // (src/app/admin/jobs/[id]/page.tsx), which is the only place a re-price
+  // done here actually gets recorded (reason + balance re-sync + audit trail
+  // + customer notice). Null pre-booking or if job auto-create hasn't run yet.
+  jobId?: string | null;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -318,6 +325,10 @@ export default function QuoteBuilder({
       })
     : null;
   const quoteNumber = initialQuote?.quoteNumber ?? null;
+  // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
+  // order" banner below, which links to the job page's Record-amendment
+  // control instead of leaving a re-price here as a dead end.
+  const savedJobId = initialQuote?.jobId ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
@@ -2524,6 +2535,22 @@ export default function QuoteBuilder({
                 Clean it up anytime with “Delete test data” in Settings.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* PS-G2: booked-order banner — persistent so it's visible whether the
+            operator arrives here to re-price or just to look. Re-pricing here
+            (Calculate) only updates the number; it does NOT record the
+            amendment (reason, balance re-sync, audit trail, customer notice).
+            That control lives only on the job page, which the builder
+            otherwise never links to — this closes that dead end. */}
+        {savedStatus === 'booked' && savedJobId && (
+          <div className="mb-6 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            This order is booked. Calculate here to re-price, then{' '}
+            <Link href={`/admin/jobs/${savedJobId}`} className="font-semibold underline hover:no-underline">
+              open the job to record the amendment
+            </Link>{' '}
+            — that is what updates the balance, audit trail, and customer notice.
           </div>
         )}
 
