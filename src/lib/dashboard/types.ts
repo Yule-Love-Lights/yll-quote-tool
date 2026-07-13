@@ -82,6 +82,8 @@ export type HolidayBreakdown = {
   bookedTotal: number;
   /** Total holiday quotes whose home.works signature is recorded (proxy for "installed"). */
   installedTotal: number;
+  /** Holiday quotes sent but not yet approved (still in the funnel). */
+  pending: number;
   /** Bookings + installed per install-month for the current season (Sep–Feb window). */
   byMonth: ReadonlyArray<{
     /** Month label, e.g. "Sep 2026". */

@@ -18,6 +18,16 @@ export function HolidaySection({ data }: { data: HolidayBreakdown }) {
         </span>
       </div>
 
+      {/* Pending (sent, not yet approved) — parity with Permanent/Event/Bistro (WT-39) */}
+      <dl className="mb-3">
+        <div>
+          <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Pending</dt>
+          <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+            {data.pending}
+          </dd>
+        </div>
+      </dl>
+
       {/* Goal bar */}
       <div
         className="h-2 rounded-full mb-4 overflow-hidden"
