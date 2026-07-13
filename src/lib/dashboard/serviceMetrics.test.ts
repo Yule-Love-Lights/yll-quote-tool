@@ -5,6 +5,7 @@ import {
   computeEventSummary,
   computeBistroSummary,
   serviceTypeOf,
+  reachedCustomer,
 } from './serviceMetrics';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
@@ -36,6 +37,28 @@ describe('serviceTypeOf — fallback', () => {
   });
   it('treats NULL as holiday (legacy default)', () => {
     expect(serviceTypeOf(makeQuote({ service_type: null }))).toBe('holiday');
+  });
+});
+
+// WT-48: reachedCustomer() is the single shared "reached the customer"
+// definition for dashboard Conversion (metrics.ts) and Insights Close ratio
+// (insights.ts) — raw sent-OR-approved, NOT gated by terminal status.
+describe('reachedCustomer', () => {
+  it('true when sent', () => {
+    expect(reachedCustomer(makeQuote({ quote_sent_at: '2026-09-01T00:00:00Z' }))).toBe(true);
+  });
+  it('true when approved, even with no sent stamp', () => {
+    expect(reachedCustomer(makeQuote({ quote_sent_at: null, customer_approved_at: '2026-09-01T00:00:00Z' }))).toBe(true);
+  });
+  it('true when approved-then-terminal (cancelled), even with no sent stamp — approval alone means it reached them', () => {
+    expect(
+      reachedCustomer(
+        makeQuote({ quote_sent_at: null, customer_approved_at: '2026-09-01T00:00:00Z', status: 'cancelled' }),
+      ),
+    ).toBe(true);
+  });
+  it('false when neither sent nor approved', () => {
+    expect(reachedCustomer(makeQuote({ quote_sent_at: null, customer_approved_at: null }))).toBe(false);
   });
 });
 

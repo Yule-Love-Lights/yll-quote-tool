@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeKpis } from './metrics';
+import { computeInsightStats } from './insights';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
 
@@ -226,5 +227,31 @@ describe('computeKpis — turnaround + conversion', () => {
   it('conversion is null when no quote has reached a customer', () => {
     const k = computeKpis([makeQuote({ quote_sent_at: null })], NOW);
     expect(k.conversionRate).toBeNull();
+  });
+});
+
+// WT-48: dashboard Conversion (computeKpis) and Insights Close ratio
+// (computeInsightStats) used to compute the sent-or-approved "reached"
+// denominator differently — Insights gated it on the terminal-filtered
+// "approved" flag, so an approved-then-cancelled quote with no sent stamp
+// silently dropped out of its ratio while still counting for Conversion.
+// Both now share serviceMetrics.ts's reachedCustomer(); this proves parity.
+describe('Conversion (metrics.ts) / Close-ratio (insights.ts) parity — WT-48', () => {
+  it('computes the identical ratio on the same data, including an approved-then-cancelled quote with no sent stamp', () => {
+    const quotes: DashboardQuote[] = [
+      // sent + approved, not terminal — a real win.
+      makeQuote({ quote_sent_at: '2026-01-01T00:00:00Z', customer_approved_at: '2026-01-05T00:00:00Z' }),
+      // sent, never approved — reached, not won.
+      makeQuote({ quote_sent_at: '2026-02-01T00:00:00Z' }),
+      // approved then cancelled, never marked sent (offline close that fell
+      // through). Still reached the customer — they approved it — even
+      // though it's not a win and quote_sent_at is null.
+      makeQuote({ quote_sent_at: null, customer_approved_at: '2026-03-01T00:00:00Z', status: 'cancelled' }),
+    ];
+    const k = computeKpis(quotes, NOW);
+    const s = computeInsightStats(quotes);
+    expect(k.conversionRate).toBe(1 / 3); // 1 won / 3 reached
+    expect(s.closeRatio).toBe(1 / 3);
+    expect(k.conversionRate).toBe(s.closeRatio);
   });
 });

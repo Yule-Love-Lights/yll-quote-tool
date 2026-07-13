@@ -6,6 +6,7 @@ import { MonthlyRevenueChart, ServiceDonut } from '@/components/dashboard/insigh
 import { listItemsForMetrics, getReopenCounts } from '@/lib/dashboard/inbox/store';
 import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
+import { DashboardErrorBanner, CappedCaveat } from '@/components/dashboard/ErrorBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,17 +39,7 @@ export default async function InsightsPage() {
             </p>
             <h1 className="text-3xl font-semibold" style={{ color: 'var(--op-text)' }}>Insights</h1>
           </header>
-          <div
-            role="alert"
-            className="rounded-lg border p-4 text-sm"
-            style={{ borderColor: 'var(--op-danger, #b91c1c)', color: 'var(--op-danger, #b91c1c)', background: 'var(--op-danger-bg, rgba(185,28,28,0.08))' }}
-          >
-            <p className="font-semibold">Couldn&apos;t load insights.</p>
-            <p className="mt-1" style={{ color: 'var(--op-text-dim)' }}>
-              The quotes query failed, so no metrics are shown (rather than misleading zeros). Try refreshing; if it persists, check the database connection.
-            </p>
-            <p className="mt-2 font-mono text-xs" style={{ color: 'var(--op-text-dim)' }}>{result.error}</p>
-          </div>
+          <DashboardErrorBanner title="Couldn't load insights." error={result.error} />
         </div>
       </OperatorShell>
     );
@@ -75,6 +66,8 @@ export default async function InsightsPage() {
             installs — arrive with the home.works integration.)
           </p>
         </header>
+
+        {result.capped && <CappedCaveat limit={result.limit} />}
 
         <section aria-label="Headline metrics" className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
           <KpiCard label="Close ratio" value={pct(stats.closeRatio)} sub="approved / reached" />

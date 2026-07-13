@@ -1,6 +1,6 @@
 import { DASHBOARD_CONFIG } from './config';
 import type { DashboardQuote, Kpis } from './types';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { isTerminalStatus, reachedCustomer } from './serviceMetrics';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -37,16 +37,11 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     const sentAt = q.quote_sent_at;
     const total = q.total ?? 0;
 
-    // B7 fix: derive the canonical status first so terminal-state orders
-    // (cancelled/declined/lost) are excluded from booked revenue even when
-    // customer_approved_at or deposit_paid_at is set.  deriveStatus returns
-    // the persisted status when it is a terminal/branch state, so this
-    // requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
-    const derivedStatus = deriveStatus(q);
-    const isTerminal =
-      derivedStatus === 'cancelled' ||
-      derivedStatus === 'declined' ||
-      derivedStatus === 'lost';
+    // B7 fix: terminal-state orders (cancelled/declined/lost) are excluded
+    // from booked revenue even when customer_approved_at or deposit_paid_at
+    // is set. Shared with serviceMetrics.ts / insights.ts (isTerminalStatus)
+    // so every surface agrees on what counts as a win.
+    const isTerminal = isTerminalStatus(q);
 
     if (approvedAt && !isTerminal) {
       bookedRevenue += total;
@@ -55,11 +50,12 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
       approvedCount += 1;
     }
 
-    // A quote "reached the customer" if it was sent OR approved. Approval implies
-    // it reached them even when quote_sent_at was never stamped (in-person /
-    // imported / offline close — /approve sets customer_approved_at only). Using
-    // this as the conversion denominator keeps the rate in [0,1].
-    if (sentAt || approvedAt) reachedCount += 1;
+    // A quote "reached the customer" if it was sent OR approved (shared
+    // reachedCustomer() — WT-48: keeps this denominator identical to
+    // Insights' Close ratio). See its doc comment for why terminal status
+    // doesn't gate this. Using this as the conversion denominator also keeps
+    // the rate in [0,1].
+    if (reachedCustomer(q)) reachedCount += 1;
 
     if (sentAt) {
       // Avg turnaround uses created→sent for every sent quote (no window).
