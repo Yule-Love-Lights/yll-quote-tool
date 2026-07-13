@@ -21,8 +21,9 @@ import { WorkflowBoard } from '@/components/dashboard/WorkflowBoard';
 import { Worklist } from '@/components/dashboard/Worklist';
 import { NeedsActionCard } from '@/components/dashboard/NeedsActionCard';
 import { ServiceSections } from '@/components/dashboard/ServiceSections';
-import { listItemsForMetrics, getReopenCounts } from '@/lib/dashboard/inbox/store';
+import { listItemsForMetrics, listOpenItems, getReopenCounts } from '@/lib/dashboard/inbox/store';
 import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
 import { ReferralMetricsCard } from '@/components/dashboard/ReferralMetricsCard';
@@ -32,15 +33,19 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, invoices, metricsRes, reopen, referralMetrics] = await Promise.all([
+  const [quotes, jobs, invoices, metricsRes, openRes, reopen, referralMetrics] = await Promise.all([
     listQuotesForDashboard(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
     listItemsForMetrics(),
+    listOpenItems(),
     getReopenCounts(now),
     loadReferralMetrics(),
   ]);
   const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
+  // PS-E2: Inbox nav badge — same buildInboxSummary(listOpenItems()) pairing
+  // /inbox's own InboxList uses for its "Open leads" / "Overdue over 4h" tiles.
+  const inboxSummary = openRes.ok ? buildInboxSummary(openRes.items, now.getTime()) : null;
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
   const workflowBoard = computeWorkflowBoard(quotes, jobs, invoices);
@@ -54,7 +59,7 @@ export default async function DashboardPage() {
   const needsActionItems = buildNeedsAction({ nowMs: now.getTime(), ...needsActionData });
 
   return (
-    <OperatorShell active="home">
+    <OperatorShell active="home" inboxOpenLeads={inboxSummary?.openLeads} inboxOverdue={inboxSummary?.overdue}>
       <div className="max-w-6xl mx-auto w-full">
         <DashboardHeader />
         <KpiStrip kpis={kpis} />
