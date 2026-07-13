@@ -28,7 +28,7 @@ export function KpiStrip({ kpis }: { kpis: Kpis }) {
       <KpiCard label="Booked (30 days)" value={fmtMoney(kpis.bookedRevenueRecent)} sub="trailing 30 days" />
       <KpiCard label="Booked (lifetime)" value={fmtMoney(kpis.bookedRevenue)} />
       <KpiCard label="Active quotes" value={kpis.activeQuotes.toString()} sub="sent · awaiting customer" />
-      <KpiCard label="Conversion" value={fmtPct(kpis.conversionRate)} sub="approved / sent" />
+      <KpiCard label="Conversion" value={fmtPct(kpis.conversionRate)} sub="approved / reached" />
     </section>
   );
 }

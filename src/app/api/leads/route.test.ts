@@ -329,6 +329,9 @@ describe('POST /api/leads — per-service GHL pipeline routing (case a)', () => 
     ['christmas', 'sC6JEcxlGnNDasanlXDN'],
     ['permanent', 'OqpjVflTdgmjmUQmbcSF'],
     ['event-wedding', 'YfCi5jy8Alc3oD5AfXmV'],
+    // WT-50: landscape now rides the live Landscape Lighting pipeline (shared
+    // with permanent_bistro) instead of deferring on never-wired env vars.
+    ['landscape', 'GTFURwOGzGLBl2zsdl0N'],
   ])('%s → pipeline %s', async (service, pipelineId) => {
     sbRef.current = makeSb().client;
     const res = await POST(makeReq(validBody({ service })));
@@ -572,20 +575,22 @@ describe('POST /api/leads — partial GHL sync keeps the contact id (F9)', () =>
   });
 });
 
-describe('POST /api/leads — landscape deferred (case h)', () => {
-  it('returns 200 ok; the row is marked deferred naming the missing env vars', async () => {
-    const { client, updated } = makeSb();
+describe('POST /api/leads — landscape syncs to the live Landscape pipeline (case h, WT-50)', () => {
+  it('returns 200 ok and creates an opportunity in the Landscape Lighting pipeline (no longer deferred)', async () => {
+    const { client } = makeSb();
     sbRef.current = client;
 
+    // The old landscape-only env vars are irrelevant now — landscape resolves
+    // through ghlPipelineMap (the permanent_bistro / Landscape Lighting pipeline)
+    // like every other vertical, so a landscape lead syncs instead of deferring.
     const res = await POST(makeReq(validBody({ service: 'landscape' })));
     const json = await res.json();
 
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
-    expect(updated).toHaveLength(1);
-    expect(updated[0]!.sync_status).toBe('deferred');
-    expect(String(updated[0]!.sync_error)).toContain('HIGHLEVEL_PIPELINE_ID_LANDSCAPE');
-    expect(hl.findOrCreateOpportunityForContact).not.toHaveBeenCalled();
+    expect(hl.findOrCreateOpportunityForContact).toHaveBeenCalledWith(
+      expect.objectContaining({ pipelineId: 'GTFURwOGzGLBl2zsdl0N' }),
+    );
   });
 });
 

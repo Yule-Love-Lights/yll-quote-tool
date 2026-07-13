@@ -40,6 +40,8 @@ export function computeWorklist(quotes: DashboardQuote[], now: Date): WorklistIt
         items.push({
           kind: 'draft-stale',
           quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          serviceType: q.service_type,
           title: customerLabel(q),
           subtitle: `Drafted ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — never sent`,
           ageDays,
@@ -55,6 +57,8 @@ export function computeWorklist(quotes: DashboardQuote[], now: Date): WorklistIt
       items.push({
         kind: 'sent-no-reply',
         quoteId: q.id,
+        quoteNumber: q.quote_number ?? null,
+        serviceType: q.service_type,
         title: customerLabel(q),
         subtitle: `Sent ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — no reply`,
         ageDays,

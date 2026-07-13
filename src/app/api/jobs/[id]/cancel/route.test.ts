@@ -72,6 +72,7 @@ function fakeSb(quoteRow: Record<string, unknown> = { deposit_paid_at: null }) {
       return b;
     },
     eq: () => b,
+    not: () => b,
     maybeSingle: async () => ({ data: quoteRow, error: null }),
     then: (resolve: (v: unknown) => void) => resolve({ error: null }),
   });
@@ -349,6 +350,31 @@ describe('POST /api/jobs/[id]/cancel', () => {
       });
       expect(hl.sendEmail).toHaveBeenCalledTimes(1);
     });
+
+    it('refunds the DEPOSIT actually collected when the order was amended DOWN below it (overpaid, credit_note > 0)', async () => {
+      // WT-17 overpaid corner: install → requires_invoicing → amend the order
+      // DOWN to $600 auto-settles the invoice to paid with total $600 <
+      // deposit_applied $1000 (credit_note $400). The customer paid the $1000
+      // deposit and is owed $1000 — invoice.total ($600) would under-refund by
+      // the $400 credit. The cue must be max(total, deposit_applied).
+      sb = fakeSb({
+        deposit_paid_at: '2026-01-01T00:00:00Z',
+        deposit_amount_usd: 1000,
+        customer_name: 'Overpaid Olivia',
+      });
+      sbRef.current = sb.client;
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'paid', total: 600, deposit_applied: 1000 });
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(json.refundedInvoice).toBe(true);
+      expect(sb.updates[1]).toMatchObject({
+        approval_snapshot: { refundDue: { reason: 'cancelled-paid-in-full', amountUsd: 1000 } },
+      });
+      const args = hl.sendEmail.mock.calls[0] as unknown as [{ html: string }];
+      expect(args[0].html).toContain('$1,000.00');
+    });
   });
 
   // WT-31: a job whose materials were already prepped (stock decremented at
@@ -450,6 +476,47 @@ describe('POST /api/jobs/[id]/cancel', () => {
 
       expect(res.status).toBe(200);
       expect(json.ok).toBe(true);
+      expect(json.stockReturned).toEqual([]);
+    });
+
+    it('claims the reversal so a concurrent double-cancel returns stock only ONCE', async () => {
+      // WT-31 concurrency: two simultaneous cancel POSTs both pass the top
+      // status guard and both reach the reversal. It is gated on an atomic
+      // claim (clear stock_decremented_at WHERE it's still set); the LOSER's
+      // claim matches no row (data: null) and must NOT re-return stock, or
+      // on-hand is double-credited into phantom inventory.
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
+        materials: {
+          materials: [{ sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+      // Table-aware fake: the jobs-claim maybeSingle LOSES (returns null);
+      // quotes reads still return a row so the rest of the cancel proceeds.
+      let table = '';
+      const b: Record<string, unknown> = {};
+      Object.assign(b, {
+        from: (t: string) => {
+          table = t;
+          return b;
+        },
+        select: () => b,
+        update: () => b,
+        eq: () => b,
+        not: () => b,
+        maybeSingle: async () => ({ data: table === 'jobs' ? null : { deposit_paid_at: null }, error: null }),
+        then: (resolve: (v: unknown) => void) => resolve({ error: null }),
+      });
+      sbRef.current = b;
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.cancelled).toBe(true);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
     });
   });

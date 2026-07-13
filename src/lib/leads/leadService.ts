@@ -32,10 +32,13 @@ export function asLeadService(v: unknown): LeadService | null {
 }
 
 // ─── Pipeline resolution ────────────────────────────────────────────────
-// christmas/permanent/event-wedding reuse the quote tool's own pipeline map
-// (their pipelines already exist in GHL and are used by the quote-send flow
-// too). landscape has no pipeline yet — it's resolved purely from env so the
-// dev can wire it up later without a code change.
+// All 4 lead services reuse the quote tool's own pipeline map — their
+// pipelines already exist in GHL and are used by the quote-send flow too.
+// landscape rides the SAME live GHL pipeline as permanent_bistro (#117 — the
+// Landscape Lighting pipeline; bistro cards already land there, see
+// ghlPipelineMap.ts), so a website landscape lead resolves through that map
+// entry too (WT-50; was previously env-driven via two vars that were never
+// configured in prod, so every landscape lead silently deferred forever).
 export type LeadPipeline = { pipelineId: string; entryStageId: string };
 
 export function resolveLeadPipeline(service: LeadService): LeadPipeline | null {
@@ -58,19 +61,10 @@ export function resolveLeadPipeline(service: LeadService): LeadPipeline | null {
       return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
     case 'landscape': {
-      const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE;
-      const entryStageId = process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY;
-      if (!pipelineId || !entryStageId) return null;
-      return { pipelineId, entryStageId };
+      const stages = resolvePipelineStages('permanent_bistro', { envOverrides: false });
+      return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
   }
-}
-
-function missingLandscapeEnvVars(): string[] {
-  const missing: string[] = [];
-  if (!process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE) missing.push('HIGHLEVEL_PIPELINE_ID_LANDSCAPE');
-  if (!process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY) missing.push('HIGHLEVEL_STAGE_LANDSCAPE_ENTRY');
-  return missing;
 }
 
 // ─── contact.service custom field ──────────────────────────────────────
@@ -198,8 +192,10 @@ async function findHouseholdMatch(lead: LeadInput): Promise<CrmContact | null> {
 // backstop, leaving the row 'pending' for retry). Every step AFTER the
 // contact exists catches its own failure and returns status 'error' WITH the
 // ghlContactId already captured, so a partial sync never loses the contact
-// id. A missing landscape pipeline is NOT an error and returns 'deferred'
-// instead.
+// id. Every LeadService now resolves to a real, live pipeline (WT-50), but
+// resolveLeadPipeline's return type stays nullable and 'deferred' stays a
+// defensive fallback for a future service added without its pipeline wired
+// up yet — a missing pipeline is NOT an error.
 export type LeadInput = {
   name: string;
   email: string;
@@ -308,7 +304,7 @@ export async function syncLeadToGhl(
       return {
         status: 'deferred',
         ghlContactId: contact.id,
-        syncError: `GHL pipeline not configured for "${lead.service}" — missing env var(s): ${missingLandscapeEnvVars().join(', ')}`,
+        syncError: `GHL pipeline not configured for "${lead.service}"`,
       };
     }
 
