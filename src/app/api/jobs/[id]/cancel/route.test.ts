@@ -208,7 +208,7 @@ describe('POST /api/jobs/[id]/cancel', () => {
           html: expect.stringContaining('$7,797.38'),
         }),
       );
-      const call = hl.sendEmail.mock.calls[0][0] as { html: string };
+      const call = (hl.sendEmail.mock.calls[0] as unknown as [{ html: string }])[0];
       expect(call.html).not.toContain('$3,898.69');
     });
 

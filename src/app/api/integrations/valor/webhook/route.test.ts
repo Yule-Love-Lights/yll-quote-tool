@@ -682,7 +682,10 @@ describe('Valor webhook — balance pay-link (#83)', () => {
 
     expect(res.status).toBe(200);
     expect(json.underpaid).toBe(true);
-    expect(updatePayloads).toHaveLength(0); // the invoice itself is never settled
+    // The invoice is never SETTLED (no status:'paid'/balance:0). A durable
+    // underpayment marker (WT-15) may be written to the quote's approval_snapshot;
+    // assert only that no settlement write occurred.
+    expect(updatePayloads.some((p) => (p as { status?: string }).status === 'paid')).toBe(false);
     expect(setJobStatus).not.toHaveBeenCalled();
   });
 
