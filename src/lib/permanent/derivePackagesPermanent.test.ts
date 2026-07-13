@@ -123,7 +123,7 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(d.total).toBe(expectedD.total);
   });
 
-  it('one drawn side only (left) → B = Front & Sides with front + that side', () => {
+  it('WT-05: one drawn side only (left) → B = "Front & Left Side", never falsely "Front & Sides"', () => {
     const lineItems = [
       permItem('permanent-front', 4000),
       permItem('permanent-left', 2750),
@@ -131,9 +131,19 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
     const b = packages.find((p) => p.id === 'B')!;
-    expect(b.name).toBe('Front & Sides');
+    expect(b.name).toBe('Front & Left Side');
+    expect(b.tagline).toBe('The front plus your left side.');
     expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-left']);
     expect(b.total).toBe(priceSelection(4000 + 2750, CHARGES).total);
+  });
+
+  it('WT-05: one drawn side only (right), no front → B = "Right Side"', () => {
+    const lineItems = [permItem('permanent-right', 2500), permItem('permanent-back', 3500)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.name).toBe('Right Side');
+    expect(b.tagline).toBe('Your right side.');
+    expect(b.includedItemIds).toEqual(['permanent-right']);
   });
 
   it('front + sides and no back → B (Front & Sides) without a byte-identical Whole Home D', () => {

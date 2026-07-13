@@ -432,48 +432,66 @@ export function InteractiveHero({
                 role="radiogroup"
                 aria-label="Choose your lighting package"
                 aria-disabled={locked || undefined}
-                className={`grid grid-cols-2 gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
+                className={`grid ${packages.length === 1 ? 'grid-cols-1' : 'grid-cols-2'} gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                {packages.map((p, i) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={packageId === p.id}
-                    onClick={() => {
-                      selectPackage(p.id);
-                      track('package_selected', { quote_id: quoteId, package: p.id });
-                    }}
-                    data-active={packageId === p.id}
-                    className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
-                  >
-                    {/* Internal ids stay A/B/C/D; the customer sees "Tier N" by
-                        position (so omitting an unavailable tier stays contiguous)
-                        + "Custom" for D. The "· recommended" badge and the D name
-                        track the live selection so they don't out-claim the
-                        sticky bar once the customer edits the recommendation. */}
-                    <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' && (serviceType == null || serviceType === 'holiday') ? 'Custom' : `Tier ${i + 1}`}
-                      {p.recommended && (packageId !== 'D' || activeName === p.name) && (
-                        <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
-                          · recommended
-                        </span>
-                      )}
-                    </span>
-                    <span className="font-display text-[17px] md:text-[18px] font-semibold text-[#F4ECD8] leading-[1.15] mt-0.5">
-                      {p.id === 'D' && packageId === 'D' ? activeName : p.name}
-                    </span>
-                    <span className="portal-snow-price text-[14px] md:text-[15px] font-semibold text-[#F4ECD8]/85 mt-1">
-                      {p.id === 'D'
-                        ? packageId === 'D'
-                          ? formatUsd(currentTotal)
-                          : p.includedItemIds.length > 0
-                            ? formatUsd(p.total)
-                            : 'You pick'
-                        : formatUsd(p.total)}
-                    </span>
-                  </button>
-                ))}
+                {packages.map((p, i) => {
+                  // Internal ids stay A/B/C/D. The small-caps eyebrow above the
+                  // package name reads differently per vertical (WT-10):
+                  //  - D on holiday (or legacy/null service_type) → "Custom".
+                  //  - Permanent packages are house SURFACES, not price tiers —
+                  //    "Back = Tier 3" is misleading, so label by the package's
+                  //    own name instead of an ordinal.
+                  //  - A single-package vertical (event/bistro today) has
+                  //    nothing to rank against, so the ordinal is just noise —
+                  //    hide the eyebrow.
+                  //  - Otherwise (holiday A/B/C) → "Tier N" as before.
+                  const eyebrow =
+                    p.id === 'D' && (serviceType == null || serviceType === 'holiday')
+                      ? 'Custom'
+                      : serviceType === 'permanent'
+                        ? p.name
+                        : packages.length === 1
+                          ? null
+                          : `Tier ${i + 1}`;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={packageId === p.id}
+                      onClick={() => {
+                        selectPackage(p.id);
+                        track('package_selected', { quote_id: quoteId, package: p.id });
+                      }}
+                      data-active={packageId === p.id}
+                      className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
+                    >
+                      {/* The "· recommended" badge and the D name track the live
+                          selection so they don't out-claim the sticky bar once
+                          the customer edits the recommendation. */}
+                      <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
+                        {eyebrow}
+                        {p.recommended && (packageId !== 'D' || activeName === p.name) && (
+                          <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
+                            · recommended
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-display text-[17px] md:text-[18px] font-semibold text-[#F4ECD8] leading-[1.15] mt-0.5">
+                        {p.id === 'D' && packageId === 'D' ? activeName : p.name}
+                      </span>
+                      <span className="portal-snow-price text-[14px] md:text-[15px] font-semibold text-[#F4ECD8]/85 mt-1">
+                        {p.id === 'D'
+                          ? packageId === 'D'
+                            ? formatUsd(currentTotal)
+                            : p.includedItemIds.length > 0
+                              ? formatUsd(p.total)
+                              : 'You pick'
+                          : formatUsd(p.total)}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>

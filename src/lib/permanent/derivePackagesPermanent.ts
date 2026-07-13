@@ -76,16 +76,37 @@ export function derivePackagesPermanent(
     });
   }
 
-  // Package B = "Front & Sides" (#133, Jason S24): the front PLUS both sides,
-  // so tapping tier 2 selects front + left + right. On a quote with no front
-  // line it degrades to the sides alone (named honestly).
+  // Package B = "Front & Sides" (#133, Jason S24): the front PLUS whichever
+  // side lines are present, so tapping tier 2 selects front + side(s). On a
+  // quote with no front line it degrades to the sides alone (named honestly).
+  //
+  // WT-05: the name must reflect which side ids are ACTUALLY present — a
+  // one-side home (townhome/corner lot) is NOT required to carry both
+  // LEFT_ID and RIGHT_ID, so "Both Sides" / "Front & Sides" would falsely
+  // claim both sides are covered. The combined legacy line always means
+  // both (it's one pre-#132 line covering the whole sides surface).
   if (sideIds.length > 0) {
     const bIds = hasFront ? [FRONT_ID, ...sideIds] : sideIds;
+    const bothSides =
+      sideIds.includes(LEGACY_SIDES_ID) || (sideIds.includes(LEFT_ID) && sideIds.includes(RIGHT_ID));
+    const oneSideLabel = sideIds.includes(LEFT_ID) ? 'Left Side' : 'Right Side';
     const p = priceIds(bIds, lineItems, charges);
     packages.push({
       id: 'B',
-      name: hasFront ? 'Front & Sides' : 'Both Sides',
-      tagline: hasFront ? 'The front plus both sides.' : 'Left + right sides.',
+      name: hasFront
+        ? bothSides
+          ? 'Front & Sides'
+          : `Front & ${oneSideLabel}`
+        : bothSides
+          ? 'Both Sides'
+          : oneSideLabel,
+      tagline: hasFront
+        ? bothSides
+          ? 'The front plus both sides.'
+          : `The front plus your ${oneSideLabel.toLowerCase()}.`
+        : bothSides
+          ? 'Left + right sides.'
+          : `Your ${oneSideLabel.toLowerCase()}.`,
       total: p.total,
       deposit: p.deposit,
       includedItemIds: bIds,
