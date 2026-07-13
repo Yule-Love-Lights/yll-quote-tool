@@ -509,6 +509,7 @@ export async function POST(req: NextRequest) {
     const isPermanent = effectiveServiceType === 'permanent';
     const isEvent = effectiveServiceType === 'event';
     const isPermanentBistro = effectiveServiceType === 'permanent_bistro';
+    const isHoliday = effectiveServiceType === 'holiday';
 
     // If a design is linked AND its scene has projectable per-unit items, the
     // DESIGN is the master list for those items (#27). Holiday + event both use
@@ -545,6 +546,13 @@ export async function POST(req: NextRequest) {
     const bistroRates = isPermanentBistro
       ? existing?.result?.permanentBistroRatesSnapshot ?? (await getAppSettings()).permanentBistroRates
       : undefined;
+    // Holiday rate table (WT-63) — the same rate-drift guard as permanent/event/
+    // bistro: re-price an EXISTING holiday quote from its FROZEN snapshot; a NEW
+    // holiday quote reads live settings. Falls back to live settings for a legacy
+    // row saved before this snapshot existed.
+    const holidayRates = isHoliday
+      ? existing?.result?.holidayRatesSnapshot ?? (await getAppSettings()).holidayRates
+      : undefined;
     const price = (i: QuoteInputs) =>
       isPermanent
         ? calculatePermanentQuote(i, permRates)
@@ -552,7 +560,7 @@ export async function POST(req: NextRequest) {
           ? calculateEventQuote(i, eventRates)
           : isPermanentBistro
             ? calculatePermanentBistro(i, bistroRates)
-            : calculateQuote(i);
+            : calculateQuote(i, holidayRates);
 
     const result = price(quoteInputs);
     // #104: a baseline result with the per-quote price overrides STRIPPED, so the

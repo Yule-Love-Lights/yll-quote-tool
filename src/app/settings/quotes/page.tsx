@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
+import { HolidayRatesSettings } from '@/components/settings/HolidayRatesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
 import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
 import { PermanentBistroRatesSettings } from '@/components/settings/PermanentBistroRatesSettings';
@@ -42,6 +43,9 @@ export default async function QuotesSettingsPage() {
           </p>
         </div>
         <QuotesSettings />
+
+        <hr className="my-8 border-gray-200" />
+        <HolidayRatesSettings />
 
         <hr className="my-8 border-gray-200" />
         <EventRatesSettings />

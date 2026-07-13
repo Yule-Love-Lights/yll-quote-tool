@@ -28,6 +28,7 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
         permanentRatesSnapshot?: unknown;
         eventRatesSnapshot?: unknown;
         permanentBistroRatesSnapshot?: unknown;
+        holidayRatesSnapshot?: unknown;
       } | null;
     } | null,
   },
@@ -78,6 +79,36 @@ vi.mock('@/lib/appSettings', () => ({
     // reads settings.permanentBistroRates, not the engine's compiled default
     // (perFt $30).
     permanentBistroRates: { perFt: 6, perPole: 20, minimum: 0 },
+    // Distinct holiday rates (WT-63) — roofline easy/medium/hard all $6, vs the
+    // engine's compiled DEFAULT_HOLIDAY_RATES (8/10/12) — so a test can prove
+    // the route reads settings.holidayRates, not the compiled default.
+    holidayRates: {
+      rooflineRates: { easy: 6, medium: 6, hard: 6 },
+      stakeLightingRates: { easy: 6, medium: 7, hard: 8 },
+      miniLightRates: { canopy: 35, trunk: 45 },
+      spritzerRates: { '16': 85, '24': 95, '32': 105 },
+      wreathPrices: {
+        '24noble': { bow: 200, fullDecor: 275 },
+        '30noble': { bow: 285, fullDecor: 355 },
+        '36noble': { bow: 315, fullDecor: 400 },
+        '48noble': { bow: 450, fullDecor: 705 },
+        '60noble': { bow: 885, fullDecor: 1130 },
+        '72noble': { bow: 1149, fullDecor: 1455 },
+      },
+      garlandPrices: {
+        noble: {
+          '9ft': { bow: 162, fullDecor: 250 },
+          '4.5ft': { bow: 135, fullDecor: 210 },
+        },
+      },
+      standaloneBowPrice: 35,
+      minimumQuoteAmount: 1000,
+      rushFeeAmount: 150,
+      premiumTakedownFee: 150,
+      taxRate: 0.0875,
+      depositPercentage: 0.5,
+      earlyInstallDiscounts: { september: 0.15, october: 0.1 },
+    },
   }),
 }));
 
@@ -222,6 +253,52 @@ describe('POST /api/quote — event dispatch (#96 Phase B)', () => {
     await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs }));
     expect(eventRooflineAmt(updatedResult())).toBe(300); // 100 * $3 (snapshot) — NOT $5 (live)
     expect(update.mock.calls[0]?.[4]).toBe('event'); // stored type written back
+  });
+});
+
+describe('POST /api/quote — holiday dispatch (WT-63)', () => {
+  it('a NEW holiday quote is priced by the holiday engine at LIVE holiday rates + saved as holiday, snapshot frozen', async () => {
+    const inputs = { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' };
+    const res = await POST(makeReq({ serviceType: 'holiday', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(eventRooflineAmt(savedResult())).toBe(600); // 100 * $6 (settings holiday rate) — NOT $8 (compiled default)
+    expect((savedResult() as { holidayRatesSnapshot?: unknown }).holidayRatesSnapshot).toBeTruthy();
+    expect(save.mock.calls[0]?.[3]).toBe('holiday');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('H1: an UPDATE of an existing holiday quote prices from the FROZEN snapshot, not live settings', async () => {
+    rawRef.current!.service_type = 'holiday';
+    rawRef.current!.result = {
+      holidayRatesSnapshot: {
+        rooflineRates: { easy: 3, medium: 3, hard: 3 },
+        stakeLightingRates: { easy: 3, medium: 3, hard: 3 },
+        miniLightRates: { canopy: 20, trunk: 20 },
+        spritzerRates: { '16': 40, '24': 40, '32': 40 },
+        wreathPrices: {
+          '24noble': { bow: 100, fullDecor: 150 },
+          '30noble': { bow: 100, fullDecor: 150 },
+          '36noble': { bow: 100, fullDecor: 150 },
+          '48noble': { bow: 100, fullDecor: 150 },
+          '60noble': { bow: 100, fullDecor: 150 },
+          '72noble': { bow: 100, fullDecor: 150 },
+        },
+        garlandPrices: { noble: { '9ft': { bow: 80, fullDecor: 120 }, '4.5ft': { bow: 60, fullDecor: 90 } } },
+        standaloneBowPrice: 20,
+        minimumQuoteAmount: 1000,
+        rushFeeAmount: 150,
+        premiumTakedownFee: 150,
+        taxRate: 0.0875,
+        depositPercentage: 0.5,
+        earlyInstallDiscounts: { september: 0.15, october: 0.1 },
+      },
+    };
+    const inputs = { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' };
+    await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'holiday', inputs }));
+    // 100 * $3 (frozen snapshot) — NOT $6 (live settings) or $8 (compiled default).
+    expect(eventRooflineAmt(updatedResult())).toBe(300);
+    expect(update.mock.calls[0]?.[4]).toBe('holiday'); // stored type written back
   });
 });
 
