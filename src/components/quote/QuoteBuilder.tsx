@@ -761,6 +761,13 @@ export default function QuoteBuilder({
   const hadPermLinesRef = useRef<Record<PermanentSideKey, boolean>>({
     front: false, left: false, right: false, back: false,
   });
+  // PS-B1: whether permanentSatLines reflects a settled trace state, so the
+  // billed-but-untraced warning (below) doesn't flash true for every reopened
+  // permanent quote while the #142 rehydrate fetch is still in flight. A new
+  // (non-edit) quote has nothing to hydrate, so it's ready immediately; an
+  // edit-mode quote flips ready once the rehydrate effect settles (found
+  // lines, found none, or errored — any outcome still means "now accurate").
+  const [permTraceHydrated, setPermTraceHydrated] = useState(!editMode);
   // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
   // the satellite view — the BILLING source (true-scale feet-per-pixel, no
   // yardstick). One flat array of runs (not per-side, unlike permanent's four
@@ -1068,7 +1075,13 @@ export default function QuoteBuilder({
   useEffect(() => {
     const isPermanentBistro = form.serviceType === 'permanent_bistro';
     if (!editMode || (form.serviceType !== 'permanent' && !isPermanentBistro)) return;
-    if (!designId || satellitePreview != null) return; // live session already
+    if (!designId || satellitePreview != null) {
+      // Nothing to hydrate (no design yet) or already hydrated/live this
+      // session — either way permanentSatLines is already accurate, so the
+      // PS-B1 billed-but-untraced warning can trust it now.
+      setPermTraceHydrated(true);
+      return;
+    }
     let stale = false;
     (async () => {
       try {
@@ -1103,6 +1116,11 @@ export default function QuoteBuilder({
       } catch (err) {
         // Best-effort: a failed rehydrate just leaves the pre-#142 blank tab.
         console.error('[QuoteBuilder] satellite rehydrate failed:', err);
+      } finally {
+        // PS-B1: this rehydrate attempt is settled (found lines, found none,
+        // 404'd, or errored) — permanentSatLines now reflects the real trace
+        // state either way, so the billed-but-untraced warning can trust it.
+        if (!stale) setPermTraceHydrated(true);
       }
     })();
     return () => {
@@ -2613,9 +2631,22 @@ export default function QuoteBuilder({
               onPick={pickHighLevelContact}
               onClear={clearHighLevelContact}
             />
-            <p className="text-xs text-amber-600 mb-3">
-              Testing mode — name / phone / email are optional. Address is optional too, but helps if you want to tie the quote to a real property.
+            <p className="text-xs text-gray-500 mb-1">
+              Name, phone, and email are optional here. The quote still saves. Address is optional too, and it
+              helps if you want to tie the quote to a real property.
             </p>
+            {/* PS-F4: the send route requires a linked HighLevel contact for any
+                real (non-test) quote (no contact = the customer never gets
+                texted/emailed and the pipeline card never moves) — say so up
+                front instead of letting the operator fill in manual fields and
+                only discover the block when Send 400s. Test quotes are exempt
+                (the send route skips this check for them), so hide it there. */}
+            {!isTest && !highlevelContact && (
+              <p className="text-xs text-amber-600 mb-3">
+                A HighLevel contact is required before this quote can be sent. Pick one above, or fill in the
+                fields below and link a contact before sending.
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={lbl}>Name</label>
@@ -3642,6 +3673,16 @@ export default function QuoteBuilder({
               onRecount={() => {
                 permDeriveFrozenRef.current = false; // #142: Recount = explicit re-derive
               }}
+              // PS-B1: a billed side (footage > 0) with no drawn satellite trace
+              // never shows on the portal's roof map — surface that mismatch
+              // inline so the operator draws it or knowingly proceeds.
+              tracedSides={{
+                front: permanentSatLines.front.length > 0,
+                left: permanentSatLines.left.length > 0,
+                right: permanentSatLines.right.length > 0,
+                back: permanentSatLines.back.length > 0,
+              }}
+              tracedReady={permTraceHydrated}
             />
           )}
 
