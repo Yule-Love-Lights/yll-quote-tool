@@ -23,6 +23,7 @@ import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { BistroBomLine } from '@/lib/permanentBistro/bom';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
+import { BISTRO_CATALOG } from './bistroCatalog';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
 import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
@@ -186,6 +187,13 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
   );
 
   const nameBySku = new Map((await listCatalog()).map((c) => [c.sku, c.name]));
+  // WA-A8 (mirrors jobs.ts's getJobWorkOrder): bistro SKUs live in the STATIC
+  // BISTRO_CATALOG (no inventory_catalog rows exist for them), so backfill their
+  // display names before falling to "(not in catalog)" — a real DB row with the
+  // same SKU still wins (only fills gaps).
+  for (const item of BISTRO_CATALOG) {
+    if (!nameBySku.has(item.sku)) nameBySku.set(item.sku, item.name);
+  }
   return {
     lines: po.map((l) => ({ ...l, name: nameBySku.get(l.sku) ?? '(not in catalog)' })),
     jobCount: active.length,
