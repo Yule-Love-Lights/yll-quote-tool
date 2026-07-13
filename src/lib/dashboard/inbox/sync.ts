@@ -5,7 +5,6 @@
 
 import {
   addContactTags,
-  findOrCreateOpportunityForContact,
   isHighLevelConfigured,
   markConversationRead,
   searchConversations,
@@ -250,11 +249,22 @@ function errMsg(err: unknown): string {
  * Best-effort source write-back for a Handled item — runs AFTER the local stamp,
  * so attribution never depends on it. Each channel step is caught independently;
  * the per-step outcome goes into handled_channel_sync. ⚠️ These are live GHL/Gmail
- * WRITES (mark-read / tag / opportunity / label) — only the Handled route invokes
- * this; nothing runs them automatically.
+ * WRITES (mark-read / tag / label) — only the Handled route invokes this; nothing
+ * runs them automatically.
  *   • GHL: mark the conversation read; tag the contact (dashboard-handled +
- *     handled-by-<operator>); ensure a pipeline opportunity (fixes "never logged").
+ *     handled-by-<operator>).
  *   • Gmail: add the YLL/Handled label + remove UNREAD.
+ *
+ * WA-A6: this used to also "ensure a pipeline opportunity" via the legacy
+ * HIGHLEVEL_PIPELINE_ID/STAGE_QUOTE_CREATED env vars — always the HOLIDAY
+ * pipeline. HandledTarget carries no service_type (an inbox item is per-
+ * contact/conversation, not per-quote, and a contact can span verticals), so
+ * that step had no correct pipeline to resolve and was filing permanent/event
+ * contacts into Christmas Lights, which could trigger a holiday drip at a
+ * non-holiday customer. Dropped: it wasn't needed to mark handled (the local
+ * stamp + mark-read + tag above are the real "handled" side-effects), and
+ * threading a service_type through would require guessing which of a
+ * contact's quotes (if any) it applies to.
  */
 export async function runHandledWriteback(target: HandledTarget, operatorLabel: string): Promise<Record<string, unknown>> {
   const sync: Record<string, unknown> = {};
@@ -276,23 +286,6 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
     } catch (err) {
       sync.ghlTags = 'failed';
       sync.ghlTagsError = errMsg(err);
-    }
-
-    const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
-    const stageId = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
-    if (pipelineId && stageId) {
-      try {
-        const { created } = await findOrCreateOpportunityForContact({
-          contactId: target.ghlContactId,
-          pipelineId,
-          fallbackStageId: stageId,
-          fallbackName: target.displayName ?? 'Inbox lead',
-        });
-        sync.ghlOpportunity = created ? 'created' : 'exists';
-      } catch (err) {
-        sync.ghlOpportunity = 'failed';
-        sync.ghlOpportunityError = errMsg(err);
-      }
     }
   }
 
