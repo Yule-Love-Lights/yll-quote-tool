@@ -1,12 +1,10 @@
-// Follow-up logic — "due today" (pinned in the top strip) and the system-created
+// Follow-up logic: "due today" (pinned in the top strip) and the system-created
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
-// ⚠️ NOT YET WIRED (#58 gap): these helpers + the follow_ups table exist, but
-// nothing creates follow-ups yet and the /inbox UI has no "due today" strip. That
-// wiring depends on the Quote-Tool ingestion (fold new quotes/leads into the
-// reconcile cron + call quoteSentNoReplyFollowUp on quote-sent), which was not
-// built this session. Tracked in the handoff "next" list.
+// Wired: the reconcile cron creates follow-ups (incl. quoteSentNoReplyFollowUp on
+// quote-sent), FollowUpStrip.tsx renders the due-today strip in /inbox, and the
+// Done route (src/app/api/dashboard/followup/route.ts) resolves them.
 
 import type { NewFollowUp } from './types';
 import { etDayKey } from './normalize';
