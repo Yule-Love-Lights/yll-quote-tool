@@ -13,6 +13,7 @@ import {
   sanitizeSwatches,
   sanitizePermanentRates,
   sanitizePermanentWarranty,
+  sanitizeHolidayRates,
   isPlainObject,
 } from '@/lib/appSettings';
 import { requireOperator } from '@/lib/auth/supabaseServer';
@@ -60,6 +61,7 @@ export async function PUT(req: NextRequest) {
     permanentRates,
     permanentWarranty,
     permanentSwatches,
+    holidayRates,
   } = body as Record<string, unknown>;
   if (
     colors === undefined &&
@@ -71,7 +73,8 @@ export async function PUT(req: NextRequest) {
     permanentBistroRates === undefined &&
     permanentRates === undefined &&
     permanentWarranty === undefined &&
-    permanentSwatches === undefined
+    permanentSwatches === undefined &&
+    holidayRates === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
@@ -130,6 +133,11 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
+  // Holiday rates (WT-63): must be an object; putAppSettings sanitizes each field
+  // (invalid/out-of-range → default) so it always stores a valid, complete table.
+  if (holidayRates !== undefined && !isPlainObject(holidayRates)) {
+    return NextResponse.json({ error: 'holidayRates must be an object' }, { status: 400 });
+  }
   // Warranty copy (#88 P6b-2): must yield at least one recognized field
   // (eyebrow/heading/bullets) — a `version`-only patch is not an edit (the version
   // is server-managed), so it's rejected as "nothing recognized" rather than
@@ -171,6 +179,7 @@ export async function PUT(req: NextRequest) {
       permanentRates: permanentRates as never,
       permanentWarranty: permanentWarranty as never,
       permanentSwatches: permanentSwatches as never,
+      holidayRates: holidayRates as never,
     });
     return NextResponse.json(settings);
   } catch (err) {

@@ -144,6 +144,60 @@ export type GarlandItem = LineIdentity & {
   quantity: number;
 };
 
+// ─────────────────────────────────────────────────────────
+// Holiday rate table (WT-63) — Settings-editable, mirroring PermanentRates/
+// EventRates. FROZEN into QuoteResult.holidayRatesSnapshot at calc time so
+// approve/amend re-prices can never drift when Settings change later (the same
+// rate-drift guard permanent/event/bistro already use). DEFAULT_HOLIDAY_RATES is
+// DERIVED from BUSINESS_RULES field-by-field (not retyped by hand) so the two can
+// never silently diverge — BUSINESS_RULES stays the canonical numbers and the
+// engine's own default when no rates arg / no Settings override is given.
+// ─────────────────────────────────────────────────────────
+
+export type HolidayRates = {
+  rooflineRates: Record<RooflineDifficulty, number>;
+  stakeLightingRates: Record<RooflineDifficulty, number>;
+  miniLightRates: { canopy: number; trunk: number };
+  spritzerRates: Record<SpritzerSize, number>;
+  wreathPrices: Record<WreathSize, Record<DecorTier, number>>;
+  garlandPrices: { noble: Record<GarlandLength, Record<DecorTier, number>> };
+  standaloneBowPrice: number;
+  minimumQuoteAmount: number;
+  rushFeeAmount: number;
+  premiumTakedownFee: number;
+  taxRate: number;
+  depositPercentage: number;
+  earlyInstallDiscounts: { september: number; october: number };
+};
+
+export const DEFAULT_HOLIDAY_RATES: HolidayRates = {
+  rooflineRates: { ...BUSINESS_RULES.rooflineRates },
+  stakeLightingRates: { ...BUSINESS_RULES.stakeLightingRates },
+  miniLightRates: { ...BUSINESS_RULES.miniLightRates },
+  spritzerRates: { ...BUSINESS_RULES.spritzerRates },
+  wreathPrices: {
+    '24noble': { ...BUSINESS_RULES.wreathPrices['24noble'] },
+    '30noble': { ...BUSINESS_RULES.wreathPrices['30noble'] },
+    '36noble': { ...BUSINESS_RULES.wreathPrices['36noble'] },
+    '48noble': { ...BUSINESS_RULES.wreathPrices['48noble'] },
+    '60noble': { ...BUSINESS_RULES.wreathPrices['60noble'] },
+    '72noble': { ...BUSINESS_RULES.wreathPrices['72noble'] },
+  },
+  garlandPrices: {
+    noble: {
+      '9ft': { ...BUSINESS_RULES.garlandPrices.noble['9ft'] },
+      '4.5ft': { ...BUSINESS_RULES.garlandPrices.noble['4.5ft'] },
+    },
+  },
+  standaloneBowPrice: BUSINESS_RULES.standaloneBowPrice,
+  minimumQuoteAmount: BUSINESS_RULES.minimumQuoteAmount,
+  rushFeeAmount: BUSINESS_RULES.rushFeeAmount,
+  premiumTakedownFee: BUSINESS_RULES.premiumTakedownFee,
+  taxRate: BUSINESS_RULES.taxRate,
+  depositPercentage: BUSINESS_RULES.depositPercentage,
+  earlyInstallDiscounts: { ...BUSINESS_RULES.earlyInstallDiscounts },
+};
+
 // Standalone bow (#28) — bills flat per bow (no size/tier; the drawn size on a
 // design is visual-only, like every per-unit item).
 export type BowLineInput = LineIdentity & {
@@ -356,6 +410,10 @@ export interface QuoteResult {
   // Permanent Bistro Lighting: the rate table frozen at calc time — the same
   // rate-drift guard as permanent/event. Present only on permanent-bistro quotes.
   permanentBistroRatesSnapshot?: PermanentBistroRates;
+  // Holiday Lighting (WT-63): the FULL rate table this result was priced with,
+  // frozen at calc time — the same rate-drift guard as permanent/event/bistro.
+  // Present only on holiday quotes (the default vertical, service_type='holiday').
+  holidayRatesSnapshot?: HolidayRates;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -394,8 +452,13 @@ function rateLabel(difficulty: RooflineDifficulty, customRate?: number): string 
     : difficulty;
 }
 
-function rooflineCost(footage: number, difficulty: RooflineDifficulty, customRate?: number): number {
-  return Math.round(units(footage) * resolveRate(BUSINESS_RULES.rooflineRates, difficulty, customRate));
+function rooflineCost(
+  footage: number,
+  difficulty: RooflineDifficulty,
+  rates: HolidayRates,
+  customRate?: number,
+): number {
+  return Math.round(units(footage) * resolveRate(rates.rooflineRates, difficulty, customRate));
 }
 
 // Both mutually-exclusive roofline options, priced from the captured footage.
@@ -404,11 +467,12 @@ function rooflineCost(footage: number, difficulty: RooflineDifficulty, customRat
 // footage to add (otherwise it would be identical to Santa's). Each component
 // is priced at its own difficulty (Gingerbread = the front cost + the
 // ridge/sides cost). The portal shows both; only the recommended one is billed.
-function rooflineOptionsFor(inputs: QuoteInputs): QuoteResult['rooflineOptions'] {
-  const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty, inputs.santasCustomRate);
+function rooflineOptionsFor(inputs: QuoteInputs, rates: HolidayRates): QuoteResult['rooflineOptions'] {
+  const frontCost = rooflineCost(inputs.santasFootage, inputs.santasDifficulty, rates, inputs.santasCustomRate);
   const ridgeSidesCost = rooflineCost(
     inputs.gingerbreadFootage,
     inputs.gingerbreadDifficulty,
+    rates,
     inputs.gingerbreadCustomRate,
   );
 
@@ -434,6 +498,7 @@ function rooflineOptionsFor(inputs: QuoteInputs): QuoteResult['rooflineOptions']
 function autoRooflineChoice(
   restSubtotal: number,
   options: QuoteResult['rooflineOptions'],
+  rates: HolidayRates,
 ): RooflineChoice {
   const candidates: { choice: RooflineChoice; total: number }[] = [];
   if (options.santas) candidates.push({ choice: 'santas', total: restSubtotal + options.santas.amount });
@@ -442,7 +507,7 @@ function autoRooflineChoice(
   }
   if (candidates.length === 0) return 'none';
 
-  const min = BUSINESS_RULES.minimumQuoteAmount;
+  const min = rates.minimumQuoteAmount;
   const meeting = candidates.filter((c) => c.total >= min);
   if (meeting.length > 0) {
     return meeting.reduce((best, c) => (c.total < best.total ? c : best)).choice;
@@ -462,12 +527,13 @@ function resolveRooflineChoice(
   inputs: QuoteInputs,
   restSubtotal: number,
   options: QuoteResult['rooflineOptions'],
+  rates: HolidayRates,
 ): RooflineChoice {
   const choice = inputs.rooflineChoice;
   if (choice === 'santas' && options.santas) return 'santas';
   if (choice === 'gingerbread' && options.gingerbread) return 'gingerbread';
   if (choice === 'none') return 'none';
-  return autoRooflineChoice(restSubtotal, options);
+  return autoRooflineChoice(restSubtotal, options, rates);
 }
 
 // The recommended roofline as ONE line item (Santa's OR Gingerbread, never
@@ -501,7 +567,7 @@ function rooflineLineItem(
 
 // Winter Wonderland (C9 custom runs) — INDEPENDENT of the Santa's/Gingerbread
 // choice; left exactly as it was. Part of the "rest of the quote."
-function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
+function calculateWinterWonderland(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   if (!(inputs.winterWonderlandFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
@@ -509,6 +575,7 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
       amount: rooflineCost(
         inputs.winterWonderlandFootage,
         inputs.winterWonderlandDifficulty,
+        rates,
         inputs.winterWonderlandCustomRate,
       ),
       id: 'winter-wonderland', // #104 stable id (single footage-driven line)
@@ -520,7 +587,7 @@ function calculateWinterWonderland(inputs: QuoteInputs): LineItem[] {
 // choice, like Winter Wonderland, but billed at its own $6/$7/$8 rate table.
 // Part of the "rest of the quote." The label must NOT contain Wonderland/
 // Roofline/Gingerbread/Ridge or the portal lineItemKind parser mis-classifies it.
-function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
+function calculateStakeLighting(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   if (!(inputs.stakeLightingFootage > 0)) return []; // drops 0/negative/NaN
   return [
     {
@@ -528,7 +595,7 @@ function calculateStakeLighting(inputs: QuoteInputs): LineItem[] {
       amount: Math.round(
         units(inputs.stakeLightingFootage) *
           resolveRate(
-            BUSINESS_RULES.stakeLightingRates,
+            rates.stakeLightingRates,
             inputs.stakeLightingDifficulty,
             inputs.stakeLightingCustomRate,
           ),
@@ -564,18 +631,18 @@ function withIdentity(item: LineIdentity): Pick<LineItem, 'id' | 'sceneItemIds'>
   };
 }
 
-function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
+function calculateMiniLights(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   return inputs.miniLightItems.map(item => {
     const count = units(item.stringCount);
     const strings = count === 1 ? '1 string' : `${count} strings`;
     if (NO_WRAP_STYLE_TYPES.has(item.type)) {
       return {
         label: `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${strings}`,
-        amount: count * BUSINESS_RULES.miniLightRates.canopy,
+        amount: count * rates.miniLightRates.canopy,
         ...withIdentity(item),
       };
     }
-    const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
+    const rate = rates.miniLightRates[item.wrapStyle];
     const amount = count * rate;
     const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
     return { label, amount, ...withIdentity(item) };
@@ -586,10 +653,10 @@ function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
 // Spritzers calculation
 // ─────────────────────────────────────────────────────────
 
-function calculateSpritzers(inputs: QuoteInputs): LineItem[] {
+function calculateSpritzers(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   return inputs.spritzers.map(item => {
     const qty = units(item.quantity);
-    const rate = BUSINESS_RULES.spritzerRates[item.size];
+    const rate = rates.spritzerRates[item.size];
     const amount = qty * rate;
     const label = qty === 1
       ? `${item.size}" Spritzer`
@@ -616,10 +683,10 @@ const TIER_LABELS: Record<DecorTier, string> = {
   fullDecor: 'Decorated',
 };
 
-function calculateWreaths(inputs: QuoteInputs): LineItem[] {
+function calculateWreaths(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   return inputs.wreaths.map(item => {
     const qty = units(item.quantity);
-    const price = BUSINESS_RULES.wreathPrices[item.size][item.tier];
+    const price = rates.wreathPrices[item.size][item.tier];
     const amount = price * qty;
     const base = `${WREATH_SIZE_LABELS[item.size]} Wreath – ${TIER_LABELS[item.tier]}`;
     const label = qty === 1 ? base : `${base} × ${qty}`;
@@ -635,10 +702,10 @@ const GARLAND_TYPE_LABELS: Record<GarlandType, string> = {
   noble: 'Noble',
 };
 
-function calculateGarland(inputs: QuoteInputs): LineItem[] {
+function calculateGarland(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   return inputs.garland.map(item => {
     const qty = units(item.quantity);
-    const price = BUSINESS_RULES.garlandPrices[item.type][item.length][item.tier];
+    const price = rates.garlandPrices[item.type][item.length][item.tier];
     const amount = price * qty;
     const base = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland – ${TIER_LABELS[item.tier]}`;
     const label = qty === 1 ? base : `${base} × ${qty}`;
@@ -654,7 +721,7 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 // TODO). One input entry → one line item, so a design's drawn bows each get
 // their own portal toggle (per-instance, like minis). Defensive: malformed
 // entries are skipped, quantities floor to whole bows.
-function calculateBows(inputs: QuoteInputs): LineItem[] {
+function calculateBows(inputs: QuoteInputs, rates: HolidayRates): LineItem[] {
   if (!Array.isArray(inputs.bows)) return [];
   return inputs.bows
     .filter(
@@ -668,7 +735,7 @@ function calculateBows(inputs: QuoteInputs): LineItem[] {
       const qty = Math.floor(b.quantity);
       return {
         label: qty === 1 ? 'Bow' : `Bows × ${qty}`,
-        amount: qty * BUSINESS_RULES.standaloneBowPrice,
+        amount: qty * rates.standaloneBowPrice,
         ...withIdentity(b),
       };
     });
@@ -753,7 +820,10 @@ function applyRooflineOverrides(
 // Main quote calculator — add each category here as we build
 // ─────────────────────────────────────────────────────────
 
-export function calculateQuote(inputs: QuoteInputs): QuoteResult {
+export function calculateQuote(
+  inputs: QuoteInputs,
+  rates: HolidayRates = DEFAULT_HOLIDAY_RATES,
+): QuoteResult {
   // "Rest of the quote" — everything except the Santa's/Gingerbread choice
   // (C9/Winter Wonderland is independent and belongs here). Computed first so
   // the recommended roofline can be auto-picked relative to the $1,000 minimum.
@@ -764,13 +834,13 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const overrides = inputs.lineItemPriceOverrides;
   const restItems: LineItem[] = applyLineOverrides(
     [
-      ...calculateWinterWonderland(inputs),
-      ...calculateStakeLighting(inputs),
-      ...calculateMiniLights(inputs),
-      ...calculateSpritzers(inputs),
-      ...calculateWreaths(inputs),
-      ...calculateGarland(inputs),
-      ...calculateBows(inputs),
+      ...calculateWinterWonderland(inputs, rates),
+      ...calculateStakeLighting(inputs, rates),
+      ...calculateMiniLights(inputs, rates),
+      ...calculateSpritzers(inputs, rates),
+      ...calculateWreaths(inputs, rates),
+      ...calculateGarland(inputs, rates),
+      ...calculateBows(inputs, rates),
       ...calculateCustomLineItems(inputs),
     ],
     overrides,
@@ -781,8 +851,8 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   // but only the recommended one is billed — Santa's and Gingerbread are
   // mutually exclusive (#17). A per-quote roofline TOTAL override (#104) applies
   // to the option amount; the billed line is then built from the overridden option.
-  const rooflineOptions = applyRooflineOverrides(rooflineOptionsFor(inputs), overrides);
-  const rooflineChoice = resolveRooflineChoice(inputs, restSubtotal, rooflineOptions);
+  const rooflineOptions = applyRooflineOverrides(rooflineOptionsFor(inputs, rates), overrides);
+  const rooflineChoice = resolveRooflineChoice(inputs, restSubtotal, rooflineOptions, rates);
 
   // Recommended roofline first (keeps it at the top of the breakdown), then
   // the rest.
@@ -794,7 +864,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   const subtotalBeforeDiscount = lineItems.reduce((sum, item) => sum + item.amount, 0);
 
   // Billed figures — priced on the SELECTED roofline.
-  const tail = computeTotalsTail(subtotalBeforeDiscount, inputs);
+  const tail = computeTotalsTail(subtotalBeforeDiscount, inputs, rates);
 
   // The $1,000 minimum is NO LONGER auto-applied here: staff can intentionally
   // send a sub-$1,000 quote for niche cases. The minimum is enforced as a
@@ -822,7 +892,7 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
   );
   const fullSubtotalBeforeDiscount =
     subtotalBeforeDiscount - selectedRooflineAmount + maxRooflineAmount;
-  const fullTail = computeTotalsTail(fullSubtotalBeforeDiscount, inputs);
+  const fullTail = computeTotalsTail(fullSubtotalBeforeDiscount, inputs, rates);
   const fullYule: FullYuleTotals = {
     subtotalBeforeDiscount: fullSubtotalBeforeDiscount,
     ...fullTail,
@@ -845,6 +915,12 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     rooflineChoice,
     rooflineOptions,
     fullYule,
+    // Freeze the rates used (the drift guard, WT-63): approve/amend re-price from
+    // this, never live app_settings — mirrors permanentRatesSnapshot/eventRatesSnapshot.
+    // structuredClone (not `{ ...rates }`) because HolidayRates is NESTED (wreathPrices,
+    // garlandPrices, …) — a shallow spread would still share those nested objects by
+    // reference, so a future live-settings mutation could retro-price a stored snapshot.
+    holidayRatesSnapshot: structuredClone(rates),
   };
 }
 
@@ -857,6 +933,10 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
 export function computeTotalsTail(
   subtotalBeforeDiscount: number,
   inputs: QuoteInputs,
+  // WT-63: optional — permanent/permanentBistro call this with 2 args and get the
+  // DEFAULT_HOLIDAY_RATES tax/deposit/fee numbers (identical to the old hardcoded
+  // BUSINESS_RULES values), so their behavior is byte-identical and unaffected.
+  rates: HolidayRates = DEFAULT_HOLIDAY_RATES,
 ): Omit<FullYuleTotals, 'subtotalBeforeDiscount'> {
   let discountAmount = 0;
   if (inputs.discount) {
@@ -881,9 +961,9 @@ export function computeTotalsTail(
   // 'none' → 0, so quotes priced before this field are unaffected.
   const earlyInstallRate =
     inputs.installTiming === 'september'
-      ? BUSINESS_RULES.earlyInstallDiscounts.september
+      ? rates.earlyInstallDiscounts.september
       : inputs.installTiming === 'october'
-        ? BUSINESS_RULES.earlyInstallDiscounts.october
+        ? rates.earlyInstallDiscounts.october
         : 0;
   const earlyInstallDiscountAmount =
     Math.round(subtotalBeforeDiscount * earlyInstallRate * 100) / 100;
@@ -896,13 +976,13 @@ export function computeTotalsTail(
   // Early-install and the rush-install fee are mutually exclusive (#40): an
   // early-install quote never also charges rush.
   const rushFeeAmount =
-    inputs.rushFee && earlyInstallRate === 0 ? BUSINESS_RULES.rushFeeAmount : 0;
-  const takedownAmount = inputs.takedown === 'premium' ? BUSINESS_RULES.premiumTakedownFee : 0;
+    inputs.rushFee && earlyInstallRate === 0 ? rates.rushFeeAmount : 0;
+  const takedownAmount = inputs.takedown === 'premium' ? rates.premiumTakedownFee : 0;
 
   const taxableAmount = subtotalAfterDiscount + rushFeeAmount + takedownAmount;
-  const taxAmount = Math.round(taxableAmount * BUSINESS_RULES.taxRate * 100) / 100;
+  const taxAmount = Math.round(taxableAmount * rates.taxRate * 100) / 100;
   const total = Math.round((taxableAmount + taxAmount) * 100) / 100;
-  const depositAmount = Math.round(total * BUSINESS_RULES.depositPercentage * 100) / 100;
+  const depositAmount = Math.round(total * rates.depositPercentage * 100) / 100;
   const balanceDue = Math.round((total - depositAmount) * 100) / 100;
 
   return {

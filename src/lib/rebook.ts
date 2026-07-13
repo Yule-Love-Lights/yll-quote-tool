@@ -37,19 +37,21 @@ export type RebookSource = {
 // status, not a NULL that relies on the deriveStatus fallback) now that the
 // status spine has merged. The new id + created_at come from the DB defaults.
 // service_type is only set when present so the clone can't reset the column to NULL.
-// A rebooked permanent/event quote must re-price at CURRENT rates when staff click
-// Calculate on the new draft — result.permanentRatesSnapshot / result.eventRatesSnapshot
-// are the rate-freeze guard for OUTSTANDING quotes, NOT a brand-new season's draft.
-// Strip BOTH from the carried result so the /api/quote update branch's price source
-// falls through to live app_settings rates (it reads existing?.result?.<vertical>RatesSnapshot
-// ?? live for whichever vertical). rebookLastSeason doesn't filter by service_type, so
-// the source can be either vertical. No-op for holiday results (no snapshot present).
+// A rebooked quote (any vertical, including holiday — WT-63) must re-price at
+// CURRENT rates when staff click Calculate on the new draft — every
+// `<vertical>RatesSnapshot` field is the rate-freeze guard for OUTSTANDING
+// quotes, NOT a brand-new season's draft. Strip ALL of them from the carried
+// result so the /api/quote update branch's price source falls through to live
+// app_settings rates (it reads existing?.result?.<vertical>RatesSnapshot ??
+// live for whichever vertical). rebookLastSeason doesn't filter by
+// service_type, so the source can be any vertical.
 function stripRatesSnapshots(result: RebookSource['result']): RebookSource['result'] {
   if (!result || typeof result !== 'object') return result;
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
   delete rest.eventRatesSnapshot;
   delete rest.permanentBistroRatesSnapshot;
+  delete rest.holidayRatesSnapshot;
   return rest as RebookSource['result'];
 }
 

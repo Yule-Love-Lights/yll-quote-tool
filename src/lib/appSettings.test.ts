@@ -9,7 +9,9 @@ import {
   sanitizeSwatches,
   sanitizePermanentRates,
   sanitizePermanentWarranty,
+  sanitizeHolidayRates,
 } from './appSettings';
+import { DEFAULT_HOLIDAY_RATES } from './pricing/pricingEngine';
 
 // A representative palette id set (mirrors the built-in DEFAULT_COLORS ids used
 // by the swatch validators).
@@ -110,6 +112,53 @@ describe('sanitizePermanentRates (#88)', () => {
     expect(sanitizePermanentRates({ bogus: 10 })).toEqual({});
     expect(sanitizePermanentRates(null)).toEqual({});
     expect(sanitizePermanentRates('x')).toEqual({});
+  });
+});
+
+describe('sanitizeHolidayRates (WT-63)', () => {
+  it('a missing/invalid value returns the full DEFAULT_HOLIDAY_RATES table (never partial)', () => {
+    expect(sanitizeHolidayRates(undefined)).toEqual(DEFAULT_HOLIDAY_RATES);
+    expect(sanitizeHolidayRates(null)).toEqual(DEFAULT_HOLIDAY_RATES);
+    expect(sanitizeHolidayRates('x')).toEqual(DEFAULT_HOLIDAY_RATES);
+    expect(sanitizeHolidayRates({})).toEqual(DEFAULT_HOLIDAY_RATES);
+  });
+
+  it('keeps a valid full table exactly as given', () => {
+    const custom = {
+      ...DEFAULT_HOLIDAY_RATES,
+      rooflineRates: { easy: 9, medium: 11, hard: 13 },
+      taxRate: 0.09,
+      depositPercentage: 0.4,
+    };
+    expect(sanitizeHolidayRates(custom)).toEqual(custom);
+  });
+
+  it('falls back to the default field-by-field for invalid $ rates (negative/NaN/non-number)', () => {
+    const out = sanitizeHolidayRates({
+      rooflineRates: { easy: -1, medium: NaN, hard: '12' },
+      standaloneBowPrice: 0, // 0 is NOT valid for a $ rate (the $0-bill guardrail)
+    });
+    expect(out.rooflineRates).toEqual(DEFAULT_HOLIDAY_RATES.rooflineRates);
+    expect(out.standaloneBowPrice).toBe(DEFAULT_HOLIDAY_RATES.standaloneBowPrice);
+  });
+
+  it('clamps percentage fields (taxRate/depositPercentage/earlyInstallDiscounts) to [0, 1], allowing 0', () => {
+    expect(sanitizeHolidayRates({ taxRate: 0 }).taxRate).toBe(0); // 0 IS valid for a percentage
+    expect(sanitizeHolidayRates({ taxRate: 1.5 }).taxRate).toBe(DEFAULT_HOLIDAY_RATES.taxRate); // out of range
+    expect(sanitizeHolidayRates({ taxRate: -0.1 }).taxRate).toBe(DEFAULT_HOLIDAY_RATES.taxRate);
+    expect(sanitizeHolidayRates({ earlyInstallDiscounts: { september: 0.2, october: 'bad' } })).toMatchObject({
+      earlyInstallDiscounts: { september: 0.2, october: DEFAULT_HOLIDAY_RATES.earlyInstallDiscounts.october },
+    });
+  });
+
+  it('falls back per-tier for a malformed wreath/garland price', () => {
+    const out = sanitizeHolidayRates({
+      wreathPrices: { '24noble': { bow: 999, fullDecor: -5 } },
+      garlandPrices: { noble: { '9ft': { bow: 'nope', fullDecor: 300 } } },
+    });
+    expect(out.wreathPrices['24noble']).toEqual({ bow: 999, fullDecor: DEFAULT_HOLIDAY_RATES.wreathPrices['24noble'].fullDecor });
+    expect(out.wreathPrices['30noble']).toEqual(DEFAULT_HOLIDAY_RATES.wreathPrices['30noble']); // untouched size
+    expect(out.garlandPrices.noble['9ft']).toEqual({ bow: DEFAULT_HOLIDAY_RATES.garlandPrices.noble['9ft'].bow, fullDecor: 300 });
   });
 });
 

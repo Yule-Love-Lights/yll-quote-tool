@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from './pricingEngine';
+import {
+  calculateQuote,
+  computeTotalsTail,
+  BUSINESS_RULES,
+  DEFAULT_HOLIDAY_RATES,
+  type QuoteInputs,
+  type HolidayRates,
+} from './pricingEngine';
 import { priceSelection } from '@/lib/portal/derivePackages';
 
 // A fully-zeroed quote. Each test overrides only the fields it exercises, so
@@ -978,5 +985,183 @@ describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
     expect(r.discountAmount).toBe(100);          // 10% of 1000
     expect(r.fullYule?.discountAmount).toBe(140); // 10% of 1400
     expect(r.fullYule?.total).toBe(1370.25);      // (1400 − 140) × 1.0875
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// WT-63 — holiday rates become operator-editable via Settings, exactly like
+// permanent/event/bistro. These tests cover the NEW surface only: the money-
+// critical guard that the huge suite above ALREADY provides is that every one
+// of those ~150 existing tests calls calculateQuote(inputs) with NO rates arg
+// and asserts exact hardcoded numbers — if this refactor changed any math,
+// they would fail. These new tests additionally prove: (1) omitting the rates
+// arg is byte-identical to passing DEFAULT_HOLIDAY_RATES explicitly, (2) a
+// kitchen-sink quote (every category + every fee) matches the BUSINESS_RULES
+// arithmetic exactly, (3) an override changes exactly the expected line by
+// exactly the expected delta, (4) the frozen snapshot is a deep clone, and (5)
+// permanent/permanentBistro's existing 2-arg computeTotalsTail calls are
+// unaffected.
+// ─────────────────────────────────────────────────────────
+
+function kitchenSinkInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
+  return emptyInputs({
+    santasFootage: 100,
+    santasDifficulty: 'medium',
+    gingerbreadFootage: 40,
+    gingerbreadDifficulty: 'hard',
+    // Pin the roofline choice so the test is deterministic regardless of what
+    // rates (esp. minimumQuoteAmount, which drives auto-pick) get passed in.
+    rooflineChoice: 'santas',
+    winterWonderlandFootage: 50,
+    winterWonderlandDifficulty: 'hard',
+    stakeLightingFootage: 80,
+    stakeLightingDifficulty: 'medium',
+    miniLightItems: [
+      { type: 'tree', wrapStyle: 'trunk', stringCount: 4 },
+      { type: 'bush', wrapStyle: 'canopy', stringCount: 2 },
+      { type: 'column', wrapStyle: 'canopy', stringCount: 3 },
+    ],
+    spritzers: [
+      { size: '16', quantity: 1 },
+      { size: '24', quantity: 2 },
+      { size: '32', quantity: 1 },
+    ],
+    wreaths: [
+      { size: '24noble', tier: 'bow', quantity: 1 },
+      { size: '36noble', tier: 'fullDecor', quantity: 1 },
+    ],
+    garland: [
+      { length: '9ft', type: 'noble', tier: 'bow', quantity: 2 },
+      { length: '4.5ft', type: 'noble', tier: 'fullDecor', quantity: 1 },
+    ],
+    bows: [{ quantity: 3 }],
+    takedown: 'premium',
+    rushFee: true,
+    ...overrides,
+  });
+}
+
+describe('HolidayRates (WT-63) — Settings-editable rates, frozen per-quote', () => {
+  const kitchenSink = kitchenSinkInputs();
+
+  it('with NO rates arg, calculateQuote is byte-identical to passing DEFAULT_HOLIDAY_RATES explicitly', () => {
+    expect(calculateQuote(kitchenSink)).toEqual(calculateQuote(kitchenSink, DEFAULT_HOLIDAY_RATES));
+  });
+
+  it('CRITICAL byte-identity: every category + the tail match the BUSINESS_RULES arithmetic exactly (kitchen-sink)', () => {
+    const r = calculateQuote(kitchenSink);
+
+    // Roofline — 'santas' explicitly selected: front-only, at santasDifficulty.
+    const rooflineAmt = r.lineItems.find((l) => l.id === 'roofline-santas')?.amount ?? 0;
+    expect(rooflineAmt).toBe(100 * BUSINESS_RULES.rooflineRates.medium); // 1000
+
+    const wwAmt = r.lineItems.find((l) => l.id === 'winter-wonderland')?.amount ?? 0;
+    expect(wwAmt).toBe(50 * BUSINESS_RULES.rooflineRates.hard); // 600
+
+    const stakeAmt = r.lineItems.find((l) => l.id === 'stake-lighting')?.amount ?? 0;
+    expect(stakeAmt).toBe(80 * BUSINESS_RULES.stakeLightingRates.medium); // 560
+
+    // Mini lights: tree/trunk×4, bush/canopy×2, column (no-wrap-style → canopy rate)×3.
+    const miniTotal =
+      4 * BUSINESS_RULES.miniLightRates.trunk +
+      2 * BUSINESS_RULES.miniLightRates.canopy +
+      3 * BUSINESS_RULES.miniLightRates.canopy;
+    const miniLines = r.lineItems.filter((l) =>
+      ['Tree', 'Bush', 'Column'].some((label) => l.label.startsWith(label)),
+    );
+    expect(miniLines.reduce((s, l) => s + l.amount, 0)).toBe(miniTotal);
+
+    const spritzerTotal =
+      1 * BUSINESS_RULES.spritzerRates['16'] +
+      2 * BUSINESS_RULES.spritzerRates['24'] +
+      1 * BUSINESS_RULES.spritzerRates['32'];
+    const spritzerLines = r.lineItems.filter((l) => l.label.includes('Spritzer'));
+    expect(spritzerLines.reduce((s, l) => s + l.amount, 0)).toBe(spritzerTotal);
+
+    const wreathTotal =
+      1 * BUSINESS_RULES.wreathPrices['24noble'].bow + 1 * BUSINESS_RULES.wreathPrices['36noble'].fullDecor;
+    const wreathLines = r.lineItems.filter((l) => l.label.includes('Wreath'));
+    expect(wreathLines.reduce((s, l) => s + l.amount, 0)).toBe(wreathTotal);
+
+    const garlandTotal =
+      2 * BUSINESS_RULES.garlandPrices.noble['9ft'].bow +
+      1 * BUSINESS_RULES.garlandPrices.noble['4.5ft'].fullDecor;
+    const garlandLines = r.lineItems.filter((l) => l.label.includes('Garland'));
+    expect(garlandLines.reduce((s, l) => s + l.amount, 0)).toBe(garlandTotal);
+
+    const bowAmt = r.lineItems.find((l) => l.label.startsWith('Bows'))?.amount ?? 0;
+    expect(bowAmt).toBe(3 * BUSINESS_RULES.standaloneBowPrice);
+
+    const expectedSubtotal =
+      rooflineAmt + wwAmt + stakeAmt + miniTotal + spritzerTotal + wreathTotal + garlandTotal + bowAmt;
+    expect(r.subtotalBeforeDiscount).toBe(expectedSubtotal);
+
+    // Tail — rush + premium takedown + tax + 50% deposit, no discount, no early install.
+    expect(r.rushFeeAmount).toBe(BUSINESS_RULES.rushFeeAmount);
+    expect(r.takedownAmount).toBe(BUSINESS_RULES.premiumTakedownFee);
+    const expectedTaxable = expectedSubtotal + BUSINESS_RULES.rushFeeAmount + BUSINESS_RULES.premiumTakedownFee;
+    expect(r.taxableAmount).toBe(expectedTaxable);
+    const expectedTax = Math.round(expectedTaxable * BUSINESS_RULES.taxRate * 100) / 100;
+    expect(r.taxAmount).toBe(expectedTax);
+    const expectedTotal = Math.round((expectedTaxable + expectedTax) * 100) / 100;
+    expect(r.total).toBe(expectedTotal);
+    const expectedDeposit = Math.round(expectedTotal * BUSINESS_RULES.depositPercentage * 100) / 100;
+    expect(r.depositAmount).toBe(expectedDeposit);
+    expect(r.balanceDue).toBe(Math.round((expectedTotal - expectedDeposit) * 100) / 100);
+  });
+
+  it('holidayRatesSnapshot freezes DEFAULT_HOLIDAY_RATES when no override is given', () => {
+    const r = calculateQuote(kitchenSink);
+    expect(r.holidayRatesSnapshot).toEqual(DEFAULT_HOLIDAY_RATES);
+  });
+
+  it('an override (medium roofline 10 -> 11) changes ONLY that line, by exactly footage × the delta', () => {
+    const baseline = calculateQuote(kitchenSink);
+    const overrideRates: HolidayRates = {
+      ...DEFAULT_HOLIDAY_RATES,
+      rooflineRates: { ...DEFAULT_HOLIDAY_RATES.rooflineRates, medium: 11 },
+    };
+    const overridden = calculateQuote(kitchenSink, overrideRates);
+
+    const baselineRoofline = baseline.lineItems.find((l) => l.id === 'roofline-santas')?.amount ?? 0;
+    const overriddenRoofline = overridden.lineItems.find((l) => l.id === 'roofline-santas')?.amount ?? 0;
+    expect(overriddenRoofline - baselineRoofline).toBe(100 * (11 - 10)); // footage × $1 delta = $100
+
+    // Every non-roofline line is byte-identical — the override touched nothing else.
+    const nonRooflineBaseline = baseline.lineItems.filter((l) => l.id !== 'roofline-santas');
+    const nonRooflineOverridden = overridden.lineItems.filter((l) => l.id !== 'roofline-santas');
+    expect(nonRooflineOverridden).toEqual(nonRooflineBaseline);
+
+    // The subtotal (and everything downstream) shifts by exactly the same $100.
+    expect(overridden.subtotalBeforeDiscount - baseline.subtotalBeforeDiscount).toBe(100);
+  });
+
+  it('freezes a DEEP CLONE, not a reference — mutating the passed-in rates after calc never retro-changes the snapshot', () => {
+    const rates: HolidayRates = {
+      ...DEFAULT_HOLIDAY_RATES,
+      rooflineRates: { ...DEFAULT_HOLIDAY_RATES.rooflineRates },
+    };
+    const r = calculateQuote(kitchenSink, rates);
+    const frozenBefore = r.holidayRatesSnapshot?.rooflineRates.medium;
+    rates.rooflineRates.medium = 999; // mutate the ORIGINAL object in place, after calc
+    expect(r.holidayRatesSnapshot?.rooflineRates.medium).toBe(frozenBefore); // snapshot unaffected
+    expect(r.holidayRatesSnapshot?.rooflineRates.medium).not.toBe(999);
+  });
+});
+
+describe('computeTotalsTail — back-compat for permanent/permanentBistro callers (WT-63)', () => {
+  it('a 2-arg call (no rates) is byte-identical to an explicit 3-arg call with DEFAULT_HOLIDAY_RATES', () => {
+    const inputs = emptyInputs({ rushFee: true, takedown: 'premium' });
+    const a = computeTotalsTail(1000, inputs);
+    const b = computeTotalsTail(1000, inputs, DEFAULT_HOLIDAY_RATES);
+    expect(a).toEqual(b);
+    expect(a.rushFeeAmount).toBe(BUSINESS_RULES.rushFeeAmount);
+    expect(a.takedownAmount).toBe(BUSINESS_RULES.premiumTakedownFee);
+  });
+
+  it('the default tax/deposit numbers equal BUSINESS_RULES — permanent/bistro (which never pass a rates arg) are unaffected', () => {
+    const tail = computeTotalsTail(1000, emptyInputs());
+    expect(tail.taxAmount).toBe(Math.round(1000 * BUSINESS_RULES.taxRate * 100) / 100);
+    expect(tail.depositAmount).toBe(Math.round(tail.total * BUSINESS_RULES.depositPercentage * 100) / 100);
   });
 });

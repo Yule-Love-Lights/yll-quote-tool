@@ -150,6 +150,19 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
     expect(putSpy).toHaveBeenCalledOnce();
   });
 
+  // Holiday rates (WT-63) — mirrors the eventRates/permanentBistroRates boundary check.
+  it('400s when holidayRates is not an object', async () => {
+    const res = await PUT(makeReq({ holidayRates: 'nope' }));
+    expect(res.status).toBe(400);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('persists a valid (partial) holidayRates patch (200, putAppSettings called)', async () => {
+    const res = await PUT(makeReq({ holidayRates: { rooflineRates: { easy: 9, medium: 10, hard: 12 } } }));
+    expect(res.status).toBe(200);
+    expect(putSpy).toHaveBeenCalledOnce();
+  });
+
   // keep the import referenced so tsc/lint don't flag it
   it('exposes factory defaults', () => {
     expect(DEFAULT_APP_SETTINGS.colors.length).toBeGreaterThan(0);

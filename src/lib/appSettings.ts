@@ -34,6 +34,10 @@ import {
   DEFAULT_PERMANENT_WARRANTY,
   type PermanentWarranty,
 } from './permanent/types';
+// Holiday Lighting rate table (WT-63, service_type 'holiday' — the default
+// vertical) — same Settings-adjustable pattern as event/permanent/bistro.
+// sanitizeHolidayRates always yields a complete valid table.
+import { DEFAULT_HOLIDAY_RATES, type HolidayRates } from './pricing/pricingEngine';
 
 // Customer-facing portal settings (Settings → Customer Portal).
 export type PortalSettings = {
@@ -84,6 +88,10 @@ export type AppSettings = {
   // color presets + build-your-own palette, Settings-editable like the holiday
   // `swatches` (#101) but a separate list.
   permanentSwatches: SwatchSettings;
+  // Holiday Lighting rates (WT-63, adjustable in Settings → Quotes). The holiday
+  // pricing engine (calculateQuote) reads these; DEFAULT_HOLIDAY_RATES underneath
+  // so a missing key is safe and byte-identical to the old hardcoded BUSINESS_RULES.
+  holidayRates: HolidayRates;
 };
 
 export const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
@@ -106,6 +114,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
   permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
+  holidayRates: DEFAULT_HOLIDAY_RATES,
 };
 
 // Sanitize a permanent-rates object to its known numeric fields. Each field must
@@ -122,6 +131,93 @@ export function sanitizePermanentRates(v: unknown): Partial<PermanentRates> {
   if (ok(r.minimumJobAmount)) out.minimumJobAmount = r.minimumJobAmount;
   if (ok(r.maintenancePrice)) out.maintenancePrice = r.maintenancePrice;
   return out;
+}
+
+function positiveOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+// A rate expressed as a FRACTION (tax rate, deposit percentage, early-install
+// discount) — 0 is a valid "off" value here, unlike the $ rates above which
+// must be positive (a $0 rate would silently drop a whole line/category).
+function fractionOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
+}
+
+function asObj(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+}
+
+/**
+ * Coerce an unknown (a stored app_settings value) into a COMPLETE, valid
+ * HolidayRates — every field that isn't a valid number falls back to the
+ * matching DEFAULT_HOLIDAY_RATES field (mirrors sanitizeEventRates). Always
+ * returns a full object (never partial), so a Settings-sourced rate table can
+ * never leave a category unpriced or a percentage out of range. Used by
+ * appSettings (read-merge + write-sanitize) so staff can adjust holiday rates
+ * without a deploy (WT-63, the #101 pattern).
+ */
+export function sanitizeHolidayRates(v: unknown): HolidayRates {
+  const o = asObj(v);
+  const D = DEFAULT_HOLIDAY_RATES;
+  const roofline = asObj(o.rooflineRates);
+  const stake = asObj(o.stakeLightingRates);
+  const mini = asObj(o.miniLightRates);
+  const spritzer = asObj(o.spritzerRates);
+  const wreath = asObj(o.wreathPrices);
+  const garlandNoble = asObj(asObj(o.garlandPrices).noble);
+  const earlyInstall = asObj(o.earlyInstallDiscounts);
+
+  const tier = (raw: unknown, fallback: { bow: number; fullDecor: number }) => {
+    const s = asObj(raw);
+    return { bow: positiveOr(s.bow, fallback.bow), fullDecor: positiveOr(s.fullDecor, fallback.fullDecor) };
+  };
+
+  return {
+    rooflineRates: {
+      easy: positiveOr(roofline.easy, D.rooflineRates.easy),
+      medium: positiveOr(roofline.medium, D.rooflineRates.medium),
+      hard: positiveOr(roofline.hard, D.rooflineRates.hard),
+    },
+    stakeLightingRates: {
+      easy: positiveOr(stake.easy, D.stakeLightingRates.easy),
+      medium: positiveOr(stake.medium, D.stakeLightingRates.medium),
+      hard: positiveOr(stake.hard, D.stakeLightingRates.hard),
+    },
+    miniLightRates: {
+      canopy: positiveOr(mini.canopy, D.miniLightRates.canopy),
+      trunk: positiveOr(mini.trunk, D.miniLightRates.trunk),
+    },
+    spritzerRates: {
+      '16': positiveOr(spritzer['16'], D.spritzerRates['16']),
+      '24': positiveOr(spritzer['24'], D.spritzerRates['24']),
+      '32': positiveOr(spritzer['32'], D.spritzerRates['32']),
+    },
+    wreathPrices: {
+      '24noble': tier(wreath['24noble'], D.wreathPrices['24noble']),
+      '30noble': tier(wreath['30noble'], D.wreathPrices['30noble']),
+      '36noble': tier(wreath['36noble'], D.wreathPrices['36noble']),
+      '48noble': tier(wreath['48noble'], D.wreathPrices['48noble']),
+      '60noble': tier(wreath['60noble'], D.wreathPrices['60noble']),
+      '72noble': tier(wreath['72noble'], D.wreathPrices['72noble']),
+    },
+    garlandPrices: {
+      noble: {
+        '9ft': tier(garlandNoble['9ft'], D.garlandPrices.noble['9ft']),
+        '4.5ft': tier(garlandNoble['4.5ft'], D.garlandPrices.noble['4.5ft']),
+      },
+    },
+    standaloneBowPrice: positiveOr(o.standaloneBowPrice, D.standaloneBowPrice),
+    minimumQuoteAmount: positiveOr(o.minimumQuoteAmount, D.minimumQuoteAmount),
+    rushFeeAmount: positiveOr(o.rushFeeAmount, D.rushFeeAmount),
+    premiumTakedownFee: positiveOr(o.premiumTakedownFee, D.premiumTakedownFee),
+    taxRate: fractionOr(o.taxRate, D.taxRate),
+    depositPercentage: fractionOr(o.depositPercentage, D.depositPercentage),
+    earlyInstallDiscounts: {
+      september: fractionOr(earlyInstall.september, D.earlyInstallDiscounts.september),
+      october: fractionOr(earlyInstall.october, D.earlyInstallDiscounts.october),
+    },
+  };
 }
 
 // Sanitize a permanent-warranty object to its known fields (#88 P6b-2). Strings
@@ -352,6 +448,7 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
       schemes: storedPermSchemes ?? DEFAULT_PERMANENT_SWATCHES.schemes,
       buildableColorIds: storedPermBuildable ?? DEFAULT_PERMANENT_SWATCHES.buildableColorIds,
     },
+    holidayRates: sanitizeHolidayRates(map.get('holidayRates')),
   };
 }
 
@@ -387,6 +484,8 @@ export async function putAppSettings(patch: {
   permanentWarranty?: Partial<PermanentWarranty>;
   // Permanent swatch list patch (#88 P6b-4) — same shape/validation as swatches.
   permanentSwatches?: Partial<SwatchSettings>;
+  // Holiday rates patch (WT-63) — same merge/sanitize pattern as eventRates.
+  holidayRates?: Partial<HolidayRates>;
 }): Promise<AppSettings> {
   const sb = getSupabaseServiceClient();
   if (!sb) return DEFAULT_APP_SETTINGS;
@@ -486,6 +585,16 @@ export async function putAppSettings(patch: {
     };
     rows.push({ key: 'permanentWarranty', value });
     map.set('permanentWarranty', value);
+  }
+
+  if (patch.holidayRates !== undefined) {
+    // Merge over the current stored rates + sanitize, so a partial write (e.g.
+    // only rooflineRates.medium) keeps the other fields and any invalid/out-of-
+    // range number falls back to the default (never a $0 rate or an out-of-[0,1]
+    // percentage that would trip the engine).
+    const value = sanitizeHolidayRates({ ...current.holidayRates, ...patch.holidayRates });
+    rows.push({ key: 'holidayRates', value });
+    map.set('holidayRates', value);
   }
 
   if (rows.length > 0) {
