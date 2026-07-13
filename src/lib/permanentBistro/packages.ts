@@ -1,4 +1,4 @@
-// Auto-derive portal packages for a PERMANENT BISTRO quote (PENDING wiring).
+// Auto-derive portal packages for a PERMANENT BISTRO quote.
 //
 // Permanent bistro doesn't use the holiday A/B/C/D tier ladder or permanent's
 // per-surface packages (front/sides/back) — it follows event's model instead:

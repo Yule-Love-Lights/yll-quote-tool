@@ -79,10 +79,18 @@ function effectiveTaxRate(_result: QuoteResult): number {
 // install never carries a rush/takedown fee (it goes up once, no seasonal
 // takedown), so `permanentBistroRatesSnapshot`'s presence zeroes the amounts
 // here too.
+//
+// Plain Permanent Lighting (audit WT-06): same fix, same reasoning — a
+// permanent (non-bistro) install is also a year-round track install with no
+// seasonal takedown, so `permanentRatesSnapshot`'s presence must zero the
+// amounts too. This used to be missed here (only isEvent/isPermanentBistro
+// were checked), so a regressed isHoliday UI gate could have shown a phantom
+// $150 rush/takedown fee on a permanent portal the server never charges.
 export function chargesFromResult(result: QuoteResult): PortalCharges {
   const isEvent = !!result.eventRatesSnapshot;
+  const isPermanent = !!result.permanentRatesSnapshot;
   const isPermanentBistro = !!result.permanentBistroRatesSnapshot;
-  const noHolidayFees = isEvent || isPermanentBistro;
+  const noHolidayFees = isEvent || isPermanent || isPermanentBistro;
   return {
     taxRate: effectiveTaxRate(result),
     rush: {
@@ -304,17 +312,6 @@ export function derivePackages(
   const b = totalsFor(idsForTierB, lineItems, charges);
   const c = totalsFor(idsForTierC, lineItems, charges);
 
-  // Tier 3 "à la carte" reference — what the bundle WOULD cost individually.
-  // Bug fix (audit W4-034): this must be priced through the SAME priceSelection
-  // pipeline (fees + tax) as the bundle `total` above — comparing the raw
-  // pre-tax/pre-fee item subtotal against the tax-inclusive bundle total mixed
-  // two different bases and could show a wrong (or negative) "you save $X".
-  // Same as the bundle until bundle discounts land (then the portal shows "you
-  // save $X" when aLaCarteTotal > total).
-  const tierCPrice = new Map(lineItems.map((li) => [li.id, li.price]));
-  const tierCSubtotal = idsForTierC.reduce((s, id) => s + (tierCPrice.get(id) ?? 0), 0);
-  const aLaCarteTotal = tierCSubtotal > 0 ? priceSelection(tierCSubtotal, charges).total : undefined;
-
   // Tier 2 only exists when there's a distinct Gingerbread roofline to upgrade
   // to. On a Santa's-only (or roofline-less) quote it would byte-duplicate Tier 1
   // while its name promises a Gingerbread upgrade — so we omit it and the portal
@@ -337,7 +334,6 @@ export function derivePackages(
     total: c.total,
     deposit: c.deposit,
     includedItemIds: idsForTierC,
-    aLaCarteTotal,
   };
   const tierD: PortalPackage = {
     id: 'D',

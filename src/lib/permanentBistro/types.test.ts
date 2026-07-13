@@ -9,7 +9,7 @@ describe('sanitizePermanentBistroRates', () => {
   });
 
   it('a valid full table round-trips unchanged', () => {
-    const rates = { perFt: 32, perPole: 120, minimum: 1500 };
+    const rates = { perFt: 32, perPole: 120, minimum: 1500, maintenancePrice: 250 };
     expect(sanitizePermanentBistroRates(rates)).toEqual(rates);
   });
 
@@ -18,6 +18,7 @@ describe('sanitizePermanentBistroRates', () => {
     expect(r.perFt).toBe(40);
     expect(r.perPole).toBe(DEFAULT_PERMANENT_BISTRO_RATES.perPole);
     expect(r.minimum).toBe(DEFAULT_PERMANENT_BISTRO_RATES.minimum);
+    expect(r.maintenancePrice).toBe(DEFAULT_PERMANENT_BISTRO_RATES.maintenancePrice);
   });
 
   it('invalid perFt/perPole (0 / negative / NaN / string) fall back to the default per field', () => {
@@ -45,10 +46,32 @@ describe('sanitizePermanentBistroRates', () => {
     expect(sanitizePermanentBistroRates({ minimum: 'x' }).minimum).toBe(DEFAULT_PERMANENT_BISTRO_RATES.minimum);
   });
 
+  it('maintenancePrice=0 is a VALID value (the hidden-add-on case) — preserved, not replaced by the default', () => {
+    const r = sanitizePermanentBistroRates({ perFt: 30, perPole: 100, maintenancePrice: 0 });
+    expect(r.maintenancePrice).toBe(0);
+  });
+
+  it('a positive maintenancePrice round-trips', () => {
+    expect(sanitizePermanentBistroRates({ maintenancePrice: 500 }).maintenancePrice).toBe(500);
+  });
+
+  it('invalid maintenancePrice (negative / NaN / string) falls back to the default, but stays non-negative-safe', () => {
+    expect(sanitizePermanentBistroRates({ maintenancePrice: -1 }).maintenancePrice).toBe(
+      DEFAULT_PERMANENT_BISTRO_RATES.maintenancePrice,
+    );
+    expect(sanitizePermanentBistroRates({ maintenancePrice: NaN }).maintenancePrice).toBe(
+      DEFAULT_PERMANENT_BISTRO_RATES.maintenancePrice,
+    );
+    expect(sanitizePermanentBistroRates({ maintenancePrice: 'x' }).maintenancePrice).toBe(
+      DEFAULT_PERMANENT_BISTRO_RATES.maintenancePrice,
+    );
+  });
+
   it('always returns a complete table (never trips the engine $0 guardrail on perFt/perPole)', () => {
     const r = sanitizePermanentBistroRates({});
     expect(Number.isFinite(r.perFt) && r.perFt > 0).toBe(true);
     expect(Number.isFinite(r.perPole) && r.perPole > 0).toBe(true);
     expect(Number.isFinite(r.minimum) && r.minimum >= 0).toBe(true);
+    expect(Number.isFinite(r.maintenancePrice) && r.maintenancePrice >= 0).toBe(true);
   });
 });

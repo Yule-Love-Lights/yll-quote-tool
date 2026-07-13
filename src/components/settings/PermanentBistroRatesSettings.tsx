@@ -4,9 +4,9 @@
 // permanent-bistro pricing engine's rate table (app_settings.permanentBistroRates)
 // without a deploy — the #101 pattern. Loads via GET /api/settings, saves via
 // PUT { permanentBistroRates }. The server sanitizes each field (invalid/≤0 →
-// default for perFt/perPole; minimum stays 0 when set — the gate-off value),
-// and we re-hydrate from the saved result so what you see is exactly what will
-// price. Mirrors EventRatesSettings.tsx.
+// default for perFt/perPole; minimum and maintenancePrice stay 0 when set —
+// the gate-off / hidden-add-on value), and we re-hydrate from the saved
+// result so what you see is exactly what will price. Mirrors EventRatesSettings.tsx.
 
 import { useEffect, useState } from 'react';
 import { DEFAULT_PERMANENT_BISTRO_RATES, type PermanentBistroRates } from '@/lib/permanentBistro/types';
@@ -156,6 +156,15 @@ export function PermanentBistroRatesSettings() {
             value={rates.minimum}
             onChange={(v) => update({ ...rates, minimum: v })}
             hint="Portal approval gate — a selection under this can't be approved. Not a price floor. 0 turns the gate off."
+          />
+        </Section>
+
+        <Section title="Maintenance add-on">
+          <RateField
+            label="Maintenance add-on"
+            value={rates.maintenancePrice}
+            onChange={(v) => update({ ...rates, maintenancePrice: v })}
+            hint="Annual maintenance plan price. 0 hides the add-on."
           />
         </Section>
       </div>

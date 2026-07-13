@@ -5,7 +5,7 @@ import Link from 'next/link';
 const ITEMS = [
   { label: 'Settings', href: '/settings', key: 'settings' as const },
   { label: 'Training', href: '/training', key: 'training' as const },
-  // Placeholder for now — the customer-portal config tab (stub page).
+  // The customer-portal config tab — early-install-discount toggle + swatch editor.
   { label: 'Customer Portal', href: '/settings/customer-portal', key: 'customer-portal' as const },
   // Operator accounts (admin-only; the page itself gates on the admin role).
   { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },

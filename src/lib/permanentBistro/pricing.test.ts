@@ -150,6 +150,59 @@ describe('calculatePermanentBistro — job minimum is a GATE, not a pricing floo
   });
 });
 
+describe('calculatePermanentBistro — annual maintenance add-on (mirrors permanent)', () => {
+  it('a nonzero maintenance price adds the line at that price', () => {
+    const rates: PermanentBistroRates = { ...R, maintenancePrice: 500 };
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), rates);
+    const line = r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance');
+    expect(line?.label).toBe('Annual Maintenance Plan');
+    expect(line?.amount).toBe(500);
+  });
+
+  it('maintenancePrice = 0 (the default) hides the add-on entirely', () => {
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), R);
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+
+  it('an unset maintenancePrice (absent from a partial rate object, sanitized to default) hides the add-on', () => {
+    const rates: PermanentBistroRates = { ...DEFAULT_PERMANENT_BISTRO_RATES };
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), rates);
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+
+  it('the maintenance line is billed on top of bistro/poles lines, not in place of them', () => {
+    const rates: PermanentBistroRates = { ...R, maintenancePrice: 250 };
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 50 }], poles: 2 } }),
+      rates,
+    );
+    // 50*30 + 2*100 + 250 = 1500 + 200 + 250 = 1950
+    expect(r.subtotalBeforeDiscount).toBe(1950);
+    expect(r.lineItems).toHaveLength(3);
+  });
+
+  it('a negative/non-finite maintenancePrice never throws — it just hides the add-on (never never a $0/NaN line)', () => {
+    // Unlike perFt/perPole/minimum, maintenancePrice is NOT asserted: a
+    // permanentBistroRatesSnapshot frozen before this field existed has no
+    // maintenancePrice key at all (reads as undefined) and must keep pricing.
+    expect(() => calculatePermanentBistro(baseInputs(), { ...R, maintenancePrice: -1 })).not.toThrow();
+    expect(() => calculatePermanentBistro(baseInputs(), { ...R, maintenancePrice: NaN })).not.toThrow();
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), { ...R, maintenancePrice: -1 });
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+
+  it('does NOT throw when maintenancePrice is 0 (the valid hidden-add-on value)', () => {
+    expect(() => calculatePermanentBistro(baseInputs(), { ...R, maintenancePrice: 0 })).not.toThrow();
+  });
+
+  it('a legacy rate object with maintenancePrice entirely absent (pre-dates this field) hides the add-on, never throws', () => {
+    const legacyRates = { perFt: 30, perPole: 100, minimum: 0 } as PermanentBistroRates;
+    expect(() => calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), legacyRates)).not.toThrow();
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { poles: 1 } }), legacyRates);
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+});
+
 describe('calculatePermanentBistro — custom line items pass through', () => {
   it('a staff-typed custom line is billed as entered', () => {
     const r = calculatePermanentBistro(baseInputs({ customLineItems: [{ label: 'Delivery', amount: 75 }] }), R);
