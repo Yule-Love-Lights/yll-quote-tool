@@ -355,6 +355,55 @@ describe('syncLeadToGhl — note (notes/utm/landingUrl present)', () => {
   });
 });
 
+describe('syncLeadToGhl — skipNotes (retry idempotency)', () => {
+  // The retry worker re-runs a lead whose earlier sync failed AFTER the contact
+  // was created (the row already carries a ghl_contact_id). createContactNote is
+  // NOT idempotent, so re-posting on retry would leave a duplicate note. The
+  // retry passes skipNotes:true to suppress BOTH the regular note and the
+  // household note, while every idempotent step (tags, service field,
+  // opportunity find-or-create) still runs so a partial sync gets completed.
+  it('skipNotes:true suppresses the regular note even when notes/utm/landingUrl are present', async () => {
+    const result = await syncLeadToGhl(
+      baseLead({
+        notes: 'Wants warm white only',
+        utm: { utm_source: 'google' },
+        landingUrl: 'https://yulelovelights.com/quote',
+      }),
+      { skipNotes: true },
+    );
+    expect(hl.createContactNote).not.toHaveBeenCalled();
+    // idempotent steps still run — a partial sync must be able to finish
+    expect(hl.addContactTags).toHaveBeenCalledTimes(1);
+    expect(hl.findOrCreateOpportunityForContact).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('synced');
+  });
+
+  it('skipNotes:true suppresses the household note too, but keeps the household tag', async () => {
+    hl.searchContacts.mockResolvedValueOnce([
+      {
+        id: 'existing-1',
+        source: 'highlevel',
+        fullName: 'Jordan Rivera',
+        email: 'jordan@example.com',
+        phone: '+16315550100',
+      },
+    ]);
+    const result = await syncLeadToGhl(
+      baseLead({ name: 'Casey Rivera', service: 'permanent', notes: null, utm: null, landingUrl: null }),
+      { skipNotes: true },
+    );
+    expect(hl.createContactNote).not.toHaveBeenCalled();
+    const [, tags] = hl.addContactTags.mock.calls[0]!;
+    expect(tags).toContain('household-second-contact');
+    expect(result.status).toBe('synced');
+  });
+
+  it('default (skipNotes omitted) still posts the note — regression', async () => {
+    await syncLeadToGhl(baseLead({ notes: 'Wants warm white only' }));
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('buildLeadNoteBody — note-forgery hardening (F12)', () => {
   it('strips newlines from landingUrl and utm values so a submitter cannot inject a fake extra line', () => {
     const body = buildLeadNoteBody(
