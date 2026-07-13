@@ -70,6 +70,13 @@ export type WorklistKind =
 export type WorklistItem = {
   kind: WorklistKind;
   quoteId: string;
+  /** Human-friendly quote # (#83) so a customer with several concurrent quotes
+   *  is distinguishable at a glance (WT-40). Null on legacy rows with no
+   *  allocated number. */
+  quoteNumber: number | null;
+  /** Service line (holiday/permanent/event/...) — same disambiguation reason
+   *  as quoteNumber (WT-40). */
+  serviceType: ServiceType | null;
   title: string;        // e.g. "Smith family — 1234 Main St"
   subtitle: string;     // e.g. "Drafted 3 days ago"
   ageDays: number;
@@ -82,6 +89,9 @@ export type HolidayBreakdown = {
   bookedTotal: number;
   /** Total holiday quotes whose home.works signature is recorded (proxy for "installed"). */
   installedTotal: number;
+  /** Holiday quotes sent but not yet approved (still in the funnel) — same
+   *  sent-not-approved definition Permanent/Event/Bistro already track (WT-39). */
+  pending: number;
   /** Bookings + installed per install-month for the current season (Sep–Feb window). */
   byMonth: ReadonlyArray<{
     /** Month label, e.g. "Sep 2026". */

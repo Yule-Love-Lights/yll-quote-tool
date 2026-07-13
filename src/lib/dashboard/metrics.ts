@@ -1,6 +1,6 @@
 import { DASHBOARD_CONFIG } from './config';
 import type { DashboardQuote, Kpis } from './types';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { isTerminalStatus } from './serviceMetrics';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -18,6 +18,24 @@ export function customerKey(q: DashboardQuote): string {
     ?? `__unknown_${q.id}`;
 }
 
+/**
+ * WT-48 (dashboard-insights reconciliation): the single "reached the customer"
+ * rule shared by the homepage KPI strip's conversionRate (computeKpis, below)
+ * and Insights' closeRatio (computeInsightStats in insights.ts). Before this
+ * fix the two surfaces disagreed — computeKpis counted `customer_approved_at`
+ * alone as reached with no terminal check, while computeInsightStats required
+ * (approved && !terminal) — so a cancelled-but-once-approved quote could be
+ * "reached" on one surface and not the other.
+ *
+ * A quote reached the customer if it was sent, OR it was approved while not
+ * in a terminal state (cancelled/declined/lost). Approval implies it reached
+ * them even when quote_sent_at was never stamped (in-person / imported /
+ * offline close). A terminal quote that was never sent has NOT reached anyone.
+ */
+export function reached(q: DashboardQuote): boolean {
+  return !!q.quote_sent_at || (!!q.customer_approved_at && !isTerminalStatus(q));
+}
+
 export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
   const nowMs = now.getTime();
   const recentCutoff = nowMs - DASHBOARD_CONFIG.recentlyBookedWindowDays * MS_PER_DAY;
@@ -26,7 +44,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
   let bookedRevenue = 0;
   let bookedRevenueRecent = 0;
   let activeQuotes = 0;
-  let reachedCount = 0; // quotes that reached the customer (sent OR approved) — conversion denominator
+  let reachedCount = 0; // quotes that reached the customer, per `reached()` — conversion denominator
   let approvedCount = 0;
   let turnaroundSum = 0;
   let turnaroundN = 0;
@@ -37,16 +55,10 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     const sentAt = q.quote_sent_at;
     const total = q.total ?? 0;
 
-    // B7 fix: derive the canonical status first so terminal-state orders
-    // (cancelled/declined/lost) are excluded from booked revenue even when
-    // customer_approved_at or deposit_paid_at is set.  deriveStatus returns
-    // the persisted status when it is a terminal/branch state, so this
-    // requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
-    const derivedStatus = deriveStatus(q);
-    const isTerminal =
-      derivedStatus === 'cancelled' ||
-      derivedStatus === 'declined' ||
-      derivedStatus === 'lost';
+    // B7 fix: exclude terminal-state orders (cancelled/declined/lost) from
+    // booked revenue even when customer_approved_at or deposit_paid_at is set.
+    // isTerminalStatus requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
+    const isTerminal = isTerminalStatus(q);
 
     if (approvedAt && !isTerminal) {
       bookedRevenue += total;
@@ -55,11 +67,8 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
       approvedCount += 1;
     }
 
-    // A quote "reached the customer" if it was sent OR approved. Approval implies
-    // it reached them even when quote_sent_at was never stamped (in-person /
-    // imported / offline close — /approve sets customer_approved_at only). Using
-    // this as the conversion denominator keeps the rate in [0,1].
-    if (sentAt || approvedAt) reachedCount += 1;
+    // A quote "reached the customer" — shared rule (WT-48), see `reached()` above.
+    if (reached(q)) reachedCount += 1;
 
     if (sentAt) {
       // Avg turnaround uses created→sent for every sent quote (no window).

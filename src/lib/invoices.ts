@@ -141,7 +141,9 @@ export type InvoiceReconciliation = {
    * Actionable flags for the operator — zero or more of:
    *   'overpaid'            — credit_note > 0; a Valor refund is required.
    *   'short-deposit'       — deposit > 0 but < 40% of quoted (fat-finger / partial-auth).
+   *                           Not evaluated on a cancelled invoice (see reconcileInvoice).
    *   'balance-outstanding' — not paid and balance > 0 (informational).
+   *                           Not evaluated on a cancelled invoice (see reconcileInvoice).
    *   'inconsistent'        — paid status but balance > 0 (data integrity error).
    */
   flags: string[];
@@ -153,6 +155,13 @@ export type InvoiceReconciliation = {
  * Flags are additive: any combination can fire simultaneously.
  * The short-deposit threshold is 40% (not 50%) to tolerate minor rounding and
  * round-dollar booking deposits, while still catching clearly low values.
+ *
+ * WT-20 fix: setInvoiceStatus never zeroes the balance when an invoice is
+ * cancelled, so a cancelled invoice keeps its original nonzero balance. The
+ * collection-oriented flags ('balance-outstanding', 'short-deposit') are
+ * skipped for a cancelled invoice so it doesn't read as "still owed" — the
+ * only real action on a cancelled order is a manual refund, which the
+ * 'overpaid' flag already covers when a credit_note exists.
  */
 export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
   const quoted = inv.total;
@@ -160,12 +169,13 @@ export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
   const balanceDue = inv.balance;
   const creditNote = inv.credit_note;
   const paid = inv.status === 'paid';
+  const cancelled = inv.status === 'cancelled';
 
   const flags: string[] = [];
 
   if (creditNote > 0) flags.push('overpaid');
-  if (depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
-  if (!paid && balanceDue > 0) flags.push('balance-outstanding');
+  if (!cancelled && depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
+  if (!cancelled && !paid && balanceDue > 0) flags.push('balance-outstanding');
   if (paid && balanceDue > 0) flags.push('inconsistent');
 
   return { quoted, depositApplied, balanceDue, creditNote, paid, flags };

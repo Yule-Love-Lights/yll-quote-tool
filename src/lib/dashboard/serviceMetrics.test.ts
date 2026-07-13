@@ -116,6 +116,34 @@ describe('computeHolidayBreakdown — totals', () => {
   });
 });
 
+describe('computeHolidayBreakdown — pending (WT-39)', () => {
+  it('counts sent-not-approved holiday quotes as pending, same funnel shape as Permanent/Event/Bistro', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-09-01T00:00:00Z' }), // pending
+      makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-10T00:00:00Z' }), // booked, not pending
+      makeQuote({
+        service_type: 'holiday',
+        quote_sent_at: '2026-09-01T00:00:00Z',
+        customer_approved_at: '2026-09-05T00:00:00Z',
+      }), // sent AND approved — counts as booked, not pending
+      makeQuote({ service_type: 'permanent', quote_sent_at: '2026-09-01T00:00:00Z' }), // wrong service
+    ]);
+    expect(out.pending).toBe(1);
+  });
+
+  it('excludes a terminal (cancelled) sent holiday quote from pending (B7 class)', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-09-01T00:00:00Z', status: 'cancelled' }),
+    ]);
+    expect(out.pending).toBe(0);
+  });
+
+  it('handles empty / no holiday quotes', () => {
+    const out = computeHolidayBreakdown([makeQuote({ service_type: 'permanent' })]);
+    expect(out.pending).toBe(0);
+  });
+});
+
 describe('computeHolidayBreakdown — cancelled orders excluded (B7)', () => {
   it('a cancelled holiday quote with customer_approved_at does NOT count as booked', () => {
     const out = computeHolidayBreakdown([
