@@ -40,9 +40,20 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
+      '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads retry worker)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
+  });
+
+  it('keeps the admin leads surface operator-only — only the cron is public (#leads)', () => {
+    // The retry CRON must reach its own CRON_SECRET check (Vercel cron carries no
+    // operator session), so it's allowlisted above. The ADMIN list + manual-retry
+    // routes are requireAdmin — an operator hits them WITH a session, so they must
+    // stay default-denied here (never public).
+    expect(isPublicPath('/api/leads/retry', 'GET')).toBe(true);
+    expect(isPublicPath('/api/admin/leads', 'GET')).toBe(false);
+    expect(isPublicPath('/api/admin/leads/abc-123/retry', 'POST')).toBe(false);
   });
 
   it('gates every operator page + write API (default-deny)', () => {
