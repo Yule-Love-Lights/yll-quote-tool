@@ -41,16 +41,22 @@ vi.mock('./gmail', () => ({
   normalizeGmailThread: (mapped: unknown) => mapped,
 }));
 
+const addContactTagsMock = vi.fn();
+const markConversationReadMock = vi.fn();
+const isHighLevelConfiguredMock = vi.fn();
+const findOrCreateOpportunityForContactMock = vi.fn();
+
 vi.mock('@/lib/integrations/highlevel', () => ({
-  addContactTags: vi.fn(),
-  findOrCreateOpportunityForContact: vi.fn(),
-  isHighLevelConfigured: vi.fn(),
-  markConversationRead: vi.fn(),
+  addContactTags: (...args: unknown[]) => addContactTagsMock(...args),
+  findOrCreateOpportunityForContact: (...args: unknown[]) => findOrCreateOpportunityForContactMock(...args),
+  isHighLevelConfigured: (...args: unknown[]) => isHighLevelConfiguredMock(...args),
+  markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
   searchConversations: vi.fn(),
   sendEmail: vi.fn(),
 }));
 
-import { runGmailPoll } from './sync';
+import { runGmailPoll, runHandledWriteback } from './sync';
+import type { HandledTarget } from './store';
 
 function threadRefs(count: number) {
   return Array.from({ length: count }, (_, i) => ({ id: `t${i}` }));
@@ -135,5 +141,57 @@ describe('runGmailPoll concurrency', () => {
     expect(summary.ok).toBe(true);
     expect(summary.errors).toBe(1);
     expect(summary.ingested).toBe(THREAD_COUNT - 1);
+  });
+});
+
+// WA-A6: the Handled write-back used to "ensure a pipeline opportunity" via the
+// legacy holiday-only HIGHLEVEL_PIPELINE_ID/STAGE_QUOTE_CREATED env vars,
+// regardless of the contact's actual vertical — filing permanent/event contacts
+// into the Christmas Lights pipeline (and risking a holiday drip firing at a
+// non-holiday customer). That step was dropped entirely (HandledTarget carries
+// no service_type to resolve the right pipeline with). These tests lock in that
+// no opportunity is ever created/found from the Handled route, holiday-shaped
+// env vars or not.
+describe('runHandledWriteback (WA-A6)', () => {
+  const baseTarget: HandledTarget = {
+    source: 'ghl',
+    externalId: 'conv-1',
+    sourceMessageId: 'msg-1',
+    ghlContactId: 'contact-1',
+    displayName: 'Jane Permanent-Lead',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isHighLevelConfiguredMock.mockReturnValue(true);
+    markConversationReadMock.mockResolvedValue(undefined);
+    addContactTagsMock.mockResolvedValue(undefined);
+  });
+
+  it('never creates/finds a GHL opportunity, even with the legacy holiday pipeline env vars set', async () => {
+    process.env.HIGHLEVEL_PIPELINE_ID = 'holiday-pipeline-id';
+    process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = 'holiday-stage-id';
+    try {
+      const sync = await runHandledWriteback(baseTarget, 'Jason');
+
+      expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+      expect(sync.ghlOpportunity).toBeUndefined();
+      // The real "handled" side-effects still fire.
+      expect(markConversationReadMock).toHaveBeenCalledWith('conv-1', 'msg-1');
+      expect(addContactTagsMock).toHaveBeenCalledWith('contact-1', expect.arrayContaining(['dashboard-handled']));
+    } finally {
+      delete process.env.HIGHLEVEL_PIPELINE_ID;
+      delete process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+    }
+  });
+
+  it('never creates/finds a GHL opportunity for a non-holiday (e.g. permanent) contact with no pipeline env vars set', async () => {
+    delete process.env.HIGHLEVEL_PIPELINE_ID;
+    delete process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+
+    const sync = await runHandledWriteback(baseTarget, 'Jason');
+
+    expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+    expect(sync.ghlOpportunity).toBeUndefined();
   });
 });

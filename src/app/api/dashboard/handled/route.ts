@@ -36,11 +36,10 @@ export async function POST(req: NextRequest) {
   const local = await markItemHandledLocal(itemId, operator?.id ?? 'system', now);
   if (!local.ok) return NextResponse.json({ error: local.error }, { status: 409 });
 
-  // 2. Best-effort source write-back: GHL mark-read + handled-by tag + ensure the
-  //    pipeline opportunity, and the Gmail YLL/Handled label. Each step is caught
-  //    independently and its outcome persisted. NOTE: whether GHL mark-read clears
-  //    the conversation unread badge is UNVERIFIED pending a human-watched live
-  //    test (see the spike + memory).
+  // 2. Best-effort source write-back: GHL mark-read + handled-by tag, and the
+  //    Gmail YLL/Handled label. Each step is caught independently and its outcome
+  //    persisted. NOTE: whether GHL mark-read clears the conversation unread badge
+  //    is UNVERIFIED pending a human-watched live test (see the spike + memory).
   const sync = await runHandledWriteback(local.target, operator?.email ?? operator?.id ?? 'operator');
   await recordWriteback(itemId, sync);
 
