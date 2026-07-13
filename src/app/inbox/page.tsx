@@ -1,9 +1,16 @@
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
-import { getReopenCounts, listDueFollowUps, listInWorks, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import {
+  getOperatorLabels,
+  getReopenCounts,
+  listDueFollowUps,
+  listInWorks,
+  listItemsForMetrics,
+  listOpenItems,
+} from '@/lib/dashboard/inbox/store';
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
-import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
@@ -15,7 +22,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen] = await Promise.all([
+  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen, repLabels] = await Promise.all([
     listOpenItems(),
     listDueFollowUps(now),
     listItemsForMetrics(),
@@ -23,6 +30,7 @@ export default async function InboxPage() {
     listInWorks(),
     getFollowUpDays(),
     getReopenCounts(now),
+    getOperatorLabels(),
   ]);
 
   return (
@@ -72,7 +80,12 @@ export default async function InboxPage() {
         )}
 
         {metricsRes.ok && (
-          <ResponseAnalytics data={computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated)} />
+          <ResponseAnalytics
+            data={withOperatorLabels(
+              computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated),
+              repLabels,
+            )}
+          />
         )}
       </div>
     </OperatorShell>

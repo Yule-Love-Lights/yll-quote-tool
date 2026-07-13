@@ -217,3 +217,22 @@ export function computeResponseAnalytics(
   }
   return { windows, trend: computeTrend(items, now), reopen: reopenRates, truncated };
 }
+
+// ─── PS-E1: resolve the raw handled_by UUID to a readable label ──────────────
+//
+// `byRep.rep` is the raw operator_id (handled_by is a `uuid references
+// auth.users(id)` FK — see migrations/2026-06-28-dashboard-tables.sql — so the
+// write routes can't stamp an email/name there without a schema change). Resolve
+// to a display label here at read time instead: lower risk, no migration, and it
+// labels rows stamped before this fix the same as rows stamped after. 'system'
+// passes through unchanged — ResponseAnalytics renders that as "Auto-resolved".
+export function withOperatorLabels(data: ResponseAnalyticsData, labels: Map<string, string>): ResponseAnalyticsData {
+  const relabel = (m: ResponseMetrics): ResponseMetrics => ({
+    ...m,
+    byRep: m.byRep.map((r) => (r.rep === 'system' ? r : { ...r, rep: labels.get(r.rep) ?? r.rep })),
+  });
+  return {
+    ...data,
+    windows: { all: relabel(data.windows.all), '90': relabel(data.windows['90']), '30': relabel(data.windows['30']) },
+  };
+}

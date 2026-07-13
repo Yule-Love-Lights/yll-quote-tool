@@ -21,8 +21,8 @@ import { WorkflowBoard } from '@/components/dashboard/WorkflowBoard';
 import { Worklist } from '@/components/dashboard/Worklist';
 import { NeedsActionCard } from '@/components/dashboard/NeedsActionCard';
 import { ServiceSections } from '@/components/dashboard/ServiceSections';
-import { listItemsForMetrics, listOpenItems, getReopenCounts } from '@/lib/dashboard/inbox/store';
-import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { listItemsForMetrics, listOpenItems, getReopenCounts, getOperatorLabels } from '@/lib/dashboard/inbox/store';
+import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
@@ -33,7 +33,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, invoices, metricsRes, openRes, reopen, referralMetrics] = await Promise.all([
+  const [quotes, jobs, invoices, metricsRes, openRes, reopen, referralMetrics, repLabels] = await Promise.all([
     listQuotesForDashboard(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
@@ -41,8 +41,11 @@ export default async function DashboardPage() {
     listOpenItems(),
     getReopenCounts(now),
     loadReferralMetrics(),
+    getOperatorLabels(),
   ]);
-  const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
+  const analytics = metricsRes.ok
+    ? withOperatorLabels(computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated), repLabels)
+    : null;
   // PS-E2: Inbox nav badge — same buildInboxSummary(listOpenItems()) pairing
   // /inbox's own InboxList uses for its "Open leads" / "Overdue over 4h" tiles.
   const inboxSummary = openRes.ok ? buildInboxSummary(openRes.items, now.getTime()) : null;
