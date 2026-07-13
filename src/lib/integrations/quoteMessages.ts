@@ -571,18 +571,28 @@ export function refundDueEmailHtml(input: {
   customerName: string | null;
   amountUsd: number;
   adminUrl: string;
+  /**
+   * WT-17: true when the invoice was PAID IN FULL (deposit + the collected
+   * balance), not just the deposit — changes the wording + row label so staff
+   * refund the whole collected amount, not just the deposit.
+   */
+  paidInFull?: boolean;
 }): string {
   const name = escapeHtml(input.customerName?.trim() || 'Unknown');
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  const chargedWhat = input.paidInFull
+    ? 'the full order was already paid in full'
+    : 'a deposit was already charged';
+  const rowLabel = input.paidInFull ? 'Full amount to refund' : 'Deposit to refund';
   return [
-    `<p><strong>${name}</strong>'s booked order was cancelled after a deposit was already charged.</p>`,
+    `<p><strong>${name}</strong>'s booked order was cancelled after ${chargedWhat}.</p>`,
     `<p><strong>Action needed:</strong> issue the refund (${usdExact(
       input.amountUsd,
     )}) manually in the Valor portal.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;">`,
     row('Customer', name),
-    row('Deposit to refund', usdExact(input.amountUsd)),
+    row(rowLabel, usdExact(input.amountUsd)),
     `</table>`,
     `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');

@@ -956,4 +956,48 @@ describe('reconcileInvoice — flags', () => {
     expect(r.flags).toContain('short-deposit');
     expect(r.flags).toContain('balance-outstanding');
   });
+
+  // WT-20: a cancelled invoice's `balance` column is never zeroed by
+  // setInvoiceStatus, so without the cancelled guard a cancelled order would
+  // falsely show "balance-outstanding" (and possibly "short-deposit") as if
+  // the customer still owed money — when the only real action is a REFUND of
+  // what was already collected, not a collection of what's "outstanding".
+  describe('WT-20 — cancelled invoices never show a false balance-outstanding/short-deposit', () => {
+    it('does NOT flag balance-outstanding on a cancelled invoice with a positive balance', () => {
+      const r = reconcileInvoice(
+        makeInvoiceRow({ status: 'cancelled', total: 4000, deposit_applied: 2000, balance: 2000, credit_note: 0 }),
+      );
+      expect(r.flags).not.toContain('balance-outstanding');
+    });
+
+    it('does NOT flag short-deposit on a cancelled invoice with a below-40% deposit', () => {
+      // $300 on $4000 = 7.5% — would trip short-deposit if not cancelled-gated.
+      const r = reconcileInvoice(
+        makeInvoiceRow({ status: 'cancelled', total: 4000, deposit_applied: 300, balance: 3700, credit_note: 0 }),
+      );
+      expect(r.flags).not.toContain('short-deposit');
+    });
+
+    it('flags "cancelled-refund-owed" when a cancelled invoice had money collected', () => {
+      const r = reconcileInvoice(
+        makeInvoiceRow({ status: 'cancelled', total: 4000, deposit_applied: 2000, balance: 2000, credit_note: 0 }),
+      );
+      expect(r.flags).toEqual(['cancelled-refund-owed']);
+    });
+
+    it('does NOT flag "cancelled-refund-owed" when a cancelled invoice never collected anything', () => {
+      const r = reconcileInvoice(
+        makeInvoiceRow({ status: 'cancelled', total: 4000, deposit_applied: 0, balance: 4000, credit_note: 0 }),
+      );
+      expect(r.flags).toEqual([]);
+    });
+
+    it('a cancelled + overpaid invoice still surfaces "overpaid" alongside "cancelled-refund-owed"', () => {
+      const r = reconcileInvoice(
+        makeInvoiceRow({ status: 'cancelled', total: 3000, deposit_applied: 4000, balance: 0, credit_note: 1000 }),
+      );
+      expect(r.flags).toContain('overpaid');
+      expect(r.flags).toContain('cancelled-refund-owed');
+    });
+  });
 });

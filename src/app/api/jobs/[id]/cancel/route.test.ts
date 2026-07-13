@@ -4,17 +4,29 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { getJob, setJobStatus, getInvoiceByJob, setInvoiceStatus, requireOperatorMock, sbRef, hl, releaseAccrualOnCancelMock } =
-  vi.hoisted(() => ({
-    getJob: vi.fn(),
-    setJobStatus: vi.fn(),
-    getInvoiceByJob: vi.fn(),
-    setInvoiceStatus: vi.fn(),
-    requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
-    sbRef: { current: null as unknown },
-    hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
-    releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
-  }));
+const {
+  getJob,
+  setJobStatus,
+  getInvoiceByJob,
+  setInvoiceStatus,
+  requireOperatorMock,
+  sbRef,
+  hl,
+  releaseAccrualOnCancelMock,
+  getJobWorkOrderMock,
+  adjustOnHandAtomicMock,
+} = vi.hoisted(() => ({
+  getJob: vi.fn(),
+  setJobStatus: vi.fn(),
+  getInvoiceByJob: vi.fn(),
+  setInvoiceStatus: vi.fn(),
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+  sbRef: { current: null as unknown },
+  hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
+  releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
+  getJobWorkOrderMock: vi.fn(),
+  adjustOnHandAtomicMock: vi.fn(async () => undefined),
+}));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
@@ -32,6 +44,13 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 // calls to this file's shared quote-row fake (which the W1-008 tests below
 // index into positionally) — this file's job is only the wiring + fail-open.
 vi.mock('@/lib/referrals', () => ({ releaseAccrualOnCancel: releaseAccrualOnCancelMock }));
+// WT-31: getJobWorkOrder + adjustOnHandAtomic are mocked so the stock-return
+// check's own logic (materials projection, atomic delta write) isn't
+// re-exercised here — it's covered in src/lib/inventory/*.test.ts. This file's
+// job is only the wiring: read the flag, return stock when it's set, skip
+// otherwise.
+vi.mock('@/lib/inventory/jobs', () => ({ getJobWorkOrder: getJobWorkOrderMock }));
+vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
 
 import { POST } from './route';
 
@@ -68,6 +87,13 @@ beforeEach(() => {
   getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'draft' });
   setInvoiceStatus.mockResolvedValue({ id: 'inv-1', status: 'cancelled' });
   releaseAccrualOnCancelMock.mockResolvedValue({ released: false });
+  // WT-31 default: stock was never decremented for this job, so the cancel
+  // route's stock-return check is a no-op unless a test overrides this.
+  getJobWorkOrderMock.mockResolvedValue({
+    job: { stockDecrementedAt: null, isTest: false },
+    materials: { materials: [], unbound: [], totalLines: 0 },
+  });
+  adjustOnHandAtomicMock.mockResolvedValue(undefined);
   sb = fakeSb();
   sbRef.current = sb.client;
 });
@@ -146,6 +172,162 @@ describe('POST /api/jobs/[id]/cancel', () => {
     const json = await res.json();
     expect(json.refundedInvoice).toBe(true);
     expect(setInvoiceStatus).toHaveBeenCalledWith('inv-1', 'cancelled');
+  });
+
+  // WT-17: cancelling a PAID-IN-FULL order (deposit + the collected balance)
+  // must report + persist the refund as the FULL invoice.total — not just the
+  // deposit taken at booking. Using only quotes.deposit_amount_usd here
+  // under-reports the refund staff need to issue in Valor.
+  describe('WT-17 — paid-in-full cancel refunds the full invoice.total, not just the deposit', () => {
+    it('uses invoice.total (not deposit_amount_usd) as the refundDue amount when the invoice was paid in full', async () => {
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'paid', total: 7797.38 });
+      sb = fakeSb({
+        deposit_paid_at: '2026-01-01T00:00:00Z',
+        deposit_amount_usd: 3898.69, // the deposit alone — must NOT be what's refunded
+        customer_name: 'Jordan Smith',
+        approval_snapshot: {},
+      });
+      sbRef.current = sb.client;
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.refundedInvoice).toBe(true);
+      expect(json.refundNeeded).toBe(true);
+
+      // updates[0] = quote status cancel; updates[1] = the refundDue snapshot merge.
+      expect(sb.updates[1]).toMatchObject({
+        approval_snapshot: {
+          refundDue: { reason: 'cancelled-invoice-paid-in-full', amountUsd: 7797.38 },
+        },
+      });
+
+      expect(hl.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          html: expect.stringContaining('$7,797.38'),
+        }),
+      );
+      const call = hl.sendEmail.mock.calls[0][0] as { html: string };
+      expect(call.html).not.toContain('$3,898.69');
+    });
+
+    it('the API response note tells staff to refund the full amount, not just "the deposit"', async () => {
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'paid', total: 5000 });
+      sb = fakeSb({ deposit_paid_at: '2026-01-01T00:00:00Z', deposit_amount_usd: 2500 });
+      sbRef.current = sb.client;
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+      expect(json.note).toMatch(/full order/i);
+    });
+
+    it('falls back to the deposit-only amount when the invoice was NOT paid in full', async () => {
+      getInvoiceByJob.mockResolvedValueOnce({ id: 'inv-1', status: 'awaiting_payment', total: 5000 });
+      sb = fakeSb({
+        deposit_paid_at: '2026-01-01T00:00:00Z',
+        deposit_amount_usd: 2500,
+        customer_name: 'Casey Lee',
+      });
+      sbRef.current = sb.client;
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+
+      expect(json.refundedInvoice).toBe(false);
+      expect(json.refundedDeposit).toBe(true);
+      expect(sb.updates[1]).toMatchObject({
+        approval_snapshot: {
+          refundDue: { reason: 'cancelled-deposit-paid', amountUsd: 2500 },
+        },
+      });
+    });
+  });
+
+  // WT-31: cancelling a job whose stock was already decremented (prepped for
+  // install) must return the units to on-hand — otherwise a cancelled-after-
+  // prep job silently understates real inventory forever.
+  describe('WT-31 — cancel reverses stock already pulled for a prepped job', () => {
+    it("returns each tracked SKU's projected qty to on-hand when stock_decremented_at is set", async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
+        materials: {
+          materials: [
+            { sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false },
+            { sku: 'CLIP-A', name: 'All-purpose clip', qty: 20, onHand: 50, short: false },
+            // untracked SKU (onHand null — not in the on-hand list) must NOT be touched.
+            { sku: 'UNTRACKED', name: 'Untracked part', qty: 5, onHand: null, short: false },
+          ],
+          unbound: [],
+          totalLines: 3,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      expect(res.status).toBe(200);
+
+      expect(adjustOnHandAtomicMock).toHaveBeenCalledTimes(2);
+      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'C9-BULB', 40);
+      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'CLIP-A', 20);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalledWith(expect.anything(), 'UNTRACKED', expect.anything());
+    });
+
+    it('does NOT touch on-hand when the job was never prepped (stock_decremented_at is null)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: null, isTest: false },
+        materials: {
+          materials: [{ sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      expect(res.status).toBe(200);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT return stock for a TEST job even if stock_decremented_at is set (prepareJobMaterials never actually deducted it)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: true },
+        materials: {
+          materials: [{ sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+
+      const res = await POST(req, ctx());
+      expect(res.status).toBe(200);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    });
+
+    it('a failed stock-return write does not break the cancel response (best-effort)', async () => {
+      getJobWorkOrderMock.mockResolvedValueOnce({
+        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
+        materials: {
+          materials: [{ sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false }],
+          unbound: [],
+          totalLines: 1,
+        },
+      });
+      adjustOnHandAtomicMock.mockRejectedValueOnce(new Error('on-hand write conflict'));
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.cancelled).toBe(true);
+    });
+
+    it('a failed getJobWorkOrder read does not break the cancel response (best-effort)', async () => {
+      getJobWorkOrderMock.mockRejectedValueOnce(new Error('read failed'));
+
+      const res = await POST(req, ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.cancelled).toBe(true);
+      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    });
   });
 
   it('cancels job + quote even when there is no invoice yet', async () => {

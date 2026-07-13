@@ -139,10 +139,13 @@ export type InvoiceReconciliation = {
   paid: boolean;
   /**
    * Actionable flags for the operator — zero or more of:
-   *   'overpaid'            — credit_note > 0; a Valor refund is required.
-   *   'short-deposit'       — deposit > 0 but < 40% of quoted (fat-finger / partial-auth).
-   *   'balance-outstanding' — not paid and balance > 0 (informational).
-   *   'inconsistent'        — paid status but balance > 0 (data integrity error).
+   *   'overpaid'              — credit_note > 0; a Valor refund is required.
+   *   'short-deposit'         — deposit > 0 but < 40% of quoted (fat-finger / partial-auth).
+   *   'balance-outstanding'   — not paid, not cancelled, and balance > 0 (informational).
+   *   'inconsistent'          — paid status but balance > 0 (data integrity error).
+   *   'cancelled-refund-owed' — status is cancelled and money was collected (deposit and/or
+   *                             the balance) — the outstanding "balance" is not owed by the
+   *                             customer, it's a refund owed TO the customer.
    */
   flags: string[];
 };
@@ -153,6 +156,15 @@ export type InvoiceReconciliation = {
  * Flags are additive: any combination can fire simultaneously.
  * The short-deposit threshold is 40% (not 50%) to tolerate minor rounding and
  * round-dollar booking deposits, while still catching clearly low values.
+ *
+ * WT-20 fix: a cancelled invoice's `balance` column is never zeroed by
+ * setInvoiceStatus, so without this guard every cancelled order (paid or not)
+ * would falsely show a red "balance-outstanding"/"short-deposit" reconciliation
+ * issue as if the customer still owed money — when the only real action (if any
+ * money was collected) is a REFUND, not collection. That obligation is handled
+ * separately by the cancel route's refundDue snapshot/email (WT-17); here we just
+ * stop the false "still owed" flags and, when money WAS collected, surface a
+ * distinct 'cancelled-refund-owed' flag instead.
  */
 export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
   const quoted = inv.total;
@@ -160,13 +172,17 @@ export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
   const balanceDue = inv.balance;
   const creditNote = inv.credit_note;
   const paid = inv.status === 'paid';
+  const cancelled = inv.status === 'cancelled';
 
   const flags: string[] = [];
 
   if (creditNote > 0) flags.push('overpaid');
-  if (depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
-  if (!paid && balanceDue > 0) flags.push('balance-outstanding');
+  if (!cancelled) {
+    if (depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
+    if (!paid && balanceDue > 0) flags.push('balance-outstanding');
+  }
   if (paid && balanceDue > 0) flags.push('inconsistent');
+  if (cancelled && depositApplied > 0) flags.push('cancelled-refund-owed');
 
   return { quoted, depositApplied, balanceDue, creditNote, paid, flags };
 }
