@@ -244,7 +244,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             id="portal-dark-included-heading"
             className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
           >
-            Your {activeName} — line by line.
+            {/* WT-L2 (defensive): activeName should always be set by
+                SelectionContext, but never render "Your  — line by line." if
+                it's ever blank. */}
+            Your {activeName || 'quote'} — line by line.
           </h2>
           {(locked || items.length > 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
