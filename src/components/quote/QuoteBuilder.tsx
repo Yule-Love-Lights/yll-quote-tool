@@ -728,6 +728,11 @@ export default function QuoteBuilder({
   // customer-facing visual now; the app-wide render teardown is task #36.)
   const [fewShotCount, setFewShotCount] = useState(0);
   const [fewShotRanking, setFewShotRanking] = useState<'similarity' | 'recency'>('recency');
+  // WT-33: true only when similarity retrieval was expected (Voyage configured
+  // + a query image) but fell back to recency anyway (a likely Voyage outage).
+  // Distinct from the benign small-library/unconfigured recency fallback,
+  // which leaves this false.
+  const [fewShotDegraded, setFewShotDegraded] = useState(false);
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -1499,7 +1504,7 @@ export default function QuoteBuilder({
     // + scale) with no holiday analysis/seed — the operator draws the roofline.
     permanentImageryOnly?: boolean;
     fewShotCount?: number;
-    fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
+    fewShotBreakdown?: { ranking?: 'similarity' | 'recency'; degraded?: boolean };
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
     if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
@@ -1593,6 +1598,7 @@ export default function QuoteBuilder({
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
     setFewShotRanking(data.fewShotBreakdown?.ranking ?? 'recency');
+    setFewShotDegraded(data.fewShotBreakdown?.degraded ?? false);
   };
 
   const handleLookupAddress = async () => {
@@ -2877,6 +2883,18 @@ export default function QuoteBuilder({
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">
                         • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference
+                      </span>
+                    )}
+                    {/* WT-33: distinct warning badge for a likely Voyage outage
+                        (similarity was expected but fell back), separate from
+                        the benign small-library/unconfigured recency fallback
+                        above (which shows no badge at all). */}
+                    {fewShotDegraded && (
+                      <span
+                        className="ml-2 inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 align-middle"
+                        title="Similarity search was expected to run but fell back to recent examples. This usually means the image-embedding service is temporarily down."
+                      >
+                        ⚠ Similarity search unavailable, showing recent examples instead
                       </span>
                     )}
                   </strong>

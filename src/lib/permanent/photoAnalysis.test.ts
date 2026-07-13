@@ -76,6 +76,36 @@ describe('normalizePermanentSatelliteResult (#140 P2)', () => {
     const r = normalizePermanentSatelliteResult({ front: [], confidence: 'high' });
     expect(r.streetRuns).toEqual([]);
     expect(r.jumps).toEqual([]);
+    expect(r.droppedJumps).toBe(0);
+  });
+
+  // WT-36: a jump over MAX_JUMP_FT (200) is dropped as likely hallucinated.
+  // Previously this was silent, which could under-count a large estate's
+  // real Extensions/Splitters with no trace for the operator. Now counted
+  // AND surfaced in `notes` so it isn't invisible.
+  it('WT-36: counts jumps dropped for exceeding MAX_JUMP_FT and appends a note', () => {
+    const r = normalizePermanentSatelliteResult({
+      jumps: [
+        { ft: 12, splitter: true, label: 'porch to second story' },
+        { ft: 900, splitter: true }, // hallucinated, dropped
+        { ft: 450 }, // also over the cap, dropped
+        { ft: -5, splitter: true }, // invalid, NOT counted as dropped
+      ],
+      notes: 'right side under trees',
+    });
+    expect(r.jumps).toHaveLength(1);
+    expect(r.droppedJumps).toBe(2);
+    expect(r.notes).toContain('right side under trees');
+    expect(r.notes).toContain('2 jumps over 200ft dropped');
+  });
+
+  it('WT-36: no dropped-jump note when nothing exceeds the cap', () => {
+    const r = normalizePermanentSatelliteResult({
+      jumps: [{ ft: 12, splitter: false }],
+      notes: 'all clear',
+    });
+    expect(r.droppedJumps).toBe(0);
+    expect(r.notes).toBe('all clear');
   });
 });
 

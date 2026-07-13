@@ -14,7 +14,11 @@ export type AnalyzeWithFewShotResult = {
   analysisUnavailable: boolean;
   analysisError: string | undefined;
   fewShotCount: number;
-  fewShotBreakdown: { ranking?: 'similarity' | 'recency' } | undefined;
+  // `degraded` = similarity was expected (Voyage configured + a query image
+  // present) but fell back to recency anyway (a likely Voyage outage, not
+  // the benign small-library/unconfigured case). Carried through from
+  // assembleFewShot's breakdown so callers can tell the two apart (WT-33).
+  fewShotBreakdown: { ranking?: 'similarity' | 'recency'; degraded?: boolean } | undefined;
 };
 
 // FAIL-SAFE (analyzer outage): if Claude/few-shot assembly fails, callers still

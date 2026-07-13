@@ -50,6 +50,11 @@ export type PermanentSatelliteAnalysis = {
   satelliteLines: PermanentSatelliteLines;
   streetRuns: PermanentStreetRun[];
   jumps: PermanentJump[];
+  // WT-36: jumps the model reported but dropped as likely hallucinated
+  // (> MAX_JUMP_FT). Silently dropping these could under-count a large
+  // estate's real Extensions/Splitters. Also appended to `notes` below so
+  // the operator sees it without reading this field directly.
+  droppedJumps: number;
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -143,10 +148,16 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
   }
   // #140 P3: jumps — finite positive feet only, capped; splitter coerced.
   const jumps: PermanentJump[] = [];
+  // WT-36: count of jumps dropped for exceeding MAX_JUMP_FT (not the ft<=0/
+  // NaN case, which is invalid data rather than a real detected connection).
+  let droppedJumps = 0;
   if (Array.isArray(obj.jumps)) {
     for (const raw of obj.jumps as Array<Record<string, unknown>>) {
       const ft = typeof raw?.ft === 'number' && Number.isFinite(raw.ft) ? raw.ft : 0;
-      if (ft <= 0 || ft > MAX_JUMP_FT) continue;
+      if (ft <= 0 || ft > MAX_JUMP_FT) {
+        if (ft > MAX_JUMP_FT) droppedJumps++;
+        continue;
+      }
       jumps.push({
         ft,
         splitter: raw.splitter === true,
@@ -155,11 +166,17 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
     }
   }
   const conf = obj.confidence;
+  const baseNotes = typeof obj.notes === 'string' ? obj.notes.slice(0, 500) : '';
+  const droppedNote =
+    droppedJumps > 0
+      ? ` [${droppedJumps} jump${droppedJumps === 1 ? '' : 's'} over ${MAX_JUMP_FT}ft dropped as likely inaccurate; check for a long connection to add manually.]`
+      : '';
   return {
     satelliteLines,
     streetRuns: streetRuns.slice(0, 40),
     jumps: jumps.slice(0, 40),
-    notes: typeof obj.notes === 'string' ? obj.notes.slice(0, 500) : '',
+    droppedJumps,
+    notes: (baseNotes + droppedNote).slice(0, 500),
     confidence: conf === 'high' || conf === 'medium' ? conf : 'low',
   };
 }
