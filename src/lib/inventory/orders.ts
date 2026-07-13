@@ -141,9 +141,11 @@ export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): 
 
   // Resolve the effective received lines. An override may only touch SKUs that
   // were actually on the order — staff can't receive something never ordered —
-  // and must cover EVERY ordered SKU (a subset would close the order while the
-  // missing lines' stock silently vanished from both on-hand and on-order; a
-  // genuinely-unshipped line is received as qty 0, explicit and auditable).
+  // must not repeat a SKU (the receive loop below writes on-hand once per
+  // entry, so a dupe would double-count stock), and must cover EVERY ordered
+  // SKU (a subset would close the order while the missing lines' stock
+  // silently vanished from both on-hand and on-order; a genuinely-unshipped
+  // line is received as qty 0, explicit and auditable).
   const orderedSkus = new Set(order.lines.map((l) => l.sku));
   let effective: ReceivedLine[];
   if (receivedLines) {
@@ -154,6 +156,10 @@ export async function receiveOrder(id: string, receivedLines?: ReceivedLine[]): 
       }
     }
     const overrideSkus = new Set(receivedLines.map((l) => l.sku));
+    if (overrideSkus.size !== receivedLines.length) {
+      console.error(`receiveOrder: rejected a duplicated SKU in the override for order ${id}`);
+      return null;
+    }
     for (const sku of orderedSkus) {
       if (!overrideSkus.has(sku)) {
         console.error(`receiveOrder: rejected incomplete override — SKU "${sku}" on order ${id} is missing`);

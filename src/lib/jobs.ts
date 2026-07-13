@@ -88,6 +88,11 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
 // the linked quote's customer identity + is_test joined on (the job's own
 // customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard
 // join, but for the BILLING view — ALL statuses, newest first.
+//
+// WT-19: `installDate` was removed from this card (2026-07-13) — nothing ever
+// writes a job's install_date, so the /admin/jobs Install column always read
+// "—". JobRow.install_date itself is left in place (still selected + typed)
+// because other operator surfaces outside this file's scope still read it.
 export type JobAdminCard = {
   id: string;
   jobNumber: number | null;
@@ -97,7 +102,6 @@ export type JobAdminCard = {
   customerName: string | null;
   customerAddress: string | null;
   isTest: boolean;
-  installDate: string | null;
   createdAt: string;
   itemCount: number;
 };
@@ -150,7 +154,6 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       customerName: c?.name ?? null,
       customerAddress: c?.address ?? null,
       isTest: c?.isTest ?? false,
-      installDate: j.install_date,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
     };

@@ -5,6 +5,12 @@
 // plain <select> — the catalog is ~831 items). Shows the chosen item as a chip
 // (sku + name) with warnings when the bound SKU is locked (sold-out) or no longer
 // in the catalog. Click the chip to re-pick; the × clears the binding.
+//
+// WT-22(d): the "locked" badge used to be display-only — picking a sold-out sku
+// was never blocked. `pick` now confirms before committing a locked selection.
+// WT-23: an optional `hiddenCategories` list (effective category, from the
+// Overrides categories tab) is threaded into the search so a hidden category's
+// skus vanish from this picker too, not just the Overrides items tab.
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CatalogItem } from '@/lib/inventory/catalog';
@@ -16,12 +22,14 @@ export function SkuPicker({
   onChange,
   ariaLabel,
   placeholder = 'Search SKU or name…',
+  hiddenCategories = [],
 }: {
   catalog: CatalogItem[];
   value: string;
   onChange: (sku: string) => void;
   ariaLabel?: string;
   placeholder?: string;
+  hiddenCategories?: readonly string[];
 }) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
@@ -36,8 +44,8 @@ export function SkuPicker({
     [catalog, value],
   );
   const results = useMemo(
-    () => (editing ? searchCatalog(catalog, query, 50) : []),
-    [editing, query, catalog],
+    () => (editing ? searchCatalog(catalog, query, 50, hiddenCategories) : []),
+    [editing, query, catalog, hiddenCategories],
   );
 
   // Focus the search input when entering edit mode (avoids the autoFocus a11y rule).
@@ -64,7 +72,14 @@ export function SkuPicker({
     return () => document.removeEventListener('mousedown', onDown);
   }, [editing]);
 
+  // WT-22(d): warn before confirming a locked (sold-out) selection — the badge
+  // alone doesn't stop staff from binding a concept to a sku the engine can no
+  // longer order. A cancel leaves the picker open on its current search.
   const pick = (sku: string) => {
+    const item = catalog.find((c) => c.sku === sku);
+    if (item?.locked && !window.confirm(`${item.name} (${sku}) is locked as sold-out. Bind it anyway?`)) {
+      return;
+    }
     onChange(sku);
     setQuery('');
     setEditing(false);

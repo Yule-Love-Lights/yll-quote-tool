@@ -19,9 +19,9 @@ describe('buildMaterialsView', () => {
     const stock: Record<string, number> = { A: 0, B: 5 }; // C not stocked
     const v = buildMaterialsView(lines, (s) => names[s], (s) => (s in stock ? stock[s] : null));
     expect(v.materials).toEqual([
-      { sku: 'A', name: 'Alpha', qty: 2, onHand: 0, short: true }, // stocked 0 < 2 → short (NOT "not tracked")
-      { sku: 'B', name: 'Bravo', qty: 2, onHand: 5, short: false }, // in stock
-      { sku: 'C', name: '(not in catalog)', qty: 1, onHand: null, short: false }, // not stocked
+      { sku: 'A', name: 'Alpha', qty: 2, onHand: 0, short: true, locked: false }, // stocked 0 < 2 → short (NOT "not tracked")
+      { sku: 'B', name: 'Bravo', qty: 2, onHand: 5, short: false, locked: false }, // in stock
+      { sku: 'C', name: '(not in catalog)', qty: 1, onHand: null, short: false, locked: false }, // not stocked
     ]);
     expect(v.totalLines).toBe(3);
   });
@@ -33,6 +33,34 @@ describe('buildMaterialsView', () => {
     ];
     const v = buildMaterialsView(lines, () => 'n', () => null);
     expect(v.unbound).toEqual([{ conceptKey: 'spritzer-pole:16', label: '16" spritzer pole', qty: 5 }]);
+  });
+
+  // WT-22(c): a locked (sold-out) sku still needs a job — flag it so staff sees it
+  // needs manual sourcing, rather than the demand silently disappearing.
+  it('flags a locked sku (still shown, not dropped)', () => {
+    const lines = [line({ sku: 'A', qty: 2 }), line({ sku: 'B', qty: 1 })];
+    const v = buildMaterialsView(lines, () => 'n', () => null, new Set(['A']));
+    expect(v.materials.find((m) => m.sku === 'A')).toMatchObject({ locked: true });
+    expect(v.materials.find((m) => m.sku === 'B')).toMatchObject({ locked: false });
+  });
+
+  // WT-23: a hidden-category sku is no longer used at all — drop it from the
+  // materials view entirely (same treatment as the picker/search views).
+  it('drops a hidden-category sku from the materials view', () => {
+    const lines = [line({ sku: 'A', qty: 2 }), line({ sku: 'B', qty: 1 })];
+    const v = buildMaterialsView(lines, () => 'n', () => null, new Set(), new Set(['A']));
+    expect(v.materials.map((m) => m.sku)).toEqual(['B']);
+  });
+});
+
+describe('aggregateMaterials — WT-22(c) locked skus', () => {
+  it('drops a locked sku from the aggregated orderable totals', () => {
+    const lines = [line({ sku: 'A', qty: 2 }), line({ sku: 'B', qty: 3 })];
+    expect(aggregateMaterials(lines, new Set(['A']))).toEqual([{ sku: 'B', qty: 3 }]);
+  });
+  it('omitting lockedSkus keeps the old behavior (backward compatible)', () => {
+    const lines = [line({ sku: 'A', qty: 2 })];
+    expect(aggregateMaterials(lines)).toEqual([{ sku: 'A', qty: 2 }]);
   });
 });
 

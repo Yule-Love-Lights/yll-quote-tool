@@ -119,6 +119,13 @@ export default async function InventoryOverviewPage() {
                 {ov.lowStock.total > ov.lowStock.items.length && (
                   <MoreLink n={ov.lowStock.total - ov.lowStock.items.length} href="/inventory/stock" />
                 )}
+                {/* WT-28: the supplier PO is built from active-job demand only, so
+                    a low-stock sku with no live job never appears there. Make clear
+                    this alert is a manual-reorder heads-up, not an auto-order queue. */}
+                <p className="mt-2 text-xs text-gray-500">
+                  Informational only — reorder these manually with the supplier. The purchase order is
+                  built from active-job demand and won&apos;t include them.
+                </p>
               </>
             )}
           </Card>

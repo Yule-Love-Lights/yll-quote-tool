@@ -33,6 +33,7 @@ vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => [{ sku: 'SKU-A', na
 vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []) }));
 
 import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder, buildSupplierPurchaseOrder } from './purchaseOrder';
+import { listCatalog } from './catalog';
 
 // A single active permanent-bistro job with a 40ft run — real bistroBomFromQuote
 // produces a Thunder-supplier cord line (sku 80324, qty 1) among others.
@@ -85,6 +86,31 @@ describe('buildSupplierPurchaseOrder — bistro Thunder SKU names (WT-27)', () =
     expect(cordLine).toBeTruthy();
     expect(cordLine!.name).toBe('E26 Bistro Cord 330ft, 24in spacing');
     expect(cordLine!.name).not.toBe('(not in catalog)');
+  });
+});
+
+// WT-22(b): the sold-out "locked" catalog flag was cosmetic — buildSupplierPurchaseOrder
+// never consulted it, so the auto-PO could keep re-ordering a sku the operator had
+// marked sold-out. Real demand comes from the bistro fixture above (SKU 80324).
+describe('buildSupplierPurchaseOrder — WT-22(b) a locked sku is never ordered', () => {
+  beforeEach(() => {
+    currentDb = makeBistroDb();
+  });
+
+  it('drops a locked sku from the built PO even though real demand exists for it', async () => {
+    vi.mocked(listCatalog).mockResolvedValueOnce([
+      { sku: '80324', name: 'E26 Bistro Cord 330ft, 24in spacing', locked: true },
+    ] as never);
+    const po = await buildSupplierPurchaseOrder();
+    expect(po.lines.find((l) => l.sku === '80324')).toBeUndefined();
+  });
+
+  it('keeps ordering it once unlocked', async () => {
+    vi.mocked(listCatalog).mockResolvedValueOnce([
+      { sku: '80324', name: 'E26 Bistro Cord 330ft, 24in spacing', locked: false },
+    ] as never);
+    const po = await buildSupplierPurchaseOrder();
+    expect(po.lines.find((l) => l.sku === '80324')).toBeTruthy();
   });
 });
 

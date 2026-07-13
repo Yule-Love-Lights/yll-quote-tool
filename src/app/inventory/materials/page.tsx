@@ -7,10 +7,17 @@
 // quote and displays the result. Per-unit only for now (roofline = Slice 2b).
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 
-type QuoteItem = { id: string; customer_name: string | null; total: number | null; created_at: string };
+type QuoteItem = {
+  id: string;
+  customer_name: string | null;
+  total: number | null;
+  created_at: string;
+  service_type?: string | null;
+};
 type Material = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type Unbound = { conceptKey: string; label: string; qty: number };
 type MaterialsResult = { hasDesign: boolean; materials: Material[]; unbound: Unbound[]; totalLines: number };
@@ -126,7 +133,16 @@ export default function MaterialsPage() {
             ) : !result ? (
               <p className="text-sm text-red-600 py-10 text-center">Couldn&apos;t load materials.</p>
             ) : !result.hasDesign ? (
-              <p className="text-sm text-gray-400 py-10 text-center">This quote has no design.</p>
+              selectedQuote?.service_type === 'permanent' || selectedQuote?.service_type === 'permanent_bistro' ? (
+                <div className="text-sm text-gray-400 py-10 text-center">
+                  <p>Permanent quotes don&apos;t use the design tool — their materials list (BOM) lives on the quote.</p>
+                  <Link href={`/admin/quotes/${selected}`} className="text-green-700 hover:underline">
+                    View this quote&apos;s BOM →
+                  </Link>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 py-10 text-center">This quote has no design.</p>
+              )
             ) : result.totalLines === 0 ? (
               <p className="text-sm text-gray-400 py-10 text-center">
                 No per-unit materials on this design (roofline-only — bulbs/wire/clips arrive in Slice 2b).
