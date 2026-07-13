@@ -150,6 +150,65 @@ describe('calculatePermanentBistro — job minimum is a GATE, not a pricing floo
   });
 });
 
+// WT-64: optional annual maintenance-plan add-on, mirroring lib/permanent's
+// maintenanceAddOn/maintenancePrice exactly (see permanent/pricing.test.ts's
+// "shows the maintenance add-on only when enabled AND a price is set").
+describe('calculatePermanentBistro — maintenance add-on (WT-64)', () => {
+  it('an existing bistro quote with maintenance OFF prices identically to before this field existed', () => {
+    const inputs = { permanentBistro: { bistro: [{ footage: 40 }], poles: 2 } } as QuoteInputs;
+    const before = calculatePermanentBistro(inputs, R);
+    // maintenance off (absent) + a positive maintenancePrice configured — still no line.
+    const withPriceSet = calculatePermanentBistro(inputs, { ...R, maintenancePrice: 500 });
+    expect(withPriceSet.lineItems).toEqual(before.lineItems);
+    expect(withPriceSet.subtotalBeforeDiscount).toBe(before.subtotalBeforeDiscount);
+    expect(withPriceSet.total).toBe(before.total);
+    // 40*30 + 2*100 = 1200 + 200 = 1400, exactly as the existing "bistro + poles" test expects.
+    expect(before.subtotalBeforeDiscount).toBe(1400);
+    expect(before.lineItems).toHaveLength(2);
+  });
+
+  it('maintenance ON + a configured price adds exactly that amount as its own line item', () => {
+    const rates: PermanentBistroRates = { ...R, maintenancePrice: 500 };
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 40 }], poles: 2, maintenanceAddOn: true } }),
+      rates,
+    );
+    // 40*30 + 2*100 + 500 = 1200 + 200 + 500 = 1900
+    expect(r.subtotalBeforeDiscount).toBe(1900);
+    expect(r.lineItems).toHaveLength(3);
+    const line = r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance');
+    expect(line?.amount).toBe(500);
+    expect(line?.label).toBe('Annual Maintenance Plan');
+  });
+
+  it('maintenance ON but maintenancePrice unset/0 → no line (0 hides the add-on)', () => {
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 40 }], maintenanceAddOn: true } }),
+      R, // default maintenancePrice is 0
+    );
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+    expect(r.subtotalBeforeDiscount).toBe(1200); // just the 40ft bistro run
+  });
+
+  it('maintenance flag OFF, even with a configured price → no line', () => {
+    const rates: PermanentBistroRates = { ...R, maintenancePrice: 500 };
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 40 }], maintenanceAddOn: false } }),
+      rates,
+    );
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+
+  it('a legacy rate table (no maintenancePrice key at all) never throws and hides the add-on', () => {
+    const legacyRates: PermanentBistroRates = { perFt: 30, perPole: 100, minimum: 0 };
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 10 }], maintenanceAddOn: true } }),
+      legacyRates,
+    );
+    expect(r.lineItems.find((l) => l.id === 'permanent-bistro-maintenance')).toBeUndefined();
+  });
+});
+
 describe('calculatePermanentBistro — custom line items pass through', () => {
   it('a staff-typed custom line is billed as entered', () => {
     const r = calculatePermanentBistro(baseInputs({ customLineItems: [{ label: 'Delivery', amount: 75 }] }), R);

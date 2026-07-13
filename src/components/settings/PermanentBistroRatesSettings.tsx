@@ -158,6 +158,17 @@ export function PermanentBistroRatesSettings() {
             hint="Portal approval gate — a selection under this can't be approved. Not a price floor. 0 turns the gate off."
           />
         </Section>
+
+        {/* WT-64: optional annual maintenance add-on, mirroring permanent's
+            "Maintenance add-on ($)" field (PermanentRatesSettings.tsx). */}
+        <Section title="Maintenance">
+          <RateField
+            label="Maintenance add-on"
+            value={rates.maintenancePrice ?? 0}
+            onChange={(v) => update({ ...rates, maintenancePrice: v })}
+            hint="Annual maintenance plan price. 0 hides the add-on."
+          />
+        </Section>
       </div>
 
       <div className="flex items-center gap-3">

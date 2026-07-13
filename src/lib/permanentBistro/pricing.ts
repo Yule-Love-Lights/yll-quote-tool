@@ -101,6 +101,24 @@ function calculatePoles(inputs: QuoteInputs, rates: PermanentBistroRates): LineI
   ];
 }
 
+// Optional annual maintenance add-on (WT-64) — mirrors lib/permanent/pricing.ts
+// exactly: only priced when enabled AND a price is configured (a 0/unset price
+// hides the feature, same $0-guardrail-exempt treatment as permanent — this is
+// intentionally NOT asserted in assertPermanentBistroRates, so a legacy rate
+// table/snapshot from before this field existed still re-prices safely).
+function calculateMaintenanceLine(inputs: QuoteInputs, rates: PermanentBistroRates): LineItem[] {
+  if (inputs.permanentBistro?.maintenanceAddOn && (rates.maintenancePrice ?? 0) > 0) {
+    return [
+      {
+        id: 'permanent-bistro-maintenance',
+        label: 'Annual Maintenance Plan',
+        amount: Math.round(rates.maintenancePrice as number),
+      },
+    ];
+  }
+  return [];
+}
+
 // Custom / manual line items — passed straight through (mirrors the holiday
 // engine's calculateCustomLineItems and event's local copy: the amount IS the
 // price, malformed entries skipped). Kept as a local copy (not the
@@ -175,6 +193,7 @@ export function calculatePermanentBistro(
     [
       ...calculateBistroLines(inputs, rates),
       ...calculatePoles(inputs, rates),
+      ...calculateMaintenanceLine(inputs, rates),
       ...calculateCustomLineItems(inputs),
     ],
     inputs.lineItemPriceOverrides,

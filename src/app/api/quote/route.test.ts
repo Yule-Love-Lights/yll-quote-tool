@@ -407,6 +407,24 @@ describe('POST /api/quote — permanentBistro block validation (#117)', () => {
     const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
     expect(res.status).toBe(200);
   });
+
+  // WT-64: optional maintenance add-on toggle, mirroring the permanent block's
+  // maintenanceAddOn boolean validation.
+  it('rejects a non-boolean maintenanceAddOn with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { poles: 2, maintenanceAddOn: 'yes' };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed permanentBistro block with maintenanceAddOn true', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: [{ footage: 20 }], maintenanceAddOn: true };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });
 
 // #117 satellite migration: bistro footage now bills from the client-sent

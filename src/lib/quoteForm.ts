@@ -109,7 +109,9 @@ export type QuoteFormData = {
   // Each run carries a STABLE id (#117 MED) so a #104 per-line override keyed
   // on its billed line item id survives a mid-list run delete (a run's id must
   // not re-index like the old positional permanent-bistro-<index> fallback).
-  permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
+  // `maintenanceAddOn` (WT-64) mirrors `permanent.maintenanceAddOn` — an
+  // optional annual maintenance plan add-on, priced in Settings.
+  permanentBistro: { poles: number; bistro: { footage: number; id?: string }[]; maintenanceAddOn: boolean };
 };
 
 export const initialFormData: QuoteFormData = {
@@ -146,7 +148,7 @@ export const initialFormData: QuoteFormData = {
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
   permanent: makeDefaultPermanentFields(),
   referralCredit: null,
-  permanentBistro: { poles: 0, bistro: [] },
+  permanentBistro: { poles: 0, bistro: [], maintenanceAddOn: false },
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -200,6 +202,8 @@ function buildPermanentBistroInputs(form: QuoteFormData): { permanentBistro?: Pe
   const pb: PermanentBistroInputFields = {
     ...(form.permanentBistro.poles > 0 ? { poles: form.permanentBistro.poles } : {}),
     ...(bistro.length > 0 ? { bistro } : {}),
+    // WT-64: only sent when on (legacy-clean), mirrors the poles/bistro guards above.
+    ...(form.permanentBistro.maintenanceAddOn ? { maintenanceAddOn: true } : {}),
   };
   return Object.keys(pb).length > 0 ? { permanentBistro: pb } : {};
 }
@@ -389,6 +393,8 @@ export function inputsToFormData(
         footage: b.footage,
         ...(b.id ? { id: b.id } : {}),
       })),
+      // WT-64: hydrate the maintenance add-on toggle; legacy/unset rows → false.
+      maintenanceAddOn: i.permanentBistro?.maintenanceAddOn ?? false,
     },
   };
 }

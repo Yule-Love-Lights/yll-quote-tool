@@ -53,4 +53,29 @@ describe('derivePackagesPermanentBistro', () => {
     const pkgs = derivePackagesPermanentBistro([pli('a', 100), pli('b', 50)], result);
     expect(pkgs).toHaveLength(1);
   });
+
+  // WT-64: the opt-in maintenance add-on must never ride bundled into the one
+  // package — it starts OFF and the customer opts in via its own toggle
+  // (mirrors derivePackagesPermanent excluding 'permanent-maintenance' from
+  // its Whole Home bundle).
+  describe('maintenance add-on exclusion (WT-64)', () => {
+    it('the maintenance line is present but never appears in the package includedItemIds', () => {
+      const result = calculatePermanentBistro(baseInputs());
+      const pkgs = derivePackagesPermanentBistro(
+        [pli('a', 700), pli('permanent-bistro-maintenance', 300)],
+        result,
+      );
+      expect(pkgs).toHaveLength(1);
+      expect(pkgs[0].includedItemIds).toEqual(['a']);
+      expect(pkgs[0].includedItemIds).not.toContain('permanent-bistro-maintenance');
+      // And the bundle's price excludes the maintenance amount — 700 → +8.75% tax = 761.25.
+      expect(pkgs[0].total).toBeCloseTo(761.25, 2);
+    });
+
+    it('a quote whose ONLY billable line is the maintenance add-on offers no package', () => {
+      const result = calculatePermanentBistro(baseInputs());
+      const pkgs = derivePackagesPermanentBistro([pli('permanent-bistro-maintenance', 300)], result);
+      expect(pkgs).toEqual([]);
+    });
+  });
 });

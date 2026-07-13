@@ -3915,6 +3915,21 @@ export default function QuoteBuilder({
                 onChange={ev => setForm(f => ({ ...f, permanentBistro: { ...f.permanentBistro, poles: Math.max(0, Math.floor(Number(ev.target.value) || 0)) } }))}
               />
               <span className="ml-2 text-xs text-gray-400">$ each (rate in Settings)</span>
+              {/* WT-64: optional annual maintenance plan add-on, mirroring
+                  PermanentSection's maintenanceAddOn checkbox. */}
+              <div className="mt-4">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={form.permanentBistro.maintenanceAddOn}
+                    onChange={ev => setForm(f => ({ ...f, permanentBistro: { ...f.permanentBistro, maintenanceAddOn: ev.target.checked } }))}
+                  />
+                  Annual maintenance add-on
+                </label>
+                <p className="text-xs text-gray-400 mt-1 ml-6">
+                  Priced in Settings; no charge if unset.
+                </p>
+              </div>
             </Section>
           )}
 

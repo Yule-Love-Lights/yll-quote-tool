@@ -33,6 +33,14 @@ export type PermanentBistroRates = {
   perPole: number;
   /** Portal approval gate (mirrors permanent.minimumJobAmount); 0 = gate OFF. */
   minimum: number;
+  /**
+   * Optional annual maintenance add-on price (WT-64, mirrors
+   * lib/permanent/types.ts PermanentRates.maintenancePrice exactly): 0/unset =
+   * the add-on is hidden. Optional (unlike perFt/perPole) so a legacy stored
+   * snapshot or rate object from before this field existed still satisfies the
+   * type and re-prices safely (treated as 0 = hidden).
+   */
+  maintenancePrice?: number;
 };
 
 /** Default permanent bistro rates (Naldo, placeholder — real numbers TBD). */
@@ -40,6 +48,8 @@ export const DEFAULT_PERMANENT_BISTRO_RATES: PermanentBistroRates = {
   perFt: 30,
   perPole: 100,
   minimum: 0,
+  // Matches permanent's DEFAULT_PERMANENT_RATES.maintenancePrice — 0 hides it.
+  maintenancePrice: 0,
 };
 
 /**
@@ -52,6 +62,12 @@ export type PermanentBistroInputFields = {
   bistro?: BistroLine[];
   /** Count of permanent poles/supports ($perPole each). */
   poles?: number;
+  /**
+   * Optional annual maintenance add-on (WT-64, mirrors
+   * lib/permanent/types.ts PermanentQuoteFields.maintenanceAddOn): hidden while
+   * rates.maintenancePrice is 0/unset.
+   */
+  maintenanceAddOn?: boolean;
 };
 
 function positiveOr(v: unknown, fallback: number): number {
@@ -80,5 +96,8 @@ export function sanitizePermanentBistroRates(v: unknown): PermanentBistroRates {
     perFt: positiveOr(o.perFt, D.perFt),
     perPole: positiveOr(o.perPole, D.perPole),
     minimum: nonNegativeOr(o.minimum, D.minimum),
+    // Mirrors `minimum`: 0 is a VALID value (hides the add-on), only a
+    // negative/non-finite/missing value falls back to the default.
+    maintenancePrice: nonNegativeOr(o.maintenancePrice, D.maintenancePrice ?? 0),
   };
 }

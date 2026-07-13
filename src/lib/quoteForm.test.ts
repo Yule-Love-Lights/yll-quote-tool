@@ -49,7 +49,7 @@ const fullForm: QuoteFormData = {
   referralCredit: null,
   // #117: permanentBistro grew a `bistro` array (satellite-derived footage) —
   // [] here so the pre-existing full-payload assertions are unaffected.
-  permanentBistro: { poles: 0, bistro: [] },
+  permanentBistro: { poles: 0, bistro: [], maintenanceAddOn: false },
 };
 
 describe('buildQuoteInputs', () => {
@@ -383,7 +383,7 @@ describe('permanentBistro inputs (#117)', () => {
   const bistroForm: QuoteFormData = {
     ...fullForm,
     serviceType: 'permanent_bistro',
-    permanentBistro: { poles: 4, bistro: [] },
+    permanentBistro: { poles: 4, bistro: [], maintenanceAddOn: false },
   };
 
   it('builds inputs.permanentBistro (poles only) for a permanent_bistro quote', () => {
@@ -395,7 +395,7 @@ describe('permanentBistro inputs (#117)', () => {
   });
 
   it('omits the permanentBistro block entirely when poles is 0 and no bistro runs', () => {
-    const inputs = buildQuoteInputs({ ...bistroForm, permanentBistro: { poles: 0, bistro: [] } });
+    const inputs = buildQuoteInputs({ ...bistroForm, permanentBistro: { poles: 0, bistro: [], maintenanceAddOn: false } });
     expect('permanentBistro' in inputs).toBe(false);
   });
 
@@ -405,7 +405,31 @@ describe('permanentBistro inputs (#117)', () => {
   });
 
   it('a legacy/non-bistro row hydrates a blank permanentBistro block', () => {
-    expect(inputsToFormData(null, {}).permanentBistro).toEqual({ poles: 0, bistro: [] });
+    expect(inputsToFormData(null, {}).permanentBistro).toEqual({ poles: 0, bistro: [], maintenanceAddOn: false });
+  });
+
+  // WT-64: the optional maintenance add-on toggle, mirroring the poles guard
+  // above (only sent when on, legacy-clean when off).
+  describe('maintenanceAddOn (WT-64)', () => {
+    it('sends maintenanceAddOn only when true', () => {
+      const on = { ...bistroForm, permanentBistro: { ...bistroForm.permanentBistro, maintenanceAddOn: true } };
+      expect(buildQuoteInputs(on).permanentBistro).toEqual({ poles: 4, maintenanceAddOn: true });
+    });
+
+    it('omits maintenanceAddOn from the wire payload when false', () => {
+      expect(buildQuoteInputs(bistroForm).permanentBistro).not.toHaveProperty('maintenanceAddOn');
+    });
+
+    it('round-trips maintenanceAddOn through inputsToFormData', () => {
+      const on = { ...bistroForm, permanentBistro: { ...bistroForm.permanentBistro, maintenanceAddOn: true } };
+      const restored = inputsToFormData(on.customer, buildQuoteInputs(on), 'permanent_bistro');
+      expect(restored.permanentBistro.maintenanceAddOn).toBe(true);
+    });
+
+    it('a legacy row with no maintenanceAddOn hydrates false', () => {
+      const restored = inputsToFormData(null, { permanentBistro: { poles: 2 } }, 'permanent_bistro');
+      expect(restored.permanentBistro.maintenanceAddOn).toBe(false);
+    });
   });
 
   // #117: satellite-derived bistro runs (form.permanentBistro.bistro) — the
@@ -413,7 +437,7 @@ describe('permanentBistro inputs (#117)', () => {
   describe('bistro runs (satellite-derived footage, #117)', () => {
     const withRuns: QuoteFormData = {
       ...bistroForm,
-      permanentBistro: { poles: 2, bistro: [{ footage: 45 }, { footage: 30 }] },
+      permanentBistro: { poles: 2, bistro: [{ footage: 45 }, { footage: 30 }], maintenanceAddOn: false },
     };
 
     it('sends only positive-footage bistro entries', () => {
@@ -427,13 +451,13 @@ describe('permanentBistro inputs (#117)', () => {
     it('drops zero/negative-footage entries but keeps the block for the rest', () => {
       const form = {
         ...withRuns,
-        permanentBistro: { poles: 0, bistro: [{ footage: 45 }, { footage: 0 }, { footage: -5 }] },
+        permanentBistro: { poles: 0, bistro: [{ footage: 45 }, { footage: 0 }, { footage: -5 }], maintenanceAddOn: false },
       };
       expect(buildQuoteInputs(form).permanentBistro).toEqual({ bistro: [{ footage: 45 }] });
     });
 
     it('omits the permanentBistro block when poles is 0 AND every run is 0-footage', () => {
-      const form = { ...withRuns, permanentBistro: { poles: 0, bistro: [{ footage: 0 }] } };
+      const form = { ...withRuns, permanentBistro: { poles: 0, bistro: [{ footage: 0 }], maintenanceAddOn: false } };
       expect('permanentBistro' in buildQuoteInputs(form)).toBe(false);
     });
 
@@ -442,6 +466,7 @@ describe('permanentBistro inputs (#117)', () => {
       expect(restored.permanentBistro).toEqual({
         poles: 2,
         bistro: [{ footage: 45 }, { footage: 30 }],
+        maintenanceAddOn: false,
       });
     });
 
@@ -452,7 +477,7 @@ describe('permanentBistro inputs (#117)', () => {
       const restored = inputsToFormData(null, {
         permanentBistro: { poles: 1, bistro: [{ footage: 12, id: 'run-x1', sceneItemIds: ['x1'] }] },
       });
-      expect(restored.permanentBistro).toEqual({ poles: 1, bistro: [{ footage: 12, id: 'run-x1' }] });
+      expect(restored.permanentBistro).toEqual({ poles: 1, bistro: [{ footage: 12, id: 'run-x1' }], maintenanceAddOn: false });
     });
 
     it('threads a run stable id through build -> engine so it survives a mid-list delete (#117 MED)', () => {
@@ -460,7 +485,7 @@ describe('permanentBistro inputs (#117)', () => {
       // not position, so deleting the FIRST run leaves the survivor id intact.
       const twoRuns: QuoteFormData = {
         ...bistroForm,
-        permanentBistro: { poles: 0, bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }] },
+        permanentBistro: { poles: 0, bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }], maintenanceAddOn: false },
       };
       expect(buildQuoteInputs(twoRuns).permanentBistro).toEqual({
         bistro: [{ footage: 45, id: 'A' }, { footage: 30, id: 'B' }],
@@ -469,7 +494,7 @@ describe('permanentBistro inputs (#117)', () => {
       // re-index to a positional 'permanent-bistro-0'.
       const afterDelete: QuoteFormData = {
         ...bistroForm,
-        permanentBistro: { poles: 0, bistro: [{ footage: 30, id: 'B' }] },
+        permanentBistro: { poles: 0, bistro: [{ footage: 30, id: 'B' }], maintenanceAddOn: false },
       };
       const inputs = buildQuoteInputs(afterDelete);
       const result = calculatePermanentBistro(inputs);

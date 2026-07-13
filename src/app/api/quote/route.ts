@@ -436,6 +436,13 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
+    // WT-64: optional maintenance add-on toggle, mirrors permanent.maintenanceAddOn.
+    if (pb.maintenanceAddOn !== undefined && typeof pb.maintenanceAddOn !== 'boolean') {
+      return NextResponse.json(
+        { error: 'permanentBistro.maintenanceAddOn must be a boolean if provided' },
+        { status: 400 },
+      );
+    }
   }
 
   try {
