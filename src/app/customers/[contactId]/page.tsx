@@ -159,8 +159,11 @@ export default async function CustomerDetailPage({
   // quote history grouped by property instead of shown as one flat list with
   // one misleading aggregated total. Pre-backfill / walk-in customers (no
   // customerId) fall through to the plain flat table.
+  // WT-53: the same one property fetch scopes the property-aware RebookButton so
+  // it clones a KNOWN building, not a system-wide "most recently approved" guess.
   const properties = customerId ? await getPropertiesForCustomer(customerId) : [];
   const propertyGroups = properties.length > 1 ? groupQuotesByProperty(quotes, properties) : null;
+  const rebookProperties = properties.map((p) => ({ id: p.id, address: p.address }));
 
   return (
     <OperatorShell active="customers">
@@ -181,7 +184,7 @@ export default async function CustomerDetailPage({
           </div>
           <div className="shrink-0 flex items-center gap-2">
             {/* Rebook last season (Part D): hidden until the backfill populates customer_id. */}
-            {customerId && <RebookButton customerId={customerId} />}
+            {customerId && <RebookButton customerId={customerId} properties={rebookProperties} />}
             {hlUrl && (
               <a
                 href={hlUrl}
