@@ -30,6 +30,7 @@ import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
+import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -760,6 +761,23 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
     createdAt: r.created_at ? new Date(r.created_at as string) : null,
   }));
   return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
+}
+
+/** operator_id → display label (name, falling back to email) for every operator
+ *  account, so `handled_by` UUIDs (PS-E1) can be shown as readable names on the
+ *  Response-time "By rep" list instead of raw auth UUIDs. Best-effort: an admin-
+ *  API failure returns an empty map rather than breaking the analytics render —
+ *  the caller falls back to the raw id via responseMetrics' withOperatorLabels. */
+export async function getOperatorLabels(): Promise<Map<string, string>> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return new Map();
+  try {
+    const accounts = await listOperatorAccounts(sb);
+    return new Map(accounts.map((a) => [a.id, a.name ?? a.email ?? a.id]));
+  } catch (e) {
+    console.warn('[dashboard/inbox/store] getOperatorLabels failed (continuing with raw ids):', e);
+    return new Map();
+  }
 }
 
 /** Reopen-rate inputs: DISTINCT inbox_items handled vs reopened, per window
