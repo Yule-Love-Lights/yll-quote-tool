@@ -8,6 +8,14 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+// WT-61: a bare `startsWith('/')` guard also passes a protocol-relative URL
+// like "//evil.com/x" — browsers treat a leading "//" as scheme-relative, so
+// the router.replace() below would do a real cross-origin navigation. Only a
+// single-leading-slash path is a safe same-origin redirect target.
+export function isSafeRedirectTarget(from: string): boolean {
+  return from.startsWith('/') && !from.startsWith('//');
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -31,7 +39,7 @@ function LoginForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? 'Login failed');
       }
-      router.replace(from.startsWith('/') ? from : '/');
+      router.replace(isSafeRedirectTarget(from) ? from : '/');
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
