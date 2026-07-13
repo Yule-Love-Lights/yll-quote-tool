@@ -50,6 +50,12 @@ export type PermanentSatelliteAnalysis = {
   satelliteLines: PermanentSatelliteLines;
   streetRuns: PermanentStreetRun[];
   jumps: PermanentJump[];
+  // #WT-36: count of AI-reported jumps dropped for exceeding MAX_JUMP_FT (the
+  // hallucination guard). Also surfaced as a `notes` warning — a real wiring
+  // bridge that legitimately exceeds the cap (large estate, detached-but-
+  // included structure) must not silently under-count the Extensions/
+  // Splitters card; the operator needs to know to add it manually.
+  droppedJumps: number;
   notes: string;
   confidence: 'low' | 'medium' | 'high';
 };
@@ -142,11 +148,20 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
     }
   }
   // #140 P3: jumps — finite positive feet only, capped; splitter coerced.
+  // #WT-36: a jump over MAX_JUMP_FT is still dropped from geometry (the
+  // hallucination guard stays), but it's counted so the drop isn't silent —
+  // a real bridge that legitimately exceeds the cap must not quietly
+  // under-count the Extensions/Splitters card.
   const jumps: PermanentJump[] = [];
+  let droppedJumps = 0;
   if (Array.isArray(obj.jumps)) {
     for (const raw of obj.jumps as Array<Record<string, unknown>>) {
       const ft = typeof raw?.ft === 'number' && Number.isFinite(raw.ft) ? raw.ft : 0;
-      if (ft <= 0 || ft > MAX_JUMP_FT) continue;
+      if (ft <= 0) continue;
+      if (ft > MAX_JUMP_FT) {
+        droppedJumps++;
+        continue;
+      }
       jumps.push({
         ft,
         splitter: raw.splitter === true,
@@ -155,11 +170,20 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
     }
   }
   const conf = obj.confidence;
+  const baseNotes = typeof obj.notes === 'string' ? obj.notes : '';
+  // #WT-36: appended to `notes` (not just the count) so the warning rides the
+  // SAME plumbing that already surfaces AI notes to the operator in the UI
+  // (QuoteBuilder's "AI notes: ..." line) with no other file needing to change.
+  const droppedWarning =
+    droppedJumps > 0
+      ? ` [${droppedJumps} jump(s) over ${MAX_JUMP_FT}ft dropped as a likely hallucination guard — if a real wiring bridge exceeds ${MAX_JUMP_FT}ft (e.g. a large estate or a detached-but-included structure), add that connection's extensions manually.]`
+      : '';
   return {
     satelliteLines,
     streetRuns: streetRuns.slice(0, 40),
     jumps: jumps.slice(0, 40),
-    notes: typeof obj.notes === 'string' ? obj.notes.slice(0, 500) : '',
+    droppedJumps,
+    notes: (baseNotes + droppedWarning).slice(0, 500),
     confidence: conf === 'high' || conf === 'medium' ? conf : 'low',
   };
 }

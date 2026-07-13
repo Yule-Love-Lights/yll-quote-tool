@@ -1,16 +1,24 @@
 'use client';
 
-// #141 — review UI for permanent-lighting training examples (the Permanent tab
-// on /training/examples). Mirrors the holiday tab's list/expand/exclude/delete
-// shape, but v1-minimal: no corrections editor (that's v2) — just a readonly
-// detail view (satellite + street overlays, footage/corners context, raw JSON).
+// #141 / WT-37 — review UI for permanent-lighting training examples (the
+// Permanent tab on /training/examples). Mirrors the holiday tab's
+// list/expand/exclude/delete shape, PLUS a corrections editor (WT-37): staff
+// can now fix a mis-traced side or a bad street run instead of only being able
+// to discard the whole example (Exclude/Delete). The ground truth the AI
+// actually learns is the traced geometry (final_satellite_lines /
+// final_street_runs — see src/lib/permanent/fewShot.ts); final_inputs
+// (footage/corners/extensions) is context-only for a human reviewer, but is
+// editable too for the same reason holiday's footage numbers are.
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type {
   PermanentTrainingExampleListItem,
   PermanentTrainingExampleRow,
+  PermanentTrainingExampleInputs,
 } from '@/lib/permanent/trainingExamples';
+import type { PermanentSatelliteLines, PermanentStreetRun } from '@/lib/permanent/photoAnalysis';
+import type { LineSegment, RoofFeatureClass } from '@/lib/photoAnalysis';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
 
 const FRONT = '#ef4444'; // red
@@ -87,6 +95,21 @@ export default function PermanentExamplesTab() {
       }
     } finally {
       if (reqId === detailReqRef.current) setLoadingDetail(false);
+    }
+  };
+
+  // WT-37 — after a correction saves, re-pull the open detail (so the overlays +
+  // list badges reflect the fix) and refresh the list (side counts). Mirrors
+  // the holiday tab's reloadDetail.
+  const reloadDetail = async (id: string) => {
+    const reqId = ++detailReqRef.current;
+    try {
+      const res = await fetch(`/api/permanent-training-examples/${id}`);
+      const data = await res.json().catch(() => ({}));
+      if (reqId !== detailReqRef.current) return;
+      if (res.ok) setDetail(data.example as PermanentTrainingExampleRow);
+    } finally {
+      refresh();
     }
   };
 
@@ -209,7 +232,9 @@ export default function PermanentExamplesTab() {
                   {detailError && (
                     <p className="text-xs text-red-600">Couldn&rsquo;t load this example: {detailError}</p>
                   )}
-                  {detail && detail.id === ex.id && <PermanentExampleDetail example={detail} />}
+                  {detail && detail.id === ex.id && (
+                    <PermanentExampleDetail example={detail} onSaved={() => reloadDetail(ex.id)} />
+                  )}
                 </div>
               )}
             </div>
@@ -220,10 +245,159 @@ export default function PermanentExamplesTab() {
   );
 }
 
-function PermanentExampleDetail({ example }: { example: PermanentTrainingExampleRow }) {
+type Side = 'front' | 'left' | 'right' | 'back';
+const SATELLITE_SIDES: Side[] = ['front', 'left', 'right', 'back'];
+const FEATURE_OPTIONS: (RoofFeatureClass | '')[] = ['', 'gutter', 'peak', 'side', 'ridge', 'metal'];
+type NumField =
+  | 'frontFootage' | 'leftFootage' | 'rightFootage' | 'backFootage'
+  | 'frontCorners' | 'leftCorners' | 'rightCorners' | 'backCorners';
+
+type LineDraft = { label: string; pointsText: string; feature?: RoofFeatureClass };
+type RunDraft = { side: 'front' | 'left' | 'right'; label: string; pointsText: string };
+
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+function pointsToText(points: [number, number][]): string {
+  return points.map(([x, y]) => `${round4(x)},${round4(y)}`).join(' ');
+}
+// "x1,y1 x2,y2 ..." → normalized points, clamped into 0-1 (mirrors the API's
+// tolerance). null = unparseable — the caller surfaces which line is broken
+// instead of silently dropping or sending a corrupt patch.
+function parsePointsText(text: string): [number, number][] | null {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const pts: [number, number][] = [];
+  for (const tok of tokens) {
+    const parts = tok.split(',');
+    if (parts.length !== 2) return null;
+    const x = Number(parts[0]);
+    const y = Number(parts[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    pts.push([Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))]);
+  }
+  return pts;
+}
+function lineToDraft(l: LineSegment): LineDraft {
+  return { label: l.label, pointsText: pointsToText(l.points), feature: l.feature };
+}
+function runToDraft(r: PermanentStreetRun): RunDraft {
+  return { side: r.side, label: r.label, pointsText: pointsToText(r.points) };
+}
+
+// WT-37 — the corrections editor: staff can now fix a mis-traced side or a bad
+// street run (the fields the AI actually learns from, per fewShot.ts) instead
+// of only being able to Exclude/Delete the whole example. Points are edited as
+// "x1,y1 x2,y2 ..." text (normalized 0-1, same format AnnotatedPhoto renders)
+// rather than a drag-to-redraw canvas — simplest thing that lets a bad line be
+// fixed or removed without losing the rest of the example's photos/geometry.
+function PermanentExampleDetail({
+  example,
+  onSaved,
+}: {
+  example: PermanentTrainingExampleRow;
+  onSaved: () => void;
+}) {
   const lines = example.final_satellite_lines;
   const streetRuns = example.final_street_runs ?? [];
   const inputs = example.final_inputs;
+
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [linesDraft, setLinesDraft] = useState<Record<Side, LineDraft[]>>({ front: [], left: [], right: [], back: [] });
+  const [runsDraft, setRunsDraft] = useState<RunDraft[]>([]);
+  const [inputsDraft, setInputsDraft] = useState<PermanentTrainingExampleInputs | null>(inputs);
+
+  const startEdit = () => {
+    setLinesDraft({
+      front: lines.front.map(lineToDraft),
+      left: lines.left.map(lineToDraft),
+      right: lines.right.map(lineToDraft),
+      back: lines.back.map(lineToDraft),
+    });
+    setRunsDraft(streetRuns.map(runToDraft));
+    setInputsDraft(inputs);
+    setSaveErr(null);
+    setEditing(true);
+  };
+
+  const updateLine = (side: Side, idx: number, patch: Partial<LineDraft>) =>
+    setLinesDraft((d) => ({ ...d, [side]: d[side].map((l, i) => (i === idx ? { ...l, ...patch } : l)) }));
+  const removeLine = (side: Side, idx: number) =>
+    setLinesDraft((d) => ({ ...d, [side]: d[side].filter((_, i) => i !== idx) }));
+  const addLine = (side: Side) =>
+    setLinesDraft((d) => ({ ...d, [side]: [...d[side], { label: '', pointsText: '' }] }));
+
+  const updateRun = (idx: number, patch: Partial<RunDraft>) =>
+    setRunsDraft((r) => r.map((run, i) => (i === idx ? { ...run, ...patch } : run)));
+  const removeRun = (idx: number) => setRunsDraft((r) => r.filter((_, i) => i !== idx));
+  const addRun = () => setRunsDraft((r) => [...r, { side: 'front', label: '', pointsText: '' }]);
+
+  const setNumField = (k: NumField, v: string) =>
+    setInputsDraft((d) => (d ? { ...d, [k]: Math.max(0, Math.round(Number(v) || 0)) } : d));
+  const setExtension = (k: 'e3' | 'e5' | 'e10' | 'e25', v: string) =>
+    setInputsDraft((d) =>
+      d
+        ? {
+            ...d,
+            extensions: {
+              e3: d.extensions?.e3 ?? 0,
+              e5: d.extensions?.e5 ?? 0,
+              e10: d.extensions?.e10 ?? 0,
+              e25: d.extensions?.e25 ?? 0,
+              [k]: Math.max(0, Math.round(Number(v) || 0)),
+            },
+          }
+        : d,
+    );
+  const setSplitters = (v: string) =>
+    setInputsDraft((d) => (d ? { ...d, splittersNeeded: Math.max(0, Math.round(Number(v) || 0)) } : d));
+
+  const save = async () => {
+    // Parse + validate every line/run's points BEFORE sending — surface exactly
+    // which one is broken instead of a generic server 400.
+    const builtLines: PermanentSatelliteLines = { front: [], left: [], right: [], back: [] };
+    for (const side of SATELLITE_SIDES) {
+      for (const l of linesDraft[side]) {
+        const points = parsePointsText(l.pointsText);
+        if (!points) {
+          setSaveErr(`${side}: "${l.label || '(untitled)'}" needs at least 2 valid "x,y" points`);
+          return;
+        }
+        builtLines[side].push(l.feature ? { points, label: l.label, feature: l.feature } : { points, label: l.label });
+      }
+    }
+    const builtRuns: PermanentStreetRun[] = [];
+    for (const r of runsDraft) {
+      const points = parsePointsText(r.pointsText);
+      if (!points) {
+        setSaveErr(`Street run (${r.side}) "${r.label || '(untitled)'}" needs at least 2 valid "x,y" points`);
+        return;
+      }
+      builtRuns.push({ side: r.side, points, label: r.label });
+    }
+
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const body: Record<string, unknown> = { finalSatelliteLines: builtLines, finalStreetRuns: builtRuns };
+      if (inputsDraft) body.finalInputs = inputsDraft;
+      const res = await fetch(`/api/permanent-training-examples/${example.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `Save failed (${res.status})`);
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setSaveErr(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="grid md:grid-cols-2 gap-4">
@@ -261,21 +435,193 @@ function PermanentExampleDetail({ example }: { example: PermanentTrainingExample
         )}
       </div>
       <div className="text-xs space-y-2 text-gray-600">
-        {inputs && (
-          <div>
-            <div className="font-semibold text-gray-700">Footage / corners at capture time (context only)</div>
-            <div>
-              Front {inputs.frontFootage}ft ({inputs.frontCorners} corners) · Left {inputs.leftFootage}ft (
-              {inputs.leftCorners}) · Right {inputs.rightFootage}ft ({inputs.rightCorners}) · Back{' '}
-              {inputs.backFootage}ft ({inputs.backCorners})
+        {!editing ? (
+          <>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-gray-700">Traced geometry (what the AI learns)</div>
+              <button onClick={startEdit} className="text-blue-600 hover:underline">✎ Edit</button>
             </div>
-            {inputs.extensions && (
-              <div className="mt-0.5">
-                Extensions 3&apos; {inputs.extensions.e3} · 5&apos; {inputs.extensions.e5} · 10&apos;{' '}
-                {inputs.extensions.e10} · 25&apos; {inputs.extensions.e25}
-                {typeof inputs.splittersNeeded === 'number' && <> · Splitters {inputs.splittersNeeded}</>}
+            {inputs && (
+              <div>
+                <div className="font-semibold text-gray-700">Footage / corners at capture time (context only)</div>
+                <div>
+                  Front {inputs.frontFootage}ft ({inputs.frontCorners} corners) · Left {inputs.leftFootage}ft (
+                  {inputs.leftCorners}) · Right {inputs.rightFootage}ft ({inputs.rightCorners}) · Back{' '}
+                  {inputs.backFootage}ft ({inputs.backCorners})
+                </div>
+                {inputs.extensions && (
+                  <div className="mt-0.5">
+                    Extensions 3&apos; {inputs.extensions.e3} · 5&apos; {inputs.extensions.e5} · 10&apos;{' '}
+                    {inputs.extensions.e10} · 25&apos; {inputs.extensions.e25}
+                    {typeof inputs.splittersNeeded === 'number' && <> · Splitters {inputs.splittersNeeded}</>}
+                  </div>
+                )}
               </div>
             )}
+          </>
+        ) : (
+          <div className="space-y-3 border border-blue-200 bg-blue-50 rounded p-2">
+            <div className="font-semibold text-gray-700">Correct the traced geometry (what the AI learns)</div>
+            {SATELLITE_SIDES.map((side) => (
+              <div key={side}>
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold" style={{ color: SIDE_COLORS[side] }}>{side}</span>
+                  <button type="button" onClick={() => addLine(side)} className="text-blue-600 hover:underline">
+                    + line
+                  </button>
+                </div>
+                {linesDraft[side].length === 0 && <div className="text-gray-400 italic">no lines</div>}
+                {linesDraft[side].map((l, idx) => (
+                  <div key={idx} className="flex gap-1 items-center mb-1 flex-wrap">
+                    <input
+                      value={l.label}
+                      onChange={(e) => updateLine(side, idx, { label: e.target.value })}
+                      placeholder="label"
+                      className="border border-gray-300 rounded px-1 py-0.5 w-24 bg-white"
+                    />
+                    <input
+                      value={l.pointsText}
+                      onChange={(e) => updateLine(side, idx, { pointsText: e.target.value })}
+                      placeholder="x1,y1 x2,y2 ..."
+                      className="border border-gray-300 rounded px-1 py-0.5 flex-1 min-w-[10rem] font-mono bg-white"
+                    />
+                    <select
+                      value={l.feature ?? ''}
+                      onChange={(e) =>
+                        updateLine(side, idx, { feature: (e.target.value || undefined) as RoofFeatureClass | undefined })
+                      }
+                      className="border border-gray-300 rounded px-1 py-0.5 bg-white"
+                    >
+                      {FEATURE_OPTIONS.map((f) => (
+                        <option key={f} value={f}>{f || '(feature)'}</option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={() => removeLine(side, idx)} className="text-red-500 hover:underline px-1">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-gray-700">Street runs</span>
+                <button type="button" onClick={addRun} className="text-blue-600 hover:underline">
+                  + run
+                </button>
+              </div>
+              {runsDraft.length === 0 && <div className="text-gray-400 italic">no runs</div>}
+              {runsDraft.map((r, idx) => (
+                <div key={idx} className="flex gap-1 items-center mb-1 flex-wrap">
+                  <select
+                    value={r.side}
+                    onChange={(e) => updateRun(idx, { side: e.target.value as RunDraft['side'] })}
+                    className="border border-gray-300 rounded px-1 py-0.5 bg-white"
+                  >
+                    <option value="front">front</option>
+                    <option value="left">left</option>
+                    <option value="right">right</option>
+                  </select>
+                  <input
+                    value={r.label}
+                    onChange={(e) => updateRun(idx, { label: e.target.value })}
+                    placeholder="label"
+                    className="border border-gray-300 rounded px-1 py-0.5 w-20 bg-white"
+                  />
+                  <input
+                    value={r.pointsText}
+                    onChange={(e) => updateRun(idx, { pointsText: e.target.value })}
+                    placeholder="x1,y1 x2,y2 ..."
+                    className="border border-gray-300 rounded px-1 py-0.5 flex-1 min-w-[10rem] font-mono bg-white"
+                  />
+                  <button type="button" onClick={() => removeRun(idx)} className="text-red-500 hover:underline px-1">
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {inputsDraft && (
+              <div>
+                <div className="font-semibold text-gray-700">Footage / corners (context only — not fed to the AI)</div>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                  <label className="flex items-center gap-1 flex-wrap">
+                    <span className="w-10">Front</span>
+                    <input type="number" min={0} value={inputsDraft.frontFootage}
+                      onChange={(e) => setNumField('frontFootage', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-14 bg-white" />ft
+                    <input type="number" min={0} value={inputsDraft.frontCorners}
+                      onChange={(e) => setNumField('frontCorners', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-10 bg-white" />corners
+                  </label>
+                  <label className="flex items-center gap-1 flex-wrap">
+                    <span className="w-10">Left</span>
+                    <input type="number" min={0} value={inputsDraft.leftFootage}
+                      onChange={(e) => setNumField('leftFootage', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-14 bg-white" />ft
+                    <input type="number" min={0} value={inputsDraft.leftCorners}
+                      onChange={(e) => setNumField('leftCorners', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-10 bg-white" />corners
+                  </label>
+                  <label className="flex items-center gap-1 flex-wrap">
+                    <span className="w-10">Right</span>
+                    <input type="number" min={0} value={inputsDraft.rightFootage}
+                      onChange={(e) => setNumField('rightFootage', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-14 bg-white" />ft
+                    <input type="number" min={0} value={inputsDraft.rightCorners}
+                      onChange={(e) => setNumField('rightCorners', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-10 bg-white" />corners
+                  </label>
+                  <label className="flex items-center gap-1 flex-wrap">
+                    <span className="w-10">Back</span>
+                    <input type="number" min={0} value={inputsDraft.backFootage}
+                      onChange={(e) => setNumField('backFootage', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-14 bg-white" />ft
+                    <input type="number" min={0} value={inputsDraft.backCorners}
+                      onChange={(e) => setNumField('backCorners', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-10 bg-white" />corners
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center mt-1">
+                  <label className="flex items-center gap-1">3&apos;
+                    <input type="number" min={0} value={inputsDraft.extensions?.e3 ?? 0}
+                      onChange={(e) => setExtension('e3', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-12 bg-white" />
+                  </label>
+                  <label className="flex items-center gap-1">5&apos;
+                    <input type="number" min={0} value={inputsDraft.extensions?.e5 ?? 0}
+                      onChange={(e) => setExtension('e5', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-12 bg-white" />
+                  </label>
+                  <label className="flex items-center gap-1">10&apos;
+                    <input type="number" min={0} value={inputsDraft.extensions?.e10 ?? 0}
+                      onChange={(e) => setExtension('e10', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-12 bg-white" />
+                  </label>
+                  <label className="flex items-center gap-1">25&apos;
+                    <input type="number" min={0} value={inputsDraft.extensions?.e25 ?? 0}
+                      onChange={(e) => setExtension('e25', e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-12 bg-white" />
+                  </label>
+                  <label className="flex items-center gap-1">splitters
+                    <input type="number" min={0} value={inputsDraft.splittersNeeded ?? 0}
+                      onChange={(e) => setSplitters(e.target.value)}
+                      className="border border-gray-300 rounded px-1 py-0.5 w-12 bg-white" />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {saveErr && <p className="text-red-600">{saveErr}</p>}
+            <div className="flex gap-2 pt-1">
+              <button onClick={save} disabled={saving} className="bg-green-600 text-white rounded px-3 py-1 disabled:bg-green-300">
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => setEditing(false)} disabled={saving} className="border border-gray-300 rounded px-3 py-1 bg-white">
+                Cancel
+              </button>
+            </div>
           </div>
         )}
         <div>
