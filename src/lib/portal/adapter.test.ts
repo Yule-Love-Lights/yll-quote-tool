@@ -1,10 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { quoteRowToPortalQuote, BILLED_ROOFLINE_IDS, type QuoteRowForPortal } from './adapter';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  quoteRowToPortalQuote,
+  resolveApprovalSelectionSeed,
+  BILLED_ROOFLINE_IDS,
+  type QuoteRowForPortal,
+} from './adapter';
+import { computeInitialSelection } from '@/components/portal/SelectionContext';
 import { calculateQuote, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
 import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
+import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
@@ -728,5 +735,155 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     })!;
     expect(portal.charges.rush.amount).toBe(0);
     expect(portal.charges.takedown.amount).toBe(0);
+  });
+});
+
+// -- PS-C1/WT-L1: a staff-approved quote must never seed an EMPTY portal
+// selection ($0 total, every item off, the minimum-gate wall) just because
+// its vertical's packages have no lettered 'C' tier. Reproduces the exact
+// downstream pipeline page.tsx drives: quoteRowToPortalQuote,
+// resolveApprovalSelectionSeed, computeInitialSelection (in order).
+describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => {
+  // Mirrors a PRE-FIX staff-approve write (and any already-approved legacy
+  // row): only the staffApproved audit marker, no customerSelection at all.
+  // This isolates the buildApproval FALLBACK (adapter.ts) as the thing under
+  // test, independent of the staff-approve route's own new write.
+  function staffApprovedRowWithNoSelection(
+    result: QuoteResult,
+    inputs: QuoteInputs,
+    serviceType: ServiceType,
+  ): QuoteRowForPortal {
+    return {
+      ...rowWith(result, inputs),
+      service_type: serviceType,
+      customer_approved_at: '2026-07-12T00:00:00Z',
+      // `staffApproved` is a real field the route writes but isn't modeled on
+      // the adapter's narrow ApprovalSnapshotJson type (it's display-irrelevant
+      // there) — cast via `unknown`, mirroring the `approvedRow` helper above.
+      approval_snapshot: {
+        staffApproved: { by: 'staff@yll.test', at: '2026-07-12T00:00:00Z' },
+      } as unknown as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  // Drives the full seed pipeline the portal page actually uses, so the
+  // assertion is on the REAL end-to-end behavior, not just one function.
+  function seedSelection(portal: NonNullable<ReturnType<typeof quoteRowToPortalQuote>>) {
+    const seed = resolveApprovalSelectionSeed(portal.approval, {
+      // Irrelevant here: resolveApprovalSelectionSeed always prefers the real
+      // `approval` over this fallback once the quote is approved.
+      initialPackageId: 'A',
+      initialSelectedItemIds: undefined,
+    });
+    return computeInitialSelection(portal.packages, seed.initialPackageId, seed.initialSelectedItemIds);
+  }
+
+  it('EVENT quote (single "D" package): seeds the FULL bundle, not empty', () => {
+    const inputs = emptyInputs({ santasFootage: 100 });
+    const result = calculateQuote(inputs);
+    const row = staffApprovedRowWithNoSelection(result, inputs, 'event');
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+
+    expect(portal.packages).toHaveLength(1);
+    expect(portal.packages[0].id).toBe('D');
+    expect(portal.packages[0].total).toBeGreaterThan(0);
+    // The old bug: buildApproval hardcoded 'C', a package id that doesn't
+    // exist on an event quote, so the seed below came up empty.
+    expect(portal.approval!.packageId).toBe('D');
+
+    const selection = seedSelection(portal);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+    expect(selection.selectedItemIds).toEqual(portal.packages[0].includedItemIds);
+  });
+
+  it('PERMANENT BISTRO quote (single "D" package): seeds the FULL bundle, not empty', () => {
+    const inputs = emptyInputs({ permanentBistro: { bistro: [{ footage: 40 }], poles: 2 } });
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const row = staffApprovedRowWithNoSelection(result, inputs, 'permanent_bistro');
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+
+    expect(portal.packages).toHaveLength(1);
+    expect(portal.packages[0].id).toBe('D');
+    expect(portal.approval!.packageId).toBe('D');
+
+    const selection = seedSelection(portal);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+    expect(selection.selectedItemIds).toEqual(portal.packages[0].includedItemIds);
+  });
+
+  it('NO-BACK PERMANENT quote (front + sides only, no "C", no "D"): seeds the biggest real package, not empty', () => {
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const result = calculatePermanentQuote(inputs);
+    const row = staffApprovedRowWithNoSelection(result, inputs, 'permanent');
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+
+    // No back, so no 'C'. Front+sides equals the whole-home id set, so 'D' is
+    // suppressed as redundant (derivePackagesPermanent). Only A and B exist:
+    // the OLD hardcoded 'C' fallback matched NEITHER.
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B']);
+    const tierB = portal.packages.find((p) => p.id === 'B')!;
+    expect(tierB.total).toBeGreaterThan(0);
+    expect(portal.approval!.packageId).toBe('B'); // the bigger real package (front + sides)
+
+    const selection = seedSelection(portal);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+    expect(selection.selectedItemIds).toEqual(tierB.includedItemIds);
+  });
+
+  it('logs a regression tripwire when an approved snapshot has no customerSelection', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const inputs = emptyInputs({ santasFootage: 100 });
+    const result = calculateQuote(inputs);
+    const row = staffApprovedRowWithNoSelection(result, inputs, 'event');
+    quoteRowToPortalQuote({ row, photos: PHOTOS });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('no customerSelection.packageId'),
+    );
+    errorSpy.mockRestore();
+  });
+
+  // Now the OTHER half of the fix: the staff-approve ROUTE itself no longer
+  // omits customerSelection, so a NEWLY staff-approved quote never even hits
+  // the fallback above; buildApproval reads a real, non-empty selection
+  // straight off the snapshot the route wrote. Simulated here (rather than
+  // hitting the actual API route, which needs Supabase) by writing the same
+  // shape the route now produces and asserting the adapter honors it as-is.
+  it('a route-written customerSelection (packageId D + every billed item) seeds the full bundle', () => {
+    const inputs = emptyInputs({ santasFootage: 100, gingerbreadFootage: 40, rooflineChoice: 'santas' });
+    const result = calculateQuote(inputs);
+    const preview = quoteRowToPortalQuote({ row: rowWith(result, inputs), photos: PHOTOS })!;
+    // What the fixed staff-approve route now freezes: every BILLED item
+    // (never both mutually-exclusive roofline options).
+    const billedIds = preview.lineItems
+      .filter((li) => !preview.roofline || !preview.roofline.itemIds.includes(li.id) || li.id === preview.roofline.recommendedItemId)
+      .map((li) => li.id);
+    expect(billedIds).toContain('roofline-santas');
+    expect(billedIds).not.toContain('roofline-gingerbread'); // never both
+
+    const row: QuoteRowForPortal = {
+      ...rowWith(result, inputs),
+      customer_approved_at: '2026-07-12T00:00:00Z',
+      approval_snapshot: {
+        staffApproved: { by: 'staff@yll.test', at: '2026-07-12T00:00:00Z' },
+        customerSelection: { packageId: 'D', selectedItemIds: billedIds },
+      } as unknown as QuoteRowForPortal['approval_snapshot'],
+    };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.approval!.packageId).toBe('D');
+
+    const selection = seedSelection(portal);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+    expect(new Set(selection.selectedItemIds)).toEqual(new Set(billedIds));
+    // Never both mutually-exclusive roofline options selected at once.
+    expect(selection.selectedItemIds).not.toEqual(
+      expect.arrayContaining(['roofline-santas', 'roofline-gingerbread']),
+    );
   });
 });
