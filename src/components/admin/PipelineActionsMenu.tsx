@@ -69,8 +69,14 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       });
     case 'mark-complete':
       return rec.job ? fetch(`/api/jobs/${rec.job.id}/complete`, { method: 'POST' }) : null;
-    case 'collect-payment':
-      return rec.invoice ? fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' }) : null;
+    case 'collect-payment': {
+      if (!rec.invoice) return null;
+      const amount = rec.invoice.balance.toFixed(2);
+      if (!window.confirm(`Collect payment? This marks the full remaining balance of $${amount} as paid.`)) {
+        return null;
+      }
+      return fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' });
+    }
     case 'close':
       if (!rec.job) return null;
       if (!window.confirm('Close this job/invoice? Marks it paid + done.')) return null;
