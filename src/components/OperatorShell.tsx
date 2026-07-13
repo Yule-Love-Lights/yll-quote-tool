@@ -8,6 +8,7 @@ export type OperatorArea =
   | 'quotes'
   | 'jobs'
   | 'invoices'
+  | 'leads'
   | 'customers'
   | 'inventory'
   | 'new'
