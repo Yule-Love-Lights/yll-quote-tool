@@ -10,6 +10,9 @@ import {
   sanitizePermanentRates,
   sanitizePermanentWarranty,
   sanitizeHolidayRates,
+  sanitizeHolidayWarranty,
+  sanitizeEventWarranty,
+  sanitizeBistroWarranty,
 } from './appSettings';
 import { DEFAULT_HOLIDAY_RATES } from './pricing/pricingEngine';
 
@@ -202,6 +205,50 @@ describe('sanitizePermanentWarranty (#88 P6b-2)', () => {
     expect(sanitizePermanentWarranty(null)).toEqual({});
     expect(sanitizePermanentWarranty('x')).toEqual({});
     expect(sanitizePermanentWarranty([1, 2])).toEqual({});
+  });
+});
+
+// WT-56/65/07 — same mechanism as permanent's, generalized to the other three
+// verticals, each with its own bullet-slot cap (matching its fixed icon count
+// in RiskReversal.tsx: holiday/event 5, bistro 4).
+describe('sanitizeHolidayWarranty / sanitizeEventWarranty / sanitizeBistroWarranty (WT-56/65/07)', () => {
+  it('caps holiday + event bullets at 5 slots', () => {
+    const bullets = ['a', 'b', 'c', 'd', 'e', 'f'];
+    expect(sanitizeHolidayWarranty({ bullets }).bullets).toHaveLength(5);
+    expect(sanitizeEventWarranty({ bullets }).bullets).toHaveLength(5);
+  });
+
+  it('caps bistro bullets at 4 slots', () => {
+    expect(sanitizeBistroWarranty({ bullets: ['a', 'b', 'c', 'd', 'e'] }).bullets).toHaveLength(4);
+  });
+
+  it('trims strings and preserves bullet SLOT positions (blank slots kept)', () => {
+    const out = sanitizeHolidayWarranty({
+      eyebrow: '  Your Protection  ',
+      heading: '  Take the risk out.  ',
+      bullets: ['first', '   ', 'third'],
+    });
+    expect(out.eyebrow).toBe('Your Protection');
+    expect(out.heading).toBe('Take the risk out.');
+    expect(out.bullets).toEqual(['first', '', 'third']);
+  });
+
+  it('accepts a partial patch (only the fields present)', () => {
+    expect(sanitizeEventWarranty({ heading: 'Just the heading' })).toEqual({
+      heading: 'Just the heading',
+    });
+  });
+
+  it('keeps a valid stored version but drops junk versions', () => {
+    expect(sanitizeBistroWarranty({ version: 4 }).version).toBe(4);
+    expect(sanitizeBistroWarranty({ version: 0 }).version).toBeUndefined();
+    expect(sanitizeBistroWarranty({ version: 'x' }).version).toBeUndefined();
+  });
+
+  it('returns {} for non-objects', () => {
+    expect(sanitizeHolidayWarranty(null)).toEqual({});
+    expect(sanitizeEventWarranty('x')).toEqual({});
+    expect(sanitizeBistroWarranty([1, 2])).toEqual({});
   });
 });
 

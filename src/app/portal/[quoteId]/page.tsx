@@ -410,14 +410,25 @@ export default async function PortalPage({
         )}
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
-             event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
+             event/holiday/bistro branch their copy inside RiskReversal via
+             serviceType (#96, generalized WT-56/65/07). Every vertical's copy is
+             Settings-editable + versioned: an APPROVED customer sees the FROZEN
+             copy they agreed to (from the snapshot); a not-yet-approved customer
+             sees the LIVE settings copy. So a later Settings edit never changes
+             a booked customer's terms. */}
         {quote.serviceType === 'permanent' ? (
-          // #88 P6b-2 — an APPROVED customer sees the FROZEN copy they agreed to
-          // (from the snapshot); a not-yet-approved customer sees the LIVE settings
-          // copy. So a later Settings edit never changes a booked customer's terms.
           <RiskReversalPermanent warranty={quote.approval?.permanentWarranty ?? appSettings.permanentWarranty} />
         ) : (
-          <RiskReversal serviceType={quote.serviceType} />
+          <RiskReversal
+            serviceType={quote.serviceType}
+            warranty={
+              quote.serviceType === 'event'
+                ? (quote.approval?.eventWarranty ?? appSettings.eventWarranty)
+                : quote.serviceType === 'permanent_bistro'
+                  ? (quote.approval?.bistroWarranty ?? appSettings.bistroWarranty)
+                  : (quote.approval?.holidayWarranty ?? appSettings.holidayWarranty)
+            }
+          />
         )}
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}

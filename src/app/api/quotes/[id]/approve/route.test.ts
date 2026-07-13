@@ -860,6 +860,68 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     const snap = updatePayloads[0].approval_snapshot as { permanentWarranty: unknown };
     expect(snap.permanentWarranty).toBeNull();
   });
+
+  // WT-56/65/07 — the same freeze mechanism, generalized to holiday/event/bistro.
+  // Exactly one of the four warranty fields is non-null on any given snapshot.
+  it('freezes the current warranty copy + version into a HOLIDAY snapshot (and nulls the other three)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote()); // no service_type → holiday default
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['roofline-santas'] }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      holidayWarranty: { version: number; heading: string; bullets: string[] } | null;
+      eventWarranty: unknown;
+      bistroWarranty: unknown;
+      permanentWarranty: unknown;
+    };
+    expect(snap.holidayWarranty).not.toBeNull();
+    expect(snap.holidayWarranty!.version).toBe(1);
+    expect(snap.holidayWarranty!.bullets).toHaveLength(5);
+    expect(snap.eventWarranty).toBeNull();
+    expect(snap.bistroWarranty).toBeNull();
+    expect(snap.permanentWarranty).toBeNull();
+  });
+
+  it('freezes the current warranty copy + version into an EVENT snapshot', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ service_type: 'event' }));
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['roofline-santas'] }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      eventWarranty: { version: number; bullets: string[] } | null;
+      holidayWarranty: unknown;
+    };
+    expect(snap.eventWarranty).not.toBeNull();
+    expect(snap.eventWarranty!.version).toBe(1);
+    expect(snap.eventWarranty!.bullets).toHaveLength(5);
+    expect(snap.holidayWarranty).toBeNull();
+  });
+
+  it('freezes the current warranty copy + version into a BISTRO snapshot', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({ result: BISTRO_RESULT, service_type: 'permanent_bistro' }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-0', 'permanent-bistro-poles'] }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      bistroWarranty: { version: number; bullets: string[] } | null;
+      holidayWarranty: unknown;
+    };
+    expect(snap.bistroWarranty).not.toBeNull();
+    expect(snap.bistroWarranty!.version).toBe(1);
+    expect(snap.bistroWarranty!.bullets).toHaveLength(4);
+    expect(snap.holidayWarranty).toBeNull();
+  });
 });
 
 describe('POST /api/quotes/[id]/approve — permanent bistro', () => {

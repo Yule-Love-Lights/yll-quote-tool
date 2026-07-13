@@ -137,6 +137,44 @@ describe('PUT /api/settings — boundary validation (#85)', () => {
     expect(putSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Holiday/event/bistro warranty copy (WT-56/65/07) — same boundary validation
+  // as permanentWarranty above, generalized to the other three keys.
+  it.each(['holidayWarranty', 'eventWarranty', 'bistroWarranty'] as const)(
+    'persists a valid %s patch (200, putAppSettings called)',
+    async (key) => {
+      const res = await PUT(makeReq({ [key]: { heading: 'Rock solid.' } }));
+      expect(res.status).toBe(200);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['holidayWarranty', 'eventWarranty', 'bistroWarranty'] as const)(
+    '400s on a version-only %s patch (no editable field)',
+    async (key) => {
+      const res = await PUT(makeReq({ [key]: { version: 99 } }));
+      expect(res.status).toBe(400);
+      expect(putSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['holidayWarranty', 'eventWarranty', 'bistroWarranty'] as const)(
+    '400s when the %s heading is blanked',
+    async (key) => {
+      const res = await PUT(makeReq({ [key]: { heading: '   ' } }));
+      expect(res.status).toBe(400);
+      expect(putSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['holidayWarranty', 'eventWarranty', 'bistroWarranty'] as const)(
+    '400s when every %s bullet is blank',
+    async (key) => {
+      const res = await PUT(makeReq({ [key]: { heading: 'ok', bullets: ['', '  ', ''] } }));
+      expect(res.status).toBe(400);
+      expect(putSpy).not.toHaveBeenCalled();
+    },
+  );
+
   // Permanent Bistro rates (#117) — mirrors the eventRates boundary check.
   it('400s when permanentBistroRates is not an object', async () => {
     const res = await PUT(makeReq({ permanentBistroRates: 'nope' }));

@@ -6,6 +6,7 @@
 
 import type { Scene } from '@/lib/design/sceneTypes';
 import type { PermanentWarranty } from '@/lib/permanent/types';
+import type { ServiceWarranty } from '@/lib/warranty/types';
 
 export type PackageId = 'A' | 'B' | 'C' | 'D';
 
@@ -119,6 +120,11 @@ export type PortalApproval = {
   // customer agreed to, frozen at approval. null for non-permanent quotes or
   // older snapshots; the portal then renders the LIVE settings copy instead.
   permanentWarranty?: PermanentWarranty | null;
+  // WT-56/65/07 — the same freeze, generalized to holiday/event/permanent-bistro.
+  // Only the field matching the quote's service_type is ever non-null.
+  holidayWarranty?: ServiceWarranty | null;
+  eventWarranty?: ServiceWarranty | null;
+  bistroWarranty?: ServiceWarranty | null;
 };
 
 // The customer's early-install timing choice on the portal (#40). Picking

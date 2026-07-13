@@ -10,7 +10,7 @@
 // mapping here, not in components. This is the contract.
 
 import type { CustomLineItem, QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
-import type { PermanentWarranty } from '@/lib/permanent/types';
+import type { ServiceWarranty } from '@/lib/warranty/types';
 import type {
   PackageId,
   PortalApproval,
@@ -58,6 +58,27 @@ type ApprovalSnapshotJson = {
   // #88 P6b-2 — the frozen "Your Protection" warranty copy + version the customer
   // agreed to (permanent quotes only). Optional/back-compat: older snapshots predate it.
   permanentWarranty?: {
+    eyebrow?: string;
+    heading?: string;
+    bullets?: string[];
+    version?: number;
+  };
+  // WT-56/65/07 — the same freeze, generalized to holiday/event/permanent-bistro.
+  // Only the field matching the quote's own service_type is ever populated; the
+  // other three stay absent. Optional/back-compat: older snapshots predate these.
+  holidayWarranty?: {
+    eyebrow?: string;
+    heading?: string;
+    bullets?: string[];
+    version?: number;
+  };
+  eventWarranty?: {
+    eyebrow?: string;
+    heading?: string;
+    bullets?: string[];
+    version?: number;
+  };
+  bistroWarranty?: {
     eyebrow?: string;
     heading?: string;
     bullets?: string[];
@@ -397,12 +418,21 @@ function pickFallbackApprovalPackageId(packages: PortalPackage[]): PackageId {
 // the frontend consumes. Returns undefined when the customer hasn't
 // approved yet (or when the snapshot is malformed beyond rescue) — the
 // approved page treats undefined as "404, not yet booked."
-// #88 P6b-2 — shape the frozen warranty jsonb back into a PortalApproval field.
-// null when the quote has no frozen warranty (non-permanent, or an older snapshot
-// predating the freeze) — the portal then falls back to the LIVE settings copy.
+// #88 P6b-2 (generalized WT-56/65/07) — shape a frozen warranty jsonb field back
+// into a PortalApproval field. null when the quote has no frozen warranty for
+// that vertical (wrong service_type, or an older snapshot predating the freeze)
+// — the portal then falls back to the LIVE settings copy. Shared by all four
+// warranty fields — they carry the same optional jsonb shape.
 function frozenWarranty(
-  w: NonNullable<QuoteRowForPortal['approval_snapshot']>['permanentWarranty'],
-): PermanentWarranty | null {
+  w:
+    | {
+        eyebrow?: string;
+        heading?: string;
+        bullets?: string[];
+        version?: number;
+      }
+    | undefined,
+): ServiceWarranty | null {
   if (!w || typeof w.version !== 'number' || !Array.isArray(w.bullets)) return null;
   return {
     eyebrow: typeof w.eyebrow === 'string' ? w.eyebrow : '',
@@ -462,6 +492,9 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
+    holidayWarranty: frozenWarranty(snap?.holidayWarranty),
+    eventWarranty: frozenWarranty(snap?.eventWarranty),
+    bistroWarranty: frozenWarranty(snap?.bistroWarranty),
   };
 }
 

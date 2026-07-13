@@ -1,40 +1,49 @@
 'use client';
 
-// Permanent "Your Protection" warranty copy (Settings → Quotes, #88 P6b-2). The
-// eyebrow, heading, and six guarantee bullets shown on the permanent portal's
-// Risk-Reversal card. Each bullet pairs with a FIXED icon by slot (see the hints);
-// a blank slot is hidden. Mirrors the PermanentRatesSettings pattern:
-// GET /api/settings → edit → PUT. The VERSION is server-managed — saving a copy
-// change bumps it, and every already-approved quote keeps the version it froze, so
-// an edit here never changes what a booked customer agreed to.
+// "Your Protection" warranty copy editor (Settings → Quotes). Generalizes the
+// permanent-only editor (#88 P6b-2) to all four verticals (WT-56/65/07): the
+// eyebrow, heading, and bullet copy shown on that vertical's portal Risk-
+// Reversal card. Each bullet pairs with a FIXED icon by slot (see the caller's
+// bulletHints); a blank slot is hidden. GET /api/settings → edit → PUT. The
+// VERSION is server-managed — saving a copy change bumps it, and every already-
+// approved quote keeps the version it froze, so an edit here never changes what
+// a booked customer agreed to.
 //
-// Type-only import from lib/permanent/types (no server deps) keeps this bundle-safe.
+// One component, parameterized by settingsKey — mirrors the PortalSwatchEditor
+// pattern (#88 P6b-4) for the same reason: four near-identical CRUD forms would
+// otherwise drift out of sync with each other.
 
 import { useEffect, useState } from 'react';
-import { DEFAULT_PERMANENT_WARRANTY, type PermanentWarranty } from '@/lib/permanent/types';
+import type { ServiceWarranty } from '@/lib/warranty/types';
 
-const BULLET_COUNT = 6;
-// The fixed icon each bullet slot pairs with in RiskReversalPermanent, as a hint
-// so the operator keeps the copy semantically aligned with its badge.
-const BULLET_HINTS = [
-  'Slot 1 · ∞ badge — the lifetime materials warranty (the legal term).',
-  'Slot 2 · phone badge — app / color control.',
-  'Slot 3 · eye-off badge — invisible by day.',
-  'Slot 4 · house badge — no roof damage.',
-  'Slot 5 · palette badge — everyday + holiday color.',
-  'Slot 6 · shield badge — insurance / licensed + bonded.',
-];
+type WarrantySettingsKey = 'holidayWarranty' | 'eventWarranty' | 'bistroWarranty' | 'permanentWarranty';
 
-// Pad/truncate a bullets array to exactly BULLET_COUNT editable slots.
-function toSlots(bullets: string[]): string[] {
-  const out = bullets.slice(0, BULLET_COUNT);
-  while (out.length < BULLET_COUNT) out.push('');
+type WarrantySettingsProps = {
+  settingsKey: WarrantySettingsKey;
+  title: string;
+  description: string;
+  defaultWarranty: ServiceWarranty;
+  /** One hint per bullet slot — length determines how many bullet fields render. */
+  bulletHints: string[];
+};
+
+// Pad/truncate a bullets array to exactly the slot count.
+function toSlots(bullets: string[], count: number): string[] {
+  const out = bullets.slice(0, count);
+  while (out.length < count) out.push('');
   return out;
 }
 
-export function PermanentWarrantySettings() {
-  const [warranty, setWarranty] = useState<PermanentWarranty>(DEFAULT_PERMANENT_WARRANTY);
-  const [bullets, setBullets] = useState<string[]>(toSlots(DEFAULT_PERMANENT_WARRANTY.bullets));
+export function WarrantySettings({
+  settingsKey,
+  title,
+  description,
+  defaultWarranty,
+  bulletHints,
+}: WarrantySettingsProps) {
+  const bulletCount = bulletHints.length;
+  const [warranty, setWarranty] = useState<ServiceWarranty>(defaultWarranty);
+  const [bullets, setBullets] = useState<string[]>(toSlots(defaultWarranty.bullets, bulletCount));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -45,10 +54,10 @@ export function PermanentWarrantySettings() {
       try {
         const res = await fetch('/api/settings');
         const data = await res.json();
-        if (!cancelled && res.ok && data.permanentWarranty) {
-          const w = data.permanentWarranty as PermanentWarranty;
+        if (!cancelled && res.ok && data[settingsKey]) {
+          const w = data[settingsKey] as ServiceWarranty;
           setWarranty(w);
-          setBullets(toSlots(w.bullets));
+          setBullets(toSlots(w.bullets, bulletCount));
         }
       } catch {
         /* keep defaults on failure */
@@ -59,6 +68,9 @@ export function PermanentWarrantySettings() {
     return () => {
       cancelled = true;
     };
+    // settingsKey/bulletCount are fixed per mount (each caller renders its own
+    // instance with a stable key) — no need to re-run on their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setBullet = (i: number, v: string) =>
@@ -72,7 +84,7 @@ export function PermanentWarrantySettings() {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          permanentWarranty: {
+          [settingsKey]: {
             eyebrow: warranty.eyebrow,
             heading: warranty.heading,
             bullets,
@@ -87,10 +99,10 @@ export function PermanentWarrantySettings() {
         }
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
-      if (data.permanentWarranty) {
-        const w = data.permanentWarranty as PermanentWarranty;
+      if (data[settingsKey]) {
+        const w = data[settingsKey] as ServiceWarranty;
         setWarranty(w);
-        setBullets(toSlots(w.bullets));
+        setBullets(toSlots(w.bullets, bulletCount));
         setMsg(`Saved — warranty terms are now version ${w.version}.`);
       } else {
         setMsg('Saved.');
@@ -105,17 +117,12 @@ export function PermanentWarrantySettings() {
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-gray-900">Permanent “Your Protection” card</h2>
+        <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
         <span className="text-xs font-medium text-gray-500 whitespace-nowrap">
           Terms version {warranty.version}
         </span>
       </div>
-      <p className="text-sm text-gray-500 mt-1">
-        The eyebrow, heading, and six guarantee bullets on the permanent portal’s protection card.
-        Leave a bullet blank to hide it. Saving a copy change bumps the terms version — quotes that
-        customers have already approved keep the version they agreed to, so an edit here never
-        changes a booked customer’s terms.
-      </p>
+      <p className="text-sm text-gray-500 mt-1">{description}</p>
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="block">
@@ -153,7 +160,7 @@ export function PermanentWarrantySettings() {
               onChange={(e) => setBullet(i, e.target.value)}
               className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:opacity-50"
             />
-            <span className="text-xs text-gray-400">{BULLET_HINTS[i]}</span>
+            <span className="text-xs text-gray-400">{bulletHints[i]}</span>
           </label>
         ))}
       </div>

@@ -504,6 +504,80 @@ describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (#88 P6b-2
   });
 });
 
+// ── Frozen holiday/event/bistro warranty (WT-56/65/07) ──────────────────────
+// Same mechanism as permanent's above, generalized to the other three fields.
+describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (WT-56/65/07)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown): QuoteRowForPortal {
+    return {
+      ...rowWith(result),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('populates approval.holidayWarranty from a well-formed frozen snapshot', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({
+        approvedAt: '2026-07-04T00:00:00Z',
+        customerSelection: { packageId: 'A' },
+        holidayWarranty: { eyebrow: 'Your Protection', heading: 'H', bullets: ['a', 'b'], version: 3 },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.holidayWarranty).toEqual({
+      eyebrow: 'Your Protection',
+      heading: 'H',
+      bullets: ['a', 'b'],
+      version: 3,
+    });
+    // The other three fields stay null — only the frozen field matching the
+    // quote's own vertical is ever populated.
+    expect(portal.approval?.eventWarranty).toBeNull();
+    expect(portal.approval?.bistroWarranty).toBeNull();
+    expect(portal.approval?.permanentWarranty).toBeNull();
+  });
+
+  it('populates approval.eventWarranty / approval.bistroWarranty independently', () => {
+    const evPortal = quoteRowToPortalQuote({
+      row: approvedRow({
+        customerSelection: { packageId: 'A' },
+        eventWarranty: { eyebrow: 'E', heading: 'EH', bullets: ['e1'], version: 2 },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(evPortal.approval?.eventWarranty).toEqual({ eyebrow: 'E', heading: 'EH', bullets: ['e1'], version: 2 });
+
+    const bisPortal = quoteRowToPortalQuote({
+      row: approvedRow({
+        customerSelection: { packageId: 'A' },
+        bistroWarranty: { eyebrow: 'B', heading: 'BH', bullets: ['b1'], version: 5 },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(bisPortal.approval?.bistroWarranty).toEqual({ eyebrow: 'B', heading: 'BH', bullets: ['b1'], version: 5 });
+  });
+
+  it('falls back to null for an OLD approved snapshot with no holiday/event/bistro warranty (must not crash)', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval).toBeTruthy(); // the quote still loads
+    expect(portal.approval?.holidayWarranty).toBeNull();
+    expect(portal.approval?.eventWarranty).toBeNull();
+    expect(portal.approval?.bistroWarranty).toBeNull();
+  });
+
+  it('returns null for a malformed frozen warranty (bad version / non-array bullets)', () => {
+    const bad = quoteRowToPortalQuote({
+      row: approvedRow({ customerSelection: {}, holidayWarranty: { version: 'x', bullets: ['a'] } }),
+      photos: PHOTOS,
+    })!;
+    expect(bad.approval?.holidayWarranty).toBeNull();
+  });
+});
+
 // ── #134: packages under the approval gate are hidden ───────────────────────
 describe('quoteRowToPortalQuote — hides packages below the approval minimum (#134)', () => {
   // Permanent quote at the default $2,500 gate: front $1,520 · left $1,085 ·
