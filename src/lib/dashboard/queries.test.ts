@@ -121,7 +121,7 @@ describe('DASHBOARD_QUOTES_SELECT (WT-52)', () => {
     await listQuotesForDashboardResult(500);
     // `from()` always returns the same builder object, so calling it again just
     // hands back a reference to inspect what the earlier real call recorded.
-    const selectedColumns = client!.from().select.mock.calls[0][0] as string;
+    const selectedColumns = (client!.from().select.mock.calls[0] as unknown as [string])[0];
     expect(selectedColumns).toContain('customer_address');
   });
 });
