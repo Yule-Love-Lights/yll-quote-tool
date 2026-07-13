@@ -451,12 +451,22 @@ function autoRooflineChoice(
 }
 
 // Honor an explicit operator recommendation; otherwise auto-pick (above).
+// A 'santas'/'gingerbread' choice is only honored while that option still
+// resolves (has footage) — `inputs.rooflineChoice` is set once and never
+// cleared, so if footage is later edited to 0 the chosen option can go null
+// out from under it. Without this check the stale choice would silently
+// bill $0 for the whole roofline line instead of falling back to whatever
+// footage remains (WT-01). An explicit 'none' is always honored — that's an
+// intentional zero, not a stale reference.
 function resolveRooflineChoice(
   inputs: QuoteInputs,
   restSubtotal: number,
   options: QuoteResult['rooflineOptions'],
 ): RooflineChoice {
-  if (inputs.rooflineChoice) return inputs.rooflineChoice;
+  const choice = inputs.rooflineChoice;
+  if (choice === 'santas' && options.santas) return 'santas';
+  if (choice === 'gingerbread' && options.gingerbread) return 'gingerbread';
+  if (choice === 'none') return 'none';
   return autoRooflineChoice(restSubtotal, options);
 }
 
