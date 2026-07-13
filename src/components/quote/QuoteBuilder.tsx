@@ -717,6 +717,11 @@ export default function QuoteBuilder({
   // customer-facing visual now; the app-wide render teardown is task #36.)
   const [fewShotCount, setFewShotCount] = useState(0);
   const [fewShotRanking, setFewShotRanking] = useState<'similarity' | 'recency'>('recency');
+  // WT-33: similarity was EXPECTED (Voyage configured + a query image) but the
+  // assembler still fell back to recency — a likely Voyage outage. Distinct
+  // from the ordinary "small library, recency is normal" case so staff aren't
+  // shown the same badge for both.
+  const [fewShotDegraded, setFewShotDegraded] = useState(false);
   const [satellitePreview, setSatellitePreview] = useState<string | null>(null);
   const [googleAddress, setGoogleAddress] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -1469,7 +1474,7 @@ export default function QuoteBuilder({
     // + scale) with no holiday analysis/seed — the operator draws the roofline.
     permanentImageryOnly?: boolean;
     fewShotCount?: number;
-    fewShotBreakdown?: { ranking?: 'similarity' | 'recency' };
+    fewShotBreakdown?: { ranking?: 'similarity' | 'recency'; degraded?: boolean };
   };
   const applyAnalysisResult = (data: AnalysisResponse) => {
     if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
@@ -1563,6 +1568,7 @@ export default function QuoteBuilder({
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
     setFewShotRanking(data.fewShotBreakdown?.ranking ?? 'recency');
+    setFewShotDegraded(data.fewShotBreakdown?.degraded ?? false);
   };
 
   const handleLookupAddress = async () => {
@@ -1636,6 +1642,26 @@ export default function QuoteBuilder({
           };
         }
         if (data.permanentImageryOnly) {
+          // WT-35: also park the RAW permanent satellite analyzer result as the
+          // design's analysis provenance — mirrors applyAnalysisResult's
+          // `ctx.analysis: r` for holiday/event above. Without this, seed_analysis
+          // stays null forever for permanent designs and the jump ground-truth
+          // few-shot signal (permanent/fewShot.ts asJumps, fed by
+          // original_analysis.jumps) never has anything to read.
+          // REOPEN-CLOBBER GUARD: this whole block only runs as the direct
+          // response handler of THIS fetch (never an automatic derive/rehydrate
+          // effect that could fire on mount), so there is no stale-ref path to
+          // guard against — the only risk is a failed analyzer call on a
+          // re-lookup pushing an empty/null analysis over a good saved one.
+          // `data.permanentSatellite` is null exactly when the try/catch above
+          // caught an analyzer failure, so gating on its truthiness ensures we
+          // only ever push a REAL analysis that just ran this session.
+          if (data.permanentSatellite) {
+            pendingContextRef.current = {
+              ...(pendingContextRef.current ?? {}),
+              analysis: data.permanentSatellite,
+            };
+          }
           // #140 P2: the permanent satellite analyzer seeds the SAME editable
           // side channels the operator draws by hand — footage/corners and the
           // Extensions/Splitters counts then derive from the seeded lines via
@@ -2804,6 +2830,15 @@ export default function QuoteBuilder({
                     {fewShotCount > 0 && (
                       <span className="ml-1 font-normal">
                         • Using {fewShotCount} {fewShotRanking === 'similarity' ? 'similar' : 'recent'} past example{fewShotCount === 1 ? '' : 's'} as reference
+                        {/* WT-33: similarity was expected (Voyage configured + a query
+                            image) but still fell back to recency — likely a Voyage
+                            outage, not the benign small-library case. A distinct badge
+                            so this doesn't look identical to the ordinary 'recent' case. */}
+                        {fewShotDegraded && (
+                          <span className="ml-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-800">
+                            similarity search unavailable — verify against these examples
+                          </span>
+                        )}
                       </span>
                     )}
                   </strong>
