@@ -16,7 +16,6 @@ export type PortalPackage = {
   total: number;        // dollars, tax-inclusive final price (rush/takedown + tax; no floor — minimum is a portal gate)
   deposit: number;      // dollars, 50% of total
   recommended?: boolean;
-  aLaCarteTotal?: number; // used to compute "you save $X" line (Package C only)
   includedItemIds: string[]; // which line items are bundled in this package
 };
 

@@ -75,7 +75,6 @@ export const MOCK_QUOTE: PortalQuote = {
       tagline: 'Everything — Gingerbread roofline, trees, wreaths, garland and more.',
       total: 3139.26, // 2890 * 1.08625, rounded to cents
       deposit: 1569.63,
-      aLaCarteTotal: 2890,
       includedItemIds: [
         'roofline-gingerbread',
         'tree-l',

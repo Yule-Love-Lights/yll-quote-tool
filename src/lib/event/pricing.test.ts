@@ -185,6 +185,37 @@ describe('calculateEventQuote — totals math (no rush/takedown/early-install)',
     expect(r.taxAmount).toBeCloseTo(55.13, 2);
     expect(r.total).toBeCloseTo(685.13, 2);
   });
+
+  it('flat discount comes off the subtotal before tax (e.g. a referral credit)', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        discount: { type: 'flat', amount: 100 },
+      }),
+      R,
+    );
+    expect(r.discountAmount).toBe(100);
+    expect(r.subtotalAfterDiscount).toBe(600);
+    expect(r.taxAmount).toBeCloseTo(52.5, 2);
+    expect(r.total).toBeCloseTo(652.5, 2);
+  });
+
+  it('never produces a negative total/deposit when a discount exceeds the subtotal', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy', // subtotal 700
+        discount: { type: 'flat', amount: 5000 }, // absurd over-discount
+      }),
+      R,
+    );
+    expect(r.subtotalAfterDiscount).toBe(0); // floored, not negative
+    expect(r.taxableAmount).toBe(0);
+    expect(r.total).toBe(0);
+    expect(r.depositAmount).toBe(0);
+    expect(r.balanceDue).toBe(0);
+  });
 });
 
 describe('calculateEventQuote — #104 per-line price overrides', () => {

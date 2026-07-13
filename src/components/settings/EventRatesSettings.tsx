@@ -5,6 +5,10 @@
 // pattern. Loads via GET /api/settings, saves via PUT { eventRates }. The server
 // sanitizes each field (invalid/≤0 → default), and we re-hydrate from the saved
 // result so what you see is exactly what will price.
+//
+// No order-minimum field here on purpose: event deliberately shares the
+// holiday $1,000 approval minimum instead of having its own dial (confirmed
+// intentional, not an oversight).
 
 import { useEffect, useState } from 'react';
 import { DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
