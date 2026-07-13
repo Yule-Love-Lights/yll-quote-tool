@@ -319,6 +319,139 @@ describe('buildInvoiceDocModel', () => {
     expect(model.accountBalance).toBe('$2,160.00');
   });
 
+  // Regression (post-merge audit): the agreed line-item Subtotal is EXACT but
+  // the invoice's scaled `tax` column is independently rounded, so on some
+  // partial approvals the derived discount lands a cent negative, was clamped
+  // to 0, and left the printed Subtotal + Tax a cent SHORT of Total (or printed
+  // a spurious ~1c Discount). The tax line now absorbs the ≤2c residual so the
+  // stack sums to Total exactly in this rounding band too.
+  it('rounding-band partial approval: Subtotal + Tax === Total to the cent, no 1c short and no spurious discount', () => {
+    const detail = makeDetail({
+      subtotal: 600, // full-quote column (unused for the itemized subtotal)
+      discount: 0,
+      tax: 31.37, // scaled + independently rounded → creates the ±1c band
+      total: 533.38,
+      deposit_applied: 266.69,
+      balance: 266.69,
+      credit_note: 0,
+    });
+    const portalQuote: PortalQuote = {
+      ...BASE_QUOTE,
+      lineItems: [
+        { id: 'item-a', kind: 'roofline', label: 'Item A', detail: '', price: 251 },
+        { id: 'item-b', kind: 'tree', label: 'Item B', detail: '', price: 251 },
+      ],
+      packages: [{ id: 'D', name: 'Build Your Own', tagline: '', total: 533.38, deposit: 266.69, includedItemIds: [] }],
+      charges: { taxRate: 0.0625, rush: { amount: 0, defaultOn: false }, takedown: { amount: 0, defaultOn: false } },
+      approval: {
+        approvedAt: '2026-06-10T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: 533.38,
+        depositUsd: 266.69,
+        selectedItemCount: 2,
+        selectedItemIds: ['item-a', 'item-b'],
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+
+    const model = buildInvoiceDocModel(detail, portalQuote);
+
+    expect(model.subtotal).toBe('$502.00');
+    expect(model.discount).toBeNull(); // the -1c artifact is NOT shown as a discount
+    expect(model.fees).toBeNull();
+    // The stack reconciles EXACTLY — the ≤2c residual was absorbed into tax
+    // (shown $31.38, one cent above the stored $31.37) rather than left short.
+    const subtotal = parseMoney(model.subtotal!);
+    const tax = parseMoney(model.tax!);
+    expect(subtotal + tax).toBe(parseMoney(model.total));
+    expect(model.total).toBe('$533.38');
+  });
+
+  it('rounding-band with a small POSITIVE residual: no spurious ~1c Discount line, stack still reconciles', () => {
+    const detail = makeDetail({
+      subtotal: 600,
+      discount: 0,
+      tax: 31.37,
+      total: 533.38,
+      deposit_applied: 266.69,
+      balance: 266.69,
+      credit_note: 0,
+    });
+    const portalQuote: PortalQuote = {
+      ...BASE_QUOTE,
+      lineItems: [
+        { id: 'item-a', kind: 'roofline', label: 'Item A', detail: '', price: 251.01 },
+        { id: 'item-b', kind: 'tree', label: 'Item B', detail: '', price: 251.01 },
+      ],
+      packages: [{ id: 'D', name: 'Build Your Own', tagline: '', total: 533.38, deposit: 266.69, includedItemIds: [] }],
+      charges: { taxRate: 0.0625, rush: { amount: 0, defaultOn: false }, takedown: { amount: 0, defaultOn: false } },
+      approval: {
+        approvedAt: '2026-06-10T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: 533.38,
+        depositUsd: 266.69,
+        selectedItemCount: 2,
+        selectedItemIds: ['item-a', 'item-b'],
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+
+    const model = buildInvoiceDocModel(detail, portalQuote);
+
+    expect(model.subtotal).toBe('$502.02');
+    expect(model.discount).toBeNull(); // +1c rounding noise is absorbed, not printed as a discount
+    expect(parseMoney(model.subtotal!) + parseMoney(model.tax!)).toBe(parseMoney(model.total));
+  });
+
+  it('a REAL discount (above the rounding band) is still shown, and the stack reconciles', () => {
+    const detail = makeDetail({
+      subtotal: 600,
+      discount: 0,
+      tax: 31.37,
+      total: 533.38,
+      deposit_applied: 266.69,
+      balance: 266.69,
+      credit_note: 0,
+    });
+    const portalQuote: PortalQuote = {
+      ...BASE_QUOTE,
+      lineItems: [
+        { id: 'item-a', kind: 'roofline', label: 'Item A', detail: '', price: 300 },
+        { id: 'item-b', kind: 'tree', label: 'Item B', detail: '', price: 300 },
+      ],
+      packages: [{ id: 'D', name: 'Build Your Own', tagline: '', total: 533.38, deposit: 266.69, includedItemIds: [] }],
+      charges: { taxRate: 0.0625, rush: { amount: 0, defaultOn: false }, takedown: { amount: 0, defaultOn: false } },
+      approval: {
+        approvedAt: '2026-06-10T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: 533.38,
+        depositUsd: 266.69,
+        selectedItemCount: 2,
+        selectedItemIds: ['item-a', 'item-b'],
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+
+    const model = buildInvoiceDocModel(detail, portalQuote);
+
+    expect(model.subtotal).toBe('$600.00');
+    expect(model.discount).not.toBeNull(); // a genuine ~$98 discount IS shown
+    expect(model.tax).toBe('$31.37'); // with a real discount the tax equals the stored figure
+    const subtotal = parseMoney(model.subtotal!);
+    const discount = parseMoney(model.discount!.amount); // "-$97.99" → -97.99
+    const tax = parseMoney(model.tax!);
+    expect(subtotal + discount + tax).toBe(parseMoney(model.total));
+  });
+
   it('an invoice with a selected rush fee: the Fees line is real (not derived) and the stack still reconciles', () => {
     const detail = makeDetail({
       subtotal: 1000,

@@ -154,9 +154,23 @@ function buildReconcilingBreakdown(params: {
 }): ReconcilingBreakdown | null {
   const { subtotal, fees, feesLabel, taxAmount, taxRate, total } = params;
   const taxable = roundMoney(total - taxAmount);
-  const discount = roundMoney(subtotal + fees - taxable);
-  if (discount < -RECONCILE_EPSILON) return null;
-  const clampedDiscount = Math.max(0, discount);
+  const rawDiscount = roundMoney(subtotal + fees - taxable);
+  if (rawDiscount < -RECONCILE_EPSILON) return null;
+
+  // The agreed line-item Subtotal is exact, but taxAmount is an independently
+  // rounded column (the invoice's proportionally-scaled tax, or the quote's
+  // total-derived tax), so `rawDiscount` can be a ±1c rounding artifact rather
+  // than a real discount. Treat anything within the reconcile band as noise:
+  // only a discount ABOVE the band is a genuine one worth printing.
+  const discount = rawDiscount > RECONCILE_EPSILON ? rawDiscount : 0;
+
+  // Derive the displayed tax so the printed stack sums to Total EXACTLY, for
+  // every case: Subtotal − Discount + Fees + Tax === Total. When `discount` is
+  // the real derived discount this equals taxAmount to the cent; when the
+  // discount was rounding noise (dropped to 0), the ≤2c residual is absorbed
+  // into the tax line instead of leaving the stack a cent short or printing a
+  // spurious ~1c "Discount". Total/Deposit/Balance stay verbatim + load-bearing.
+  const tax = roundMoney(total - subtotal - fees + discount);
 
   return {
     subtotal: money(subtotal),
@@ -164,10 +178,10 @@ function buildReconcilingBreakdown(params: {
     // standard Helvetica font has no glyph for U+2212 and silently drops it,
     // rendering the amount with no sign at all — verified against an actual
     // rendered PDF while building this feature.
-    discount: clampedDiscount > 0.004 ? { label: 'Discount', amount: `-${money(clampedDiscount)}` } : null,
+    discount: discount > 0.004 ? { label: 'Discount', amount: `-${money(discount)}` } : null,
     fees: fees > 0.004 ? { label: feesLabel ?? 'Fees', amount: money(fees) } : null,
     taxLabel: `Sales Tax (${formatTaxPercent(taxRate)})`,
-    tax: money(taxAmount),
+    tax: money(tax),
   };
 }
 
