@@ -51,8 +51,11 @@ export default function JobsAdminPage() {
 
   const fmtDate = (iso: string) =>
     new Date(iso).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
-  const fmtInstall = (iso: string | null) =>
-    iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+
+  // WT-19: 'scheduled' is excluded from the filter — no code path ever writes a
+  // job into it (jobs jump to_schedule → installed), so the bucket was always
+  // empty. Kept in JOB_STATUSES itself (see jobStatus.ts) for other consumers.
+  const FILTERABLE_STATUSES = JOB_STATUSES.filter((s) => s !== 'scheduled');
 
   const term = search.trim().toLowerCase();
   const visible = items.filter((j) => {
@@ -94,7 +97,7 @@ export default function JobsAdminPage() {
         {!loading && items.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <div className="flex flex-wrap gap-1">
-              {(['All', ...JOB_STATUSES] as const).map((s) => (
+              {(['All', ...FILTERABLE_STATUSES] as const).map((s) => (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
@@ -138,7 +141,6 @@ export default function JobsAdminPage() {
                   <th className="text-left px-3 py-2">Address</th>
                   <th className="text-left px-3 py-2">Status</th>
                   <th className="text-right px-3 py-2">Items</th>
-                  <th className="text-left px-3 py-2">Install</th>
                   <th className="text-right px-3 py-2"></th>
                 </tr>
               </thead>
@@ -167,7 +169,6 @@ export default function JobsAdminPage() {
                       <JobStatusBadge status={j.status} />
                     </td>
                     <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{j.itemCount}</td>
-                    <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{fmtInstall(j.installDate)}</td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
                       <Link href={`/admin/jobs/${j.id}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1">
                         Detail

@@ -14,13 +14,17 @@
 import { NextResponse } from 'next/server';
 import { getInventoryBindings } from '@/lib/inventory/bindings';
 import { offeredColorLists } from '@/lib/inventory/resolveInstalls';
+import { listCatalog } from '@/lib/inventory/catalog';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
   try {
     const { bindings } = await getInventoryBindings();
-    return NextResponse.json(offeredColorLists(bindings));
+    // WT-22: a sold-out (locked) sku must not be offered as an available color.
+    const catalog = await listCatalog();
+    const lockedSkus = new Set(catalog.filter((c) => c.locked).map((c) => c.sku));
+    return NextResponse.json(offeredColorLists(bindings, lockedSkus));
   } catch (err) {
     console.error('[api/inventory/offered-colors] GET failed:', err);
     return NextResponse.json({ error: 'Failed to read offered colors' }, { status: 500 });

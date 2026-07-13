@@ -196,7 +196,6 @@ export default function JobDetailPage() {
                   : 'Seasonal'}{' '}
               · created{' '}
               {fmtDate(data.job.created_at)}
-              {data.job.install_date ? ` · install ${fmtDate(data.job.install_date)}` : ''}
             </p>
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">

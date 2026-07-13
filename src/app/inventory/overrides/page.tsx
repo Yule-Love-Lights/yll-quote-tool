@@ -140,7 +140,7 @@ export default function OverridesPage() {
         ) : tab === 'categories' ? (
           <CategoriesTab categories={categories} hidden={hidden} onToggle={toggleCategory} />
         ) : (
-          <ItemsTab catalog={catalog} onPatch={patchItem} />
+          <ItemsTab catalog={catalog} hidden={hidden} onPatch={patchItem} />
         )}
       </main>
     </OperatorShell>
@@ -191,15 +191,19 @@ function CategoriesTab({
 
 function ItemsTab({
   catalog,
+  hidden,
   onPatch,
 }: {
   catalog: CatalogItem[];
+  hidden: string[];
   onPatch: (sku: string, patch: { locked?: boolean; yll_category?: string | null }) => void;
 }) {
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
 
-  const filtered = useMemo(() => searchCatalog(catalog, query, catalog.length), [catalog, query]);
+  // WT-23: a hidden category vanishes from this list too — the categories tab's
+  // "Hidden" toggle previously had zero effect here, only re-rendering itself.
+  const filtered = useMemo(() => searchCatalog(catalog, query, catalog.length, hidden), [catalog, query, hidden]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clamped = Math.min(page, pages - 1);
   const slice = filtered.slice(clamped * PAGE_SIZE, clamped * PAGE_SIZE + PAGE_SIZE);

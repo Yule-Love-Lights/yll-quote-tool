@@ -41,16 +41,25 @@ vi.mock('./gmail', () => ({
   normalizeGmailThread: (mapped: unknown) => mapped,
 }));
 
+const addContactTagsMock = vi.fn();
+const findOrCreateOpportunityForContactMock = vi.fn();
+const isHighLevelConfiguredMock = vi.fn();
+const markConversationReadMock = vi.fn();
+
 vi.mock('@/lib/integrations/highlevel', () => ({
-  addContactTags: vi.fn(),
-  findOrCreateOpportunityForContact: vi.fn(),
-  isHighLevelConfigured: vi.fn(),
-  markConversationRead: vi.fn(),
+  addContactTags: (...args: unknown[]) => addContactTagsMock(...args),
+  // Not imported by sync.ts anymore (WT-49) — kept mocked so a regression that
+  // re-adds the import/call is caught by "not have been called" assertions
+  // below rather than a mock-not-found crash.
+  findOrCreateOpportunityForContact: (...args: unknown[]) => findOrCreateOpportunityForContactMock(...args),
+  isHighLevelConfigured: (...args: unknown[]) => isHighLevelConfiguredMock(...args),
+  markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
   searchConversations: vi.fn(),
   sendEmail: vi.fn(),
 }));
 
-import { runGmailPoll } from './sync';
+import { runGmailPoll, runHandledWriteback } from './sync';
+import type { HandledTarget } from './store';
 
 function threadRefs(count: number) {
   return Array.from({ length: count }, (_, i) => ({ id: `t${i}` }));
@@ -135,5 +144,61 @@ describe('runGmailPoll concurrency', () => {
     expect(summary.ok).toBe(true);
     expect(summary.errors).toBe(1);
     expect(summary.ingested).toBe(THREAD_COUNT - 1);
+  });
+});
+
+// WT-49: Mark-Handled must never create a GHL pipeline opportunity. It used to
+// findOrCreateOpportunityForContact against the legacy holiday-only
+// HIGHLEVEL_PIPELINE_ID/HIGHLEVEL_STAGE_QUOTE_CREATED env vars — since
+// HandledTarget carries no service_type, a permanent/event/bistro contact
+// marked Handled got a duplicate card CREATED in the holiday pipeline.
+describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const ghlTarget: HandledTarget = {
+    source: 'ghl',
+    externalId: 'conv-1',
+    sourceMessageId: 'msg-1',
+    ghlContactId: 'contact-1',
+    displayName: 'Jane Doe',
+  };
+
+  it('never calls findOrCreateOpportunityForContact, even with the legacy pipeline env vars set', async () => {
+    const savedPipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
+    const savedStageId = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+    process.env.HIGHLEVEL_PIPELINE_ID = 'legacy-pipeline';
+    process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = 'legacy-stage';
+    try {
+      isHighLevelConfiguredMock.mockReturnValue(true);
+      addContactTagsMock.mockResolvedValue(undefined);
+      markConversationReadMock.mockResolvedValue(undefined);
+
+      const sync = await runHandledWriteback(ghlTarget, 'jason');
+
+      expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+      expect(sync.ghlOpportunity).toBeUndefined();
+      expect(sync.ghlOpportunityError).toBeUndefined();
+    } finally {
+      if (savedPipelineId === undefined) delete process.env.HIGHLEVEL_PIPELINE_ID;
+      else process.env.HIGHLEVEL_PIPELINE_ID = savedPipelineId;
+      if (savedStageId === undefined) delete process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
+      else process.env.HIGHLEVEL_STAGE_QUOTE_CREATED = savedStageId;
+    }
+  });
+
+  it('still marks the conversation read and tags the contact (the rest of the write-back stays intact)', async () => {
+    isHighLevelConfiguredMock.mockReturnValue(true);
+    addContactTagsMock.mockResolvedValue(undefined);
+    markConversationReadMock.mockResolvedValue(undefined);
+
+    const sync = await runHandledWriteback(ghlTarget, 'jason');
+
+    expect(markConversationReadMock).toHaveBeenCalledWith('conv-1', 'msg-1');
+    expect(sync.ghlMarkRead).toBe('ok');
+    expect(addContactTagsMock).toHaveBeenCalledWith('contact-1', ['dashboard-handled', expect.any(String)]);
+    expect(sync.ghlTags).toBe('ok');
+    expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
   });
 });

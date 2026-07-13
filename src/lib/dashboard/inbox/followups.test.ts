@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS } from './followups';
+import { isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS, DEFAULT_FOLLOW_UP_DAYS } from './followups';
 
 describe('isDueToday — evaluated in America/New_York', () => {
   it('is true for a follow-up due later the same ET day', () => {
@@ -51,5 +51,19 @@ describe('quoteSentNoReplyFollowUp — system-created follow-up', () => {
   it('honors a custom afterDays', () => {
     const fu = quoteSentNoReplyFollowUp({ contactId: null, inboxItemId: null, sentAt, afterDays: 5 });
     expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + 5 * DAY);
+  });
+  it('falls back to DEFAULT_FOLLOW_UP_DAYS (3) — not a bare literal — when afterDays is omitted', () => {
+    expect(DEFAULT_FOLLOW_UP_DAYS).toBe(3);
+    const fu = quoteSentNoReplyFollowUp({ contactId: null, inboxItemId: null, sentAt });
+    expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + DEFAULT_FOLLOW_UP_DAYS * DAY);
+  });
+  it('cadence follows a configured value end-to-end (not hardcoded) — the value getFollowUpDays would supply', () => {
+    // Simulates the configured setting (settings.ts's getFollowUpDays) being
+    // threaded in as afterDays, proving the pure function's cadence is fully
+    // caller-controlled rather than pinned to the hardcoded default.
+    const configuredDays = 10;
+    const fu = quoteSentNoReplyFollowUp({ contactId: 'c1', inboxItemId: 'i1', sentAt, afterDays: configuredDays });
+    expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + configuredDays * DAY);
+    expect(fu.dueAt.getTime()).not.toBe(sentAt.getTime() + DEFAULT_FOLLOW_UP_DAYS * DAY);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SceneItem, QuoteSpritzerSize } from '@/lib/design/sceneTypes';
-import { resolveInstalls, offeredFromBindings, offeredIsKnown, resolveColorChoice, colorChoiceFromSnapshot, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
+import { resolveInstalls, offeredFromBindings, offeredColorLists, offeredIsKnown, resolveColorChoice, colorChoiceFromSnapshot, buildRenderColorMap, type OfferedColors } from './resolveInstalls';
 import { miniKey, spritzerKey } from './concepts';
 import { matchPattern } from './patternSkus';
 
@@ -32,6 +32,32 @@ describe('offeredFromBindings', () => {
     expect(o.spritzerHas('blue', '24')).toBe(true);
     expect(o.spritzerHas('blue', '16')).toBe(false); // not bound at 16"
     expect(o.spritzerHas('orange', '24')).toBe(false);
+  });
+
+  // WT-22(a): the sold-out "locked" catalog flag was cosmetic — a locked-but-bound
+  // sku still read as "offered", so detectUnfulfillable never flagged it and the
+  // portal color picker/round-robin could still hand it out. Threading lockedSkus
+  // through makes a locked sku read as NOT bound (not offered).
+  it('a bound-but-LOCKED sku is NOT offered, even though the binding still exists', () => {
+    const bindings = { [miniKey('Pure White')]: '40156', [spritzerKey('blue', '24')]: '61502' };
+    const lockedSkus = new Set(['40156']);
+    const o = offeredFromBindings(bindings, lockedSkus);
+    expect(o.miniHas('cool-white')).toBe(false); // bound to a LOCKED sku → not offered
+    expect(o.spritzerHas('blue', '24')).toBe(true); // different sku, not locked → unaffected
+  });
+
+  it('omitting lockedSkus keeps the old bound-is-offered behavior (backward compatible)', () => {
+    const bindings = { [miniKey('Pure White')]: '40156' };
+    expect(offeredFromBindings(bindings).miniHas('cool-white')).toBe(true);
+  });
+});
+
+describe('offeredColorLists — forwards lockedSkus to offeredFromBindings (WT-22a)', () => {
+  it('drops a locked mini color from the serialized offered list', () => {
+    const bindings = { [miniKey('Pure White')]: '40156', [spritzerKey('blue', '24')]: '61502' };
+    const lists = offeredColorLists(bindings, new Set(['40156']));
+    expect(lists.mini).not.toContain('cool-white');
+    expect(lists.spritzer['24']).toContain('blue');
   });
 });
 

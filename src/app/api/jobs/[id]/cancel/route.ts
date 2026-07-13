@@ -71,23 +71,41 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     const wo = await getJobWorkOrder(id);
     if (wo?.job.stockDecrementedAt && !wo.job.isTest) {
-      const deductions = computeStockDeductions(wo.materials.materials);
-      if (deductions.length) {
-        const stockSb = getSupabaseServiceClient()!;
-        for (const d of deductions) {
-          try {
-            // Positive delta returns exactly what a prep would deduct today —
-            // mirrors prepareJobMaterials's negative delta (adjustOnHandAtomic
-            // in onHand.ts).
-            await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
-            stockReturned.push({ sku: d.sku, qty: d.deducted });
-          } catch (err) {
-            console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
+      const stockSb = getSupabaseServiceClient()!;
+      // WT-31 (concurrency): the top `status === 'cancelled'` guard only stops a
+      // SEQUENTIAL re-cancel. Two CONCURRENT cancel POSTs (an operator
+      // double-click) both read a non-cancelled job and both reach here, and
+      // adjustOnHandAtomic has no cross-call idempotency — each would add the
+      // same +qty, over-crediting on-hand into phantom stock. Atomically CLAIM
+      // the reversal by clearing stock_decremented_at WHERE it's still set
+      // (the INVERSE of prepareJobMaterials's NULL→now claim); only the caller
+      // that flips it non-null → NULL runs the return. The job is terminal
+      // (cancelled), so it's never re-prepped and the cleared marker is inert.
+      const { data: claimed } = await stockSb
+        .from('jobs')
+        .update({ stock_decremented_at: null })
+        .eq('id', id)
+        .not('stock_decremented_at', 'is', null)
+        .select('id')
+        .maybeSingle();
+      if (claimed) {
+        const deductions = computeStockDeductions(wo.materials.materials);
+        if (deductions.length) {
+          for (const d of deductions) {
+            try {
+              // Positive delta returns exactly what a prep would deduct today —
+              // mirrors prepareJobMaterials's negative delta (adjustOnHandAtomic
+              // in onHand.ts).
+              await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
+              stockReturned.push({ sku: d.sku, qty: d.deducted });
+            } catch (err) {
+              console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
+            }
           }
+        } else {
+          stockReturnNote =
+            'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
         }
-      } else {
-        stockReturnNote =
-          'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
       }
     }
   } catch (err) {
@@ -164,8 +182,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // amount owed back. Otherwise (deposit-only), same source the invoice
       // layer uses for the actually-charged deposit (quotes.deposit_amount_usd;
       // result.depositAmount only as a legacy fallback).
+      //
+      // WT-17 follow-up: cash actually collected on a paid invoice is
+      // max(total, deposit_applied), NOT total alone. An order amended DOWN
+      // below its deposit auto-settles the invoice to paid with a credit_note
+      // (total < deposit_applied), so the customer is owed the larger
+      // deposit_applied — `invoice.total` would under-refund by the credit_note.
       const amountUsd = refundedInvoice
-        ? (invoice?.total ?? 0)
+        ? Math.max(invoice?.total ?? 0, invoice?.deposit_applied ?? 0)
         : (q?.deposit_amount_usd ?? q?.result?.depositAmount ?? 0);
       const reason = refundedInvoice ? 'cancelled-paid-in-full' : 'cancelled-deposit-paid';
       const at = new Date().toISOString();
