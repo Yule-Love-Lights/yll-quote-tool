@@ -50,11 +50,13 @@ import {
   internalPaidEmailHtml,
   duplicatePaymentEmailSubject,
   duplicatePaymentEmailHtml,
+  balanceUnderpaymentEmailSubject,
+  balanceUnderpaymentEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
 import { createJobFromQuote, getJobByQuote, setJobStatus, type JobRow } from '@/lib/jobs';
-import { getInvoiceByJob } from '@/lib/invoices';
+import { getInvoiceByJob, type InvoiceRow } from '@/lib/invoices';
 import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
@@ -78,17 +80,27 @@ function hlErrorMessage(err: unknown): string {
 // Valor retry (a retry replays the SAME txn id), so it must leave a durable
 // record + alert staff instead of a bare silent ack. Same-txn-id replays are
 // intentionally NOT flagged here — that's the correct, expected idempotent path.
+//
+// WA-A2: generalized to `existingTxnId` (was inlined as `quote.valor_txn_id`)
+// so the SAME guard covers the #83 BALANCE pay-link leg too, where the txn on
+// file lives on the INVOICE (`valor_balance_txn_id`), not the quote. `opts`
+// only changes the approval_snapshot key + copy — the deposit call sites (no
+// opts) are byte-identical to before this change.
 async function flagPossibleDuplicatePayment(
   sb: ReturnType<typeof getSupabaseServiceClient>,
-  quote: Pick<QuoteRow, 'id' | 'customer_name' | 'valor_txn_id' | 'approval_snapshot'>,
+  quote: Pick<QuoteRow, 'id' | 'customer_name' | 'approval_snapshot'>,
+  existingTxnId: string | null,
   event: ValorWebhookEvent,
   baseUrl: string,
+  opts?: { snapshotKey?: string; kind?: 'deposit' | 'balance' },
 ): Promise<void> {
-  if (!event.approved || !event.txnId || event.txnId === quote.valor_txn_id) return;
+  if (!event.approved || !event.txnId || event.txnId === existingTxnId) return;
 
+  const snapshotKey = opts?.snapshotKey ?? 'duplicatePayment';
+  const kind = opts?.kind ?? 'deposit';
   const amountUsd = typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
   console.error(
-    `[api/integrations/valor/webhook] POSSIBLE DOUBLE CHARGE for quote ${quote.id}: new txn ${event.txnId} differs from txn on file ${quote.valor_txn_id} — refund in Valor`,
+    `[api/integrations/valor/webhook] POSSIBLE DOUBLE ${kind === 'balance' ? 'BALANCE ' : ''}CHARGE for quote ${quote.id}: new txn ${event.txnId} differs from txn on file ${existingTxnId} — refund in Valor`,
   );
 
   // Merge into approval_snapshot — never clobber customerSelection/amendments/signature.
@@ -98,7 +110,7 @@ async function flagPossibleDuplicatePayment(
       .update({
         approval_snapshot: {
           ...(quote.approval_snapshot ?? {}),
-          duplicatePayment: { txnId: event.txnId, at: new Date().toISOString(), amountUsd },
+          [snapshotKey]: { txnId: event.txnId, at: new Date().toISOString(), amountUsd },
         },
       })
       .eq('id', quote.id);
@@ -117,14 +129,70 @@ async function flagPossibleDuplicatePayment(
           customerName: quote.customer_name,
           amountUsd,
           newTxnId: event.txnId,
-          existingTxnId: quote.valor_txn_id,
+          existingTxnId,
           adminUrl: `${baseUrl}/quote/${quote.id}`,
+          kind,
         }),
         emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
       });
     }
   } catch (err) {
     console.error('[api/integrations/valor/webhook] duplicate-payment alert email failed:', err);
+  }
+}
+
+// WA-A2 / WT-15: a #83 balance webhook came back APPROVED but for less than the
+// invoice balance. The route already refuses to settle it (invoice stays open
+// for staff), but that refusal was previously a bare console.error with no
+// durable/staff-visible trace. Mirrors flagPossibleDuplicatePayment's shape:
+// a best-effort approval_snapshot stamp (durable) + a best-effort staff email
+// (visible) — neither may ever break the 200 ack Valor is waiting on.
+async function flagBalanceUnderpayment(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quote: Pick<QuoteRow, 'id' | 'customer_name' | 'approval_snapshot'>,
+  invoice: Pick<InvoiceRow, 'balance'>,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<void> {
+  const paidUsd = typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
+
+  try {
+    await sb!
+      .from('quotes')
+      .update({
+        approval_snapshot: {
+          ...(quote.approval_snapshot ?? {}),
+          balanceUnderpayment: {
+            txnId: event.txnId,
+            at: new Date().toISOString(),
+            paidUsd,
+            expectedUsd: invoice.balance,
+          },
+        },
+      })
+      .eq('id', quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] balance-underpayment snapshot stamp failed:', err);
+  }
+
+  try {
+    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    if (isHighLevelConfigured() && internalContactId) {
+      await sendEmail({
+        contactId: internalContactId,
+        subject: balanceUnderpaymentEmailSubject(quote.customer_name),
+        html: balanceUnderpaymentEmailHtml({
+          customerName: quote.customer_name,
+          paidUsd,
+          expectedUsd: invoice.balance,
+          txnId: event.txnId,
+          adminUrl: `${baseUrl}/quote/${quote.id}`,
+        }),
+        emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+      });
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] balance-underpayment alert email failed:', err);
   }
 }
 
@@ -279,7 +347,8 @@ export async function POST(req: NextRequest) {
     /^bal_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
   );
   if (balanceMatch) {
-    return handleBalancePayment(balanceMatch[1]!, event);
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    return handleBalancePayment(balanceMatch[1]!, event, baseUrl);
   }
 
   const sb = getSupabaseServiceClient()!;
@@ -315,7 +384,7 @@ export async function POST(req: NextRequest) {
   // transaction — the former is a real double charge and must be flagged.
   if (quote.deposit_paid_at) {
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-    await flagPossibleDuplicatePayment(sb, quote, event, baseUrl);
+    await flagPossibleDuplicatePayment(sb, quote, quote.valor_txn_id, event, baseUrl);
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
   }
 
@@ -416,7 +485,7 @@ export async function POST(req: NextRequest) {
   // distinct second approved charge racing in under a different txn id.
   if (!claimed || claimed.length === 0) {
     const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-    await flagPossibleDuplicatePayment(sb, quote, event, baseUrl);
+    await flagPossibleDuplicatePayment(sb, quote, quote.valor_txn_id, event, baseUrl);
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true });
   }
 
@@ -649,7 +718,11 @@ export async function POST(req: NextRequest) {
 // invoice paid + close the job. HMAC + config already verified by the caller.
 // Test-safe: a test quote's balance is never collected via real Valor — ignore one
 // defensively. Idempotent: an atomic claim flips the invoice paid at most once.
-async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): Promise<NextResponse> {
+async function handleBalancePayment(
+  quoteId: string,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<NextResponse> {
   if (!event.approved) {
     console.warn(
       `[api/integrations/valor/webhook] non-approved balance txn for quote ${quoteId}: response_code=${event.responseCode}`,
@@ -658,11 +731,14 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   }
 
   const sb = getSupabaseServiceClient()!;
+  // WA-A2: widened from `id, is_test` to also carry customer_name + approval_snapshot
+  // — needed by flagPossibleDuplicatePayment / flagBalanceUnderpayment below (the
+  // same durable-marker + staff-alert mechanism the DEPOSIT path already uses).
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, is_test')
+    .select('id, customer_name, is_test, approval_snapshot')
     .eq('id', quoteId)
-    .maybeSingle<{ id: string; is_test: boolean }>();
+    .maybeSingle<Pick<QuoteRow, 'id' | 'customer_name' | 'is_test' | 'approval_snapshot'>>();
   if (!quote) return NextResponse.json({ ok: true, ignored: 'balance-no-quote' });
   if (quote.is_test) {
     console.warn(`[api/integrations/valor/webhook] ignoring balance webhook for TEST quote ${quoteId}`);
@@ -673,6 +749,14 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   const invoice = job ? await getInvoiceByJob(job.id) : null;
   if (!invoice) return NextResponse.json({ ok: true, ignored: 'balance-no-invoice' });
   if (invoice.status === 'paid') {
+    // WT-14: the BALANCE mirror of the deposit path's W1-006 guard — a second
+    // approved balance webhook with a DIFFERENT txn id than the one on file is a
+    // genuine second charge (two open pay-link tabs), not a Valor retry (a retry
+    // replays the SAME txn id). Flag it instead of a silent alreadyPaid ack.
+    await flagPossibleDuplicatePayment(sb, quote, invoice.valor_balance_txn_id, event, baseUrl, {
+      snapshotKey: 'duplicateBalancePayment',
+      kind: 'balance',
+    });
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
   // B6 fix: a cancelled invoice must NEVER be resurrected by a late/retried webhook.
@@ -695,6 +779,8 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
     console.error(
       `[api/integrations/valor/webhook] balance underpayment for quote ${quoteId}: paid=${paid} expected>=${invoice.balance}`,
     );
+    // WT-15: previously only the console.error above — nothing durable/staff-visible.
+    await flagBalanceUnderpayment(sb, quote, invoice, event, baseUrl);
     return NextResponse.json({ ok: true, balance: true, underpaid: true });
   }
 
@@ -723,6 +809,15 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
     return NextResponse.json({ error: 'Failed to record the balance payment' }, { status: 500 });
   }
   if (!claimed || (Array.isArray(claimed) && claimed.length === 0)) {
+    // WT-14: lost the race to a concurrent retry. `invoice.valor_balance_txn_id`
+    // is the value read BEFORE this claim attempt (the invoice was still
+    // draft/awaiting_payment then, so it's necessarily null — set only alongside
+    // status:'paid' in the same atomic write) — mirrors the deposit path's
+    // identical lost-race reasoning (W1-006).
+    await flagPossibleDuplicatePayment(sb, quote, invoice.valor_balance_txn_id, event, baseUrl, {
+      snapshotKey: 'duplicateBalancePayment',
+      kind: 'balance',
+    });
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
 

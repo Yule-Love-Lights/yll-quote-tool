@@ -538,12 +538,16 @@ export function duplicatePaymentEmailHtml(input: {
   newTxnId: string | null;
   existingTxnId: string | null;
   adminUrl: string;
+  // WA-A2: which payment leg this fired on — 'deposit' (default, byte-identical
+  // wording to before this param existed) or 'balance' (#83 pay-link).
+  kind?: 'deposit' | 'balance';
 }): string {
   const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const kindLabel = input.kind === 'balance' ? 'balance payment' : 'deposit';
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
   return [
-    `<p><strong>${name}</strong>'s deposit was already marked paid, but a SECOND approved Valor charge just came in with a different transaction id — likely two open checkout tabs both got paid.</p>`,
+    `<p><strong>${name}</strong>'s ${kindLabel} was already marked paid, but a SECOND approved Valor charge just came in with a different transaction id — likely two open checkout tabs both got paid.</p>`,
     `<p><strong>Action needed:</strong> check the Valor portal and refund the duplicate charge (${usdExact(
       input.amountUsd,
     )}) manually.</p>`,
@@ -552,6 +556,44 @@ export function duplicatePaymentEmailHtml(input: {
     row('New (duplicate) txn', escapeHtml(input.newTxnId || '—')),
     row('Existing txn on file', escapeHtml(input.existingTxnId || '—')),
     row('Amount', usdExact(input.amountUsd)),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
+// ─── Balance underpayment alert (WA-A2 / WT-15) ──────────────────────────────
+// A #83 balance pay-link webhook came in APPROVED but for less than the invoice
+// balance — the webhook route already refuses to settle it (so the invoice
+// stays open for staff), but that refusal must be staff-visible, not just a
+// console.error. Mirrors the duplicate-payment alert's shape/tone.
+
+export function balanceUnderpaymentEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `⚠️ Balance underpaid: ${who}`;
+}
+
+export function balanceUnderpaymentEmailHtml(input: {
+  customerName: string | null;
+  paidUsd: number;
+  expectedUsd: number;
+  txnId: string | null;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const shortBy = Math.max(0, input.expectedUsd - input.paidUsd);
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>'s balance payment came back approved from Valor for LESS than the amount owed — the invoice was NOT marked paid, so the customer isn't left owing with no record.</p>`,
+    `<p><strong>Action needed:</strong> check the Valor portal and either collect the shortfall (${usdExact(
+      shortBy,
+    )}) or resend the balance pay-link.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Amount paid', usdExact(input.paidUsd)),
+    row('Balance owed', usdExact(input.expectedUsd)),
+    row('Short by', usdExact(shortBy)),
+    row('Transaction id', escapeHtml(input.txnId || '—')),
     `</table>`,
     `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
   ].join('\n');
