@@ -14,6 +14,9 @@ export type DashboardQuote = {
   customer_name: string | null;
   customer_email: string | null;
   customer_phone: string | null;
+  /** Property/service address (WT-52). Optional, since not all surfaces
+   *  select it; the dashboard chokepoint (DASHBOARD_QUOTES_SELECT) does. */
+  customer_address?: string | null;
   total: number | null;
   created_at: string;
   quote_sent_at: string | null;

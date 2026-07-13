@@ -21,7 +21,9 @@ export type DashboardQuotesResult =
   | { ok: false; error: string };
 
 const DASHBOARD_QUOTES_SELECT =
-  'id, customer_name, customer_email, customer_phone, total, ' +
+  // WT-52: customer_address so dashboard surfaces (worklist, needs-action,
+  // customer detail) can show the property address, not just the name.
+  'id, customer_name, customer_address, customer_email, customer_phone, total, ' +
   'created_at, quote_sent_at, customer_approved_at, deposit_paid_at, ' +
   'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
   'service_type, ' +

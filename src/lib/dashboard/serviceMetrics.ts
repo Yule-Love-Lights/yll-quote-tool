@@ -44,6 +44,16 @@ export function serviceTypeOf(q: DashboardQuote): ServiceType {
   return q.service_type ?? 'holiday';
 }
 
+/** Short display label per service type: shared by worklist/needs-action row
+ *  builders (WT-40) so a commercial contact's holiday vs permanent quote reads
+ *  as distinguishable at a glance. */
+export const SERVICE_LABEL: Record<ServiceType, string> = {
+  holiday: 'Holiday',
+  permanent: 'Permanent',
+  event: 'Event',
+  permanent_bistro: 'Bistro',
+};
+
 const MONTH_LABELS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',

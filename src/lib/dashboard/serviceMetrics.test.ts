@@ -6,7 +6,9 @@ import {
   computeBistroSummary,
   serviceTypeOf,
   reachedCustomer,
+  SERVICE_LABEL,
 } from './serviceMetrics';
+import { SERVICE_TYPES } from './types';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
 
@@ -37,6 +39,14 @@ describe('serviceTypeOf — fallback', () => {
   });
   it('treats NULL as holiday (legacy default)', () => {
     expect(serviceTypeOf(makeQuote({ service_type: null }))).toBe('holiday');
+  });
+});
+
+describe('SERVICE_LABEL (WT-40)', () => {
+  it('has a display label for every service type', () => {
+    for (const t of SERVICE_TYPES) {
+      expect(SERVICE_LABEL[t]).toBeTruthy();
+    }
   });
 });
 

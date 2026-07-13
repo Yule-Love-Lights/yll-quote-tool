@@ -6,6 +6,7 @@
 
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import type { DashboardQuote } from './types';
+import { serviceTypeOf, SERVICE_LABEL } from './serviceMetrics';
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -80,6 +81,19 @@ function customerLabel(q: DashboardQuote): string {
   return q.customer_name?.trim() || 'Unknown customer';
 }
 
+// WT-40: quote_number/service type/address, appended to a row's detail so a
+// commercial contact with several quotes (or a residential customer running a
+// holiday + permanent quote at once) reads as more than identical text
+// differing only by age. Always non-empty (the service label alone covers
+// legacy rows with no quote_number or address). Mirrors worklist.ts.
+function rowContext(q: DashboardQuote): string {
+  const parts: string[] = [];
+  if (q.quote_number != null) parts.push(`#${q.quote_number}`);
+  parts.push(SERVICE_LABEL[serviceTypeOf(q)]);
+  if (q.customer_address?.trim()) parts.push(q.customer_address.trim());
+  return parts.join(' · ');
+}
+
 function ageDaysFrom(isoTs: string, nowMs: number): number {
   return (nowMs - new Date(isoTs).getTime()) / MS_PER_DAY;
 }
@@ -142,7 +156,7 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
           kind: 'nudge',
           quoteId: q.id,
           label: customerLabel(q),
-          detail: `Sent ${pluralDays(floor)} ago — follow up`,
+          detail: `Sent ${pluralDays(floor)} ago — follow up · ${rowContext(q)}`,
           ageDays,
           href: `/portal/${q.id}`,
         });
@@ -161,7 +175,7 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
           kind: 'collect-deposit',
           quoteId: q.id,
           label: customerLabel(q),
-          detail: `Approved ${pluralDays(floor)} ago — collect deposit`,
+          detail: `Approved ${pluralDays(floor)} ago — collect deposit · ${rowContext(q)}`,
           ageDays,
           href: `/quote/${q.id}`,
         });
@@ -183,7 +197,7 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
             kind: 'collect-balance',
             quoteId: q.id,
             label: customerLabel(q),
-            detail: `Invoice ${pluralDays(floor)} old — collect balance ${formatUsd(inv.balance)}`,
+            detail: `Invoice ${pluralDays(floor)} old — collect balance ${formatUsd(inv.balance)} · ${rowContext(q)}`,
             ageDays,
             href: `/admin/invoices/${inv.id}`,
           });

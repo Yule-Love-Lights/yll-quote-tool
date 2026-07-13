@@ -342,6 +342,28 @@ describe('buildNeedsAction — item shape', () => {
     expect(item.quoteId).toBe('q-shape');
   });
 
+  it('nudge detail includes quote_number, service type, and address (WT-40)', () => {
+    const q = makeQuote({
+      id: 'q-context',
+      customer_name: 'Jones',
+      quote_sent_at: daysAgo(5),
+      quote_number: 2050,
+      service_type: 'event',
+      customer_address: '99 Oak Ave',
+    });
+    const [item] = buildNeedsAction(makeInput({ quotes: [q] }));
+    expect(item.detail).toContain('#2050');
+    expect(item.detail).toContain('Event');
+    expect(item.detail).toContain('99 Oak Ave');
+  });
+
+  it('falls back to just the service label when quote_number and address are absent', () => {
+    const q = makeQuote({ id: 'q-nocontext', quote_sent_at: daysAgo(5) });
+    const [item] = buildNeedsAction(makeInput({ quotes: [q] }));
+    expect(item.detail).toContain('Holiday');
+    expect(item.detail).not.toContain('#');
+  });
+
   it('collect-balance detail includes the dollar amount', () => {
     const q = makeQuote({ id: 'q-bal' });
     const items = buildNeedsAction(

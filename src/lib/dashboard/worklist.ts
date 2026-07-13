@@ -1,6 +1,7 @@
 import { DASHBOARD_CONFIG } from './config';
 import { deriveStatus, type QuoteStatus } from '../quoteStatus';
 import type { DashboardQuote, WorklistItem } from './types';
+import { serviceTypeOf, SERVICE_LABEL } from './serviceMetrics';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -18,6 +19,19 @@ const TERMINAL_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
 
 function customerLabel(q: DashboardQuote): string {
   return q.customer_name?.trim() || 'Unknown customer';
+}
+
+// WT-40: quote_number/service type/address, appended to a row's subtitle so a
+// commercial contact with several quotes (or a residential customer running a
+// holiday + permanent quote at once) reads as more than identical text
+// differing only by age. Always non-empty (the service label alone covers
+// legacy rows with no quote_number or address).
+function rowContext(q: DashboardQuote): string {
+  const parts: string[] = [];
+  if (q.quote_number != null) parts.push(`#${q.quote_number}`);
+  parts.push(SERVICE_LABEL[serviceTypeOf(q)]);
+  if (q.customer_address?.trim()) parts.push(q.customer_address.trim());
+  return parts.join(' · ');
 }
 
 export function computeWorklist(quotes: DashboardQuote[], now: Date): WorklistItem[] {
@@ -41,7 +55,7 @@ export function computeWorklist(quotes: DashboardQuote[], now: Date): WorklistIt
           kind: 'draft-stale',
           quoteId: q.id,
           title: customerLabel(q),
-          subtitle: `Drafted ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — never sent`,
+          subtitle: `Drafted ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — never sent · ${rowContext(q)}`,
           ageDays,
           href: `/quote/${q.id}`,
         });
@@ -56,7 +70,7 @@ export function computeWorklist(quotes: DashboardQuote[], now: Date): WorklistIt
         kind: 'sent-no-reply',
         quoteId: q.id,
         title: customerLabel(q),
-        subtitle: `Sent ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — no reply`,
+        subtitle: `Sent ${Math.floor(ageDays)} day${Math.floor(ageDays) === 1 ? '' : 's'} ago — no reply · ${rowContext(q)}`,
         ageDays,
         href: `/portal/${q.id}`,
       });

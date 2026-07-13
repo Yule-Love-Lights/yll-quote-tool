@@ -115,6 +115,17 @@ describe('listQuotesForDashboard (backward-compatible wrapper)', () => {
   });
 });
 
+describe('DASHBOARD_QUOTES_SELECT (WT-52)', () => {
+  it('selects customer_address so dashboard surfaces can show the property address', async () => {
+    client = makeClient({ data: [], error: null });
+    await listQuotesForDashboardResult(500);
+    // `from()` always returns the same builder object, so calling it again just
+    // hands back a reference to inspect what the earlier real call recorded.
+    const selectedColumns = client!.from().select.mock.calls[0][0] as string;
+    expect(selectedColumns).toContain('customer_address');
+  });
+});
+
 describe('Test Quote isolation (#93)', () => {
   it('the dashboard chokepoint filters is_test = false', async () => {
     client = makeClient({ data: [], error: null });

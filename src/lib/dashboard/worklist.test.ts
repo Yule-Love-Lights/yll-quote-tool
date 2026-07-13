@@ -156,6 +156,40 @@ describe('computeWorklist — terminal statuses never nag (#110 W7-007, B7 class
   });
 });
 
+describe('computeWorklist - subtitle context (WT-40)', () => {
+  it('includes quote_number, service type, and address so multi-quote rows are distinguishable', () => {
+    const old = new Date(
+      NOW.getTime() - (DASHBOARD_CONFIG.draftStaleDays + 2) * 86400_000,
+    ).toISOString();
+    const out = computeWorklist(
+      [
+        makeQuote({
+          id: 'q1',
+          created_at: old,
+          quote_number: 1032,
+          service_type: 'permanent',
+          customer_address: '1234 Main St',
+        }),
+      ],
+      NOW,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].subtitle).toContain('#1032');
+    expect(out[0].subtitle).toContain('Permanent');
+    expect(out[0].subtitle).toContain('1234 Main St');
+  });
+
+  it('falls back to just the service label when quote_number and address are absent', () => {
+    const old = new Date(
+      NOW.getTime() - (DASHBOARD_CONFIG.draftStaleDays + 2) * 86400_000,
+    ).toISOString();
+    const out = computeWorklist([makeQuote({ id: 'q2', created_at: old })], NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].subtitle).toContain('Holiday');
+    expect(out[0].subtitle).not.toContain('#');
+  });
+});
+
 describe('computeWorklist — sorting + cap', () => {
   it('sorts oldest-stale first (most overdue at the top)', () => {
     const aDay = 86400_000;
