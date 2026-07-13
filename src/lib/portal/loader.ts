@@ -109,7 +109,7 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       } catch (err) {
         console.error('[loadPortalQuote] design lookup failed:', err);
       }
-      // Populate the "Our Recommendation" (D) card from the staff-recommended
+      // Populate the "Recommended Design" (D) card from the staff-recommended
       // line items (#12, Jason S12). Runs after attachSceneLinks so design-driven
       // recommended flags are attached; also covers custom-item recommendations
       // the adapter set. No-op (D stays "Build Your Own") when nothing is flagged.

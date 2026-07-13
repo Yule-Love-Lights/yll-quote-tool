@@ -64,7 +64,7 @@ export function attachSceneLinks(lineItems: PortalLineItem[], scene: Scene): Por
       .map((i) => i.id);
   // Winter Wonderland is measurement-driven (NOT projected), so its `recommended`
   // flag (#12) rides on its scene strands rather than a ProjectedLineItem. Carry
-  // it through on the WW line item so the portal's "Our Recommendation" can
+  // it through on the WW line item so the portal's "Recommended Design" can
   // include WW when staff check it in the builder (Jason S12). Santa's/Gingerbread
   // keep their own recommend mechanism (PortalRoofline) and never read this.
   const wwRecommended = items.some(

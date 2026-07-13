@@ -204,7 +204,7 @@ export function nextSelectedItemIds(
 
 // Pure reducer for selectPackage (extracted for test coverage — audit W4-011).
 // Mirrors SelectionProvider's selectPackage exactly: picking A/B/C replaces the
-// selection with that tier's bundle; picking D ("Our Recommendation") loads the
+// selection with that tier's bundle; picking D ("Recommended Design") loads the
 // staff-recommended set when non-empty, otherwise keeps whatever's currently
 // selected (the empty "Build Your Own" card is a no-op on the item set).
 export function nextPackageSelectedItemIds(
@@ -477,7 +477,7 @@ export function SelectionProvider({
         recIds.length > 0 &&
         recIds.length === selectedItemIds.size &&
         recIds.every((id) => selectedItemIds.has(id));
-      return matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+      return matchesRec ? pkg?.name ?? 'Recommended Design' : 'Build Your Own';
     }
     return pkg?.name ?? '';
   }, [packageId, packagesById, selectedItemIds]);

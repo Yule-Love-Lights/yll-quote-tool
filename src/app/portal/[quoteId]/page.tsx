@@ -261,7 +261,7 @@ export default async function PortalPage({
   const heroAfter = quote.photo.after || FALLBACK_HERO;
   const heroAlt = quote.photo.alt || 'A Yule Love Lights install at dusk';
 
-  // Recommended initial selection (#12): the "Our Recommendation" (D) package is
+  // Recommended initial selection (#12): the "Recommended Design" (D) package is
   // populated upstream (applyOurRecommendation in the loader) with the staff-
   // recommended items + the recommended roofline. When it has items, open the
   // portal on that set (computeInitialSelection switches to custom 'D'); when

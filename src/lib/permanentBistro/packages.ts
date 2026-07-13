@@ -36,7 +36,6 @@ export function derivePackagesPermanentBistro(
       // "Your " (mirrors event's #119 note), the name must NOT itself lead
       // with "Your".
       name: 'Bistro Lighting',
-      tagline: "Everything we'll light for your space.",
       total: p.total,
       deposit: p.deposit,
       recommended: true,

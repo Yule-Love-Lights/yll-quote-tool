@@ -12,7 +12,6 @@ import type { PortalCharges, PortalPackage } from './types';
 const pkg = (id: PortalPackage['id'], includedItemIds: string[]): PortalPackage => ({
   id,
   name: `Package ${id}`,
-  tagline: '',
   total: 0,
   deposit: 0,
   includedItemIds,
