@@ -114,6 +114,32 @@ describe('computeHolidayBreakdown — totals', () => {
       expect.objectContaining({ booked: 1, installed: 1 }),
     );
   });
+
+  it('pending = sent-not-approved holiday quotes (WT-39 parity w/ Permanent/Event/Bistro)', () => {
+    const out = computeHolidayBreakdown(
+      [
+        makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-10T00:00:00Z' }), // booked
+        makeQuote({ service_type: 'holiday', quote_sent_at: '2026-11-01T00:00:00Z' }), // pending
+        makeQuote({
+          service_type: 'holiday',
+          quote_sent_at: '2026-11-01T00:00:00Z',
+          customer_approved_at: '2026-11-05T00:00:00Z',
+        }), // sent AND approved → booked, not pending
+        makeQuote({ service_type: 'holiday' }), // neither sent nor approved → not counted at all
+        makeQuote({ service_type: 'permanent', quote_sent_at: '2026-11-01T00:00:00Z' }), // wrong service
+      ],
+    );
+    expect(out.bookedTotal).toBe(2);
+    expect(out.pending).toBe(1);
+  });
+
+  it('a cancelled sent-not-approved holiday quote does NOT count as pending (B7 parity)', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-11-01T00:00:00Z', status: 'cancelled' }),
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-11-02T00:00:00Z' }),
+    ]);
+    expect(out.pending).toBe(1);
+  });
 });
 
 describe('computeHolidayBreakdown — cancelled orders excluded (B7)', () => {
