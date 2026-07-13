@@ -50,7 +50,12 @@ const QUOTE_READY_EMAIL_COPY: Record<ServiceType, { intro: string; breakdown: st
   permanent_bistro: { intro: 'Your custom bistro lighting quote is ready.', breakdown: 'item' },
 };
 
-export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType?: string | null): string {
+export function quoteEmailHtml(
+  firstName: string,
+  portalUrl: string,
+  serviceType: string | null | undefined,
+  phone: string,
+): string {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   const { intro, breakdown } = QUOTE_READY_EMAIL_COPY[type];
   const name = escapeHtml(firstName);
@@ -60,7 +65,7 @@ export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType
     `<p>We've put together a design showing exactly how your home will look, with a full ${breakdown} breakdown and your price. You can review it, adjust what's included, and approve right from the page:</p>`,
     `<p><a href="${portalUrl}">View my quote →</a></p>`,
     `<p>Once you approve and place your deposit, your spot on our install calendar is reserved.</p>`,
-    `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
+    `<p>Questions? Just reply here or text/call us at ${escapeHtml(phone)}, we're happy to help!</p>`,
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,
   ].join('\n');
 }

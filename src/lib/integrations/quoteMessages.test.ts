@@ -47,8 +47,8 @@ describe('quote-ready notifications, per service type (S26)', () => {
     const evt = quoteSmsBody('Jordan', PORTAL_URL, 'event');
     expect(evt).toBe(perm.replace('Permanent Lighting', 'Event Lighting'));
 
-    const permHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent');
-    const evtHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'event');
+    const permHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent', '(631) 517-0186');
+    const evtHtml = quoteEmailHtml('Jordan', PORTAL_URL, 'event', '(631) 517-0186');
     expect(evtHtml).toBe(permHtml.replace('permanent lighting', 'event lighting'));
 
     expect(quoteEmailSubject('event')).toBe(quoteEmailSubject('permanent').replace('Permanent', 'Event'));
@@ -73,31 +73,40 @@ describe('quote-ready notifications, per service type (S26)', () => {
     expect(quoteEmailSubject(undefined)).toBe(quoteEmailSubject('holiday'));
     expect(quoteEmailSubject('not-a-real-type')).toBe(quoteEmailSubject('holiday'));
     expect(quoteSmsBody('Jordan', PORTAL_URL, 'bogus')).toBe(quoteSmsBody('Jordan', PORTAL_URL, 'holiday'));
-    expect(quoteEmailHtml('Jordan', PORTAL_URL, undefined)).toBe(quoteEmailHtml('Jordan', PORTAL_URL, 'holiday'));
+    expect(quoteEmailHtml('Jordan', PORTAL_URL, undefined, '(631) 517-0186')).toBe(
+      quoteEmailHtml('Jordan', PORTAL_URL, 'holiday', '(631) 517-0186'),
+    );
   });
 
   it("holiday email keeps its ORIGINAL wording byte-for-byte (line-item breakdown, 'holiday lighting')", () => {
-    const html = quoteEmailHtml('Jordan', PORTAL_URL, 'holiday');
+    const html = quoteEmailHtml('Jordan', PORTAL_URL, 'holiday', '(631) 517-0186');
     expect(html).toContain('Your custom holiday lighting quote is ready.');
     expect(html).toContain('with a full line-item breakdown and your price.');
     expect(html).toContain(`<p><a href="${PORTAL_URL}">View my quote →</a></p>`);
     expect(html).toContain("we're happy to help!");
+    expect(html).toContain('(631) 517-0186');
   });
 
   it('permanent/event email bodies use "item breakdown" (no line- prefix) and the right lighting noun', () => {
-    const perm = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent');
+    const perm = quoteEmailHtml('Jordan', PORTAL_URL, 'permanent', '(631) 517-0186');
     expect(perm).toContain('Your custom permanent lighting quote is ready.');
     expect(perm).toContain('with a full item breakdown and your price.');
 
-    const evt = quoteEmailHtml('Jordan', PORTAL_URL, 'event');
+    const evt = quoteEmailHtml('Jordan', PORTAL_URL, 'event', '(631) 517-0186');
     expect(evt).toContain('Your custom event lighting quote is ready.');
     expect(evt).toContain('with a full item breakdown and your price.');
   });
 
   it('escapes HTML in the first name', () => {
-    const html = quoteEmailHtml('<script>', PORTAL_URL, 'permanent');
+    const html = quoteEmailHtml('<script>', PORTAL_URL, 'permanent', '(631) 517-0186');
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('uses the passed-in phone rather than a hardcoded number', () => {
+    const html = quoteEmailHtml('Jordan', PORTAL_URL, 'holiday', '631-555-0123');
+    expect(html).toContain('631-555-0123');
+    expect(html).not.toContain('(631) 517-0186');
   });
 });
 

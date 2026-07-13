@@ -334,12 +334,22 @@ export function InteractiveHero({
             className="font-display text-[26px] leading-[1.06] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
           >
-            {serviceType === 'event'
-              ? "Here's your event,"
-              : serviceType === 'permanent_bistro'
-                ? "Here's your space,"
-                : "Here's your home,"}{' '}
-            <span className="italic text-[#FFD07A]">{firstName}</span>.
+            {firstName ? (
+              <>
+                {serviceType === 'event'
+                  ? "Here's your event,"
+                  : serviceType === 'permanent_bistro'
+                    ? "Here's your space,"
+                    : "Here's your home,"}{' '}
+                <span className="italic text-[#FFD07A]">{firstName}</span>.
+              </>
+            ) : serviceType === 'event' ? (
+              "Here's your event."
+            ) : serviceType === 'permanent_bistro' ? (
+              "Here's your space."
+            ) : (
+              "Here's your home."
+            )}
           </h1>
         </div>
       </div>

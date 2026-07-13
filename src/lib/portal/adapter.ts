@@ -111,9 +111,9 @@ export type QuoteRowForPortal = {
 };
 
 function deriveFirstName(fullName: string | null): string {
-  if (!fullName) return 'there';
+  if (!fullName) return '';
   const [first] = fullName.trim().split(/\s+/);
-  return first || 'there';
+  return first || '';
 }
 
 // Recover the per-item `recommended` flag for CUSTOM line items (#12). The flag
