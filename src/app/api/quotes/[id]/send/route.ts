@@ -443,6 +443,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
   const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
   const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+  const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
 
   const customerSms = async () => {
     if (!canMessage || !doSms || !quote.highlevel_contact_id) return;
@@ -465,7 +466,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       await sendEmail({
         contactId: quote.highlevel_contact_id,
         subject: quoteEmailSubject(quote.service_type),
-        html: quoteEmailHtml(firstName, portalUrl, quote.service_type),
+        html: quoteEmailHtml(firstName, portalUrl, quote.service_type, phone),
         emailFrom,
       });
       emailSent = true;

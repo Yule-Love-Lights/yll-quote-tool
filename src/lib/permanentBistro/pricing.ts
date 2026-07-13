@@ -1,13 +1,12 @@
 // Permanent Bistro Lighting — pure pricing engine (service_type =
-// 'permanent_bistro', PENDING wiring).
+// 'permanent_bistro'). Live: dispatched from /api/quote/route.ts.
 //
 // A SELF-CONTAINED sibling of calculateEventQuote / calculatePermanentQuote:
 // it prices permanent bistro runs (long-term café string lights) + poles at
 // an INDEPENDENT rate table and emits the same QuoteResult shape the portal
 // already consumes. It imports ONLY exported symbols from pricingEngine — it
-// touches no private helper and no shared dispatch seam, so it is safe
-// Phase-A parallel work. Wiring it in (the ServiceType union + /api/quote
-// dispatch) is a later PR.
+// touches no private helper and no shared dispatch seam, so it stayed safe
+// Phase-A parallel work while it was being built.
 //
 // Deliberately EXCLUDED (allow-list, not deny-list): roofline / minis /
 // spritzers / accessories / surfaces — none of those apply to a permanent
