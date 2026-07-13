@@ -29,9 +29,15 @@ export function projectClips(
   if (!feature || feature === 'metal') return null; // metal = magnetic wire, no clip
   if (!(feet > 0)) return null;
 
+  // WT-24: an explicit stored perFt (including 0 — "this feature takes no
+  // clips") is honored as-is; only a genuinely UNSET / non-finite value falls
+  // back to the default. The old `perFtRaw > 0` check coerced a real 0 back to
+  // 1/ft, silently over-ordering clips for any feature an operator zeroed out.
   const rule = rules?.[feature];
-  const perFtRaw = rule && typeof rule.perFt === 'number' ? rule.perFt : DEFAULT_CLIP_PER_FT;
-  const perFt = perFtRaw > 0 ? perFtRaw : DEFAULT_CLIP_PER_FT;
+  const perFt =
+    rule && typeof rule.perFt === 'number' && Number.isFinite(rule.perFt)
+      ? rule.perFt
+      : DEFAULT_CLIP_PER_FT;
   const qty = Math.ceil(feet * perFt);
   if (qty <= 0) return null;
 

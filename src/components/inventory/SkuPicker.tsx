@@ -16,12 +16,18 @@ export function SkuPicker({
   onChange,
   ariaLabel,
   placeholder = 'Search SKU or name…',
+  hiddenCategories = [],
 }: {
   catalog: CatalogItem[];
   value: string;
   onChange: (sku: string) => void;
   ariaLabel?: string;
   placeholder?: string;
+  // WT-23 — categories the operator hid via Overrides; excluded from search
+  // results (the already-bound `selected` chip still resolves normally, so an
+  // existing binding into a since-hidden category doesn't start showing a
+  // false "⚠ not in catalog" warning).
+  hiddenCategories?: string[];
 }) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
@@ -36,8 +42,8 @@ export function SkuPicker({
     [catalog, value],
   );
   const results = useMemo(
-    () => (editing ? searchCatalog(catalog, query, 50) : []),
-    [editing, query, catalog],
+    () => (editing ? searchCatalog(catalog, query, 50, hiddenCategories) : []),
+    [editing, query, catalog, hiddenCategories],
   );
 
   // Focus the search input when entering edit mode (avoids the autoFocus a11y rule).

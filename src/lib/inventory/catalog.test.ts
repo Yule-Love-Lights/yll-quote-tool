@@ -19,7 +19,8 @@ vi.mock('../supabase', () => ({
   getSupabaseClient: () => null,
 }));
 
-const { toCatalogUpsertRow, normalizeHiddenCategories, catalogCostOverrides } = await import('./catalog');
+const { toCatalogUpsertRow, normalizeHiddenCategories, catalogCostOverrides, effectiveCategory } =
+  await import('./catalog');
 
 const SAMPLE: ParsedCatalogItem = {
   sku: '14147', name: 'C9 Flex Clip White', category: 'Hardware', color: 'White',
@@ -39,6 +40,17 @@ describe('toCatalogUpsertRow', () => {
     const row = toCatalogUpsertRow(dirty) as Record<string, unknown>;
     expect(row.locked).toBeUndefined();
     expect(row.yll_category).toBeUndefined();
+  });
+});
+
+describe('effectiveCategory', () => {
+  // WT-23: the formula hiddenCategories/searchCatalog must agree on — the
+  // operator's yll_category regroup wins over the vendor category.
+  it('prefers yll_category when set', () => {
+    expect(effectiveCategory({ category: 'Hardware', yll_category: 'Clips' })).toBe('Clips');
+  });
+  it('falls back to the vendor category when yll_category is null', () => {
+    expect(effectiveCategory({ category: 'Hardware', yll_category: null })).toBe('Hardware');
   });
 });
 
