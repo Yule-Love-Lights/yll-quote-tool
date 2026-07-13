@@ -341,26 +341,29 @@
       '.yll-lf-sticky-quotebtn{background:var(--yll-lf-red);color:#fff;}',
       '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
       'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
-      // desktop (>=768px): the sticky is a compact PANEL, not a slim scroll
-      // row. Branded heading on the left, the form as a capped, centered
-      // 3-col grid on the right — row 1 the three inputs, row 2 the 2x2
-      // service grid beside the consent, row 3 the submit. Content is capped
-      // + centered so it never sprawls on ultra-wide (the dark bar itself
-      // still spans edge-to-edge). No overflow/scrollbar anywhere.
-      '@media(min-width:768px){.yll-lf-sticky-desktop{display:flex;align-items:center;gap:24px;',
-      'max-width:1080px;margin:0 auto;}',
+      // desktop (>=768px): ONE full-width inline bar (owner: use the WHOLE
+      // horizontal width — no centered panel, no bare sides — in two short rows).
+      // The branded heading sits IN the grid on row 2, in line with the consent +
+      // Get Quote; that frees the ENTIRE top row for the three inputs, so
+      // name/phone/email get the most space.
+      //   row 1: name · phone · email · pills (2x2, right)
+      //   row 2: heading · consent · Get Quote
+      '@media(min-width:768px){.yll-lf-sticky-desktop{display:block;}',
       '.yll-lf-sticky-mobile{display:none;}',
-      '.yll-lf-sticky-desktop>.yll-lf--sticky{flex:1 1 auto;min-width:0;}',
+      '.yll-lf-sticky-desktop>.yll-lf--sticky{width:100%;}',
       '.yll-lf-sticky-heading .yll-lf-sticky-heading-green{font-size:22px;}',
       '.yll-lf-sticky-heading .yll-lf-sticky-heading-red{font-size:18px;}',
-      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr 1fr;',
-      'gap:12px 16px;align-items:start;padding-right:0;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr 1fr minmax(300px,1fr);',
+      'gap:10px 18px;align-items:center;padding-right:0;}',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--name{grid-column:1;grid-row:1;}',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--phone{grid-column:2;grid-row:1;}',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email{grid-column:3;grid-row:1;}',
-      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--service{grid-column:1/3;grid-row:2;}',
-      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent{grid-column:3;grid-row:2;}',
-      '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:3;grid-row:3;justify-self:stretch;}',
+      // pills fill the 4th column on row 1 (2x2 block, top-right).
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--service{grid-column:4;grid-row:1;}',
+      // row 2, all in line: heading (left) · consent (wide middle) · Get Quote (right).
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-sticky-heading{grid-column:1;grid-row:2;align-self:center;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent{grid-column:2/4;grid-row:2;align-self:center;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:4;grid-row:2;justify-self:stretch;}',
       // the 4 service options as a real 2x2 grid — NO overflow/scrollbar
       // (overrides the base flex-nowrap/overflow-x:auto pill strip).
       '.yll-lf-sticky .yll-lf-pills{display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:visible;}',
@@ -1023,7 +1026,13 @@
         h('span', { class: 'yll-lf-sticky-heading-red', text: 'Takes Only 5 Seconds' }),
       ]),
     ]);
-    var desktopRow = h('div', { class: 'yll-lf-sticky-desktop' }, [desktopHeading, built.root]);
+    // Put the branded heading INTO the form grid (as its first child) so the
+    // desktop layout places it on row 2, in line with the consent + submit
+    // (see the desktop @media block) — freeing the whole top row for the three
+    // inputs + the 2x2 pills. It's a desktop-only element (the mobile view has
+    // its own heading + buttons and hides this whole `.yll-lf-sticky-desktop`).
+    built.form.insertBefore(desktopHeading, built.form.firstChild);
+    var desktopRow = h('div', { class: 'yll-lf-sticky-desktop' }, [built.root]);
 
     // ---- mobile: tiny heading + two buttons, no fields, no POST ----
     var callBtn = h(
