@@ -12,9 +12,15 @@ import { useRouter, useSearchParams } from 'next/navigation';
 // `//evil.com/x` through — the browser treats a leading `//` as "same scheme,
 // different host", so `router.replace` navigates off-origin (open redirect /
 // phishing). Require a single leading slash: same-origin path, not a
-// scheme-relative host.
+// scheme-relative host. Also reject the `/\host` backslash form AND any ASCII
+// tab/newline/CR: the WHATWG URL parser strips those control chars before
+// parsing, so `/%09/evil.com` (a leading `/<tab>/`) re-forms as `//evil.com`
+// and still navigates off-origin. No legitimate same-origin path contains them.
 export function safeRedirectTarget(target: string): string {
-  return target.startsWith('/') && !target.startsWith('//') ? target : '/';
+  if (!target.startsWith('/')) return '/';
+  if (/[\t\n\r]/.test(target)) return '/';
+  if (target[1] === '/' || target[1] === '\\') return '/';
+  return target;
 }
 
 function LoginForm() {
