@@ -1,6 +1,7 @@
 import type { CustomerStatus, CustomerSummary, DashboardQuote } from './types';
 import { customerKey } from './metrics';
 import { deriveStatus } from '@/lib/quoteStatus';
+import { normalizeAddress } from '@/lib/customers';
 
 /**
  * Lifecycle status of a single quote. BUG-1 (S22): this used to read ONLY the
@@ -104,4 +105,56 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
   // Most recently active customer first.
   summaries.sort((a, b) => new Date(b.latestQuoteAt).getTime() - new Date(a.latestQuoteAt).getTime());
   return summaries;
+}
+
+/** One property's bucket of quotes, for the grouped quote-history view. */
+export type PropertyQuoteGroup = {
+  /** Display address for this group's header. The matched property's stored
+   *  address when one exists, else the raw address off the group's own
+   *  quotes, else null (no address on file for any quote in the group). */
+  address: string | null;
+  quotes: DashboardQuote[];
+};
+
+/**
+ * WT-52: buckets a customer's quotes by property, so a multi-address
+ * (commercial) customer's history reads as one section per property instead
+ * of one flat list with one misleading aggregated total.
+ *
+ * Matches each quote to a property by the SAME normalization the
+ * customers/properties tables key on (normalizeAddress), not property_id:
+ * a quote saved before the customer/property backfill ran (or before a
+ * repeat visit re-attached it) may not carry property_id, so address-text
+ * matching is the inclusive path that never silently drops a quote. A quote
+ * whose address doesn't match any known property still gets its own group
+ * (keyed off its own raw address, or null when it has none) rather than
+ * being dropped.
+ *
+ * Groups are ordered most-recent-quote-first, same as the flat history.
+ */
+export function groupQuotesByProperty(
+  quotes: DashboardQuote[],
+  properties: ReadonlyArray<{ address: string | null; address_key: string }>,
+): PropertyQuoteGroup[] {
+  const groups = new Map<string, PropertyQuoteGroup>();
+  for (const prop of properties) {
+    groups.set(prop.address_key, { address: prop.address, quotes: [] });
+  }
+
+  for (const q of quotes) {
+    const key = normalizeAddress(q.customer_address);
+    let group = groups.get(key);
+    if (!group) {
+      group = { address: q.customer_address ?? null, quotes: [] };
+      groups.set(key, group);
+    }
+    group.quotes.push(q);
+  }
+
+  const latestOf = (list: DashboardQuote[]) =>
+    Math.max(...list.map((q) => new Date(q.created_at).getTime()));
+
+  return Array.from(groups.values())
+    .filter((g) => g.quotes.length > 0)
+    .sort((a, b) => latestOf(b.quotes) - latestOf(a.quotes));
 }

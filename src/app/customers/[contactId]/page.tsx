@@ -3,7 +3,8 @@ import { notFound, redirect } from 'next/navigation';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
-import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
+import { statusOf, matchesCustomerRoute, groupQuotesByProperty } from '@/lib/dashboard/customers';
+import { getPropertiesForCustomer } from '@/lib/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
@@ -23,6 +24,9 @@ function fmtMoney(n: number | null): string {
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+function fmtAddress(v: string | null | undefined): string {
+  return v && v.trim() ? v : '—';
+}
 
 /** HighLevel app URL for a contact, built from the location id. Null if the
  *  location id isn't configured. (locationId is not a secret — it's in HL URLs.) */
@@ -39,6 +43,47 @@ function fieldList(contact: CrmContact): Array<{ label: string; value: string }>
   const addr = [contact.address1, contact.city, contact.state, contact.postalCode].filter(Boolean).join(', ');
   if (addr) fields.push({ label: 'Address', value: addr });
   return fields;
+}
+
+/** WT-52: one quote-history table, shared by the flat (single/no-property)
+ *  view and each property section of the grouped (multi-property) view. */
+function QuoteHistoryTable({ quotes }: { quotes: DashboardQuote[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
+          <tr>
+            <th className="text-left px-4 py-2 font-semibold">Created</th>
+            <th className="text-left px-3 py-2 font-semibold">Quote</th>
+            <th className="text-left px-3 py-2 font-semibold">Address</th>
+            <th className="text-left px-3 py-2 font-semibold">Status</th>
+            <th className="text-right px-3 py-2 font-semibold">Total</th>
+            <th className="px-3 py-2"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {quotes
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .map(q => (
+              <tr key={q.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
+                <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(q.created_at)}</td>
+                {/* Sequential display number (#83) when allocated; falls
+                    back to the truncated UUID on legacy rows (BUG-2, S22). */}
+                <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
+                <td className="px-3 py-2.5 max-w-[16rem] truncate" style={{ color: 'var(--op-text-2)' }} title={q.customer_address ?? undefined}>{fmtAddress(q.customer_address)}</td>
+                <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
+                <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>
+                  <PipelineActionsMenuRefresh quoteId={q.id} />
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export default async function CustomerDetailPage({
@@ -110,6 +155,13 @@ export default async function CustomerDetailPage({
   const customerId: string | null =
     quotes.find(q => q.customer_id)?.customer_id ?? null;
 
+  // WT-52: a commercial buyer with more than one property (address) has their
+  // quote history grouped by property instead of shown as one flat list with
+  // one misleading aggregated total. Pre-backfill / walk-in customers (no
+  // customerId) fall through to the plain flat table.
+  const properties = customerId ? await getPropertiesForCustomer(customerId) : [];
+  const propertyGroups = properties.length > 1 ? groupQuotesByProperty(quotes, properties) : null;
+
   return (
     <OperatorShell active="customers">
       <div className="max-w-4xl mx-auto w-full">
@@ -170,7 +222,9 @@ export default async function CustomerDetailPage({
           )}
         </section>
 
-        {/* Quote history (this tool's data) */}
+        {/* Quote history (this tool's data). WT-52: a multi-property
+            customer gets one section per property instead of one flat list
+            (properties.length > 1 → propertyGroups is set above). */}
         <section
           className="rounded-lg border"
           style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
@@ -178,39 +232,17 @@ export default async function CustomerDetailPage({
           <h2 className="text-sm font-semibold px-4 pt-4 pb-2" style={{ color: 'var(--op-text)' }}>Quote history</h2>
           {quotes.length === 0 ? (
             <div className="p-6 text-sm text-center" style={{ color: 'var(--op-text-dim)' }}>No quotes for this customer.</div>
+          ) : propertyGroups ? (
+            propertyGroups.map((group, i) => (
+              <div key={group.address ?? 'no-address'} className={i > 0 ? 'border-t' : undefined} style={i > 0 ? { borderColor: 'var(--op-border)' } : undefined}>
+                <h3 className="text-xs font-semibold uppercase tracking-wide px-4 pt-3 pb-1" style={{ color: 'var(--op-text-dim)' }}>
+                  {fmtAddress(group.address)} · {group.quotes.length} quote{group.quotes.length === 1 ? '' : 's'}
+                </h3>
+                <QuoteHistoryTable quotes={group.quotes} />
+              </div>
+            ))
           ) : (
-            <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
-                <tr>
-                  <th className="text-left px-4 py-2 font-semibold">Created</th>
-                  <th className="text-left px-3 py-2 font-semibold">Quote</th>
-                  <th className="text-left px-3 py-2 font-semibold">Status</th>
-                  <th className="text-right px-3 py-2 font-semibold">Total</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {quotes
-                  .slice()
-                  .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                  .map(q => (
-                    <tr key={q.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
-                      <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(q.created_at)}</td>
-                      {/* Sequential display number (#83) when allocated; falls
-                          back to the truncated UUID on legacy rows (BUG-2, S22). */}
-                      <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
-                      <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
-                      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>
-                        <PipelineActionsMenuRefresh quoteId={q.id} />
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-            </div>
+            <QuoteHistoryTable quotes={quotes} />
           )}
         </section>
 

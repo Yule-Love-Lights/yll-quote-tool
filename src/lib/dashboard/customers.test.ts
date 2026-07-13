@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute } from './customers';
+import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute, groupQuotesByProperty } from './customers';
 import type { DashboardQuote } from './types';
 
 function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -180,5 +180,77 @@ describe('matchesCustomerRoute', () => {
 
   it('does not match an unrelated quote', () => {
     expect(matchesCustomerRoute(makeQuote({ highlevel_contact_id: 'h1', customer_id: 'cust-1' }), 'other')).toBe(false);
+  });
+});
+
+// WT-52: a commercial buyer with several properties shouldn't have their
+// quote history folded into one flat list with one misleading total.
+describe('groupQuotesByProperty', () => {
+  it('buckets quotes into one group per matched property (address-normalized)', () => {
+    const out = groupQuotesByProperty(
+      [
+        makeQuote({ id: 'a1', customer_address: '123 Main St.', created_at: '2026-06-01T00:00:00Z' }),
+        makeQuote({ id: 'a2', customer_address: '123  main   st', created_at: '2026-06-05T00:00:00Z' }),
+        makeQuote({ id: 'b1', customer_address: '45 Oak Ave', created_at: '2026-06-02T00:00:00Z' }),
+      ],
+      [
+        { address: '123 Main St.', address_key: '123 main st' },
+        { address: '45 Oak Ave', address_key: '45 oak ave' },
+      ],
+    );
+    expect(out).toHaveLength(2);
+    const main = out.find((g) => g.address === '123 Main St.');
+    expect(main?.quotes.map((q) => q.id).sort()).toEqual(['a1', 'a2']);
+    const oak = out.find((g) => g.address === '45 Oak Ave');
+    expect(oak?.quotes.map((q) => q.id)).toEqual(['b1']);
+  });
+
+  it('sorts groups by their most recent quote, newest first', () => {
+    const out = groupQuotesByProperty(
+      [
+        makeQuote({ id: 'old', customer_address: 'A St', created_at: '2026-01-01T00:00:00Z' }),
+        makeQuote({ id: 'new', customer_address: 'B St', created_at: '2026-06-01T00:00:00Z' }),
+      ],
+      [
+        { address: 'A St', address_key: 'a st' },
+        { address: 'B St', address_key: 'b st' },
+      ],
+    );
+    expect(out.map((g) => g.address)).toEqual(['B St', 'A St']);
+  });
+
+  it('gives an unmatched address its own group instead of dropping the quote', () => {
+    const out = groupQuotesByProperty(
+      [makeQuote({ id: 'x', customer_address: 'Not On File Rd', created_at: '2026-06-01T00:00:00Z' })],
+      [{ address: 'A St', address_key: 'a st' }],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].address).toBe('Not On File Rd');
+    expect(out[0].quotes.map((q) => q.id)).toEqual(['x']);
+  });
+
+  it('groups quotes with no address on file under a null-address bucket', () => {
+    const out = groupQuotesByProperty(
+      [
+        makeQuote({ id: 'x', customer_address: null, created_at: '2026-06-01T00:00:00Z' }),
+        makeQuote({ id: 'y', customer_address: undefined, created_at: '2026-06-02T00:00:00Z' }),
+      ],
+      [],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].address).toBeNull();
+    expect(out[0].quotes.map((q) => q.id).sort()).toEqual(['x', 'y']);
+  });
+
+  it('drops an empty property with no quotes (never renders an empty section)', () => {
+    const out = groupQuotesByProperty(
+      [makeQuote({ id: 'a', customer_address: 'A St' })],
+      [
+        { address: 'A St', address_key: 'a st' },
+        { address: 'Empty Property', address_key: 'empty property' },
+      ],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].address).toBe('A St');
   });
 });
