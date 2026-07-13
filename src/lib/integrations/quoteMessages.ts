@@ -286,9 +286,10 @@ export function internalViewedEmailHtml(input: {
 export type OrderEmailLine = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 export type OrderEmailUnbound = { label: string; qty: number };
 
-export function orderEmailSubject(jobNumber: number | null, customerName: string | null): string {
+export function orderEmailSubject(jobNumber: number | null, customerName: string | null, isTest = false): string {
   const who = customerName?.replace(/[\r\n]+/g, ' ').trim();
-  return `📦 Materials order — Job #${jobNumber ?? '—'}${who ? ` (${who})` : ''}`;
+  const prefix = isTest ? 'TEST — ' : '';
+  return `${prefix}📦 Materials order — Job #${jobNumber ?? '—'}${who ? ` (${who})` : ''}`;
 }
 
 export function orderEmailHtml(input: {
@@ -298,6 +299,7 @@ export function orderEmailHtml(input: {
   installDate: string | null;
   materials: OrderEmailLine[];
   unbound: OrderEmailUnbound[];
+  isTest?: boolean;
 }): string {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
@@ -311,14 +313,22 @@ export function orderEmailHtml(input: {
       )}${td(onHand, `text-align:right;${m.short ? 'color:#b45309;font-weight:bold;' : 'color:#666;'}`)}</tr>`;
     })
     .join('\n');
-  const out = [
+  const out: string[] = [];
+  // WT-30: a test job never decrements real on-hand — flag it up top so staff
+  // don't pull real materials for it or forward it to the supplier.
+  if (input.isTest) {
+    out.push(
+      `<p style="border:2px solid #6d28d9;background:#ede9fe;color:#6d28d9;font-weight:bold;text-transform:uppercase;padding:8px 12px;text-align:center;">TEST JOB — do not pull real stock</p>`,
+    );
+  }
+  out.push(
     `<p>Materials order for <strong>Job #${input.jobNumber ?? '—'}</strong> — staff-only. Forward to the supplier or use to pull stock.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin-bottom:12px;">`,
     row('Customer', escapeHtml(input.customerName || '—')),
     row('Address', escapeHtml(input.address || '—')),
     row('Install', escapeHtml(input.installDate || '—')),
     `</table>`,
-  ];
+  );
   if (input.materials.length) {
     out.push(
       `<table style="border-collapse:collapse;font-size:13px;">`,

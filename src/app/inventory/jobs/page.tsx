@@ -19,7 +19,7 @@ import type { FulfillmentCard } from '@/lib/inventory/jobs';
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
 type WorkOrder = {
-  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null; stockDecrementedAt: string | null };
+  job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null; stockDecrementedAt: string | null; isTest: boolean };
   materials: { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
 };
 
@@ -223,8 +223,19 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4" onClick={onClose}>
       <div className="mt-10 w-full max-w-2xl rounded-lg shadow-xl" style={{ background: 'var(--op-bg-raised)' }} onClick={(e) => e.stopPropagation()}>
         <header className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--op-border)' }}>
-          <h2 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold" style={{ color: 'var(--op-text)' }}>
             Work order{data?.job.jobNumber != null ? ` — Job #${data.job.jobNumber}` : ''}
+            {/* WT-30: the Kanban card's Test badge doesn't otherwise carry into
+                this modal — staff could pull real materials for a test job. */}
+            {data?.job.isTest && (
+              <span
+                className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+                style={{ background: '#ede9fe', color: '#6d28d9' }}
+                title="Simulated test job — no real stock or supplier order"
+              >
+                Test
+              </span>
+            )}
           </h2>
           <button type="button" onClick={onClose} className="text-sm" style={{ color: 'var(--op-text-dim)' }}>Close ✕</button>
         </header>

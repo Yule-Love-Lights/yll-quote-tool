@@ -160,6 +160,34 @@ describe('inventory order email (#82 Slice 3)', () => {
     const html = orderEmailHtml({ jobNumber: 1, customerName: null, address: null, installDate: null, materials: [], unbound: [] });
     expect(html).toContain('No bound materials projected');
   });
+
+  it('WT-30: prefixes the subject and banners the body for a test job, and omits both otherwise', () => {
+    expect(orderEmailSubject(1042, 'Jane Doe', true)).toBe('TEST — 📦 Materials order — Job #1042 (Jane Doe)');
+    expect(orderEmailSubject(1042, 'Jane Doe', false)).toBe('📦 Materials order — Job #1042 (Jane Doe)');
+    expect(orderEmailSubject(1042, 'Jane Doe')).toBe('📦 Materials order — Job #1042 (Jane Doe)'); // default false
+
+    const testHtml = orderEmailHtml({
+      jobNumber: 1042,
+      customerName: 'Jane Doe',
+      address: '1 Main St',
+      installDate: 'Dec 1, 2026',
+      materials: [],
+      unbound: [],
+      isTest: true,
+    });
+    expect(testHtml).toContain('TEST JOB');
+    expect(testHtml).toContain('do not pull real stock');
+
+    const realHtml = orderEmailHtml({
+      jobNumber: 1042,
+      customerName: 'Jane Doe',
+      address: '1 Main St',
+      installDate: 'Dec 1, 2026',
+      materials: [],
+      unbound: [],
+    });
+    expect(realHtml).not.toContain('TEST JOB');
+  });
 });
 
 describe('low-stock alert email (#82)', () => {

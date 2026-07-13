@@ -3,7 +3,8 @@
 // on-hand, black-on-white for print. Staff hit Print → "Save as PDF". Server-
 // rendered from the shared getJobWorkOrder so it always matches the board modal.
 
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { PrintButton } from '@/components/inventory/PrintButton';
@@ -15,6 +16,12 @@ function fmtDate(iso: string | null): string {
 }
 
 export default async function WorkOrderPrintPage({ params }: { params: Promise<{ id: string }> }) {
+  // WT-29: this page renders full customer PII (name, address, install date) for
+  // any job UUID — it had no gate at all. Same dormant-until-live pattern as the
+  // rest of the operator surface (e.g. src/app/inventory/page.tsx).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/inventory/jobs');
+  }
   const { id } = await params;
   const wo = await getJobWorkOrder(id);
   if (!wo) notFound();
@@ -39,6 +46,27 @@ export default async function WorkOrderPrintPage({ params }: { params: Promise<{
       <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
         <PrintButton />
       </div>
+
+      {/* WT-30: a test job's Kanban badge doesn't carry over to print — staff
+          could pull real materials for a job that never decrements real stock. */}
+      {job.isTest && (
+        <div
+          style={{
+            border: '2px solid #6d28d9',
+            background: '#ede9fe',
+            color: '#6d28d9',
+            fontWeight: 700,
+            fontSize: '13px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            padding: '8px 12px',
+            marginBottom: '14px',
+            textAlign: 'center',
+          }}
+        >
+          TEST JOB — do not pull real stock
+        </div>
+      )}
 
       <header style={{ borderBottom: '2px solid #1f7a4d', paddingBottom: '10px', marginBottom: '14px' }}>
         <div style={{ fontSize: '12px', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#1f7a4d', fontWeight: 700 }}>
