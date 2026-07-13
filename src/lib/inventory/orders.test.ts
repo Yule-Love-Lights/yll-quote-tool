@@ -410,6 +410,17 @@ describe('receiveOrder', () => {
     spy.mockRestore();
   });
 
+  it('rejects an override with a DUPLICATED SKU — the receive loop writes on-hand once per entry, so a dupe would double-count stock (WT-25)', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const db = makeDb({ rows: [{ ...OPEN_ROW }], onHand: SEED });
+    currentDb = db;
+    const res = await receiveOrder('o1', [{ sku: 'A', qty: 6 }, { sku: 'A', qty: 6 }, { sku: 'B', qty: 4 }]);
+    expect(res).toBeNull();
+    expect(db._onHand.get('A')!.on_hand_qty).toBe(5); // no stock touched
+    expect(db._onHand.get('B')!.on_hand_qty).toBe(1);
+    spy.mockRestore();
+  });
+
   it('rejects an INCOMPLETE override — a subset would close the order while the missing lines silently vanish from stock and on-order', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const db = makeDb({ rows: [{ ...OPEN_ROW }], onHand: SEED });

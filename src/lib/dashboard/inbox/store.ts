@@ -368,16 +368,24 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 
 // ─── Reads for the UI / poll ────────────────────────────────────────────────
 
-export type OpenItemsResult = { ok: true; items: OpenInboxItem[] } | { ok: false; error: string };
+// WT-41: `truncated`/`totalOpen` mirror the pattern listItemsForMetrics already
+// exposes for ResponseAnalytics — the page is capped at `limit` (oldest-first),
+// but `totalOpen` is the REAL count of open items (via Postgrest's exact count,
+// unaffected by .limit()), so the UI can say "N more not shown" instead of
+// silently under-reporting once open items exceed the cap.
+export type OpenItemsResult =
+  | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
+  | { ok: false; error: string };
 
 export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
+  const { data, error, count } = await sb
     .from('inbox_items')
     .select(
       'id, source, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
         'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+      { count: 'exact' },
     )
     .eq('status', 'unresponded')
     .is('followed_up_at', null)
@@ -429,7 +437,10 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
         : null,
     };
   });
-  return { ok: true, items };
+  // count is null only if Postgrest didn't return one (shouldn't happen with
+  // { count: 'exact' }, but fall back to the page length rather than lie low).
+  const totalOpen = count ?? items.length;
+  return { ok: true, items, totalOpen, truncated: totalOpen > items.length };
 }
 
 // ─── Claim / assign (shared-queue "I've got this", Phase 1.5) ───────────────
@@ -648,12 +659,20 @@ export async function setSyncCursor(source: string, cursor: Record<string, unkno
 
 // ─── Follow-ups ─────────────────────────────────────────────────────────────
 
-/** Create a follow-up for an inbox item once (idempotent on inbox_item_id+reason). */
+/** Create a follow-up for an inbox item once (idempotent on inbox_item_id+reason
+ *  while a PENDING one exists). WT-43: scoped to status='pending' — an item's id
+ *  is stable, so a prior follow-up marked 'done' must NOT block a fresh nudge
+ *  (e.g. a second "quote sent, no reply" cycle weeks later on the same
+ *  still-unapproved item). Without the status scope, clicking Done once
+ *  permanently killed the nudge for that item+reason forever. */
 export async function ensureFollowUp(input: {
   inboxItemId: string;
   contactId: string | null;
   reason: string;
   sentAt: Date;
+  // WT-44: cadence override so the "Follow-up reminder (days)" setting can
+  // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
+  afterDays?: number;
 }): Promise<void> {
   const sb = getSupabaseServiceClient();
   if (!sb) return;
@@ -662,18 +681,28 @@ export async function ensureFollowUp(input: {
     .select('id')
     .eq('inbox_item_id', input.inboxItemId)
     .eq('reason', input.reason)
+    .eq('status', 'pending')
     .limit(1);
-  if (data && data.length > 0) return; // already created (any status) — don't duplicate
-  const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt });
-  await sb.from('follow_ups').insert({
-    contact_id: fu.contactId,
-    inbox_item_id: fu.inboxItemId,
-    due_at: fu.dueAt.toISOString(),
-    reason: fu.reason,
-    status: fu.status,
-    assigned_to: fu.assignedTo,
-    created_by: fu.createdBy,
-  });
+  if (data && data.length > 0) return; // a pending one already exists — don't duplicate
+  const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
+  // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
+  // with no status predicate, so once a prior nudge is marked 'done' a plain
+  // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
+  // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
+  // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
+  // the early-return above, so this never resets a live pending nudge).
+  await sb.from('follow_ups').upsert(
+    {
+      contact_id: fu.contactId,
+      inbox_item_id: fu.inboxItemId,
+      due_at: fu.dueAt.toISOString(),
+      reason: fu.reason,
+      status: fu.status,
+      assigned_to: fu.assignedTo,
+      created_by: fu.createdBy,
+    },
+    { onConflict: 'inbox_item_id,reason' },
+  );
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).

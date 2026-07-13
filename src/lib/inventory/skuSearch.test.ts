@@ -29,3 +29,26 @@ describe('searchCatalog', () => {
     expect(searchCatalog(CATALOG, 'c9', 1)).toHaveLength(1);
   });
 });
+
+// WT-23: "hiddenCategories" was written by the Overrides categories tab but read
+// back only to re-render that toggle — searchCatalog never honored it, so a
+// "hidden" category still showed up in both the SkuPicker and the Overrides items
+// tab. It must vanish from both, which both call through searchCatalog.
+describe('searchCatalog — WT-23 hidden categories', () => {
+  it('excludes every sku whose effective category is hidden', () => {
+    expect(searchCatalog(CATALOG, '', 50, ['Hardware']).map((i) => i.sku)).toEqual(['20009-SPK']);
+  });
+  it('a hidden category is excluded even when the query would otherwise match it', () => {
+    expect(searchCatalog(CATALOG, 'HARDWARE', 50, ['Hardware'])).toEqual([]);
+  });
+  it('honors the yll_category override, not the vendor category, when hiding', () => {
+    const regrouped = [...CATALOG, item({ sku: '99999', name: 'Regrouped item', category: 'Bulbs', yll_category: 'Hardware' })];
+    // Hiding "Hardware" hides the regrouped item (effective category), even
+    // though its vendor category is "Bulbs".
+    const skus = searchCatalog(regrouped, '', 50, ['Hardware']).map((i) => i.sku);
+    expect(skus).not.toContain('99999');
+  });
+  it('an empty hiddenCategories list keeps the old behavior (backward compatible)', () => {
+    expect(searchCatalog(CATALOG, '', 50, []).map((i) => i.sku)).toEqual(CATALOG.map((i) => i.sku));
+  });
+});

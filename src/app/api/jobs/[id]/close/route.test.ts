@@ -21,8 +21,10 @@ const { getJob, setJobStatus, getInvoiceByJob, markInvoicePaidManually, requireO
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
-  // Consumed by the shared moveQuoteCardToInstalled helper (ghlQuoteCard.ts);
-  // null (the default) makes the helper a silent no-op for the non-GHL tests.
+  // Consumed by the shared moveQuoteCardToInstalled helper (ghlQuoteCard.ts)
+  // AND the WT-18 re-consent gate's own quotes-table read; null (the default)
+  // makes the GHL helper a silent no-op for the non-GHL tests, and the WT-18
+  // gate is only reached when the fixture's invoice carries a quote_id.
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
@@ -37,9 +39,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 
 import { POST } from './route';
 
-// A minimal from().select().eq().maybeSingle() chain for the quote row the
-// installed-stage GHL move reads (the shared moveQuoteCardToInstalled in
-// src/lib/integrations/ghlQuoteCard.ts).
+// A minimal from().select().eq().maybeSingle() chain for the quote row —
+// shared by the installed-stage GHL move (ghlQuoteCard.ts) and the WT-18
+// re-consent gate's own read (both just need a `.maybeSingle()` that returns
+// whatever quote fixture the test supplies, regardless of the select list).
 function makeQuoteSb(quote: Record<string, unknown> | null) {
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -53,9 +56,20 @@ function makeQuoteSb(quote: Record<string, unknown> | null) {
 
 const ID = '33333333-3333-3333-3333-333333333333';
 const INV_ID = '44444444-4444-4444-4444-444444444444';
+const QUOTE_ID = '66666666-6666-6666-6666-666666666666';
 
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-const req = {} as NextRequest;
+// A callable request builder: default (no body / no query) mirrors the real UI
+// call site (`fetch(url, { method: 'POST' })` — no body at all), which is why
+// the route's `req.json()` must tolerate a throw (empty body) via try/catch.
+const req = (body: unknown = undefined, query = '') =>
+  ({
+    json: async () => {
+      if (body === undefined) throw new Error('no body');
+      return body;
+    },
+    nextUrl: { searchParams: new URLSearchParams(query) },
+  }) as unknown as NextRequest;
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 const JOB_REQUIRES_INVOICING = { id: ID, status: 'requires_invoicing' as const };
@@ -78,26 +92,26 @@ beforeEach(() => {
 describe('POST /api/jobs/[id]/close', () => {
   it('401s when the operator gate denies', async () => {
     requireOperatorMock.mockResolvedValueOnce(denied401());
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(401);
     expect(getJob).not.toHaveBeenCalled();
   });
 
   it('400s on a bad UUID', async () => {
-    const res = await POST(req, ctx('not-a-uuid'));
+    const res = await POST(req(), ctx('not-a-uuid'));
     expect(res.status).toBe(400);
     expect(getJob).not.toHaveBeenCalled();
   });
 
   it('404s when the job does not exist', async () => {
     getJob.mockResolvedValueOnce(null);
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(404);
   });
 
   it('400s when the job is cancelled', async () => {
     getJob.mockResolvedValueOnce(JOB_CANCELLED);
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.code).toBe('cancelled');
@@ -106,7 +120,7 @@ describe('POST /api/jobs/[id]/close', () => {
 
   it('200 alreadyDone when the job is already done — no writes', async () => {
     getJob.mockResolvedValueOnce(JOB_DONE);
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toMatchObject({ ok: true, alreadyDone: true });
@@ -118,7 +132,7 @@ describe('POST /api/jobs/[id]/close', () => {
     getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
     getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toMatchObject({ ok: true, closed: true });
@@ -131,7 +145,7 @@ describe('POST /api/jobs/[id]/close', () => {
     getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
     getInvoiceByJob.mockResolvedValueOnce(PAID_INVOICE);
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(markInvoicePaidManually).not.toHaveBeenCalled();
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'done');
@@ -141,7 +155,7 @@ describe('POST /api/jobs/[id]/close', () => {
     getJob.mockResolvedValueOnce({ id: ID, status: 'to_schedule' as const });
     getInvoiceByJob.mockResolvedValueOnce(PAID_INVOICE);
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'installed');
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'requires_invoicing');
@@ -152,7 +166,7 @@ describe('POST /api/jobs/[id]/close', () => {
     getJob.mockResolvedValueOnce({ id: ID, status: 'to_schedule' as const });
     getInvoiceByJob.mockResolvedValueOnce(null);
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.code).toBe('no-invoice');
@@ -165,7 +179,7 @@ describe('POST /api/jobs/[id]/close', () => {
     getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
     getInvoiceByJob.mockResolvedValueOnce(null);
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.code).toBe('no-invoice');
@@ -177,10 +191,82 @@ describe('POST /api/jobs/[id]/close', () => {
     getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
     markInvoicePaidManually.mockRejectedValueOnce(new Error('invoice is cancelled'));
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.code).toBe('settle-failed');
+  });
+});
+
+describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () => {
+  beforeEach(() => {
+    getJob.mockResolvedValue(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValue({ ...UNPAID_INVOICE, quote_id: QUOTE_ID });
+  });
+
+  it('409s reconsent-required after a price-INCREASING amendment, without settling or advancing', async () => {
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] },
+      status: 'booked',
+    });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('reconsent-required');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+    expect(setJobStatus).not.toHaveBeenCalled();
+  });
+
+  it('succeeds with an operator override in the body', async () => {
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] },
+      status: 'booked',
+    });
+    const res = await POST(req({ overrideReconsent: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+  });
+
+  it('succeeds with an operator override via the ?override=true query param', async () => {
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] },
+      status: 'booked',
+    });
+    const res = await POST(req(undefined, 'override=true'), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+  });
+
+  it('does NOT block a non-increasing (price-DECREASING) amendment', async () => {
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: { amendments: [{ delta: -500, new_total: 4500 }] },
+      status: 'booked',
+    });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+  });
+
+  it('does NOT block a zero-delta (cosmetic) amendment', async () => {
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: { amendments: [{ delta: 0, new_total: 5000 }] },
+      status: 'booked',
+    });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+  });
+
+  it('does NOT block a quote with no amendments at all', async () => {
+    sbRef.current = makeQuoteSb({ approval_snapshot: { amendments: [] }, status: 'booked' });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+  });
+
+  it('skips the gate entirely when the invoice has no linked quote', async () => {
+    getInvoiceByJob.mockResolvedValueOnce({ ...UNPAID_INVOICE, quote_id: null });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
   });
 });
 
@@ -203,7 +289,7 @@ describe('POST /api/jobs/[id]/close — GHL installed-stage card move (#GHL pipe
       is_test: false,
     });
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect((await res.json()).closed).toBe(true);
     expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_1', {
@@ -221,7 +307,7 @@ describe('POST /api/jobs/[id]/close — GHL installed-stage card move (#GHL pipe
       is_test: false,
     });
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
@@ -236,7 +322,7 @@ describe('POST /api/jobs/[id]/close — GHL installed-stage card move (#GHL pipe
       is_test: true,
     });
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
@@ -253,7 +339,7 @@ describe('POST /api/jobs/[id]/close — GHL installed-stage card move (#GHL pipe
       is_test: false,
     });
 
-    const res = await POST(req, ctx());
+    const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.closed).toBe(true);

@@ -3,6 +3,9 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { pipelineActions, type PipelineRecord, type PipelineAction } from '@/lib/pipeline/pipelineActions';
 
+const money = (n: number) =>
+  `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 async function run(action: PipelineAction, rec: PipelineRecord): Promise<Response | null> {
   const q = rec.quoteId;
   switch (action.kind) {
@@ -98,8 +101,16 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       });
     case 'mark-complete':
       return rec.job ? fetch(`/api/jobs/${rec.job.id}/complete`, { method: 'POST' }) : null;
-    case 'collect-payment':
-      return rec.invoice ? fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' }) : null;
+    case 'collect-payment': {
+      if (!rec.invoice) return null;
+      if (
+        !window.confirm(
+          `Collect payment for this invoice? This marks the full balance of ${money(rec.invoice.balance)} as paid. Only confirm if the full amount was received: this cannot record a partial payment.`,
+        )
+      )
+        return null;
+      return fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' });
+    }
     case 'close':
       if (!rec.job) return null;
       if (!window.confirm('Close this job/invoice? Marks it paid + done.')) return null;

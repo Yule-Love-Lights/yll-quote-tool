@@ -56,6 +56,20 @@ export default async function InboxPage() {
 
         {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
 
+        {/* WT-41: above the 100-item page cap, the oldest items are what's shown
+            (by design — they're the longest-waiting) but the newest customer
+            messages are excluded from the list below until the queue drains.
+            Say so explicitly rather than let the "Open leads" count look final. */}
+        {openRes.ok && openRes.truncated && (
+          <div
+            className="rounded-md border p-3 text-sm mb-4"
+            style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+          >
+            Showing the oldest {openRes.items.length} of {openRes.totalOpen} open items —{' '}
+            {openRes.totalOpen - openRes.items.length} more not shown yet.
+          </div>
+        )}
+
         {openRes.ok ? (
           <InboxList initialItems={openRes.items} nowMs={now.getTime()} currentOperatorId={operator?.id ?? null} />
         ) : (

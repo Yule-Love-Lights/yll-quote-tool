@@ -2,9 +2,11 @@
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
-// Wired: the reconcile cron creates follow-ups (incl. quoteSentNoReplyFollowUp on
-// quote-sent), FollowUpStrip.tsx renders the due-today strip in /inbox, and the
-// Done route (src/app/api/dashboard/followup/route.ts) resolves them.
+// WIRED: runQuoteToolReconcile (sync.ts) reads the /inbox "Follow-up reminder
+// (days)" setting (getFollowUpDays, settings.ts) once per reconcile and passes
+// it as `afterDays` into store.ts's ensureFollowUp, which forwards it to
+// quoteSentNoReplyFollowUp below. So the setting drives the strip cadence
+// (WT-44 fully threaded); DEFAULT_FOLLOW_UP_DAYS is only the fallback.
 
 import type { NewFollowUp } from './types';
 import { etDayKey } from './normalize';
@@ -13,6 +15,10 @@ import { etDayKey } from './normalize';
 export const FOLLOWUP_REASONS = {
   quoteSentNoReply: 'quote_sent_no_reply',
 } as const;
+
+/** Fallback cadence when no explicit `afterDays` is given (matches the /inbox
+ *  "Follow-up reminder (days)" setting's own fallback — see settings.ts). */
+export const DEFAULT_FOLLOW_UP_DAYS = 3;
 
 /**
  * True when a follow-up should appear in today's strip: its due date is the
@@ -38,7 +44,7 @@ export function quoteSentNoReplyFollowUp(input: {
   sentAt: Date;
   afterDays?: number;
 }): NewFollowUp {
-  const afterDays = input.afterDays ?? 3;
+  const afterDays = input.afterDays ?? DEFAULT_FOLLOW_UP_DAYS;
   return {
     contactId: input.contactId,
     inboxItemId: input.inboxItemId,

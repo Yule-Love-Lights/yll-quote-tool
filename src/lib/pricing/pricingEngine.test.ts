@@ -187,6 +187,40 @@ describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)',
   });
 });
 
+describe('calculateQuote — stale rooflineChoice whose matching option no longer exists (WT-01)', () => {
+  it('falls through to auto-pick instead of silently billing $0 for real footage', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // Santa's 1000 — real footage is present
+      gingerbreadFootage: 0,                           // gingerbread option is now null
+      rooflineChoice: 'gingerbread',                   // stale — operator's earlier pick
+    }));
+    expect(r.lineItems).toHaveLength(1);
+    expect(r.lineItems[0].label).toContain("Santa's Roofline");
+    expect(r.lineItems[0].amount).toBe(1000); // NOT 0
+    expect(r.rooflineChoice).toBe('santas');  // auto-resolved, not the stale value
+  });
+
+  it('an explicit choice that is still valid keeps winning over auto-pick', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000 — auto would pick this
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400, still a real option
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.rooflineChoice).toBe('gingerbread');
+    expect(r.lineItems[0].amount).toBe(1400);
+  });
+
+  it('an explicit "none" still means no roofline, with no fallback', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // real footage present
+      gingerbreadFootage: 0,
+      rooflineChoice: 'none',
+    }));
+    expect(r.lineItems).toHaveLength(0);
+    expect(r.rooflineChoice).toBe('none');
+  });
+});
+
 describe('calculateQuote — custom $/ft override (#102)', () => {
   it("prices Santa's at the custom rate, ignoring the difficulty table", () => {
     const r = calculateQuote(emptyInputs({

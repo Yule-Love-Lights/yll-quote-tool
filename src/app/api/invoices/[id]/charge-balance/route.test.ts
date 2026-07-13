@@ -41,7 +41,17 @@ import { POST } from './route';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const QID = '22222222-2222-2222-2222-222222222222';
-const req = () => ({}) as unknown as NextRequest;
+// A callable request builder: default (no body / no query) mirrors the real UI
+// call site (`fetch(url, { method: 'POST' })` — no body at all), which is why
+// the route's `req.json()` must tolerate a throw (empty body) via try/catch.
+const req = (body: unknown = undefined, query = '') =>
+  ({
+    json: async () => {
+      if (body === undefined) throw new Error('no body');
+      return body;
+    },
+    nextUrl: { searchParams: new URLSearchParams(query) },
+  }) as unknown as NextRequest;
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 function makeSb(quote: Record<string, unknown> | null) {
@@ -57,7 +67,13 @@ function makeSb(quote: Record<string, unknown> | null) {
 }
 
 const INVOICE = { id: ID, quote_id: QID, job_id: 'job-1', status: 'awaiting_payment', balance: 2500, credit_note: 0 };
-const QUOTE = { valor_vault_token: 'vault-token-abc', customer_name: 'Alice', customer_email: 'a@x.com' };
+const QUOTE = {
+  valor_vault_token: 'vault-token-abc',
+  customer_name: 'Alice',
+  customer_email: 'a@x.com',
+  approval_snapshot: { amendments: [] as unknown[] },
+  status: 'booked',
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -173,5 +189,52 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(res.status).toBe(500);
     expect(json.reason).toBe('settle-failed');
     expect(json.txnId).toBe('txn-9');
+  });
+});
+
+describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement gate', () => {
+  it('409s reconsent-required after a price-INCREASING amendment, without charging', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.ok).toBe(false);
+    expect(json.reason).toBe('reconsent-required');
+    expect(json.code).toBe('reconsent-required');
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('succeeds with an operator override in the body', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
+    const res = await POST(req({ overrideReconsent: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('succeeds with an operator override via the ?override=true query param', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
+    const res = await POST(req(undefined, 'override=true'), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does NOT block a non-increasing (price-DECREASING) amendment', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: -500, new_total: 4500 }] } });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does NOT block a zero-delta (cosmetic) amendment', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 0, new_total: 5000 }] } });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does NOT block a quote with no amendments at all (default fixture)', async () => {
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
   });
 });

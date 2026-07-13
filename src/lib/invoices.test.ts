@@ -981,4 +981,16 @@ describe('reconcileInvoice — flags', () => {
     expect(r.flags).toContain('short-deposit');
     expect(r.flags).toContain('balance-outstanding');
   });
+
+  // WT-20: setInvoiceStatus never zeroes the balance on cancel, so a cancelled
+  // invoice keeps its original nonzero balance. That's expected — the only real
+  // follow-up on a cancelled order is a manual refund, not collection — so the
+  // collection-oriented flags must NOT fire and falsely read as "still owed".
+  it('cancelled: no balance-outstanding or short-deposit flags even with a nonzero balance', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({ status: 'cancelled', total: 4000, deposit_applied: 500, balance: 3500, credit_note: 0 }),
+    );
+    expect(r.flags).not.toContain('balance-outstanding');
+    expect(r.flags).not.toContain('short-deposit');
+  });
 });

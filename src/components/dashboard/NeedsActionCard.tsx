@@ -4,6 +4,7 @@
 
 import Link from 'next/link';
 import type { NeedsActionItem, NeedsActionKind } from '@/lib/dashboard/needsAction';
+import { SERVICE_TYPE_LABELS } from '@/lib/serviceType';
 
 const KIND_LABEL: Record<NeedsActionKind, string> = {
   'nudge': 'Follow up',
@@ -18,8 +19,19 @@ const KIND_STYLE: Record<NeedsActionKind, { background: string; color: string }>
   'collect-balance': { background: 'var(--op-danger, #b91c1c)', color: 'var(--brand-cream, #fdf8ef)' },
 };
 
+// WT-40: a customer with several concurrent quotes produced identical-looking
+// rows (label = customer name only). Prefix the detail with the quote # +
+// service line so each row is distinguishable at a glance.
+function rowMeta(item: NeedsActionItem): string {
+  return [
+    item.quoteNumber != null ? `#${item.quoteNumber}` : null,
+    item.serviceType ? SERVICE_TYPE_LABELS[item.serviceType] : null,
+  ].filter(Boolean).join(' · ');
+}
+
 function NeedsActionRow({ item }: { item: NeedsActionItem }) {
   const badge = KIND_STYLE[item.kind];
+  const meta = rowMeta(item);
   return (
     <Link
       href={item.href}
@@ -37,6 +49,7 @@ function NeedsActionRow({ item }: { item: NeedsActionItem }) {
           {item.label}
         </div>
         <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+          {meta && <span className="tabular-nums">{meta} — </span>}
           {item.detail}
         </div>
       </div>

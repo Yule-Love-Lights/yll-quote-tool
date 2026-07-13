@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 // getOperator is the session-based signal (inert while auth is dormant); mock it
@@ -9,7 +10,7 @@ const { getOperatorMock } = vi.hoisted(() => ({
 }));
 vi.mock('./supabaseServer', () => ({ getOperator: getOperatorMock }));
 
-import { isStaffPreview, STAFF_DEVICE_COOKIE } from './staffDevice';
+import { isStaffPreview, clearStaffDeviceCookie, STAFF_DEVICE_COOKIE } from './staffDevice';
 
 function reqWithCookie(value?: string): NextRequest {
   return {
@@ -40,5 +41,17 @@ describe('isStaffPreview', () => {
 
   it('is false for a real customer — no cookie, no session', async () => {
     expect(await isStaffPreview(reqWithCookie())).toBe(false);
+  });
+});
+
+describe('clearStaffDeviceCookie', () => {
+  it('clears the cookie (WT-62 — logout must drop the 1-year staff-device marker)', () => {
+    const res = NextResponse.json({ ok: true });
+    clearStaffDeviceCookie(res);
+    const cookie = res.cookies.get(STAFF_DEVICE_COOKIE);
+    expect(cookie?.value).toBe('');
+    expect(cookie?.maxAge).toBe(0);
+    expect(cookie?.httpOnly).toBe(true);
+    expect(cookie?.sameSite).toBe('lax');
   });
 });

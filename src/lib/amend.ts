@@ -207,6 +207,40 @@ export function amendedQuoteStatus(
   return requiresReconsent(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
 }
 
+/**
+ * The most recently appended entry in an amendment trail, or null when the
+ * quote has never been amended. Amendments are APPEND-ONLY (the amend route
+ * never reorders or removes one), so the last array element is always latest.
+ */
+export function latestAmendment(
+  amendments: AmendmentTrailEntry[] | null | undefined,
+): AmendmentTrailEntry | null {
+  if (!Array.isArray(amendments) || amendments.length === 0) return null;
+  return amendments[amendments.length - 1];
+}
+
+/**
+ * WT-18 — the settlement re-consent gate. mark-paid / charge-balance /
+ * job-close all call this before moving money, on the quote's LATEST
+ * amendment (via latestAmendment).
+ *
+ * `requiresReconsent` is true for ANY total-changing amendment — increase OR
+ * decrease — because the PORTAL re-consent flow that predicate backs cares
+ * about both directions (the customer re-signs either way). A SETTLEMENT gate
+ * is narrower: it exists only to stop collecting/settling an un-consented
+ * price INCREASE (the amend-up silently reopens the invoice to
+ * awaiting_payment with zero proof the customer agreed to owe more). A
+ * decrease can never over-collect, so it must NOT block — gating it would
+ * strand a legitimate lower payment behind a re-sign nobody needs.
+ *
+ * True only when both hold: the delta is a real change (not float dust, via
+ * requiresReconsent) AND it is a positive delta (the customer owes MORE than
+ * the last total they're on record as having agreed to).
+ */
+export function blocksSettlement(amendment: AmendmentTrailEntry | null | undefined): boolean {
+  return !!amendment && requiresReconsent(amendment) && amendment.delta > 0;
+}
+
 // #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The
 // operator "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and
 // its UI are money-moving operator surfaces — they re-open a BOOKED order,
@@ -217,3 +251,17 @@ export function amendedQuoteStatus(
 // change before charging the new balance. That route also REJECTs amendments
 // on a non-booked order (only a booked order has a paid deposit to apply). All
 // of it sits behind the #81 auth perimeter (requireOperator()).
+//
+// WT-18: `requiresReconsent` used to be advisory-only (surfaced in the amend
+// route's JSON response, never enforced) and `amendedQuoteStatus` had zero
+// production call sites. Both now drive the settlement gate — mark-paid,
+// charge-balance, and job-close (src/app/api/invoices/[id]/mark-paid,
+// .../charge-balance, src/app/api/jobs/[id]/close) each read the quote's
+// approval_snapshot.amendments, take latestAmendment(), and call
+// blocksSettlement() before moving money; a blocked settlement's error log
+// also surfaces amendedQuoteStatus() so the operator sees the conceptual
+// re-consent state without it ever being persisted (booked→changes_requested
+// stays illegal — unchanged from the amend route's own design above). An
+// operator override (`overrideReconsent`/`?override=true`) is the release
+// valve; a real customer-facing re-approval flow is a separate, later piece
+// of work.

@@ -216,6 +216,27 @@ describe('computeTrend', () => {
     expect(t.thisWeekMs).toBe(HOUR);
     expect(['faster', 'slower', 'flat', 'na']).toContain(t.direction);
   });
+
+  it('measures from last_inbound_at, not last_message_at, when a reply was sent outside the inbox (#WT-42)', () => {
+    // Customer messaged 3 days ago; the reply went out via the GHL app (not the
+    // inbox UI), so the reconcile overwrote last_message_at with the outbound's
+    // ~now timestamp. last_inbound_at still holds the real customer message time.
+    const handledAt = agoMs(2 * DAY);
+    const realInbound = new Date(handledAt.getTime() - 3 * DAY);
+    const items: MetricItem[] = [
+      {
+        status: 'handled',
+        lastMessageAt: new Date(handledAt.getTime() - 1 * MIN), // corrupted
+        lastInboundAt: realInbound, // the real customer message time
+        handledAt,
+        handledBy: 'a',
+        source: 'ghl',
+        createdAt: realInbound,
+      },
+    ];
+    const t = computeTrend(items, T2);
+    expect(t.thisWeekMs).toBe(3 * DAY); // the real wait, NOT ~1 min
+  });
 });
 
 describe('reopenRate', () => {

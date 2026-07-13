@@ -27,6 +27,15 @@
 // captured) covers the balance — so the real wiring MUST populate chargedUsd or
 // this route will (safely) never settle. Mirrors the balance webhook's guard.
 //
+// WT-18: before charging, block a quote whose LATEST amendment is a
+// price-increasing change the customer hasn't re-approved yet
+// (src/lib/amend.ts blocksSettlement/requiresReconsent) — an amend-up silently
+// reopens the invoice to awaiting_payment with zero proof of re-consent, and
+// this route would otherwise happily auto-charge the card on file for it. An
+// operator override (body `{ overrideReconsent: true }` or `?override=true`)
+// is the release valve for this wave; a real customer-facing re-approval flow
+// is separate, later work.
+//
 // Response: { ok, charged, invoice } | { ok:false, reason, error }
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -36,6 +45,8 @@ import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { planBalanceCollection } from '@/lib/balanceCollection';
 import { chargeBalanceOnFile, isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
+import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -45,9 +56,11 @@ type QuoteCardRow = {
   valor_vault_token: string | null;
   customer_name: string | null;
   customer_email: string | null;
+  approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+  status: QuoteStatus | null;
 };
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
   if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
@@ -58,6 +71,15 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
+
+  let body: { overrideReconsent?: unknown } = {};
+  try {
+    body = (await req.json()) as { overrideReconsent?: unknown };
+  } catch {
+    body = {};
+  }
+  const override =
+    body.overrideReconsent === true || req.nextUrl.searchParams.get('override') === 'true';
 
   // Gate: no auto-charge capability confirmed → don't attempt anything.
   if (!isAutoChargeEnabled()) {
@@ -85,15 +107,35 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Invoice has no linked quote' }, { status: 409 });
   }
 
-  // The saved card + customer live on the quote.
+  // The saved card + customer live on the quote (+ the WT-18 amendment trail).
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: qErr } = await sb
     .from('quotes')
-    .select('valor_vault_token, customer_name, customer_email')
+    .select('valor_vault_token, customer_name, customer_email, approval_snapshot, status')
     .eq('id', invoice.quote_id)
     .single<QuoteCardRow>();
   if (qErr || !quote) {
     return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Linked quote not found' }, { status: 409 });
+  }
+
+  if (!override) {
+    const latest = latestAmendment(quote.approval_snapshot?.amendments);
+    if (blocksSettlement(latest)) {
+      console.warn(
+        `[api/invoices/:id/charge-balance] blocked charge for invoice ${id} — reconsent required ` +
+          `(quote ${invoice.quote_id} would read '${amendedQuoteStatus(latest!, quote.status ?? 'booked')}')`,
+      );
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: 'reconsent-required',
+          code: 'reconsent-required',
+          error:
+            'This order has a price increase awaiting customer re-approval. Pass an operator override to charge anyway.',
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const plan = planBalanceCollection({

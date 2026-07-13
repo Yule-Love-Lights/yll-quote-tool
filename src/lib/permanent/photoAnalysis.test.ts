@@ -55,14 +55,14 @@ describe('normalizePermanentSatelliteResult (#140 P2)', () => {
     expect(r.streetRuns[0].points).toHaveLength(3);
   });
 
-  it('P3: coerces jumps — positive finite ft only, capped at 200, splitter coerced', () => {
+  it('P3: coerces jumps — positive finite ft only, capped at 200, splitter coerced, and surfaces the dropped over-cap jump', () => {
     const r = normalizePermanentSatelliteResult({
       jumps: [
         { ft: 12, splitter: true, label: 'porch to second story' },
         { ft: 8, splitter: 'yes' }, // truthy-but-not-true → false
         { ft: 0 },
         { ft: -5, splitter: true },
-        { ft: 900, splitter: true }, // hallucinated distance
+        { ft: 900, splitter: true }, // over MAX_JUMP_FT — dropped, but must be surfaced (WT-36)
         { ft: Number.NaN },
       ],
     });
@@ -70,12 +70,29 @@ describe('normalizePermanentSatelliteResult (#140 P2)', () => {
       { ft: 12, splitter: true, label: 'porch to second story' },
       { ft: 8, splitter: false, label: '' },
     ]);
+    // WT-36: the guard still drops the jump from geometry, but it's no longer
+    // silent — a dropped count and a notes warning tell the operator to add
+    // that connection's extensions manually (e.g. a real bridge on a large
+    // estate that legitimately exceeds the cap).
+    expect(r.droppedJumps).toBe(1);
+    expect(r.notes).toMatch(/1 jump.*200ft/i);
+  });
+
+  it('WT-36: a normal (<=200ft) jump is unaffected — no dropped-jump warning, notes untouched', () => {
+    const r = normalizePermanentSatelliteResult({
+      jumps: [{ ft: 45, splitter: false, label: 'garage to house' }],
+      notes: 'all clear',
+    });
+    expect(r.jumps).toHaveLength(1);
+    expect(r.droppedJumps).toBe(0);
+    expect(r.notes).toBe('all clear');
   });
 
   it('P3: missing streetRuns/jumps default to empty arrays (P2-shaped responses)', () => {
     const r = normalizePermanentSatelliteResult({ front: [], confidence: 'high' });
     expect(r.streetRuns).toEqual([]);
     expect(r.jumps).toEqual([]);
+    expect(r.droppedJumps).toBe(0);
   });
 });
 

@@ -62,6 +62,16 @@ export function derivePackagesPermanent(
     .filter((id) => id === LEFT_ID || id === RIGHT_ID || id === LEGACY_SIDES_ID);
   const hasBack = lineItems.some((li) => li.id === BACK_ID);
 
+  // WT-05: `sideIds` only tells us a side line is present, not that BOTH
+  // sides are — a townhome/corner-lot quote can measure just one. Name the
+  // package for the specific side(s) actually billed so the customer is
+  // never shown "Both Sides" when only one was measured. The legacy combined
+  // line always represents both sides bundled into one line.
+  const hasLeft = lineItems.some((li) => li.id === LEFT_ID);
+  const hasRight = lineItems.some((li) => li.id === RIGHT_ID);
+  const hasLegacySides = lineItems.some((li) => li.id === LEGACY_SIDES_ID);
+  const isBothSides = hasLegacySides || (hasLeft && hasRight);
+
   const packages: PortalPackage[] = [];
 
   if (hasFront) {
@@ -78,14 +88,30 @@ export function derivePackagesPermanent(
 
   // Package B = "Front & Sides" (#133, Jason S24): the front PLUS both sides,
   // so tapping tier 2 selects front + left + right. On a quote with no front
-  // line it degrades to the sides alone (named honestly).
+  // line it degrades to the sides alone. WT-05: the name/tagline are keyed on
+  // WHICH side ids are actually present — a one-side-only quote is named for
+  // that specific side, never "Both Sides" / "Front & Sides".
   if (sideIds.length > 0) {
     const bIds = hasFront ? [FRONT_ID, ...sideIds] : sideIds;
     const p = priceIds(bIds, lineItems, charges);
+
+    let sidesName: string;
+    let sidesTagline: string;
+    if (isBothSides) {
+      sidesName = hasFront ? 'Front & Sides' : 'Both Sides';
+      sidesTagline = hasFront ? 'The front plus both sides.' : 'Left + right sides.';
+    } else if (hasLeft) {
+      sidesName = hasFront ? 'Front & Left Side' : 'Left Side';
+      sidesTagline = hasFront ? 'The front plus the left side.' : 'The left side.';
+    } else {
+      sidesName = hasFront ? 'Front & Right Side' : 'Right Side';
+      sidesTagline = hasFront ? 'The front plus the right side.' : 'The right side.';
+    }
+
     packages.push({
       id: 'B',
-      name: hasFront ? 'Front & Sides' : 'Both Sides',
-      tagline: hasFront ? 'The front plus both sides.' : 'Left + right sides.',
+      name: sidesName,
+      tagline: sidesTagline,
       total: p.total,
       deposit: p.deposit,
       includedItemIds: bIds,

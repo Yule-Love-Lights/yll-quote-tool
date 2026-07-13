@@ -162,16 +162,20 @@ export type Trend = {
 };
 
 function medianResponseIn(items: MetricItem[], startMs: number, endMs: number): number | null {
+  // #WT-42: same last_inbound_at fallback as computeResponseMetrics — otherwise
+  // the trend arrow can flip based on replies sent outside the inbox UI, which
+  // overwrite last_message_at and contradict the headline median right next to it.
+  const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
   const rs = items
     .filter(
       (i) =>
         i.status !== 'unresponded' &&
-        i.lastMessageAt &&
+        inboundOf(i) &&
         i.handledAt &&
         (i.handledAt as Date).getTime() >= startMs &&
         (i.handledAt as Date).getTime() < endMs,
     )
-    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (i.lastMessageAt as Date).getTime()));
+    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (inboundOf(i) as Date).getTime()));
   return median(rs);
 }
 

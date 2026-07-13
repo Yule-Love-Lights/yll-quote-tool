@@ -398,9 +398,11 @@ describe('listJobsForAdmin', () => {
       id: 'j2',
       customerName: 'Test Bob',
       isTest: true,
-      installDate: '2026-12-01',
       itemCount: 0,
     });
+    // WT-19: JobAdminCard no longer carries installDate (nothing ever writes
+    // install_date, so the admin list's Install column was always "—").
+    expect(cards[1]).not.toHaveProperty('installDate');
   });
 
   it('nulls customer identity when a job has no linked quote', async () => {

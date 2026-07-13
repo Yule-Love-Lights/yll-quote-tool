@@ -33,6 +33,8 @@ export type PermanentBistroRates = {
   perPole: number;
   /** Portal approval gate (mirrors permanent.minimumJobAmount); 0 = gate OFF. */
   minimum: number;
+  /** Annual maintenance add-on price (mirrors permanent.maintenancePrice); 0 = the add-on is hidden. Default 0. */
+  maintenancePrice: number;
 };
 
 /** Default permanent bistro rates (Naldo, placeholder — real numbers TBD). */
@@ -40,6 +42,7 @@ export const DEFAULT_PERMANENT_BISTRO_RATES: PermanentBistroRates = {
   perFt: 30,
   perPole: 100,
   minimum: 0,
+  maintenancePrice: 0,
 };
 
 /**
@@ -70,8 +73,9 @@ function nonNegativeOr(v: unknown, fallback: number): number {
  * DEFAULT_PERMANENT_BISTRO_RATES. Always returns a full object (never
  * partial), mirroring sanitizeEventRates. `perFt`/`perPole` are
  * positive-or-default (they price real items and can never be 0); `minimum`
- * is non-negative-or-default (0 is a valid, preserved value — the gate-off
- * case), never silently promoted to a positive default.
+ * and `maintenancePrice` are non-negative-or-default (0 is a valid, preserved
+ * value — the gate-off / hidden-add-on case), never silently promoted to a
+ * positive default.
  */
 export function sanitizePermanentBistroRates(v: unknown): PermanentBistroRates {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
@@ -80,5 +84,6 @@ export function sanitizePermanentBistroRates(v: unknown): PermanentBistroRates {
     perFt: positiveOr(o.perFt, D.perFt),
     perPole: positiveOr(o.perPole, D.perPole),
     minimum: nonNegativeOr(o.minimum, D.minimum),
+    maintenancePrice: nonNegativeOr(o.maintenancePrice, D.maintenancePrice),
   };
 }

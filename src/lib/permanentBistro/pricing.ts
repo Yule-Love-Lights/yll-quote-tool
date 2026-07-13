@@ -1,13 +1,11 @@
 // Permanent Bistro Lighting — pure pricing engine (service_type =
-// 'permanent_bistro', PENDING wiring).
+// 'permanent_bistro').
 //
 // A SELF-CONTAINED sibling of calculateEventQuote / calculatePermanentQuote:
 // it prices permanent bistro runs (long-term café string lights) + poles at
 // an INDEPENDENT rate table and emits the same QuoteResult shape the portal
 // already consumes. It imports ONLY exported symbols from pricingEngine — it
-// touches no private helper and no shared dispatch seam, so it is safe
-// Phase-A parallel work. Wiring it in (the ServiceType union + /api/quote
-// dispatch) is a later PR.
+// touches no private helper and no shared dispatch seam.
 //
 // Deliberately EXCLUDED (allow-list, not deny-list): roofline / minis /
 // spritzers / accessories / surfaces — none of those apply to a permanent
@@ -37,6 +35,12 @@ function units(n: number): number {
 // #18 "minimum is a gate, not a floor"), so 0 is a VALID value — it must
 // still be a finite, non-negative number (a misconfigured negative/NaN
 // minimum is a bad rate table and should throw, same as any other field).
+// `maintenancePrice` is deliberately NOT asserted here (mirrors permanent's
+// pricing.ts, which never validates maintenancePrice either): a legacy
+// permanentBistroRatesSnapshot or rates object frozen before this field
+// existed has no `maintenancePrice` key at all, and that must keep pricing
+// (with the add-on simply hidden), not throw. calculateMaintenanceLine below
+// treats anything that isn't a positive finite number as "hidden".
 function assertPermanentBistroRates(r: PermanentBistroRates): void {
   const positiveRates: Array<[string, number]> = [
     ['perFt', r.perFt],
@@ -98,6 +102,22 @@ function calculatePoles(inputs: QuoteInputs, rates: PermanentBistroRates): LineI
       id: 'permanent-bistro-poles',
       label: `Poles (${qty})`,
       amount: Math.round(qty * rates.perPole),
+    },
+  ];
+}
+
+// Optional maintenance add-on — mirrors lib/permanent/pricing.ts: hidden
+// until a nonzero price is configured (permanent bistro has no per-quote
+// opt-in toggle, so the rate alone gates it). The `> 0` comparison is also
+// what makes a missing/legacy `maintenancePrice` (undefined, pre-dates this
+// field) safely resolve to "hidden" rather than throwing.
+function calculateMaintenanceLine(rates: PermanentBistroRates): LineItem[] {
+  if (!(rates.maintenancePrice > 0)) return [];
+  return [
+    {
+      id: 'permanent-bistro-maintenance',
+      label: 'Annual Maintenance Plan',
+      amount: Math.round(rates.maintenancePrice),
     },
   ];
 }
@@ -176,6 +196,7 @@ export function calculatePermanentBistro(
     [
       ...calculateBistroLines(inputs, rates),
       ...calculatePoles(inputs, rates),
+      ...calculateMaintenanceLine(rates),
       ...calculateCustomLineItems(inputs),
     ],
     inputs.lineItemPriceOverrides,

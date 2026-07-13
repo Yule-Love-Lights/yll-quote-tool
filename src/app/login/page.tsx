@@ -8,6 +8,22 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+// WT-61: `from.startsWith('/')` alone lets a protocol-relative value like
+// `//evil.com/x` through — the browser treats a leading `//` as "same scheme,
+// different host", so `router.replace` navigates off-origin (open redirect /
+// phishing). Require a single leading slash: same-origin path, not a
+// scheme-relative host. Also reject the `/\host` backslash form AND any ASCII
+// tab/newline/CR. The WHATWG URL parser normalizes a backslash to a slash and
+// strips control chars before parsing, so `/\evil.com`, `/\/evil.com`, and
+// `/%09/evil.com` all re-form as a protocol-relative host and hard-navigate
+// off-origin. No legitimate same-origin path contains them.
+export function safeRedirectTarget(target: string): string {
+  if (!target.startsWith('/')) return '/';
+  if (/[\t\n\r]/.test(target)) return '/';
+  if (target[1] === '/' || target[1] === '\\') return '/';
+  return target;
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -31,7 +47,7 @@ function LoginForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? 'Login failed');
       }
-      router.replace(from.startsWith('/') ? from : '/');
+      router.replace(safeRedirectTarget(from));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

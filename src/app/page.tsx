@@ -1,5 +1,5 @@
 import {
-  listQuotesForDashboard,
+  listQuotesForDashboardResult,
   listJobsForWorkflowBoard,
   listInvoicesForWorkflowBoard,
   loadNeedsActionData,
@@ -33,8 +33,8 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, invoices, metricsRes, openRes, reopen, referralMetrics, repLabels] = await Promise.all([
-    listQuotesForDashboard(500),
+  const [quotesResult, jobs, invoices, metricsRes, openRes, reopen, referralMetrics, repLabels] = await Promise.all([
+    listQuotesForDashboardResult(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
     listItemsForMetrics(),
@@ -43,6 +43,34 @@ export default async function DashboardPage() {
     loadReferralMetrics(),
     getOperatorLabels(),
   ]);
+
+  // AUDIT FIX (WT-38/WT-46, dashboard-insights-error-visibility): the old
+  // listQuotesForDashboard() swallowed a Supabase read failure into `[]`, so
+  // every widget below computed over an empty list and rendered $0 KPIs / an
+  // empty pipeline — indistinguishable from a genuinely quiet day. Surface a
+  // visible error banner instead, before computing anything over the rows.
+  if (!quotesResult.ok) {
+    return (
+      <OperatorShell active="home">
+        <div className="max-w-6xl mx-auto w-full">
+          <DashboardHeader />
+          <div
+            role="alert"
+            className="rounded-lg border p-4 text-sm mb-8"
+            style={{ borderColor: 'var(--op-danger, #b91c1c)', color: 'var(--op-danger, #b91c1c)', background: 'var(--op-danger-bg, rgba(185,28,28,0.08))' }}
+          >
+            <p className="font-semibold">Couldn&apos;t load the dashboard.</p>
+            <p className="mt-1" style={{ color: 'var(--op-text-dim)' }}>
+              The quotes query failed, so KPIs and the pipeline are hidden (rather than showing misleading zeros). Try refreshing; if it persists, check the database connection.
+            </p>
+            <p className="mt-2 font-mono text-xs" style={{ color: 'var(--op-text-dim)' }}>{quotesResult.error}</p>
+          </div>
+        </div>
+      </OperatorShell>
+    );
+  }
+
+  const quotes = quotesResult.rows;
   const analytics = metricsRes.ok
     ? withOperatorLabels(computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated), repLabels)
     : null;
@@ -65,6 +93,13 @@ export default async function DashboardPage() {
     <OperatorShell active="home" inboxOpenLeads={inboxSummary?.openLeads} inboxOverdue={inboxSummary?.overdue}>
       <div className="max-w-6xl mx-auto w-full">
         <DashboardHeader />
+        {quotesResult.capped && (
+          // WT-47: listQuotesForDashboardResult hit the row cap — lifetime
+          // totals below may exclude the oldest quotes.
+          <p className="text-xs mb-4" style={{ color: 'var(--op-text-dim)' }}>
+            Based on the newest 500 quotes — lifetime totals may not include older quotes.
+          </p>
+        )}
         <KpiStrip kpis={kpis} />
         {/* Early-stage worklist (drafts / unsent) above the late-stage
             Needs-Action money queue (overdue follow-ups / deposits / balances). */}

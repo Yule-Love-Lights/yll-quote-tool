@@ -15,20 +15,36 @@
 // A close race (setJobStatus throws because a concurrent request already
 // advanced past a step) re-reads: if already `done`, returns success; else 409.
 //
+// WT-18: before settling the invoice, block a quote whose LATEST amendment is
+// a price-increasing change the customer hasn't re-approved yet
+// (src/lib/amend.ts blocksSettlement/requiresReconsent) — an amend-up silently
+// reopens the invoice to awaiting_payment with zero proof of re-consent, and
+// closing the job would otherwise settle it right past that. An operator
+// override (body `{ overrideReconsent: true }` or `?override=true`) is the
+// release valve for this wave; a real customer-facing re-approval flow is
+// separate, later work.
+//
 // Response: { ok, closed:true } | { ok, alreadyDone:true } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { getInvoiceByJob, markInvoicePaidManually } from '@/lib/invoices';
 import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
+import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+type QuoteReconsentRow = {
+  approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+  status: QuoteStatus | null;
+};
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
   if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
@@ -39,6 +55,15 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ error: 'Invalid job id' }, { status: 400 });
   }
+
+  let body: { overrideReconsent?: unknown } = {};
+  try {
+    body = (await req.json()) as { overrideReconsent?: unknown };
+  } catch {
+    body = {};
+  }
+  const override =
+    body.overrideReconsent === true || req.nextUrl.searchParams.get('override') === 'true';
 
   const job = await getJob(id);
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
@@ -64,6 +89,29 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   // Settle the linked invoice if unpaid (close = finalize).
   if (invoice.status !== 'paid' && invoice.status !== 'cancelled') {
+    if (!override && invoice.quote_id) {
+      const sb = getSupabaseServiceClient()!;
+      const { data: quoteRow } = await sb
+        .from('quotes')
+        .select('approval_snapshot, status')
+        .eq('id', invoice.quote_id)
+        .maybeSingle<QuoteReconsentRow>();
+      const latest = latestAmendment(quoteRow?.approval_snapshot?.amendments);
+      if (blocksSettlement(latest)) {
+        console.warn(
+          `[api/jobs/:id/close] blocked settlement for job ${id} — reconsent required ` +
+            `(quote ${invoice.quote_id} would read '${amendedQuoteStatus(latest!, quoteRow?.status ?? 'booked')}')`,
+        );
+        return NextResponse.json(
+          {
+            error:
+              'This order has a price increase awaiting customer re-approval. Pass an operator override to close anyway.',
+            code: 'reconsent-required',
+          },
+          { status: 409 },
+        );
+      }
+    }
     try {
       await markInvoicePaidManually(invoice.id);
     } catch (err) {

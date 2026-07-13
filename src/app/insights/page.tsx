@@ -55,6 +55,7 @@ export default async function InsightsPage() {
   }
 
   const quotes = result.rows;
+  const capped = result.capped;
   const now = new Date();
   const [metricsRes, reopen, repLabels] = await Promise.all([
     listItemsForMetrics(),
@@ -80,6 +81,13 @@ export default async function InsightsPage() {
             Native metrics from this tool&apos;s quotes. (Operational metrics — collected revenue,
             installs — arrive with the home.works integration.)
           </p>
+          {capped && (
+            // WT-47: listQuotesForDashboardResult hit the row cap — lifetime
+            // totals below may exclude the oldest quotes.
+            <p className="text-xs mt-2" style={{ color: 'var(--op-text-dim)' }}>
+              Based on the newest 500 quotes — lifetime totals may not include older quotes.
+            </p>
+          )}
         </header>
 
         <section aria-label="Headline metrics" className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">

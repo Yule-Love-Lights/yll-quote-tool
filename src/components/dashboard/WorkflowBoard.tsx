@@ -130,7 +130,6 @@ const QUOTE_DOTS = {
 
 const JOB_DOTS = {
   to_schedule: 'var(--brand-gold)',
-  scheduled: '#378ADD',
   installed: '#639922',
   requires_invoicing: '#D4537E',
   done: 'var(--brand-evergreen)',
@@ -171,7 +170,8 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
     j.to_schedule.totalUsd + j.scheduled.totalUsd + j.installed.totalUsd + j.requires_invoicing.totalUsd;
   const jobRows: StatusRow[] = [
     { key: 'to_schedule', label: 'To schedule', dot: JOB_DOTS.to_schedule, bucket: j.to_schedule },
-    { key: 'scheduled', label: 'Scheduled', dot: JOB_DOTS.scheduled, bucket: j.scheduled },
+    // WT-19: the 'scheduled' bucket was removed — no code path ever writes a job
+    // into 'scheduled' (jobs jump to_schedule → installed), so it always read 0.
     { key: 'installed', label: 'Installed', dot: JOB_DOTS.installed, bucket: j.installed },
     { key: 'requires_invoicing', label: 'Requires invoicing', dot: JOB_DOTS.requires_invoicing, bucket: j.requires_invoicing },
     { key: 'done', label: 'Done', dot: JOB_DOTS.done, bucket: j.done },

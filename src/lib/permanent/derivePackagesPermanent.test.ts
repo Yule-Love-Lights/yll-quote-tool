@@ -123,7 +123,9 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(d.total).toBe(expectedD.total);
   });
 
-  it('one drawn side only (left) → B = Front & Sides with front + that side', () => {
+  it('WT-05: one drawn side only (left) → B names the specific side, not "Both/Front & Sides"', () => {
+    // A townhome/corner-lot quote where only the left side was measured must
+    // NOT be presented as covering both sides — name it honestly.
     const lineItems = [
       permItem('permanent-front', 4000),
       permItem('permanent-left', 2750),
@@ -131,9 +133,37 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
     const b = packages.find((p) => p.id === 'B')!;
-    expect(b.name).toBe('Front & Sides');
+    expect(b.name).toBe('Front & Left Side');
+    expect(b.tagline).toBe('The front plus the left side.');
     expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-left']);
     expect(b.total).toBe(priceSelection(4000 + 2750, CHARGES).total);
+  });
+
+  it('WT-05: one drawn side only (right), no front → B is "Right Side"', () => {
+    const lineItems = [permItem('permanent-right', 2500), permItem('permanent-back', 3500)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.name).toBe('Right Side');
+    expect(b.tagline).toBe('The right side.');
+    expect(b.includedItemIds).toEqual(['permanent-right']);
+  });
+
+  it('WT-05: front + right side only → B is "Front & Right Side"', () => {
+    const lineItems = [permItem('permanent-front', 4000), permItem('permanent-right', 2500)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.name).toBe('Front & Right Side');
+    expect(b.tagline).toBe('The front plus the right side.');
+    expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-right']);
+  });
+
+  it('WT-05: left-only, no front → B is "Left Side"', () => {
+    const lineItems = [permItem('permanent-left', 2750)];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.name).toBe('Left Side');
+    expect(b.tagline).toBe('The left side.');
+    expect(b.includedItemIds).toEqual(['permanent-left']);
   });
 
   it('front + sides and no back → B (Front & Sides) without a byte-identical Whole Home D', () => {

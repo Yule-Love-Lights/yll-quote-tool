@@ -4,6 +4,8 @@ import {
   requiresReconsent,
   amendedQuoteStatus,
   AMEND_RECONSENT_STATUS,
+  latestAmendment,
+  blocksSettlement,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -179,6 +181,59 @@ describe('amendedQuoteStatus — resulting status', () => {
   it('zero-delta amendment keeps the order booked', () => {
     const noop = computeAmendment({ ...bookedBase(), newTotal: 5000 });
     expect(amendedQuoteStatus(noop, 'booked')).toBe('booked');
+  });
+});
+
+describe('latestAmendment — trail lookup (WT-18 settlement gate)', () => {
+  it('returns null for an empty/missing/undefined trail', () => {
+    expect(latestAmendment([])).toBeNull();
+    expect(latestAmendment(null)).toBeNull();
+    expect(latestAmendment(undefined)).toBeNull();
+  });
+
+  it('returns the LAST entry (amendments are append-only)', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    const second = computeAmendment({
+      previousTotal: first.new_total,
+      depositPaid: first.deposit_applied,
+      previousBalance: first.new_balance,
+      newTotal: 7000,
+      by: 'staff:naldo',
+      reason: 'added garland',
+    });
+    expect(latestAmendment([first, second])).toBe(second);
+  });
+});
+
+describe('blocksSettlement — WT-18 re-consent settlement gate', () => {
+  it('blocks a price-INCREASING amendment', () => {
+    const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    expect(inc.delta).toBeGreaterThan(0);
+    expect(blocksSettlement(inc)).toBe(true);
+  });
+
+  it('does NOT block a price-DECREASING amendment (non-increasing never over-collects)', () => {
+    const dec = computeAmendment({ ...bookedBase(), newTotal: 4000 });
+    expect(dec.delta).toBeLessThan(0);
+    // requiresReconsent is true for a decrease too (it's a real total change),
+    // but the settlement gate only cares about un-consented INCREASES.
+    expect(requiresReconsent(dec)).toBe(true);
+    expect(blocksSettlement(dec)).toBe(false);
+  });
+
+  it('does NOT block a zero-delta (cosmetic) amendment', () => {
+    const noop = computeAmendment({ ...bookedBase(), newTotal: 5000 });
+    expect(blocksSettlement(noop)).toBe(false);
+  });
+
+  it('does NOT block a sub-cent (float-dust) delta', () => {
+    const dust = computeAmendment({ ...bookedBase(), newTotal: 5000.004 });
+    expect(blocksSettlement(dust)).toBe(false);
+  });
+
+  it('does NOT block when there is no amendment at all (null/undefined)', () => {
+    expect(blocksSettlement(null)).toBe(false);
+    expect(blocksSettlement(undefined)).toBe(false);
   });
 });
 

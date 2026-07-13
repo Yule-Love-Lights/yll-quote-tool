@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 
@@ -50,12 +51,24 @@ export function OperatorNav({
   inboxOverdue?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
 
   const linkStyle = (item: NavItem) =>
     isActive(item)
       ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
       : { color: 'var(--op-text-2)' };
+
+  // WT-60: logout (POST /api/auth/logout) worked but had no UI trigger. Best
+  // effort — even if the request fails, still send the operator to /login.
+  const signOut = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      router.replace('/login');
+      router.refresh();
+    }
+  };
 
   const inboxBadge = (item: NavItem) =>
     item.href === '/inbox' && inboxOpenLeads > 0 ? (
@@ -89,6 +102,16 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={signOut}
+              className="px-3 py-1.5 rounded-md transition-colors"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              Sign out
+            </button>
+          </li>
         </ul>
 
         {/* Mobile + tablet-portrait: hamburger toggle (shown below lg / 1024px) */}
@@ -130,6 +153,19 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                void signOut();
+              }}
+              className="block w-full text-left px-4 py-3 text-sm font-medium border-b"
+              style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+            >
+              Sign out
+            </button>
+          </li>
         </ul>
       )}
     </nav>

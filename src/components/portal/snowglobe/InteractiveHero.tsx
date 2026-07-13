@@ -463,6 +463,12 @@ export function InteractiveHero({
                     <span className="font-display text-[17px] md:text-[18px] font-semibold text-[#F4ECD8] leading-[1.15] mt-0.5">
                       {p.id === 'D' && packageId === 'D' ? activeName : p.name}
                     </span>
+                    {/* WT-13 (audit): a subtle one-line subhead under the
+                        package name so the tagline every derive fn writes
+                        actually reaches the customer. */}
+                    <span className="w-full text-[10px] md:text-[11px] text-[#F4ECD8]/60 leading-snug line-clamp-1 mt-0.5">
+                      {p.tagline}
+                    </span>
                     <span className="portal-snow-price text-[14px] md:text-[15px] font-semibold text-[#F4ECD8]/85 mt-1">
                       {p.id === 'D'
                         ? packageId === 'D'
