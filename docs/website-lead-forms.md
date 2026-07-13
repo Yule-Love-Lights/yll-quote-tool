@@ -38,15 +38,27 @@ per-page:
 <script src="https://quote.yulelovelights.com/lead-form.js" async></script>
 ```
 
-Stays hidden until the visitor scrolls past 600px, then slides up from the
-bottom. Has its own dismiss (×) — once dismissed it stays hidden for the
-rest of that browser session (sessionStorage), even across page navigations,
-but reappears on a new visit/session.
+Stays hidden until the visitor scrolls past 600px, then slides **down from
+the top**, pinning just below the site's own header. It's a dark bar with
+**no dismiss button** — it simply hides again if the visitor scrolls back up.
+Its layout differs by screen size:
 
-**Only include the sticky snippet on one place site-wide.** If it's also
-pasted into individual pages, the same visitor could see two independent
-sticky bars stack. The `bar`/`full` snippets are fine to repeat per-page —
-each is scoped to its own container.
+- **Desktop (≥768px):** one full-width inline bar — the "Get A Fast Quote /
+  Takes Only 5 Seconds" heading, the name / phone / email fields, and the
+  2×2 service picker (Christmas / Permanent / Event & Wedding / Landscape),
+  plus the consent checkbox and a **Get Quote** button. Submits to
+  `POST /api/leads` exactly like the other variants.
+- **Mobile (<768px):** no form fields at all — just the heading and two
+  buttons, **Call** (a `tel:` link to 631-517-0186) and **Get a Quote**
+  (scrolls to the page's full form if there is one, otherwise sends the
+  visitor to the homepage). Nothing on mobile posts, so there's no consent
+  step to strand a phone-sized visitor on.
+
+**Only include the sticky snippet in one place site-wide.** As a backstop the
+script now renders only the FIRST `data-yll-lead-form="sticky"` marker on a
+page (any later duplicate is hidden), but keeping it to a single global
+placement is still the right call. The `bar`/`full` snippets are fine to
+repeat per-page — each is scoped to its own container.
 
 ## 3. "Get A Quote" page — full form
 

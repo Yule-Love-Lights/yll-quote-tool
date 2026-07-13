@@ -14,6 +14,7 @@ import {
   computeInvoiceTotals,
   createInvoiceFromJob,
   getInvoiceByJob,
+  getInvoiceByQuote,
   getInvoiceDetail,
   listInvoicesForAdmin,
   markInvoicePaidManually,
@@ -447,6 +448,30 @@ describe('getInvoiceByJob', () => {
   it('returns null safely when Supabase is unconfigured', async () => {
     sbRef.current = null;
     expect(await getInvoiceByJob('j1')).toBeNull();
+  });
+});
+
+describe('getInvoiceByQuote', () => {
+  it('finds the one invoice linked to a quote', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', invoice_number: 1000, job_id: 'j1', quote_id: 'q1', total: 1000, deposit_applied: 500, balance: 500, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const inv = await getInvoiceByQuote('q1');
+    expect(inv?.id).toBe('i1');
+  });
+
+  it('returns null when the quote has no invoice yet', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await getInvoiceByQuote('q-none')).toBeNull();
+  });
+
+  it('returns null safely when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    expect(await getInvoiceByQuote('q1')).toBeNull();
   });
 });
 
