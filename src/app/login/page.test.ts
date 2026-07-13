@@ -23,4 +23,18 @@ describe('safeRedirectTarget', () => {
   it('rejects an absolute URL, falling back to /', () => {
     expect(safeRedirectTarget('https://evil.com')).toBe('/');
   });
+
+  // WT-61 follow-up: the backslash forms normalize to a protocol-relative HOST
+  // under the WHATWG URL parser, so they open-redirect exactly like `//host`.
+  it('rejects the /\\host backslash protocol-relative form, falling back to /', () => {
+    expect(safeRedirectTarget('/\\evil.com/x')).toBe('/');
+  });
+
+  it('rejects the /\\/host backslash form, falling back to /', () => {
+    expect(safeRedirectTarget('/\\/evil.com')).toBe('/');
+  });
+
+  it('still allows a normal nested same-origin path', () => {
+    expect(safeRedirectTarget('/admin/quotes/123')).toBe('/admin/quotes/123');
+  });
 });

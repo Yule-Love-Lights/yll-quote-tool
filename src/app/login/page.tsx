@@ -13,8 +13,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 // different host", so `router.replace` navigates off-origin (open redirect /
 // phishing). Require a single leading slash: same-origin path, not a
 // scheme-relative host.
+//
+// WT-61 follow-up: the `\` variant (`/\evil.com`, `/\/evil.com`) needs the same
+// block — the WHATWG URL parser normalizes a backslash to a slash for http(s),
+// so those resolve to a protocol-relative HOST exactly like `//`, and Next's
+// client router hard-navigates off-origin. Reject a second char of `/` OR `\`.
 export function safeRedirectTarget(target: string): string {
-  return target.startsWith('/') && !target.startsWith('//') ? target : '/';
+  return target.startsWith('/') && target[1] !== '/' && target[1] !== '\\' ? target : '/';
 }
 
 function LoginForm() {
