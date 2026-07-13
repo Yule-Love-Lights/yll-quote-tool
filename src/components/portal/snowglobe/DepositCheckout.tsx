@@ -62,14 +62,21 @@ export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType 
           headers: { 'Content-Type': 'application/json' },
         });
         failureStatus = res.status;
-
-        if (res.status === 409) {
-          // Already paid (or already booked) — go straight to the booked page.
-          router.push(`/portal/${quoteId}/approved`);
-          return;
-        }
-
         const body = await res.json().catch(() => ({}));
+
+        // 409 covers several distinct server states across /pay and
+        // /simulate-deposit (approve-first, not-payable, not-bookable, plus the
+        // real already-paid case). Only 'already-paid' is a success case; any
+        // other 409 is a dead end that must NOT navigate the customer forward to
+        // a phantom booking (PS-D1) — fall through to the shared error handling
+        // below instead.
+        if (res.status === 409) {
+          if (body.code === 'already-paid') {
+            router.push(`/portal/${quoteId}/approved`);
+            return;
+          }
+          throw new Error(body.error || `Could not start payment (${res.status})`);
+        }
 
         // #93 — simulated deposit: no redirect, the route booked it server-side.
         if (isTest) {

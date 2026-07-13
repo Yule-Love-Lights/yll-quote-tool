@@ -370,8 +370,11 @@ export default async function PortalPage({
             row under the color so any color can play any effect. */}
         {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
 
-        {/* 2. Walkthrough video — global default or per-quote override */}
-        {quote.video && <WalkthroughVideo video={quote.video} />}
+        {/* 2. Walkthrough video — global default or per-quote override.
+            Bug fix (WT-L4): pass the already-approved/booked state so the CTA
+            copy doesn't tell a customer who already approved to "watch before
+            you approve". */}
+        {quote.video && <WalkthroughVideo video={quote.video} booked={isApproved || isBooked} />}
 
         {/* 3. What's Included — line-item toggles feed the hero + sticky price.
             Also hosts the second on-page design render (#50) between the items
