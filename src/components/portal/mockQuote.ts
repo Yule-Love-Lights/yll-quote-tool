@@ -17,6 +17,7 @@ export const MOCK_QUOTE: PortalQuote = {
     firstName: 'Jasmine',
     fullName: 'Jasmine Smith',
     address: '45 Main Street, Huntington, NY 11743',
+    phone: '(631) 555-0142',
   },
   photo: {
     before: BEFORE_PHOTO,
