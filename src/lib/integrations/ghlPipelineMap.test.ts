@@ -9,7 +9,12 @@
 //     send never overwrites another pipeline's drip-automation field.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from './ghlPipelineMap';
+import {
+  resolvePipelineStages,
+  quoteLinkFieldId,
+  quoteLinkFieldEnvVar,
+  listPipelineMapEntries,
+} from './ghlPipelineMap';
 
 const ENV_KEYS = [
   'HIGHLEVEL_PIPELINE_ID',
@@ -160,6 +165,21 @@ describe('resolvePipelineStages', () => {
     expect(resolvePipelineStages(null).pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
     expect(resolvePipelineStages(undefined).pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
     expect(resolvePipelineStages().pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
+  });
+});
+
+describe('listPipelineMapEntries (WT-51 — Settings → HighLevel map diagnostics)', () => {
+  it('returns one entry per service type, the raw map values (no env overrides)', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID = 'env-pipeline-should-not-apply';
+
+    const entries = listPipelineMapEntries();
+    expect(entries.map((e) => e.serviceType)).toEqual(['holiday', 'permanent', 'event', 'permanent_bistro']);
+
+    const holiday = entries.find((e) => e.serviceType === 'holiday')!;
+    expect(holiday.stages.pipelineId).toBe('sC6JEcxlGnNDasanlXDN'); // never the env override
+
+    const bistro = entries.find((e) => e.serviceType === 'permanent_bistro')!;
+    expect(bistro.stages.pipelineId).toBe('GTFURwOGzGLBl2zsdl0N');
   });
 });
 

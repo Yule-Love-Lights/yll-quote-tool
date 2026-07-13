@@ -2,11 +2,11 @@
 // that routed every lead into the Christmas pipeline). Covers validation,
 // honeypot/timing spam handling, IP rate limiting, the GHL sync fail-open
 // contract (a GHL error must never surface as a customer-facing failure),
-// the landscape "deferred" pipeline case, and CORS.
+// and CORS.
 //
 // Supabase and the HighLevel client are mocked; no live calls. ghlPipelineMap
-// is NOT mocked — christmas/permanent/event-wedding resolve against the real,
-// hardcoded pipeline map so a drift there would be caught here too.
+// is NOT mocked — christmas/permanent/event-wedding/landscape resolve against
+// the real, hardcoded pipeline map so a drift there would be caught here too.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
@@ -175,8 +175,6 @@ beforeEach(() => {
     opportunity: { id: 'opp-1' },
     created: true,
   });
-  delete process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE;
-  delete process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY;
   delete process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
 });
 
@@ -329,6 +327,7 @@ describe('POST /api/leads — per-service GHL pipeline routing (case a)', () => 
     ['christmas', 'sC6JEcxlGnNDasanlXDN'],
     ['permanent', 'OqpjVflTdgmjmUQmbcSF'],
     ['event-wedding', 'YfCi5jy8Alc3oD5AfXmV'],
+    ['landscape', 'GTFURwOGzGLBl2zsdl0N'], // rides the permanent_bistro pipeline (WT-50, #117)
   ])('%s → pipeline %s', async (service, pipelineId) => {
     sbRef.current = makeSb().client;
     const res = await POST(makeReq(validBody({ service })));
@@ -572,8 +571,8 @@ describe('POST /api/leads — partial GHL sync keeps the contact id (F9)', () =>
   });
 });
 
-describe('POST /api/leads — landscape deferred (case h)', () => {
-  it('returns 200 ok; the row is marked deferred naming the missing env vars', async () => {
+describe('POST /api/leads — landscape syncs into the live pipeline (WT-50, #117)', () => {
+  it('returns 200 ok; the row is marked synced against the permanent_bistro pipeline, no env vars needed', async () => {
     const { client, updated } = makeSb();
     sbRef.current = client;
 
@@ -583,9 +582,10 @@ describe('POST /api/leads — landscape deferred (case h)', () => {
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(updated).toHaveLength(1);
-    expect(updated[0]!.sync_status).toBe('deferred');
-    expect(String(updated[0]!.sync_error)).toContain('HIGHLEVEL_PIPELINE_ID_LANDSCAPE');
-    expect(hl.findOrCreateOpportunityForContact).not.toHaveBeenCalled();
+    expect(updated[0]!.sync_status).toBe('synced');
+    expect(hl.findOrCreateOpportunityForContact).toHaveBeenCalledWith(
+      expect.objectContaining({ pipelineId: 'GTFURwOGzGLBl2zsdl0N' }),
+    );
   });
 });
 

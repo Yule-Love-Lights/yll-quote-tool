@@ -133,6 +133,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // WT-21: the check above only reads the QUOTE's own status. The cancel route's
+  // quote-status write is best-effort (SPEC) — if it failed, the quote can still
+  // read 'booked' while its linked job (the actual order record) is 'cancelled'.
+  // Gate on the job too, so an amend can never record a financial amendment (and
+  // optionally text the customer a new balance) against a dead order. Fetched
+  // once here and reused below for the invoice re-sync.
+  const job = await getJobByQuote(id);
+  if (job?.status === 'cancelled') {
+    return NextResponse.json(
+      { error: 'Cannot amend a cancelled order', code: 'not-amendable' },
+      { status: 409 },
+    );
+  }
+
   const snap = quote.approval_snapshot ?? {};
   const amendments = Array.isArray(snap.amendments) ? snap.amendments : [];
   // Prior agreed total: the last amendment's new_total, else the original agreed
@@ -154,9 +168,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // value.
   const newTotal = amendedAgreedTotal(snap, quote.result, previousTotal);
 
-  // Linked job → invoice (exists only once the job is completed): the prior balance
-  // + the row to re-sync.
-  const job = await getJobByQuote(id);
+  // Invoice linked to the job (exists only once the job is completed): the prior
+  // balance + the row to re-sync. `job` was already fetched above for the
+  // cancelled-job gate.
   const invoice = job ? await getInvoiceByJob(job.id) : null;
   // The trail's previous_balance is derived from the SAME base as previous_total
   // (review LOW — internal consistency), not from the live invoice.balance (which

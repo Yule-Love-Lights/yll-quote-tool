@@ -5,6 +5,13 @@
 // Without these set, "Send Quote" can't advance the CRM pipeline card (the send
 // route records ghl_sync_error: "HIGHLEVEL_STAGE_QUOTE_SENT / HIGHLEVEL_PIPELINE_ID
 // not set"). Read-only — it never writes to GHL or to env.
+//
+// WT-51: the env vars below only cover holiday's legacy quote-flow. Every
+// service type's card actually moves via the HARDCODED map in
+// ghlPipelineMap.ts — a renamed/deleted pipeline or stage there had no
+// on-page diagnostic. The "Per-service-type pipeline map" section cross-
+// checks each mapped id against the live pipelines fetched here and flags
+// any id no longer found in the account.
 
 import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
@@ -12,6 +19,8 @@ import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { isHighLevelConfigured, listPipelines } from '@/lib/integrations/highlevel';
 import { parsePipelines, guessAssignments, type Pipeline } from '@/lib/integrations/highlevelPipelines';
+import { listPipelineMapEntries } from '@/lib/integrations/ghlPipelineMap';
+import { SERVICE_TYPE_LABELS } from '@/lib/serviceType';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,6 +52,12 @@ export default async function HighLevelSettingsPage() {
   }
   // Best-guess mapping for each env var (suggestion only — confirm below).
   const guesses = guessAssignments(pipelines);
+
+  // WT-51: the per-service-type map (ghlPipelineMap.ts), cross-checked
+  // against the live pipelines fetched above so a renamed/deleted pipeline
+  // or stage is flagged here instead of failing silently at send time.
+  const mapEntries = listPipelineMapEntries();
+  const findLivePipeline = (id: string) => (configured ? pipelines.find((p) => p.id === id) : undefined);
 
   return (
     <OperatorShell active="settings">
@@ -154,6 +169,75 @@ export default async function HighLevelSettingsPage() {
                 </ul>
               </div>
             ))}
+        </section>
+
+        {/* Per-service-type pipeline map (ghlPipelineMap.ts) — WT-51. This is
+            what actually moves a card on send/decline/deposit-paid/installed
+            for EVERY service type (the env vars above only override holiday's
+            legacy quote-flow stages). Flags any id no longer present in the
+            live pipelines fetched above. */}
+        <section className="mt-8">
+          <h2 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-3">
+            Per-service-type pipeline map
+          </h2>
+          <p className="text-xs text-gray-500 mb-3">
+            Hardcoded in <code className="text-xs">ghlPipelineMap.ts</code>, one entry per service type.
+            Renaming or deleting a pipeline/stage in HighLevel does not update this map — it has to be
+            edited in code. A row flagged <span className="font-semibold text-red-600">NOT FOUND</span>{' '}
+            means cards for that service type have silently stopped moving.
+          </p>
+          <div className="space-y-3">
+            {mapEntries.map(({ serviceType, stages }) => {
+              const livePipeline = findLivePipeline(stages.pipelineId);
+              const rows: { label: string; id: string }[] = [
+                { label: 'Pipeline', id: stages.pipelineId },
+                { label: 'Entry', id: stages.entry },
+                { label: 'Sent', id: stages.sent },
+                { label: 'Deposit paid', id: stages.depositPaid },
+                { label: 'Installed', id: stages.installed },
+                { label: 'Declined', id: stages.declined },
+              ];
+              return (
+                <div
+                  key={serviceType}
+                  className="rounded-md border p-3"
+                  style={{ borderColor: 'var(--op-border)' }}
+                >
+                  <div className="flex items-baseline justify-between gap-3 mb-2 pb-2 border-b border-gray-100">
+                    <span className="text-sm font-semibold text-gray-900">
+                      {SERVICE_TYPE_LABELS[serviceType]}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {!configured
+                        ? 'unverified — HighLevel not connected'
+                        : loadError
+                          ? 'unverified — pipelines failed to load'
+                          : (livePipeline?.name ?? 'NOT FOUND in live account')}
+                    </span>
+                  </div>
+                  <ul className="space-y-1">
+                    {rows.map(({ label, id }, i) => {
+                      const canVerify = configured && !loadError;
+                      const found = i === 0 ? !!livePipeline : !!livePipeline?.stages.some((s) => s.id === id);
+                      return (
+                        <li key={label} className="flex items-center justify-between gap-3 text-sm">
+                          <span className="text-gray-700">{label}</span>
+                          <span className="flex items-center gap-2">
+                            <code className="text-xs text-gray-500 font-mono break-all">{id}</code>
+                            {canVerify && !found && (
+                              <span className="text-[11px] font-semibold text-red-600 shrink-0">
+                                NOT FOUND
+                              </span>
+                            )}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
         </section>
       </main>
     </OperatorShell>

@@ -1,7 +1,8 @@
 // Unit tests for the website lead-capture domain logic (#leads):
 //  - resolveLeadPipeline maps each of the 4 lead services to the right GHL
 //    pipeline/entry-stage (christmas/permanent/event-wedding reuse the real
-//    ghlPipelineMap; landscape is env-driven with no map entry yet).
+//    ghlPipelineMap; landscape rides the permanent_bistro map entry — WT-50 —
+//    since it shares the live Landscape Lighting pipeline with Bistro (#117)).
 //  - splitLeadName never drops words past the first (the old plugin's bug).
 //  - syncLeadToGhl composes the HighLevel calls in the right order/shape:
 //    tags are exactly ['new lead', 'web-lead-<service>'] and NEVER the 3
@@ -10,12 +11,11 @@
 //    upsertContact itself propagates (the route is responsible for catching
 //    it and keeping the lead row 'pending'); a failure from any LATER step
 //    is caught internally and returned as status 'error' WITH the
-//    ghlContactId already captured (F9); an unconfigured landscape pipeline
-//    defers instead of failing.
+//    ghlContactId already captured (F9).
 //
 // The HighLevel client is mocked — no live GHL calls. ghlPipelineMap is NOT
-// mocked: christmas/permanent/event-wedding assert against its real,
-// hardcoded pipeline ids so a drift there is caught here too.
+// mocked: christmas/permanent/event-wedding/landscape assert against its
+// real, hardcoded pipeline ids so a drift there is caught here too.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -121,8 +121,6 @@ beforeEach(() => {
   });
   hl.createOpportunity.mockResolvedValue({ id: 'opp-should-not-be-called' });
   hl.searchContacts.mockResolvedValue([]);
-  delete process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE;
-  delete process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY;
   delete process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE;
 });
 
@@ -155,14 +153,10 @@ describe('resolveLeadPipeline — per-service pipeline mapping (case a)', () => 
     expect(resolveLeadPipeline('event-wedding')?.pipelineId).toBe('YfCi5jy8Alc3oD5AfXmV');
   });
 
-  it('landscape → env-driven; null when either env var is unset', () => {
-    expect(resolveLeadPipeline('landscape')).toBeNull();
-    process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE = 'pipe-landscape';
-    expect(resolveLeadPipeline('landscape')).toBeNull(); // stage still unset
-    process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY = 'stage-landscape-entry';
+  it('landscape → the real permanent_bistro pipeline (WT-50, #117) — no env vars needed', () => {
     expect(resolveLeadPipeline('landscape')).toEqual({
-      pipelineId: 'pipe-landscape',
-      entryStageId: 'stage-landscape-entry',
+      pipelineId: 'GTFURwOGzGLBl2zsdl0N',
+      entryStageId: '7e821733-a431-4545-bc65-5e14c5f02877',
     });
   });
 
@@ -264,8 +258,8 @@ describe('syncLeadToGhl — contact.service custom field', () => {
   it('writes the field as an ARRAY when the env var is set (F4 — contact.service is a GHL CHECKBOX field)', async () => {
     process.env.HIGHLEVEL_CONTACT_FIELD_SERVICE = 'field-123';
     await syncLeadToGhl(baseLead({ service: 'landscape' }));
-    // landscape defers (no pipeline env), but the field write happens before
-    // pipeline resolution and must still fire.
+    // The field write happens before pipeline resolution and must fire
+    // regardless of which service/pipeline is resolved.
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-123', ['Landscape']);
   });
 });
@@ -426,13 +420,16 @@ describe('buildLeadNoteBody — note-forgery hardening (F12)', () => {
   });
 });
 
-describe('syncLeadToGhl — landscape deferred (case h)', () => {
-  it('returns status "deferred" and names the missing env vars, without touching the pipeline', async () => {
+describe('syncLeadToGhl — landscape syncs into the live permanent_bistro pipeline (WT-50, #117)', () => {
+  it('resolves + syncs, no env vars needed, never defers', async () => {
     const result = await syncLeadToGhl(baseLead({ service: 'landscape' }));
-    expect(result.status).toBe('deferred');
-    expect(result.syncError).toContain('HIGHLEVEL_PIPELINE_ID_LANDSCAPE');
-    expect(result.syncError).toContain('HIGHLEVEL_STAGE_LANDSCAPE_ENTRY');
-    expect(hl.findOrCreateOpportunityForContact).not.toHaveBeenCalled();
+    expect(result.status).toBe('synced');
+    expect(hl.findOrCreateOpportunityForContact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineId: 'GTFURwOGzGLBl2zsdl0N',
+        fallbackStageId: '7e821733-a431-4545-bc65-5e14c5f02877',
+      }),
+    );
   });
 });
 
