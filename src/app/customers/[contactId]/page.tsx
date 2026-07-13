@@ -10,6 +10,7 @@ import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFee
 import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
+import { getPropertiesForCustomer } from '@/lib/customers';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
@@ -110,6 +111,14 @@ export default async function CustomerDetailPage({
   const customerId: string | null =
     quotes.find(q => q.customer_id)?.customer_id ?? null;
 
+  // Property-aware rebook (WT-53): resolve this customer's properties server-side
+  // so RebookButton can scope the clone to a KNOWN building instead of falling
+  // back to a system-wide "most recently approved" guess when a customer has
+  // more than one property.
+  const rebookProperties = customerId
+    ? (await getPropertiesForCustomer(customerId)).map(p => ({ id: p.id, address: p.address }))
+    : [];
+
   return (
     <OperatorShell active="customers">
       <div className="max-w-4xl mx-auto w-full">
@@ -129,7 +138,7 @@ export default async function CustomerDetailPage({
           </div>
           <div className="shrink-0 flex items-center gap-2">
             {/* Rebook last season (Part D): hidden until the backfill populates customer_id. */}
-            {customerId && <RebookButton customerId={customerId} />}
+            {customerId && <RebookButton customerId={customerId} properties={rebookProperties} />}
             {hlUrl && (
               <a
                 href={hlUrl}
