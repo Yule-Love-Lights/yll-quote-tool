@@ -3,8 +3,8 @@ import { monthlyRevenue, revenueByService, computeInsightStats } from '@/lib/das
 import { OperatorShell } from '@/components/OperatorShell';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import { MonthlyRevenueChart, ServiceDonut } from '@/components/dashboard/insightsCharts';
-import { listItemsForMetrics, getReopenCounts } from '@/lib/dashboard/inbox/store';
-import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { listItemsForMetrics, getReopenCounts, getOperatorLabels } from '@/lib/dashboard/inbox/store';
+import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 
 export const dynamic = 'force-dynamic';
@@ -56,8 +56,14 @@ export default async function InsightsPage() {
 
   const quotes = result.rows;
   const now = new Date();
-  const [metricsRes, reopen] = await Promise.all([listItemsForMetrics(), getReopenCounts(now)]);
-  const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
+  const [metricsRes, reopen, repLabels] = await Promise.all([
+    listItemsForMetrics(),
+    getReopenCounts(now),
+    getOperatorLabels(),
+  ]);
+  const analytics = metricsRes.ok
+    ? withOperatorLabels(computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated), repLabels)
+    : null;
   const months = monthlyRevenue(quotes, now, 12);
   const byService = revenueByService(quotes);
   const stats = computeInsightStats(quotes);

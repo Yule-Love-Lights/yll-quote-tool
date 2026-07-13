@@ -82,6 +82,14 @@ function median(values: number[]): number | null {
   return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
+// #110 W7-003: measure from the customer's last INBOUND touch, falling back to
+// last_message_at on legacy rows that predate the last_inbound_at column. Shared
+// by computeResponseMetrics (headline) and medianResponseIn (trend) so the two
+// can't disagree on which timestamp "response" is measured from (WT-42).
+function inboundOf(i: MetricItem): Date | null {
+  return i.lastInboundAt ?? i.lastMessageAt;
+}
+
 export function filterByWindow(items: MetricItem[], days: number | null, now: Date): MetricItem[] {
   if (days == null) return items;
   const cutoff = now.getTime() - days * 86_400_000;
@@ -94,9 +102,6 @@ export function filterByWindow(items: MetricItem[], days: number | null, now: Da
 // ─── Main compute ─────────────────────────────────────────────────────────────
 
 export function computeResponseMetrics(items: MetricItem[], now: Date): ResponseMetrics {
-  // #110 W7-003: measure from the customer's last INBOUND (falls back to
-  // last_message_at on legacy rows that predate the last_inbound_at column).
-  const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
   const handledItems = items.filter((i) => i.status === 'handled' && inboundOf(i) && i.handledAt);
   const openItems = items.filter((i) => i.status === 'unresponded');
 
@@ -166,12 +171,12 @@ function medianResponseIn(items: MetricItem[], startMs: number, endMs: number): 
     .filter(
       (i) =>
         i.status !== 'unresponded' &&
-        i.lastMessageAt &&
+        inboundOf(i) &&
         i.handledAt &&
         (i.handledAt as Date).getTime() >= startMs &&
         (i.handledAt as Date).getTime() < endMs,
     )
-    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (i.lastMessageAt as Date).getTime()));
+    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (inboundOf(i) as Date).getTime()));
   return median(rs);
 }
 
@@ -216,4 +221,23 @@ export function computeResponseAnalytics(
     reopenRates[k] = reopenRate(reopen[k].handled, reopen[k].reopened);
   }
   return { windows, trend: computeTrend(items, now), reopen: reopenRates, truncated };
+}
+
+// ─── PS-E1: resolve the raw handled_by UUID to a readable label ──────────────
+//
+// `byRep.rep` is the raw operator_id (handled_by is a `uuid references
+// auth.users(id)` FK — see migrations/2026-06-28-dashboard-tables.sql — so the
+// write routes can't stamp an email/name there without a schema change). Resolve
+// to a display label here at read time instead: lower risk, no migration, and it
+// labels rows stamped before this fix the same as rows stamped after. 'system'
+// passes through unchanged — ResponseAnalytics renders that as "Auto-resolved".
+export function withOperatorLabels(data: ResponseAnalyticsData, labels: Map<string, string>): ResponseAnalyticsData {
+  const relabel = (m: ResponseMetrics): ResponseMetrics => ({
+    ...m,
+    byRep: m.byRep.map((r) => (r.rep === 'system' ? r : { ...r, rep: labels.get(r.rep) ?? r.rep })),
+  });
+  return {
+    ...data,
+    windows: { all: relabel(data.windows.all), '90': relabel(data.windows['90']), '30': relabel(data.windows['30']) },
+  };
 }

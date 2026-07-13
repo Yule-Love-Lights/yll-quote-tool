@@ -21,8 +21,8 @@ import { WorkflowBoard } from '@/components/dashboard/WorkflowBoard';
 import { Worklist } from '@/components/dashboard/Worklist';
 import { NeedsActionCard } from '@/components/dashboard/NeedsActionCard';
 import { ServiceSections } from '@/components/dashboard/ServiceSections';
-import { listItemsForMetrics, getReopenCounts } from '@/lib/dashboard/inbox/store';
-import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { listItemsForMetrics, getReopenCounts, getOperatorLabels } from '@/lib/dashboard/inbox/store';
+import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
 import { ReferralMetricsCard } from '@/components/dashboard/ReferralMetricsCard';
@@ -32,15 +32,18 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, invoices, metricsRes, reopen, referralMetrics] = await Promise.all([
+  const [quotes, jobs, invoices, metricsRes, reopen, referralMetrics, repLabels] = await Promise.all([
     listQuotesForDashboard(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
     listItemsForMetrics(),
     getReopenCounts(now),
     loadReferralMetrics(),
+    getOperatorLabels(),
   ]);
-  const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
+  const analytics = metricsRes.ok
+    ? withOperatorLabels(computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated), repLabels)
+    : null;
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
   const workflowBoard = computeWorkflowBoard(quotes, jobs, invoices);
