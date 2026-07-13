@@ -10,7 +10,7 @@
 // image's onError fallback).
 
 import { notFound } from 'next/navigation';
-import { Star } from 'lucide-react';
+import { Star, ShieldCheck, Wrench } from 'lucide-react';
 import { getReferralByCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getDesignByQuote } from '@/lib/designs';
@@ -109,6 +109,25 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
           <p className="mt-5 text-[17px] md:text-[19px] text-[#E0D7C1] leading-[1.6]">
             See your own house in lights, free, no visit needed.
           </p>
+
+          {/* Compact trust signal, above the fold and above the lead form
+              (PS-A3 fix): a first-time visitor sees proof before we ask for
+              contact info. */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+            <div className="inline-flex items-center gap-2 text-[14px] text-[#E0D7C1]">
+              <Star className="w-4 h-4 fill-[#E8B862] text-[#E8B862]" aria-hidden />
+              <span className="font-semibold">5.0</span>
+              <span className="text-[#A89F87]">&middot; 166 Google reviews</span>
+            </div>
+            <div className="inline-flex items-center gap-1.5 text-[13px] text-[#A89F87]">
+              <ShieldCheck className="w-4 h-4 text-[#E8B862]" aria-hidden />
+              <span>Licensed &amp; insured</span>
+            </div>
+            <div className="inline-flex items-center gap-1.5 text-[13px] text-[#A89F87]">
+              <Wrench className="w-4 h-4 text-[#E8B862]" aria-hidden />
+              <span>48-hour fix guarantee</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -161,21 +180,16 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
       {/* ── Trust ── */}
       <TrustSection />
 
-      {/* ── Static reviews line + urgency ── */}
-      <section className="w-full bg-[#0D1519] border-t border-[#1F2A23]">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16 text-center">
-          <div className="inline-flex items-center gap-2 text-[15px] text-[#E0D7C1]">
-            <Star className="w-4 h-4 fill-[#E8B862] text-[#E8B862]" aria-hidden />
-            <span className="font-semibold">5.0</span>
-            <span className="text-[#A89F87]">&middot; 166 Google reviews</span>
-          </div>
-          {bookedThrough && (
-            <p className="mt-4 text-[13px] text-[#A89F87]">
+      {/* ── Urgency line (rating moved above the fold, see hero) ── */}
+      {bookedThrough && (
+        <section className="w-full bg-[#0D1519] border-t border-[#1F2A23]">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16 text-center">
+            <p className="text-[13px] text-[#A89F87]">
               Currently booking installs through {bookedThrough}.
             </p>
-          )}
-        </div>
-      </section>
+          </div>
+        </section>
+      )}
     </main>
   );
 }
