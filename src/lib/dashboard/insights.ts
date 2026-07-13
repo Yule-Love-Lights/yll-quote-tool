@@ -1,6 +1,6 @@
 import type { DashboardQuote, ServiceType } from './types';
 import { SERVICE_TYPES } from './types';
-import { serviceTypeOf, isTerminalStatus } from './serviceMetrics';
+import { serviceTypeOf, isTerminalStatus, reachedCustomer } from './serviceMetrics';
 
 const MS_PER_DAY = 86_400_000;
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -80,10 +80,13 @@ export function computeInsightStats(quotes: DashboardQuote[]): InsightStats {
     allTotalSum += q.total ?? 0;
     // B7 (#110 W7-006): a cancelled/declined/lost quote is NOT a win even if it
     // once carried customer_approved_at — exclude it from the booked/approved
-    // rollups. It still counts as `reached` (it was sent), so closeRatio
-    // correctly treats a fallen-through deal as reached-but-not-won.
+    // rollups.
     const isApproved = !!q.customer_approved_at && !isTerminalStatus(q);
-    if (q.quote_sent_at || isApproved) reached += 1;
+    // WT-48: shared reachedCustomer() (raw sent-OR-approved), not gated on
+    // isApproved — an approved-then-cancelled quote with no sent stamp still
+    // reached the customer (they approved it) even though it fell through.
+    // Keeps closeRatio identical to dashboard Conversion (metrics.ts).
+    if (reachedCustomer(q)) reached += 1;
     if (isApproved) {
       approved += 1;
       approvedTotalSum += q.total ?? 0;

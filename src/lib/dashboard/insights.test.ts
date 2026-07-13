@@ -155,4 +155,17 @@ describe('insights — terminal statuses excluded from booked revenue (#110 W7-0
     expect(s.avgJobValue).toBe(1000); // only the one real win
     expect(s.closeRatio).toBe(0.5); // 1 won / 2 reached — the cancelled deal drags it down
   });
+
+  // WT-48: closeRatio's "reached" denominator used to be gated on the
+  // terminal-filtered "approved" flag, so an approved-then-cancelled quote
+  // with NO sent stamp dropped out of the ratio entirely instead of counting
+  // as reached-but-not-won (it clearly reached the customer — they approved
+  // it). Regression guard for the shared reachedCustomer() fix.
+  it('an approved-then-cancelled quote with no sent stamp still counts as reached', () => {
+    const s = computeInsightStats([
+      makeQuote({ quote_sent_at: '2026-06-01T00:00:00Z', customer_approved_at: '2026-06-02T00:00:00Z' }), // won
+      makeQuote({ quote_sent_at: null, customer_approved_at: '2026-06-03T00:00:00Z', status: 'cancelled' }), // reached, not won
+    ]);
+    expect(s.closeRatio).toBe(0.5); // 1 won / 2 reached (not 1/1 = 1.0)
+  });
 });

@@ -1,5 +1,5 @@
 import {
-  listQuotesForDashboard,
+  listQuotesForDashboardResult,
   listJobsForWorkflowBoard,
   listInvoicesForWorkflowBoard,
   loadNeedsActionData,
@@ -26,20 +26,38 @@ import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics'
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
 import { ReferralMetricsCard } from '@/components/dashboard/ReferralMetricsCard';
+import { DashboardErrorBanner, CappedCaveat } from '@/components/dashboard/ErrorBanner';
 
 // Always render fresh — the dashboard reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotes, jobs, invoices, metricsRes, reopen, referralMetrics] = await Promise.all([
-    listQuotesForDashboard(500),
+  const [quotesResult, jobs, invoices, metricsRes, reopen, referralMetrics] = await Promise.all([
+    listQuotesForDashboardResult(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
     listItemsForMetrics(),
     getReopenCounts(now),
     loadReferralMetrics(),
   ]);
+
+  // AUDIT FIX (dashboard-insights-error-visibility, WT-38/46): surface a
+  // visible banner instead of silently rendering a fully-populated-looking
+  // but empty dashboard ($0 KPIs, "all caught up") on a read failure — that
+  // used to be indistinguishable from a real quiet day.
+  if (!quotesResult.ok) {
+    return (
+      <OperatorShell active="home">
+        <div className="max-w-6xl mx-auto w-full">
+          <DashboardHeader />
+          <DashboardErrorBanner title="Couldn't load the dashboard." error={quotesResult.error} />
+        </div>
+      </OperatorShell>
+    );
+  }
+
+  const quotes = quotesResult.rows;
   const analytics = metricsRes.ok ? computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated) : null;
   const kpis = computeKpis(quotes, now);
   const worklist = computeWorklist(quotes, now);
@@ -57,6 +75,7 @@ export default async function DashboardPage() {
     <OperatorShell active="home">
       <div className="max-w-6xl mx-auto w-full">
         <DashboardHeader />
+        {quotesResult.capped && <CappedCaveat limit={quotesResult.limit} />}
         <KpiStrip kpis={kpis} />
         {/* Early-stage worklist (drafts / unsent) above the late-stage
             Needs-Action money queue (overdue follow-ups / deposits / balances). */}

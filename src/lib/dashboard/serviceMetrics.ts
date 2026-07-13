@@ -21,6 +21,24 @@ export function isTerminalStatus(q: DashboardQuote): boolean {
   return s === 'cancelled' || s === 'declined' || s === 'lost';
 }
 
+/**
+ * A quote "reached" the customer if it was sent OR approved, using the RAW
+ * timestamps — approval means the customer definitely saw/approved it, even
+ * when quote_sent_at was never stamped (offline/imported close — /approve
+ * sets customer_approved_at only) or the order was later cancelled/declined/
+ * lost. Terminal status gates whether a quote counts as WON (isTerminalStatus
+ * above), not whether it reached the customer.
+ *
+ * WT-48 fix: dashboard Conversion (metrics.ts) and Insights Close ratio
+ * (insights.ts) each computed this denominator differently — Insights gated
+ * it on the terminal-filtered "approved" flag, so an approved-then-cancelled
+ * quote with no sent stamp silently dropped out of the ratio instead of
+ * counting as reached-but-not-won. Both now share this one function.
+ */
+export function reachedCustomer(q: DashboardQuote): boolean {
+  return !!(q.quote_sent_at || q.customer_approved_at);
+}
+
 /** NULL service_type rows are Holiday (the legacy default). */
 export function serviceTypeOf(q: DashboardQuote): ServiceType {
   return q.service_type ?? 'holiday';
