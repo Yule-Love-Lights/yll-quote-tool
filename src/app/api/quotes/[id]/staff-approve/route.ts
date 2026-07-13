@@ -68,7 +68,8 @@ type QuoteRow = {
   result: QuoteResult | null;
   approval_snapshot: Record<string, unknown> | null;
   is_test: boolean;
-  // #88 P6b-2 — needed to freeze the warranty version on a permanent staff approval.
+  // #88 P6b-2 (generalized WT-56/65/07) — needed to freeze the right vertical's
+  // warranty version on a staff approval.
   service_type: string | null;
 };
 
@@ -118,12 +119,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const operator = await getOperator();
   const approvedAt = new Date().toISOString();
 
-  // #88 P6b-2 — a permanent job still commits the customer to the warranty terms,
-  // even on a verbal/phone (staff) approval. Freeze the current warranty copy +
-  // version so the booked job records exactly which terms apply, regardless of the
-  // approval channel. Non-permanent quotes have no such card → omit it.
-  const permanentWarranty =
-    quote.service_type === 'permanent' ? (await getAppSettings()).permanentWarranty : null;
+  // #88 P6b-2 (generalized WT-56/65/07) — every job still commits the customer to
+  // its vertical's warranty terms, even on a verbal/phone (staff) approval.
+  // Freeze the current warranty copy + version for whichever vertical this quote
+  // actually is, so the booked job records exactly which terms apply, regardless
+  // of the approval channel. The other three fields stay null/omitted.
+  const isPermanent = quote.service_type === 'permanent';
+  const isEvent = quote.service_type === 'event';
+  const isPermanentBistro = quote.service_type === 'permanent_bistro';
+  const isHoliday = !isPermanent && !isEvent && !isPermanentBistro;
+  const settings = await getAppSettings();
+  const permanentWarranty = isPermanent ? settings.permanentWarranty : null;
+  const holidayWarranty = isHoliday ? settings.holidayWarranty : null;
+  const eventWarranty = isEvent ? settings.eventWarranty : null;
+  const bistroWarranty = isPermanentBistro ? settings.bistroWarranty : null;
 
   // PS-C1/WT-L1: freeze a minimal customerSelection — the operator approved
   // the quote AS-IS, so the only honest selection is "every line item that
@@ -155,6 +164,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       ? { customerSelection: { packageId: 'D' as const, selectedItemIds } }
       : {}),
     ...(permanentWarranty ? { permanentWarranty } : {}),
+    ...(holidayWarranty ? { holidayWarranty } : {}),
+    ...(eventWarranty ? { eventWarranty } : {}),
+    ...(bistroWarranty ? { bistroWarranty } : {}),
   };
 
   // Atomic conditional write: .is('customer_approved_at', null) is the

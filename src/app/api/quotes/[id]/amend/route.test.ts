@@ -236,6 +236,29 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(snap.customerSelection?.colorIds).toEqual(['warm-white']);
   });
 
+  // WT-56/65/07 — the same generic-spread guarantee covers holiday/event/bistro's
+  // frozen warranty fields too (amend never touches approval_snapshot's warranty
+  // keys directly; it only appends to `amendments`).
+  it('preserves a frozen holidayWarranty across an amend', async () => {
+    const frozen = {
+      ...BOOKED_QUOTE,
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 5000 },
+        pricing: { total: 5000 },
+        holidayWarranty: { eyebrow: 'Your Protection', heading: 'H', bullets: ['a'], version: 4 },
+        amendments: [],
+      },
+    };
+    const sb = makeSb(frozen);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    await POST(req({ reason: 'tweak' }), ctx());
+    const snap = sb.updates.quotes[0].approval_snapshot as { holidayWarranty?: { version: number } };
+    expect(snap.holidayWarranty?.version).toBe(4); // survived the spread
+  });
+
   it('reopens an already-PAID invoice to awaiting_payment when amended up', async () => {
     const sb = makeSb(BOOKED_QUOTE);
     sbRef.current = sb.client;

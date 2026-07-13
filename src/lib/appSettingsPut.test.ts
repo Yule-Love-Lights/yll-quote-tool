@@ -10,6 +10,7 @@ vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }))
 
 import { putAppSettings } from './appSettings';
 import { DEFAULT_PERMANENT_WARRANTY } from './permanent/types';
+import { DEFAULT_HOLIDAY_WARRANTY, DEFAULT_EVENT_WARRANTY, DEFAULT_BISTRO_WARRANTY } from './warranty/types';
 
 type StoredRow = { key: string; value: unknown };
 
@@ -164,5 +165,64 @@ describe('putAppSettings — permanentWarranty version bump (#88 P6b-2)', () => 
 
     const r2 = await putAppSettings({ permanentWarranty: { eyebrow: 'Our Guarantee' } });
     expect(r2.permanentWarranty.version).toBe(4);
+  });
+});
+
+// WT-56/65/07 — the same version-bump mechanism, generalized to the other three
+// verticals, each stored under its OWN key and independently versioned.
+describe('putAppSettings — holiday/event/bistro warranty version bump (WT-56/65/07)', () => {
+  it('bumps holidayWarranty version by 1 when the copy changes, independent of the other keys', async () => {
+    const fake = makeFake([]); // unconfigured → defaults (all version 1)
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({ holidayWarranty: { heading: 'Rock solid.' } });
+
+    expect(result.holidayWarranty.heading).toBe('Rock solid.');
+    expect(result.holidayWarranty.version).toBe(DEFAULT_HOLIDAY_WARRANTY.version + 1); // 2
+    // The other three verticals are untouched by this patch.
+    expect(result.eventWarranty.version).toBe(DEFAULT_EVENT_WARRANTY.version);
+    expect(result.bistroWarranty.version).toBe(DEFAULT_BISTRO_WARRANTY.version);
+    expect(result.permanentWarranty.version).toBe(DEFAULT_PERMANENT_WARRANTY.version);
+    expect(fake.upserts.flat().some((r) => r.key === 'holidayWarranty')).toBe(true);
+    expect(fake.upserts.flat().some((r) => r.key === 'eventWarranty')).toBe(false);
+  });
+
+  it('does NOT bump eventWarranty when the saved copy is byte-identical to the current copy', async () => {
+    const fake = makeFake([
+      { key: 'eventWarranty', value: { ...DEFAULT_EVENT_WARRANTY, version: 5 } },
+    ]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({
+      eventWarranty: {
+        eyebrow: DEFAULT_EVENT_WARRANTY.eyebrow,
+        heading: DEFAULT_EVENT_WARRANTY.heading,
+        bullets: DEFAULT_EVENT_WARRANTY.bullets,
+      },
+    });
+
+    expect(result.eventWarranty.version).toBe(5); // no copy change → no bump
+  });
+
+  it('ignores a client-supplied version on bistroWarranty (server-authoritative)', async () => {
+    const fake = makeFake([
+      { key: 'bistroWarranty', value: { ...DEFAULT_BISTRO_WARRANTY, version: 3 } },
+    ]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({ bistroWarranty: { version: 99 } as never });
+
+    expect(result.bistroWarranty.version).toBe(3); // forged version discarded
+  });
+
+  it('caps bistroWarranty bullets at 4 slots (its fixed icon count, not permanent’s 6)', async () => {
+    const fake = makeFake([]);
+    sbRef.current = fake.client;
+
+    const result = await putAppSettings({
+      bistroWarranty: { bullets: ['a', 'b', 'c', 'd', 'e', 'f'] },
+    });
+
+    expect(result.bistroWarranty.bullets).toHaveLength(4);
   });
 });

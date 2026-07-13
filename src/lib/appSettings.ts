@@ -34,6 +34,16 @@ import {
   DEFAULT_PERMANENT_WARRANTY,
   type PermanentWarranty,
 } from './permanent/types';
+// Generic "Your Protection" warranty copy (WT-56/65/07) — the same Settings-
+// editable + versioned + approval-frozen mechanism permanent's warranty
+// pioneered, generalized for holiday/event/permanent-bistro (previously
+// hardcoded in RiskReversal.tsx with no settings hook).
+import {
+  DEFAULT_HOLIDAY_WARRANTY,
+  DEFAULT_EVENT_WARRANTY,
+  DEFAULT_BISTRO_WARRANTY,
+  type ServiceWarranty,
+} from './warranty/types';
 
 // Customer-facing portal settings (Settings → Customer Portal).
 export type PortalSettings = {
@@ -60,6 +70,11 @@ export type SwatchSettings = {
 const WARRANTY_TEXT_MAX = 160;
 const WARRANTY_BULLET_MAX = 500;
 const WARRANTY_MAX_BULLETS = 6;
+// WT-56/65/07 — the other three verticals' bullet caps, matching their fixed
+// icon-slot count in RiskReversal.tsx (holiday/event: 5 icons; bistro: 4).
+const HOLIDAY_WARRANTY_MAX_BULLETS = 5;
+const EVENT_WARRANTY_MAX_BULLETS = 5;
+const BISTRO_WARRANTY_MAX_BULLETS = 4;
 
 export type AppSettings = {
   colors: BulbColor[];
@@ -80,6 +95,12 @@ export type AppSettings = {
   // Permanent Lighting "Your Protection" card copy (#88 P6b-2) — Settings-editable
   // + versioned; frozen into a permanent quote's approval snapshot.
   permanentWarranty: PermanentWarranty;
+  // Holiday / Event / Permanent-Bistro "Your Protection" card copy (WT-56/65/07)
+  // — the same Settings-editable + versioned + approval-frozen mechanism as
+  // permanentWarranty above, generalized to the other three verticals.
+  holidayWarranty: ServiceWarranty;
+  eventWarranty: ServiceWarranty;
+  bistroWarranty: ServiceWarranty;
   // Permanent Lighting portal color swatches (#88 P6b-4) — the permanent quote's
   // color presets + build-your-own palette, Settings-editable like the holiday
   // `swatches` (#101) but a separate list.
@@ -105,6 +126,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   permanentBistroRates: DEFAULT_PERMANENT_BISTRO_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
+  holidayWarranty: DEFAULT_HOLIDAY_WARRANTY,
+  eventWarranty: DEFAULT_EVENT_WARRANTY,
+  bistroWarranty: DEFAULT_BISTRO_WARRANTY,
   permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
 };
 
@@ -124,20 +148,21 @@ export function sanitizePermanentRates(v: unknown): Partial<PermanentRates> {
   return out;
 }
 
-// Sanitize a permanent-warranty object to its known fields (#88 P6b-2). Strings
-// are trimmed + capped; bullets keep their SLOT positions (a blank slot is a
-// hidden bullet, its icon dropped with it), capped at WARRANTY_MAX_BULLETS. A
-// valid stored `version` is preserved (the read path); putAppSettings recomputes
-// it on write. Unknown/invalid fields are dropped — the caller merges over defaults.
-export function sanitizePermanentWarranty(v: unknown): Partial<PermanentWarranty> {
+// Sanitize a warranty-copy object to its known fields (#88 P6b-2, generalized
+// WT-56/65/07). Strings are trimmed + capped; bullets keep their SLOT positions
+// (a blank slot is a hidden bullet, its icon dropped with it), capped at
+// maxBullets (each vertical's fixed icon-slot count). A valid stored `version`
+// is preserved (the read path); putAppSettings recomputes it on write.
+// Unknown/invalid fields are dropped — the caller merges over defaults.
+function sanitizeWarrantyCopy(v: unknown, maxBullets: number): Partial<ServiceWarranty> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
   const r = v as Record<string, unknown>;
-  const out: Partial<PermanentWarranty> = {};
+  const out: Partial<ServiceWarranty> = {};
   if (typeof r.eyebrow === 'string') out.eyebrow = r.eyebrow.trim().slice(0, WARRANTY_TEXT_MAX);
   if (typeof r.heading === 'string') out.heading = r.heading.trim().slice(0, WARRANTY_TEXT_MAX);
   if (Array.isArray(r.bullets)) {
     out.bullets = r.bullets
-      .slice(0, WARRANTY_MAX_BULLETS)
+      .slice(0, maxBullets)
       .map((b) => (typeof b === 'string' ? b.trim().slice(0, WARRANTY_BULLET_MAX) : ''));
   }
   if (typeof r.version === 'number' && Number.isFinite(r.version) && r.version >= 1) {
@@ -146,15 +171,48 @@ export function sanitizePermanentWarranty(v: unknown): Partial<PermanentWarranty
   return out;
 }
 
+export function sanitizePermanentWarranty(v: unknown): Partial<PermanentWarranty> {
+  return sanitizeWarrantyCopy(v, WARRANTY_MAX_BULLETS);
+}
+export function sanitizeHolidayWarranty(v: unknown): Partial<ServiceWarranty> {
+  return sanitizeWarrantyCopy(v, HOLIDAY_WARRANTY_MAX_BULLETS);
+}
+export function sanitizeEventWarranty(v: unknown): Partial<ServiceWarranty> {
+  return sanitizeWarrantyCopy(v, EVENT_WARRANTY_MAX_BULLETS);
+}
+export function sanitizeBistroWarranty(v: unknown): Partial<ServiceWarranty> {
+  return sanitizeWarrantyCopy(v, BISTRO_WARRANTY_MAX_BULLETS);
+}
+
 // Whether two warranty records display the SAME copy (version-independent) — used
-// by putAppSettings to decide when to bump the version.
-function warrantyCopyEqual(a: PermanentWarranty, b: PermanentWarranty): boolean {
+// by putAppSettings to decide when to bump the version. PermanentWarranty and
+// ServiceWarranty are structurally identical, so this serves all four verticals.
+function warrantyCopyEqual(a: ServiceWarranty, b: ServiceWarranty): boolean {
   return (
     a.eyebrow === b.eyebrow &&
     a.heading === b.heading &&
     a.bullets.length === b.bullets.length &&
     a.bullets.every((t, i) => t === b.bullets[i])
   );
+}
+
+// Merge a sanitized warranty patch over the current stored copy and RECOMPUTE
+// the version: bump by 1 when the displayed copy changed, keep it otherwise. The
+// patch's own `version` is discarded so a client can't freeze/forge it — the
+// version is server-authoritative, which is what makes the approval-snapshot
+// freeze trustworthy. Shared by all four verticals' putAppSettings patch blocks.
+function bumpedWarranty(
+  current: ServiceWarranty,
+  patch: unknown,
+  sanitize: (v: unknown) => Partial<ServiceWarranty>,
+): ServiceWarranty {
+  const sanitized = sanitize(patch);
+  delete sanitized.version;
+  const mergedCopy: ServiceWarranty = { ...current, ...sanitized, version: current.version };
+  return {
+    ...mergedCopy,
+    version: warrantyCopyEqual(mergedCopy, current) ? current.version : current.version + 1,
+  };
 }
 
 // ── Validators (also used by the API route on write) ────────────────────────
@@ -348,6 +406,9 @@ function settingsFromMap(map: Map<string, unknown>): AppSettings {
     permanentBistroRates: sanitizePermanentBistroRates(map.get('permanentBistroRates')),
     permanentRates: { ...DEFAULT_PERMANENT_RATES, ...sanitizePermanentRates(map.get('permanentRates')) },
     permanentWarranty: { ...DEFAULT_PERMANENT_WARRANTY, ...sanitizePermanentWarranty(map.get('permanentWarranty')) },
+    holidayWarranty: { ...DEFAULT_HOLIDAY_WARRANTY, ...sanitizeHolidayWarranty(map.get('holidayWarranty')) },
+    eventWarranty: { ...DEFAULT_EVENT_WARRANTY, ...sanitizeEventWarranty(map.get('eventWarranty')) },
+    bistroWarranty: { ...DEFAULT_BISTRO_WARRANTY, ...sanitizeBistroWarranty(map.get('bistroWarranty')) },
     permanentSwatches: {
       schemes: storedPermSchemes ?? DEFAULT_PERMANENT_SWATCHES.schemes,
       buildableColorIds: storedPermBuildable ?? DEFAULT_PERMANENT_SWATCHES.buildableColorIds,
@@ -385,6 +446,11 @@ export async function putAppSettings(patch: {
   // Warranty copy patch (#88 P6b-2). Any `version` on the patch is IGNORED —
   // putAppSettings recomputes it (bumps when the copy actually changed).
   permanentWarranty?: Partial<PermanentWarranty>;
+  // Holiday/event/bistro warranty copy patches (WT-56/65/07) — same
+  // server-authoritative version-bump behavior as permanentWarranty above.
+  holidayWarranty?: Partial<ServiceWarranty>;
+  eventWarranty?: Partial<ServiceWarranty>;
+  bistroWarranty?: Partial<ServiceWarranty>;
   // Permanent swatch list patch (#88 P6b-4) — same shape/validation as swatches.
   permanentSwatches?: Partial<SwatchSettings>;
 }): Promise<AppSettings> {
@@ -465,27 +531,28 @@ export async function putAppSettings(patch: {
     map.set('permanentRates', value);
   }
 
+  // Warranty copy patches (#88 P6b-2, generalized WT-56/65/07) — each vertical's
+  // version is independent, bumped only when THAT vertical's displayed copy
+  // changes (see bumpedWarranty above).
   if (patch.permanentWarranty !== undefined) {
-    // Merge the sanitized copy over the current stored copy (a partial write keeps
-    // the other fields), then RECOMPUTE the version: bump by 1 when the displayed
-    // copy changed, keep it otherwise. The patch's own `version` is discarded so a
-    // client can't freeze/forge it — the version is server-authoritative, which is
-    // what makes the approval-snapshot freeze trustworthy.
-    const sanitized = sanitizePermanentWarranty(patch.permanentWarranty);
-    delete sanitized.version;
-    const mergedCopy: PermanentWarranty = {
-      ...current.permanentWarranty,
-      ...sanitized,
-      version: current.permanentWarranty.version,
-    };
-    const value: PermanentWarranty = {
-      ...mergedCopy,
-      version: warrantyCopyEqual(mergedCopy, current.permanentWarranty)
-        ? current.permanentWarranty.version
-        : current.permanentWarranty.version + 1,
-    };
+    const value = bumpedWarranty(current.permanentWarranty, patch.permanentWarranty, sanitizePermanentWarranty);
     rows.push({ key: 'permanentWarranty', value });
     map.set('permanentWarranty', value);
+  }
+  if (patch.holidayWarranty !== undefined) {
+    const value = bumpedWarranty(current.holidayWarranty, patch.holidayWarranty, sanitizeHolidayWarranty);
+    rows.push({ key: 'holidayWarranty', value });
+    map.set('holidayWarranty', value);
+  }
+  if (patch.eventWarranty !== undefined) {
+    const value = bumpedWarranty(current.eventWarranty, patch.eventWarranty, sanitizeEventWarranty);
+    rows.push({ key: 'eventWarranty', value });
+    map.set('eventWarranty', value);
+  }
+  if (patch.bistroWarranty !== undefined) {
+    const value = bumpedWarranty(current.bistroWarranty, patch.bistroWarranty, sanitizeBistroWarranty);
+    rows.push({ key: 'bistroWarranty', value });
+    map.set('bistroWarranty', value);
   }
 
   if (rows.length > 0) {

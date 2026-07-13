@@ -17,6 +17,9 @@ import { DEFAULT_PERMANENT_RATES, DEFAULT_PERMANENT_WARRANTY } from './permanent
 import { DEFAULT_PERMANENT_BISTRO_RATES } from './permanentBistro/types';
 // permanentScenes is client-safe — the permanent-swatches fallback.
 import { DEFAULT_PERMANENT_SWATCHES } from './design/permanentScenes';
+// warranty/types is client-safe (zero imports) — the holiday/event/bistro
+// warranty fallback (WT-56/65/07, generalizing permanentWarranty above).
+import { DEFAULT_HOLIDAY_WARRANTY, DEFAULT_EVENT_WARRANTY, DEFAULT_BISTRO_WARRANTY } from './warranty/types';
 // Type only — never import a runtime value from appSettings here (it pulls the
 // server-only Supabase client into the browser bundle).
 import type { AppSettings } from './appSettings';
@@ -34,6 +37,9 @@ const FALLBACK: AppSettings = {
   permanentBistroRates: DEFAULT_PERMANENT_BISTRO_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
+  holidayWarranty: DEFAULT_HOLIDAY_WARRANTY,
+  eventWarranty: DEFAULT_EVENT_WARRANTY,
+  bistroWarranty: DEFAULT_BISTRO_WARRANTY,
   permanentSwatches: DEFAULT_PERMANENT_SWATCHES,
 };
 

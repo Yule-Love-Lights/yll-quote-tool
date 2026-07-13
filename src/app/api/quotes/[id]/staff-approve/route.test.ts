@@ -324,4 +324,55 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     expect(snapshot.staffApproved).toBeTruthy();
     expect(snapshot.permanentWarranty).toBeUndefined();
   });
+
+  // WT-56/65/07 — the same freeze, generalized to holiday/event/bistro: a staff
+  // (verbal/phone) approval still commits the customer to that vertical's terms.
+  it('freezes holidayWarranty on a HOLIDAY staff approval and omits the other three', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, service_type: 'holiday' });
+    sbRef.current = client;
+
+    await POST(makeReq(), ctx());
+    const snapshot = updatePayloads[0].approval_snapshot as {
+      holidayWarranty?: { version: number; bullets: string[] };
+      eventWarranty?: unknown;
+      bistroWarranty?: unknown;
+      permanentWarranty?: unknown;
+    };
+    expect(snapshot.holidayWarranty).toBeTruthy();
+    expect(snapshot.holidayWarranty!.version).toBe(1);
+    expect(snapshot.holidayWarranty!.bullets).toHaveLength(5);
+    expect(snapshot.eventWarranty).toBeUndefined();
+    expect(snapshot.bistroWarranty).toBeUndefined();
+    expect(snapshot.permanentWarranty).toBeUndefined();
+  });
+
+  it('freezes eventWarranty on an EVENT staff approval', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, service_type: 'event' });
+    sbRef.current = client;
+
+    await POST(makeReq(), ctx());
+    const snapshot = updatePayloads[0].approval_snapshot as {
+      eventWarranty?: { version: number; bullets: string[] };
+      holidayWarranty?: unknown;
+    };
+    expect(snapshot.eventWarranty).toBeTruthy();
+    expect(snapshot.eventWarranty!.version).toBe(1);
+    expect(snapshot.eventWarranty!.bullets).toHaveLength(5);
+    expect(snapshot.holidayWarranty).toBeUndefined();
+  });
+
+  it('freezes bistroWarranty on a PERMANENT_BISTRO staff approval', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, service_type: 'permanent_bistro' });
+    sbRef.current = client;
+
+    await POST(makeReq(), ctx());
+    const snapshot = updatePayloads[0].approval_snapshot as {
+      bistroWarranty?: { version: number; bullets: string[] };
+      holidayWarranty?: unknown;
+    };
+    expect(snapshot.bistroWarranty).toBeTruthy();
+    expect(snapshot.bistroWarranty!.version).toBe(1);
+    expect(snapshot.bistroWarranty!.bullets).toHaveLength(4);
+    expect(snapshot.holidayWarranty).toBeUndefined();
+  });
 });

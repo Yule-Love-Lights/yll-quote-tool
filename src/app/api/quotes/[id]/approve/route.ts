@@ -67,6 +67,7 @@ import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
 import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
+import type { ServiceWarranty } from '@/lib/warranty/types';
 // Audit fix (g1-route): server-side recompute of the approved selection mirrors
 // exactly what the portal's SelectionContext displays, so we never freeze a
 // client-tampered total/deposit/discount into the authoritative snapshot.
@@ -248,6 +249,12 @@ type ApprovalSnapshot = {
   // booked customer's terms. Set only for permanent quotes; null for holiday/event
   // (they have no such card) and for snapshots written before this field existed.
   permanentWarranty: PermanentWarranty | null;
+  // WT-56/65/07 — the same freeze, generalized to holiday/event/permanent-bistro.
+  // Exactly one of these four warranty fields is non-null on any given snapshot,
+  // matching the quote's own service_type.
+  holidayWarranty: ServiceWarranty | null;
+  eventWarranty: ServiceWarranty | null;
+  bistroWarranty: ServiceWarranty | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -297,7 +304,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // resolve the customer's light-color choice further BELOW (once service_type is
   // known): a PERMANENT quote accepts a fixed permanent-only scheme set, a holiday
   // quote the operator's live swatch list.
-  const { swatches, permanentWarranty, permanentSwatches, portal } = await getAppSettings();
+  const {
+    swatches,
+    permanentWarranty,
+    holidayWarranty,
+    eventWarranty,
+    bistroWarranty,
+    permanentSwatches,
+    portal,
+  } = await getAppSettings();
   // #40 — the customer's early-install timing choice + the resulting discount.
   // Recorded in the snapshot (the authoritative record of what they approved);
   // the discounted amount is already baked into currentTotal/currentDeposit.
@@ -387,6 +402,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const isEvent = quote.service_type === 'event';
   const isPermanentBistro = quote.service_type === 'permanent_bistro';
   const noHolidayFees = isPermanent || isEvent || isPermanentBistro;
+  // WT-56/65/07 — anything that isn't one of the three named verticals reads as
+  // holiday (matches DEFAULT_SERVICE_TYPE: null/undefined/'holiday' all default
+  // here), the same fallback the rest of this route already uses.
+  const isHoliday = !noHolidayFees;
   const rushSelected = noHolidayFees ? false : reqRushSelected;
   const takedownSelected = noHolidayFees ? false : reqTakedownSelected;
   // Audit fix (approve-discount-enforce): staff can hide the Sep/Oct early-install
@@ -597,8 +616,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
     pricing: quote.result,
     signature,
-    // #88 P6b-2 — freeze the warranty copy + version for permanent quotes only.
+    // #88 P6b-2 (generalized WT-56/65/07) — freeze the warranty copy + version
+    // for whichever vertical this quote actually is; the other three stay null.
     permanentWarranty: isPermanent ? permanentWarranty : null,
+    holidayWarranty: isHoliday ? holidayWarranty : null,
+    eventWarranty: isEvent ? eventWarranty : null,
+    bistroWarranty: isPermanentBistro ? bistroWarranty : null,
   };
 
   // Audit fix (g1-route, #43): GUARDED conditional update closes the read-then-

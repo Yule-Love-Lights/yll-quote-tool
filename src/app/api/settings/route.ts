@@ -13,8 +13,12 @@ import {
   sanitizeSwatches,
   sanitizePermanentRates,
   sanitizePermanentWarranty,
+  sanitizeHolidayWarranty,
+  sanitizeEventWarranty,
+  sanitizeBistroWarranty,
   isPlainObject,
 } from '@/lib/appSettings';
+import type { ServiceWarranty } from '@/lib/warranty/types';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 
 export const runtime = 'nodejs';
@@ -59,6 +63,9 @@ export async function PUT(req: NextRequest) {
     permanentBistroRates,
     permanentRates,
     permanentWarranty,
+    holidayWarranty,
+    eventWarranty,
+    bistroWarranty,
     permanentSwatches,
   } = body as Record<string, unknown>;
   if (
@@ -71,6 +78,9 @@ export async function PUT(req: NextRequest) {
     permanentBistroRates === undefined &&
     permanentRates === undefined &&
     permanentWarranty === undefined &&
+    holidayWarranty === undefined &&
+    eventWarranty === undefined &&
+    bistroWarranty === undefined &&
     permanentSwatches === undefined
   ) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
@@ -130,34 +140,47 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
-  // Warranty copy (#88 P6b-2): must yield at least one recognized field
-  // (eyebrow/heading/bullets) — a `version`-only patch is not an edit (the version
-  // is server-managed), so it's rejected as "nothing recognized" rather than
-  // silently returning 200 with the old copy.
-  if (permanentWarranty !== undefined) {
-    const s = sanitizePermanentWarranty(permanentWarranty);
+  // Warranty copy (#88 P6b-2, generalized WT-56/65/07): must yield at least one
+  // recognized field (eyebrow/heading/bullets) — a `version`-only patch is not an
+  // edit (the version is server-managed), so it's rejected as "nothing
+  // recognized" rather than silently returning 200 with the old copy.
+  //
+  // Foot-gun guard (P6b-2 review GAP 5): a provided heading can't be blanked and
+  // a provided bullets array can't be ALL-blank — either would ship a heading-less
+  // / bullet-less protection card to a booked customer. (Individual blank bullet
+  // slots are still allowed — they just hide that one bullet.)
+  function warrantyPatchError(
+    key: string,
+    patch: unknown,
+    sanitize: (v: unknown) => Partial<ServiceWarranty>,
+  ): string | null {
+    const s = sanitize(patch);
     if (s.eyebrow === undefined && s.heading === undefined && s.bullets === undefined) {
-      return NextResponse.json(
-        { error: 'permanentWarranty must have an eyebrow, heading, and/or bullets array' },
-        { status: 400 },
-      );
+      return `${key} must have an eyebrow, heading, and/or bullets array`;
     }
-    // Foot-gun guard (P6b-2 review GAP 5): a provided heading can't be blanked and
-    // a provided bullets array can't be ALL-blank — either would ship a heading-less
-    // / bullet-less protection card to a booked customer. (Individual blank bullet
-    // slots are still allowed — they just hide that one bullet.)
     if (s.heading !== undefined && s.heading === '') {
-      return NextResponse.json(
-        { error: 'permanentWarranty heading cannot be blank' },
-        { status: 400 },
-      );
+      return `${key} heading cannot be blank`;
     }
     if (s.bullets !== undefined && s.bullets.every((b) => b === '')) {
-      return NextResponse.json(
-        { error: 'permanentWarranty needs at least one non-blank bullet' },
-        { status: 400 },
-      );
+      return `${key} needs at least one non-blank bullet`;
     }
+    return null;
+  }
+  if (permanentWarranty !== undefined) {
+    const err = warrantyPatchError('permanentWarranty', permanentWarranty, sanitizePermanentWarranty);
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
+  }
+  if (holidayWarranty !== undefined) {
+    const err = warrantyPatchError('holidayWarranty', holidayWarranty, sanitizeHolidayWarranty);
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
+  }
+  if (eventWarranty !== undefined) {
+    const err = warrantyPatchError('eventWarranty', eventWarranty, sanitizeEventWarranty);
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
+  }
+  if (bistroWarranty !== undefined) {
+    const err = warrantyPatchError('bistroWarranty', bistroWarranty, sanitizeBistroWarranty);
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
   }
   try {
     const settings = await putAppSettings({
@@ -170,6 +193,9 @@ export async function PUT(req: NextRequest) {
       permanentBistroRates: permanentBistroRates as never,
       permanentRates: permanentRates as never,
       permanentWarranty: permanentWarranty as never,
+      holidayWarranty: holidayWarranty as never,
+      eventWarranty: eventWarranty as never,
+      bistroWarranty: bistroWarranty as never,
       permanentSwatches: permanentSwatches as never,
     });
     return NextResponse.json(settings);
