@@ -338,7 +338,13 @@
       // the callbtn's own <a> tag rendered its label in green-on-green.
       'a.yll-lf-sticky-callbtn{background:var(--yll-lf-green);color:#fff;}',
       '.yll-lf-sticky-callbtn:hover{background:var(--yll-lf-green-dark);}',
-      '.yll-lf-sticky-quotebtn{background:var(--yll-lf-red);color:#fff;}',
+      // owner-reported (live): the WP/Elementor theme styles bare <button>s
+      // green with enough weight to override our plain-class red here — the
+      // callbtn dodges it because it's an <a>. Win with an ancestor-scoped
+      // selector + !important so no host button rule can repaint the "Get a
+      // Quote" CTA. (The pills are <div role=radio> and the submit is meant to
+      // be green, so this button was the only one visibly wrong.)
+      '.yll-lf-sticky .yll-lf-sticky-quotebtn{background:var(--yll-lf-red)!important;color:#fff!important;}',
       '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
       'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
       // desktop (>=768px): ONE full-width inline bar (owner: use the WHOLE
