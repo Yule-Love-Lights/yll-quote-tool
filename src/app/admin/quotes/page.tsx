@@ -109,7 +109,7 @@ export default function QuotesAdminPage() {
   const adminFetch = async (url: string, init: RequestInit): Promise<Response> => {
     const res = await fetch(url, init);
     if (res.status === 401) {
-      window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+      window.location.assign(`/login?from=${encodeURIComponent(window.location.pathname)}`);
     }
     return res;
   };

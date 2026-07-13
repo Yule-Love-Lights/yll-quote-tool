@@ -825,9 +825,9 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
     const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
 
     // No back, so no 'C'. Front+sides equals the whole-home id set, so 'D' is
-    // suppressed as redundant (derivePackagesPermanent). Only A and B exist:
-    // the OLD hardcoded 'C' fallback matched NEITHER.
-    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B']);
+    // suppressed as redundant (derivePackagesPermanent), leaving only 'B'
+    // (front + sides). The OLD hardcoded 'C' fallback matched NEITHER 'B' nor 'D'.
+    expect(portal.packages.map((p) => p.id)).toEqual(['B']);
     const tierB = portal.packages.find((p) => p.id === 'B')!;
     expect(tierB.total).toBeGreaterThan(0);
     expect(portal.approval!.packageId).toBe('B'); // the bigger real package (front + sides)
