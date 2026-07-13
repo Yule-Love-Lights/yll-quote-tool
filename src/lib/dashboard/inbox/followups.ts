@@ -2,16 +2,11 @@
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
-// WIRED: runQuoteToolReconcile (sync.ts) calls quoteFollowUpDecision then
-// store.ts's ensureFollowUp, which calls quoteSentNoReplyFollowUp below.
-//
-// ⚠️ WT-44 (partial): the /inbox "Follow-up reminder (days)" setting
-// (getFollowUpDays, settings.ts) is NOT yet threaded into that chain —
-// store.ts's ensureFollowUp doesn't accept an afterDays override, so every
-// created follow-up still uses DEFAULT_FOLLOW_UP_DAYS below regardless of the
-// setting. Closing this needs a small additive change to ensureFollowUp
-// (accept `afterDays?: number`, forward it here) — out of scope for a
-// sync.ts/followups.ts-only fix since store.ts is owned by another task.
+// WIRED: runQuoteToolReconcile (sync.ts) reads the /inbox "Follow-up reminder
+// (days)" setting (getFollowUpDays, settings.ts) once per reconcile and passes
+// it as `afterDays` into store.ts's ensureFollowUp, which forwards it to
+// quoteSentNoReplyFollowUp below. So the setting drives the strip cadence
+// (WT-44 fully threaded); DEFAULT_FOLLOW_UP_DAYS is only the fallback.
 
 import type { NewFollowUp } from './types';
 import { etDayKey } from './normalize';

@@ -684,15 +684,24 @@ export async function ensureFollowUp(input: {
     .limit(1);
   if (data && data.length > 0) return; // a pending one already exists — don't duplicate
   const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
-  await sb.from('follow_ups').insert({
-    contact_id: fu.contactId,
-    inbox_item_id: fu.inboxItemId,
-    due_at: fu.dueAt.toISOString(),
-    reason: fu.reason,
-    status: fu.status,
-    assigned_to: fu.assignedTo,
-    created_by: fu.createdBy,
-  });
+  // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
+  // with no status predicate, so once a prior nudge is marked 'done' a plain
+  // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
+  // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
+  // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
+  // the early-return above, so this never resets a live pending nudge).
+  await sb.from('follow_ups').upsert(
+    {
+      contact_id: fu.contactId,
+      inbox_item_id: fu.inboxItemId,
+      due_at: fu.dueAt.toISOString(),
+      reason: fu.reason,
+      status: fu.status,
+      assigned_to: fu.assignedTo,
+      created_by: fu.createdBy,
+    },
+    { onConflict: 'inbox_item_id,reason' },
+  );
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).

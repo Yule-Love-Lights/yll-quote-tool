@@ -438,9 +438,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     let nextId = rows.length + 1;
     function table() {
       const filters: Record<string, unknown> = {};
-      let mode: 'select' | 'insert' | 'update' | null = null;
+      let mode: 'select' | 'insert' | 'update' | 'upsert' | null = null;
       let insertRow: Record<string, unknown> | undefined;
       let updateFields: Record<string, unknown> | undefined;
+      let upsertConflict: string | undefined;
       const self: Record<string, unknown> = {};
       self.select = () => {
         mode = 'select';
@@ -461,6 +462,14 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
         updateFields = fields;
         return self;
       };
+      // Models Postgres UPSERT against the real `unique (inbox_item_id, reason)`
+      // constraint: a conflicting row is UPDATED in place, never duplicated.
+      self.upsert = (row: Record<string, unknown>, opts?: { onConflict?: string }) => {
+        mode = 'upsert';
+        insertRow = row;
+        upsertConflict = opts?.onConflict;
+        return self;
+      };
       self.then = (resolve: (v: unknown) => void) => {
         if (mode === 'insert') {
           const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
@@ -471,6 +480,19 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
             if (Object.entries(filters).every(([k, v]) => r[k] === v)) Object.assign(r, updateFields);
           }
           resolve({ data: null, error: null });
+        } else if (mode === 'upsert') {
+          const cols = (upsertConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
+          const existing = cols.length
+            ? rows.find((r) => cols.every((c) => r[c] === (insertRow as Record<string, unknown>)[c]))
+            : undefined;
+          if (existing) {
+            Object.assign(existing, insertRow); // re-arm: done -> pending, fresh due_at
+            resolve({ data: [existing], error: null });
+          } else {
+            const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
+            rows.push(row);
+            resolve({ data: [row], error: null });
+          }
         } else {
           const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
           resolve({ data: matched, error: null });
@@ -507,7 +529,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows).toHaveLength(1); // no new insert — the pending row already covers it
   });
 
-  it('creates a FRESH pending follow-up after a prior one for the same (item, reason) was marked done', async () => {
+  it('re-arms the follow-up (done -> pending) after a prior one for the same (item, reason) was marked done', async () => {
     const fake = makeFollowUpsFake([
       { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
     ]);
@@ -519,14 +541,17 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].status).toBe('done');
 
     // ...weeks later, a second "quote sent, no reply" cycle fires for the SAME
-    // still-unapproved item. Without the WT-43 fix this would silently no-op.
+    // still-unapproved item. WT-43: the real `unique (inbox_item_id, reason)`
+    // constraint means a plain insert would 23505 + silently no-op, so ensureFollowUp
+    // must UPSERT the existing row back to pending (never a duplicate).
     await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-    expect(fake.rows).toHaveLength(2); // the done row persists + a fresh pending row
-    const fresh = fake.rows.find((r) => r.status === 'pending');
-    expect(fresh).toBeDefined();
-    expect(fresh?.inbox_item_id).toBe('item-1');
-    expect(fresh?.reason).toBe('quote_sent_no_reply');
+    // Still exactly ONE row (the unique constraint forbids a duplicate), flipped
+    // back to pending so the nudge re-arms.
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.rows[0].status).toBe('pending');
+    expect(fake.rows[0].inbox_item_id).toBe('item-1');
+    expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
   });
 });
 
