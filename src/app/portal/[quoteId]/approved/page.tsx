@@ -22,6 +22,7 @@ import type { PortalQuote } from '@/components/portal/types';
 import { ensureReferralCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
 import { referralQrSvg } from '@/lib/referralQr';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { getInvoiceByQuote } from '@/lib/invoices';
 
 type Params = { quoteId: string };
 
@@ -65,6 +66,11 @@ export default async function PortalApprovedPage({
   // Growth feature 2: a small server-side QR of the link, "or scan to share"
   // next to the copy/share controls. Fail-open — null just hides it.
   const referralQr = referralLink ? await referralQrSvg(referralLink) : null;
+  // #87(a) — PDF download links, once available. Best-effort: an invoice lookup
+  // failure just hides the links rather than breaking the celebration page.
+  const invoice = await getInvoiceByQuote(quoteId).catch(() => null);
+  const invoicePdfAvailable = !!invoice;
+  const receiptPdfAvailable = !!invoice && (invoice.deposit_applied > 0 || !!invoice.paid_at);
   const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || MOCK_TEAM.phone;
   const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
 
@@ -318,6 +324,40 @@ export default async function PortalApprovedPage({
               View your quote
               <ArrowRight className="w-4 h-4" aria-hidden />
             </Link>
+          </div>
+
+          {/* #87(a) fix-batch HIGH #1 — the quote PDF is approved-only, so it
+              only ever belongs on this (already-approved) page, never the
+              pre-approval portal. Invoice/receipt only once available. */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+            <a
+              href={`/api/quotes/${quoteId}/pdf?doc=quote`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+            >
+              Download quote PDF ↓
+            </a>
+            {invoicePdfAvailable && (
+              <a
+                href={`/api/quotes/${quoteId}/pdf?doc=invoice`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+              >
+                Download invoice PDF ↓
+              </a>
+            )}
+            {receiptPdfAvailable && (
+              <a
+                href={`/api/quotes/${quoteId}/pdf?doc=receipt`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] transition-colors duration-200"
+              >
+                Download receipt PDF ↓
+              </a>
+            )}
           </div>
         </div>
       </section>

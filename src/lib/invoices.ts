@@ -214,6 +214,25 @@ export async function getInvoiceByJob(jobId: string): Promise<InvoiceRow | null>
   return (data as InvoiceRow | null) ?? null;
 }
 
+// The single invoice for a quote, if one has been created (a quote only ever
+// links to one job, so this mirrors getInvoiceByJob's one-row contract). Ledger
+// #87(a): the customer PDF route only knows the QUOTE id (the portal's
+// capability token), so this is the quote→invoice resolution it needs.
+export async function getInvoiceByQuote(quoteId: string): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('invoices')
+    .select(INVOICE_SELECT)
+    .eq('quote_id', quoteId)
+    .maybeSingle();
+  if (error) {
+    console.error('getInvoiceByQuote error:', error);
+    return null;
+  }
+  return (data as InvoiceRow | null) ?? null;
+}
+
 export async function listInvoices(limit = 500): Promise<InvoiceRow[]> {
   const db = sb();
   if (!db) return [];

@@ -210,6 +210,28 @@ export default function InvoiceDetailPage() {
                     Open quote →
                   </Link>
                 )}
+                {/* #87(a) — branded PDFs, generated on-demand. Receipt only once a
+                    payment has posted (deposit applied or paid in full). */}
+                {inv.quote_id && (
+                  <Link
+                    href={`/api/quotes/${inv.quote_id}/pdf?doc=invoice`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 hover:underline"
+                  >
+                    Invoice PDF ↓
+                  </Link>
+                )}
+                {inv.quote_id && (inv.deposit_applied > 0 || inv.paid_at) && (
+                  <Link
+                    href={`/api/quotes/${inv.quote_id}/pdf?doc=receipt`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 hover:underline"
+                  >
+                    Receipt PDF ↓
+                  </Link>
+                )}
                 {inv.valor_receipt_url && (
                   <a
                     href={inv.valor_receipt_url}

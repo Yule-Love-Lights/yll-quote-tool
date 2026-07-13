@@ -227,6 +227,11 @@ export type PortalQuote = {
     firstName: string;
     fullName: string;
     address: string;
+    // Ledger #87(a): the customer PDFs' RECIPIENT block shows a phone line.
+    // Additive — no existing portal UI reads this, so populating it from
+    // quotes.customer_phone (already selected by loadPortalQuote) is a
+    // zero-risk addition. '' when the quote has no phone on file.
+    phone: string;
   };
   // Bug fix (B3): the derived quote lifecycle status so the portal can gate the
   // approve+pay UI. When this is a terminal/branch state (declined/cancelled/
