@@ -15,7 +15,7 @@
 // secrets — safe to commit, same as any other GHL pipeline/stage id already
 // visible in the Settings → HighLevel setup page.
 
-import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { asServiceType, DEFAULT_SERVICE_TYPE, SERVICE_TYPES, type ServiceType } from '@/lib/serviceType';
 
 export type PipelineStages = {
   pipelineId: string;
@@ -120,6 +120,18 @@ export function resolvePipelineStages(
     installed: base.installed,
     declined: base.declined,
   };
+}
+
+// ─── Map diagnostics (Settings → HighLevel, WT-51) ─────────────────────────
+// Exposes the raw, env-override-free PIPELINE_MAP entries so the settings
+// page can list what each service type actually names and cross-check those
+// ids against the live GET /opportunities/pipelines result — without this,
+// a renamed/deleted pipeline or stage silently stops moving cards for that
+// service type with no on-page signal at all.
+
+/** One service type's raw map entry, for display/diagnostics. */
+export function listPipelineMapEntries(): Array<{ serviceType: ServiceType; stages: PipelineStages }> {
+  return SERVICE_TYPES.map((serviceType) => ({ serviceType, stages: PIPELINE_MAP[serviceType] }));
 }
 
 // ─── Quote-link contact custom field, one per ServiceType ─────────────────

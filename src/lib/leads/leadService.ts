@@ -32,10 +32,12 @@ export function asLeadService(v: unknown): LeadService | null {
 }
 
 // ─── Pipeline resolution ────────────────────────────────────────────────
-// christmas/permanent/event-wedding reuse the quote tool's own pipeline map
+// Every lead service reuses one of the quote tool's own pipeline map entries
 // (their pipelines already exist in GHL and are used by the quote-send flow
-// too). landscape has no pipeline yet — it's resolved purely from env so the
-// dev can wire it up later without a code change.
+// too) — landscape rides the permanent_bistro pipeline (WT-50: the old
+// landscape-only env vars, HIGHLEVEL_PIPELINE_ID_LANDSCAPE /
+// HIGHLEVEL_STAGE_LANDSCAPE_ENTRY, were never configured, so landscape leads
+// got a contact but no pipeline card).
 export type LeadPipeline = { pipelineId: string; entryStageId: string };
 
 export function resolveLeadPipeline(service: LeadService): LeadPipeline | null {
@@ -58,19 +60,14 @@ export function resolveLeadPipeline(service: LeadService): LeadPipeline | null {
       return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
     case 'landscape': {
-      const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE;
-      const entryStageId = process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY;
-      if (!pipelineId || !entryStageId) return null;
-      return { pipelineId, entryStageId };
+      // Landscape rides the SAME live pipeline as Permanent Bistro (#117) —
+      // Naldo confirmed 2026-07-09 both product lines share the Landscape
+      // Lighting pipeline in GHL, so there's no landscape-specific pipeline
+      // to configure via env.
+      const stages = resolvePipelineStages('permanent_bistro', { envOverrides: false });
+      return { pipelineId: stages.pipelineId, entryStageId: stages.entry };
     }
   }
-}
-
-function missingLandscapeEnvVars(): string[] {
-  const missing: string[] = [];
-  if (!process.env.HIGHLEVEL_PIPELINE_ID_LANDSCAPE) missing.push('HIGHLEVEL_PIPELINE_ID_LANDSCAPE');
-  if (!process.env.HIGHLEVEL_STAGE_LANDSCAPE_ENTRY) missing.push('HIGHLEVEL_STAGE_LANDSCAPE_ENTRY');
-  return missing;
 }
 
 // ─── contact.service custom field ──────────────────────────────────────
@@ -305,10 +302,14 @@ export async function syncLeadToGhl(
 
     const pipeline = resolveLeadPipeline(lead.service);
     if (!pipeline) {
+      // Defensive fallback — every current LEAD_SERVICES value resolves to a
+      // real map entry (see resolveLeadPipeline above), so this shouldn't
+      // fire today. Kept for a future service added without its pipeline
+      // wired up yet.
       return {
         status: 'deferred',
         ghlContactId: contact.id,
-        syncError: `GHL pipeline not configured for "${lead.service}" — missing env var(s): ${missingLandscapeEnvVars().join(', ')}`,
+        syncError: `GHL pipeline not configured for "${lead.service}"`,
       };
     }
 
