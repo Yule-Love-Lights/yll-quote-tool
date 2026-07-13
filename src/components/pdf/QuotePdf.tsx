@@ -1,11 +1,19 @@
-// Ledger #87(a) — customer Quote PDF. Renders a QuoteDocModel ONLY — every
-// figure on the page is already a formatted string produced by
-// buildQuoteDocModel (src/lib/pdf/docModels.ts); this component does no math.
+// Ledger #87(a) — customer Quote PDF, redesigned to match the company's
+// Jobber invoice format. Renders a QuoteDocModel ONLY — every figure on the
+// page is already a formatted string produced by buildQuoteDocModel
+// (src/lib/pdf/docModels.ts); this component does no math.
 
 import { Document, Page, View, Text } from '@react-pdf/renderer';
 import { pdfStyles } from './pdfStyles';
 import { PdfHeader } from './PdfHeader';
 import { PdfFooter } from './PdfFooter';
+import { PdfWatermark } from './PdfWatermark';
+import { PdfRecipientBlock } from './PdfRecipientBlock';
+import { PdfMetaCard } from './PdfMetaCard';
+import { PdfLineItemsTable } from './PdfLineItemsTable';
+import { PdfTotalsStack } from './PdfTotalsStack';
+import { PdfContractTerms } from './PdfContractTerms';
+import { itemizedRows } from './totalsRows';
 import type { QuoteDocModel } from '@/lib/pdf/docModels';
 
 type Props = {
@@ -14,54 +22,29 @@ type Props = {
 };
 
 export function QuotePdf({ model, logo }: Props) {
+  const rows = [...itemizedRows(model), { label: 'Total', amount: model.total, bold: true }, { label: 'Deposit due', amount: model.depositDue }];
+
   return (
     <Document title={`Yule Love Lights Quote ${model.quoteNumber}`}>
       <Page size="LETTER" style={pdfStyles.page}>
-        <PdfHeader logo={logo} docTitle="Quote (Approved)" docNumber={model.quoteNumber} docDate={model.date} />
+        <PdfWatermark status={model.status} />
+        <PdfHeader logo={logo} />
 
-        <View style={pdfStyles.section}>
-          <Text style={pdfStyles.sectionLabel}>Prepared for</Text>
-          <Text style={pdfStyles.customerName}>{model.customerName}</Text>
-          {model.customerAddress ? <Text style={pdfStyles.customerLine}>{model.customerAddress}</Text> : null}
+        <View style={pdfStyles.metaRow}>
+          <PdfRecipientBlock recipient={model.recipient} />
+          <PdfMetaCard
+            title={`Quote ${model.quoteNumber}`}
+            dateRows={[{ label: 'Issued', value: model.date }]}
+            totalLabel="Total"
+            totalValue={model.total}
+          />
         </View>
 
-        <View style={pdfStyles.section}>
-          <Text style={pdfStyles.sectionLabel}>{model.packageName}</Text>
-          <View style={pdfStyles.table}>
-            <View style={pdfStyles.tableHeaderRow}>
-              <Text style={pdfStyles.tableHeaderLabel}>Item</Text>
-              <Text style={pdfStyles.tableHeaderLabel}>Price</Text>
-            </View>
-            {model.lineItems.length === 0 ? (
-              <Text style={pdfStyles.emptyNote}>No line items on this quote yet.</Text>
-            ) : (
-              model.lineItems.map((li, i) => (
-                <View
-                  key={`${li.label}-${i}`}
-                  style={i === model.lineItems.length - 1 ? { ...pdfStyles.row, ...pdfStyles.rowLast } : pdfStyles.row}
-                >
-                  <View>
-                    <Text style={pdfStyles.rowLabel}>{li.label}</Text>
-                    {li.detail ? <Text style={pdfStyles.rowDetail}>{li.detail}</Text> : null}
-                  </View>
-                  <Text style={pdfStyles.rowAmount}>{li.amount}</Text>
-                </View>
-              ))
-            )}
-          </View>
-        </View>
+        <Text style={pdfStyles.docSectionTitle}>For Yule Love Lights {model.serviceType} Installation</Text>
 
-        <View style={pdfStyles.totalsBlock}>
-          <View style={pdfStyles.grandTotalRow}>
-            <Text style={pdfStyles.grandTotalLabel}>Total</Text>
-            <Text style={pdfStyles.grandTotalAmount}>{model.total}</Text>
-          </View>
-        </View>
-
-        <View style={pdfStyles.depositBanner}>
-          <Text style={pdfStyles.depositLabel}>Deposit paid at approval</Text>
-          <Text style={pdfStyles.depositAmount}>{model.depositDue}</Text>
-        </View>
+        <PdfLineItemsTable items={model.lineItems} />
+        <PdfTotalsStack rows={rows} />
+        <PdfContractTerms />
 
         <PdfFooter />
       </Page>

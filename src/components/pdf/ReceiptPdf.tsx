@@ -1,12 +1,19 @@
-// Ledger #87(a) — Receipt PDF: what money actually changed hands. Renders a
-// ReceiptDocModel ONLY — every figure is already a formatted string produced
-// by buildReceiptDocModel (src/lib/pdf/docModels.ts); this component does no
-// math.
+// Ledger #87(a) — Receipt PDF: what money actually changed hands, redesigned
+// to match the company's Jobber invoice format. Renders a ReceiptDocModel
+// ONLY — every figure is already a formatted string produced by
+// buildReceiptDocModel (src/lib/pdf/docModels.ts); this component does no
+// math. Per Naldo's #87a scope, the receipt emphasizes what was PAID (no
+// Subtotal/Discount/Fees/Tax breakdown — that's the invoice's job).
 
 import { Document, Page, View, Text, Link } from '@react-pdf/renderer';
 import { pdfStyles } from './pdfStyles';
 import { PdfHeader } from './PdfHeader';
 import { PdfFooter } from './PdfFooter';
+import { PdfWatermark } from './PdfWatermark';
+import { PdfRecipientBlock } from './PdfRecipientBlock';
+import { PdfMetaCard } from './PdfMetaCard';
+import { PdfLineItemsTable } from './PdfLineItemsTable';
+import { PdfTotalsStack, type PdfTotalsRow } from './PdfTotalsStack';
 import type { ReceiptDocModel } from '@/lib/pdf/docModels';
 
 type Props = {
@@ -16,69 +23,49 @@ type Props = {
 
 export function ReceiptPdf({ model, logo }: Props) {
   const cancelled = model.status === 'cancelled';
+  const watermarkStatus = cancelled ? 'cancelled' : model.status === 'paid' ? 'paid' : null;
+
+  const rows: PdfTotalsRow[] = [];
+  if (model.depositPaid) rows.push({ label: `Deposit paid (${model.depositPaid.date})`, amount: model.depositPaid.amount });
+  if (model.balancePaid) rows.push({ label: `Remaining balance paid (${model.balancePaid.date})`, amount: model.balancePaid.amount });
+  rows.push({ label: 'Total paid', amount: model.totalPaid, bold: true });
+
+  const dateRows = [
+    { label: 'Issued', value: model.date },
+    ...(model.paidDate ? [{ label: 'Paid', value: model.paidDate }] : []),
+  ];
 
   return (
     <Document title={`Yule Love Lights Receipt ${model.receiptNumber}`}>
       <Page size="LETTER" style={pdfStyles.page}>
-        <PdfHeader
-          logo={logo}
-          docTitle="Receipt"
-          docNumber={`#${model.receiptNumber}`}
-          statusLabel={cancelled ? 'CANCELLED' : null}
-        />
+        <PdfWatermark status={watermarkStatus} />
+        <PdfHeader logo={logo} />
 
-        {/* #87(a) fix-batch MED #4 — a cancelled order's receipt must never
-            look like a valid record of a payable/current document. */}
+        <View style={pdfStyles.metaRow}>
+          <PdfRecipientBlock recipient={model.recipient} />
+          <PdfMetaCard
+            title={`Receipt #${model.receiptNumber}`}
+            dateRows={dateRows}
+            totalLabel="Total paid"
+            totalValue={model.totalPaid}
+          />
+        </View>
+
         {cancelled && (
-          <View style={pdfStyles.cancelledBanner}>
-            <Text style={pdfStyles.cancelledLabel}>This order was cancelled</Text>
-            <Text style={pdfStyles.cancelledText}>Reference only</Text>
-          </View>
+          <Text style={{ fontSize: 10, fontFamily: 'Helvetica-Bold', color: '#b91c1c', marginBottom: 12 }}>
+            This order was cancelled — reference only.
+          </Text>
         )}
 
-        <View style={pdfStyles.section}>
-          <Text style={pdfStyles.sectionLabel}>Received from</Text>
-          <Text style={pdfStyles.customerName}>{model.customerName}</Text>
-          {model.customerAddress ? <Text style={pdfStyles.customerLine}>{model.customerAddress}</Text> : null}
-        </View>
+        <Text style={pdfStyles.docSectionTitle}>For Yule Love Lights {model.serviceType} Installation</Text>
 
-        <View style={pdfStyles.table}>
-          <View style={pdfStyles.tableHeaderRow}>
-            <Text style={pdfStyles.tableHeaderLabel}>Payment</Text>
-            <Text style={pdfStyles.tableHeaderLabel}>Amount</Text>
-          </View>
-          {model.depositPaid && (
-            <View style={pdfStyles.row}>
-              <View>
-                <Text style={pdfStyles.rowLabel}>Deposit</Text>
-                <Text style={pdfStyles.rowDetail}>Paid {model.depositPaid.date}</Text>
-              </View>
-              <Text style={pdfStyles.rowAmount}>{model.depositPaid.amount}</Text>
-            </View>
-          )}
-          {model.balancePaid && (
-            <View style={{ ...pdfStyles.row, ...pdfStyles.rowLast }}>
-              <View>
-                <Text style={pdfStyles.rowLabel}>Remaining balance</Text>
-                <Text style={pdfStyles.rowDetail}>Paid {model.balancePaid.date}</Text>
-              </View>
-              <Text style={pdfStyles.rowAmount}>{model.balancePaid.amount}</Text>
-            </View>
-          )}
-          {!model.depositPaid && !model.balancePaid && (
-            <Text style={pdfStyles.emptyNote}>No payment recorded yet.</Text>
-          )}
-        </View>
-
-        <View style={pdfStyles.paidBanner}>
-          <Text style={pdfStyles.paidLabel}>Total paid</Text>
-          <Text style={pdfStyles.paidAmount}>{model.totalPaid}</Text>
-        </View>
+        <PdfLineItemsTable items={model.lineItems} />
+        <PdfTotalsStack rows={rows} />
 
         {model.valorReceiptUrl && (
-          <View style={pdfStyles.section}>
-            <Text style={pdfStyles.sectionLabel}>Payment processor receipt</Text>
-            <Link src={model.valorReceiptUrl} style={pdfStyles.link}>
+          <View style={{ marginTop: 16 }}>
+            <Text style={pdfStyles.sectionLabel}>PAYMENT PROCESSOR RECEIPT</Text>
+            <Link src={model.valorReceiptUrl} style={{ fontSize: 9, color: '#1f6f43', textDecoration: 'underline' }}>
               {model.valorReceiptUrl}
             </Link>
           </View>

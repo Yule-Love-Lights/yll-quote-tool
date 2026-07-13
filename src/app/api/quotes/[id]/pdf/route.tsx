@@ -99,7 +99,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (doc === 'invoice') {
       const detail = await getInvoiceDetail(invoice.id);
       if (!detail) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
-      const model = buildInvoiceDocModel(detail);
+      // Jobber-format redesign: the itemized Subtotal/Discount/Fees/Tax block
+      // is sourced from the AGREED line items (the same frozen approval
+      // selection the Quote PDF has always rendered from), never the stored
+      // (unscaled) invoice.subtotal column — see buildInvoiceDocModel's
+      // docstring. A missing/failed portal-quote load degrades to the
+      // minimal always-reconciling set (Total/Deposit/Balance), never a
+      // guess.
+      const portalQuote = await loadPortalQuote(id).catch(() => null);
+      const model = buildInvoiceDocModel(detail, portalQuote);
       const buffer = await renderToBuffer(<InvoicePdf model={model} logo={logo} />);
       return pdfResponse(buffer, `YuleLoveLights-Invoice-${model.invoiceNumber}.pdf`);
     }
@@ -110,8 +118,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const detail = await getInvoiceDetail(invoice.id);
     if (!detail) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
-    const quoteRow = await getQuoteRaw(id);
-    const model = buildReceiptDocModel(detail, { deposit_paid_at: quoteRow?.deposit_paid_at ?? null });
+    const [quoteRow, portalQuote] = await Promise.all([
+      getQuoteRaw(id),
+      loadPortalQuote(id).catch(() => null),
+    ]);
+    const model = buildReceiptDocModel(detail, { deposit_paid_at: quoteRow?.deposit_paid_at ?? null }, portalQuote);
     const buffer = await renderToBuffer(<ReceiptPdf model={model} logo={logo} />);
     return pdfResponse(buffer, `YuleLoveLights-Receipt-${model.receiptNumber}.pdf`);
   } catch (err) {

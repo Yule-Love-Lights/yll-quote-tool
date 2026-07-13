@@ -51,7 +51,7 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 const BASE_PORTAL_QUOTE = {
   id: ID,
-  customer: { firstName: 'Jasmine', fullName: 'Jasmine Smith', address: '45 Main St' },
+  customer: { firstName: 'Jasmine', fullName: 'Jasmine Smith', address: '45 Main St', phone: '555-0100' },
   photo: { before: '', after: '', alt: '' },
   packages: [
     { id: 'C', name: 'Full House', tagline: '', total: 2000, deposit: 1000, recommended: true, includedItemIds: ['tree-l'] },
@@ -180,6 +180,16 @@ describe('GET /api/quotes/[id]/pdf', () => {
       expect(res.headers.get('Content-Disposition')).toBe(
         'attachment; filename="YuleLoveLights-Invoice-1042.pdf"',
       );
+      // Jobber-format redesign: the itemized breakdown is sourced from the
+      // AGREED line items on the source portal quote.
+      expect(loadPortalQuoteMock).toHaveBeenCalledWith(ID);
+    });
+
+    it('still renders (degrading to the minimal reconciling set) when the source portal quote fails to load', async () => {
+      loadPortalQuoteMock.mockRejectedValueOnce(new Error('boom'));
+      const res = await GET(makeReq(ID, 'invoice'), ctx());
+      expect(res.status).toBe(200);
+      expect(renderToBufferMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -198,6 +208,13 @@ describe('GET /api/quotes/[id]/pdf', () => {
         'attachment; filename="YuleLoveLights-Receipt-1042.pdf"',
       );
       expect(getQuoteRawMock).toHaveBeenCalledWith(ID);
+      expect(loadPortalQuoteMock).toHaveBeenCalledWith(ID);
+    });
+
+    it('still renders (degrading to the minimal reconciling set) when the source portal quote fails to load', async () => {
+      loadPortalQuoteMock.mockRejectedValueOnce(new Error('boom'));
+      const res = await GET(makeReq(ID, 'receipt'), ctx());
+      expect(res.status).toBe(200);
     });
 
     it('renders when the balance was later paid in full even with no deposit', async () => {

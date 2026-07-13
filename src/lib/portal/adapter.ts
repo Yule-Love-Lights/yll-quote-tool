@@ -623,6 +623,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       firstName: deriveFirstName(row.customer_name),
       fullName: row.customer_name ?? 'Anonymous',
       address: row.customer_address ?? '',
+      // Ledger #87(a): the customer PDFs' RECIPIENT block. Already selected
+      // by loadPortalQuote's query — just not previously mapped through.
+      phone: row.customer_phone ?? '',
     },
     photo: {
       // Empty strings collapse the <img> visually if the components don't
