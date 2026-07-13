@@ -451,12 +451,19 @@ function autoRooflineChoice(
 }
 
 // Honor an explicit operator recommendation; otherwise auto-pick (above).
+// A stale explicit choice whose matching option no longer exists (e.g. staff
+// picked 'gingerbread' and the gingerbread footage was later zeroed out) must
+// NOT silently bill $0 for the whole roofline — fall through to auto-pick
+// from whatever options DO exist instead of returning the unbillable choice.
+// An explicit 'none' always means no roofline, with no fallback.
 function resolveRooflineChoice(
   inputs: QuoteInputs,
   restSubtotal: number,
   options: QuoteResult['rooflineOptions'],
 ): RooflineChoice {
-  if (inputs.rooflineChoice) return inputs.rooflineChoice;
+  if (inputs.rooflineChoice === 'santas' && options.santas) return 'santas';
+  if (inputs.rooflineChoice === 'gingerbread' && options.gingerbread) return 'gingerbread';
+  if (inputs.rooflineChoice === 'none') return 'none';
   return autoRooflineChoice(restSubtotal, options);
 }
 

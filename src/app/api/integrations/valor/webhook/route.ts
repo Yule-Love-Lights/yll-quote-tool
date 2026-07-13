@@ -54,7 +54,7 @@ import {
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
 import { createJobFromQuote, getJobByQuote, setJobStatus, type JobRow } from '@/lib/jobs';
-import { getInvoiceByJob } from '@/lib/invoices';
+import { getInvoiceByJob, type InvoiceRow } from '@/lib/invoices';
 import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
@@ -279,7 +279,8 @@ export async function POST(req: NextRequest) {
     /^bal_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
   );
   if (balanceMatch) {
-    return handleBalancePayment(balanceMatch[1]!, event);
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    return handleBalancePayment(balanceMatch[1]!, event, baseUrl);
   }
 
   const sb = getSupabaseServiceClient()!;
@@ -645,11 +646,150 @@ export async function POST(req: NextRequest) {
   });
 }
 
+type BalanceQuoteRow = {
+  id: string;
+  customer_name: string | null;
+  is_test: boolean;
+  approval_snapshot: Record<string, unknown> | null;
+};
+
+// WT-14: mirrors flagPossibleDuplicatePayment (deposit path, above) for the #83
+// balance pay-link. A second APPROVED balance txn on an invoice that's already
+// settled (or that lost the atomic claim below to a concurrent request),
+// carrying a DIFFERENT txn id than the one recorded on the invoice, is a
+// genuine second charge — not a Valor retry (which replays the SAME txn id).
+// Same-txn-id replays are the correct, expected idempotent path and stay silent.
+async function flagPossibleDuplicateBalancePayment(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quote: BalanceQuoteRow,
+  invoice: Pick<InvoiceRow, 'valor_balance_txn_id'>,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<void> {
+  if (!event.approved || !event.txnId || event.txnId === invoice.valor_balance_txn_id) return;
+
+  const amountUsd = typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
+  console.error(
+    `[api/integrations/valor/webhook] POSSIBLE DOUBLE CHARGE (balance) for quote ${quote.id}: new txn ${event.txnId} differs from balance txn on file ${invoice.valor_balance_txn_id} — refund in Valor`,
+  );
+
+  // Merge into approval_snapshot — same shape as the deposit path's marker,
+  // never clobbering customerSelection/amendments/signature.
+  try {
+    await sb!
+      .from('quotes')
+      .update({
+        approval_snapshot: {
+          ...(quote.approval_snapshot ?? {}),
+          duplicateBalancePayment: { txnId: event.txnId, at: new Date().toISOString(), amountUsd },
+        },
+      })
+      .eq('id', quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] duplicate balance-payment snapshot stamp failed:', err);
+  }
+
+  // Best-effort staff alert — reuse the SAME double-charge email as the deposit path.
+  try {
+    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    if (isHighLevelConfigured() && internalContactId) {
+      await sendEmail({
+        contactId: internalContactId,
+        subject: duplicatePaymentEmailSubject(quote.customer_name),
+        html: duplicatePaymentEmailHtml({
+          customerName: quote.customer_name,
+          amountUsd,
+          newTxnId: event.txnId,
+          existingTxnId: invoice.valor_balance_txn_id,
+          adminUrl: `${baseUrl}/quote/${quote.id}`,
+        }),
+        emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+      });
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] duplicate balance-payment alert email failed:', err);
+  }
+}
+
+// Local escape — quoteMessages.ts's escapeHtml is unexported, and this route
+// doesn't otherwise touch that file. Same minimal escaping it uses.
+function escapeAlertHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// WT-15: a partial/short balance payment must surface for staff in-app, not
+// only in a server log line. Stamp a durable marker on the quote (same
+// approval_snapshot merge pattern as the duplicate-payment flag above) and
+// send a best-effort internal staff alert, so the shortfall is visible even
+// if nobody is watching the logs.
+async function flagBalanceUnderpayment(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quote: BalanceQuoteRow,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+  paidUsd: number | null,
+  expectedUsd: number,
+): Promise<void> {
+  const paid = typeof paidUsd === 'number' && Number.isFinite(paidUsd) ? paidUsd : 0;
+  const shortfallUsd = Math.max(0, expectedUsd - paid);
+
+  try {
+    await sb!
+      .from('quotes')
+      .update({
+        approval_snapshot: {
+          ...(quote.approval_snapshot ?? {}),
+          balanceUnderpayment: {
+            txnId: event.txnId,
+            paidUsd: paid,
+            expectedUsd,
+            shortfallUsd,
+            at: new Date().toISOString(),
+          },
+        },
+      })
+      .eq('id', quote.id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] balance-underpayment snapshot stamp failed:', err);
+  }
+
+  try {
+    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    if (isHighLevelConfigured() && internalContactId) {
+      const who = quote.customer_name?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+      const row = (label: string, value: string) =>
+        `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+      await sendEmail({
+        contactId: internalContactId,
+        subject: `⚠️ Balance underpaid: ${who}`,
+        html: [
+          `<p><strong>${escapeAlertHtml(who)}</strong>'s balance pay-link came back SHORT — the charge did not cover the full amount due.</p>`,
+          `<p><strong>Action needed:</strong> collect the remaining $${shortfallUsd.toFixed(2)} manually and settle the invoice in the admin tools.</p>`,
+          `<table style="border-collapse:collapse;font-size:14px;">`,
+          row('Paid', `$${paid.toFixed(2)}`),
+          row('Expected', `$${expectedUsd.toFixed(2)}`),
+          row('Shortfall', `$${shortfallUsd.toFixed(2)}`),
+          row('Transaction id', escapeAlertHtml(event.txnId || '—')),
+          `</table>`,
+          `<p><a href="${baseUrl}/quote/${quote.id}">Open in quote tool →</a></p>`,
+        ].join('\n'),
+        emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+      });
+    }
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] balance-underpayment alert email failed:', err);
+  }
+}
+
 // Handle a #83 balance pay-link payment (orderRef `bal_<quoteId>`): mark the linked
 // invoice paid + close the job. HMAC + config already verified by the caller.
 // Test-safe: a test quote's balance is never collected via real Valor — ignore one
 // defensively. Idempotent: an atomic claim flips the invoice paid at most once.
-async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): Promise<NextResponse> {
+async function handleBalancePayment(
+  quoteId: string,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<NextResponse> {
   if (!event.approved) {
     console.warn(
       `[api/integrations/valor/webhook] non-approved balance txn for quote ${quoteId}: response_code=${event.responseCode}`,
@@ -660,9 +800,9 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, is_test')
+    .select('id, customer_name, is_test, approval_snapshot')
     .eq('id', quoteId)
-    .maybeSingle<{ id: string; is_test: boolean }>();
+    .maybeSingle<BalanceQuoteRow>();
   if (!quote) return NextResponse.json({ ok: true, ignored: 'balance-no-quote' });
   if (quote.is_test) {
     console.warn(`[api/integrations/valor/webhook] ignoring balance webhook for TEST quote ${quoteId}`);
@@ -673,6 +813,10 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
   const invoice = job ? await getInvoiceByJob(job.id) : null;
   if (!invoice) return NextResponse.json({ ok: true, ignored: 'balance-no-invoice' });
   if (invoice.status === 'paid') {
+    // WT-14: tell a genuine second charge (a different txn id than the one
+    // recorded on the invoice) apart from a Valor retry of the SAME settled
+    // transaction before silently acking.
+    await flagPossibleDuplicateBalancePayment(sb, quote, invoice, event, baseUrl);
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
   // B6 fix: a cancelled invoice must NEVER be resurrected by a late/retried webhook.
@@ -695,6 +839,9 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
     console.error(
       `[api/integrations/valor/webhook] balance underpayment for quote ${quoteId}: paid=${paid} expected>=${invoice.balance}`,
     );
+    // WT-15: durable marker + staff alert — a partial balance payment must
+    // surface in-app, not only in the log line above.
+    await flagBalanceUnderpayment(sb, quote, event, baseUrl, paid, invoice.balance);
     return NextResponse.json({ ok: true, balance: true, underpaid: true });
   }
 
@@ -723,6 +870,12 @@ async function handleBalancePayment(quoteId: string, event: ValorWebhookEvent): 
     return NextResponse.json({ error: 'Failed to record the balance payment' }, { status: 500 });
   }
   if (!claimed || (Array.isArray(claimed) && claimed.length === 0)) {
+    // WT-14: same duplicate check on the lost-race path (mirrors the deposit
+    // path's atomic-claim-lost branch above). `invoice.valor_balance_txn_id`
+    // here is the value read BEFORE this claim attempt (the row was unsettled
+    // then), so it's still the right basis to detect a genuinely distinct
+    // second approved charge racing in under a different txn id.
+    await flagPossibleDuplicateBalancePayment(sb, quote, invoice, event, baseUrl);
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
 

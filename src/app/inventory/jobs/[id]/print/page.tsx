@@ -3,7 +3,8 @@
 // on-hand, black-on-white for print. Staff hit Print → "Save as PDF". Server-
 // rendered from the shared getJobWorkOrder so it always matches the board modal.
 
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { PrintButton } from '@/components/inventory/PrintButton';
@@ -15,6 +16,13 @@ function fmtDate(iso: string | null): string {
 }
 
 export default async function WorkOrderPrintPage({ params }: { params: Promise<{ id: string }> }) {
+  // Defense in depth behind the middleware perimeter — re-check at render so this
+  // staff work order (customer PII + pick list) never serves anonymously even if
+  // the perimeter is bypassed. Dormant until the auth gate is live (matches the
+  // #81 operator-page pattern).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/inventory/jobs');
+  }
   const { id } = await params;
   const wo = await getJobWorkOrder(id);
   if (!wo) notFound();
@@ -39,6 +47,29 @@ export default async function WorkOrderPrintPage({ params }: { params: Promise<{
       <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
         <PrintButton />
       </div>
+
+      {job.isTest && (
+        // Test Quote (ledger #93) — this banner is NOT inside .no-print: it must
+        // stay visible on the printed/PDF sheet, since that's exactly the copy
+        // that could otherwise be mistaken for a real work order in the field.
+        <div
+          style={{
+            border: '2px solid #b45309',
+            background: '#fef3c7',
+            color: '#92400e',
+            borderRadius: '6px',
+            padding: '8px 12px',
+            marginBottom: '14px',
+            fontSize: '13px',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            textAlign: 'center',
+          }}
+        >
+          TEST — do not pull real stock
+        </div>
+      )}
 
       <header style={{ borderBottom: '2px solid #1f7a4d', paddingBottom: '10px', marginBottom: '14px' }}>
         <div style={{ fontSize: '12px', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#1f7a4d', fontWeight: 700 }}>

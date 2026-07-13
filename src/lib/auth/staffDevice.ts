@@ -13,7 +13,7 @@
 // this cookie stays as a belt-and-suspenders (and keeps working on a staff
 // browser that isn't logged in).
 
-import type { NextRequest } from 'next/server';
+import type { NextRequest, NextResponse } from 'next/server';
 import { getOperator } from './supabaseServer';
 
 /** httpOnly cookie set on staff browsers. Value '1' = staff device. */
@@ -29,4 +29,23 @@ export const STAFF_DEVICE_COOKIE = 'yll_staff_device';
 export async function isStaffPreview(req: NextRequest): Promise<boolean> {
   if (req.cookies.get(STAFF_DEVICE_COOKIE)?.value === '1') return true;
   return !!(await getOperator());
+}
+
+/**
+ * Clears the staff-device cookie (WT-62). Operator logout ends the Supabase
+ * session but must also drop this marker — otherwise a shared/reissued
+ * browser stays flagged "staff" indefinitely (set for 1 year by
+ * /api/operator/mark-device) even after the operator signs out. Mirrors the
+ * same options mark-device sets it with (httpOnly/sameSite/secure/path) so
+ * the browser matches and actually removes it, with maxAge 0 in place of the
+ * 1-year expiry.
+ */
+export function clearStaffDeviceCookie(res: NextResponse): void {
+  res.cookies.set(STAFF_DEVICE_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: 0,
+  });
 }
