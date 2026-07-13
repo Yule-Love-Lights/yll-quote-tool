@@ -52,37 +52,6 @@ function RateField({
   );
 }
 
-// A percentage field (tax rate / deposit / early-install discount): the STORED
-// value is a fraction (0–1), the input shows/edits it as a whole percent
-// (0–100) so a non-technical operator reads "8.75" instead of "0.0875".
-function PercentField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-3 py-1.5">
-      <span className="text-sm text-gray-700">{label}</span>
-      <span className="inline-flex items-center gap-1">
-        <input
-          type="number"
-          min={0}
-          max={100}
-          step="0.01"
-          value={Math.round(value * 100 * 100) / 100}
-          onChange={(e) => onChange(Math.min(1, Math.max(0, toNum(e.target.value) / 100)))}
-          className="w-24 rounded border border-gray-300 px-2 py-1 text-right text-sm"
-        />
-        <span className="text-sm text-gray-400">%</span>
-      </span>
-    </label>
-  );
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-lg border border-gray-200 p-4">
@@ -323,52 +292,21 @@ export function HolidayRatesSettings() {
             suffix="each"
           />
         </Section>
-
-        <Section title="Fees & minimum">
-          <RateField
-            label="Rush-install fee"
-            value={rates.rushFeeAmount}
-            onChange={(v) => update({ ...rates, rushFeeAmount: v })}
-          />
-          <RateField
-            label="Premium takedown fee"
-            value={rates.premiumTakedownFee}
-            onChange={(v) => update({ ...rates, premiumTakedownFee: v })}
-          />
-          <RateField
-            label="Quote minimum"
-            value={rates.minimumQuoteAmount}
-            onChange={(v) => update({ ...rates, minimumQuoteAmount: v })}
-          />
-        </Section>
-
-        <Section title="Tax, deposit & early-install">
-          <PercentField
-            label="Tax rate"
-            value={rates.taxRate}
-            onChange={(v) => update({ ...rates, taxRate: v })}
-          />
-          <PercentField
-            label="Deposit due at booking"
-            value={rates.depositPercentage}
-            onChange={(v) => update({ ...rates, depositPercentage: v })}
-          />
-          <PercentField
-            label="September early-install discount"
-            value={rates.earlyInstallDiscounts.september}
-            onChange={(v) =>
-              update({ ...rates, earlyInstallDiscounts: { ...rates.earlyInstallDiscounts, september: v } })
-            }
-          />
-          <PercentField
-            label="October early-install discount"
-            value={rates.earlyInstallDiscounts.october}
-            onChange={(v) =>
-              update({ ...rates, earlyInstallDiscounts: { ...rates.earlyInstallDiscounts, october: v } })
-            }
-          />
-        </Section>
       </div>
+
+      {/* WT-63 follow-up: the global fee/tax/deposit/minimum/early-install fields
+          are intentionally NOT editable here yet. The portal charge path still
+          reads those six from the hardcoded engine defaults, so exposing them as
+          editable would let a Settings edit silently diverge from what the
+          customer is actually charged. They stay deploy-only until the portal
+          charge path (derivePackages/SelectionContext/adapter) reads them from
+          the frozen holidayRatesSnapshot. The per-item rates above DO flow end to
+          end (they become frozen line items the portal sums). */}
+      <p className="text-xs text-gray-400">
+        Rush/takedown fees, tax rate, deposit percentage, the order minimum, and the
+        early-install discounts are not adjustable here yet and stay at their current
+        values. The per-item rates above apply to new quotes.
+      </p>
 
       <div className="flex items-center gap-3">
         <button

@@ -11,6 +11,9 @@ import { setRenderSettings, DEFAULT_RENDER_SETTINGS } from '@/components/design/
 import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from './design/colorSchemes';
 // event/types is client-safe (pure types + constants) — the eventRates fallback.
 import { DEFAULT_EVENT_RATES } from './event/types';
+// pricingEngine is type-only imports (pure, client-safe; already imported by
+// several 'use client' components) — the holidayRates fallback (WT-63).
+import { DEFAULT_HOLIDAY_RATES } from './pricing/pricingEngine';
 // permanent/types is client-safe (zero imports) — the permanent-rates + warranty fallback.
 import { DEFAULT_PERMANENT_RATES, DEFAULT_PERMANENT_WARRANTY } from './permanent/types';
 // permanentBistro/types is client-safe (zero imports) — the permanent-bistro-rates fallback.
@@ -34,6 +37,7 @@ const FALLBACK: AppSettings = {
   portal: { hideEarlyInstallDiscounts: false },
   swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
   eventRates: DEFAULT_EVENT_RATES,
+  holidayRates: DEFAULT_HOLIDAY_RATES,
   permanentBistroRates: DEFAULT_PERMANENT_BISTRO_RATES,
   permanentRates: DEFAULT_PERMANENT_RATES,
   permanentWarranty: DEFAULT_PERMANENT_WARRANTY,
