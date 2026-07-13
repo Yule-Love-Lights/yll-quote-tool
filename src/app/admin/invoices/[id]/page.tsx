@@ -280,6 +280,7 @@ export default function InvoiceDetailPage() {
                   'short-deposit': 'Deposit below 40% of total — verify with customer',
                   'balance-outstanding': 'Balance outstanding',
                   'inconsistent': 'Data error: invoice marked paid but balance > 0 — contact support',
+                  'cancelled-refund-owed': 'Order cancelled after money was collected — issue a refund in Valor',
                 };
                 return recon.flags.length > 0 ? (
                   <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2">

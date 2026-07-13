@@ -17,6 +17,8 @@ import {
   quoteEmailSubject,
   quoteSmsBody,
   quoteEmailHtml,
+  refundDueEmailSubject,
+  refundDueEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -314,5 +316,39 @@ describe('balance pay-link notifications (#83)', () => {
 
   it('subject is stable copy about the balance', () => {
     expect(BALANCE_LINK_EMAIL_SUBJECT).toMatch(/balance/i);
+  });
+});
+
+// WT-17: the refund-due staff alert must say (and total) the FULL collected
+// amount when the invoice was paid in full, not just the deposit — otherwise
+// staff under-refund a cancelled paid-in-full order.
+describe('refundDueEmailHtml — WT-17 paid-in-full wording', () => {
+  it('deposit-only (default): mentions a deposit, not the full order', () => {
+    const html = refundDueEmailHtml({
+      customerName: 'Jordan Smith',
+      amountUsd: 1467,
+      adminUrl: 'https://quote.yulelovelights.com/quote/q1',
+    });
+    expect(html).toContain('$1,467.00');
+    expect(html).toContain('a deposit was already charged');
+    expect(html).toContain('Deposit to refund');
+    expect(html).not.toContain('paid in full');
+  });
+
+  it('paidInFull: mentions the full order + the full amount, not "deposit"', () => {
+    const html = refundDueEmailHtml({
+      customerName: 'Jordan Smith',
+      amountUsd: 7797.38,
+      adminUrl: 'https://quote.yulelovelights.com/quote/q1',
+      paidInFull: true,
+    });
+    expect(html).toContain('$7,797.38');
+    expect(html).toContain('the full order was already paid in full');
+    expect(html).toContain('Full amount to refund');
+    expect(html).not.toContain('Deposit to refund');
+  });
+
+  it('subject stays the same regardless of paidInFull (only the body wording changes)', () => {
+    expect(refundDueEmailSubject('Jordan Smith')).toBe('↩️ Refund owed: Jordan Smith');
   });
 });

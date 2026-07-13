@@ -14,6 +14,8 @@ import { getInvoiceByJob, setInvoiceStatus } from '@/lib/invoices';
 import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { refundDueEmailSubject, refundDueEmailHtml } from '@/lib/integrations/quoteMessages';
 import { releaseAccrualOnCancel } from '@/lib/referrals';
+import { getJobWorkOrder } from '@/lib/inventory/jobs';
+import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
 
 export const runtime = 'nodejs';
 
@@ -57,12 +59,49 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // invoice status, including paid → a paid-then-cancelled invoice means a MANUAL
   // Valor refund). Best-effort: the job is already cancelled.
   const invoice = await getInvoiceByJob(id);
+  // WT-17: capture BEFORE cancelling whether the invoice was already paid IN
+  // FULL (deposit + the collected balance, not just the deposit) — `invoice`
+  // is a plain JS snapshot from the read above, so its `.status` keeps
+  // reflecting the pre-cancel value even after the write below.
+  const refundedInvoice = !!(invoice && invoice.status === 'paid');
   if (invoice && invoice.status !== 'cancelled') {
     try {
       await setInvoiceStatus(invoice.id, 'cancelled');
     } catch (err) {
       console.error('[api/jobs/:id/cancel] invoice cancel failed:', err);
     }
+  }
+
+  // WT-31: if stock was already decremented for this job (prepped for
+  // install), cancelling it must return those units to on-hand — otherwise a
+  // cancelled-after-prep job silently understates real inventory forever.
+  // Best-effort: recompute the same materials projection prepareJobMaterials
+  // used to deduct (getJobWorkOrder), and add each tracked SKU's projected
+  // need back via the atomic on-hand adjuster (mirrors the negative delta
+  // prepareJobMaterials applied, as a positive delta here). Skipped for test
+  // jobs — prepareJobMaterials never actually deducts real stock for those,
+  // so "returning" it would inflate real on-hand.
+  try {
+    const wo = await getJobWorkOrder(id);
+    if (wo && wo.job.stockDecrementedAt && !wo.job.isTest) {
+      const toReturn = wo.materials.materials.filter((m) => m.onHand !== null && m.qty > 0);
+      if (toReturn.length) {
+        const invDb = getSupabaseServiceClient()!;
+        for (const m of toReturn) {
+          try {
+            await adjustOnHandAtomic(invDb, m.sku, m.qty);
+          } catch (err) {
+            console.error(`[api/jobs/:id/cancel] on-hand return failed for ${m.sku}:`, err);
+          }
+        }
+        console.error(
+          `[api/jobs/:id/cancel] returned stock for cancelled job ${id}: ` +
+            toReturn.map((m) => `${m.qty} × ${m.sku}`).join(', '),
+        );
+      }
+    }
+  } catch (err) {
+    console.error('[api/jobs/:id/cancel] stock-return check failed:', err);
   }
 
   // Cancel the source quote too (operator-initiated; written directly via the
@@ -103,20 +142,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       console.error('[api/jobs/:id/cancel] referral accrual release failed:', err);
     }
 
-    // W1-008: cancelling a deposit-paid order leaves a real refund obligation.
-    // Persist it into approval_snapshot (merge — never clobber existing keys like
-    // customerSelection/amendments/signature) + alert staff, mirroring the
-    // deposit webhook's "money event → durable record + email" pattern, so the
-    // obligation survives past this response even if it's missed.
-    if (refundedDeposit) {
-      // Same source the invoice layer uses for the actually-charged deposit
-      // (quotes.deposit_amount_usd; result.depositAmount only as a legacy fallback).
-      const amountUsd = q?.deposit_amount_usd ?? q?.result?.depositAmount ?? 0;
+    // W1-008 / WT-17: cancelling a deposit-paid OR paid-in-full order leaves a
+    // real refund obligation. Persist it into approval_snapshot (merge — never
+    // clobber existing keys like customerSelection/amendments/signature) +
+    // alert staff, mirroring the deposit webhook's "money event → durable
+    // record + email" pattern, so the obligation survives past this response
+    // even if it's missed.
+    //
+    // WT-17 fix: when the INVOICE was paid in full (the balance was also
+    // collected, not just the deposit), the refund owed is the full collected
+    // total (invoice.total) — using only quotes.deposit_amount_usd here under-
+    // reported the refund by whatever balance was collected on top of it.
+    if (refundedDeposit || refundedInvoice) {
+      const amountUsd = refundedInvoice
+        ? (invoice?.total ?? 0)
+        : (q?.deposit_amount_usd ?? q?.result?.depositAmount ?? 0);
+      const reason = refundedInvoice ? 'cancelled-invoice-paid-in-full' : 'cancelled-deposit-paid';
       const at = new Date().toISOString();
       // Unconditional log so the obligation is traceable even if the DB stamp and
       // the GHL alert below both fail (mirrors W1-006's double-charge log).
       console.error(
-        `[api/jobs/:id/cancel] REFUND DUE for quote ${job.quote_id}: $${amountUsd} deposit already charged, order cancelled — refund in Valor`,
+        `[api/jobs/:id/cancel] REFUND DUE for quote ${job.quote_id}: $${amountUsd} ` +
+          `${refundedInvoice ? 'collected in full' : 'deposit'} already charged, order cancelled — refund in Valor`,
       );
       try {
         await sb
@@ -124,7 +171,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           .update({
             approval_snapshot: {
               ...(q?.approval_snapshot ?? {}),
-              refundDue: { reason: 'cancelled-deposit-paid', amountUsd, at },
+              refundDue: { reason, amountUsd, at },
             },
           })
           .eq('id', job.quote_id);
@@ -142,6 +189,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             html: refundDueEmailHtml({
               customerName: q?.customer_name ?? null,
               amountUsd,
+              paidInFull: refundedInvoice,
               adminUrl: `${baseUrl}/quote/${job.quote_id}`,
             }),
             emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
@@ -153,14 +201,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  const refundedInvoice = !!(invoice && invoice.status === 'paid');
   const refundNeeded = refundedInvoice || refundedDeposit;
   // #110 W6-010: surface a failed source-quote status write so the operator
   // doesn't see an unqualified success while the quote can still read as
   // bookable/booked in the portal and quote list.
   const notes = [
     refundNeeded
-      ? 'A payment was already taken — issue the refund manually in Valor.'
+      ? refundedInvoice
+        ? 'The full order was already paid — issue a refund for the full amount manually in Valor.'
+        : 'A deposit was already taken — issue the refund manually in Valor.'
       : 'No payment was taken — nothing to refund.',
   ];
   if (!quoteCancelled) {
