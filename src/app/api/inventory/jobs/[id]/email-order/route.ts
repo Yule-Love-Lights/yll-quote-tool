@@ -34,7 +34,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   try {
     await sendEmail({
       contactId: internalContactId,
-      subject: orderEmailSubject(wo.job.jobNumber, wo.job.customerName),
+      subject: orderEmailSubject(wo.job.jobNumber, wo.job.customerName, wo.job.isTest),
       html: orderEmailHtml({
         jobNumber: wo.job.jobNumber,
         customerName: wo.job.customerName,
@@ -42,6 +42,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         installDate: wo.job.installDate,
         materials: wo.materials.materials,
         unbound: wo.materials.unbound.map((u) => ({ label: u.label, qty: u.qty })),
+        isTest: wo.job.isTest,
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });

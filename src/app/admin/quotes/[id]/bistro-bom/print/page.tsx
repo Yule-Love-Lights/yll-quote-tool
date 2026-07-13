@@ -8,7 +8,8 @@
 // order → no BOM).
 
 import type { CSSProperties } from 'react';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import { getQuoteRaw } from '@/lib/quotes';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { listCatalog } from '@/lib/inventory/catalog';
@@ -29,6 +30,12 @@ const money = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default async function BistroBomPrintPage({ params }: { params: Promise<{ id: string }> }) {
+  // WT-29: this page renders full customer PII + margin data for any quote UUID
+  // — it had no gate at all. Same dormant-until-live pattern as the rest of the
+  // operator surface (e.g. src/app/inventory/page.tsx).
+  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+    redirect('/login?from=/admin/quotes');
+  }
   const { id } = await params;
   const quote = await getQuoteRaw(id);
   if (!quote) notFound();
@@ -67,6 +74,28 @@ export default async function BistroBomPrintPage({ params }: { params: Promise<{
       <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
         <PrintButton />
       </div>
+
+      {/* WT-30: a test quote's badge (Kanban/admin list) doesn't carry over to
+          print — staff could pull real materials for a job that never
+          decrements real stock. */}
+      {quote.is_test && (
+        <div
+          style={{
+            border: '2px solid #6d28d9',
+            background: '#ede9fe',
+            color: '#6d28d9',
+            fontWeight: 700,
+            fontSize: '13px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            padding: '8px 12px',
+            marginBottom: '14px',
+            textAlign: 'center',
+          }}
+        >
+          TEST QUOTE — do not pull real stock
+        </div>
+      )}
 
       <header style={{ borderBottom: '2px solid #1f7a4d', paddingBottom: '10px', marginBottom: '14px' }}>
         <div style={{ fontSize: '12px', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#1f7a4d', fontWeight: 700 }}>
