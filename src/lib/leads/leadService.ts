@@ -228,7 +228,18 @@ function normalizeCheckboxValue(value: unknown): string[] {
   return typeof value === 'string' && value ? [value] : [];
 }
 
-export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResult> {
+// opts.skipNotes — set by the RETRY worker when the row already has a
+// ghl_contact_id (a sync that failed AFTER the contact was created). Both note
+// calls below are the ONLY non-idempotent GHL steps here, so re-posting them on
+// retry would duplicate the note; skipping them lets the retry safely re-run the
+// idempotent steps (tags/field/opportunity) to finish a partial sync. Trade-off:
+// if the note itself was the failing step, that note never lands — a missing
+// note is far cheaper than a duplicate, and the row (Supabase) is the source of
+// truth for the lead's context regardless.
+export async function syncLeadToGhl(
+  lead: LeadInput,
+  opts: { skipNotes?: boolean } = {},
+): Promise<SyncLeadToGhlResult> {
   const { firstName, lastName } = splitLeadName(lead.name);
 
   // Household pre-check — one extra read before the upsert, only to decide
@@ -275,19 +286,20 @@ export async function syncLeadToGhl(lead: LeadInput): Promise<SyncLeadToGhlResul
       await upsertContactCustomField(contact.id, fieldId, union);
     }
 
-    if (isHousehold) {
+    if (isHousehold && !opts.skipNotes) {
       // Independent of the notes/utm/landingUrl guard below — staff need to
       // see this even when the submitter left every optional field blank.
+      // Skipped on retry (skipNotes) — see the opts.skipNotes note above.
       await createContactNote(
         contact.id,
         buildHouseholdNoteBody(lead, householdMatch!.fullName ?? ''),
       );
     }
 
-    if (lead.notes || lead.utm || lead.landingUrl) {
-      // A future retry worker must SKIP this call once ghl_contact_id is
-      // already set on the row — createContactNote is NOT idempotent, so
-      // re-running the sync on retry would post a duplicate note.
+    if ((lead.notes || lead.utm || lead.landingUrl) && !opts.skipNotes) {
+      // The retry worker SKIPS this call once ghl_contact_id is already set on
+      // the row (skipNotes) — createContactNote is NOT idempotent, so re-running
+      // the sync on retry would otherwise post a duplicate note.
       await createContactNote(contact.id, buildLeadNoteBody(lead));
     }
 

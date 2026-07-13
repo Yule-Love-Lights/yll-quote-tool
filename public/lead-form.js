@@ -28,7 +28,6 @@
 
   var DEFAULT_API_BASE = 'https://quote.yulelovelights.com';
   var UTM_STORAGE_KEY = 'yll_lf_utm';
-  var STICKY_DISMISS_KEY = 'yll_lf_sticky_dismissed';
   var STICKY_REVEAL_PX = 600;
   var EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   var PHONE_MIN_DIGITS = 7;
@@ -247,6 +246,9 @@
       '.yll-lf--full .yll-lf-field--notes,.yll-lf--full .yll-lf-field--consent,',
       '.yll-lf--full .yll-lf-form>.yll-lf-formerror,.yll-lf--full .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
       '.yll-lf--full .yll-lf-form>.yll-lf-submit{justify-self:center;width:auto;padding-left:48px;padding-right:48px;}}',
+      // full-only: center the heading (sticky renders no heading; bar has none)
+      // and give it real header weight (owner: base 22px "looked like a subheader")
+      '.yll-lf--full .yll-lf-heading{text-align:center;font-size:32px;font-weight:800;}',
       // bar + sticky share the row/stack breakpoint; deltas kept separate
       '.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:column;}',
       // sticky-top: pinned just below the host page's own fixed header (JS
@@ -259,37 +261,119 @@
       // any page section (light or dark) — no rgba/translucent background.
       // Compact slim toolbar (owner: the old bottom bar ate too much of the
       // page) — tight padding, small controls, capped mobile height.
-      '.yll-lf-sticky{background:#fff;border-bottom:1px solid var(--yll-lf-border);',
+      // owner: dark bar (harder to miss, matches brand) — everything on it
+      // below is re-colored/re-sized for legibility + bigger touch targets.
+      '.yll-lf-sticky{background:#1B1B1B;border-bottom:1px solid rgba(255,255,255,0.15);',
       'box-shadow:0 4px 20px rgba(0,0,0,0.25);',
-      'padding:8px 14px;max-height:36vh;overflow-y:auto;position:relative;}',
-      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px;}',
+      'padding:12px 21px;max-height:36vh;overflow-y:auto;position:relative;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;}',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email,.yll-lf-sticky .yll-lf-form>.yll-lf-field--service,',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent,.yll-lf-sticky .yll-lf-form>.yll-lf-formerror,',
       '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:1/-1;}',
-      '.yll-lf-sticky .yll-lf-field{gap:2px;}',
+      '.yll-lf-sticky .yll-lf-field{gap:3px;}',
       '.yll-lf-sticky .yll-lf-field-error{min-height:0;}',
-      '.yll-lf-sticky .yll-lf-input{min-height:34px;padding:6px 10px;font-size:13px;}',
-      '.yll-lf-sticky .yll-lf-pills{gap:5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}',
-      '.yll-lf-sticky .yll-lf-pill{min-height:28px;padding:4px 9px;font-size:11px;flex:0 0 auto;white-space:nowrap;}',
-      '.yll-lf-sticky .yll-lf-pill--selected{padding:3px 8px;}',
-      '.yll-lf-sticky .yll-lf-submit{padding:7px 16px;min-height:32px;font-size:13px;justify-self:center;}',
-      '.yll-lf-sticky .yll-lf-consent-row input{width:14px;height:14px;min-height:14px;}',
-      '.yll-lf-sticky .yll-lf-consent-text{font-size:11px;line-height:1.25;}',
-      '.yll-lf-sticky-dismiss{position:absolute;top:2px;right:4px;background:transparent;border:none;',
-      'font-size:16px;line-height:1;color:var(--yll-lf-muted);cursor:pointer;padding:6px;min-width:26px;min-height:26px;}',
-      '.yll-lf-sticky-dismiss:focus-visible{outline:2px solid var(--yll-lf-green);outline-offset:1px;}',
+      // input stays light (white bg + dark text + light border) so it pops
+      // against the dark bar behind it — only its size is scaled up here.
+      '.yll-lf-sticky .yll-lf-input{min-height:51px;padding:9px 15px;font-size:20px;}',
+      '.yll-lf-sticky .yll-lf-pills{gap:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}',
+      '.yll-lf-sticky .yll-lf-pill{min-height:42px;padding:6px 14px;font-size:17px;flex:0 0 auto;white-space:nowrap;}',
+      '.yll-lf-sticky .yll-lf-pill--selected{padding:5px 13px;}',
+      '.yll-lf-sticky .yll-lf-submit{padding:11px 24px;min-height:48px;font-size:20px;justify-self:center;}',
+      '.yll-lf-sticky .yll-lf-consent-row input{width:21px;height:21px;min-height:21px;}',
+      '.yll-lf-sticky .yll-lf-consent-text{font-size:17px;line-height:1.25;color:#f0f0f0;}',
       '@media(min-width:760px){.yll-lf--bar .yll-lf-form,.yll-lf-sticky .yll-lf-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px;}',
       '.yll-lf--bar .yll-lf-field,.yll-lf-sticky .yll-lf-field{min-width:110px;}',
       '.yll-lf--bar .yll-lf-field{flex:1 1 140px;}',
       '.yll-lf-sticky .yll-lf-form{display:flex;}',
-      '.yll-lf-sticky .yll-lf-field{flex:1 1 100px;min-width:80px;}',
+      '.yll-lf-sticky .yll-lf-field{flex:1 1 100px;min-width:90px;}',
       '.yll-lf--bar .yll-lf-field--service{flex-basis:100%;}',
       '.yll-lf--bar .yll-lf-field--consent{flex-basis:100%;order:5;}',
-      '.yll-lf-sticky .yll-lf-field--service{flex:2 1 380px;}',
-      '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 200px;}',
+      // service pills can scroll internally (overflow-x:auto above), so the
+      // field itself doesn't need to reserve room for every pill at once —
+      // keeping its basis modest is what keeps row 1 a single row at
+      // desktop widths despite the bigger fonts/controls elsewhere.
+      '.yll-lf-sticky .yll-lf-field--service{flex:1 1 140px;}',
+      // consent gets most of the remaining row width — it's the longest
+      // piece of text on the bar, so it needs the most room to stay
+      // readable without wrapping into a wall of lines, while still
+      // leaving room for the submit button on the same row.
+      '.yll-lf-sticky .yll-lf-field--consent{flex:1 1 290px;}',
       '.yll-lf--bar .yll-lf-submit,.yll-lf-sticky .yll-lf-submit{flex:none;}',
-      '.yll-lf-sticky{max-height:none;}',
-      '.yll-lf-sticky .yll-lf-form{padding-right:24px;}}',
+      // desktop: no scroll container anywhere on the sticky (the mobile
+      // max-height:36vh/overflow-y:auto from the base rule is dropped here).
+      '.yll-lf-sticky{max-height:none;overflow:visible;}',
+      '.yll-lf-sticky .yll-lf-form{padding-right:36px;gap:15px;}}',
+      // bar-only centering (heading removed; row/pills/submit centered on
+      // both mobile + desktop breakpoints) — additive only, sticky untouched
+      '.yll-lf--bar .yll-lf-input{text-align:center;}',
+      '.yll-lf--bar .yll-lf-pills{justify-content:center;}',
+      '.yll-lf--bar .yll-lf-submit{align-self:center;}',
+      '@media(min-width:760px){.yll-lf--bar .yll-lf-form{justify-content:center;}}',
+      // sticky-only: desktop (>=768px) shows a branded heading inline with
+      // the full compact form on one row; mobile (<768px) swaps in a tiny
+      // heading + two buttons (Call Us / Get a Quote), no form fields.
+      // Additive only — bar/full rules above are untouched.
+      '.yll-lf-sticky-desktop{display:none;}',
+      // mobile: heading stacked on its OWN centered line ABOVE the two
+      // buttons (owner: the old side-column crammed/wrapped the heading and
+      // shoved the buttons to the screen edges). column layout, everything
+      // centered, buttons share a full-width row below.
+      '.yll-lf-sticky-mobile{display:flex;flex-direction:column;align-items:center;gap:8px;}',
+      '.yll-lf-sticky-mobile-heading{width:100%;text-align:center;line-height:1.15;}',
+      '.yll-lf-sticky-mobile-btns{display:flex;width:100%;gap:12px;}',
+      '.yll-lf-sticky-heading{flex:none;line-height:1.2;white-space:nowrap;}',
+      '.yll-lf-sticky-heading-line{display:block;}',
+      '.yll-lf-sticky-heading-green{font-size:18px;font-weight:700;color:var(--yll-lf-green);}',
+      '.yll-lf-sticky-heading-red{font-size:17px;font-weight:700;color:var(--yll-lf-red);}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-green{font-size:16px;}',
+      '.yll-lf-sticky-mobile-heading .yll-lf-sticky-heading-red{font-size:15px;margin-left:6px;}',
+      // buttons: half the row each (min-width:0 lets them shrink so the
+      // text never forces overflow), generous inner padding so the label
+      // sits inside with clear margin on both sides, never touching an edge.
+      '.yll-lf-sticky-callbtn,.yll-lf-sticky-quotebtn{flex:1 1 0;min-width:0;display:flex;align-items:center;',
+      'justify-content:center;gap:9px;min-height:58px;padding:0 14px;border-radius:var(--yll-lf-radius-pill);',
+      'font-size:18px;font-weight:700;white-space:nowrap;text-decoration:none;cursor:pointer;border:none;}',
+      // "a." tag-qualified so this ties (not loses) the specificity fight
+      // with the base `.yll-lf a{color:green}` link rule above — without it
+      // the callbtn's own <a> tag rendered its label in green-on-green.
+      'a.yll-lf-sticky-callbtn{background:var(--yll-lf-green);color:#fff;}',
+      '.yll-lf-sticky-callbtn:hover{background:var(--yll-lf-green-dark);}',
+      // owner-reported (live): the WP/Elementor theme styles bare <button>s
+      // green with enough weight to override our plain-class red here — the
+      // callbtn dodges it because it's an <a>. Win with an ancestor-scoped
+      // selector + !important so no host button rule can repaint the "Get a
+      // Quote" CTA. (The pills are <div role=radio> and the submit is meant to
+      // be green, so this button was the only one visibly wrong.)
+      '.yll-lf-sticky .yll-lf-sticky-quotebtn{background:var(--yll-lf-red)!important;color:#fff!important;}',
+      '.yll-lf-sticky-callbtn:focus-visible,.yll-lf-sticky-quotebtn:focus-visible{',
+      'outline:2px solid var(--yll-lf-green-dark);outline-offset:2px;}',
+      // desktop (>=768px): ONE full-width inline bar (owner: use the WHOLE
+      // horizontal width — no centered panel, no bare sides — in two short rows).
+      // The branded heading sits IN the grid on row 2, in line with the consent +
+      // Get Quote; that frees the ENTIRE top row for the three inputs, so
+      // name/phone/email get the most space.
+      //   row 1: name · phone · email · pills (2x2, right)
+      //   row 2: heading · consent · Get Quote
+      '@media(min-width:768px){.yll-lf-sticky-desktop{display:block;}',
+      '.yll-lf-sticky-mobile{display:none;}',
+      '.yll-lf-sticky-desktop>.yll-lf--sticky{width:100%;}',
+      '.yll-lf-sticky-heading .yll-lf-sticky-heading-green{font-size:22px;}',
+      '.yll-lf-sticky-heading .yll-lf-sticky-heading-red{font-size:18px;}',
+      '.yll-lf-sticky .yll-lf-form{display:grid;grid-template-columns:1fr 1fr 1fr minmax(300px,1fr);',
+      'gap:10px 18px;align-items:center;padding-right:0;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--name{grid-column:1;grid-row:1;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--phone{grid-column:2;grid-row:1;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--email{grid-column:3;grid-row:1;}',
+      // pills fill the 4th column on row 1 (2x2 block, top-right).
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--service{grid-column:4;grid-row:1;}',
+      // row 2, all in line: heading (left) · consent (wide middle) · Get Quote (right).
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-sticky-heading{grid-column:1;grid-row:2;align-self:center;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-field--consent{grid-column:2/4;grid-row:2;align-self:center;}',
+      '.yll-lf-sticky .yll-lf-form>.yll-lf-submit{grid-column:4;grid-row:2;justify-self:stretch;}',
+      // the 4 service options as a real 2x2 grid — NO overflow/scrollbar
+      // (overrides the base flex-nowrap/overflow-x:auto pill strip).
+      '.yll-lf-sticky .yll-lf-pills{display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:visible;}',
+      '.yll-lf-sticky .yll-lf-pill{width:100%;white-space:normal;}}',
     ].join('');
     var style = document.createElement('style');
     style.id = 'yll-lf-styles';
@@ -874,14 +958,10 @@
   // variant: bar
   function renderBar(container) {
     var pre = resolvePreselect(container);
-    var heading = h('h2', { class: 'yll-lf-heading' }, [
-      'Get A Fast Quote - ',
-      h('span', { class: 'yll-lf-accent' }, ['Takes Only 5 Seconds']),
-    ]);
     var built = buildForm({
       variant: 'bar',
       apiBase: resolveApiBase(container),
-      heading: heading,
+      heading: null, // no heading — the WP page already shows this copy in its own Elementor heading section right above the embed
       submitLabel: 'Get My Fast Quote',
       hideLabels: true,
       showAddress: true,
@@ -903,19 +983,25 @@
   // header, sliding DOWN into view once the visitor scrolls past
   // STICKY_REVEAL_PX (and hiding again if they scroll back up) — it never
   // shows at the very top, where the page's own "bar" variant already lives
-  // in the hero.
+  // in the hero. Only ONE ever renders per page (see the `stickyRendered`
+  // dedupe guard in init()).
+  //
+  // Desktop (>=768px) and mobile (<768px) show different content, both
+  // built up front and toggled with CSS (`.yll-lf-sticky-desktop` /
+  // `.yll-lf-sticky-mobile`) so there's no resize/rebuild logic:
+  //   - desktop: a branded "Get A Fast Quote / Takes Only 5 Seconds"
+  //     heading inline at the left of the same row as the full compact
+  //     form (fields/pills/consent/submit) — unchanged POST /api/leads
+  //     contract.
+  //   - mobile: no form fields at all — just a tiny heading and two
+  //     buttons, "Call Us" (a real tel: link) and "Get a Quote" (scrolls to
+  //     the page's `.yll-lf--full` form if present, else navigates to the
+  //     homepage where the full form lives). Nothing here posts.
   function renderSticky(container) {
     var pre = resolvePreselect(container);
     container.style.display = 'none'; // the container is just the placement marker
 
-    var dismissed;
-    try {
-      dismissed = sessionStorage.getItem(STICKY_DISMISS_KEY) === '1';
-    } catch (e) {
-      dismissed = false;
-    }
-    if (dismissed) return;
-
+    // ---- desktop: branded heading + the full compact form ----
     var built = buildForm({
       variant: 'sticky',
       apiBase: resolveApiBase(container),
@@ -938,22 +1024,61 @@
     var emailField = built.form.querySelector('.yll-lf-field--email');
     if (nameField && phoneField && emailField) built.form.insertBefore(phoneField, emailField);
 
-    var dismissBtn = h('button', { type: 'button', class: 'yll-lf-sticky-dismiss', 'aria-label': 'Dismiss', text: '×' });
+    var desktopHeading = h('div', { class: 'yll-lf-sticky-heading' }, [
+      h('span', { class: 'yll-lf-sticky-heading-line' }, [
+        h('span', { class: 'yll-lf-sticky-heading-green', text: 'Get A Fast Quote' }),
+      ]),
+      h('span', { class: 'yll-lf-sticky-heading-line' }, [
+        h('span', { class: 'yll-lf-sticky-heading-red', text: 'Takes Only 5 Seconds' }),
+      ]),
+    ]);
+    // Put the branded heading INTO the form grid (as its first child) so the
+    // desktop layout places it on row 2, in line with the consent + submit
+    // (see the desktop @media block) — freeing the whole top row for the three
+    // inputs + the 2x2 pills. It's a desktop-only element (the mobile view has
+    // its own heading + buttons and hides this whole `.yll-lf-sticky-desktop`).
+    built.form.insertBefore(desktopHeading, built.form.firstChild);
+    var desktopRow = h('div', { class: 'yll-lf-sticky-desktop' }, [built.root]);
 
-    var inner = h('div', { class: 'yll-lf-sticky' }, [dismissBtn, built.root]);
-    var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
-    document.body.appendChild(outer);
+    // ---- mobile: tiny heading + two buttons, no fields, no POST ----
+    var callBtn = h(
+      'a',
+      { class: 'yll-lf-sticky-callbtn', href: 'tel:6315170186', 'aria-label': 'Call us at 631-517-0186' },
+      [h('span', { text: '631-517-0186' })]
+    );
 
-    var dismissedThisView = false;
-    dismissBtn.addEventListener('click', function () {
-      dismissedThisView = true;
-      outer.classList.remove('yll-lf-sticky-visible');
-      try {
-        sessionStorage.setItem(STICKY_DISMISS_KEY, '1');
-      } catch (e) {
-        /* ignore */
+    var quoteBtn = h('button', { type: 'button', class: 'yll-lf-sticky-quotebtn', text: 'Get a Quote' });
+    quoteBtn.addEventListener('click', function () {
+      var fullEl = document.querySelector('.yll-lf--full');
+      if (fullEl) {
+        if (typeof fullEl.scrollIntoView === 'function') {
+          try {
+            fullEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } catch (e) {
+            fullEl.scrollIntoView();
+          }
+        }
+        var firstField = fullEl.querySelector('input,textarea,select');
+        if (firstField && typeof firstField.focus === 'function') firstField.focus();
+      } else {
+        window.location.href = 'https://yulelovelights.com/';
       }
     });
+
+    var mobileHeading = h('div', { class: 'yll-lf-sticky-mobile-heading' }, [
+      h('span', { class: 'yll-lf-sticky-heading-green', text: 'Get A Fast Quote' }),
+      h('span', { class: 'yll-lf-sticky-heading-red', text: 'Takes Only 5 Seconds' }),
+    ]);
+    var mobileBtns = h('div', { class: 'yll-lf-sticky-mobile-btns' }, [callBtn, quoteBtn]);
+    var mobileRow = h('div', { class: 'yll-lf-sticky-mobile' }, [mobileHeading, mobileBtns]);
+
+    // `yll-lf` (not just `yll-lf-sticky`) so the --yll-lf-green/--yll-lf-red
+    // custom properties (scoped to `.yll-lf` descendants — see injectStyles)
+    // reach the heading/buttons, which sit as siblings of the `.yll-lf--sticky`
+    // form wrapper, not inside it.
+    var inner = h('div', { class: 'yll-lf yll-lf-sticky' }, [desktopRow, mobileRow]);
+    var outer = h('div', { class: 'yll-lf-sticky-outer' }, [inner]);
+    document.body.appendChild(outer);
 
     trackViewedOnce(outer, 'sticky');
 
@@ -1006,7 +1131,6 @@
     }
 
     function updateVisibility() {
-      if (dismissedThisView) return;
       var shouldShow = window.scrollY > STICKY_REVEAL_PX;
       var isVisible = outer.classList.contains('yll-lf-sticky-visible');
       if (shouldShow && !isVisible) {
@@ -1021,6 +1145,13 @@
   }
 
   // init
+  // dedupe guard: a WordPress page can include the sticky template twice
+  // (e.g. a site-wide footer template plus a stray per-page paste) — only
+  // the FIRST [data-yll-lead-form="sticky"] marker ever builds a bar; any
+  // later ones are hidden and skipped so a visitor never sees two stacked
+  // sticky bars.
+  var stickyRendered = false;
+
   function init() {
     injectStyles();
     captureUtmFirstTouch();
@@ -1029,8 +1160,14 @@
       var container = containers[i];
       var variant = container.getAttribute('data-yll-lead-form');
       if (variant === 'bar') renderBar(container);
-      else if (variant === 'sticky') renderSticky(container);
-      else renderFull(container); // default / unknown -> full
+      else if (variant === 'sticky') {
+        if (stickyRendered) {
+          container.style.display = 'none'; // duplicate marker — never a second bar
+          continue;
+        }
+        stickyRendered = true;
+        renderSticky(container);
+      } else renderFull(container); // default / unknown -> full
     }
   }
 

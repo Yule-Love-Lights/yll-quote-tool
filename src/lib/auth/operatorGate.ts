@@ -46,6 +46,11 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
+  '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
+  // request carries no operator session, so it must be allowlisted here to reach
+  // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
+  // POST/OPTIONS only, so it does NOT cover this GET sub-path). The sibling
+  // /api/admin/leads* routes are requireAdmin (operator-session) and stay gated.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
