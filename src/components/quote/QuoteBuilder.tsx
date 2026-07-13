@@ -1075,15 +1075,16 @@ export default function QuoteBuilder({
   useEffect(() => {
     const isPermanentBistro = form.serviceType === 'permanent_bistro';
     if (!editMode || (form.serviceType !== 'permanent' && !isPermanentBistro)) return;
-    if (!designId || satellitePreview != null) {
-      // Nothing to hydrate (no design yet) or already hydrated/live this
-      // session — either way permanentSatLines is already accurate, so the
-      // PS-B1 billed-but-untraced warning can trust it now.
-      setPermTraceHydrated(true);
-      return;
-    }
     let stale = false;
     (async () => {
+      if (!designId || satellitePreview != null) {
+        // Nothing to hydrate (no design yet) or already hydrated/live this
+        // session — either way permanentSatLines is already accurate, so the
+        // PS-B1 billed-but-untraced warning can trust it now. Set inside the
+        // async body (not synchronously in the effect) to avoid cascading renders.
+        if (!stale) setPermTraceHydrated(true);
+        return;
+      }
       try {
         const res = await fetch(`/api/designs/${designId}`);
         if (!res.ok) return;

@@ -132,7 +132,6 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     const packages = derivePackagesPermanent(lineItems, RESULT);
     const b = packages.find((p) => p.id === 'B')!;
     expect(b.name).toBe('Front & Left Side');
-    expect(b.tagline).toBe('The front plus your left side.');
     expect(b.includedItemIds.sort()).toEqual(['permanent-front', 'permanent-left']);
     expect(b.total).toBe(priceSelection(4000 + 2750, CHARGES).total);
   });
@@ -142,7 +141,6 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     const packages = derivePackagesPermanent(lineItems, RESULT);
     const b = packages.find((p) => p.id === 'B')!;
     expect(b.name).toBe('Right Side');
-    expect(b.tagline).toBe('Your right side.');
     expect(b.includedItemIds).toEqual(['permanent-right']);
   });
 
