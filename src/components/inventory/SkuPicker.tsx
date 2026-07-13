@@ -8,9 +8,12 @@
 //
 // WT-22(d): the "locked" badge used to be display-only — picking a sold-out sku
 // was never blocked. `pick` now confirms before committing a locked selection.
-// WT-23: an optional `hiddenCategories` list (effective category, from the
-// Overrides categories tab) is threaded into the search so a hidden category's
-// skus vanish from this picker too, not just the Overrides items tab.
+// WT-23: an OPTIONAL `hiddenCategories` list (effective category, from the
+// Overrides categories tab) can be passed to filter hidden categories out of
+// the search. It defaults to [] and the binding-config pickers deliberately
+// leave it unset (you configure bindings for every category, hidden or not);
+// the hidden-category setting takes effect on the surfaces that DISPLAY skus
+// (the Overrides items tab and the materials view/PO), which pass it.
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CatalogItem } from '@/lib/inventory/catalog';
