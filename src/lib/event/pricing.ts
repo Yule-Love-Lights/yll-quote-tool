@@ -109,7 +109,16 @@ function resolveRooflineChoice(
   inputs: QuoteInputs,
   options: QuoteResult['rooflineOptions'],
 ): RooflineChoice {
-  if (inputs.rooflineChoice) return inputs.rooflineChoice;
+  // WT-01: only honor an explicit operator choice while its option still
+  // resolves. A stale choice (e.g. 'gingerbread' after its footage was later
+  // edited to 0, Santa's footage still present) must fall through to the auto-
+  // pick, never bill $0 while real footage remains. An explicit 'none' stays an
+  // intentional operator zero. (Events keep their own inference fallback — no
+  // holiday $1,000-minimum auto-targeting.)
+  const choice = inputs.rooflineChoice;
+  if (choice === 'santas' && options.santas) return 'santas';
+  if (choice === 'gingerbread' && options.gingerbread) return 'gingerbread';
+  if (choice === 'none') return 'none';
   if (options.gingerbread) return 'gingerbread';
   if (options.santas) return 'santas';
   return 'none';

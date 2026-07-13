@@ -15,7 +15,6 @@ import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { refundDueEmailSubject, refundDueEmailHtml } from '@/lib/integrations/quoteMessages';
 import { releaseAccrualOnCancel } from '@/lib/referrals';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
-import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
 
 export const runtime = 'nodejs';
 
@@ -72,31 +71,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  // WT-31: if stock was already decremented for this job (prepped for
-  // install), cancelling it must return those units to on-hand — otherwise a
-  // cancelled-after-prep job silently understates real inventory forever.
-  // Best-effort: recompute the same materials projection prepareJobMaterials
-  // used to deduct (getJobWorkOrder), and add each tracked SKU's projected
-  // need back via the atomic on-hand adjuster (mirrors the negative delta
-  // prepareJobMaterials applied, as a positive delta here). Skipped for test
-  // jobs — prepareJobMaterials never actually deducts real stock for those,
-  // so "returning" it would inflate real on-hand.
+  // WT-31: if stock was decremented for this job (prepped for install),
+  // cancelling it leaves those pulled materials to be returned to stock. We do
+  // NOT auto-adjust on-hand here: prepareJobMaterials deducts min(qty, onHand)
+  // floored at 0 and persists no per-SKU deducted amount, so crediting the full
+  // projected qty back would OVER-credit whenever a SKU was short at prep
+  // (phantom stock -> the next supplier PO under-orders). Instead we surface a
+  // durable operator note (a best-effort upper bound) plus a log; exact
+  // auto-return needs a prep-time per-SKU deduction ledger (tracked follow-up).
+  // Skipped for test jobs, which never deducted real stock.
+  let materialsToReturn: { sku: string; qty: number }[] = [];
   try {
     const wo = await getJobWorkOrder(id);
     if (wo && wo.job.stockDecrementedAt && !wo.job.isTest) {
-      const toReturn = wo.materials.materials.filter((m) => m.onHand !== null && m.qty > 0);
-      if (toReturn.length) {
-        const invDb = getSupabaseServiceClient()!;
-        for (const m of toReturn) {
-          try {
-            await adjustOnHandAtomic(invDb, m.sku, m.qty);
-          } catch (err) {
-            console.error(`[api/jobs/:id/cancel] on-hand return failed for ${m.sku}:`, err);
-          }
-        }
+      materialsToReturn = wo.materials.materials
+        .filter((m) => m.onHand !== null && m.qty > 0)
+        .map((m) => ({ sku: m.sku, qty: m.qty }));
+      if (materialsToReturn.length) {
         console.error(
-          `[api/jobs/:id/cancel] returned stock for cancelled job ${id}: ` +
-            toReturn.map((m) => `${m.qty} × ${m.sku}`).join(', '),
+          `[api/jobs/:id/cancel] materials were pulled for cancelled job ${id} — ` +
+            `verify and return to stock (best-effort upper bound): ` +
+            materialsToReturn.map((m) => `${m.qty} × ${m.sku}`).join(', '),
         );
       }
     }
@@ -212,6 +207,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : 'A deposit was already taken — issue the refund manually in Valor.'
       : 'No payment was taken — nothing to refund.',
   ];
+  if (materialsToReturn.length) {
+    notes.push(
+      'Materials were already pulled for this job — verify and return them to stock: ' +
+        materialsToReturn.map((m) => `${m.qty} × ${m.sku}`).join(', ') + '.',
+    );
+  }
   if (!quoteCancelled) {
     notes.push('The job was cancelled but the source quote could not be updated — check manually.');
   }
@@ -222,6 +223,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     refundedDeposit,
     refundNeeded,
     quoteCancelled,
+    materialsReturnPending: materialsToReturn,
     note: notes.join(' '),
   });
 }

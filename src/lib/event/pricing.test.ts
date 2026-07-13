@@ -93,6 +93,53 @@ describe('calculateEventQuote — roofline at EVENT rates', () => {
     expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')).toBeUndefined();
     expect(r.subtotalBeforeDiscount).toBe(700);
   });
+
+  // WT-01: a stale rooflineChoice whose option no longer resolves must fall
+  // through to the auto-pick, never bill $0 while real footage remains.
+  it('WT-01: stale "gingerbread" choice with gingerbread footage zeroed falls to santas, not $0', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 100,
+        santasDifficulty: 'easy',
+        gingerbreadFootage: 0, // was set, later corrected to 0 while the choice stayed 'gingerbread'
+        rooflineChoice: 'gingerbread',
+      }),
+      R,
+    );
+    expect(r.rooflineChoice).toBe('santas');
+    expect(r.lineItems.find(l => l.id === 'roofline-santas')?.amount).toBe(700);
+    expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')).toBeUndefined();
+    expect(r.subtotalBeforeDiscount).toBe(700);
+  });
+
+  it('WT-01: stale "santas" choice with santas footage zeroed falls to gingerbread', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 0,
+        gingerbreadFootage: 50,
+        gingerbreadDifficulty: 'medium',
+        rooflineChoice: 'santas',
+      }),
+      R,
+    );
+    expect(r.rooflineChoice).toBe('gingerbread');
+    expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')?.amount).toBe(400);
+    expect(r.lineItems.find(l => l.id === 'roofline-santas')).toBeUndefined();
+  });
+
+  it('WT-01: stale choice with both footages zeroed resolves to none (no roofline line)', () => {
+    const r = calculateEventQuote(
+      baseInputs({
+        santasFootage: 0,
+        gingerbreadFootage: 0,
+        rooflineChoice: 'gingerbread',
+      }),
+      R,
+    );
+    expect(r.rooflineChoice).toBe('none');
+    expect(r.lineItems.find(l => l.id === 'roofline-santas')).toBeUndefined();
+    expect(r.lineItems.find(l => l.id === 'roofline-gingerbread')).toBeUndefined();
+  });
 });
 
 describe('calculateEventQuote — minis / curtain / spritzers at event rates', () => {

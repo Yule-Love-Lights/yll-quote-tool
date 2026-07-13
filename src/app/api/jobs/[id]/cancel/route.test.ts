@@ -14,7 +14,6 @@ const {
   hl,
   releaseAccrualOnCancelMock,
   getJobWorkOrderMock,
-  adjustOnHandAtomicMock,
 } = vi.hoisted(() => ({
   getJob: vi.fn(),
   setJobStatus: vi.fn(),
@@ -25,7 +24,6 @@ const {
   hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
   releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
   getJobWorkOrderMock: vi.fn(),
-  adjustOnHandAtomicMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -44,13 +42,11 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 // calls to this file's shared quote-row fake (which the W1-008 tests below
 // index into positionally) — this file's job is only the wiring + fail-open.
 vi.mock('@/lib/referrals', () => ({ releaseAccrualOnCancel: releaseAccrualOnCancelMock }));
-// WT-31: getJobWorkOrder + adjustOnHandAtomic are mocked so the stock-return
-// check's own logic (materials projection, atomic delta write) isn't
+// WT-31: getJobWorkOrder is mocked so the materials-projection logic isn't
 // re-exercised here — it's covered in src/lib/inventory/*.test.ts. This file's
-// job is only the wiring: read the flag, return stock when it's set, skip
-// otherwise.
+// job is only the wiring: read the stock-decremented flag and surface the
+// materials to return, skip otherwise.
 vi.mock('@/lib/inventory/jobs', () => ({ getJobWorkOrder: getJobWorkOrderMock }));
-vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
 
 import { POST } from './route';
 
@@ -93,7 +89,6 @@ beforeEach(() => {
     job: { stockDecrementedAt: null, isTest: false },
     materials: { materials: [], unbound: [], totalLines: 0 },
   });
-  adjustOnHandAtomicMock.mockResolvedValue(undefined);
   sb = fakeSb();
   sbRef.current = sb.client;
 });
@@ -245,17 +240,19 @@ describe('POST /api/jobs/[id]/cancel', () => {
   });
 
   // WT-31: cancelling a job whose stock was already decremented (prepped for
-  // install) must return the units to on-hand — otherwise a cancelled-after-
-  // prep job silently understates real inventory forever.
-  describe('WT-31 — cancel reverses stock already pulled for a prepped job', () => {
-    it("returns each tracked SKU's projected qty to on-hand when stock_decremented_at is set", async () => {
+  // install) surfaces the pulled materials as a durable operator note +
+  // materialsReturnPending so staff return them to stock. It intentionally does
+  // NOT auto-adjust on-hand: with no per-SKU deduction ledger, a blind full-qty
+  // credit would over-count whenever a SKU was short at prep (see route comment).
+  describe('WT-31 — cancel surfaces the materials to return for a prepped job', () => {
+    it('lists each tracked SKU (qty > 0, on-hand tracked) in materialsReturnPending + the note when stock_decremented_at is set', async () => {
       getJobWorkOrderMock.mockResolvedValueOnce({
         job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
         materials: {
           materials: [
             { sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false },
             { sku: 'CLIP-A', name: 'All-purpose clip', qty: 20, onHand: 50, short: false },
-            // untracked SKU (onHand null — not in the on-hand list) must NOT be touched.
+            // untracked SKU (onHand null — not in the on-hand list) must NOT be listed.
             { sku: 'UNTRACKED', name: 'Untracked part', qty: 5, onHand: null, short: false },
           ],
           unbound: [],
@@ -264,15 +261,18 @@ describe('POST /api/jobs/[id]/cancel', () => {
       });
 
       const res = await POST(req, ctx());
+      const json = await res.json();
       expect(res.status).toBe(200);
-
-      expect(adjustOnHandAtomicMock).toHaveBeenCalledTimes(2);
-      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'C9-BULB', 40);
-      expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'CLIP-A', 20);
-      expect(adjustOnHandAtomicMock).not.toHaveBeenCalledWith(expect.anything(), 'UNTRACKED', expect.anything());
+      expect(json.materialsReturnPending).toEqual([
+        { sku: 'C9-BULB', qty: 40 },
+        { sku: 'CLIP-A', qty: 20 },
+      ]);
+      expect(json.note).toContain('40 × C9-BULB');
+      expect(json.note).toContain('20 × CLIP-A');
+      expect(json.note).not.toContain('UNTRACKED');
     });
 
-    it('does NOT touch on-hand when the job was never prepped (stock_decremented_at is null)', async () => {
+    it('materialsReturnPending is empty when the job was never prepped (stock_decremented_at is null)', async () => {
       getJobWorkOrderMock.mockResolvedValueOnce({
         job: { stockDecrementedAt: null, isTest: false },
         materials: {
@@ -283,11 +283,12 @@ describe('POST /api/jobs/[id]/cancel', () => {
       });
 
       const res = await POST(req, ctx());
+      const json = await res.json();
       expect(res.status).toBe(200);
-      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+      expect(json.materialsReturnPending).toEqual([]);
     });
 
-    it('does NOT return stock for a TEST job even if stock_decremented_at is set (prepareJobMaterials never actually deducted it)', async () => {
+    it('does NOT list materials for a TEST job even if stock_decremented_at is set (never deducted real stock)', async () => {
       getJobWorkOrderMock.mockResolvedValueOnce({
         job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: true },
         materials: {
@@ -298,25 +299,9 @@ describe('POST /api/jobs/[id]/cancel', () => {
       });
 
       const res = await POST(req, ctx());
-      expect(res.status).toBe(200);
-      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
-    });
-
-    it('a failed stock-return write does not break the cancel response (best-effort)', async () => {
-      getJobWorkOrderMock.mockResolvedValueOnce({
-        job: { stockDecrementedAt: '2026-01-05T00:00:00Z', isTest: false },
-        materials: {
-          materials: [{ sku: 'C9-BULB', name: 'C9 bulb', qty: 40, onHand: 100, short: false }],
-          unbound: [],
-          totalLines: 1,
-        },
-      });
-      adjustOnHandAtomicMock.mockRejectedValueOnce(new Error('on-hand write conflict'));
-
-      const res = await POST(req, ctx());
       const json = await res.json();
       expect(res.status).toBe(200);
-      expect(json.cancelled).toBe(true);
+      expect(json.materialsReturnPending).toEqual([]);
     });
 
     it('a failed getJobWorkOrder read does not break the cancel response (best-effort)', async () => {
@@ -326,7 +311,7 @@ describe('POST /api/jobs/[id]/cancel', () => {
       const json = await res.json();
       expect(res.status).toBe(200);
       expect(json.cancelled).toBe(true);
-      expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+      expect(json.materialsReturnPending).toEqual([]);
     });
   });
 
