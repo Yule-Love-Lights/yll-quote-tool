@@ -682,8 +682,59 @@ describe('Valor webhook — balance pay-link (#83)', () => {
 
     expect(res.status).toBe(200);
     expect(json.underpaid).toBe(true);
-    expect(updatePayloads).toHaveLength(0); // never settled
+    expect(updatePayloads).toHaveLength(0); // the invoice itself is never settled
     expect(setJobStatus).not.toHaveBeenCalled();
+  });
+
+  // WT-15: previously the underpayment branch only console.error'd — nothing
+  // durable or staff-visible. Now it stamps a marker on the quote (same
+  // approval_snapshot mechanism as the duplicate-payment guard) + emails staff.
+  it('underpayment stamps a durable balanceUnderpayment marker + emails staff (WT-15)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: { signature: 'sig-data' } },
+      [{ id: 'inv-1' }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.underpaid).toBe(true);
+    expect(setJobStatus).not.toHaveBeenCalled();
+
+    // Durable marker on the quote — existing snapshot keys preserved, invoice untouched.
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).toMatchObject({
+      approval_snapshot: {
+        signature: 'sig-data',
+        balanceUnderpayment: { paidUsd: 1, expectedUsd: 1350 },
+      },
+    });
+
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: 'internal-1', subject: expect.stringContaining('Jordan Smith') }),
+    );
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('balance underpayment'));
+    err.mockRestore();
+  });
+
+  it('does not fail the webhook when the underpayment alert email throws (best-effort)', async () => {
+    const { client } = makeSb({ id: 'quote-1', is_test: false }, [{ id: 'inv-1' }]);
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.underpaid).toBe(true);
   });
 
   it('ignores a balance webhook for a TEST quote (no real settle)', async () => {
@@ -705,7 +756,10 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
     sbRef.current = client;
     getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
-    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0 });
+    // SAME txn id as BAL_PAYLOAD (== APPROVED_PAYLOAD's 'TXN-123') — a normal
+    // Valor retry of the transaction that already settled this invoice, NOT a
+    // second charge. WT-14 must stay silent here (no marker, no alert).
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0, valor_balance_txn_id: 'TXN-123' });
 
     const res = await POST(signedReq(BAL_PAYLOAD));
     const json = await res.json();
@@ -713,6 +767,131 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     expect(json.alreadyPaid).toBe(true);
     expect(updatePayloads).toHaveLength(0);
     expect(setJobStatus).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  // WT-14: the deposit path already guards against a genuinely distinct second
+  // approved charge landing on an already-paid record (W1-006); the BALANCE
+  // pay-link leg had no equivalent guard — a customer completing the balance
+  // hosted-payment page twice was silently charged twice with zero trace.
+  describe('possible double charge on the BALANCE leg (WT-14)', () => {
+    it('a DISTINCT txn id on an already-paid invoice stamps duplicateBalancePayment + emails staff, still 200-acks', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { client, updatePayloads } = makeSb(
+        {
+          id: 'quote-1',
+          customer_name: 'Jordan Smith',
+          is_test: false,
+          approval_snapshot: { customerSelection: { currentTotalUsd: 2700 } },
+        },
+        [],
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'paid',
+        balance: 0,
+        valor_balance_txn_id: 'BAL-TXN-ORIGINAL',
+      });
+
+      // A different txn id than the one on file — a genuine second charge (two
+      // open pay-link tabs), not a Valor retry of the same transaction.
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'BAL-TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200); // still ack so Valor doesn't retry
+      expect(json.alreadyPaid).toBe(true);
+
+      // Merge-stamped into the QUOTE's approval_snapshot — existing keys preserved,
+      // the invoice itself is never re-touched (it's already correctly 'paid').
+      expect(updatePayloads).toHaveLength(1);
+      expect(updatePayloads[0]).toMatchObject({
+        approval_snapshot: {
+          customerSelection: { currentTotalUsd: 2700 },
+          duplicateBalancePayment: { txnId: 'BAL-TXN-SECOND' },
+        },
+      });
+
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ contactId: 'internal-1', subject: expect.stringContaining('Jordan Smith') }),
+      );
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('POSSIBLE DOUBLE BALANCE CHARGE'));
+      err.mockRestore();
+    });
+
+    it('a DISTINCT txn id racing the atomic claim (lost-race path) also flags the duplicate', async () => {
+      const { client, updatePayloads } = makeSb(
+        { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+        [], // 0 rows claimed → another concurrent webhook already settled it
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      // Invoice still draft/awaiting_payment when READ (so valor_balance_txn_id is
+      // necessarily null — it's set only alongside status:'paid' in one write),
+      // but the atomic claim loses the race below.
+      getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'BAL-TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+      // First updatePayload is the failed atomic-claim attempt; second is the marker.
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({
+        approval_snapshot: { duplicateBalancePayment: { txnId: 'BAL-TXN-SECOND' } },
+      });
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    });
+
+    it('SAME txn id racing the atomic claim (a normal retry) stays a silent alreadyPaid ack', async () => {
+      const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      // BAL_PAYLOAD carries txn_id 'TXN-123' (from APPROVED_PAYLOAD) — mirrors the
+      // deposit path's equivalent lost-race test (valor_txn_id pre-set to match):
+      // the pre-claim read's txn id already equals the incoming event, so the
+      // guard must treat it as the SAME transaction, not a second charge.
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'awaiting_payment',
+        balance: 1350,
+        valor_balance_txn_id: 'TXN-123',
+      });
+
+      const res = await POST(signedReq(BAL_PAYLOAD));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+      // Only the failed atomic-claim attempt — no duplicate marker on a same-txn retry.
+      expect(updatePayloads).toHaveLength(1);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the webhook when the duplicate-payment alert email throws (best-effort)', async () => {
+      const { client } = makeSb(
+        { id: 'quote-1', is_test: false },
+        [],
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'paid',
+        balance: 0,
+        valor_balance_txn_id: 'BAL-TXN-ORIGINAL',
+      });
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'BAL-TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+    });
   });
 
   // B6 fix: a late or retried balance webhook must NOT resurrect a CANCELLED invoice.
