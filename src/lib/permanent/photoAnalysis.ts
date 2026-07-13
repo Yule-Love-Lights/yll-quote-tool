@@ -176,14 +176,17 @@ export function normalizePermanentSatelliteResult(parsed: unknown): PermanentSat
   // (QuoteBuilder's "AI notes: ..." line) with no other file needing to change.
   const droppedWarning =
     droppedJumps > 0
-      ? ` [${droppedJumps} jump(s) over ${MAX_JUMP_FT}ft dropped as a likely hallucination guard — if a real wiring bridge exceeds ${MAX_JUMP_FT}ft (e.g. a large estate or a detached-but-included structure), add that connection's extensions manually.]`
+      ? `[${droppedJumps} jump(s) over ${MAX_JUMP_FT}ft dropped as a likely hallucination guard. If a real wiring bridge exceeds ${MAX_JUMP_FT}ft (e.g. a large estate or a detached-but-included structure), add that connection's extensions manually.]`
       : '';
   return {
     satelliteLines,
     streetRuns: streetRuns.slice(0, 40),
     jumps: jumps.slice(0, 40),
     droppedJumps,
-    notes: (baseNotes + droppedWarning).slice(0, 500),
+    // Prepend the drop warning (the actionable operator hint) so the 500-char
+    // cap trims the AI's own notes, not the "add extensions manually" warning —
+    // otherwise a verbose baseNotes on a complex property could hide it.
+    notes: (droppedWarning ? `${droppedWarning} ${baseNotes}`.trim() : baseNotes).slice(0, 500),
     confidence: conf === 'high' || conf === 'medium' ? conf : 'low',
   };
 }
