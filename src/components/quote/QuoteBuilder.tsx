@@ -1635,6 +1635,20 @@ export default function QuoteBuilder({
             satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
           };
         }
+        // WA-A10 (WT-35): persist the raw permanent-analyzer result as
+        // `analysis`, mirroring how applyAnalysisResult parks the HOLIDAY
+        // result (ctx.analysis = r) for the eager design effect to push via
+        // pushAnalysisContext → setDesignAnalysis → designs.seed_analysis.
+        // Without this, seed_analysis stayed null for every permanent design,
+        // trainingExamples.ts stored original_analysis: null, and fewShot.ts
+        // taught "jumps": [] forever — the #140/#141 jump-detection training
+        // never fired.
+        if (data.permanentSatellite) {
+          pendingContextRef.current = {
+            ...(pendingContextRef.current ?? {}),
+            analysis: data.permanentSatellite as unknown as Record<string, unknown>,
+          };
+        }
         if (data.permanentImageryOnly) {
           // #140 P2: the permanent satellite analyzer seeds the SAME editable
           // side channels the operator draws by hand — footage/corners and the
