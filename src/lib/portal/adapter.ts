@@ -23,6 +23,7 @@ import type {
 } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
+import { roundMoney } from '@/lib/money';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
@@ -436,7 +437,7 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
   const depositUsd =
     typeof sel?.currentDepositUsd === 'number'
       ? sel.currentDepositUsd
-      : Math.round(totalUsd * 0.5);
+      : roundMoney(totalUsd * 0.5); // half the total, rounded to CENTS (was whole dollars — a legacy/staff-approved snapshot could show a deposit ~49¢ off)
   return {
     approvedAt: snap?.approvedAt ?? row.customer_approved_at,
     depositPaidAt: row.deposit_paid_at ?? null,
