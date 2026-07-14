@@ -23,6 +23,8 @@ const {
   getInvoiceByJob,
   notifyTelegram,
   getJobWorkOrder,
+  accrueOnBooking,
+  ensureReferralCode,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
@@ -53,6 +55,12 @@ const {
       unbound: [], totalLines: 1,
     },
   })),
+  // Referral program (#41): mocked so the webhook test asserts the wiring
+  // (called once per booking) without touching the referrals table. Its OWN
+  // idempotency is covered in src/lib/referrals.test.ts.
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
+  // Referral program (#41 PR 2): stamp-at-booking — mocked the same way.
+  ensureReferralCode: vi.fn(async () => 'CODE1234'),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -84,6 +92,11 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   isHighLevelConfigured: () => hl.configured.value,
   HighLevelError: class HighLevelError extends Error {},
+}));
+
+vi.mock('@/lib/referrals', () => ({
+  accrueOnBooking,
+  ensureReferralCode,
 }));
 
 import { POST, GET } from './route';
@@ -170,6 +183,7 @@ const QUOTE = {
   deposit_amount_usd: 1350,
   valor_txn_id: null,
   approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 1350 } },
+  customer_id: null,
 };
 
 beforeEach(() => {
@@ -215,6 +229,10 @@ describe('Valor webhook — happy path', () => {
     expect(createJobFromQuote).toHaveBeenCalledTimes(1);
     expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
 
+    // #41 referral program: the booking event fires the accrual exactly once.
+    expect(accrueOnBooking).toHaveBeenCalledTimes(1);
+    expect(accrueOnBooking).toHaveBeenCalledWith('quote-1');
+
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
     expect(notifyTelegram).toHaveBeenCalledTimes(1);
@@ -233,6 +251,50 @@ describe('Valor webhook — happy path', () => {
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true); // payment recorded despite the job failure
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true); // payment recorded despite the accrual failure
+  });
+
+  // #41 PR 2: stamp-at-booking — every future customer gets their referral
+  // link live in GHL from the moment they're booked via a real Valor payment.
+  it('stamps the referral code for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the referral code stamp when the quote has no linked customer', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
   });
 
   it('verifies a signature built with the Stripe-style `${ts}.${body}` fallback base', async () => {
@@ -609,8 +671,12 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled(); // never the booking path
   });
 
-  it('does NOT settle on an underpayment (paid amount < balance)', async () => {
-    const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, [{ id: 'inv-1' }]);
+  it('does NOT settle on an underpayment (paid amount < balance), but WT-15 stamps a durable shortfall marker', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: { foo: 'bar' } },
+      [{ id: 'inv-1' }],
+    );
     sbRef.current = client;
     getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
     getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
@@ -620,8 +686,44 @@ describe('Valor webhook — balance pay-link (#83)', () => {
 
     expect(res.status).toBe(200);
     expect(json.underpaid).toBe(true);
-    expect(updatePayloads).toHaveLength(0); // never settled
     expect(setJobStatus).not.toHaveBeenCalled();
+
+    // WT-15: the invoice itself is never touched (no status/balance write) —
+    // only a durable marker on the quote's approval_snapshot, preserving
+    // existing keys, so the shortfall surfaces in-app.
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).not.toHaveProperty('status');
+    expect(updatePayloads[0]).toMatchObject({
+      approval_snapshot: {
+        foo: 'bar',
+        balanceUnderpayment: { txnId: 'TXN-123', paidUsd: 1, expectedUsd: 1350, shortfallUsd: 1349 },
+      },
+    });
+
+    // Best-effort staff alert.
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: 'internal-1', subject: expect.stringContaining('Jordan Smith') }),
+    );
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('balance underpayment'));
+    err.mockRestore();
+  });
+
+  it('does not fail the webhook when the underpayment alert email throws (best-effort)', async () => {
+    const { client } = makeSb(
+      { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: null },
+      [{ id: 'inv-1' }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.underpaid).toBe(true);
   });
 
   it('ignores a balance webhook for a TEST quote (no real settle)', async () => {
@@ -643,14 +745,17 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
     sbRef.current = client;
     getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
-    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0 });
+    // SAME txn id as the one already recorded on the invoice (a normal Valor
+    // retry, not a genuinely distinct second charge) — must stay silent (WT-14).
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0, valor_balance_txn_id: 'TXN-123' });
 
-    const res = await POST(signedReq(BAL_PAYLOAD));
+    const res = await POST(signedReq(BAL_PAYLOAD)); // txn_id: 'TXN-123'
     const json = await res.json();
 
     expect(json.alreadyPaid).toBe(true);
-    expect(updatePayloads).toHaveLength(0);
+    expect(updatePayloads).toHaveLength(0); // no duplicate-marker write
     expect(setJobStatus).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
   });
 
   // B6 fix: a late or retried balance webhook must NOT resurrect a CANCELLED invoice.
@@ -669,5 +774,118 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     expect(json.ignored).toBe('invoice-cancelled');
     expect(updatePayloads).toHaveLength(0); // invoice NOT touched
     expect(setJobStatus).not.toHaveBeenCalled(); // job NOT closed
+  });
+
+  // WT-14: the balance path had no duplicate-charge guard, unlike the deposit
+  // path's flagPossibleDuplicatePayment (W1-006). A second APPROVED balance
+  // webhook carrying a DIFFERENT txn id than the one recorded on the invoice is
+  // a genuine second charge (two open pay-link tabs both got paid) and must be
+  // flagged, not silently ack'd.
+  describe('Valor webhook — balance possible double charge (WT-14)', () => {
+    it('DISTINCT txn id on an already-paid invoice stamps duplicateBalancePayment + emails staff, does NOT re-settle', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { client, updatePayloads } = makeSb(
+        { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: { foo: 'bar' } },
+        [],
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'paid',
+        balance: 0,
+        valor_balance_txn_id: 'TXN-ORIGINAL',
+      });
+
+      // A different txn id than the one on file — a genuinely second approved charge.
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200); // still ack so Valor doesn't retry
+      expect(json.alreadyPaid).toBe(true);
+      expect(setJobStatus).not.toHaveBeenCalled(); // invoice NOT re-settled/double-applied
+
+      // Merge-stamped into the quote's approval_snapshot — existing keys preserved.
+      expect(updatePayloads).toHaveLength(1);
+      expect(updatePayloads[0]).toMatchObject({
+        approval_snapshot: {
+          foo: 'bar',
+          duplicateBalancePayment: { txnId: 'TXN-SECOND' },
+        },
+      });
+
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ contactId: 'internal-1', subject: expect.stringContaining('Jordan Smith') }),
+      );
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('POSSIBLE DOUBLE CHARGE (balance)'));
+      err.mockRestore();
+    });
+
+    it('DISTINCT txn id racing the atomic claim (lost-race path) also flags the duplicate', async () => {
+      const { client, updatePayloads } = makeSb(
+        { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: null },
+        [], // 0 rows claimed → another request already settled it
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'awaiting_payment', // unsettled when read; loses the claim below
+        balance: 1350,
+        valor_balance_txn_id: 'TXN-ORIGINAL',
+      });
+
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+      // First updatePayload is the failed atomic-claim attempt on invoices;
+      // second is the duplicate marker on the quote.
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({
+        approval_snapshot: { duplicateBalancePayment: { txnId: 'TXN-SECOND' } },
+      });
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      expect(setJobStatus).not.toHaveBeenCalled();
+    });
+
+    it('SAME txn id retry on an already-paid invoice stays a silent alreadyPaid ack (no marker, no email)', async () => {
+      const { client, updatePayloads } = makeSb({ id: 'quote-1', is_test: false }, []);
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0, valor_balance_txn_id: 'TXN-123' });
+
+      const res = await POST(signedReq(BAL_PAYLOAD)); // txn_id: 'TXN-123'
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+      expect(updatePayloads).toHaveLength(0);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the webhook when the duplicate balance-payment alert email throws (best-effort)', async () => {
+      const { client } = makeSb(
+        { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: null },
+        [],
+      );
+      sbRef.current = client;
+      getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+      getInvoiceByJob.mockResolvedValue({
+        id: 'inv-1',
+        status: 'paid',
+        balance: 0,
+        valor_balance_txn_id: 'TXN-ORIGINAL',
+      });
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+
+      const res = await POST(signedReq({ ...BAL_PAYLOAD, txn_id: 'TXN-SECOND' }));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.alreadyPaid).toBe(true);
+    });
   });
 });

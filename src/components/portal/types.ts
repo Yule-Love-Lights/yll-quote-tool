@@ -16,7 +16,6 @@ export type PortalPackage = {
   total: number;        // dollars, tax-inclusive final price (rush/takedown + tax; no floor — minimum is a portal gate)
   deposit: number;      // dollars, 50% of total
   recommended?: boolean;
-  aLaCarteTotal?: number; // used to compute "you save $X" line (Package C only)
   includedItemIds: string[]; // which line items are bundled in this package
 };
 
@@ -33,6 +32,7 @@ export type PortalLineItemKind =
   | 'railing'
   | 'curtain'
   | 'stake-lighting'
+  | 'bistro'
   | 'permanent'
   | 'permanent-addon';
 
@@ -190,6 +190,9 @@ export type PortalSatelliteLines = {
   left?: PortalSatelliteLine[];
   right?: PortalSatelliteLine[];
   back?: PortalSatelliteLine[];
+  // Permanent Bistro Lighting (#117): freeform bistro-run polylines traced on
+  // the satellite view — optional (non-bistro designs lack it).
+  bistro?: PortalSatelliteLine[];
 };
 
 export type PortalDesign = {
@@ -213,10 +216,21 @@ export type PortalDesign = {
 
 export type PortalQuote = {
   id: string;
+  // The stable customers.id this quote is linked to (ledger #83 Phase 5
+  // identity), when the quote has one. Referral program (#41): the booked-page
+  // referral section needs this to ensure/read the customer's referral code.
+  // Undefined for a quote with no customer link (walk-in/test data) — the
+  // referral section renders copy-only, no link, when absent.
+  customerId?: string | null;
   customer: {
     firstName: string;
     fullName: string;
     address: string;
+    // Ledger #87(a): the customer PDFs' RECIPIENT block shows a phone line.
+    // Additive — no existing portal UI reads this, so populating it from
+    // quotes.customer_phone (already selected by loadPortalQuote) is a
+    // zero-risk addition. '' when the quote has no phone on file.
+    phone: string;
   };
   // Bug fix (B3): the derived quote lifecycle status so the portal can gate the
   // approve+pay UI. When this is a terminal/branch state (declined/cancelled/

@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import type { StoredReferenceAsset, ReferenceAssetType } from '@/lib/referenceAssets';
+import { GARLAND_LENGTHS } from '@/lib/design/sceneCorrections';
 
 const SPRITZER_SIZES = ['16', '24', '32'];
 const WREATH_SIZES = ['24noble', '30noble', '36noble', '48noble', '60noble', '72noble'];
 const WREATH_TIERS = ['bow', 'fullDecor'];
-const GARLAND_SIZES = ['9ft', '6ft'];
 const GARLAND_TIERS = ['bow', 'fullDecor'];
 
 async function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
@@ -60,7 +60,7 @@ export default function ReferenceLibraryPage() {
 
   const sizeOptions = assetType === 'spritzer' ? SPRITZER_SIZES
     : assetType === 'wreath' ? WREATH_SIZES
-    : GARLAND_SIZES;
+    : GARLAND_LENGTHS;
   const tierOptions = assetType === 'spritzer' ? []
     : assetType === 'wreath' ? WREATH_TIERS
     : GARLAND_TIERS;

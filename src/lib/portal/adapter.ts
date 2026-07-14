@@ -16,6 +16,7 @@ import type {
   PortalApproval,
   PortalLineItem,
   PortalLineItemKind,
+  PortalPackage,
   PortalQuote,
   PortalRoofline,
   PortalVideo,
@@ -24,6 +25,7 @@ import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
+import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -67,6 +69,9 @@ type ApprovalSnapshotJson = {
 // Kept narrow so callers can SELECT only what they need.
 export type QuoteRowForPortal = {
   id: string;
+  // Referral program (#41): the stable customers.id link (ledger #83 Phase 5).
+  // Optional for back-compat with older callers/tests that don't select it.
+  customer_id?: string | null;
   customer_name: string | null;
   customer_address: string | null;
   customer_phone: string | null;
@@ -177,6 +182,23 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // label regex) instead of running them through the holiday parser.
       // The stable id becomes the portal id itself so packages/selection can
       // key on it without a separate lookup.
+      // NOTE (#117): permanent BISTRO ids ('permanent-bistro-*') also match this
+      // prefix (manual/no-scene-link bistro runs + the poles line), so they are
+      // carved out FIRST into their own 'bistro' kind below — id/stableId/label
+      // preserved exactly as the plain permanent branch, detail stays '' (the
+      // label already carries footage). Any future permanent-only logic keyed on
+      // this prefix must still exclude 'permanent-bistro-'.
+      if (typeof raw.id === 'string' && raw.id.startsWith('permanent-bistro')) {
+        const item: PortalLineItem = {
+          id: raw.id,
+          kind: 'bistro',
+          label: raw.label,
+          detail: '',
+          price: raw.amount,
+          stableId: raw.id,
+        };
+        return item;
+      }
       if (typeof raw.id === 'string' && raw.id.startsWith('permanent-')) {
         const isAddon = raw.id === 'permanent-maintenance';
         const item: PortalLineItem = {
@@ -331,6 +353,46 @@ export function buildPortalLineItems(result: QuoteResult, inputs: QuoteInputs | 
   };
 }
 
+// The billable set of line-item ids for a quote "as sent" — every line item,
+// EXCEPT that when a mutually-exclusive roofline group exists (#17 Phase 2)
+// only the recommended/billed option counts (selecting BOTH Santa's AND
+// Gingerbread would double-bill the front). Mirrors the `tierLineItems` gate
+// filter in quoteRowToPortalQuote below. Exported so the staff-approve route
+// (PS-C1/WT-L1) can freeze "the whole quote, as billed" into an approval
+// snapshot's customerSelection without duplicating the roofline-exclusivity
+// rule or risking a double-select.
+export function billableLineItemIds(lineItems: PortalLineItem[], roofline?: PortalRoofline): string[] {
+  if (!roofline) return lineItems.map((li) => li.id);
+  return lineItems
+    .filter((li) => !roofline.itemIds.includes(li.id) || li.id === roofline.recommendedItemId)
+    .map((li) => li.id);
+}
+
+// Approved-quote fallback packageId for a snapshot with no customerSelection
+// (the pre-fix staff-approve path — see the route's header comment) or a
+// corrupted/legacy one missing packageId: resolve to an id that ACTUALLY
+// EXISTS among this quote's derived packages, so the downstream seed
+// (resolveApprovalSelectionSeed → computeInitialSelection in
+// SelectionContext) never comes up empty. Hardcoding the holiday-only 'C'
+// (the old behavior) rendered a $0 portal with every item OFF for any
+// staff-approved event/bistro/no-back-permanent quote, because those
+// verticals have no 'C' tier (PS-C1/WT-L1).
+//
+// Preference order: holiday's "everything" tier 'C' (byte-identical to the
+// old default for holiday quotes) → 'D' (event/bistro's only tier, or
+// permanent's Whole Home when present) → the package with the most included
+// items (e.g. a no-back permanent quote offering only Front/Sides, where 'D'
+// is intentionally omitted as redundant — see derivePackagesPermanent).
+function pickFallbackApprovalPackageId(packages: PortalPackage[]): PackageId {
+  if (packages.some((p) => p.id === 'C')) return 'C';
+  if (packages.some((p) => p.id === 'D')) return 'D';
+  if (packages.length > 0) {
+    return packages.reduce((best, p) => (p.includedItemIds.length > best.includedItemIds.length ? p : best))
+      .id;
+  }
+  return 'D';
+}
+
 // Translate the jsonb approval snapshot into the camelCase PortalApproval
 // the frontend consumes. Returns undefined when the customer hasn't
 // approved yet (or when the snapshot is malformed beyond rescue) — the
@@ -350,13 +412,23 @@ function frozenWarranty(
   };
 }
 
-function buildApproval(row: QuoteRowForPortal): PortalApproval | undefined {
+function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): PortalApproval | undefined {
   if (!row.customer_approved_at) return undefined;
   const snap = row.approval_snapshot;
   // Even without a snapshot we know they approved — fall back to row.total
   // so the page still works for any old rows missing the snapshot column.
   const sel = snap?.customerSelection;
-  const packageId = (sel?.packageId ?? 'C') as PackageId;
+  if (!sel?.packageId) {
+    // Regression tripwire (PS-C1/WT-L1): every approved quote should carry a
+    // real customerSelection now that the staff-approve route freezes one.
+    // Hitting this path means either an OLD pre-fix staff approval, or a
+    // future regression that omits it again — log so it surfaces before a
+    // customer sees a $0 portal.
+    console.error(
+      `[portal/adapter] approved quote ${row.id} has no customerSelection.packageId in its approval_snapshot — falling back to a derived package id`,
+    );
+  }
+  const packageId = (sel?.packageId ?? pickFallbackApprovalPackageId(packages)) as PackageId;
   const totalUsd =
     typeof sel?.currentTotalUsd === 'number'
       ? sel.currentTotalUsd
@@ -498,28 +570,41 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // whole-home) instead of the holiday roofline/spritzer tier ladder.
   // Event Lighting (#96 Phase B): ONE "what's included" package (all line items
   // bundled) instead of the holiday tier ladder / permanent surface packages.
+  // Permanent Bistro Lighting: ONE "what's included" package too (event's model —
+  // see derivePackagesPermanentBistro), never the holiday tier ladder or
+  // permanent's per-surface packages.
   const isPermanent = row.service_type === 'permanent';
   const isEvent = row.service_type === 'event';
+  const isPermanentBistro = row.service_type === 'permanent_bistro';
   const allPackages = isPermanent
     ? derivePackagesPermanent(lineItems, row.result)
     : isEvent
       ? derivePackagesEvent(lineItems, row.result)
-      : derivePackages(lineItems, row.result, roofline);
+      : isPermanentBistro
+        ? derivePackagesPermanentBistro(lineItems, row.result)
+        : derivePackages(lineItems, row.result, roofline);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
-  // $1,000 for holiday/event, or the permanent quote's FROZEN rate-snapshot
+  // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
   // minimumJobAmount (#88 — never live app_settings, the rate-drift guard;
   // falls back to the canonical $2,500 default if a permanent result somehow
-  // lacks a snapshot). 0 when EITHER (a) staff checked "waive the minimum" on
-  // this quote (#59 — inputs.waiveMinimum), or (b) the quote's items already
-  // total under the minimum (the existing auto-waive in minimumOrderSubtotal()).
-  // Enforced on the portal, not in pricing. Uses tierLineItems so a
-  // two-roofline quote isn't double-counted.
+  // lacks a snapshot), or the permanent bistro quote's FROZEN rate-snapshot
+  // minimum (same rate-drift guard; falls back to 0 — gate OFF — if a bistro
+  // result somehow lacks a snapshot, never the holiday $1,000 default).
+  // 0 when EITHER (a) staff checked "waive the minimum" on this quote (#59 —
+  // inputs.waiveMinimum), or (b) the quote's items already total under the
+  // minimum (the existing auto-waive in minimumOrderSubtotal()). Enforced on
+  // the portal, not in pricing. Uses tierLineItems so a two-roofline quote
+  // isn't double-counted.
   const approvalGate = row.inputs?.waiveMinimum
     ? 0
     : minimumOrderSubtotal(
         tierLineItems,
-        isPermanent ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500) : undefined,
+        isPermanent
+          ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500)
+          : isPermanentBistro
+            ? (row.result.permanentBistroRatesSnapshot?.minimum ?? 0)
+            : undefined,
       );
   // #134 (Jason S24): hide any package tile the customer can't approve AS
   // TAPPED — its selection basis (pre-tax items + the default-ON rush/takedown
@@ -557,7 +642,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
   // than what the customer actually confirmed.
-  const approval = buildApproval(row);
+  const approval = buildApproval(row, packages);
   // Staff "Apply discount" from the builder → flowed to the live portal price so
   // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
   // flat as dollars. Mutually exclusive with the early-install promo (one per quote).
@@ -584,10 +669,14 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
 
   return {
     id: row.id,
+    customerId: row.customer_id ?? undefined,
     customer: {
       firstName: deriveFirstName(row.customer_name),
       fullName: row.customer_name ?? 'Anonymous',
       address: row.customer_address ?? '',
+      // Ledger #87(a): the customer PDFs' RECIPIENT block. Already selected
+      // by loadPortalQuote's query — just not previously mapped through.
+      phone: row.customer_phone ?? '',
     },
     photo: {
       // Empty strings collapse the <img> visually if the components don't

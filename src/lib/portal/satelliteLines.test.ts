@@ -128,3 +128,29 @@ describe('selectDrawableLineGroups — permanent side channels (#88 / S23)', () 
     expect(groups.map((g) => g.key)).toEqual(['front']);
   });
 });
+
+describe('selectDrawableLineGroups — permanent bistro channel (#117)', () => {
+  it('draws bistro as its own teal-colored, labeled group', () => {
+    const lines: PortalSatelliteLines = { ...empty, bistro: [line(2)] };
+    const groups = selectDrawableLineGroups(lines, ['bistro']);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe('bistro');
+    expect(groups[0].color).toBe('#14b8a6');
+    expect(groups[0].label).toBe('Bistro Lights');
+  });
+
+  it('hides the bistro group when it has no drawn lines', () => {
+    const groups = selectDrawableLineGroups(empty, ['bistro']);
+    expect(groups).toEqual([]);
+  });
+
+  it('an allowedKeys of ["bistro"] never surfaces the other channels', () => {
+    const lines: PortalSatelliteLines = {
+      santas: [line(2)], gingerbread: [line(2)], c9: [line(2)],
+      front: [line(2)], left: [line(2)], right: [line(2)], back: [line(2)],
+      bistro: [line(2)],
+    };
+    const groups = selectDrawableLineGroups(lines, ['bistro']);
+    expect(groups.map((g) => g.key)).toEqual(['bistro']);
+  });
+});

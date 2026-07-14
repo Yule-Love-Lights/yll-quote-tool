@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 
@@ -22,14 +23,57 @@ const ITEMS: NavItem[] = [
   { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
 ];
 
-export function OperatorNav({ active }: { active: OperatorArea }) {
+// Small numeric pill for the Inbox nav item — red once something's overdue
+// (>4h, matching the /inbox escalation convention), otherwise a neutral tone
+// so a merely-waiting lead doesn't read as urgent.
+function NavBadge({ count, overdue }: { count: number; overdue: boolean }) {
+  return (
+    <span
+      aria-label={`${count} lead${count === 1 ? '' : 's'} waiting in the inbox`}
+      className="ml-1.5 inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-1 rounded-full text-[10px] font-semibold leading-none"
+      style={{ background: overdue ? 'var(--op-danger)' : 'var(--op-text-2)', color: 'var(--brand-cream)' }}
+    >
+      {count}
+    </span>
+  );
+}
+
+export function OperatorNav({
+  active,
+  inboxOpenLeads = 0,
+  inboxOverdue = 0,
+}: {
+  active: OperatorArea;
+  // Open-lead / overdue counts for the Inbox badge — server-computed from the
+  // same buildInboxSummary(listOpenItems()) pairing /inbox itself uses.
+  // Omitted (0) on pages that don't fetch inbox data, in which case no badge shows.
+  inboxOpenLeads?: number;
+  inboxOverdue?: number;
+}) {
   const [open, setOpen] = useState(false);
+  const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
 
   const linkStyle = (item: NavItem) =>
     isActive(item)
       ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
       : { color: 'var(--op-text-2)' };
+
+  // WT-60: logout (POST /api/auth/logout) worked but had no UI trigger. Best
+  // effort — even if the request fails, still send the operator to /login.
+  const signOut = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      router.replace('/login');
+      router.refresh();
+    }
+  };
+
+  const inboxBadge = (item: NavItem) =>
+    item.href === '/inbox' && inboxOpenLeads > 0 ? (
+      <NavBadge count={inboxOpenLeads} overdue={inboxOverdue > 0} />
+    ) : null;
 
   return (
     <nav
@@ -52,11 +96,22 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
         <ul className="hidden lg:flex items-center gap-1 text-sm">
           {ITEMS.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors" style={linkStyle(item)}>
+              <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
                 {item.label}
+                {inboxBadge(item)}
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={signOut}
+              className="px-3 py-1.5 rounded-md transition-colors"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              Sign out
+            </button>
+          </li>
         </ul>
 
         {/* Mobile + tablet-portrait: hamburger toggle (shown below lg / 1024px) */}
@@ -85,7 +140,7 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
               <Link
                 href={item.href}
                 onClick={() => setOpen(false)}
-                className="block px-4 py-3 text-sm font-medium border-b"
+                className="flex items-center px-4 py-3 text-sm font-medium border-b"
                 style={{
                   borderColor: 'var(--op-border)',
                   ...(isActive(item)
@@ -94,9 +149,23 @@ export function OperatorNav({ active }: { active: OperatorArea }) {
                 }}
               >
                 {item.label}
+                {inboxBadge(item)}
               </Link>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                void signOut();
+              }}
+              className="block w-full text-left px-4 py-3 text-sm font-medium border-b"
+              style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+            >
+              Sign out
+            </button>
+          </li>
         </ul>
       )}
     </nav>

@@ -39,14 +39,35 @@ type PermanentSectionProps = {
   // #142: fired when the operator clicks "Recount from drawn lines" — the
   // builder thaws its rehydrate freeze so the recount actually derives.
   onRecount?: () => void;
+  // PS-B1: which sides currently have a drawn/hydrated satellite trace, so a
+  // billed side with no trace (never shows on the portal's roof map) can be
+  // flagged inline. Omit or leave tracedReady false to suppress the warning
+  // (e.g. before the builder knows whether a reopened quote's trace has
+  // finished loading — see QuoteBuilder's permTraceHydrated).
+  tracedSides?: { front: boolean; left: boolean; right: boolean; back: boolean };
+  tracedReady?: boolean;
+};
+
+const SIDE_LABEL: Record<'front' | 'left' | 'right' | 'back', string> = {
+  front: 'Front',
+  left: 'Left side',
+  right: 'Right side',
+  back: 'Back',
 };
 
 // Footage + corners come from the satellite-view roofline draw (#88 / S23, per
 // Jason — the design projection was dropped as inaccurate). The operator draws
 // each side on the Satellite tab; those measurements flow into the fields below,
 // which stay hand-editable.
-export default function PermanentSection({ form, setForm, onRecount }: PermanentSectionProps) {
+export default function PermanentSection({ form, setForm, onRecount, tracedSides, tracedReady }: PermanentSectionProps) {
   const p = form.permanent;
+
+  // PS-B1: this side bills (footage > 0) but has no drawn satellite trace, so
+  // the portal's roof map won't show it — a visible mismatch between what the
+  // customer is billed for and what they see. Only fires once tracedReady
+  // (avoids a false flash on a reopened quote before its trace has loaded).
+  const untracedButBilled = (side: 'front' | 'left' | 'right' | 'back', footage: number) =>
+    tracedReady === true && footage > 0 && tracedSides?.[side] === false;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
     setForm((f) => {
@@ -111,6 +132,12 @@ export default function PermanentSection({ form, setForm, onRecount }: Permanent
                 Front footage is 0 — draw the front roofline on the Satellite tab, or enter it manually.
               </p>
             )}
+            {untracedButBilled('front', p.frontFootage) && (
+              <p className="text-xs text-amber-600 mt-1">
+                {SIDE_LABEL.front} is billed but has no drawn line on the Satellite tab, so the portal&apos;s
+                roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
+              </p>
+            )}
           </div>
           <div>
             <label className={lbl}>Front corners</label>
@@ -144,6 +171,12 @@ export default function PermanentSection({ form, setForm, onRecount }: Permanent
               onChange={(e) => setP('leftFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('leftFootage')}
             />
+            {untracedButBilled('left', p.leftFootage) && (
+              <p className="text-xs text-amber-600 mt-1">
+                {SIDE_LABEL.left} is billed but has no drawn line on the Satellite tab, so the portal&apos;s
+                roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
+              </p>
+            )}
           </div>
           <div>
             <label className={lbl}>Left corners</label>
@@ -165,6 +198,12 @@ export default function PermanentSection({ form, setForm, onRecount }: Permanent
               onChange={(e) => setP('rightFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('rightFootage')}
             />
+            {untracedButBilled('right', p.rightFootage) && (
+              <p className="text-xs text-amber-600 mt-1">
+                {SIDE_LABEL.right} is billed but has no drawn line on the Satellite tab, so the portal&apos;s
+                roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
+              </p>
+            )}
           </div>
           <div>
             <label className={lbl}>Right corners</label>
@@ -186,6 +225,12 @@ export default function PermanentSection({ form, setForm, onRecount }: Permanent
               onChange={(e) => setP('backFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('backFootage')}
             />
+            {untracedButBilled('back', p.backFootage) && (
+              <p className="text-xs text-amber-600 mt-1">
+                {SIDE_LABEL.back} is billed but has no drawn line on the Satellite tab, so the portal&apos;s
+                roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
+              </p>
+            )}
           </div>
           <div>
             <label className={lbl}>Back corners</label>

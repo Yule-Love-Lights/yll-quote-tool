@@ -144,10 +144,11 @@ type SelectionContextValue = {
    *  portal analytics events (package_selected, package_viewed) without
    *  needing their own quoteId prop. Undefined for the mock/dev fallback. */
   quoteId?: string;
-  /** PostHog Wave 4 — the quote's service type, threaded through alongside
-   *  quoteId so SectionViewTracker can fire section_viewed with both
-   *  properties via useSelection() instead of its own props. Undefined for
-   *  the mock/dev fallback. */
+  /** PostHog Wave 2 — the quote's service line, threaded through the same way
+   *  as quoteId so light-color/effect/video consumers can stamp service_type
+   *  onto their events without their own prop. Wave 4 reuses it so
+   *  SectionViewTracker can fire section_viewed via useSelection() too.
+   *  Undefined for the mock/dev fallback. */
   serviceType?: ServiceType;
 };
 
@@ -268,7 +269,8 @@ export type SelectionProviderProps = {
   // SelectionContextValue.quoteId) so package_selected/package_viewed can
   // read it via useSelection() instead of their own prop.
   quoteId?: string;
-  // PostHog Wave 4 — same pass-through, for SectionViewTracker's section_viewed.
+  // PostHog Wave 2 — same passthrough as quoteId (see
+  // SelectionContextValue.serviceType); Wave 4 reuses it for section_viewed.
   serviceType?: ServiceType;
   children: React.ReactNode;
 };

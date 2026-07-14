@@ -189,9 +189,13 @@ export default function JobDetailPage() {
               )}
             </div>
             <p className="text-sm text-gray-500 mb-6">
-              {data.job.type === 'permanent' ? 'Permanent / Glow365' : 'Seasonal'} · created{' '}
+              {data.job.type === 'permanent'
+                ? 'Permanent / Glow365'
+                : data.quoteServiceType === 'permanent_bistro'
+                  ? 'Bistro'
+                  : 'Seasonal'}{' '}
+              · created{' '}
               {fmtDate(data.job.created_at)}
-              {data.job.install_date ? ` · install ${fmtDate(data.job.install_date)}` : ''}
             </p>
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">

@@ -30,8 +30,9 @@ export function projectClips(
   if (!(feet > 0)) return null;
 
   const rule = rules?.[feature];
-  const perFtRaw = rule && typeof rule.perFt === 'number' ? rule.perFt : DEFAULT_CLIP_PER_FT;
-  const perFt = perFtRaw > 0 ? perFtRaw : DEFAULT_CLIP_PER_FT;
+  // typeof-check, not truthiness/`> 0` — an explicit stored 0 (staff deliberately
+  // zeroing a feature's clip rate) must be honored, not coerced to the default.
+  const perFt = typeof rule?.perFt === 'number' ? rule.perFt : DEFAULT_CLIP_PER_FT;
   const qty = Math.ceil(feet * perFt);
   if (qty <= 0) return null;
 

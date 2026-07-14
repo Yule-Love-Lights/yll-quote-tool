@@ -110,6 +110,14 @@ export default function NewTrainingHousePage() {
   const [analysisNotes, setAnalysisNotes] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
+  // #109 Phase 1: pre-fill markup from a stored approved design when the
+  // photographed job was quoted in the tool. A DRAFT the operator reconciles
+  // against the photo — never auto-applied, never runs Auto-Analyze.
+  const [prefillQuoteInput, setPrefillQuoteInput] = useState('');
+  const [prefilling, setPrefilling] = useState(false);
+  const [prefillError, setPrefillError] = useState<string | null>(null);
+  const [prefillNote, setPrefillNote] = useState<string | null>(null);
+
   // Training-specific fields
   const [address, setAddress] = useState('');
   const [yearCompleted, setYearCompleted] = useState<number | ''>('');
@@ -619,6 +627,67 @@ export default function NewTrainingHousePage() {
     }
   };
 
+  // ─── Pre-fill from quote (#109 Phase 1) ───
+  // Accepts a pasted quote id or a quote/portal URL containing one.
+  const extractQuoteId = (raw: string): string | null => {
+    const m = raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    return m ? m[0] : null;
+  };
+
+  const handlePrefillFromQuote = async () => {
+    if (!activePhoto) return;
+    const quoteId = extractQuoteId(prefillQuoteInput);
+    if (!quoteId) {
+      setPrefillError('Paste a valid quote ID or quote link');
+      return;
+    }
+    setPrefilling(true);
+    setPrefillError(null);
+    setPrefillNote(null);
+    try {
+      const res = await fetch(`/api/training/prefill?quoteId=${quoteId}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Pre-fill failed');
+
+      const m = data.markup as PerPhotoMarkup;
+      const i = data.inputs as {
+        santasFootage: number; santasDifficulty: 'easy' | 'medium' | 'hard';
+        gingerbreadFootage: number; gingerbreadDifficulty: 'easy' | 'medium' | 'hard';
+        winterWonderlandFootage: number; winterWonderlandDifficulty: 'easy' | 'medium' | 'hard';
+        stakeLightingFootage: number; stakeLightingDifficulty: 'easy' | 'medium' | 'hard';
+      };
+
+      // Same normalized-0-1 markup shape handleAutoAnalyze writes — no pixel
+      // scaling needed (LineSegment/detection boxes are already fractions of
+      // the photo, not pixel coordinates).
+      setSantasLines(m.santasLines);
+      setGingerbreadLines(m.gingerbreadLines);
+      setC9Lines(m.c9Lines);
+      setStakeLines(m.stakeLines);
+      setMiniLightDetections(m.miniLightDetections);
+      setWreathDetections(m.wreathDetections);
+      setSpritzerDetections(m.spritzerDetections);
+      setGarlandDetections(m.garlandDetections);
+
+      setSantasFootage(i.santasFootage || '');
+      setSantasDifficulty(i.santasDifficulty);
+      setGingerbreadFootage(i.gingerbreadFootage || '');
+      setGingerbreadDifficulty(i.gingerbreadDifficulty);
+      setWwFootage(i.winterWonderlandFootage || '');
+      setWwDifficulty(i.winterWonderlandDifficulty);
+      setStakeFootage(i.stakeLightingFootage || '');
+      setStakeDifficulty(i.stakeLightingDifficulty);
+
+      if (!address && typeof data.address === 'string') setAddress(data.address);
+
+      setPrefillNote('Pre-filled from the approved design. Drag the lines to match this photo.');
+    } catch (err) {
+      setPrefillError(err instanceof Error ? err.message : 'Pre-fill failed');
+    } finally {
+      setPrefilling(false);
+    }
+  };
+
   // ─── Save ───
   const handleSave = async () => {
     if (photos.length === 0) {
@@ -829,6 +898,45 @@ export default function NewTrainingHousePage() {
               </p>
             </div>
           )}
+
+          {/* #109 Phase 1: pre-fill from a stored approved design when this
+              job was quoted in the tool — a draft to reconcile against the photo. */}
+          <div className="mt-4 bg-blue-50 border border-blue-200 rounded-md p-3">
+            <p className="text-sm font-semibold text-blue-900">Pre-fill From Quote</p>
+            <p className="text-xs text-blue-700 mt-0.5 mb-2">
+              If this job was quoted in the tool, paste its quote ID or link to load the approved design as a starting draft.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                className={`${inp} flex-1 min-w-[220px]`}
+                type="text"
+                value={prefillQuoteInput}
+                onChange={e => setPrefillQuoteInput(e.target.value)}
+                placeholder="Quote ID or link"
+              />
+              <button
+                type="button"
+                onClick={handlePrefillFromQuote}
+                disabled={prefilling || !activePhoto}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+              >
+                {prefilling ? 'Loading…' : 'Load Draft'}
+              </button>
+            </div>
+            {!activePhoto && (
+              <p className="mt-2 text-xs text-blue-700">Upload a photo first. Pre-fill loads onto the active photo.</p>
+            )}
+            {prefillError && (
+              <div className="mt-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
+                {prefillError}
+              </div>
+            )}
+            {prefillNote && !prefillError && (
+              <div className="mt-2 bg-white border border-blue-200 rounded p-2 text-xs text-gray-700">
+                {prefillNote}
+              </div>
+            )}
+          </div>
         </Section>
 
         {/* Photo markup — mirrors quote/new Analysis Results structure */}

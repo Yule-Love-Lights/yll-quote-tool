@@ -162,16 +162,20 @@ export type Trend = {
 };
 
 function medianResponseIn(items: MetricItem[], startMs: number, endMs: number): number | null {
+  // #WT-42: same last_inbound_at fallback as computeResponseMetrics — otherwise
+  // the trend arrow can flip based on replies sent outside the inbox UI, which
+  // overwrite last_message_at and contradict the headline median right next to it.
+  const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
   const rs = items
     .filter(
       (i) =>
         i.status !== 'unresponded' &&
-        i.lastMessageAt &&
+        inboundOf(i) &&
         i.handledAt &&
         (i.handledAt as Date).getTime() >= startMs &&
         (i.handledAt as Date).getTime() < endMs,
     )
-    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (i.lastMessageAt as Date).getTime()));
+    .map((i) => Math.max(0, (i.handledAt as Date).getTime() - (inboundOf(i) as Date).getTime()));
   return median(rs);
 }
 
@@ -216,4 +220,23 @@ export function computeResponseAnalytics(
     reopenRates[k] = reopenRate(reopen[k].handled, reopen[k].reopened);
   }
   return { windows, trend: computeTrend(items, now), reopen: reopenRates, truncated };
+}
+
+// ─── PS-E1: resolve the raw handled_by UUID to a readable label ──────────────
+//
+// `byRep.rep` is the raw operator_id (handled_by is a `uuid references
+// auth.users(id)` FK — see migrations/2026-06-28-dashboard-tables.sql — so the
+// write routes can't stamp an email/name there without a schema change). Resolve
+// to a display label here at read time instead: lower risk, no migration, and it
+// labels rows stamped before this fix the same as rows stamped after. 'system'
+// passes through unchanged — ResponseAnalytics renders that as "Auto-resolved".
+export function withOperatorLabels(data: ResponseAnalyticsData, labels: Map<string, string>): ResponseAnalyticsData {
+  const relabel = (m: ResponseMetrics): ResponseMetrics => ({
+    ...m,
+    byRep: m.byRep.map((r) => (r.rep === 'system' ? r : { ...r, rep: labels.get(r.rep) ?? r.rep })),
+  });
+  return {
+    ...data,
+    windows: { all: relabel(data.windows.all), '90': relabel(data.windows['90']), '30': relabel(data.windows['30']) },
+  };
 }

@@ -3,6 +3,7 @@ import {
   computeHolidayBreakdown,
   computePermanentSummary,
   computeEventSummary,
+  computeBistroSummary,
   serviceTypeOf,
 } from './serviceMetrics';
 import type { DashboardQuote } from './types';
@@ -115,6 +116,34 @@ describe('computeHolidayBreakdown — totals', () => {
   });
 });
 
+describe('computeHolidayBreakdown — pending (WT-39)', () => {
+  it('counts sent-not-approved holiday quotes as pending, same funnel shape as Permanent/Event/Bistro', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-09-01T00:00:00Z' }), // pending
+      makeQuote({ service_type: 'holiday', customer_approved_at: '2026-09-10T00:00:00Z' }), // booked, not pending
+      makeQuote({
+        service_type: 'holiday',
+        quote_sent_at: '2026-09-01T00:00:00Z',
+        customer_approved_at: '2026-09-05T00:00:00Z',
+      }), // sent AND approved — counts as booked, not pending
+      makeQuote({ service_type: 'permanent', quote_sent_at: '2026-09-01T00:00:00Z' }), // wrong service
+    ]);
+    expect(out.pending).toBe(1);
+  });
+
+  it('excludes a terminal (cancelled) sent holiday quote from pending (B7 class)', () => {
+    const out = computeHolidayBreakdown([
+      makeQuote({ service_type: 'holiday', quote_sent_at: '2026-09-01T00:00:00Z', status: 'cancelled' }),
+    ]);
+    expect(out.pending).toBe(0);
+  });
+
+  it('handles empty / no holiday quotes', () => {
+    const out = computeHolidayBreakdown([makeQuote({ service_type: 'permanent' })]);
+    expect(out.pending).toBe(0);
+  });
+});
+
 describe('computeHolidayBreakdown — cancelled orders excluded (B7)', () => {
   it('a cancelled holiday quote with customer_approved_at does NOT count as booked', () => {
     const out = computeHolidayBreakdown([
@@ -190,5 +219,35 @@ describe('computeEventSummary', () => {
     expect(out.booked).toBe(2);
     expect(out.pending).toBe(1);
     expect(out.bookedRevenue).toBe(10800);
+  });
+});
+
+describe('computeBistroSummary (#117)', () => {
+  it('booked / pending / revenue from permanent_bistro quotes only', () => {
+    const out = computeBistroSummary(
+      [
+        makeQuote({ service_type: 'permanent_bistro', customer_approved_at: '2026-07-10T00:00:00Z', total: 217.5 }),
+        makeQuote({ service_type: 'permanent_bistro', quote_sent_at: '2026-07-11T00:00:00Z' }),
+        makeQuote({ service_type: 'permanent_bistro', quote_sent_at: '2026-07-11T00:00:00Z', customer_approved_at: '2026-07-12T00:00:00Z', total: 3000 }),
+        makeQuote({ service_type: 'event', customer_approved_at: '2026-07-10T00:00:00Z', total: 999 }), // wrong service
+      ],
+    );
+    expect(out.booked).toBe(2);
+    expect(out.pending).toBe(1);
+    expect(out.bookedRevenue).toBe(3217.5);
+  });
+
+  it('a cancelled bistro quote with customer_approved_at does NOT count as booked or revenue (B7)', () => {
+    const out = computeBistroSummary([
+      makeQuote({ service_type: 'permanent_bistro', customer_approved_at: '2026-07-10T00:00:00Z', total: 6000, status: 'cancelled' }),
+      makeQuote({ service_type: 'permanent_bistro', customer_approved_at: '2026-07-11T00:00:00Z', total: 3000 }),
+    ]);
+    expect(out.booked).toBe(1);
+    expect(out.bookedRevenue).toBe(3000);
+  });
+
+  it('handles empty / no bistro quotes', () => {
+    const out = computeBistroSummary([makeQuote({ service_type: 'holiday' })]);
+    expect(out).toEqual({ booked: 0, pending: 0, bookedRevenue: 0 });
   });
 });

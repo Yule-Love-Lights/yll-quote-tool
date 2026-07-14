@@ -13,10 +13,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { createJobFromQuote, requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { createJobFromQuote, requireOperatorMock, sbRef, accrueOnBooking, ensureReferralCode } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   sbRef: { current: null as unknown },
+  accrueOnBooking: vi.fn(async () => ({ accrued: false })),
+  ensureReferralCode: vi.fn(async () => 'CODE1234'),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -25,6 +27,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
+vi.mock('@/lib/referrals', () => ({ accrueOnBooking, ensureReferralCode }));
 
 import { POST } from './route';
 
@@ -81,6 +84,7 @@ const BASE_QUOTE = {
   is_test: false,
   // No customer Valor checkout in flight — the in-flight guard doesn't fire.
   valor_order_ref: null,
+  customer_id: null,
 };
 
 beforeEach(() => {
@@ -234,6 +238,53 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
 
     expect(createJobFromQuote).toHaveBeenCalledOnce();
     expect(createJobFromQuote).toHaveBeenCalledWith(ID);
+
+    // #41 referral program: this manual booking write is a third deposit-paid
+    // write site (reconciled against the Valor webhook + simulate-deposit) and
+    // must fire the same accrual.
+    expect(accrueOnBooking).toHaveBeenCalledWith(ID);
+  });
+
+  it('still books even if the referral accrual throws (fail-open, #41)', async () => {
+    const { client } = makeSb(BASE_QUOTE);
+    sbRef.current = client;
+    accrueOnBooking.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+  });
+
+  // #41 PR 2: stamp-at-booking — every future customer gets their referral
+  // link live in GHL from the moment they're manually booked.
+  it('stamps the referral code for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the referral code stamp when the quote has no linked customer', async () => {
+    const { client } = makeSb(BASE_QUOTE);
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    expect(res.status).toBe(200);
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, customer_id: 'cust-1' });
+    sbRef.current = client;
+    ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
   });
 
   it('clamps depositUsd to quote.total when it exceeds it', async () => {

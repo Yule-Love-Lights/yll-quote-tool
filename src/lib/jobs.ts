@@ -88,6 +88,11 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
 // the linked quote's customer identity + is_test joined on (the job's own
 // customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard
 // join, but for the BILLING view — ALL statuses, newest first.
+//
+// WT-19: `installDate` was removed from this card (2026-07-13) — nothing ever
+// writes a job's install_date, so the /admin/jobs Install column always read
+// "—". JobRow.install_date itself is left in place (still selected + typed)
+// because other operator surfaces outside this file's scope still read it.
 export type JobAdminCard = {
   id: string;
   jobNumber: number | null;
@@ -97,7 +102,6 @@ export type JobAdminCard = {
   customerName: string | null;
   customerAddress: string | null;
   isTest: boolean;
-  installDate: string | null;
   createdAt: string;
   itemCount: number;
 };
@@ -150,7 +154,6 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       customerName: c?.name ?? null,
       customerAddress: c?.address ?? null,
       isTest: c?.isTest ?? false,
-      installDate: j.install_date,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
     };
@@ -166,13 +169,18 @@ export type JobDetail = {
   customerPhone: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // The linked quote's service_type (#117), for surfaces that need to tell a
+  // 'permanent_bistro' one_off job apart from an ordinary holiday/event one_off
+  // (the type column alone collapses both to 'one_off' — see createJobFromQuote's
+  // comment). null when the job has no linked quote or the column is unset.
+  quoteServiceType: string | null;
   invoice: InvoiceRow | null;
 };
 
 /**
  * The billing detail for one job — the job row + the linked quote's customer
- * identity + is_test + the linked invoice (null until the job is completed).
- * Returns null when Supabase isn't configured or the job is missing.
+ * identity + is_test + service_type + the linked invoice (null until the job
+ * is completed). Returns null when Supabase isn't configured or the job is missing.
  */
 export async function getJobDetail(id: string): Promise<JobDetail | null> {
   const db = sb();
@@ -186,10 +194,11 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let customerPhone: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let quoteServiceType: string | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, service_type')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -197,6 +206,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         customer_phone: string | null;
         customer_address: string | null;
         is_test: boolean | null;
+        service_type: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -204,11 +214,12 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       customerPhone = data.customer_phone ?? null;
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
+      quoteServiceType = data.service_type ?? null;
     }
   }
 
   const invoice = await getInvoiceByJob(id);
-  return { job, customerName, customerEmail, customerPhone, customerAddress, isTest, invoice };
+  return { job, customerName, customerEmail, customerPhone, customerAddress, isTest, quoteServiceType, invoice };
 }
 
 // The minimal quote shape createJobFromQuote needs.
@@ -281,6 +292,9 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
 
   // Job type from the quote's service line. Holiday/event = one-off; permanent
   // (Glow365) carries the recurring type now (recurring billing is deferred).
+  // Permanent BISTRO (#117) books as one_off ON PURPOSE for v1: 'permanent'
+  // jobs feed the APL puck/track BOM + Glow365 ops machinery, none of which
+  // applies to café string lights. Revisit if bistro grows its own ops track.
   const type: JobRow['type'] = quote.service_type === 'permanent' ? 'permanent' : 'one_off';
 
   // Sequential display number (Job #1000…). Best-effort, exactly like

@@ -153,6 +153,23 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sb.updates.quotes).toHaveLength(0); // never wrote a trail entry
   });
 
+  // WT-21: cancel/route.ts writes the linked JOB to 'cancelled' first, then
+  // best-effort writes the source quote's status — if that quote-status write
+  // fails, the quote can still read 'booked' (or any non-terminal status)
+  // while its job already reads 'cancelled'. Amend must gate on the job too,
+  // independent of the quote's own status column.
+  it('409s when the linked job is cancelled, even though the quote status still reads booked', async () => {
+    const sb = makeSb(BOOKED_QUOTE); // quote.status is still 'booked'
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'cancelled' });
+
+    const res = await POST(req({ reason: 'add a wreath' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('job-cancelled');
+    expect(sb.updates.quotes).toHaveLength(0); // never wrote a trail entry
+  });
+
   it('409s with no-change when the total is unchanged (re-price in the builder first)', async () => {
     // result.total === the snapshot agreed total → delta 0.
     const unchanged = { ...BOOKED_QUOTE, result: { total: 5000 } };

@@ -41,6 +41,7 @@ import type {
   QuoteInputs,
 } from '@/lib/pricing/pricingEngine';
 import type { BistroLine } from '@/lib/event/types';
+import type { ServiceType } from '@/lib/serviceType';
 import { pxPerFoot } from '@/components/design/editor-core/yardstick-scale';
 
 export type ProjectedCategory = 'mini' | 'spritzer' | 'wreath' | 'garland' | 'bow';
@@ -78,8 +79,11 @@ export type Projection = {
   wreaths: Wreath[];
   garland: PriceGarland[];
   bows: BowLineInput[];
-  // Bistro runs (event, #96) — footage-priced from drawn bulbType='bistro' strands.
-  // Applied to inputs.event.bistro; the holiday/permanent engines ignore it.
+  // Bistro runs (event #96 / permanent_bistro #117) — footage-priced from drawn
+  // bulbType='bistro' strands. applyProjectionToInputs applies this to
+  // inputs.event.bistro or inputs.permanentBistro.bistro depending on the
+  // vertical (see its `serviceType` param); the holiday/permanent engines
+  // ignore it either way.
   bistro: BistroLine[];
   // The linkage-carrying view. The arrays above are derived from this (same
   // order), so the Nth entry of a category here lines up with the Nth engine
@@ -293,8 +297,21 @@ export function projectScene(scene: Scene): Projection {
 // per-unit entry still drives the quote. This keeps no-design / legacy quotes
 // working today and means design-driven pricing activates cleanly the moment
 // staff start tagging items (once the editor's binding UI lands).
-export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): QuoteInputs {
+export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene, serviceType?: ServiceType): QuoteInputs {
   const p = projectScene(scene);
+  // Bistro's TARGET block depends on the vertical: permanent_bistro prices from
+  // inputs.permanentBistro.bistro (calculatePermanentBistro); every other
+  // vertical (event, holiday) keeps the original inputs.event.bistro target.
+  // Bistro strands are footage-priced identically either way — only the block
+  // they land in differs, so a permanent_bistro quote must NEVER get an
+  // inputs.event block created/touched.
+  // #117 satellite migration: the /api/quote route no longer calls
+  // applyProjectionToInputs at all for permanent_bistro (the route's design-
+  // projection gate is `!isPermanent && !isPermanentBistro`) — bistro footage
+  // bills from the client-sent satellite polylines, not the design's street
+  // scene. This isBistroVertical branch is now dead code for that vertical;
+  // event still routes bistro through here, so it stays.
+  const isBistroVertical = serviceType === 'permanent_bistro';
   // Audit fix (Finding #103): only fall back to the request's manual per-unit
   // arrays for a TRUE legacy/roofline-only design (no projectable items at all).
   // A design where staff excluded EVERY per-unit item has hasProjectableItems
@@ -306,9 +323,13 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
   // the REPLACE path below — bistro has no per-unit representation to conflict
   // with, so it must never be the reason manual miniLightItems/spritzers/
   // wreaths/garland/bows get overwritten with empty arrays. Preserve the manual
-  // arrays here and only layer `event.bistro` on top.
+  // arrays here and only layer `event.bistro` (or `permanentBistro.bistro`) on
+  // top.
   if (p.items.length === 0 && !p.hasProjectableItems) {
-    return p.bistro.length > 0 ? { ...inputs, event: { ...inputs.event, bistro: p.bistro } } : inputs;
+    if (p.bistro.length === 0) return inputs;
+    return isBistroVertical
+      ? { ...inputs, permanentBistro: { ...inputs.permanentBistro, bistro: p.bistro } }
+      : { ...inputs, event: { ...inputs.event, bistro: p.bistro } };
   }
   // #104: thread each projected line's stable id + scene item ids onto the priced
   // input (same order as p.miniLightItems etc.), so calculateQuote can emit them on
@@ -323,12 +344,18 @@ export function applyProjectionToInputs(inputs: QuoteInputs, scene: Scene): Quot
     wreaths: forCategory('wreath').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
     garland: forCategory('garland').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
     bows: forCategory('bow').map((i) => ({ ...i.input, id: i.id, sceneItemIds: i.sceneItemIds })),
-    // Event bistro (#96): drawn bistro runs drive inputs.event.bistro (design is
-    // master, like minis), preserving any operator-typed event fields (barrels,
-    // dates). Only set when there IS bistro or an existing event block, so
-    // holiday/permanent quotes without event data stay clean.
-    ...(p.bistro.length > 0 || inputs.event
-      ? { event: { ...inputs.event, bistro: p.bistro } }
-      : {}),
+    // Bistro (#96/#117): drawn bistro runs drive the vertical's own bistro block
+    // (design is master, like minis), preserving any operator-typed fields
+    // (event's barrels/dates, permanentBistro's poles). Only set when there IS
+    // bistro or an existing target block, so quotes without bistro/event/
+    // permanentBistro data stay clean — and a permanent_bistro quote never gets
+    // an inputs.event block.
+    ...(isBistroVertical
+      ? p.bistro.length > 0 || inputs.permanentBistro
+        ? { permanentBistro: { ...inputs.permanentBistro, bistro: p.bistro } }
+        : {}
+      : p.bistro.length > 0 || inputs.event
+        ? { event: { ...inputs.event, bistro: p.bistro } }
+        : {}),
   };
 }

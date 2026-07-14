@@ -42,6 +42,14 @@ const ROOFLINE_RE = /Roofline/i;
 const SPRITZER_RE = /Spritzer/i;
 const WREATH_RE = /Wreath/i;
 const GARLAND_RE = /Garland/i;
+// Bistro (#117) — event's "Bistro Lighting – Nft" and the design-projected
+// permanent-bistro "Permanent Bistro Lighting – Nft". Own kind so the portal
+// shows a bistro icon instead of falling through to 'roofline'. No earlier
+// regex matches "Bistro" (checked: TREE/BUSH/COLUMN/RAILING/CURTAIN/BOW are
+// all `^`-anchored to a different word; RIDGE/STAKE/ROOFLINE/SPRITZER/WREATH/
+// GARLAND look for their own distinct tokens), so placement order here is a
+// no-op — but keep it before the roofline fallback regardless.
+const BISTRO_RE = /Bistro/i;
 
 export function parseLineItem(label: string): ParsedLineItem {
   // Mini lights — Tree / Bush / Column. Detail = "N strings".
@@ -73,6 +81,9 @@ export function parseLineItem(label: string): ParsedLineItem {
   // Decor — wreath / garland. Detail = tier label ("With Bow") + qty.
   if (WREATH_RE.test(label)) return { kind: 'wreath', detail: extractDecorDetail(label) };
   if (GARLAND_RE.test(label)) return { kind: 'garland', detail: extractDecorDetail(label) };
+
+  // Bistro — its own kind (#117), detail = footage, before the roofline fallback.
+  if (BISTRO_RE.test(label)) return { kind: 'bistro', detail: extractFootage(label) };
 
   // Unknown — render under roofline so the icon still works. Detail = the
   // raw label (clipped) so admins can spot mis-categorization in the wild.

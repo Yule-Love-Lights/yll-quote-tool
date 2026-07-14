@@ -1,9 +1,16 @@
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
-import { getReopenCounts, listDueFollowUps, listInWorks, listItemsForMetrics, listOpenItems } from '@/lib/dashboard/inbox/store';
+import {
+  getOperatorLabels,
+  getReopenCounts,
+  listDueFollowUps,
+  listInWorks,
+  listItemsForMetrics,
+  listOpenItems,
+} from '@/lib/dashboard/inbox/store';
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
-import { computeResponseAnalytics } from '@/lib/dashboard/inbox/responseMetrics';
+import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
@@ -15,7 +22,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen] = await Promise.all([
+  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen, repLabels] = await Promise.all([
     listOpenItems(),
     listDueFollowUps(now),
     listItemsForMetrics(),
@@ -23,6 +30,7 @@ export default async function InboxPage() {
     listInWorks(),
     getFollowUpDays(),
     getReopenCounts(now),
+    getOperatorLabels(),
   ]);
 
   return (
@@ -48,6 +56,20 @@ export default async function InboxPage() {
 
         {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
 
+        {/* WT-41: above the 100-item page cap, the oldest items are what's shown
+            (by design — they're the longest-waiting) but the newest customer
+            messages are excluded from the list below until the queue drains.
+            Say so explicitly rather than let the "Open leads" count look final. */}
+        {openRes.ok && openRes.truncated && (
+          <div
+            className="rounded-md border p-3 text-sm mb-4"
+            style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+          >
+            Showing the oldest {openRes.items.length} of {openRes.totalOpen} open items —{' '}
+            {openRes.totalOpen - openRes.items.length} more not shown yet.
+          </div>
+        )}
+
         {openRes.ok ? (
           <InboxList initialItems={openRes.items} nowMs={now.getTime()} currentOperatorId={operator?.id ?? null} />
         ) : (
@@ -72,7 +94,12 @@ export default async function InboxPage() {
         )}
 
         {metricsRes.ok && (
-          <ResponseAnalytics data={computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated)} />
+          <ResponseAnalytics
+            data={withOperatorLabels(
+              computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated),
+              repLabels,
+            )}
+          />
         )}
       </div>
     </OperatorShell>

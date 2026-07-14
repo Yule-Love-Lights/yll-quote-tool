@@ -251,6 +251,7 @@ export function InboxList({
                   type="button"
                   disabled={busyId === item.id}
                   onClick={() => act(item.id, '/api/dashboard/handled')}
+                  title="Closed as answered"
                   className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
                   style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
                 >
@@ -260,6 +261,7 @@ export function InboxList({
                   type="button"
                   disabled={busyId === item.id}
                   onClick={() => act(item.id, '/api/dashboard/dismiss')}
+                  title="Permanently hidden as spam"
                   className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                   style={{ color: 'var(--op-text-2)' }}
                 >
@@ -269,7 +271,7 @@ export function InboxList({
                   type="button"
                   disabled={busyId === item.id}
                   onClick={() => act(item.id, '/api/dashboard/followed')}
-                  title="I followed up — snooze until they reply"
+                  title="I followed up: snoozed until they reply"
                   className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                   style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
                 >
@@ -279,7 +281,7 @@ export function InboxList({
                   type="button"
                   disabled={busyId === item.id}
                   onClick={() => act(item.id, '/api/dashboard/completed')}
-                  title="Mark this item completed"
+                  title="Closed as done"
                   className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                   style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
                 >

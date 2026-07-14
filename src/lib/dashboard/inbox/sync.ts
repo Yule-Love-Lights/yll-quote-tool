@@ -5,7 +5,6 @@
 
 import {
   addContactTags,
-  findOrCreateOpportunityForContact,
   isHighLevelConfigured,
   markConversationRead,
   searchConversations,
@@ -25,6 +24,7 @@ import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThread } from './gmail';
 import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
+import { getFollowUpDays } from './settings';
 import {
   closeFollowUp,
   ensureFollowUp,
@@ -119,6 +119,10 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // to scanning UNRESOLVED quotes — a created_at cursor would miss state changes
     // on older rows. `scanned` in the summary surfaces this bound (no silent cap).
     const quotes = await listQuotesForDashboard(500);
+    // WT-44: read the configured follow-up cadence once per reconcile and
+    // forward it below, so the "Follow-up reminder (days)" setting controls
+    // when the strip nudge is due (not a hardcoded 3).
+    const followUpDays = await getFollowUpDays();
     let ingested = 0;
     let skipped = 0;
     let followUpsCreated = 0;
@@ -134,7 +138,9 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       else ingested++;
       const decision = quoteFollowUpDecision(q);
       if (res.itemId && decision.kind === 'create') {
-        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt });
+        // WT-44: forward the configured cadence so the "Follow-up reminder
+        // (days)" setting actually controls when this follow-up is due.
+        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
         followUpsCreated++;
       } else if (res.itemId && decision.kind === 'close') {
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
@@ -250,11 +256,20 @@ function errMsg(err: unknown): string {
  * Best-effort source write-back for a Handled item — runs AFTER the local stamp,
  * so attribution never depends on it. Each channel step is caught independently;
  * the per-step outcome goes into handled_channel_sync. ⚠️ These are live GHL/Gmail
- * WRITES (mark-read / tag / opportunity / label) — only the Handled route invokes
- * this; nothing runs them automatically.
+ * WRITES (mark-read / tag / label) — only the Handled route invokes this;
+ * nothing runs them automatically.
  *   • GHL: mark the conversation read; tag the contact (dashboard-handled +
- *     handled-by-<operator>); ensure a pipeline opportunity (fixes "never logged").
+ *     handled-by-<operator>).
  *   • Gmail: add the YLL/Handled label + remove UNREAD.
+ *
+ * WT-49 fix: this used to also findOrCreateOpportunityForContact against the
+ * legacy HIGHLEVEL_PIPELINE_ID/HIGHLEVEL_STAGE_QUOTE_CREATED env vars (the
+ * holiday pipeline). HandledTarget carries no service_type, so a permanent/
+ * event/bistro contact marked Handled got a duplicate opportunity CREATED in
+ * the wrong (holiday) pipeline — invisible on the right board and able to trip
+ * a holiday drip. Dropped: this was the only call site that created a NEW
+ * pipeline card outside a quote's own send/attach flow (ghlPipelineMap.ts),
+ * which already resolves the correct per-service-type pipeline.
  */
 export async function runHandledWriteback(target: HandledTarget, operatorLabel: string): Promise<Record<string, unknown>> {
   const sync: Record<string, unknown> = {};
@@ -276,23 +291,6 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
     } catch (err) {
       sync.ghlTags = 'failed';
       sync.ghlTagsError = errMsg(err);
-    }
-
-    const pipelineId = process.env.HIGHLEVEL_PIPELINE_ID;
-    const stageId = process.env.HIGHLEVEL_STAGE_QUOTE_CREATED;
-    if (pipelineId && stageId) {
-      try {
-        const { created } = await findOrCreateOpportunityForContact({
-          contactId: target.ghlContactId,
-          pipelineId,
-          fallbackStageId: stageId,
-          fallbackName: target.displayName ?? 'Inbox lead',
-        });
-        sync.ghlOpportunity = created ? 'created' : 'exists';
-      } catch (err) {
-        sync.ghlOpportunity = 'failed';
-        sync.ghlOpportunityError = errMsg(err);
-      }
     }
   }
 

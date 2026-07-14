@@ -56,7 +56,7 @@ export type HighLevelContact = {
   city?: string;
   state?: string;
   postalCode?: string;
-  customFields?: Array<{ id: string; value?: string }>;
+  customFields?: Array<{ id: string; value?: string | string[] }>;
   tags?: string[];
 };
 

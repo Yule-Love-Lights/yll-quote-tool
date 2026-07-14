@@ -166,7 +166,7 @@ export default function TrainingExamplesPage() {
               href="/training"
               className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
             >
-              ← Training Houses
+              ← AI Training Database
             </Link>
           </div>
         </div>

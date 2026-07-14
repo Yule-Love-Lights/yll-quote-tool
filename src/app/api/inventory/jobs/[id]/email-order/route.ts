@@ -32,9 +32,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!wo) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
 
   try {
+    // Test Quote (ledger #93) — isTest never reached this email before, so a
+    // test job's order looked like a real one to whoever opened the inbox.
+    // Prefix the subject here (orderEmailSubject itself stays untouched) and
+    // pass isTest through to orderEmailHtml for the in-body banner.
+    const subject = wo.job.isTest
+      ? `[TEST] ${orderEmailSubject(wo.job.jobNumber, wo.job.customerName)}`
+      : orderEmailSubject(wo.job.jobNumber, wo.job.customerName);
     await sendEmail({
       contactId: internalContactId,
-      subject: orderEmailSubject(wo.job.jobNumber, wo.job.customerName),
+      subject,
       html: orderEmailHtml({
         jobNumber: wo.job.jobNumber,
         customerName: wo.job.customerName,
@@ -42,6 +49,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         installDate: wo.job.installDate,
         materials: wo.materials.materials,
         unbound: wo.materials.unbound.map((u) => ({ label: u.label, qty: u.qty })),
+        isTest: wo.job.isTest,
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });

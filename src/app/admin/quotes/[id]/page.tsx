@@ -10,8 +10,10 @@ import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
 import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
-import { catalogCostOverrides } from '@/lib/inventory/catalog';
+import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
+import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
+import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -87,6 +89,15 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
       ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides())
       : null;
 
+  // Permanent Bistro (#117): the same ordering-only BOM pattern, a separate
+  // engine (Thunder/Home Depot/Amazon, no wholesale-cost totals shown here —
+  // see the print sheet). Positive `=== 'permanent_bistro'` gate; null for an
+  // empty job (no footage, no poles) even on a bistro quote.
+  const bistroBom =
+    quote.service_type === 'permanent_bistro'
+      ? bistroBomFromQuote(quote.inputs, costOverridesFromBistroCatalog(await listCatalog()))
+      : null;
+
   return (
     <OperatorShell active="quotes">
       <div className="max-w-3xl mx-auto">
@@ -110,14 +121,30 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Test
             </span>
           )}
-          <Link
-            href={`/portal/${id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-auto text-sm text-blue-700 hover:underline"
-          >
-            Portal ↗
-          </Link>
+          <div className="ml-auto flex items-center gap-3">
+            {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
+                unapproved quote has no persisted "current" selection to
+                render), so only offer the link once the quote has actually
+                been approved. */}
+            {(status === 'approved' || status === 'booked') && (
+              <Link
+                href={`/api/quotes/${id}/pdf?doc=quote`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Download PDF ↓
+              </Link>
+            )}
+            <Link
+              href={`/portal/${id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Portal ↗
+            </Link>
+          </div>
         </div>
 
         {/* Customer */}
@@ -238,6 +265,31 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Ascend/Dauer APL list — ordering + margin only. Materials never affect the customer price.
             </p>
             <PermanentBomPanel bom={bom} />
+          </div>
+        )}
+
+        {/* Permanent Bistro BOM (#117) — order sheet link (Thunder/Home Depot/Amazon). */}
+        {bistroBom && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Materials — BOM (ordering)
+              </h2>
+              <Link
+                href={`/admin/quotes/${id}/bistro-bom/print`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Print order sheet ↗
+              </Link>
+            </div>
+            <p className="text-xs text-gray-400">
+              {bistroBom.totals.totalFootage} ft ({bistroBom.totals.strands} strand
+              {bistroBom.totals.strands === 1 ? '' : 's'}), {bistroBom.totals.poles} pole
+              {bistroBom.totals.poles === 1 ? '' : 's'}. Thunder / Home Depot / Amazon order list. Materials never
+              affect the customer price.
+            </p>
           </div>
         )}
 

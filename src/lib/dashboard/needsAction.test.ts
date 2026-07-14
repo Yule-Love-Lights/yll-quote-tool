@@ -331,6 +331,35 @@ describe('buildNeedsAction — sorting', () => {
   });
 });
 
+// ─── quote_number + service_type carried onto rows (WT-40) ───────────────────
+
+describe('buildNeedsAction — quote_number + service_type on items (WT-40)', () => {
+  it('carries quote_number + service_type onto a nudge item', () => {
+    const q = makeQuote({ id: 'q-num', quote_sent_at: daysAgo(4), quote_number: 2001, service_type: 'event' });
+    const [item] = buildNeedsAction(makeInput({ quotes: [q] }));
+    expect(item.quoteNumber).toBe(2001);
+    expect(item.serviceType).toBe('event');
+  });
+
+  it('carries quote_number + service_type onto a collect-deposit item', () => {
+    const q = makeQuote({
+      id: 'q-dep',
+      customer_approved_at: daysAgo(3),
+      quote_number: 3005,
+      service_type: 'permanent',
+    });
+    const [item] = buildNeedsAction(makeInput({ quotes: [q] }));
+    expect(item.quoteNumber).toBe(3005);
+    expect(item.serviceType).toBe('permanent');
+  });
+
+  it('quoteNumber is null when the row has no allocated number (legacy row)', () => {
+    const q = makeQuote({ id: 'q-nonum', quote_sent_at: daysAgo(4) });
+    const [item] = buildNeedsAction(makeInput({ quotes: [q] }));
+    expect(item.quoteNumber).toBeNull();
+  });
+});
+
 // ─── label / detail formatting ───────────────────────────────────────────────
 
 describe('buildNeedsAction — item shape', () => {

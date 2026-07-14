@@ -100,6 +100,41 @@ export async function getContact(contactId: string): Promise<CrmContact> {
   return toCrmContact(json.contact);
 }
 
+// ─── Contact create ───────────────────────────────────────────────────────
+// Creates a brand-new GHL contact — used by the referral landing page (#41
+// /refer/<code> submit) to get a referred lead into HighLevel immediately, so
+// staff can follow up from the CRM they already work out of. Mirrors
+// createOpportunity's request shape (locationId + POST /contacts/, default
+// Version header). Unlike searchContacts/getContact this WRITES — callers
+// should only invoke it when they actually mean to create a new record (no
+// dedupe/search-first here; that's the caller's job if it matters for them).
+export type CreateContactInput = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address1?: string;
+  tags?: string[];
+  source?: string;
+};
+
+export async function createContact(input: CreateContactInput): Promise<CrmContact> {
+  const { locationId } = requireConfig();
+  const body = {
+    locationId,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.email ? { email: input.email } : {}),
+    ...(input.phone ? { phone: input.phone } : {}),
+    ...(input.address1 ? { address1: input.address1 } : {}),
+    tags: input.tags ?? [],
+    source: input.source ?? 'ai-quote-tool',
+  };
+  const json = await ghlFetch<{ contact: HighLevelContact }>('/contacts/', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  return toCrmContact(json.contact);
+}
+
 // ─── Opportunity search (by contact) ──────────────────────────────────────
 // Customers exist in HighLevel BEFORE they hit our quote tool — they were
 // captured via lead forms or manual entry and already have an opportunity
@@ -181,6 +216,7 @@ export async function findOrCreateOpportunityForContact(input: {
   fallbackStageId: string;   // HIGHLEVEL_STAGE_QUOTE_CREATED — the ENTRY stage (e.g. Open), never Make Quote
   fallbackName: string;       // used only if we create
   monetaryValue?: number;
+  source?: string;            // used only if we create; falls through to createOpportunity's own default ('ai-quote-tool') when omitted
 }): Promise<{ opportunity: HighLevelOpportunity; created: boolean }> {
   const existing = await findOpportunityForContact(input.contactId, input.pipelineId);
   if (existing) return { opportunity: existing, created: false };
@@ -190,6 +226,7 @@ export async function findOrCreateOpportunityForContact(input: {
     pipelineStageId: input.fallbackStageId,
     name: input.fallbackName,
     monetaryValue: input.monetaryValue,
+    source: input.source,
   });
   return { opportunity: fresh, created: true };
 }
@@ -396,11 +433,71 @@ export async function addContactTags(contactId: string, tags: string[]): Promise
 export async function upsertContactCustomField(
   contactId: string,
   fieldId: string,
-  value: string,
+  value: string | string[],
 ): Promise<void> {
+  // value is string[] for CHECKBOX-dataType fields (GHL expects an array of
+  // selected option strings there — a scalar string silently fails to land)
+  // and a plain string for TEXT-dataType fields. Callers know which shape
+  // their field expects; this function just passes it through untouched.
   await ghlFetch(`/contacts/${encodeURIComponent(contactId)}`, {
     method: 'PUT',
     body: JSON.stringify({ customFields: [{ id: fieldId, value }] }),
+  });
+}
+
+// ─── Contact upsert (website lead capture) ─────────────────────────────────
+// POST /contacts/upsert — the v2 LeadConnector endpoint that creates a NEW
+// contact or updates the existing match (by email/phone) and reports which
+// via `new`. Used by the website lead-capture route (src/app/api/leads) instead
+// of a search-then-create/update round trip.
+//
+// Deliberately does NOT accept tags. GHL's upsert has replace-ish tag
+// semantics on some payload shapes, while addContactTags's POST
+// /contacts/{id}/tags is confirmed ADDITIVE (see the merge-vs-replace note on
+// upsertContactCustomField below) — callers add tags via addContactTags
+// AFTER the upsert so re-submitting a form never wipes a contact's existing
+// tags.
+export type UpsertContactInput = {
+  // Optional so a caller can omit name fields entirely on a household match
+  // (see leadService.syncLeadToGhl) — sending them there would overwrite the
+  // existing contact's name via GHL's email/phone-matched upsert.
+  firstName?: string;
+  lastName?: string;
+  email: string;
+  phone: string;
+  address1?: string;
+  source?: string;
+};
+
+export async function upsertContact(
+  input: UpsertContactInput,
+): Promise<{ contact: HighLevelContact; new: boolean }> {
+  const { locationId } = requireConfig();
+  const body = {
+    locationId,
+    firstName: input.firstName,
+    lastName: input.lastName,
+    email: input.email,
+    phone: input.phone,
+    address1: input.address1,
+    source: input.source,
+  };
+  return ghlFetch<{ contact: HighLevelContact; new: boolean }>('/contacts/upsert', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── Contact note create ────────────────────────────────────────────────
+// POST /contacts/{contactId}/notes — attaches a free-text note to the
+// contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
+// context, which don't fit any existing custom field).
+type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+
+export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
+  return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
   });
 }
 

@@ -6,7 +6,7 @@
 // for the sticky bar CTA.
 
 import type { CSSProperties } from 'react';
-import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Check } from 'lucide-react';
+import { Home, Triangle, TreePine, Sparkles, Gift, Leaf, Flower2, Ribbon, Fence, Lightbulb, Lamp, Check } from 'lucide-react';
 import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types';
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { ServiceType } from '@/lib/serviceType';
@@ -15,7 +15,7 @@ import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
-import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS } from '@/lib/portal/satelliteLines';
+import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -157,6 +157,9 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   railing: Fence,
   curtain: Lightbulb,
   'stake-lighting': Lightbulb,
+  // Bistro Lighting (#117): its own icon — a hanging-lamp glyph reads as
+  // "string/ambient lighting" distinct from the roofline house icon.
+  bistro: Lamp,
   // Permanent Lighting (#88 P5): per-surface line items reuse the house icon;
   // the maintenance add-on reuses the generic bulb icon.
   permanent: Home,
@@ -190,10 +193,16 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // (a straight #443-regression fix; those quotes used the holiday channels).
   // selectDrawableLineGroups hides empty channels, so old + new never collide.
   // undefined for holiday/event so their satellite view is unchanged.
+  // Permanent Bistro Lighting (#117): its own single 'bistro' channel — a
+  // POSITIVE match (never `!== 'permanent'`), so it never inherits permanent's
+  // side channels or the legacy santas/gingerbread trace (the file's own
+  // stated principle — see AGENTS.md seam-gate rule).
   const allowedSatelliteKeys =
     serviceType === 'permanent'
       ? [...PERMANENT_SIDE_SATELLITE_KEYS, 'santas' as const, 'gingerbread' as const]
-      : undefined;
+      : serviceType === 'permanent_bistro'
+        ? (['bistro'] as SatelliteLineGroup['key'][])
+        : undefined;
   const satelliteLabelOverrides =
     serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
   const {
@@ -494,10 +503,11 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </dl>
           {minimumOrderSubtotal > 0 && !meetsMinimum && (
             <p className="mt-4 border-t border-[#243029] pt-3 text-[13px] text-[#E8B862]">
-              {/* "season minimum" is holiday-only copy. Permanent (year-round) and
-                  event (date-driven) are not seasonal → neutral "minimum". Only
-                  holiday/undefined keeps "season minimum". */}
-              {serviceType === 'permanent' || serviceType === 'event'
+              {/* "season minimum" is holiday-only copy. Permanent (year-round),
+                  event (date-driven), and permanent bistro (year-round) are not
+                  seasonal → neutral "minimum". Only holiday/undefined keeps
+                  "season minimum". */}
+              {serviceType === 'permanent' || serviceType === 'event' || serviceType === 'permanent_bistro'
                 ? currentSubtotal <= 0
                   ? `Our minimum is ${formatUsd(minimumOrderSubtotal)}. Select items to continue.`
                   : `Our minimum is ${formatUsd(minimumOrderSubtotal)} — add ${formatUsd(amountToMinimum)} more to approve.`

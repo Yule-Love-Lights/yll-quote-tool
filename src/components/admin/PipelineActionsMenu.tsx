@@ -3,15 +3,47 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { pipelineActions, type PipelineRecord, type PipelineAction } from '@/lib/pipeline/pipelineActions';
 
+const money = (n: number) =>
+  `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 async function run(action: PipelineAction, rec: PipelineRecord): Promise<Response | null> {
   const q = rec.quoteId;
   switch (action.kind) {
-    case 'send':
-      return fetch(`/api/quotes/${q}/send`, {
+    case 'send': {
+      // PS-G4: this is now the ONE way to send a quote (the admin quotes list's
+      // inline Send/Resend button was dropped as a duplicate that offered no
+      // channel choice). Carries over that button's UX — copy the portal URL to
+      // the clipboard and confirm what happened, including the HighLevel stage —
+      // so picking a channel here doesn't feel like a silent action.
+      const portalUrl = `${window.location.origin}/portal/${q}`;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(portalUrl);
+        copied = true;
+      } catch {
+        // Some browsers block clipboard outside HTTPS — fall through.
+      }
+      const res = await fetch(`/api/quotes/${q}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ channel: action.channel }),
       });
+      if (res.ok) {
+        const body = (await res.clone().json().catch(() => ({}))) as {
+          stageUpdated?: boolean;
+          stageError?: string;
+          alreadySent?: boolean;
+        };
+        const stage = body.stageUpdated
+          ? '\nHighLevel: card moved to Bid Sent.'
+          : body.stageError
+            ? `\nHighLevel: ${body.stageError}`
+            : '';
+        const already = body.alreadySent ? ' (already sent earlier)' : '';
+        alert(`Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}`);
+      }
+      return res;
+    }
     case 'mark-approved':
       return fetch(`/api/quotes/${q}/staff-approve`, { method: 'POST' });
     case 'staff-decline': {
@@ -69,8 +101,16 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       });
     case 'mark-complete':
       return rec.job ? fetch(`/api/jobs/${rec.job.id}/complete`, { method: 'POST' }) : null;
-    case 'collect-payment':
-      return rec.invoice ? fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' }) : null;
+    case 'collect-payment': {
+      if (!rec.invoice) return null;
+      if (
+        !window.confirm(
+          `Collect payment for this invoice? This marks the full balance of ${money(rec.invoice.balance)} as paid. Only confirm if the full amount was received: this cannot record a partial payment.`,
+        )
+      )
+        return null;
+      return fetch(`/api/invoices/${rec.invoice.id}/mark-paid`, { method: 'POST' });
+    }
     case 'close':
       if (!rec.job) return null;
       if (!window.confirm('Close this job/invoice? Marks it paid + done.')) return null;

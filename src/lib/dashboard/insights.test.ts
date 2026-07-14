@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { monthlyRevenue, revenueByService, computeInsightStats } from './insights';
+import { reached } from './metrics';
 import type { DashboardQuote } from './types';
 
 const NOW = new Date('2026-06-15T12:00:00Z');
@@ -74,9 +75,9 @@ describe('revenueByService', () => {
     expect(byKey.event).toBe(4800);
   });
 
-  it('always returns all three services in canonical order, even at 0', () => {
+  it('always returns all four services in canonical order, even at 0', () => {
     const out = revenueByService([]);
-    expect(out.map(s => s.service)).toEqual(['holiday', 'permanent', 'event']);
+    expect(out.map(s => s.service)).toEqual(['holiday', 'permanent', 'event', 'permanent_bistro']);
     expect(out.every(s => s.revenue === 0)).toBe(true);
   });
 });
@@ -154,5 +155,16 @@ describe('insights — terminal statuses excluded from booked revenue (#110 W7-0
     expect(s.totalBooked).toBe(1000);
     expect(s.avgJobValue).toBe(1000); // only the one real win
     expect(s.closeRatio).toBe(0.5); // 1 won / 2 reached — the cancelled deal drags it down
+  });
+
+  it('WT-48: an approved-but-terminal quote that was never sent is NOT counted as reached — matches computeKpis in metrics.ts', () => {
+    // Same quote shape used in metrics.test.ts's parallel WT-48 case: this
+    // proves computeInsightStats' closeRatio and computeKpis' conversionRate
+    // now agree (both null — nothing reached a customer) because both use
+    // the shared `reached()` helper from metrics.ts.
+    const q = makeQuote({ quote_sent_at: null, customer_approved_at: '2026-02-01T00:00:00Z', status: 'cancelled' });
+    expect(reached(q)).toBe(false);
+    const s = computeInsightStats([q]);
+    expect(s.closeRatio).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ export type OperatorArea =
   | 'quotes'
   | 'jobs'
   | 'invoices'
+  | 'leads'
   | 'customers'
   | 'inventory'
   | 'new'
@@ -23,9 +24,15 @@ export type OperatorArea =
 // the nav, the page background, and the vertical padding.
 export function OperatorShell({
   active,
+  inboxOpenLeads,
+  inboxOverdue,
   children,
 }: {
   active: OperatorArea;
+  // Optional Inbox nav badge counts (PS-E2) — pass through from a page that
+  // already fetched them (see src/app/page.tsx). Omitted pages render no badge.
+  inboxOpenLeads?: number;
+  inboxOverdue?: number;
   children: React.ReactNode;
 }) {
   return (
@@ -33,7 +40,7 @@ export function OperatorShell({
       {/* Marks this browser a staff device (S22) so a staff preview of a
           customer's portal link isn't recorded/notified as a customer view. */}
       <MarkStaffDevice />
-      <OperatorNav active={active} />
+      <OperatorNav active={active} inboxOpenLeads={inboxOpenLeads} inboxOverdue={inboxOverdue} />
       <div className="flex-1 py-8 px-4">{children}</div>
     </div>
   );

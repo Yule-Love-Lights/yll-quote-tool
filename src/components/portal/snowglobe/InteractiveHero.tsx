@@ -334,7 +334,11 @@ export function InteractiveHero({
             className="font-display text-[26px] leading-[1.06] md:text-[54px] md:leading-[1.02] font-semibold text-[#F4ECD8] tracking-[-0.02em] max-w-2xl"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 2px 28px rgba(0,0,0,0.6)' }}
           >
-            {serviceType === 'event' ? "Here's your event," : "Here's your home,"}{' '}
+            {serviceType === 'event'
+              ? "Here's your event,"
+              : serviceType === 'permanent_bistro'
+                ? "Here's your space,"
+                : "Here's your home,"}{' '}
             <span className="italic text-[#FFD07A]">{firstName}</span>.
           </h1>
         </div>
@@ -449,7 +453,7 @@ export function InteractiveHero({
                         track the live selection so they don't out-claim the
                         sticky bar once the customer edits the recommendation. */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' && serviceType !== 'permanent' && serviceType !== 'event' ? 'Custom' : `Tier ${i + 1}`}
+                      {p.id === 'D' && (serviceType == null || serviceType === 'holiday') ? 'Custom' : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
@@ -458,6 +462,12 @@ export function InteractiveHero({
                     </span>
                     <span className="font-display text-[17px] md:text-[18px] font-semibold text-[#F4ECD8] leading-[1.15] mt-0.5">
                       {p.id === 'D' && packageId === 'D' ? activeName : p.name}
+                    </span>
+                    {/* WT-13 (audit): a subtle one-line subhead under the
+                        package name so the tagline every derive fn writes
+                        actually reaches the customer. */}
+                    <span className="w-full text-[10px] md:text-[11px] text-[#F4ECD8]/60 leading-snug line-clamp-1 mt-0.5">
+                      {p.tagline}
                     </span>
                     <span className="portal-snow-price text-[14px] md:text-[15px] font-semibold text-[#F4ECD8]/85 mt-1">
                       {p.id === 'D'

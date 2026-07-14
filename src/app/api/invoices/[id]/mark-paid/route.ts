@@ -9,19 +9,34 @@
 // settle). markInvoicePaidManually itself never touches the job, so the route
 // does the close best-effort — a job-close failure never fails the payment.
 //
-// Response: { ok, paid, invoice: { id, status, balance } }
+// WT-18: before settling, block a quote whose LATEST amendment is a
+// price-increasing change the customer hasn't re-approved yet
+// (src/lib/amend.ts blocksSettlement/requiresReconsent) — an amend-up silently
+// reopens the invoice to awaiting_payment with zero proof of re-consent, and
+// this route would otherwise happily settle it. An operator override (body
+// `{ overrideReconsent: true }` or `?override=true`) is the release valve for
+// this wave; a real customer-facing re-approval flow is separate, later work.
+//
+// Response: { ok, paid, invoice: { id, status, balance } } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { markInvoicePaidManually } from '@/lib/invoices';
+import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
+import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+type QuoteReconsentRow = {
+  approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+  status: QuoteStatus | null;
+};
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
   if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
@@ -33,9 +48,49 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
 
-  let invoice;
+  let body: { overrideReconsent?: unknown } = {};
   try {
-    invoice = await markInvoicePaidManually(id);
+    body = (await req.json()) as { overrideReconsent?: unknown };
+  } catch {
+    body = {};
+  }
+  const override =
+    body.overrideReconsent === true || req.nextUrl.searchParams.get('override') === 'true';
+
+  // Pre-fetch the invoice (rather than relying solely on markInvoicePaidManually's
+  // own read) so the WT-18 gate below runs BEFORE any money moves.
+  const invoice = await getInvoice(id);
+  if (!invoice) {
+    return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+  }
+
+  if (!override && invoice.quote_id) {
+    const sb = getSupabaseServiceClient()!;
+    const { data: quoteRow } = await sb
+      .from('quotes')
+      .select('approval_snapshot, status')
+      .eq('id', invoice.quote_id)
+      .maybeSingle<QuoteReconsentRow>();
+    const latest = latestAmendment(quoteRow?.approval_snapshot?.amendments);
+    if (blocksSettlement(latest)) {
+      console.warn(
+        `[api/invoices/:id/mark-paid] blocked settlement for invoice ${id} — reconsent required ` +
+          `(quote ${invoice.quote_id} would read '${amendedQuoteStatus(latest!, quoteRow?.status ?? 'booked')}')`,
+      );
+      return NextResponse.json(
+        {
+          error:
+            'This order has a price increase awaiting customer re-approval. Pass an operator override to settle anyway.',
+          code: 'reconsent-required',
+        },
+        { status: 409 },
+      );
+    }
+  }
+
+  let paid;
+  try {
+    paid = await markInvoicePaidManually(id);
   } catch (err) {
     console.error('[api/invoices/:id/mark-paid]', err);
     return NextResponse.json(
@@ -44,7 +99,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     );
   }
 
-  if (!invoice) {
+  if (!paid) {
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
   }
 
@@ -54,8 +109,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // markInvoicePaidManually returns the full invoice row (incl. job_id) on every
   // branch, so no extra read is needed to find the job.
   try {
-    if (invoice.job_id) {
-      const job = await getJob(invoice.job_id);
+    if (paid.job_id) {
+      const job = await getJob(paid.job_id);
       if (job && job.status === 'requires_invoicing') {
         await setJobStatus(job.id, 'done');
       }
@@ -67,6 +122,6 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   return NextResponse.json({
     ok: true,
     paid: true,
-    invoice: { id: invoice.id, status: invoice.status, balance: invoice.balance },
+    invoice: { id: paid.id, status: paid.status, balance: paid.balance },
   });
 }

@@ -54,6 +54,7 @@ import {
   MOCK_FAQ,
   EVENT_FAQ,
   PERMANENT_FAQ,
+  BISTRO_FAQ,
   MOCK_TEAM,
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
@@ -326,7 +327,9 @@ export default async function PortalPage({
         locked={isApproved}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={
-          quote.serviceType === 'permanent' || quote.serviceType === 'event'
+          quote.serviceType === 'permanent' ||
+          quote.serviceType === 'event' ||
+          quote.serviceType === 'permanent_bistro'
             ? 'none'
             : quote.installTiming
         }
@@ -355,15 +358,25 @@ export default async function PortalPage({
         {/* 1.5 Light color picker (#48/#57) — the full picker (presets + palette +
             build-your-own). Permanent (#88 P6b-4) uses the SAME picker over its own
             swatch list, so a permanent customer gets full color control too. Only
-            when a design is linked (recolor needs a live scene). */}
-        {quote.design && <LightColorPicker />}
+            when a design is linked (recolor needs a live scene). Positive list
+            (#117): permanent bistro is EXCLUDED — warm-white Edison bulbs only
+            (its FAQ says so), and holiday Red & Green schemes would contradict
+            it. A future vertical must opt in here, not inherit the picker. */}
+        {quote.design &&
+          (quote.serviceType == null ||
+            quote.serviceType === 'holiday' ||
+            quote.serviceType === 'permanent' ||
+            quote.serviceType === 'event') && <LightColorPicker />}
         {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
             row under the color so any color can play any effect. */}
         {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
 
-        {/* 2. Walkthrough video — global default or per-quote override */}
+        {/* 2. Walkthrough video — global default or per-quote override.
+            Bug fix (WT-L4): pass the already-approved/booked state so the CTA
+            copy doesn't tell a customer who already approved to "watch before
+            you approve". */}
         {quote.video && <SectionViewTracker section="walkthrough_video" />}
-        {quote.video && <WalkthroughVideo video={quote.video} />}
+        {quote.video && <WalkthroughVideo video={quote.video} booked={isApproved || isBooked} />}
 
         {/* 3. What's Included — line-item toggles feed the hero + sticky price.
             Also hosts the second on-page design render (#50) between the items
@@ -451,14 +464,16 @@ export default async function PortalPage({
         <Philanthropy />
 
         {/* 10. FAQ — per service_type: event (#96) + permanent (#88, ledger #120)
-             each get their own Q&A; holiday keeps MOCK_FAQ. */}
+             + permanent bistro each get their own Q&A; holiday keeps MOCK_FAQ. */}
         <FAQ
           items={
             quote.serviceType === 'event'
               ? EVENT_FAQ
               : quote.serviceType === 'permanent'
                 ? PERMANENT_FAQ
-                : MOCK_FAQ
+                : quote.serviceType === 'permanent_bistro'
+                  ? BISTRO_FAQ
+                  : MOCK_FAQ
           }
         />
 

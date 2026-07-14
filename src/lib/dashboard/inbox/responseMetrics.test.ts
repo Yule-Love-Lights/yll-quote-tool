@@ -6,6 +6,7 @@ import {
   computeTrend,
   reopenRate,
   computeResponseAnalytics,
+  withOperatorLabels,
 } from './responseMetrics';
 import type { MetricItem } from './responseMetrics';
 
@@ -215,6 +216,27 @@ describe('computeTrend', () => {
     expect(t.thisWeekMs).toBe(HOUR);
     expect(['faster', 'slower', 'flat', 'na']).toContain(t.direction);
   });
+
+  it('measures from last_inbound_at, not last_message_at, when a reply was sent outside the inbox (#WT-42)', () => {
+    // Customer messaged 3 days ago; the reply went out via the GHL app (not the
+    // inbox UI), so the reconcile overwrote last_message_at with the outbound's
+    // ~now timestamp. last_inbound_at still holds the real customer message time.
+    const handledAt = agoMs(2 * DAY);
+    const realInbound = new Date(handledAt.getTime() - 3 * DAY);
+    const items: MetricItem[] = [
+      {
+        status: 'handled',
+        lastMessageAt: new Date(handledAt.getTime() - 1 * MIN), // corrupted
+        lastInboundAt: realInbound, // the real customer message time
+        handledAt,
+        handledBy: 'a',
+        source: 'ghl',
+        createdAt: realInbound,
+      },
+    ];
+    const t = computeTrend(items, T2);
+    expect(t.thisWeekMs).toBe(3 * DAY); // the real wait, NOT ~1 min
+  });
 });
 
 describe('reopenRate', () => {
@@ -255,5 +277,32 @@ describe('computeResponseAnalytics', () => {
     expect(a.windows['30'].handled).toBe(1);
     expect(a.reopen.all).toBeCloseTo(0.2);
     expect(a.reopen['30']).toBe(0);
+  });
+});
+
+// PS-E1: byRep.rep is stamped as the raw operator UUID (handled_by is an
+// auth.users FK — see migrations/2026-06-28-dashboard-tables.sql), so it must be
+// relabeled to something readable before it reaches the UI.
+describe('withOperatorLabels', () => {
+  const items: MetricItem[] = [handled(30, 'uuid-jason'), handled(90, 'uuid-naldo'), handled(15, 'system')];
+
+  it('replaces a known operator id with its display label in every window', () => {
+    const a = computeResponseAnalytics(items, { all: { handled: 0, reopened: 0 }, '90': { handled: 0, reopened: 0 }, '30': { handled: 0, reopened: 0 } }, T, false);
+    const labels = new Map([
+      ['uuid-jason', 'Jason'],
+      ['uuid-naldo', 'Naldo'],
+    ]);
+    const out = withOperatorLabels(a, labels);
+    const reps = out.windows.all.byRep.map((r) => r.rep).sort();
+    expect(reps).toEqual(['Jason', 'Naldo', 'system'].sort());
+    // Applied consistently to every window, not just 'all'.
+    expect(out.windows['30'].byRep.map((r) => r.rep).sort()).toEqual(['Jason', 'Naldo', 'system'].sort());
+  });
+
+  it('leaves an unknown id as-is (no label found) and never relabels "system"', () => {
+    const a = computeResponseAnalytics(items, { all: { handled: 0, reopened: 0 }, '90': { handled: 0, reopened: 0 }, '30': { handled: 0, reopened: 0 } }, T, false);
+    const out = withOperatorLabels(a, new Map()); // empty map — e.g. the admin API failed
+    const reps = out.windows.all.byRep.map((r) => r.rep).sort();
+    expect(reps).toEqual(['system', 'uuid-jason', 'uuid-naldo'].sort());
   });
 });

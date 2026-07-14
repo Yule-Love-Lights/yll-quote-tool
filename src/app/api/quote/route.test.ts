@@ -24,7 +24,11 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       viewed_at?: string | null;
       status?: string | null;
       service_type?: string | null;
-      result?: { permanentRatesSnapshot?: unknown; eventRatesSnapshot?: unknown } | null;
+      result?: {
+        permanentRatesSnapshot?: unknown;
+        eventRatesSnapshot?: unknown;
+        permanentBistroRatesSnapshot?: unknown;
+      } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -70,6 +74,10 @@ vi.mock('@/lib/appSettings', () => ({
       bistroPerFt: 8,
       barrelBoxPrice: 100,
     },
+    // Distinct permanent-bistro rates (perFt $6) so a test can prove the route
+    // reads settings.permanentBistroRates, not the engine's compiled default
+    // (perFt $30).
+    permanentBistroRates: { perFt: 6, perPole: 20, minimum: 0 },
   }),
 }));
 
@@ -335,6 +343,140 @@ describe('POST /api/quote — event block validation (#96 audit fixes #9 / #5)',
   });
 });
 
+const bistroPoleAmt = (r: { lineItems: Line[] }) =>
+  r.lineItems.find((l) => l.id === 'permanent-bistro-poles')?.amount;
+
+describe('POST /api/quote — permanent_bistro dispatch (#117)', () => {
+  it('a NEW permanent_bistro quote is priced by the bistro engine at live settings rates + saved as permanent_bistro, snapshot frozen', async () => {
+    const inputs = { ...validInputs(), permanentBistro: { poles: 2 } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(bistroPoleAmt(savedResult())).toBe(40); // 2 * $20 (settings rate, not $100 default)
+    expect((savedResult() as { permanentBistroRatesSnapshot?: unknown }).permanentBistroRatesSnapshot).toBeTruthy();
+    expect(save.mock.calls[0]?.[3]).toBe('permanent_bistro'); // saved as permanent_bistro
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('H1: an UPDATE of an existing permanent_bistro quote prices from the FROZEN snapshot, not live settings', async () => {
+    rawRef.current!.service_type = 'permanent_bistro';
+    rawRef.current!.result = {
+      permanentBistroRatesSnapshot: { perFt: 30, perPole: 99, minimum: 0 },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { poles: 2 } };
+    await POST(makeReq({ quoteId: REAL_UUID, serviceType: 'permanent_bistro', inputs }));
+    expect(bistroPoleAmt(updatedResult())).toBe(198); // 2 * $99 (snapshot) — NOT 2 * $20 (live)
+    expect(update.mock.calls[0]?.[4]).toBe('permanent_bistro'); // stored type written back
+  });
+});
+
+describe('POST /api/quote — permanentBistro block validation (#117)', () => {
+  it('rejects an over-cap permanentBistro.bistro array (length 501) with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: Array.from({ length: 501 }, () => ({ footage: 10 })) };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed bistro element (non-numeric footage) with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: [{ footage: 'ten' }] };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a negative poles with 400', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { poles: -1 };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a well-formed permanentBistro block with bistro + poles', async () => {
+    const inputs = validInputs();
+    inputs.permanentBistro = { bistro: [{ footage: 20 }], poles: 2 };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a permanent_bistro quote with no permanentBistro block at all (still optional)', async () => {
+    const inputs = validInputs();
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+  });
+});
+
+// #117 satellite migration: bistro footage now bills from the client-sent
+// satellite-derived inputs.permanentBistro.bistro (true-scale polylines drawn
+// on the Satellite tab), never from a linked design's street-photo scene — the
+// Design tab's bistro strand there is visual-only for the portal. The route's
+// design-projection gate (`!isPermanent && !isPermanentBistro && isValidDesignId`)
+// must skip getDesign/applyProjectionToInputs entirely for permanent_bistro, so
+// a design's projected bistro footage can never clobber the client-sent value.
+describe('POST /api/quote — permanent_bistro design-projection exemption (#117)', () => {
+  const DESIGN_ID = 'ffffffff-2222-4ccc-8ddd-eeeeeeeeeeee';
+  const bistroAmt = (r: { lineItems: Line[] }) =>
+    r.lineItems.find((l) => (l.id ?? '').toString().startsWith('permanent-bistro-') && l.id !== 'permanent-bistro-poles')
+      ?.amount;
+
+  function designSceneWithBistroStrand() {
+    return {
+      yardsticks: [],
+      items: [
+        {
+          id: 'b1',
+          kind: 'strand',
+          yardstickId: null,
+          bulbType: 'bistro',
+          spacingIn: 6,
+          drawingStyle: 'strand',
+          colorPattern: [],
+          // 600px ÷ the 50px/ft no-yardstick fallback = 12ft — a DIFFERENT
+          // number than the client-sent 20ft below, so a passing assertion
+          // proves whichever number wins.
+          points: [0, 0, 600, 0],
+        },
+      ],
+    };
+  }
+
+  it('a bistro quote client-sent inputs.permanentBistro.bistro survives Calculate even when a linked design exists', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designSceneWithBistroStrand() });
+
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ footage: 20 }] } };
+    const res = await POST(makeReq({ designId: DESIGN_ID, serviceType: 'permanent_bistro', inputs }));
+    expect(res.status).toBe(200);
+
+    // getDesign must never be consulted for permanent_bistro — the gate skips
+    // the whole design-projection branch before it's reached.
+    expect(getDesignMock).not.toHaveBeenCalled();
+
+    // 20ft (client-sent, live settings perFt=$6) = $120 — NOT 12ft/$72 (what the
+    // design's bistro strand would have projected to).
+    expect(bistroAmt(savedResult())).toBe(120);
+  });
+
+  it('event projection behavior is unchanged: a linked design bistro strand STILL projects for an event quote', async () => {
+    designIdRef.current = true;
+    getDesignMock.mockResolvedValue({ id: DESIGN_ID, scene: designSceneWithBistroStrand() });
+
+    const inputs = validInputs();
+    const res = await POST(makeReq({ designId: DESIGN_ID, serviceType: 'event', inputs }));
+    expect(res.status).toBe(200);
+
+    // Event still routes through getDesign → applyProjectionToInputs.
+    expect(getDesignMock).toHaveBeenCalledTimes(1);
+    const body = (await res.json()) as { result: { lineItems: Line[] } };
+    const bistroLine = body.result.lineItems.find((l) => (l.id ?? '').toString().startsWith('bistro-'));
+    // 12ft (projected from the 600px strand) * $8/ft (settings eventRates.bistroPerFt) = $96.
+    expect(bistroLine?.amount).toBe(96);
+  });
+});
+
 describe('POST /api/quote — validation hardening', () => {
   it('routes a non-UUID quoteId to insert, not update', async () => {
     // 36 dashes used to slip past the old loose /^[0-9a-f-]{36}$/i regex.
@@ -442,7 +584,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
     const res = await POST(makeReq({ inputs: validInputs() }));
     expect(res.status).toBe(200);
-    // saveQuote(customer, inputs, result, serviceType, isTest, created_by)
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId)
     expect(save).toHaveBeenCalledWith(
       expect.anything(), // customer
       expect.anything(), // inputs
@@ -450,6 +592,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(), // serviceType
       expect.anything(), // isTest
       'op-1', // created_by
+      null, // referredByCustomerId (#41) — not supplied in this request
     );
   });
 
@@ -463,7 +606,49 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(),
       expect.anything(),
       null,
+      null,
     );
+  });
+});
+
+describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)', () => {
+  it('threads a valid referredByCustomerId to saveQuote', async () => {
+    const referrerId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: referrerId }));
+    expect(res.status).toBe(200);
+    // Note: expect.anything() does NOT match null, so the no-operator-session
+    // created_by arg (position 6) needs the literal `null` here.
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      referrerId,
+    );
+  });
+
+  it('400s when referredByCustomerId is not a valid UUID', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: 'not-a-uuid' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s when referredByCustomerId is not a string', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), referredByCustomerId: 123 }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('also threads referredByCustomerId to updateQuote on the UPDATE path (#41 adversarial-review fix — was previously dropped)', async () => {
+    const referrerId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID, referredByCustomerId: referrerId }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId)
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[5]).toBe(referrerId);
   });
 });
 

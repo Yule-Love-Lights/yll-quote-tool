@@ -1,8 +1,7 @@
 'use client';
 
 // Permanent Lighting rates (Settings → Quotes, #88). The adjustable $/ft + job
-// minimum + maintenance price the permanent pricing engine reads, plus the
-// feature flag that turns the Permanent option on in the quote builder. Mirrors
+// minimum + maintenance price the permanent pricing engine reads. Mirrors
 // the #101 swatch-editor pattern: GET /api/settings → edit → PUT.
 //
 // Type-only import from lib/permanent/types (no server deps) keeps this

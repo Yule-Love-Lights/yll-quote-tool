@@ -14,6 +14,7 @@ import type {
 import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
+import type { PermanentBistroInputFields } from './permanentBistro/types';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -91,6 +92,24 @@ export type QuoteFormData = {
   // 'permanent'; only sent to the engine (via buildQuoteInputs) for permanent
   // quotes. Always present in the form so the picker can switch to it cleanly.
   permanent: PermanentQuoteFields;
+  // Referral program redemption (#41 PR 2): provenance for a referral-credit
+  // discount application — set when staff clicks "Apply as discount" on the
+  // credit banner (which ALSO sets discountEnabled/discountType/discountAmount
+  // above). null = no referral credit applied. Purely additive/display —
+  // ridden through to inputs.referralCredit so the snapshot freeze remembers
+  // which rows were spent (see pricingEngine.ts QuoteInputs.referralCredit).
+  referralCredit: { amount: number; consumedRowIds: string[] } | null;
+  // Permanent Bistro Lighting (#117) — permanent_bistro-only inputs, edited
+  // only when serviceType === 'permanent_bistro'. Bistro footage is derived
+  // from the freeform runs the operator draws on the Satellite tab (true-scale
+  // feet-per-pixel, no yardstick) — the builder writes it here directly, it is
+  // NOT projected from the design's street-photo scene (that stays visual-only
+  // for bistro, mirroring permanent's split). Only the pole count is
+  // hand-entered.
+  // Each run carries a STABLE id (#117 MED) so a #104 per-line override keyed
+  // on its billed line item id survives a mid-list run delete (a run's id must
+  // not re-index like the old positional permanent-bistro-<index> fallback).
+  permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
 };
 
 export const initialFormData: QuoteFormData = {
@@ -126,6 +145,8 @@ export const initialFormData: QuoteFormData = {
   stakeLightingRecommended: false,
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
   permanent: makeDefaultPermanentFields(),
+  referralCredit: null,
+  permanentBistro: { poles: 0, bistro: [] },
 };
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
@@ -162,6 +183,25 @@ function buildEventInputs(form: QuoteFormData): { event?: EventInputFields } {
     ...(form.event.takedownDate ? { takedownDate: form.event.takedownDate } : {}),
   };
   return Object.keys(e).length > 0 ? { event: e } : {};
+}
+
+// Permanent Bistro Lighting (#117): the permanentBistro-only inputs block,
+// only for permanent_bistro quotes and only the fields staff set. Bistro
+// FOOTAGE comes straight off the form (the Satellite-tab derive effect writes
+// it there) — only positive-footage entries are sent, matching the poles > 0
+// guard, so a quote with no drawn runs yet stays legacy-clean.
+function buildPermanentBistroInputs(form: QuoteFormData): { permanentBistro?: PermanentBistroInputFields } {
+  if (form.serviceType !== 'permanent_bistro') return {};
+  const bistro = (form.permanentBistro.bistro ?? [])
+    .filter((b) => b.footage > 0)
+    // #117 MED: carry the run's stable id through so the engine keys the billed
+    // line item on it (not a positional fallback that shifts on run delete).
+    .map((b) => ({ footage: b.footage, ...(b.id ? { id: b.id } : {}) }));
+  const pb: PermanentBistroInputFields = {
+    ...(form.permanentBistro.poles > 0 ? { poles: form.permanentBistro.poles } : {}),
+    ...(bistro.length > 0 ? { bistro } : {}),
+  };
+  return Object.keys(pb).length > 0 ? { permanentBistro: pb } : {};
 }
 
 export function buildQuoteInputs(
@@ -216,6 +256,9 @@ export function buildQuoteInputs(
     // #88 Permanent: send the permanent block ONLY for permanent quotes, so a
     // holiday quote's inputs jsonb stays clean and the holiday engine never sees it.
     ...(form.serviceType === 'permanent' ? { permanent: form.permanent } : {}),
+    // Permanent Bistro Lighting (#117) — permanentBistro-only inputs (poles),
+    // permanent_bistro quotes only.
+    ...buildPermanentBistroInputs(form),
     // Manual %/flat discount — only when "Apply discount" is on AND no early-install
     // month is picked. They share the one toggle and are mutually exclusive: an
     // early-install month sends installTiming (above) instead of a manual discount.
@@ -230,6 +273,9 @@ export function buildQuoteInputs(
             : form.discountAmount,
       },
     }),
+    // Referral program redemption (#41 PR 2) — provenance only, only sent
+    // when a referral credit was actually applied (legacy-clean jsonb).
+    ...(form.referralCredit ? { referralCredit: form.referralCredit } : {}),
   };
 }
 
@@ -330,5 +376,19 @@ export function inputsToFormData(
     permanent: i.permanent
       ? { ...makeDefaultPermanentFields(), ...i.permanent }
       : makeDefaultPermanentFields(),
+    // Referral program redemption (#41 PR 2) — legacy/no-credit rows → null.
+    referralCredit: i.referralCredit ?? null,
+    // Permanent Bistro Lighting (#117) — hydrate the poles count + the saved
+    // bistro runs (footage + the stable run id so a reopened-then-edited quote
+    // keeps #104 overrides attached to the right run; sceneItemIds aren't
+    // form-relevant since #117 moved bistro off the design projection).
+    // Legacy/non-bistro rows → 0/[].
+    permanentBistro: {
+      poles: i.permanentBistro?.poles ?? 0,
+      bistro: (i.permanentBistro?.bistro ?? []).map((b) => ({
+        footage: b.footage,
+        ...(b.id ? { id: b.id } : {}),
+      })),
+    },
   };
 }

@@ -398,9 +398,11 @@ describe('listJobsForAdmin', () => {
       id: 'j2',
       customerName: 'Test Bob',
       isTest: true,
-      installDate: '2026-12-01',
       itemCount: 0,
     });
+    // WT-19: JobAdminCard no longer carries installDate (nothing ever writes
+    // install_date, so the admin list's Install column was always "—").
+    expect(cards[1]).not.toHaveProperty('installDate');
   });
 
   it('nulls customer identity when a job has no linked quote', async () => {
@@ -471,6 +473,18 @@ describe('getJobDetail', () => {
     const detail = await getJobDetail('j1');
     expect(detail?.invoice).toBeNull();
     expect(detail?.isTest).toBe(true);
+  });
+
+  it('carries the linked quote service_type (#117 — a one_off job can be Bistro, not just Seasonal)', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule', type: 'one_off' } },
+      quotes: { read: { customer_name: 'Carol', service_type: 'permanent_bistro' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.quoteServiceType).toBe('permanent_bistro');
   });
 
   it('returns null when the job does not exist', async () => {

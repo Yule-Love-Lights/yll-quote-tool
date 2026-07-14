@@ -46,6 +46,11 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
+  '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
+  // request carries no operator session, so it must be allowlisted here to reach
+  // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
+  // POST/OPTIONS only, so it does NOT cover this GET sub-path). The sibling
+  // /api/admin/leads* routes are requireAdmin (operator-session) and stay gated.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
@@ -79,6 +84,10 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   if (path === '/portal' || path.startsWith('/portal/')) return true;
   if (path.startsWith('/photos/')) return true;
 
+  // Referral landing page (ledger #41) — public, gated only by the referral
+  // code in the URL (a bad/unknown code just 404s inside the page itself).
+  if (path === '/refer' || path.startsWith('/refer/')) return true;
+
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
@@ -98,6 +107,25 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // only; other methods on this exact path stay operator-gated (S26).
   if (method.toUpperCase() === 'GET' && path === '/api/inventory/offered-colors') {
     return true;
+  }
+
+  // POST /api/referrals/submit is the referral landing page's public lead-
+  // capture form (ledger #41) — rate-limited + code-revalidated in the route
+  // itself. POST only; other methods on this exact path stay operator-gated
+  // (mirrors the offered-colors GET-only carve-out, S26).
+  if (method.toUpperCase() === 'POST' && path === '/api/referrals/submit') {
+    return true;
+  }
+
+  // /api/leads is the WordPress site's public lead-capture endpoint (#leads) —
+  // honeypot + rate-limited + strictly validated in the route itself. POST is
+  // the submission; OPTIONS must also pass because the browser sends a CORS
+  // preflight for the cross-origin JSON POST from yulelovelights.com (the
+  // referrals carve-out above never needed this — its form is same-origin).
+  // All other methods on this path stay operator-gated.
+  if (path === '/api/leads') {
+    const m = method.toUpperCase();
+    if (m === 'POST' || m === 'OPTIONS') return true;
   }
 
   return false;

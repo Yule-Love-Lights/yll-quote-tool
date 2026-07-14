@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sceneToFewShotPieces } from './sceneToFewShot';
+import { sceneToFewShotPieces, sceneAuxiliaryC9Lines } from './sceneToFewShot';
 import type { Scene, StrandItem, MiniAreaItem, WreathItem, SpritzerItem, GarlandItem } from './sceneTypes';
 
 // 1000×500 photo keeps the normalized math easy to eyeball.
@@ -211,5 +211,48 @@ describe('sceneToFewShotPieces', () => {
       W, H,
     );
     expect(out.santasLines[0].points).toEqual([[0, 0], [1, 0.2]]);
+  });
+});
+
+// #109 Phase 1: the /training/new pre-fill affordance needs the two C9
+// surfaces sceneToFewShotPieces intentionally skips (winter-wonderland +
+// stake-lighting) — sceneAuxiliaryC9Lines is the separate, additive export
+// that maps them.
+describe('sceneAuxiliaryC9Lines', () => {
+  it('returns empty lines for degenerate photo dims', () => {
+    const out = sceneAuxiliaryC9Lines(scene([c9('a', 'winter-wonderland', [0, 0, 100, 0])]), 0, H);
+    expect(out).toEqual({ c9Lines: [], stakeLines: [] });
+  });
+
+  it('maps winter-wonderland C9 runs to c9Lines and stake-lighting runs to stakeLines', () => {
+    const out = sceneAuxiliaryC9Lines(
+      scene([
+        c9('ww1', 'winter-wonderland', [100, 100, 600, 100]),
+        c9('st1', 'stake-lighting', [0, 400, 1000, 400]),
+      ]),
+      W, H,
+    );
+    expect(out.c9Lines).toHaveLength(1);
+    expect(out.c9Lines[0].points).toEqual([[0.1, 0.2], [0.6, 0.2]]);
+    expect(out.stakeLines).toHaveLength(1);
+    expect(out.stakeLines[0].points).toEqual([[0, 0.8], [1, 0.8]]);
+  });
+
+  it('ignores santas-roofline/gingerbread C9 runs and non-c9 bulb types', () => {
+    const out = sceneAuxiliaryC9Lines(
+      scene([
+        c9('s', 'santas-roofline', [0, 0, 500, 0]),
+        c9('g', 'gingerbread', [0, 250, 1000, 250]),
+        miniStrand('m', 'bush', [100, 400, 300, 450]),
+      ]),
+      W, H,
+    );
+    expect(out.c9Lines).toEqual([]);
+    expect(out.stakeLines).toEqual([]);
+  });
+
+  it('drops a degenerate single-point run (needs at least 2 points)', () => {
+    const out = sceneAuxiliaryC9Lines(scene([c9('a', 'winter-wonderland', [100, 100])]), W, H);
+    expect(out.c9Lines).toEqual([]);
   });
 });

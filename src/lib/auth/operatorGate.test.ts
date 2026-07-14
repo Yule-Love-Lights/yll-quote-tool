@@ -40,9 +40,20 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
+      '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads retry worker)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
+  });
+
+  it('keeps the admin leads surface operator-only — only the cron is public (#leads)', () => {
+    // The retry CRON must reach its own CRON_SECRET check (Vercel cron carries no
+    // operator session), so it's allowlisted above. The ADMIN list + manual-retry
+    // routes are requireAdmin — an operator hits them WITH a session, so they must
+    // stay default-denied here (never public).
+    expect(isPublicPath('/api/leads/retry', 'GET')).toBe(true);
+    expect(isPublicPath('/api/admin/leads', 'GET')).toBe(false);
+    expect(isPublicPath('/api/admin/leads/abc-123/retry', 'POST')).toBe(false);
   });
 
   it('gates every operator page + write API (default-deny)', () => {
@@ -112,5 +123,29 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p)).toBe(true); // method defaults to GET
     expect(isPublicPath(p, 'POST')).toBe(false);
     expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('treats the referral landing page as public (ledger #41)', () => {
+    for (const p of ['/refer', '/refer/ABCD1234', '/refer/not-a-real-code']) {
+      expect(isPublicPath(p), p).toBe(true);
+    }
+  });
+
+  it('allows POST /api/referrals/submit (referral landing page lead form) but keeps other methods operator-only (#41)', () => {
+    const p = '/api/referrals/submit';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('allows POST + OPTIONS /api/leads (website lead form, cross-origin) but keeps other methods operator-only (#leads)', () => {
+    const p = '/api/leads';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'OPTIONS')).toBe(true); // CORS preflight from yulelovelights.com
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
   });
 });

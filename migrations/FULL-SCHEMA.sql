@@ -175,7 +175,7 @@ alter table quotes add constraint quotes_video_kind_check
 
 alter table quotes drop constraint if exists quotes_service_type_check;
 alter table quotes add constraint quotes_service_type_check
-  check (service_type is null or service_type in ('holiday', 'permanent', 'event'));
+  check (service_type is null or service_type in ('holiday', 'permanent', 'event', 'permanent_bistro'));
 
 -- Backfill legacy NULLs to 'holiday' (idempotent).
 update quotes set service_type = 'holiday' where service_type is null;

@@ -7,8 +7,8 @@ import {
 } from './serviceType';
 
 describe('serviceType', () => {
-  it('has the three canonical types with a label each', () => {
-    expect(SERVICE_TYPES).toEqual(['holiday', 'permanent', 'event']);
+  it('has the four canonical types with a label each', () => {
+    expect(SERVICE_TYPES).toEqual(['holiday', 'permanent', 'event', 'permanent_bistro']);
     for (const t of SERVICE_TYPES) {
       expect(SERVICE_TYPE_LABELS[t]).toBeTruthy();
     }
@@ -22,6 +22,7 @@ describe('serviceType', () => {
     expect(asServiceType('holiday')).toBe('holiday');
     expect(asServiceType('permanent')).toBe('permanent');
     expect(asServiceType('event')).toBe('event');
+    expect(asServiceType('permanent_bistro')).toBe('permanent_bistro');
   });
 
   it('asServiceType rejects anything else as null', () => {

@@ -15,6 +15,8 @@ import {
   MAX_CUSTOM_PATTERN,
 } from '@/lib/design/colorSchemes';
 import { colorOf } from '@/components/design/editor-core/colors';
+import { track } from '@/lib/analytics/posthog';
+import type { ServiceType } from '@/lib/serviceType';
 
 // Customer-facing color label (cool-white is shown as the product name "Pure White").
 function colorLabel(id: string): string {
@@ -36,6 +38,27 @@ function schemeSwatch(colorIds: string[] | null): React.CSSProperties {
   return { background: `linear-gradient(135deg, ${stops})` };
 }
 
+// PostHog Wave 2 — analytics property builders for the light-color band.
+// Extracted as pure functions (no jsdom component-test infra in this repo —
+// see SelectionContext.test.ts) so the event-name/property-shape contract is
+// covered without rendering the component. Colors are always catalog scheme/
+// color ids here, never a hex value or free-text label.
+export function daylightToggledProps(quoteId: string | undefined, serviceType: ServiceType | undefined, nextOn: boolean) {
+  return { quote_id: quoteId, service_type: serviceType, on: nextOn };
+}
+
+export function schemeChangedProps(quoteId: string | undefined, serviceType: ServiceType | undefined, schemeId: string) {
+  return { quote_id: quoteId, service_type: serviceType, scheme: schemeId, custom: false };
+}
+
+export function customColorsOpenedProps(quoteId: string | undefined, serviceType: ServiceType | undefined) {
+  return { quote_id: quoteId, service_type: serviceType };
+}
+
+export function customColorAddedProps(quoteId: string | undefined, serviceType: ServiceType | undefined, colorId: string) {
+  return { quote_id: quoteId, service_type: serviceType, scheme: 'custom', custom: true, color: colorId };
+}
+
 export function LightColorPicker() {
   const {
     colorSchemeId,
@@ -48,6 +71,8 @@ export function LightColorPicker() {
     showDaylight,
     toggleDaylight,
     daylightAvailable,
+    quoteId,
+    serviceType,
   } = useSelection();
 
   const customActive = colorSchemeId === CUSTOM_SCHEME_ID;
@@ -56,6 +81,7 @@ export function LightColorPicker() {
     if (locked || customPattern.length >= MAX_CUSTOM_PATTERN) return;
     setColorScheme(CUSTOM_SCHEME_ID);
     setCustomPattern([...customPattern, id]);
+    track('color_changed', customColorAddedProps(quoteId, serviceType, id));
   };
   // Removing the last color (or Clear) exits custom mode back to "As designed" so
   // the highlighted radio matches what's on screen — an empty custom pattern
@@ -99,7 +125,10 @@ export function LightColorPicker() {
         {daylightAvailable && (
           <button
             type="button"
-            onClick={toggleDaylight}
+            onClick={() => {
+              toggleDaylight();
+              track('daylight_toggled', daylightToggledProps(quoteId, serviceType, !showDaylight));
+            }}
             aria-pressed={showDaylight}
             // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
             className="inline-flex items-center gap-1.5 min-h-[44px] py-2 mb-3 text-[13px] md:text-[14px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm"
@@ -122,7 +151,10 @@ export function LightColorPicker() {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                onClick={() => setColorScheme(s.id)}
+                onClick={() => {
+                  setColorScheme(s.id);
+                  track('color_changed', schemeChangedProps(quoteId, serviceType, s.id));
+                }}
                 // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
                 className={`inline-flex items-center gap-1.5 rounded-full border min-h-[44px] px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
                   active
@@ -144,7 +176,10 @@ export function LightColorPicker() {
             type="button"
             role="radio"
             aria-checked={customActive}
-            onClick={() => setColorScheme(CUSTOM_SCHEME_ID)}
+            onClick={() => {
+              setColorScheme(CUSTOM_SCHEME_ID);
+              track('custom_colors_opened', customColorsOpenedProps(quoteId, serviceType));
+            }}
             // min-h-[44px] meets the 44px iOS/WCAG tap-target minimum (audit fix #98).
             className={`inline-flex items-center gap-1.5 rounded-full border min-h-[44px] px-3 py-2 text-[12px] md:text-[13px] font-medium cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] ${
               customActive

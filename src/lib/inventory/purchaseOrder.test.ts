@@ -23,7 +23,96 @@ vi.mock('@/lib/integrations/telegramNotify', () => ({
 }));
 vi.mock('./orders', () => ({ recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder }));
 
-import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder } from './purchaseOrder';
+// WT-27: buildSupplierPurchaseOrder mocks (mirrors purchaseOrderBuild.test.ts /
+// purchaseOrderPermanent.test.ts). listCatalog deliberately omits bistro SKUs so
+// the fix's BISTRO_CATALOG backfill is the only thing that can resolve their name.
+let currentDb: unknown = null;
+vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
+vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: {}, clipRules: {} })) }));
+vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => [{ sku: 'SKU-A', name: 'Holiday Widget' }]) }));
+vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []) }));
+
+import { computePurchaseOrder, purchaseOrderSignature, emailSupplierPurchaseOrder, buildSupplierPurchaseOrder } from './purchaseOrder';
+import { listCatalog } from './catalog';
+
+// A single active permanent-bistro job with a 40ft run — real bistroBomFromQuote
+// produces a Thunder-supplier cord line (sku 80324, qty 1) among others.
+const BISTRO_QUOTE_ID = 'BIS';
+function makeBistroDb() {
+  return {
+    from(table: string) {
+      const b = {
+        select: () => b,
+        is: () => b,
+        eq: () => b,
+        in: () => b,
+        then: (resolve: (v: unknown) => void) => {
+          if (table === 'jobs') {
+            return resolve({
+              data: [{ quote_id: BISTRO_QUOTE_ID, status: 'to_schedule', stock_decremented_at: null }],
+              error: null,
+            });
+          }
+          if (table === 'quotes') {
+            return resolve({
+              data: [
+                {
+                  id: BISTRO_QUOTE_ID,
+                  is_test: false,
+                  approval_snapshot: null,
+                  service_type: 'permanent_bistro',
+                  inputs: { permanentBistro: { bistro: [{ footage: 40 }], poles: 0 } },
+                },
+              ],
+              error: null,
+            });
+          }
+          return resolve({ data: [], error: null });
+        },
+      };
+      return b;
+    },
+  };
+}
+
+describe('buildSupplierPurchaseOrder — bistro Thunder SKU names (WT-27)', () => {
+  beforeEach(() => {
+    currentDb = makeBistroDb();
+  });
+
+  it('resolves the real product name for a pooled bistro Thunder SKU, not "(not in catalog)"', async () => {
+    const po = await buildSupplierPurchaseOrder();
+    const cordLine = po.lines.find((l) => l.sku === '80324');
+    expect(cordLine).toBeTruthy();
+    expect(cordLine!.name).toBe('E26 Bistro Cord 330ft, 24in spacing');
+    expect(cordLine!.name).not.toBe('(not in catalog)');
+  });
+});
+
+// WT-22(b): the sold-out "locked" catalog flag was cosmetic — buildSupplierPurchaseOrder
+// never consulted it, so the auto-PO could keep re-ordering a sku the operator had
+// marked sold-out. Real demand comes from the bistro fixture above (SKU 80324).
+describe('buildSupplierPurchaseOrder — WT-22(b) a locked sku is never ordered', () => {
+  beforeEach(() => {
+    currentDb = makeBistroDb();
+  });
+
+  it('drops a locked sku from the built PO even though real demand exists for it', async () => {
+    vi.mocked(listCatalog).mockResolvedValueOnce([
+      { sku: '80324', name: 'E26 Bistro Cord 330ft, 24in spacing', locked: true },
+    ] as never);
+    const po = await buildSupplierPurchaseOrder();
+    expect(po.lines.find((l) => l.sku === '80324')).toBeUndefined();
+  });
+
+  it('keeps ordering it once unlocked', async () => {
+    vi.mocked(listCatalog).mockResolvedValueOnce([
+      { sku: '80324', name: 'E26 Bistro Cord 330ft, 24in spacing', locked: false },
+    ] as never);
+    const po = await buildSupplierPurchaseOrder();
+    expect(po.lines.find((l) => l.sku === '80324')).toBeTruthy();
+  });
+});
 
 describe('purchaseOrderSignature (auto-send dedup)', () => {
   it('is stable regardless of line order', () => {
@@ -197,5 +286,43 @@ describe('emailSupplierPurchaseOrder — on-order ledger (P8, folds in #110 W7-0
     expect(res.ok).toBe(true);
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(cancelOrder).not.toHaveBeenCalled();
+  });
+});
+
+// #117 (Naldo 2026-07-11): bistro's THUNDER lines auto-send on the pooled PO;
+// Home Depot (posts, concrete) + Amazon (timer) are manual buys, and the
+// as-needed zip wire has no computable quantity. Locked against the real BOM
+// engine's output so a catalog/engine change can't silently leak a manual-buy
+// SKU into the Thunder email.
+describe('poolableBistroPoLines (#117 Thunder-only pooling)', () => {
+  it('keeps every Thunder line with the engine quantities and drops HD/Amazon/zip', async () => {
+    const { bistroBomFromQuote } = await import('@/lib/permanentBistro/bomFromQuote');
+    const { poolableBistroPoLines } = await import('./purchaseOrder');
+    const bom = bistroBomFromQuote({
+      permanentBistro: { bistro: [{ footage: 40 }, { footage: 35 }, { footage: 25 }], poles: 2 },
+    });
+    const pooled = poolableBistroPoLines(bom!.lines);
+    const bySku = Object.fromEntries(pooled.map((l) => [l.sku, l.qty]));
+    expect(bySku).toEqual({
+      '80324': 1,  // cord, 330 ft section covers 100 ft
+      '80011': 53, // bulbs: ceil((100/2) * 1.06)
+      '80002': 1,  // guide wire, 250 ft spool
+      '93571': 6,  // eye screws: 2 per strand
+      '80005': 6,  // quick links
+      '80004': 6,  // looping grippers
+      '80308': 3,  // male plugs: 1 per strand
+      '80307': 3,  // female plugs
+    });
+    const pooledSkus = pooled.map((l) => l.sku);
+    for (const manual of ['100010238', '100321247', 'B0F5M2S8VJ', '80305']) {
+      expect(pooledSkus).not.toContain(manual);
+    }
+  });
+
+  it('a poles-only bistro job pools NOTHING (all its needs are manual buys)', async () => {
+    const { bistroBomFromQuote } = await import('@/lib/permanentBistro/bomFromQuote');
+    const { poolableBistroPoLines } = await import('./purchaseOrder');
+    const bom = bistroBomFromQuote({ permanentBistro: { bistro: [], poles: 3 } });
+    expect(poolableBistroPoLines(bom!.lines)).toEqual([]);
   });
 });

@@ -9,10 +9,24 @@
 import { useState } from 'react';
 import { Play, Clock } from 'lucide-react';
 import type { PortalVideo } from '../types';
+import { useSelection } from '../SelectionContext';
+import { track } from '@/lib/analytics/posthog';
+import type { ServiceType } from '@/lib/serviceType';
 
 export type WalkthroughVideoProps = {
   video: PortalVideo;
+  /** Bug fix (WT-L4): true once the quote is approved or booked. The portal
+   *  page computes this server-side (isApproved || isBooked) — reused here
+   *  rather than derived so the copy always matches the page's own gates. */
+  booked?: boolean;
 };
+
+// PostHog Wave 2 — property builder for video_played, extracted as a pure
+// function (no jsdom component-test infra in this repo) so the event-name/
+// property-shape contract is covered without rendering the component.
+export function videoPlayedProps(quoteId: string | undefined, serviceType: ServiceType | undefined) {
+  return { quote_id: quoteId, service_type: serviceType };
+}
 
 function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -28,8 +42,12 @@ function youtubeEmbedSrc(videoId: string): string {
   return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&color=white`;
 }
 
-export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
+export function WalkthroughVideo({ video, booked = false }: WalkthroughVideoProps) {
   const [activated, setActivated] = useState(false);
+  // Renders inside <SelectionProvider> on the portal page (WalkthroughVideo's
+  // only render site), so quote_id/service_type come from context like the
+  // color/effect pickers rather than their own props.
+  const { quoteId, serviceType } = useSelection();
 
   const poster =
     video.poster ??
@@ -57,7 +75,10 @@ export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
           </h2>
           <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
             {leader} recorded a quick video explaining exactly what was designed for your
-            home and how the whole install process works. Watch before you approve.
+            home and how the whole install process works.{' '}
+            {booked
+              ? "Here's the walkthrough for your booked install."
+              : 'Watch before you approve.'}
           </p>
         </div>
 
@@ -65,7 +86,10 @@ export function WalkthroughVideo({ video }: WalkthroughVideoProps) {
           {!activated ? (
             <button
               type="button"
-              onClick={() => setActivated(true)}
+              onClick={() => {
+                setActivated(true);
+                track('video_played', videoPlayedProps(quoteId, serviceType));
+              }}
               aria-label={`Play walkthrough video from ${leader}`}
               className="group absolute inset-0 w-full h-full cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
             >

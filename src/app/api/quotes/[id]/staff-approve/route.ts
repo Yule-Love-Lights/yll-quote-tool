@@ -13,10 +13,21 @@
 //   - Same status field written: status='approved', customer_approved_at=now
 //   - Same atomic guard: .is('customer_approved_at', null)
 //   - Same idempotency: already-approved quote → 200 { alreadyApproved:true }
-//   - DIFFERENT snapshot: no customer-selection inputs (no packageId /
-//     selectedItemIds / colorScheme / etc.) because the operator is approving
-//     the quote as-is, not a customer's portal selection. The existing
-//     approval_snapshot (if any) is preserved and extended with staffApproved.
+//   - MINIMAL snapshot: no colorScheme / rush / takedown / install-timing
+//     inputs (those are a customer's own portal choices, which don't exist
+//     for a verbal/phone approval) — but it DOES freeze a customerSelection
+//     of { packageId: 'D', selectedItemIds: <every billed line item> }. The
+//     operator is approving the quote AS-IS (the whole thing), so "select
+//     everything that was billed" is the only honest selection to freeze.
+//     (PS-C1/WT-L1 fix: omitting customerSelection entirely made the portal
+//     adapter fall back to the holiday-only tier 'C', which doesn't exist on
+//     event/bistro/no-back-permanent quotes — computeInitialSelection then
+//     found no matching package and rendered a $0 portal, every item OFF.
+//     buildPortalLineItems/billableLineItemIds are the SAME functions the
+//     portal render itself uses, so the frozen ids always match — including
+//     dropping whichever mutually-exclusive roofline option wasn't billed.)
+//     The existing approval_snapshot (if any) is preserved and extended with
+//     staffApproved + customerSelection.
 //   - NO e-signature (the whole point of this path).
 //   - NO GHL/notify calls (the customer already agreed verbally; messaging is
 //     the operator's responsibility). is_test quotes are safe: the route never
@@ -26,9 +37,11 @@
 // route — the two snapshots serve different purposes:
 //   - Customer: freezes the customer's portal selection + server-recomputed
 //     totals + e-signature. Requires packageId, selectedItemIds, colorSchemeId,
-//     etc. — inputs that do not exist in a staff approval.
-//   - Staff: freezes a "who approved this and when" audit marker on top of
-//     whatever snapshot data already exists (or nothing). No selection inputs.
+//     etc. — most of which don't exist in a staff approval.
+//   - Staff: freezes a "who approved this and when" audit marker plus the
+//     minimal packageId/selectedItemIds pair needed to render a non-empty,
+//     correctly-priced portal — never the customer's richer color/fee/timing
+//     choices, which a verbal approval simply has none of.
 // Sharing code between them would require making all customer-selection inputs
 // optional, which would obscure what each path actually requires and risk
 // accidentally omitting them. Keep them separate and self-contained.
@@ -38,6 +51,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canTransition, isQuoteStatus } from '@/lib/quoteStatus';
 import { getAppSettings } from '@/lib/appSettings';
+import { buildPortalLineItems, billableLineItemIds } from '@/lib/portal/adapter';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -111,16 +125,35 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const permanentWarranty =
     quote.service_type === 'permanent' ? (await getAppSettings()).permanentWarranty : null;
 
+  // PS-C1/WT-L1: freeze a minimal customerSelection — the operator approved
+  // the quote AS-IS, so the only honest selection is "every line item that
+  // was billed" (never a "recommended" subset: any item that subset excluded
+  // would silently under-bill the total/deposit on re-render — a money bug).
+  // packageId 'D' is required for this to take effect downstream: the portal
+  // adapter's resolveApprovalSelectionSeed only honors a non-empty
+  // selectedItemIds list when packageId === 'D' (any lettered A/B/C id
+  // discards the id list and reseeds from that tier's own bundle instead).
+  // buildPortalLineItems/billableLineItemIds are the SAME functions the
+  // portal render itself calls, so the ids always match — including dropping
+  // whichever mutually-exclusive roofline option (#17 Phase 2) wasn't billed,
+  // so a holiday quote never gets both Santa's AND Gingerbread selected.
+  const portalLineItems = quote.result ? buildPortalLineItems(quote.result) : null;
+  const selectedItemIds = portalLineItems
+    ? billableLineItemIds(portalLineItems.lineItems, portalLineItems.roofline)
+    : [];
+
   // Build the snapshot: preserve any existing fields (e.g. if the customer had
   // partially filled out a portal form that was never submitted) and add the
-  // staffApproved audit marker. This does NOT set customerSelection — there is
-  // no customer portal selection for a staff approval.
+  // staffApproved audit marker + the minimal customerSelection above.
   const snapshot: Record<string, unknown> = {
     ...(quote.approval_snapshot ?? {}),
     staffApproved: {
       by: operator?.email ?? null,
       at: approvedAt,
     },
+    ...(selectedItemIds.length > 0
+      ? { customerSelection: { packageId: 'D' as const, selectedItemIds } }
+      : {}),
     ...(permanentWarranty ? { permanentWarranty } : {}),
   };
 

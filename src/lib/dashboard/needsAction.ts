@@ -5,7 +5,7 @@
 // deterministic testing (never call Date.now() inside this module).
 
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
-import type { DashboardQuote } from './types';
+import type { DashboardQuote, ServiceType } from './types';
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -18,6 +18,13 @@ export type NeedsActionKind =
 export type NeedsActionItem = {
   kind: NeedsActionKind;
   quoteId: string;
+  /** Human-friendly quote # (#83) so a customer with several concurrent quotes
+   *  is distinguishable at a glance (WT-40). Null on legacy rows with no
+   *  allocated number. */
+  quoteNumber: number | null;
+  /** Service line (holiday/permanent/event/...) — same disambiguation reason
+   *  as quoteNumber (WT-40). */
+  serviceType: ServiceType | null;
   /** Short display label — customer name + brief context. */
   label: string;
   /** One-line detail — age + next step. */
@@ -141,6 +148,8 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
         items.push({
           kind: 'nudge',
           quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          serviceType: q.service_type,
           label: customerLabel(q),
           detail: `Sent ${pluralDays(floor)} ago — follow up`,
           ageDays,
@@ -160,6 +169,8 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
         items.push({
           kind: 'collect-deposit',
           quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          serviceType: q.service_type,
           label: customerLabel(q),
           detail: `Approved ${pluralDays(floor)} ago — collect deposit`,
           ageDays,
@@ -182,6 +193,8 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
           items.push({
             kind: 'collect-balance',
             quoteId: q.id,
+            quoteNumber: q.quote_number ?? null,
+            serviceType: q.service_type,
             label: customerLabel(q),
             detail: `Invoice ${pluralDays(floor)} old — collect balance ${formatUsd(inv.balance)}`,
             ageDays,

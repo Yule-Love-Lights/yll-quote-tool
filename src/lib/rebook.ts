@@ -49,7 +49,23 @@ function stripRatesSnapshots(result: RebookSource['result']): RebookSource['resu
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
   delete rest.eventRatesSnapshot;
+  delete rest.permanentBistroRatesSnapshot;
   return rest as RebookSource['result'];
+}
+
+// #41 adversarial-review HIGH fix: a rebooked quote must RE-EARN and
+// RE-APPLY its own referral credit next season, never inherit the source
+// quote's. Without this, cloning an approved quote that had a referral
+// credit applied would carry the `discount` + `referralCredit` provenance
+// straight onto the new DRAFT — which still shows "credit applied" even
+// though this new quote's credited rows/consumedRowIds belong to the OLD
+// quote entirely. Mirrors stripRatesSnapshots's shallow-copy-and-delete.
+function stripDiscountAndReferralCredit(inputs: unknown): unknown {
+  if (!inputs || typeof inputs !== 'object') return inputs;
+  const rest = { ...(inputs as Record<string, unknown>) };
+  delete rest.discount;
+  delete rest.referralCredit;
+  return rest;
 }
 
 export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
@@ -61,7 +77,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     highlevel_contact_id: src.highlevel_contact_id ?? null,
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
-    inputs: src.inputs,
+    inputs: stripDiscountAndReferralCredit(src.inputs),
     result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,

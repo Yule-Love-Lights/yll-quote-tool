@@ -187,6 +187,40 @@ describe('calculateQuote — Santa\'s vs Gingerbread (mutually exclusive, #17)',
   });
 });
 
+describe('calculateQuote — stale rooflineChoice whose matching option no longer exists (WT-01)', () => {
+  it('falls through to auto-pick instead of silently billing $0 for real footage', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // Santa's 1000 — real footage is present
+      gingerbreadFootage: 0,                           // gingerbread option is now null
+      rooflineChoice: 'gingerbread',                   // stale — operator's earlier pick
+    }));
+    expect(r.lineItems).toHaveLength(1);
+    expect(r.lineItems[0].label).toContain("Santa's Roofline");
+    expect(r.lineItems[0].amount).toBe(1000); // NOT 0
+    expect(r.rooflineChoice).toBe('santas');  // auto-resolved, not the stale value
+  });
+
+  it('an explicit choice that is still valid keeps winning over auto-pick', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium',          // Santa's 1000 — auto would pick this
+      gingerbreadFootage: 40, gingerbreadDifficulty: 'medium', // Gingerbread 1400, still a real option
+      rooflineChoice: 'gingerbread',
+    }));
+    expect(r.rooflineChoice).toBe('gingerbread');
+    expect(r.lineItems[0].amount).toBe(1400);
+  });
+
+  it('an explicit "none" still means no roofline, with no fallback', () => {
+    const r = calculateQuote(emptyInputs({
+      santasFootage: 100, santasDifficulty: 'medium', // real footage present
+      gingerbreadFootage: 0,
+      rooflineChoice: 'none',
+    }));
+    expect(r.lineItems).toHaveLength(0);
+    expect(r.rooflineChoice).toBe('none');
+  });
+});
+
 describe('calculateQuote — custom $/ft override (#102)', () => {
   it("prices Santa's at the custom rate, ignoring the difficulty table", () => {
     const r = calculateQuote(emptyInputs({
@@ -620,6 +654,43 @@ describe('calculateQuote — custom / manual line items (#27 escape hatch)', () 
       { label: 'A', amount: 50 },
       { label: 'B', amount: 30 },
     ]);
+  });
+
+  // Referral program redemption (#41 PR 2): the "2 free spritzers" line the
+  // quote builder appends is an ORDINARY $0 custom item — no special-casing.
+  it('flows a $0 custom item (e.g. free referral spritzers) through as an ordinary line — zero subtotal/tax impact', () => {
+    const withoutFreebie = calculateQuote(emptyInputs({ santasFootage: 50, santasDifficulty: 'medium' }));
+    const withFreebie = calculateQuote(emptyInputs({
+      santasFootage: 50, santasDifficulty: 'medium',
+      customLineItems: [
+        { id: 'referral-spritzers', label: '2 Free 16" Spritzers (referral)', amount: 0, quantity: 1 },
+      ],
+    }));
+    expect(withFreebie.lineItems).toHaveLength(2);
+    expect(withFreebie.lineItems).toContainEqual({
+      label: '2 Free 16" Spritzers (referral)',
+      amount: 0,
+      id: 'referral-spritzers',
+    });
+    // Adding the $0 line changes nothing else — same subtotal, tax, and total.
+    expect(withFreebie.subtotalBeforeDiscount).toBe(withoutFreebie.subtotalBeforeDiscount);
+    expect(withFreebie.taxAmount).toBe(withoutFreebie.taxAmount);
+    expect(withFreebie.total).toBe(withoutFreebie.total);
+  });
+});
+
+// Referral program redemption (#41 PR 2): the builder stores provenance
+// (which rows were spent) additively on inputs.referralCredit. The engine
+// must be completely blind to it — the discount math runs entirely through
+// the existing `discount` field.
+describe('calculateQuote — referral credit provenance (#41 PR2, additive, engine-blind)', () => {
+  it('produces an IDENTICAL result with or without inputs.referralCredit present', () => {
+    const base = emptyInputs({
+      santasFootage: 50, santasDifficulty: 'medium',
+      discount: { type: 'flat', amount: 125 },
+    });
+    const withProvenance = { ...base, referralCredit: { amount: 125, consumedRowIds: ['r1', 'r2'] } };
+    expect(calculateQuote(withProvenance)).toEqual(calculateQuote(base));
   });
 });
 
