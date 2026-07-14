@@ -504,6 +504,29 @@ describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (#88 P6b-2
   });
 });
 
+describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / staff-approved snapshot)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown): QuoteRowForPortal {
+    return {
+      ...rowWith(result),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('a snapshot with no currentDepositUsd derives the deposit as HALF the total to the cent, not whole dollars', () => {
+    const portal = quoteRowToPortalQuote({
+      // No currentDepositUsd → buildApproval derives it. 3389.06 / 2 = 1694.53 exactly;
+      // the old Math.round(total * 0.5) rounded to the WHOLE dollar (1695), so a legacy/
+      // staff-approved snapshot's PDF/portal showed a deposit up to ~49¢ off the true half.
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', currentTotalUsd: 3389.06 } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.totalUsd).toBe(3389.06);
+    expect(portal.approval?.depositUsd).toBe(1694.53);
+  });
+});
+
 // ── #134: packages under the approval gate are hidden ───────────────────────
 describe('quoteRowToPortalQuote — hides packages below the approval minimum (#134)', () => {
   // Permanent quote at the default $2,500 gate: front $1,520 · left $1,085 ·
