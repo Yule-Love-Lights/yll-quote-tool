@@ -45,6 +45,7 @@ import { TrustSection } from '@/components/portal/dark/TrustSection';
 import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
+import { SectionViewTracker } from '@/components/portal/SectionViewTracker';
 import {
   MOCK_QUOTE,
   galleryItemsFor,
@@ -374,11 +375,13 @@ export default async function PortalPage({
             Bug fix (WT-L4): pass the already-approved/booked state so the CTA
             copy doesn't tell a customer who already approved to "watch before
             you approve". */}
+        {quote.video && <SectionViewTracker section="walkthrough_video" />}
         {quote.video && <WalkthroughVideo video={quote.video} booked={isApproved || isBooked} />}
 
         {/* 3. What's Included — line-item toggles feed the hero + sticky price.
             Also hosts the second on-page design render (#50) between the items
             and the add-ons (passes the design + app settings through). */}
+        <SectionViewTracker section="whats_included" />
         <WhatsIncluded
           items={quote.lineItems}
           design={quote.design}
@@ -411,6 +414,7 @@ export default async function PortalPage({
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
              event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
+        <SectionViewTracker section="warranty" />
         {quote.serviceType === 'permanent' ? (
           // #88 P6b-2 — an APPROVED customer sees the FROZEN copy they agreed to
           // (from the snapshot); a not-yet-approved customer sees the LIVE settings
@@ -438,6 +442,7 @@ export default async function PortalPage({
             when configured; mock block as the graceful fallback. liveReviews is
             all-or-nothing, so the headline rating and the testimonials always
             come from the same source (never live rating + mock quotes). */}
+        <SectionViewTracker section="reviews" />
         <GoogleReviews
           rating={liveReviews?.rating ?? 4.9}
           totalReviews={liveReviews?.totalReviews ?? 187}
@@ -449,6 +454,7 @@ export default async function PortalPage({
              back to the holiday set until Naldo supplies their photos.
              crossSell (S30 extension of #121): the two OTHER service types'
              completed work, below the main grid. */}
+        <SectionViewTracker section="gallery" />
         <Gallery
           items={galleryItemsFor(quote.serviceType)}
           crossSell={crossSellFor(quote.serviceType)}

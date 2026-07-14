@@ -8,6 +8,7 @@
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { SectionViewTracker } from '../SectionViewTracker';
 
 export type GalleryItem = {
   id: string;
@@ -116,34 +117,37 @@ export function Gallery({ items, crossSell }: GalleryProps) {
             customer on one vertical's portal sees we also do the others.
             Static tiles only, no lightbox wiring. */}
         {crossSell && crossSell.length > 0 && (
-          <div className="mt-16 md:mt-20 space-y-10 md:space-y-12">
-            {crossSell.map((block) => (
-              <div key={block.heading}>
-                {/* Naldo S30: the display serif (the MeetYourTeam heading face),
-                    kept in the gallery's gold. */}
-                <h3 className="font-display text-[24px] md:text-[32px] leading-[1.1] font-semibold text-[#E8B862] tracking-[-0.01em] mb-4 md:mb-5">
-                  {block.heading}
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
-                  {block.items.map((it) => (
-                    <div
-                      key={it.id}
-                      className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-[#243029]"
-                    >
-                      <Image
-                        src={it.src}
-                        alt={it.alt}
-                        fill
-                        loading="lazy"
-                        sizes="(max-width: 768px) 100vw, 33vw"
-                        className="object-cover"
-                      />
-                    </div>
-                  ))}
+          <>
+            <SectionViewTracker section="cross_sell" />
+            <div className="mt-16 md:mt-20 space-y-10 md:space-y-12">
+              {crossSell.map((block) => (
+                <div key={block.heading}>
+                  {/* Naldo S30: the display serif (the MeetYourTeam heading face),
+                      kept in the gallery's gold. */}
+                  <h3 className="font-display text-[24px] md:text-[32px] leading-[1.1] font-semibold text-[#E8B862] tracking-[-0.01em] mb-4 md:mb-5">
+                    {block.heading}
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+                    {block.items.map((it) => (
+                      <div
+                        key={it.id}
+                        className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-[#243029]"
+                      >
+                        <Image
+                          src={it.src}
+                          alt={it.alt}
+                          fill
+                          loading="lazy"
+                          sizes="(max-width: 768px) 100vw, 33vw"
+                          className="object-cover"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
