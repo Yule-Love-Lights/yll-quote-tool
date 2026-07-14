@@ -1068,29 +1068,35 @@ export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; er
 const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
 
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
- *  display name via inbox_item → dashboard_contact. actorName is left null
- *  (no operator-name map exists — UI can label 'system' explicitly). */
+ *  display name via inbox_item → dashboard_contact. actorName resolves the raw
+ *  `actor` operator UUID to a readable name via getOperatorLabels (task_bbc6490a)
+ *  — best-effort; an unknown id or 'system' stays null and ActivityLog's
+ *  friendlyActor labels it ('System' / the raw id). */
 export async function listActivity(limit = 100): Promise<ActivityResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
-    .from('dashboard_activity')
-    // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
-    // reconcile touch — thousands) and 'escalated' would otherwise bury the
-    // handled/dismissed/followed/completed rows (and their Reverse buttons).
-    .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
-    .not('action', 'in', '(ingested,escalated)')
-    .order('created_at', { ascending: false })
-    .limit(limit);
+  const [{ data, error }, labels] = await Promise.all([
+    sb
+      .from('dashboard_activity')
+      // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
+      // reconcile touch — thousands) and 'escalated' would otherwise bury the
+      // handled/dismissed/followed/completed rows (and their Reverse buttons).
+      .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+      .not('action', 'in', '(ingested,escalated)')
+      .order('created_at', { ascending: false })
+      .limit(limit),
+    getOperatorLabels(),
+  ]);
   if (error) return { ok: false, error: error.message };
   const rows: ActivityRow[] = (data ?? []).map((r) => {
     const row = r as Record<string, unknown>;
     const item = (row.inbox_items as { dashboard_contacts?: { display_name?: string | null } | null } | null) ?? null;
+    const actor = (row.actor as string | null) ?? null;
     return {
       id: String(row.id),
       action: String(row.action),
-      actor: (row.actor as string | null) ?? null,
-      actorName: null,
+      actor,
+      actorName: actor ? (labels.get(actor) ?? null) : null,
       itemId: (row.inbox_item_id as string | null) ?? null,
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
