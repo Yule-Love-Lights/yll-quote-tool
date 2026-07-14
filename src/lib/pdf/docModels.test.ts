@@ -301,7 +301,9 @@ describe('buildInvoiceDocModel', () => {
     // The itemized Subtotal is the AGREED $4,000 (item-a + item-b), never the
     // stored $5,000 full-quote column.
     expect(model.subtotal).toBe('$4,000.00');
-    expect(model.lineItems.map((li) => li.label)).toEqual(['Item A', 'Item B']);
+    // item-b is kind 'tree' → a single wrapped item renders as "Tree" (customer
+    // PDFs hide the per-strand label). The AGREED subtotal is unchanged.
+    expect(model.lineItems.map((li) => li.label)).toEqual(['Item A', 'Tree']);
     expect(model.discount).toBeNull(); // nothing unexplained — no fabricated discount
     expect(model.fees).toBeNull();
     expect(model.tax).toBe('$320.00');
@@ -671,5 +673,88 @@ describe('buildReceiptDocModel', () => {
     expect(model.serviceType).toBe('Permanent');
     expect(model.lineItems.map((li) => li.label)).toEqual(["Santa's Roofline", '24" Spritzers']);
     expect(model.recipient.phone).toBe('555-0100'); // from InvoiceDetail.customerPhone, not the portal quote
+  });
+});
+
+describe('resolveAgreedLineItems — wrapped-item grouping (bush/tree/column) on customer PDFs', () => {
+  const quoteWith = (lineItems: PortalQuote['lineItems']): PortalQuote => ({
+    ...BASE_QUOTE,
+    lineItems,
+    packages: [{ id: 'D', name: 'Build Your Own', tagline: '', total: 0, deposit: 0, includedItemIds: [] }],
+    charges: { taxRate: 0, rush: { amount: 0, defaultOn: false }, takedown: { amount: 0, defaultOn: false } },
+    approval: {
+      approvedAt: '2026-06-10T00:00:00Z',
+      packageId: 'D',
+      packageName: 'Build Your Own',
+      totalUsd: 0,
+      depositUsd: 0,
+      selectedItemCount: lineItems.length,
+      selectedItemIds: lineItems.map((li) => li.id),
+      installTiming: 'none',
+      rushSelected: false,
+      takedownSelected: false,
+    },
+  });
+
+  it('collapses several bushes at MIXED prices into ONE "Bushes" row (Qty = count, blank Unit Price, summed Total) and never moves the subtotal', () => {
+    const agreed = resolveAgreedLineItems(
+      quoteWith([
+        { id: 'roof', kind: 'roofline', label: "Santa's Roofline", detail: '', price: 320 },
+        { id: 'b1', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+        { id: 'b2', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+        { id: 'b3', kind: 'bush', label: 'Bush – canopy wrap, 3 strings', detail: '3 strings', price: 105 },
+        { id: 'b4', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+      ]),
+    )!;
+    // Roofline keeps its own row; the 4 bushes become ONE combined row in place.
+    expect(agreed.items.map((i) => i.label)).toEqual(["Santa's Roofline", 'Bushes']);
+    const bushes = agreed.items.find((i) => i.label === 'Bushes')!;
+    expect(bushes.qty).toBe(4);
+    expect(bushes.unitPrice).toBe(''); // mixed prices → blank; no strand counts leak
+    expect(bushes.detail).toBe('');
+    expect(bushes.amount).toBe('$315.00'); // 70+70+105+70
+    // Money-safety: subtotal is summed from the ORIGINAL items, and the combined
+    // rows' displayed amounts still sum to that exact subtotal.
+    expect(agreed.subtotal).toBe(320 + 70 + 70 + 105 + 70);
+    expect(agreed.items.reduce((s, i) => s + parseMoney(i.amount), 0)).toBe(agreed.subtotal);
+  });
+
+  it('shows the Unit Price when every wrapped item of a kind is the same price', () => {
+    const row = resolveAgreedLineItems(
+      quoteWith([
+        { id: 'b1', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+        { id: 'b2', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+        { id: 'b3', kind: 'bush', label: 'Bush – canopy wrap, 2 strings', detail: '2 strings', price: 70 },
+      ]),
+    )!.items[0]!;
+    expect(row.label).toBe('Bushes');
+    expect(row.qty).toBe(3);
+    expect(row.unitPrice).toBe('$70.00'); // uniform → unit price shown
+    expect(row.amount).toBe('$210.00');
+  });
+
+  it('uses the singular label for a single wrapped item', () => {
+    const row = resolveAgreedLineItems(
+      quoteWith([{ id: 't1', kind: 'tree', label: 'Tree – trunk wrap, 5 strings', detail: '5 strings', price: 180 }]),
+    )!.items[0]!;
+    expect(row.label).toBe('Tree');
+    expect(row.qty).toBe(1);
+    expect(row.unitPrice).toBe('$180.00');
+    expect(row.amount).toBe('$180.00');
+  });
+
+  it('groups each wrapped kind separately and leaves non-wrapped items untouched', () => {
+    const items = resolveAgreedLineItems(
+      quoteWith([
+        { id: 'b1', kind: 'bush', label: 'Bush A', detail: '2 strings', price: 70 },
+        { id: 't1', kind: 'tree', label: 'Tree A', detail: '4 strings', price: 180 },
+        { id: 'c1', kind: 'column', label: 'Column A', detail: '3 strings', price: 90 },
+        { id: 'c2', kind: 'column', label: 'Column B', detail: '3 strings', price: 90 },
+        { id: 'w1', kind: 'wreath', label: '30" Noble Wreath', detail: 'Non-Decorated', price: 285 },
+      ]),
+    )!.items;
+    expect(items.map((i) => `${i.label} x${i.qty}`)).toEqual(['Bush x1', 'Tree x1', 'Columns x2', '30" Noble Wreath x1']);
+    // A non-wrapped item (wreath) keeps its own label + detail verbatim.
+    expect(items.find((i) => i.label === '30" Noble Wreath')!.detail).toBe('Non-Decorated');
   });
 });
