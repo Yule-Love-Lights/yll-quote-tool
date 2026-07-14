@@ -14,7 +14,7 @@
 // (see docModels.test.ts — the money gate for this ledger item).
 
 import { formatUsd, formatQuoteRef } from '@/components/portal/format';
-import type { PortalQuote } from '@/components/portal/types';
+import type { PortalQuote, PortalLineItem } from '@/components/portal/types';
 import type { InvoiceDetail } from '@/lib/invoices';
 import type { InvoiceStatus } from '@/lib/invoiceStatus';
 import { roundMoney } from '@/lib/money';
@@ -66,6 +66,58 @@ export type AgreedItems = {
   feesLabel: string | null;
 };
 
+// Wrapped mini-light kinds (bush/tree/column) are priced per strand, so their
+// auto-generated labels read "Bush – canopy wrap, N strings". Customers want to
+// see just how many bushes/trees/columns, not the strand counts — so on the PDFs
+// (THIS FILE ONLY; the portal + quote builder keep the detailed strand labels)
+// each kind collapses to ONE combined row: a plural label, Qty = how many, and
+// the summed Total. Unit Price is shown only when every member is the same price
+// (otherwise blank — the whole point is to hide the per-strand price variance).
+const WRAPPED_MINI_KINDS = new Set<PortalLineItem['kind']>(['bush', 'tree', 'column']);
+const WRAPPED_MINI_LABELS: Record<'bush' | 'tree' | 'column', { one: string; many: string }> = {
+  bush: { one: 'Bush', many: 'Bushes' },
+  tree: { one: 'Tree', many: 'Trees' },
+  column: { one: 'Column', many: 'Columns' },
+};
+
+function groupWrappedItems(filtered: PortalLineItem[]): PdfLineItem[] {
+  // Pre-aggregate the wrapped kinds: count, summed total, and whether every
+  // member shares one price (drives the Unit Price column).
+  const agg = new Map<'bush' | 'tree' | 'column', { count: number; total: number; prices: Set<number> }>();
+  for (const li of filtered) {
+    if (WRAPPED_MINI_KINDS.has(li.kind)) {
+      const k = li.kind as 'bush' | 'tree' | 'column';
+      const g = agg.get(k) ?? { count: 0, total: 0, prices: new Set<number>() };
+      g.count += 1;
+      g.total += li.price;
+      g.prices.add(li.price);
+      agg.set(k, g);
+    }
+  }
+
+  const emitted = new Set<string>();
+  const out: PdfLineItem[] = [];
+  for (const li of filtered) {
+    if (WRAPPED_MINI_KINDS.has(li.kind)) {
+      const k = li.kind as 'bush' | 'tree' | 'column';
+      if (emitted.has(k)) continue; // one combined row per kind, placed at its first occurrence
+      emitted.add(k);
+      const g = agg.get(k)!;
+      const uniform = g.prices.size === 1;
+      out.push({
+        label: g.count === 1 ? WRAPPED_MINI_LABELS[k].one : WRAPPED_MINI_LABELS[k].many,
+        detail: '',
+        qty: g.count,
+        unitPrice: uniform ? money(li.price) : '', // li.price is the shared price when uniform
+        amount: money(roundMoney(g.total)),
+      });
+    } else {
+      out.push({ label: li.label, detail: li.detail, qty: 1, unitPrice: money(li.price), amount: money(li.price) });
+    }
+  }
+  return out;
+}
+
 /**
  * Resolve the line items the customer actually AGREED to (and their real
  * dollar subtotal), from a quote's frozen approval — the same selection
@@ -91,14 +143,13 @@ export function resolveAgreedLineItems(quote: PortalQuote): AgreedItems | null {
 
   const filtered = includedIds ? quote.lineItems.filter((li) => includedIds.has(li.id)) : quote.lineItems;
 
-  const items: PdfLineItem[] = filtered.map((li) => ({
-    label: li.label,
-    detail: li.detail,
-    qty: 1,
-    unitPrice: money(li.price),
-    amount: money(li.price),
-  }));
+  const items = groupWrappedItems(filtered);
 
+  // Subtotal is summed from the ORIGINAL filtered items, never the grouped
+  // display rows — grouping is a customer-facing LABEL change only and must
+  // not be able to move the money (each combined row's amount is the exact
+  // sum of its members, so the two agree, but sourcing subtotal here makes
+  // that a guarantee, not a coincidence).
   const subtotal = roundMoney(filtered.reduce((sum, li) => sum + li.price, 0));
 
   // Rush/premium-takedown fees the customer selected, at the amounts staff
