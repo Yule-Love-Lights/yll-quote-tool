@@ -155,11 +155,11 @@ async function main(): Promise<void> {
   let done = 0, failed = 0, skipped = 0;
 
   for (const r of jobs) {
-    const key = `${r.jobber_num}|${r.street}`;
+    const key = `${r.invoice_nos}|${r.street}`;
     if (state[key]?.status === 'done') { skipped++; continue; }
     const who = `${r.client_name} — ${r.street}`;
     try {
-      // ── 1. Jobber money, verified to the cent ──
+      // ── 1. Invoice money (what the customer actually paid), verified to the cent ──
       const items: ManifestItem[] = JSON.parse(r.line_items_json);
       const subtotal = Number(r.subtotal);
       const discount = Number(r.discount);
@@ -167,7 +167,7 @@ async function main(): Promise<void> {
       const total = Number(r.total);
       const itemSum = Math.round(items.reduce((s, i) => s + i.amount, 0) * 100) / 100;
       if (Math.abs(itemSum - subtotal) > 0.02) {
-        throw new Error(`line items sum $${itemSum} ≠ subtotal $${subtotal} (selection_mode=${r.selection_mode}) — resolve in manifest first`);
+        throw new Error(`line items sum $${itemSum} ≠ subtotal $${subtotal} (invoices ${r.invoice_nos}) — resolve in manifest first`);
       }
       if (Math.abs(subtotal - discount + tax - total) > 0.02) {
         throw new Error(`money mismatch: ${subtotal} − ${discount} + ${tax} ≠ ${total}`);
@@ -190,13 +190,13 @@ async function main(): Promise<void> {
       // ── 3. analyze the completed install (design + learning only — no money) ──
       const analysis = dryRun
         ? { result: null, analysisError: 'dry-run: analysis skipped' }
-        : await runAnalyzeWithFewShot(photoBase64, mediaType, undefined, { mode: 'completed' }, `[migrate ${r.jobber_num}]`);
+        : await runAnalyzeWithFewShot(photoBase64, mediaType, undefined, { mode: 'completed' }, `[migrate ${r.invoice_nos}]`);
 
       appendFileSync(learnPath, JSON.stringify({
         at: new Date().toISOString(),
-        client: r.client_name, street: r.street, jobberNum: r.jobber_num,
-        jobberItems: items.map(i => ({ label: i.label, qty: i.qty, amount: i.amount })),
-        jobberSubtotal: subtotal, jobberTotal: total, taxmode: r.taxmode,
+        client: r.client_name, street: r.street, invoiceNos: r.invoice_nos,
+        invoiceItems: items.map(i => ({ label: i.label, qty: i.qty, amount: i.amount })),
+        invoiceSubtotal: subtotal, invoiceTotal: total, taxmode: r.taxmode,
         analyzer: analysis.result ? {
           santasFootage: analysis.result.santasFootage,
           gingerbreadFootage: analysis.result.gingerbreadFootage,
@@ -211,9 +211,10 @@ async function main(): Promise<void> {
 
       if (dryRun) { done++; console.log(`DRY ${who}`); continue; }
 
-      // ── 4. quote row: original Jobber numbers verbatim ──
+      // ── 4. quote row: invoice numbers verbatim (what they actually paid) ──
+      const invoiceSlug = (r.invoice_nos || 'inv').trim().replace(/\s+/g, '-');
       const customLineItems = items.map((i, idx) => ({
-        id: `legacy-${r.jobber_num}-${idx}`,
+        id: `legacy-${invoiceSlug}-${idx}`,
         label: i.qty > 1 ? `${i.label} ×${i.qty}` : i.label,
         amount: i.amount, // Jobber line TOTAL; quantity stays 1 so amount×qty = amount
         quantity: 1,
