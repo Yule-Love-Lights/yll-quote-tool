@@ -100,6 +100,16 @@ const MEDIA: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
 };
 
+// Identify an image by its magic bytes (Drive photos aren't guaranteed a file
+// extension). Returns undefined when the signature isn't a supported type.
+function sniffImageType(buf: Buffer): string | undefined {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (buf.length >= 6 && ['GIF87a', 'GIF89a'].includes(buf.toString('ascii', 0, 6))) return 'image/gif';
+  return undefined;
+}
+
 async function main(): Promise<void> {
   loadEnvLocal();
   const manifestPath = arg('--manifest');
@@ -169,10 +179,13 @@ async function main(): Promise<void> {
       // ── 2. photo ──
       const photoFile = (r.photo_files || '').split(';').filter(Boolean)[0];
       if (!photoFile) throw new Error('no photo file');
-      const ext = photoFile.split('.').pop()!.toLowerCase();
-      const mediaType = MEDIA[ext];
-      if (!mediaType) throw new Error(`unsupported photo extension .${ext}`);
-      const photoBase64 = readFileSync(join(photosDir, photoFile)).toString('base64');
+      const buf = readFileSync(join(photosDir, photoFile));
+      // Sniff the type from magic bytes first — some Drive photos have no file
+      // extension (e.g. "Marie Mulligan"), and the bytes are more reliable than
+      // the name anyway. Fall back to the extension only if the sniff is unsure.
+      const mediaType = sniffImageType(buf) ?? MEDIA[photoFile.split('.').pop()!.toLowerCase()];
+      if (!mediaType) throw new Error(`could not determine image type for ${photoFile}`);
+      const photoBase64 = buf.toString('base64');
 
       // ── 3. analyze the completed install (design + learning only — no money) ──
       const analysis = dryRun
