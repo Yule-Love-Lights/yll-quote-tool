@@ -29,6 +29,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
+import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
@@ -261,6 +262,10 @@ export type QuoteBuilderInitial = {
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
+  // YLL Neighbor (#158): quote migrated from last year's Jobber data (#155).
+  // Read-only display flag from the saved row — legacy_rebook quotes only exist
+  // via that migration, so there's no "new quote" path that sets this.
+  legacyRebook?: boolean;
   // Referral program redemption (#41 PR 2): the quote's OWN linked customer
   // (quotes.customer_id), so the credit banner can resolve identity WITHOUT a
   // second save (only known once a quote has been saved + reopened — a
@@ -311,6 +316,8 @@ export default function QuoteBuilder({
   // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
   // banner and Calculate persists the quote as is_test=true (saveQuote).
   const isTest = isTestProp ?? initialQuote?.isTest ?? false;
+  // YLL Neighbor (#158) — purely from the saved row, never set for a brand-new quote.
+  const legacyRebook = initialQuote?.legacyRebook ?? false;
   // BUG-1/BUG-2 (S22): the saved quote's canonical status + display number for
   // the header. deriveStatus prefers a persisted declined/cancelled/etc. over the
   // timestamps a still-"sent"-looking row carries. Only in edit mode; a brand-new
@@ -2611,6 +2618,8 @@ export default function QuoteBuilder({
                 Test
               </span>
             )}
+            {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
+            {legacyRebook && <YllNeighborBadge />}
             {/* Canonical lifecycle pill (BUG-1, S22): a declined/cancelled quote
                 reads correctly instead of the old timestamp-only Approved/Sent. */}
             {savedStatus && (
