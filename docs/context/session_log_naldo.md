@@ -10,7 +10,20 @@ metadata:
 
 > Naldo's per-session log. **Append-only; newest entry on top.** This is the dashboard-area (#58) continuity thread — Jason's thread is `session_log.md`. Each dev edits ONLY their own log so the two machines never clobber each other (see the "Multi-dev collaboration" section in `AGENTS.md`). The shared `task_ledger.md` + `project_quote_tool.md` stay unified.
 >
-> **ACTIVE** (S39 / S38 / S37 / S36 / S35 below; S34 & older still inline pending a careful archive pass — the log's concurrent-edit structure needs one; S31 & older already in `session_log_naldo_archive.md`).
+> **ACTIVE** (S40 / S39 / S38 / S37 / S36 / S35 below; S34 & older still inline pending a careful archive pass — the log's concurrent-edit structure needs one; S31 & older already in `session_log_naldo_archive.md`).
+
+### Naldo S40, Legacy migration LIVE + revised on pilot review; send-side buildout queued (#156-158) (2026-07-16)
+
+> Naldo's LOCAL machine (cloud S39 handed off the branch); this addendum was written from the S39 cloud session, which observed it live via PR #556 webhooks. Ran the pilot, revised the approach on what the real output looked like, then ran it for real: **114 legacy rebook drafts are LIVE in prod, none sent.** Next fresh conversation = **S41**.
+
+- **#155 LIVE:** 114 real draft quotes inserted into prod (holiday vertical). NOT sent — held for the send-side buildout below.
+- **Pilot-driven revisions (commit `121d981`), all Naldo's calls after seeing real output:**
+  - **No analyzer** — auto-drawings on top of real lit installs looked bad; the design is now the CLEAN completed-install photo (the photo IS the display). `ANTHROPIC_API_KEY` no longer needed.
+  - **ONE bundled line item** at the pre-tax net (discount folded in, tax verbatim, total = what they paid) — replaces the per-item spread; per-item toggles were inviting $0 recomputes.
+  - **`legacy_rebook=true` stamp** on every quote (post-insert UPDATE) -> portal renders a rebooking variant (color-change copy, no daylight toggle, read-only items). Column applied to prod FIRST (S39 flagged the migration-order + orphan/dup risk; handled migration-first, so all 114 stamps succeeded).
+- **Send-side buildout QUEUED (ledger #156-158, do BEFORE any send wave):** #156 route legacy sends to a dedicated **"YLL Neighbors" GHL pipeline** (new *Bid Sent* stage, own workflows — NEVER the Christmas Lights pipeline); #157 **exclude legacy quotes from inbox + stats** until #156 ships; #158 a visible **"YLL Neighbor" tag** wherever legacy quotes surface. Do #156 first — #157/#158 both key off the `legacy_rebook` flag.
+- **PR #556 still OPEN** (migrate script + S39/S40 docs). The live data was written by running the script against prod directly (service-role), independent of merge — the PR is record-keeping. Gates green (tsc · lint 0 err · vitest 3423).
+- **Migration data (manifest / photos / build_manifest.py) stays gitignored + local** — never in the repo.
 
 ### Naldo S39, Legacy Jobber quote migration (#155): pipeline built + invoice-truth money, PR #556 GREEN — live pilot runs on Naldo's LOCAL machine next (2026-07-15/16)
 
