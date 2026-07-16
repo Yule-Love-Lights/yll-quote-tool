@@ -228,7 +228,13 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
     manualDiscount,
     earlyInstallHidden,
     locked,
+    legacyRebook,
   } = useSelection();
+  // #155 — a legacy rebook quote shows the item list read-only (the same
+  // pointer-events-none treatment as a booked/locked quote), even before the
+  // quote is actually approved. Positive gate on legacyRebook === true only;
+  // a normal quote's `locked` behavior is completely unchanged.
+  const itemsReadOnly = locked || legacyRebook === true;
 
   return (
     <section
@@ -246,17 +252,19 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           >
             Your {activeName} — line by line.
           </h2>
-          {(locked || items.length > 1) && (
+          {(locked || legacyRebook === true || items.length > 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
               {locked
                 ? "This is your booked quote — here's everything included, line by line."
-                : "Toggle anything off to remove it and we'll update your total automatically."}
+                : legacyRebook === true
+                  ? "Here's everything included — same as last year."
+                  : "Toggle anything off to remove it and we'll update your total automatically."}
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
         </div>
 
-        <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${locked ? 'pointer-events-none' : ''}`}>
+        <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${itemsReadOnly ? 'pointer-events-none' : ''}`}>
           {items.map((item) => {
             const Icon = ICONS[item.kind] ?? Sparkles;
             const selected = isItemSelected(item.id);

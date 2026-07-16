@@ -109,6 +109,11 @@ export type QuoteRowForPortal = {
   // Permanent Lighting (#88 P5): which package-derivation + minimum-gate path
   // the portal uses. Optional/back-compat — undefined/null reads as holiday.
   service_type?: import('@/lib/serviceType').ServiceType | null;
+  // Legacy rebook (#155): quote migrated from last year's Jobber data — the
+  // portal shows a slightly different Light Color band + read-only What's
+  // Included list. Optional/back-compat — undefined/null reads as false
+  // (normal quote, unchanged behavior).
+  legacy_rebook?: boolean | null;
 };
 
 function deriveFirstName(fullName: string | null): string {
@@ -709,6 +714,10 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.
     isTest: row.is_test ?? false,
+    // Legacy rebook (#155): quote migrated from last year's Jobber data —
+    // drives the Light Color band's rebook copy + the read-only What's
+    // Included list. Positive gate; every other quote reads false.
+    legacyRebook: row.legacy_rebook === true,
     // The quote's service line (#88 Permanent Lighting vertical). Undefined
     // for legacy rows without the column.
     serviceType: row.service_type ?? undefined,

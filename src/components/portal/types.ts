@@ -275,6 +275,12 @@ export type PortalQuote = {
   // Test Quote (ledger #93): true ⇒ the deposit button simulates payment
   // (→ /simulate-deposit) instead of a real Valor charge. Default false.
   isTest?: boolean;
+  // Legacy rebook (#155): true ⇒ this quote was migrated from last year's
+  // Jobber data — the portal shows the Light Color band's rebook copy (no
+  // "see it in daylight" toggle) and a read-only What's Included list.
+  // Optional/default false, matching isTest above — every other quote is
+  // unaffected.
+  legacyRebook?: boolean;
   // The quote's service line (#88 Permanent Lighting vertical). Additive/
   // optional — undefined for legacy rows (they behave as 'holiday' throughout).
   serviceType?: import('@/lib/serviceType').ServiceType;

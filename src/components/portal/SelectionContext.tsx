@@ -133,6 +133,11 @@ type SelectionContextValue = {
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
   locked: boolean;
+  /** #155 — true when this quote was migrated from last year's Jobber data
+   *  (a legacy rebook). Drives the Light Color band's rebook copy (no "see it
+   *  in daylight" toggle) and the read-only What's Included list — the color
+   *  swatches themselves stay interactive. Default false. */
+  legacyRebook: boolean;
   /** #61 — daytime⇄lit-design view toggle, lifted out of the hero so the Light
    *  Color section can drive the hero's day/night view. `daylightAvailable` is
    *  false when there's no base photo to switch to. NOT affected by `locked` —
@@ -252,6 +257,11 @@ export type SelectionProviderProps = {
   // #43 — when true the portal is read-only (the quote is already approved):
   // all selection setters no-op and consumers render their controls disabled.
   locked?: boolean;
+  // #155 — true for a quote migrated from last year's Jobber data (a legacy
+  // rebook). Passed straight through onto the context value (see
+  // SelectionContextValue.legacyRebook) so LightColorPicker/WhatsIncluded can
+  // read it via useSelection() without their own prop. Default false.
+  legacyRebook?: boolean;
   // #61 — whether the linked design has a base photo to toggle to (daytime view).
   daylightAvailable?: boolean;
   // Staff-set early-install promo (#40): the customer's timing starts here so the
@@ -284,6 +294,7 @@ export function SelectionProvider({
   initialPackageId = 'A',
   initialSelectedItemIds,
   locked = false,
+  legacyRebook = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
   earlyInstallDiscountsHidden = false,
@@ -527,6 +538,7 @@ export function SelectionProvider({
     permanentEffect,
     setPermanentEffect: locked ? noop : setPermanentEffect,
     locked,
+    legacyRebook,
     showDaylight,
     toggleDaylight,
     daylightAvailable,
