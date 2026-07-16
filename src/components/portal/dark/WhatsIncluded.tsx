@@ -11,7 +11,7 @@ import type { PortalDesign, PortalLineItem, PortalLineItemKind } from '../types'
 import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { ServiceType } from '@/lib/serviceType';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
-import { useSelection } from '../SelectionContext';
+import { useSelection, frozenMutatorGroups } from '../SelectionContext';
 import { formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
@@ -230,11 +230,14 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
     locked,
     legacyRebook,
   } = useSelection();
-  // #155 — a legacy rebook quote shows the item list read-only (the same
-  // pointer-events-none treatment as a booked/locked quote), even before the
-  // quote is actually approved. Positive gate on legacyRebook === true only;
-  // a normal quote's `locked` behavior is completely unchanged.
-  const itemsReadOnly = locked || legacyRebook === true;
+  // #155 — a legacy rebook quote shows the item list AND the add-on/discount
+  // toggles read-only (the same pointer-events-none treatment as a booked/
+  // locked quote), even before the quote is actually approved. Derived from
+  // the SAME pure seam that no-ops the context setters (frozenMutatorGroups),
+  // so the styling and the behavior can never drift apart. Positive gate on
+  // legacyRebook === true only; a normal quote's `locked` behavior is
+  // completely unchanged.
+  const itemsReadOnly = frozenMutatorGroups({ locked, legacyRebook }).selection;
 
   return (
     <section
@@ -369,7 +372,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
          * (AGENTS.md seam-gate rule; derivePackages.ts also zeroes the charge
          * amounts for non-holiday as defense in depth). */}
         {isHoliday && (
-        <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
+        <div className={`mt-10 md:mt-12 ${itemsReadOnly ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Optional add-ons
           </p>
@@ -401,7 +404,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
          * when the global "hide early-install discounts" setting is on (the
          * season has passed — Settings → Customer Portal). */}
         {isHoliday && !hasManualDiscount && !earlyInstallHidden && (
-        <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
+        <div className={`mt-10 md:mt-12 ${itemsReadOnly ? 'opacity-60 pointer-events-none' : ''}`}>
           <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
             Install early &amp; save
           </p>
