@@ -124,7 +124,12 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       // (!== permanent && !== event) silently handed that clobber to bistro,
       // the exact AGENTS.md negative-gate pitfall. A null/legacy service_type
       // reads as holiday — the DEFAULT.
-      if (data.service_type == null || data.service_type === 'holiday') {
+      // LEGACY REBOOK carve-out (#155): a legacy rebook IS a holiday quote,
+      // but its adapter repurposes 'D' as the single "Last Year's Design"
+      // bundle (same reason the other verticals are excluded), so the
+      // positively-matched legacy flag skips the rewrite here too.
+      const isLegacyRebook = data.legacy_rebook === true;
+      if (!isLegacyRebook && (data.service_type == null || data.service_type === 'holiday')) {
         portal.packages = applyOurRecommendation(
           portal.packages,
           portal.lineItems,

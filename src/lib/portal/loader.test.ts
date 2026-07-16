@@ -197,6 +197,41 @@ describe('loadPortalQuote — W4-016 parallel design lookup', () => {
   });
 });
 
+describe('loadPortalQuote — legacy rebook skips the "Our Recommendation" rewrite (#155)', () => {
+  // A recommended line item normally makes this loader rewrite the holiday 'D'
+  // slot into "Our Recommendation" (applyOurRecommendation). On a legacy
+  // rebook, 'D' IS the single "Last Year's Design" bundle the adapter emitted —
+  // the rewrite must never clobber it (the same clobber class the permanent/
+  // event/bistro carve-outs guard against).
+  const inputs = emptyInputs({
+    customLineItems: [
+      { label: 'Full display (from last year)', amount: 2400, recommended: true },
+    ],
+  });
+  const result = calculateQuote(inputs);
+
+  it("keeps the single Last Year's Design package even when an item is flagged recommended", async () => {
+    sbRef.current = makeSb(
+      baseRow({ inputs, result, total: result.total, legacy_rebook: true }),
+    );
+    getDesignByQuoteMock.mockResolvedValue(null);
+    const portal = await loadPortalQuote(ID);
+    expect(portal).not.toBeNull();
+    expect(portal!.packages).toHaveLength(1);
+    expect(portal!.packages[0].name).toBe("Last Year's Design");
+  });
+
+  it('a normal holiday quote still gets the "Our Recommendation" rewrite (unchanged)', async () => {
+    sbRef.current = makeSb(baseRow({ inputs, result, total: result.total }));
+    getDesignByQuoteMock.mockResolvedValue(null);
+    const portal = await loadPortalQuote(ID);
+    expect(portal).not.toBeNull();
+    const D = portal!.packages.find((p) => p.id === 'D')!;
+    expect(D.name).toBe('Our Recommendation');
+    expect(D.includedItemIds.length).toBeGreaterThan(0);
+  });
+});
+
 // #117 review HIGH — applyOurRecommendation must be HOLIDAY-ONLY (positive
 // gate). Permanent, event, and permanent bistro all repurpose package 'D' as a
 // real bundle; a staff-recommended custom line item must never collapse that

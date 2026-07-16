@@ -361,6 +361,49 @@ export function derivePackages(
   ];
 }
 
+// #155 — the single LEGACY REBOOK package: a quote migrated from last year's
+// Jobber data shows exactly ONE tier, "Last Year's Design", bundling every
+// line item on the quote (typically the one bundled custom item the migration
+// created) — no A/B/C ladder and no empty "Build Your Own" slot (the hero's
+// custom card IS the empty holiday D, so a single non-empty D removes it).
+// Priced with the staff-default rush/takedown toggle state via the SAME
+// mechanism as the holiday tiers (chargesFromResult + effectiveCharges +
+// totalsFor), so the money math is identical; the live tile price still comes
+// from SelectionContext (currentTotal), so the customer's fee toggles — live
+// upsells on a legacy quote — reprice it as usual. Mirrors derivePackagesEvent's
+// roofline guard: if both mutually-exclusive roofline options are present,
+// bundle only Gingerbread (never both — that would double-bill the front).
+// Positive gate at the call site (adapter): only legacy_rebook === true rows
+// ever reach this.
+export function derivePackagesLegacyRebook(
+  lineItems: PortalLineItem[],
+  result: QuoteResult,
+): PortalPackage[] {
+  if (lineItems.length === 0) return [];
+  const excludeRooflineId = lineItems.some((li) => li.id === GINGERBREAD_ID)
+    ? SANTAS_ID
+    : null;
+  const includedIds = lineItems
+    .filter((li) => li.id !== excludeRooflineId)
+    .map((li) => li.id);
+  const config = chargesFromResult(result);
+  const charges = effectiveCharges(config, config.rush.defaultOn, config.takedown.defaultOn);
+  const { total, deposit } = totalsFor(includedIds, lineItems, charges);
+  return [
+    {
+      id: 'D',
+      // #119 — the What's Included heading + hero pill prepend "Your ", so the
+      // name must NOT lead with "Your" (else "Your Your ...").
+      name: "Last Year's Design",
+      tagline: 'Everything from last year.',
+      total,
+      deposit,
+      recommended: true,
+      includedItemIds: includedIds,
+    },
+  ];
+}
+
 // Populate the 4th "Our Recommendation" (D) card from the staff-recommended line
 // items (#12). Runs in the loader AFTER attachSceneLinks, because design-driven
 // `recommended` flags are only attached there; it also picks up custom-item

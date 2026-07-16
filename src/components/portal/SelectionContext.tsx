@@ -228,24 +228,28 @@ export function nextPackageSelectedItemIds(
 
 // Pure — which mutator groups no-op for a given portal state (extracted for
 // test coverage, the computeInitialSelection/nextSelectedItemIds pattern).
-// Two groups:
-//   selection  — toggleItem / selectPackage / toggleRush / toggleTakedown /
-//                toggleInstallTiming: everything that changes the included
-//                items, the active package, or the money total.
+// Three groups:
+//   items      — toggleItem / selectPackage: everything that changes the
+//                included item set or the active package.
+//   fees       — toggleRush / toggleTakedown / toggleInstallTiming: the
+//                per-job add-on and early-install offers.
 //   appearance — setColorScheme / setCustomPattern / setPermanentEffect: the
 //                customer's light color/pattern/effect choice (view-side only,
 //                frozen into the approval snapshot at approve time).
-// #43 locked (booked/approved) freezes BOTH groups — the whole portal is
-// read-only. #155 legacyRebook freezes ONLY the selection group: a legacy
-// rebook keeps last year's items/total fixed, but the customer still picks
-// their light color ("Want to change up your lights this year?"). Positive
-// gate on legacyRebook === true; a normal quote is unaffected.
+// #43 locked (booked/approved) freezes ALL THREE groups — the whole portal is
+// read-only (byte-equivalent to the pre-#155 all-noop behavior). #155
+// legacyRebook freezes ONLY the items group: a legacy rebook keeps last
+// year's item list fixed, but rush/takedown/early-install stay live (they're
+// real upsells this season) and the customer still picks their light color
+// ("Want to change up your lights this year?"). Positive gate on
+// legacyRebook === true; a normal quote is unaffected.
 export function frozenMutatorGroups(state: {
   locked: boolean;
   legacyRebook: boolean;
-}): { selection: boolean; appearance: boolean } {
+}): { items: boolean; fees: boolean; appearance: boolean } {
   return {
-    selection: state.locked || state.legacyRebook === true,
+    items: state.locked || state.legacyRebook === true,
+    fees: state.locked,
     appearance: state.locked,
   };
 }
@@ -525,8 +529,8 @@ export function SelectionProvider({
   const noop = useCallback(() => {}, []);
 
   // #155 — which setter groups no-op for this quote (pure, unit-tested seam).
-  // locked freezes both groups (unchanged #43 behavior); a legacy rebook
-  // freezes only the item/package/fee setters — colors stay interactive.
+  // locked freezes all three groups (unchanged #43 behavior); a legacy rebook
+  // freezes only the item/package setters — fees and colors stay interactive.
   const frozen = frozenMutatorGroups({ locked, legacyRebook });
 
   const value: SelectionContextValue = {
@@ -543,18 +547,20 @@ export function SelectionProvider({
     takedownSelected,
     rushAmount: charges.rush.amount,
     takedownAmount: charges.takedown.amount,
-    toggleRush: frozen.selection ? noop : toggleRush,
-    toggleTakedown: frozen.selection ? noop : toggleTakedown,
+    // Fee toggles are deliberately NOT gated on legacyRebook — rush/takedown/
+    // early-install are live upsells on a legacy rebook (#155 r2).
+    toggleRush: frozen.fees ? noop : toggleRush,
+    toggleTakedown: frozen.fees ? noop : toggleTakedown,
     installTiming,
-    toggleInstallTiming: frozen.selection || earlyInstallHidden ? noop : toggleInstallTiming,
+    toggleInstallTiming: frozen.fees || earlyInstallHidden ? noop : toggleInstallTiming,
     septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
     octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
     earlyInstallHidden,
     manualDiscount,
     hasManualDiscount,
     activeName,
-    selectPackage: frozen.selection ? noop : selectPackage,
-    toggleItem: frozen.selection ? noop : toggleItem,
+    selectPackage: frozen.items ? noop : selectPackage,
+    toggleItem: frozen.items ? noop : toggleItem,
     isItemSelected,
     hiddenSceneItemIds,
     colorSchemeId,

@@ -71,6 +71,7 @@ export function InteractiveHero({
     packageId,
     selectPackage,
     locked,
+    legacyRebook,
     currentTotal,
     currentDeposit,
     selectedItemIds,
@@ -451,9 +452,17 @@ export function InteractiveHero({
                         position (so omitting an unavailable tier stays contiguous)
                         + "Custom" for D. The "· recommended" badge and the D name
                         track the live selection so they don't out-claim the
-                        sticky bar once the customer edits the recommendation. */}
+                        sticky bar once the customer edits the recommendation.
+                        #155 — a legacy rebook's single tile is D (its "Last
+                        Year's Design" bundle, not the empty holiday custom
+                        slot), so the positively-matched legacy branch labels
+                        it by position ("Tier 1"), never "Custom". */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
-                      {p.id === 'D' && (serviceType == null || serviceType === 'holiday') ? 'Custom' : `Tier ${i + 1}`}
+                      {legacyRebook === true
+                        ? `Tier ${i + 1}`
+                        : p.id === 'D' && (serviceType == null || serviceType === 'holiday')
+                          ? 'Custom'
+                          : `Tier ${i + 1}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
