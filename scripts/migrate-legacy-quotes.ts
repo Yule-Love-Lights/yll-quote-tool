@@ -19,20 +19,28 @@
  * insert — the pricing engine is never allowed to (re)compute money for these
  * rows. The engine's live tax rate (8.75%) doesn't even match the historical
  * quotes (8.625% / 8.725% / untaxed), so any recompute = silent price drift.
- *   Corollary: inputs.customLineItems mirrors the same items so a builder
- * recalculate reproduces the same subtotal; but tax/total drift on recalc is
- * expected and acceptable ONLY after staff deliberately edit the quote.
+ *   Corollary: inputs.customLineItems carries the ONE bundled item at the same
+ * net, so a builder recalculate reproduces the same subtotal; tax/total drift
+ * on recalc is expected and acceptable ONLY after staff deliberately edit the
+ * quote.
  *
- * The photo analyzer (mode:'completed' — reads what is actually installed and
- * lit in the night photo) seeds the DESIGN geometry + a learning report; its
- * numbers never touch the quote's money.
+ * The design carries the CLEAN completed-install photo only — no AI analysis,
+ * no seeded geometry (Naldo, pilot review 2026-07-16: drawings on top of real
+ * lit installs look bad; the photo IS the display).
+ *
+ * The customer's paid items appear as ONE bundled line item (label = all of
+ * last year's items joined), priced at the pre-tax net (subtotal − discount);
+ * tax as recorded on top so the total equals what they actually paid.
+ *
+ * Every inserted quote is stamped legacy_rebook=true (portal shows the
+ * rebooking variant: color-change copy, no daylight toggle, read-only items).
  *
  * Safety: is_test=true by default (pilot rows are wipeable via the "Delete
  * test data" sweep and never touch customers/properties). Pass --live for the
  * real run. Resumable: completed rows are recorded in migration-state.json
  * next to the manifest and skipped on re-run.
  */
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 
 // Minimal .env.local loader (same pattern as seed-ascend-catalog.ts) — must run
@@ -123,7 +131,7 @@ async function main(): Promise<void> {
   const limit = Number(arg('--limit') ?? Infinity);
   const only = (arg('--only') ?? '').toLowerCase();
 
-  for (const key of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'ANTHROPIC_API_KEY']) {
+  for (const key of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']) {
     if (!dryRun && !process.env[key]) {
       console.error(`${key} must be set (env or .env.local).`);
       process.exit(1);
@@ -133,13 +141,14 @@ async function main(): Promise<void> {
   // Import AFTER env load so service clients pick up the vars.
   const { saveQuote } = await import('../src/lib/quotes');
   const { createDesign } = await import('../src/lib/designs');
-  const { runAnalyzeWithFewShot } = await import('../src/lib/analyzeWithFewShot');
+  const { createClient } = await import('@supabase/supabase-js');
   type QuoteInputs = import('../src/lib/pricing/pricingEngine').QuoteInputs;
   type QuoteResult = import('../src/lib/pricing/pricingEngine').QuoteResult;
-  type AnalysisSeed = import('../src/lib/design/seedFromAnalysis').AnalysisSeed;
+
+  // Service client for the legacy_rebook stamp (saveQuote's insert set is fixed).
+  const sb = dryRun ? null : createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
 
   const statePath = join(dirname(resolve(manifestPath)), 'migration-state.json');
-  const learnPath = join(dirname(resolve(manifestPath)), 'learning-report.jsonl');
   const state: Record<string, StateEntry> = existsSync(statePath)
     ? JSON.parse(readFileSync(statePath, 'utf8'))
     : {};
@@ -187,38 +196,22 @@ async function main(): Promise<void> {
       if (!mediaType) throw new Error(`could not determine image type for ${photoFile}`);
       const photoBase64 = buf.toString('base64');
 
-      // ── 3. analyze the completed install (design + learning only — no money) ──
-      const analysis = dryRun
-        ? { result: null, analysisError: 'dry-run: analysis skipped' }
-        : await runAnalyzeWithFewShot(photoBase64, mediaType, undefined, { mode: 'completed' }, `[migrate ${r.invoice_nos}]`);
-
-      appendFileSync(learnPath, JSON.stringify({
-        at: new Date().toISOString(),
-        client: r.client_name, street: r.street, invoiceNos: r.invoice_nos,
-        invoiceItems: items.map(i => ({ label: i.label, qty: i.qty, amount: i.amount })),
-        invoiceSubtotal: subtotal, invoiceTotal: total, taxmode: r.taxmode,
-        analyzer: analysis.result ? {
-          santasFootage: analysis.result.santasFootage,
-          gingerbreadFootage: analysis.result.gingerbreadFootage,
-          miniLights: analysis.result.miniLightDetections.length,
-          wreaths: analysis.result.wreathDetections.map(w => `${w.size}/${w.tier}`),
-          spritzers: analysis.result.spritzerDetections.map(s => s.size),
-          garland: analysis.result.garlandDetections.length,
-          confidence: analysis.result.confidence,
-          notes: analysis.result.notes,
-        } : { error: analysis.analysisError ?? 'analyzer unavailable' },
-      }) + '\n');
-
       if (dryRun) { done++; console.log(`DRY ${who}`); continue; }
 
-      // ── 4. quote row: invoice numbers verbatim (what they actually paid) ──
+      // ── 3. quote row: ONE bundled item at the pre-tax net (what they paid) ──
+      // Label lists every item from last year's invoice; the discount is folded
+      // into the net so the customer sees one price — the one they'll pay.
       const invoiceSlug = (r.invoice_nos || 'inv').trim().replace(/\s+/g, '-');
-      const customLineItems = items.map((i, idx) => ({
-        id: `legacy-${invoiceSlug}-${idx}`,
-        label: i.qty > 1 ? `${i.label} ×${i.qty}` : i.label,
-        amount: i.amount, // Jobber line TOTAL; quantity stays 1 so amount×qty = amount
+      const net = Math.round((subtotal - discount) * 100) / 100;
+      const bundleLabel = items
+        .map(i => (i.qty > 1 ? `${i.label} ×${i.qty}` : i.label))
+        .join(' · ');
+      const customLineItems = [{
+        id: `legacy-${invoiceSlug}-bundle`,
+        label: bundleLabel,
+        amount: net,
         quantity: 1,
-      }));
+      }];
       const inputs: QuoteInputs = {
         santasFootage: 0, santasDifficulty: 'medium',
         gingerbreadFootage: 0, gingerbreadDifficulty: 'medium',
@@ -227,21 +220,20 @@ async function main(): Promise<void> {
         miniLightItems: [], spritzers: [], wreaths: [], garland: [],
         customLineItems,
         takedown: 'included', rushFee: false,
-        ...(discount > 0 ? { discount: { type: 'flat' as const, amount: discount } } : {}),
         // Historical packages under the portal's $1,000 approve gate must stay
         // approvable at their original price.
-        ...(subtotal - discount < 1000 ? { waiveMinimum: true } : {}),
+        ...(net < 1000 ? { waiveMinimum: true } : {}),
       };
       const result: QuoteResult = {
         lineItems: customLineItems.map(c => ({ id: c.id, label: c.label, amount: c.amount })),
-        subtotalBeforeDiscount: subtotal,
-        discountAmount: discount,
+        subtotalBeforeDiscount: net,
+        discountAmount: 0,
         earlyInstallDiscountAmount: 0,
-        subtotalAfterDiscount: Math.round((subtotal - discount) * 100) / 100,
+        subtotalAfterDiscount: net,
         minimumApplied: false,
         rushFeeAmount: 0,
         takedownAmount: 0,
-        taxableAmount: Math.round((subtotal - discount) * 100) / 100,
+        taxableAmount: net,
         taxAmount: tax,
         total,
         depositAmount: Math.round((total / 2) * 100) / 100,
@@ -264,38 +256,21 @@ async function main(): Promise<void> {
       );
       if (!saved) throw new Error('saveQuote returned null');
 
-      // ── 5. design born from the analysis (geometry only) ──
-      const a = analysis.result;
-      const seed: AnalysisSeed | null = a ? {
-        lines: {
-          santas: (a.santasLines ?? []).map(l => l.points),
-          gingerbread: (a.gingerbreadLines ?? []).map(l => l.points),
-          winterWonderland: [], stakeLighting: [],
-          features: {
-            santas: (a.santasLines ?? []).map(l => l.feature ?? null),
-            gingerbread: (a.gingerbreadLines ?? []).map(l => l.feature ?? null),
-          },
-        },
-        detections: {
-          miniLights: (a.miniLightDetections ?? []).map(d => ({
-            type: d.type, wrapStyle: d.wrapStyle, stringCount: d.stringCount, box: d.box,
-          })),
-          wreaths: (a.wreathDetections ?? []).map(d => ({ size: d.size, tier: d.tier, box: d.box })),
-          spritzers: (a.spritzerDetections ?? []).map(d => ({ size: d.size, box: d.box })),
-          garland: (a.garlandDetections ?? []).map(d => ({ length: d.length, tier: d.tier, box: d.box })),
-        } as AnalysisSeed['detections'],
-        calibration: { santasFootage: a.santasFootage, gingerbreadFootage: a.gingerbreadFootage },
-      } : null;
+      // ── 4. stamp legacy_rebook (portal shows the rebooking variant) ──
+      const { error: stampErr } = await sb!
+        .from('quotes')
+        .update({ legacy_rebook: true })
+        .eq('id', saved.id);
+      if (stampErr) throw new Error(`quote ${saved.id} created but legacy_rebook stamp FAILED: ${stampErr.message}`);
 
+      // ── 5. design = the clean completed-install photo, no drawings ──
       const design = await createDesign({
         quoteId: saved.id,
         photoBase64,
         photoMediaType: mediaType,
-        ...(seed ? { seedAnalysis: seed } : {}),
       });
       if (!design) throw new Error(`quote ${saved.id} created but design creation FAILED`);
-      if (design.seedFailed) console.warn(`  ⚠ ${who}: design ${design.id} photo/seed partially failed — re-check in builder`);
-      if (!a) console.warn(`  ⚠ ${who}: analyzer unavailable — design has photo but no auto-seeded geometry`);
+      if (design.seedFailed) console.warn(`  ⚠ ${who}: design ${design.id} photo upload partially failed — re-check in builder`);
 
       state[key] = { status: 'done', quoteId: saved.id, designId: design.id, at: new Date().toISOString() };
       saveState();
@@ -310,7 +285,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`\ndone=${done} failed=${failed} skipped(already done)=${skipped}`);
-  console.log(`state: ${statePath}\nlearning report: ${learnPath}`);
+  console.log(`state: ${statePath}`);
   if (!dryRun) {
     console.log(isTest
       ? 'PILOT MODE (is_test=true): rows are wipeable via Settings → Delete test data.'
