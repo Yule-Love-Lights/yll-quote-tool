@@ -10,7 +10,20 @@ metadata:
 
 > Naldo's per-session log. **Append-only; newest entry on top.** This is the dashboard-area (#58) continuity thread — Jason's thread is `session_log.md`. Each dev edits ONLY their own log so the two machines never clobber each other (see the "Multi-dev collaboration" section in `AGENTS.md`). The shared `task_ledger.md` + `project_quote_tool.md` stay unified.
 >
-> **ACTIVE** (S38 / S37 / S36 / S35 below; S34 & older still inline pending a careful archive pass — the log's concurrent-edit structure needs one; S31 & older already in `session_log_naldo_archive.md`).
+> **ACTIVE** (S39 / S38 / S37 / S36 / S35 below; S34 & older still inline pending a careful archive pass — the log's concurrent-edit structure needs one; S31 & older already in `session_log_naldo_archive.md`).
+
+### Naldo S39, Legacy Jobber quote migration (#155): pipeline built + invoice-truth money, PR #556 GREEN — live pilot runs on Naldo's LOCAL machine next (2026-07-15/16)
+
+> One conversation. Naldo: "get all past Jobber clients into the quote tool, analyze their install photos, remake their quotes with our design features." 3-agent recon (quote model / analyzer / design) -> built the data pipeline + a resumable `tsx` migrate script -> corrected ALL money to invoice truth. Ends BEFORE the live pilot (cloud has no secrets/photos); Naldo runs it on his machine. Next fresh conversation = **S40**.
+
+- **New task #155 (Backlog -> BUILT, live pilot pending):** legacy-quote migration = a REBOOKING play (distinct from #72 Jobber->Insights revenue-history). Per past install: completed-install photo -> analyzer `mode:'completed'` seeds an editable design -> insert a **draft holiday quote** carrying the real paid price -> interactive portal render.
+- **Ships as `scripts/migrate-legacy-quotes.ts` (PR #556, draft, GREEN, awaiting merge-go).** 3 commits; gates tsc·lint·vitest 3423 green; `--dry-run` over the real 114-row manifest passes. `is_test=true` default (wipeable via Delete-test-data); `--live` deliberate; resumable via migration-state.json.
+- **MONEY invariant LOCKED (Naldo, load-bearing): the price the customer PAID is untouchable — never engine-repriced.** Source of truth = the **INVOICE export ("Total paid")**, NOT the quote export, which proved wildly wrong both ways (Riza Bueser quote $15,756 vs $3,704 paid; cindy small $0 quote vs $2,346 paid; Carl Laurent $5,301 vs $1,682; 81 invoices carried discounts the quotes hid). Invoice line items = the real billed items (no selection-guessing). Every migrating row cent-verified.
+- **Decisions LOCKED:** holiday-only (incl. commercial holiday); completed-install photos as analyzer input + portal hero; invoice-primary manifest; tips excluded from the rebook total. **HELD from auto-migrate:** 5 past-due (4 Kimberly McNulty Glen Cove + Mirelle's Restaurant) + 2 $0-comped (Joe DeGaetano, Michelle Richards).
+- **Manifest = 114 READY** (paid invoice + photo + holiday), invoice-sourced + cent-exact. **All PII data (roster/photos/manifest/invoices/build_manifest.py) is gitignored** (`scripts/legacy-migration-data/`) — lives session-side only, delivered to Naldo as files; NOT in the repo.
+- **Data-quality catches:** Jobber `(DELETE & MOVE)` dup-name invoices (Morton/Capobianco) broke matching -> builder strips them; extension-less Drive photo ("Marie Mulligan") -> script sniffs image type by magic bytes.
+- **▶ NEXT (Naldo, LOCAL machine):** pull the branch, drop `manifest.csv` + the "2025 Installs" Drive photos into `scripts/legacy-migration-data/photos/`, run `npx tsx scripts/migrate-legacy-quotes.ts --manifest scripts/legacy-migration-data/manifest.csv --photos scripts/legacy-migration-data/photos --limit 10` (is_test), eyeball designs+prices, then scale. Open items: architectural (Carl Laurent/Foss/DeGaetano) + promo $0-line cleanup (my call pending Naldo); 56 paid customers with NO photo; 6 off-roster payers to add (Willard Grant, Renee Albertella, Gul Zaidi, Tamare Orilus, John Pierson x2).
+- **Cross-dev heads-up (Jason):** new `scripts/migrate-legacy-quotes.ts` (imports pricing/quotes/designs libs READ-ONLY; no changes to your files); `.gitignore` gained `scripts/legacy-migration-data/`.
 
 ### Naldo S38, Wisetack portal financing (#154): captured, scoped, and PLANNED (spec + implementation plan committed); paused before build on P0 (2026-07-14)
 
