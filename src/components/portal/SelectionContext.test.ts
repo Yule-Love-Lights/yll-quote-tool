@@ -257,36 +257,42 @@ describe('approve-payload pricing pin (selectedItemIds -> currentTotal/currentDe
 // rather than inventing component-test infra for one ternary.
 //
 // #155 UPDATE: the freeze DECISION now has a pure seam — frozenMutatorGroups
-// (tested below) — because legacy rebook needed a second, partial freeze
-// (items/package/fees only, colors stay live). The setter ternaries in the
-// provider now read frozen.selection / frozen.appearance from it; only the
-// noop-swap wiring itself remains render-only.
+// (tested below) — because legacy rebook needed a partial freeze. Three groups
+// (r2): items (toggleItem/selectPackage), fees (toggleRush/toggleTakedown/
+// toggleInstallTiming — LIVE upsells on a legacy rebook), appearance (color/
+// pattern/effect). The setter ternaries in the provider read frozen.items /
+// frozen.fees / frozen.appearance from it; only the noop-swap wiring itself
+// remains render-only.
 
 describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
-  it('legacyRebook=true (not locked): the selection mutators (toggleItem/selectPackage/fees) freeze, the color/appearance mutators stay live', () => {
+  it('legacyRebook=true (not locked): ONLY the items group (toggleItem/selectPackage) freezes — fees and appearance stay live', () => {
     expect(frozenMutatorGroups({ locked: false, legacyRebook: true })).toEqual({
-      selection: true,
+      items: true,
+      fees: false,
       appearance: false,
     });
   });
 
   it('legacyRebook=false, not locked: nothing freezes (a normal quote is unchanged)', () => {
     expect(frozenMutatorGroups({ locked: false, legacyRebook: false })).toEqual({
-      selection: false,
+      items: false,
+      fees: false,
       appearance: false,
     });
   });
 
-  it('locked=true freezes BOTH groups (the #43 booked read-only rule, unchanged)', () => {
+  it('locked=true freezes ALL THREE groups (the #43 booked read-only rule, unchanged)', () => {
     expect(frozenMutatorGroups({ locked: true, legacyRebook: false })).toEqual({
-      selection: true,
+      items: true,
+      fees: true,
       appearance: true,
     });
   });
 
-  it('locked + legacyRebook together: locked still wins everywhere (colors frozen too)', () => {
+  it('locked + legacyRebook together: locked wins everywhere (fees and colors frozen too)', () => {
     expect(frozenMutatorGroups({ locked: true, legacyRebook: true })).toEqual({
-      selection: true,
+      items: true,
+      fees: true,
       appearance: true,
     });
   });

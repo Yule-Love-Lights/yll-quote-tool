@@ -430,6 +430,29 @@ describe('quoteRowToPortalQuote — legacy_rebook mapping (#155)', () => {
     const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
     expect(portal.legacyRebook).toBe(false);
   });
+
+  it('legacy_rebook: true derives exactly ONE package, "Last Year\'s Design", bundling the quote\'s items (#155 r2)', () => {
+    // The migrated shape: one bundled custom line item carrying the quote.
+    const inputs = emptyInputs({
+      customLineItems: [{ label: 'Full display (from last year)', amount: 2400 }],
+    });
+    const legacyResult = calculateQuote(inputs);
+    const row: QuoteRowForPortal = { ...rowWith(legacyResult, inputs), legacy_rebook: true };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.packages).toHaveLength(1);
+    expect(portal.packages[0].name).toBe("Last Year's Design");
+    expect(portal.packages[0].includedItemIds).toEqual(portal.lineItems.map((li) => li.id));
+    expect(portal.packages[0].total).toBeGreaterThan(0);
+  });
+
+  it('a non-legacy quote keeps the holiday tier ladder + the empty "Build Your Own" slot (unchanged)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
+    expect(portal.packages.length).toBeGreaterThan(1);
+    expect(portal.packages.some((p) => p.name === "Last Year's Design")).toBe(false);
+    const D = portal.packages.find((p) => p.id === 'D')!;
+    expect(D.name).toBe('Build Your Own');
+    expect(D.includedItemIds).toEqual([]);
+  });
 });
 
 describe('event schedule (#96)', () => {

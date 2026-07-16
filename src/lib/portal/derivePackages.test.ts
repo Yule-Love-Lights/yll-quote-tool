@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId, derivePackages, applyOurRecommendation } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId, derivePackages, derivePackagesLegacyRebook, applyOurRecommendation } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PortalCharges, SelectionCharges, PortalLineItem, PortalLineItemKind, PortalPackage, PortalRoofline } from '@/components/portal/types';
 
@@ -199,6 +199,51 @@ describe('applyOurRecommendation — the "Our Recommendation" (D) card (#12, Jas
     expect(D.name).toBe('Build Your Own');
     expect(D.includedItemIds).toEqual([]);
     expect(D.recommended).toBeUndefined();
+  });
+});
+
+describe('derivePackagesLegacyRebook — the single "Last Year\'s Design" package (#155)', () => {
+  it('bundles every line item into exactly ONE package named "Last Year\'s Design", priced like the tiers', () => {
+    const result = resultWith({});
+    const lineItems = [li('custom-0', 'spritzer', 2000)];
+    const pkgs = derivePackagesLegacyRebook(lineItems, result);
+    expect(pkgs).toHaveLength(1);
+    const p = pkgs[0];
+    expect(p.id).toBe('D');
+    expect(p.name).toBe("Last Year's Design");
+    expect(p.tagline).toBe('Everything from last year.');
+    expect(p.recommended).toBe(true);
+    expect(p.includedItemIds).toEqual(['custom-0']);
+    // Same money mechanism as the holiday tiers: staff-default fee toggles
+    // (both off on this result) + priceSelection.
+    const expected = priceSelection(2000, effectiveCharges(chargesFromResult(result), false, false));
+    expect(p.total).toBe(expected.total);
+    expect(p.deposit).toBe(expected.deposit);
+  });
+
+  it('staff-default fees ride the tile total (rush defaulted on)', () => {
+    const result = resultWith({ rushFeeAmount: BUSINESS_RULES.rushFeeAmount });
+    const lineItems = [li('custom-0', 'spritzer', 2000)];
+    const p = derivePackagesLegacyRebook(lineItems, result)[0];
+    const expected = priceSelection(2000, effectiveCharges(chargesFromResult(result), true, false));
+    expect(p.total).toBe(expected.total);
+  });
+
+  it('never bundles both mutually-exclusive rooflines — Gingerbread wins (no front double-bill)', () => {
+    const result = resultWith({});
+    const lineItems = [
+      li('roofline-santas', 'roofline', 600),
+      li('roofline-gingerbread', 'ridge', 900),
+      li('wreath-0', 'wreath', 300),
+    ];
+    const p = derivePackagesLegacyRebook(lineItems, result)[0];
+    expect(p.includedItemIds).toEqual(['roofline-gingerbread', 'wreath-0']);
+    const expected = priceSelection(1200, effectiveCharges(chargesFromResult(result), false, false));
+    expect(p.total).toBe(expected.total);
+  });
+
+  it('returns [] for an empty quote (defensive, matches derivePackagesEvent)', () => {
+    expect(derivePackagesLegacyRebook([], resultWith({}))).toEqual([]);
   });
 });
 

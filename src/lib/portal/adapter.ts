@@ -22,7 +22,7 @@ import type {
   PortalVideo,
 } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
-import { derivePackages, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
+import { derivePackages, derivePackagesLegacyRebook, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { roundMoney } from '@/lib/money';
 import { derivePackagesPermanent } from '@/lib/permanent/derivePackagesPermanent';
 import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
@@ -582,13 +582,20 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   const isPermanent = row.service_type === 'permanent';
   const isEvent = row.service_type === 'event';
   const isPermanentBistro = row.service_type === 'permanent_bistro';
-  const allPackages = isPermanent
-    ? derivePackagesPermanent(lineItems, row.result)
-    : isEvent
-      ? derivePackagesEvent(lineItems, row.result)
-      : isPermanentBistro
-        ? derivePackagesPermanentBistro(lineItems, row.result)
-        : derivePackages(lineItems, row.result, roofline);
+  // Legacy Rebook (#155): ONE "Last Year's Design" package (everything on the
+  // quote bundled) instead of the holiday tier ladder. Positive gate, checked
+  // FIRST: the flag rides migrated HOLIDAY quotes, so the holiday fall-through
+  // below would otherwise build A/B/C + the empty Build-Your-Own slot.
+  const isLegacyRebook = row.legacy_rebook === true;
+  const allPackages = isLegacyRebook
+    ? derivePackagesLegacyRebook(lineItems, row.result)
+    : isPermanent
+      ? derivePackagesPermanent(lineItems, row.result)
+      : isEvent
+        ? derivePackagesEvent(lineItems, row.result)
+        : isPermanentBistro
+          ? derivePackagesPermanentBistro(lineItems, row.result)
+          : derivePackages(lineItems, row.result, roofline);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
   // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
