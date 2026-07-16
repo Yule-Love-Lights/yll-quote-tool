@@ -39,6 +39,9 @@ type QuoteGhlRow = {
   highlevel_opportunity_id: string | null;
   service_type: string | null;
   is_test: boolean;
+  // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
+  // service_type's own map — see resolvePipelineStages.
+  legacy_rebook: boolean;
 };
 
 /**
@@ -53,11 +56,11 @@ export async function moveQuoteCardToInstalled(quoteId: string | null): Promise<
     if (!sb) return;
     const { data: quote } = await sb
       .from('quotes')
-      .select('id, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test')
+      .select('id, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook')
       .eq('id', quoteId)
       .maybeSingle<QuoteGhlRow>();
     if (!quote || quote.is_test || !isHighLevelConfigured()) return;
-    const stages = resolvePipelineStages(quote.service_type);
+    const stages = resolvePipelineStages(quote.service_type, { legacyRebook: quote.legacy_rebook });
     let opportunityId = quote.highlevel_opportunity_id;
     if (!opportunityId && quote.highlevel_contact_id) {
       const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);

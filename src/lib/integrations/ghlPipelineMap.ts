@@ -77,6 +77,28 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
   },
 };
 
+// ─── Legacy rebook (#156): "Yule Love Lights Neighbors" pipeline ──────────
+// Quotes migrated from last year's Jobber data (legacy_rebook = true) keep
+// service_type='holiday' — pricing and the portal both depend on it — but
+// their GHL card must NEVER land in the Christmas Lights pipeline: that would
+// fire the regular holiday drip workflows on a customer who already has a
+// signed history with us. Routing keys on the quote's legacy_rebook flag
+// alone (checked in resolvePipelineStages BEFORE the service-type dispatch),
+// never on service_type.
+//
+// IDs discovered live from the GHL API (2026-07-16). `entry` reuses the Bid
+// Sent stage id: a legacy rebook's opportunity is only ever created at send
+// time — there's no separate "brand-new lead" moment for a migrated quote,
+// unlike a normal holiday lead captured off the website.
+const NEIGHBORS_STAGES: PipelineStages = {
+  pipelineId: 'TIYqklVJ349F5heaSkCs', // Yule Love Lights Neighbors
+  entry: '9ada8238-1e95-4242-b567-7edf3bef6c2c', // Bid Sent
+  sent: '9ada8238-1e95-4242-b567-7edf3bef6c2c', // Bid Sent
+  depositPaid: 'da6521b1-b945-4484-8251-6c6dc487c860', // Booked
+  installed: 'eb773949-401d-4e61-959c-3d5b1d92f77e', // Installed
+  declined: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2025
+};
+
 /**
  * Resolve the pipeline + stage ids to use for a quote's service_type.
  *
@@ -99,15 +121,38 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
  * HIGHLEVEL_STAGE_QUOTE_CREATED is configured in prod to point at the
  * mid-pipeline "Make Quote" stage (right for the quote-send flow, wrong for
  * a fresh lead).
+ *
+ * opts.legacyRebook (#156) — POSITIVE gate, checked FIRST, before the
+ * service-type dispatch below: true routes to the Neighbors pipeline no
+ * matter what serviceType is passed. A legacy_rebook quote's service_type
+ * stays 'holiday' (pricing/portal depend on it), so this can never be
+ * expressed as a serviceType value — it's a separate flag on the quote row,
+ * and callers must read it off their own quote SELECT and pass it through.
+ * Env overrides (HIGHLEVEL_PIPELINE_ID_NEIGHBORS etc.) still honor
+ * opts.envOverrides the same way holiday's legacy vars do.
  */
 export function resolvePipelineStages(
   serviceType?: string | null,
-  opts?: { envOverrides?: boolean },
+  opts?: { envOverrides?: boolean; legacyRebook?: boolean },
 ): PipelineStages {
+  const envOverrides = opts?.envOverrides ?? true;
+
+  if (opts?.legacyRebook === true) {
+    if (!envOverrides) return NEIGHBORS_STAGES;
+    const sentStage = process.env.HIGHLEVEL_STAGE_NEIGHBORS_SENT || NEIGHBORS_STAGES.sent;
+    return {
+      pipelineId: process.env.HIGHLEVEL_PIPELINE_ID_NEIGHBORS || NEIGHBORS_STAGES.pipelineId,
+      entry: sentStage, // opportunities are only ever created at send time
+      sent: sentStage,
+      depositPaid: process.env.HIGHLEVEL_STAGE_NEIGHBORS_DEPOSIT_PAID || NEIGHBORS_STAGES.depositPaid,
+      installed: process.env.HIGHLEVEL_STAGE_NEIGHBORS_INSTALLED || NEIGHBORS_STAGES.installed,
+      declined: process.env.HIGHLEVEL_STAGE_NEIGHBORS_DECLINED || NEIGHBORS_STAGES.declined,
+    };
+  }
+
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   const base = PIPELINE_MAP[type];
 
-  const envOverrides = opts?.envOverrides ?? true;
   if (type !== 'holiday' || !envOverrides) return base;
 
   const approvedStage =
@@ -161,9 +206,18 @@ const QUOTE_LINK_FIELD_ENV: Record<ServiceType, string> = {
  *
  * The legacy single-field HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK env var is DEAD
  * — it is not read here or anywhere else in the app.
+ *
+ * opts.legacyRebook (#156) — POSITIVE gate, same as resolvePipelineStages:
+ * true resolves the NEIGHBOR field (HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR)
+ * regardless of serviceType, and NEVER falls back to the holiday field when
+ * that var is unset — a stamp on the holiday field would feed the Christmas
+ * Lights drip automations, the exact collision this routing exists to avoid.
  */
-export function quoteLinkFieldId(serviceType?: string | null): string | undefined {
-  return process.env[quoteLinkFieldEnvVar(serviceType)] || undefined;
+export function quoteLinkFieldId(
+  serviceType?: string | null,
+  opts?: { legacyRebook?: boolean },
+): string | undefined {
+  return process.env[quoteLinkFieldEnvVar(serviceType, opts)] || undefined;
 }
 
 /**
@@ -171,7 +225,11 @@ export function quoteLinkFieldId(serviceType?: string | null): string | undefine
  * a service_type — exported so call sites can name the exact var they're
  * missing in a warn/log message without duplicating this map.
  */
-export function quoteLinkFieldEnvVar(serviceType?: string | null): string {
+export function quoteLinkFieldEnvVar(
+  serviceType?: string | null,
+  opts?: { legacyRebook?: boolean },
+): string {
+  if (opts?.legacyRebook === true) return 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR';
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   return QUOTE_LINK_FIELD_ENV[type];
 }

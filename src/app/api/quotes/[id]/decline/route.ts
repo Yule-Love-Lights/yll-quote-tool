@@ -84,6 +84,9 @@ type QuoteRow = QuoteStatusRow & {
   highlevel_opportunity_id: string | null;
   service_type: string | null;
   is_test: boolean;
+  // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
+  // service_type's own map — see resolvePipelineStages.
+  legacy_rebook: boolean;
 };
 
 // Best-effort: move the quote's linked HighLevel opportunity to the Declined
@@ -97,7 +100,7 @@ async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<voi
   if (quote.is_test || !isHighLevelConfigured()) return;
 
   try {
-    const stages = resolvePipelineStages(quote.service_type);
+    const stages = resolvePipelineStages(quote.service_type, { legacyRebook: quote.legacy_rebook });
     let opportunityId = quote.highlevel_opportunity_id;
     if (!opportunityId && quote.highlevel_contact_id) {
       const existing = await findOpportunityForContact(quote.highlevel_contact_id, stages.pipelineId);
@@ -114,7 +117,7 @@ async function moveDeclinedOpportunity(quote: QuoteRow, id: string): Promise<voi
   // card — the field can be stamped while the linked opportunity id is stale,
   // so the two are attempted independently.
   if (quote.highlevel_contact_id) {
-    const fieldId = quoteLinkFieldId(quote.service_type);
+    const fieldId = quoteLinkFieldId(quote.service_type, { legacyRebook: quote.legacy_rebook });
     if (fieldId) {
       try {
         await upsertContactCustomField(quote.highlevel_contact_id, fieldId, '');
@@ -160,7 +163,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
     )
     .eq('id', id)
     .single<QuoteRow>();
