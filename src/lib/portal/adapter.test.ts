@@ -411,6 +411,27 @@ describe('BILLED_ROOFLINE_IDS (#110 W3-003)', () => {
   });
 });
 
+describe('quoteRowToPortalQuote — legacy_rebook mapping (#155)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+
+  it('maps legacy_rebook: true to legacyRebook: true', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), legacy_rebook: true };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.legacyRebook).toBe(true);
+  });
+
+  it('maps legacy_rebook: false to legacyRebook: false', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), legacy_rebook: false };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.legacyRebook).toBe(false);
+  });
+
+  it('defaults legacyRebook to false when the column is absent (legacy/back-compat row)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
+    expect(portal.legacyRebook).toBe(false);
+  });
+});
+
 describe('event schedule (#96)', () => {
   const evInputs = emptyInputs({
     santasFootage: 100,

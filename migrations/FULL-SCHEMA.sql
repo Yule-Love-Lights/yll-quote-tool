@@ -167,7 +167,10 @@ alter table quotes
   -- 2026-06-28 actor audit trail (#81/#90)
   add column if not exists created_by uuid references auth.users(id) on delete set null,
   -- 2026-06-28 Test Quote flag (#93) — fully-simulated end-to-end test data
-  add column if not exists is_test boolean not null default false;
+  add column if not exists is_test boolean not null default false,
+  -- 2026-07-16 Legacy rebook flag (#155) — quotes migrated from last year's
+  -- Jobber data get a slightly different portal + an admin detail line.
+  add column if not exists legacy_rebook boolean not null default false;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check

@@ -68,6 +68,7 @@ export function LightColorPicker() {
     schemes,
     buildableColorIds,
     locked,
+    legacyRebook,
     showDaylight,
     toggleDaylight,
     daylightAvailable,
@@ -117,12 +118,15 @@ export function LightColorPicker() {
           Light color
         </p>
         <p className="text-[14px] md:text-[15px] text-[#A89F87] mb-4">
-          Pick a color or pattern — your design recolors instantly above.
+          {legacyRebook === true
+            ? 'Want to change up your lights this year? Let us know below!'
+            : 'Pick a color or pattern — your design recolors instantly above.'}
         </p>
         {/* #61 — daytime⇄lit view toggle, moved here from the hero top bar. Drives
             the hero's day/night view via SelectionContext. Only when a base photo
-            exists to switch to. */}
-        {daylightAvailable && (
+            exists to switch to. #155 — hidden entirely for a legacy rebook portal
+            variant (positive gate; every other quote is unaffected). */}
+        {legacyRebook !== true && daylightAvailable && (
           <button
             type="button"
             onClick={() => {
