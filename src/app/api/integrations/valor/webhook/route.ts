@@ -272,6 +272,35 @@ export async function POST(req: NextRequest) {
   // pointlessly retry every unrelated sale). A signed-but-unmatched APPROVED txn
   // is logged loudly in case it ever signals a real booking we failed to map.
   if (!event.orderRef) {
+    // #159 DIAGNOSTIC (first real payment, 2026-07-17): a REAL hosted-page
+    // deposit (quote #1191) charged fine at Valor with our ref stored as its
+    // Invoice No (`q…`), but its E-Invoice confirmation webhook carried NO field
+    // parseWebhookEvent recognizes as the order ref → hasOrderRef:false → the
+    // charge is IGNORED here and the quote never auto-books. We can't fix the
+    // pick-list without knowing Valor's actual field name, and the summary log
+    // above doesn't reveal it. Log the payload's top-level + one-level-nested
+    // KEY NAMES (names only — NEVER values, so no card/PII data leaks; mirrors
+    // the probe branch's safe key-name logging) so the NEXT deposit reveals the
+    // field, which then gets added to the pick-list (or we stamp Valor's `uid`
+    // at /pay and match on it). Behavior is otherwise unchanged — still a 200 ack.
+    const keyDump: string[] = [];
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const k of Object.keys(parsed as Record<string, unknown>).slice(0, 60)) {
+          keyDump.push(k);
+          const v = (parsed as Record<string, unknown>)[k];
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            for (const k2 of Object.keys(v as Record<string, unknown>).slice(0, 60)) keyDump.push(`${k}.${k2}`);
+          }
+        }
+      }
+    } catch {
+      /* non-JSON body */
+    }
+    console.log(
+      `[valor/webhook] APPROVED txn IGNORED (no recognized order ref) — payload keys: [${keyDump.join(', ')}]`,
+    );
     return NextResponse.json({ ok: true, ignored: 'no-order-ref' });
   }
 
