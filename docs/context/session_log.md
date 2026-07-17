@@ -15,9 +15,9 @@ metadata:
 
 ---
 
-### Session 41 (Jason) — YLL's FIRST REAL CUSTOMER PAYMENT exposed a money-path cluster; 3 fixes LIVE (#159 auto-book · #165 cents · #160 BOM-selection) + #161 vault-probe->parked + #166 race logged + session-open backlog/audit-review (2026-07-17)
+### Session 27 (Jason) — YLL's FIRST REAL CUSTOMER PAYMENT exposed a money-path cluster; 3 fixes LIVE (#159 auto-book · #165 cents · #160 BOM-selection) + #161 vault-probe->parked + #166 race logged + session-open backlog/audit-review (2026-07-17)
 
-> **CLOSE.** One conversation = S41 (Jason). **SESSION-NUMBER FIX:** this started mislabeled "S27" (Jason's local memory was stale) but Naldo's concurrent sessions took S27-S40, so this is **S41** (next after Naldo S40). Master `4101f6c` (S41 start) -> `405f491` (close); gates tsc 0 / eslint 0 / vitest **3481**. Caveman ON, Fable seat (Sonnet builders, explicit model every spawn).
+> **CLOSE.** One conversation = S27 (Jason). **SESSION-NUMBERING RULE (Jason, this close): the two devs' counters are SEPARATE.** Jason's log counts Session 1..N in session_log.md (previous close = S26, so this is **S27**); Naldo's "Naldo SN" numbers in session_log_naldo.md are HIS OWN thread — never cross-apply his counter to Jason's log (an earlier draft of this entry mislabeled it "S41" off Naldo's counter). Master `4101f6c` (S27 start) -> `405f491` (close); gates tsc 0 / eslint 0 / vitest **3481**. Caveman ON, Fable seat (Sonnet builders, explicit model every spawn).
 >
 > **THE ARC - the first real payment root-caused a money-path cluster (all via Vercel runtime logs):**
 > - **#159 deposits didn't auto-book (was CRITICAL, LIVE FIX).** A real deposit charged at Valor but never booked -> quote stuck 'approved', portal kept showing "Complete deposit". Diagnosed by a diagnostic deploy (PR #566 - key-name logging on the no-order-ref webhook branch): Valor's E-Invoice webhook nests under `data` and echoes our order ref as **`data.invoice_no`** - a field `parseWebhookEvent` didn't check. Fix = add `invoice_no` to the pick-list (PR #568). Confirmed live: a pay-then-void showed `hasOrderRef:true`, auto-booked, booking SMS fired.
@@ -33,11 +33,11 @@ metadata:
 >
 > **Also:** built `create-operator.mjs` (one-off operator-account bootstrap via the service-role key - Jason made his own login; DELETE the script). Corrected an early bad relay: the "#524 bundles an undisclosed lead-retry system" finder claim was a stale three-dot-diff artifact (that code was already in master) - caught before it went into writing to Naldo.
 >
-> **Confirmed decisions S41 (don't re-ask):** Valor webhook amount is CENTS (/100) - Valor hosted page does NOT vault via save_card=1 (needs a different path) - card fee = eat it for now, revisit with the rate (Settings-editable / freeze-per-quote) - #109 shelved seasonal - #150 scrapped.
+> **Confirmed decisions S27 (don't re-ask):** Valor webhook amount is CENTS (/100) - Valor hosted page does NOT vault via save_card=1 (needs a different path) - card fee = eat it for now, revisit with the rate (Settings-editable / freeze-per-quote) - #109 shelved seasonal - #150 scrapped.
 >
 > **Cross-dev (Naldo):** all my code was Jason-area money path (valor.ts, webhook route, inventory/jobs.ts) - merged on Jason's go, SHA-verified each deploy. Naldo's concurrent "booking bug batch" (#567 PDF-deposit-paid + 5-step approved page, #570 convert-to-job GHL stage move, #569 referral page) landed complementary to mine, no conflicts. **My 3 fixes pushed to #524's branch await Naldo's merge; the #527 review verdict is posted.**
 >
-> **State at close:** master **`405f491`**, prod serving the money fixes (each deploy SHA-checked); gates tsc 0 / eslint 0 / vitest **3481**. **NEXT (S42): (1) #166** approved-page confirming-state fix (small; a refresh resolves it, low-urgency); **(2) #161** vault - blocked on the Valor question (hosted-page vault param or REST API); **(3)** Naldo to merge my #524 fixes + act on the #527 review. Parked: #162/#163 (post-approval selection edit + post-booking colour request) - #164 card fee (needs rate) - #83 auto-charge (needs #161). Next free ledger #: **167**.
+> **State at close:** master **`405f491`**, prod serving the money fixes (each deploy SHA-checked); gates tsc 0 / eslint 0 / vitest **3481**. **NEXT (S28): (1) #166** approved-page confirming-state fix (small; a refresh resolves it, low-urgency); **(2) #161** vault - blocked on the Valor question (hosted-page vault param or REST API); **(3)** Naldo to merge my #524 fixes + act on the #527 review. Parked: #162/#163 (post-approval selection edit + post-booking colour request) - #164 card fee (needs rate) - #83 auto-charge (needs #161). Next free ledger #: **167**.
 
 ### Session 26 — backlog blitz: GHL pipeline-sync ARC live end-to-end (+quote links in the drips) · customer color-picker 2-layer auth fix · wave-1 UI batch (2026-07-10)
 
