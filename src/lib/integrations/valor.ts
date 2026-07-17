@@ -120,16 +120,13 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     // (the default, "calculate fee from portal") double-charged tax + added a
     // card-difference surcharge — the customer must pay the deposit we showed.
     ignore_surcharge_calc: 1,
-    // #161: ask Valor to VAULT the card at deposit so we can later auto-charge
-    // the 50% balance (the #83 card-on-file path). `save_card=1` is the flag the
-    // removed getClientToken used; whether the HOSTED-PAGE product honors it and
-    // returns a token in the confirmation webhook is UNCONFIRMED — a live deposit
-    // is the probe (the webhook already persists event.vaultToken → valor_vault_token).
-    // NOTE: this stores the card; it does NOT charge it. The balance auto-charge
-    // stays gated behind VALOR_AUTO_CHARGE_ENABLED (off). A customer card-on-file
-    // CONSENT/disclosure line is still owed before relying on stored cards for
-    // real customers (see docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md §3).
-    save_card: 1,
+    // #161: `save_card: 1` was PROBED here to vault the card at deposit (for the
+    // future #83 balance auto-charge) — but a live test (2026-07-17) confirmed
+    // the HOSTED-PAGE product does NOT honor it: the card never landed in the
+    // Valor Vault and the webhook returned no token. Reverted (a dead param).
+    // Card-on-file needs a different path (the correct hosted-page param per
+    // Valor support, or the separate valor-vault REST profile API) — see #161
+    // in the ledger + docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md §1.
     shipping_country: 'US',
     customer_name: input.customerName?.trim() || 'Customer',
     success_url: input.successUrl,

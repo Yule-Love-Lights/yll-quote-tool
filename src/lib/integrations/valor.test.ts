@@ -46,9 +46,10 @@ describe('parseWebhookEvent — order ref extraction', () => {
   });
 });
 
-// #161: the deposit hosted-page call asks Valor to vault the card (save_card=1)
-// so we can later auto-charge the balance. This does not charge the card; the
-// auto-charge stays gated behind VALOR_AUTO_CHARGE_ENABLED.
+// #161: the deposit hosted-page call charges EXACTLY the deposit (no surcharge)
+// and round-trips our order ref. `save_card` was probed to vault the card but the
+// hosted page does NOT honor it (live test 2026-07-17) — reverted, so it must be
+// absent from the body (guards against it being re-added without a working path).
 describe('createHostedPageSale — request body', () => {
   const OLD_ENV = process.env;
   beforeEach(() => {
@@ -59,7 +60,7 @@ describe('createHostedPageSale — request body', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends save_card=1 to vault the card at deposit (and still charges EXACTLY the amount)', async () => {
+  it('charges EXACTLY the amount, round-trips the ref, and does NOT send save_card (#161 reverted)', async () => {
     let capturedBody: Record<string, unknown> = {};
     const fetchMock = vi.fn(async (_url: unknown, init: { body: string }) => {
       capturedBody = JSON.parse(init.body) as Record<string, unknown>;
@@ -75,10 +76,11 @@ describe('createHostedPageSale — request body', () => {
     });
 
     expect(r.url).toBe('https://valor/pay/abc');
-    expect(capturedBody.save_card).toBe(1);
-    // Unchanged money-safety flags: charge exactly the amount, our ref round-trips.
+    // Money-safety flags: charge exactly the amount, our ref round-trips.
     expect(capturedBody.ignore_surcharge_calc).toBe(1);
     expect(capturedBody.surcharge).toBe(0);
     expect(capturedBody.invoicenumber).toBe('qaf7affe2379dfd8a');
+    // save_card confirmed non-functional on the hosted page → not sent.
+    expect(capturedBody.save_card).toBeUndefined();
   });
 });
