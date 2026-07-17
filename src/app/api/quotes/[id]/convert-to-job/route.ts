@@ -34,6 +34,8 @@ import { createJobFromQuote } from '@/lib/jobs';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
+import { updateOpportunity, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 
 export const runtime = 'nodejs';
 
@@ -59,6 +61,18 @@ type QuoteForBooking = {
   // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
   // this manual booking can stamp their referral code too (see below).
   customer_id: string | null;
+  // GHL pipeline sync (booking bug batch 2026-07-17): a staff conversion is an
+  // offline close (cash/check/terminal deposit) — the SAME lifecycle event the
+  // Valor webhook already syncs to HighLevel (its hlStageMove). Diagnosed live:
+  // a real booking recorded through this route left the card stuck in its
+  // entry stage because this route never touched GHL at all. These three
+  // fields are what resolvePipelineStages + updateOpportunity need.
+  highlevel_opportunity_id: string | null;
+  service_type: string | null;
+  // legacy_rebook (#156) is a POSITIVE gate: true routes the card to the
+  // Neighbors pipeline instead of service_type's own map. Must be read off
+  // the quote row and passed through — never inferred from service_type.
+  legacy_rebook: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -90,7 +104,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, status, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref, customer_id')
+    .select(
+      'id, status, customer_approved_at, deposit_paid_at, total, is_test, approval_snapshot, valor_order_ref, customer_id, highlevel_opportunity_id, service_type, legacy_rebook',
+    )
     .eq('id', id)
     .maybeSingle<QuoteForBooking>();
 
@@ -216,6 +232,48 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     console.error('[api/quotes/:id/convert-to-job] referral code stamp failed:', err);
   }
 
+  // GHL pipeline sync (booking bug batch 2026-07-17): this is an OFFLINE close
+  // (cash/check/terminal deposit collected outside Valor), so the Valor
+  // webhook's own card-move never fires for it — move the card here instead,
+  // mirroring the webhook's hlStageMove exactly (same resolvePipelineStages
+  // call incl. the #156 Neighbors legacyRebook passthrough, same monetaryValue
+  // guard). Runs AFTER the booking write above already succeeded — never
+  // before, so a failed booking can never move a card. Best-effort: a GHL
+  // hiccup must not fail an already-recorded booking. Deliberately NO SMS/
+  // email here — staff conversions are offline closes, and customer messaging
+  // (receipt SMS/email) stays the webhook's job only, so a manual booking
+  // doesn't double-send a receipt the customer never triggered via Valor.
+  let stageUpdated = false;
+  let stageError: string | undefined;
+  if (quote.is_test) {
+    // Test Quote (#93): never touch a real GHL card. Defensive, symmetric with
+    // the webhook's own is_test guard — mirrors its "can't normally reach here
+    // but guard anyway" posture.
+    stageError = 'test quote';
+  } else if (!quote.highlevel_opportunity_id) {
+    stageError = 'No HighLevel opportunity linked to this quote';
+  } else if (!isHighLevelConfigured()) {
+    stageError = 'HighLevel not configured';
+  } else {
+    try {
+      const stages = resolvePipelineStages(quote.service_type, { legacyRebook: quote.legacy_rebook });
+      await updateOpportunity(quote.highlevel_opportunity_id, {
+        pipelineStageId: stages.depositPaid,
+        // Guard 0/missing so a degenerate total never BLANKS a live card —
+        // mirrors the Valor webhook's totalUsd > 0 ? totalUsd : undefined.
+        // agreedTotal is the SAME AGREED-total figure (W1-043) already
+        // computed above for the deposit clamp, reused here as the card's
+        // monetary value (the deal total, not the deposit itself).
+        monetaryValue: agreedTotal !== null && agreedTotal > 0 ? agreedTotal : undefined,
+      });
+      stageUpdated = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown HighLevel error';
+      console.warn('[api/quotes/:id/convert-to-job] HL stage move failed:', msg);
+      stageError = msg;
+    }
+  }
+
   // We won the race. Create the job (idempotent on quote_id — a test job for a
   // test quote, per #93; a real job otherwise).
   const job = await createJobFromQuote(id);
@@ -224,5 +282,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     booked: true,
     depositUsd: clamped,
     jobId: job?.id ?? null,
+    stageUpdated,
+    stageError,
   });
 }
