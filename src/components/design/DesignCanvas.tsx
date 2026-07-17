@@ -37,6 +37,17 @@ type Props = {
    * existing render's cheap setColorOverride imperatively.
    */
   animation?: { effect: SceneEffect; speedMs: number } | null;
+  /**
+   * Referral page bug batch 2026-07-17 (ledger #41) — fired once if the Konva
+   * render itself fails to mount (a genuine render error, e.g. a dynamic-
+   * import chunk failure — NOT a missing/expired photo URL, which
+   * renderReadOnlyDesign already tolerates by drawing the items on a blank
+   * stage). Lets a caller with its OWN static-photo fallback (the referral
+   * hero) swap over instead of sitting on this component's built-in dimmed-
+   * poster fallback. Existing callers (InteractiveHero, DesignReprise,
+   * PhotoGallery) don't pass it — they keep today's poster fallback, unchanged.
+   */
+  onRenderError?: () => void;
 };
 
 // #110 W4-006 — module-level cache so every DesignCanvas instance on a page
@@ -61,7 +72,7 @@ function fetchOfferedColors(): Promise<OfferedColorLists | null> {
 // Read-only React wrapper that mounts the live design render (Konva) into a
 // host div, client-side only (dynamic import keeps Konva out of SSR). Used by
 // the portal hero to show the customer's actual design. View-only — no editing.
-export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride, palette, renderSettings, animation }: Props) {
+export default function DesignCanvas({ scene, photoUrl, photoW, photoH, className, hiddenIds, colorOverride, palette, renderSettings, animation, onRenderError }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ReadOnlyDesignController | null>(null);
   // Loading/error state drives the sibling overlay (skeleton while the Konva
@@ -127,7 +138,10 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
       } catch {
         // Dynamic import or render rejected (e.g. an expired signed photo URL).
         // Surface the static-photo fallback instead of a permanent blank.
-        if (!cancelled) setFailed(true);
+        if (!cancelled) {
+          setFailed(true);
+          onRenderError?.();
+        }
       }
     })();
 
