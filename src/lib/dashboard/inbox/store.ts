@@ -377,27 +377,93 @@ export type OpenItemsResult =
   | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
   | { ok: false; error: string };
 
+// ─── Legacy-rebook inbox exclusion (#157) ───────────────────────────────────
+// "YLL Neighbors": quotes migrated from last year's Jobber data
+// (legacy_rebook = true, migrations/2026-07-16-legacy-rebook.sql). They're real
+// drafts, so runQuoteToolReconcile folds each into an unresponded touch same as
+// any other draft quote — flooding the operator inbox with 100+ items nobody
+// needs to action yet. This hides them from the INBOX ONLY: every dashboard/
+// stats consumer (metrics.ts, insights.ts, serviceMetrics.ts, referralMetrics.ts,
+// needsAction.ts, workflowBoard.ts) reads quotes directly and is untouched by
+// this flag — legacy quotes keep counting everywhere except the inbox surfaces.
+//
+// Flip to false once the dedicated "YLL Neighbors" rebook flow ships (task
+// #157) and these should resurface as normal inbox leads again.
+export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
+
+// A generous ceiling above the caller's `limit` to over-fetch by whenever the
+// flag above is active. The ~114 migrated drafts (as of 2026-07) share roughly
+// the same last_message_at (the import run), so — sorted oldest-first — they
+// could otherwise occupy the ENTIRE page and starve genuinely open leads that
+// arrived after the migration. 200 comfortably covers today's batch with room
+// to grow; only affects listOpenItems' internal fetch size, never the caller's
+// `limit`-sized returned page.
+const LEGACY_REBOOK_FETCH_BUFFER = 200;
+
+/**
+ * #157: drop items backed by a legacy_rebook=true ("YLL Neighbor") quote. Only
+ * a 'quotetool' item can match — its external_id IS the quote id (see
+ * quotetool.ts normalizeQuoteTouch) — so every other source is untouched by
+ * construction, even if an id happened to collide. Pure — no I/O — hence
+ * unit-testable on its own (store.test.ts).
+ */
+export function excludeLegacyRebookItems<T extends { source: unknown; external_id: unknown }>(
+  items: T[],
+  legacyQuoteIds: ReadonlySet<string>,
+): T[] {
+  if (legacyQuoteIds.size === 0) return items;
+  return items.filter((item) => !(item.source === 'quotetool' && legacyQuoteIds.has(String(item.external_id))));
+}
+
 export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+
+  // #157: over-fetch when the legacy filter is active — see
+  // LEGACY_REBOOK_FETCH_BUFFER above.
+  const fetchLimit = EXCLUDE_LEGACY_REBOOK_FROM_INBOX ? limit + LEGACY_REBOOK_FETCH_BUFFER : limit;
+
   const { data, error, count } = await sb
     .from('inbox_items')
     .select(
-      'id, source, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
+      'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
         'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
       { count: 'exact' },
     )
     .eq('status', 'unresponded')
     .is('followed_up_at', null)
     .order('last_message_at', { ascending: true })
-    .limit(limit);
+    .limit(fetchLimit);
   if (error) return { ok: false, error: error.message };
+
+  let rows = (data ?? []) as unknown as Record<string, unknown>[];
+  let legacyExcluded = 0;
+
+  // #157: batch-fetch the quotetool ids present on THIS page and drop any that
+  // are a legacy_rebook quote. Skips the extra query entirely when the page has
+  // no quotetool items (the common case for ghl/gmail/homeworks-only pages).
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
+    const quotetoolIds = [...new Set(rows.filter((r) => r.source === 'quotetool').map((r) => String(r.external_id)))];
+    if (quotetoolIds.length) {
+      const { data: quoteRows } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
+      const legacyQuoteIds = new Set(
+        ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
+          .filter((q) => q.legacy_rebook === true)
+          .map((q) => String(q.id)),
+      );
+      const before = rows.length;
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+      legacyExcluded = before - rows.length;
+    }
+  }
+
+  const trimmed = rows.slice(0, limit);
 
   // "Returning" proxy: a contact with >1 inbox_items across ALL statuses (any
   // channel, incl. handled/dismissed history). NOTE: a single customer with two
   // channels open right now also reads as returning — acceptable for v1 (we chose
   // this over the dormant quote_customer_id link).
-  const contactIds = [...new Set((data ?? []).map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
+  const contactIds = [...new Set(trimmed.map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
   const returning = new Set<string>();
   if (contactIds.length) {
     const { data: counts } = await sb
@@ -412,7 +478,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     for (const [cid, n] of tally) if (n > 1) returning.add(cid);
   }
 
-  const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): OpenInboxItem => {
+  const items = (trimmed as unknown as Record<string, unknown>[]).map((row): OpenInboxItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
       id: String(row.id),
@@ -439,7 +505,12 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   });
   // count is null only if Postgrest didn't return one (shouldn't happen with
   // { count: 'exact' }, but fall back to the page length rather than lie low).
-  const totalOpen = count ?? items.length;
+  // #157: subtract the legacy items excluded from THIS fetch so "N more not
+  // shown" never counts a hidden YLL Neighbor draft as a still-open lead.
+  // Best-effort if the fetch window didn't cover every matching row (rare,
+  // given the buffer above) — errs toward over-, never under-, reporting,
+  // matching the pre-#157 behavior this WT-41 signal already relies on.
+  const totalOpen = Math.max((count ?? rows.length) - legacyExcluded, items.length);
   return { ok: true, items, totalOpen, truncated: totalOpen > items.length };
 }
 

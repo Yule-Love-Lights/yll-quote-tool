@@ -4,6 +4,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -14,6 +15,7 @@ import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
+import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -52,6 +54,19 @@ const fmtDate = (iso: string | null | undefined) =>
     ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
     : '—';
 
+// #155 — the light color/pattern a legacy-rebook customer approved with, for
+// the admin detail card. null when the quote hasn't been approved yet (no
+// customerSelection to read) — the card renders nothing in that case.
+function chosenLightColorLabel(
+  sel: { colorSchemeId?: string; customPattern?: string[] } | undefined,
+): string | null {
+  if (!sel) return null;
+  const hasCustomPattern = Array.isArray(sel.customPattern) && sel.customPattern.length > 0;
+  if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
+  if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId).label;
+  return null;
+}
+
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
@@ -76,6 +91,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+
+  // #155 — for a legacy rebook, show what light color/pattern the customer
+  // approved with (once approved). null while awaiting approval, or for a
+  // normal (non-rebook) quote — the line simply doesn't render.
+  const chosenLightColor =
+    quote.legacy_rebook ? chosenLightColorLabel(quote.approval_snapshot?.customerSelection) : null;
 
   // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
   // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials
@@ -121,6 +142,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Test
             </span>
           )}
+          {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
+          {quote.legacy_rebook && <YllNeighborBadge />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
@@ -155,6 +178,9 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           <p className="text-sm text-gray-500">
             {[quote.customer_phone, quote.customer_email].filter(Boolean).join(' · ') || '—'}
           </p>
+          {chosenLightColor && (
+            <p className="text-sm text-gray-500 mt-1">Chosen light color: {chosenLightColor}</p>
+          )}
         </div>
 
         {/* Design photos (#13 PR5) — read-only thumbnails, base + extras. */}

@@ -325,6 +325,7 @@ export default async function PortalPage({
         initialPackageId={initialPackageId}
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
+        legacyRebook={quote.legacyRebook === true}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={
           quote.serviceType === 'permanent' ||

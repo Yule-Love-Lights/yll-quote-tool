@@ -133,6 +133,11 @@ type SelectionContextValue = {
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
   locked: boolean;
+  /** #155 — true when this quote was migrated from last year's Jobber data
+   *  (a legacy rebook). Drives the Light Color band's rebook copy (no "see it
+   *  in daylight" toggle) and the read-only What's Included list — the color
+   *  swatches themselves stay interactive. Default false. */
+  legacyRebook: boolean;
   /** #61 — daytime⇄lit-design view toggle, lifted out of the hero so the Light
    *  Color section can drive the hero's day/night view. `daylightAvailable` is
    *  false when there's no base photo to switch to. NOT affected by `locked` —
@@ -221,6 +226,34 @@ export function nextPackageSelectedItemIds(
   return new Set(pkg.includedItemIds);
 }
 
+// Pure — which mutator groups no-op for a given portal state (extracted for
+// test coverage, the computeInitialSelection/nextSelectedItemIds pattern).
+// Three groups:
+//   items      — toggleItem / selectPackage: everything that changes the
+//                included item set or the active package.
+//   fees       — toggleRush / toggleTakedown / toggleInstallTiming: the
+//                per-job add-on and early-install offers.
+//   appearance — setColorScheme / setCustomPattern / setPermanentEffect: the
+//                customer's light color/pattern/effect choice (view-side only,
+//                frozen into the approval snapshot at approve time).
+// #43 locked (booked/approved) freezes ALL THREE groups — the whole portal is
+// read-only (byte-equivalent to the pre-#155 all-noop behavior). #155
+// legacyRebook freezes ONLY the items group: a legacy rebook keeps last
+// year's item list fixed, but rush/takedown/early-install stay live (they're
+// real upsells this season) and the customer still picks their light color
+// ("Want to change up your lights this year?"). Positive gate on
+// legacyRebook === true; a normal quote is unaffected.
+export function frozenMutatorGroups(state: {
+  locked: boolean;
+  legacyRebook: boolean;
+}): { items: boolean; fees: boolean; appearance: boolean } {
+  return {
+    items: state.locked || state.legacyRebook === true,
+    fees: state.locked,
+    appearance: state.locked,
+  };
+}
+
 export function useSelection(): SelectionContextValue {
   const ctx = useContext(SelectionContext);
   if (!ctx) throw new Error('useSelection must be inside <SelectionProvider>');
@@ -252,6 +285,11 @@ export type SelectionProviderProps = {
   // #43 — when true the portal is read-only (the quote is already approved):
   // all selection setters no-op and consumers render their controls disabled.
   locked?: boolean;
+  // #155 — true for a quote migrated from last year's Jobber data (a legacy
+  // rebook). Passed straight through onto the context value (see
+  // SelectionContextValue.legacyRebook) so LightColorPicker/WhatsIncluded can
+  // read it via useSelection() without their own prop. Default false.
+  legacyRebook?: boolean;
   // #61 — whether the linked design has a base photo to toggle to (daytime view).
   daylightAvailable?: boolean;
   // Staff-set early-install promo (#40): the customer's timing starts here so the
@@ -284,6 +322,7 @@ export function SelectionProvider({
   initialPackageId = 'A',
   initialSelectedItemIds,
   locked = false,
+  legacyRebook = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
   earlyInstallDiscountsHidden = false,
@@ -489,6 +528,11 @@ export function SelectionProvider({
   // stray clickable control. (Belt-and-suspenders with the disabled controls.)
   const noop = useCallback(() => {}, []);
 
+  // #155 — which setter groups no-op for this quote (pure, unit-tested seam).
+  // locked freezes all three groups (unchanged #43 behavior); a legacy rebook
+  // freezes only the item/package setters — fees and colors stay interactive.
+  const frozen = frozenMutatorGroups({ locked, legacyRebook });
+
   const value: SelectionContextValue = {
     packageId,
     selectedItemIds,
@@ -503,30 +547,35 @@ export function SelectionProvider({
     takedownSelected,
     rushAmount: charges.rush.amount,
     takedownAmount: charges.takedown.amount,
-    toggleRush: locked ? noop : toggleRush,
-    toggleTakedown: locked ? noop : toggleTakedown,
+    // Fee toggles are deliberately NOT gated on legacyRebook — rush/takedown/
+    // early-install are live upsells on a legacy rebook (#155 r2).
+    toggleRush: frozen.fees ? noop : toggleRush,
+    toggleTakedown: frozen.fees ? noop : toggleTakedown,
     installTiming,
-    toggleInstallTiming: locked || earlyInstallHidden ? noop : toggleInstallTiming,
+    toggleInstallTiming: frozen.fees || earlyInstallHidden ? noop : toggleInstallTiming,
     septemberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.september,
     octoberDiscountRate: BUSINESS_RULES.earlyInstallDiscounts.october,
     earlyInstallHidden,
     manualDiscount,
     hasManualDiscount,
     activeName,
-    selectPackage: locked ? noop : selectPackage,
-    toggleItem: locked ? noop : toggleItem,
+    selectPackage: frozen.items ? noop : selectPackage,
+    toggleItem: frozen.items ? noop : toggleItem,
     isItemSelected,
     hiddenSceneItemIds,
     colorSchemeId,
-    setColorScheme: locked ? noop : setColorScheme,
+    // Appearance setters are deliberately NOT gated on legacyRebook — a legacy
+    // rebook customer still picks their light color/pattern/effect (#155).
+    setColorScheme: frozen.appearance ? noop : setColorScheme,
     colorOverride,
     schemes,
     buildableColorIds,
     customPattern,
-    setCustomPattern: locked ? noop : setCustomPattern,
+    setCustomPattern: frozen.appearance ? noop : setCustomPattern,
     permanentEffect,
-    setPermanentEffect: locked ? noop : setPermanentEffect,
+    setPermanentEffect: frozen.appearance ? noop : setPermanentEffect,
     locked,
+    legacyRebook,
     showDaylight,
     toggleDaylight,
     daylightAvailable,

@@ -21,6 +21,12 @@ const ENV_KEYS = [
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_PERMANENT',
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_EVENT',
   'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO',
+  'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR',
+  'HIGHLEVEL_PIPELINE_ID_NEIGHBORS',
+  'HIGHLEVEL_STAGE_NEIGHBORS_SENT',
+  'HIGHLEVEL_STAGE_NEIGHBORS_DEPOSIT_PAID',
+  'HIGHLEVEL_STAGE_NEIGHBORS_INSTALLED',
+  'HIGHLEVEL_STAGE_NEIGHBORS_DECLINED',
 ] as const;
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -151,6 +157,65 @@ describe('resolvePipelineStages', () => {
     expect(stages.pipelineId).not.toBe(resolvePipelineStages('permanent').pipelineId);
   });
 
+  it('legacy_rebook (#156): legacyRebook=true routes to the Neighbors pipeline for service_type holiday', () => {
+    const stages = resolvePipelineStages('holiday', { legacyRebook: true });
+    expect(stages).toEqual({
+      pipelineId: 'TIYqklVJ349F5heaSkCs',
+      entry: '9ada8238-1e95-4242-b567-7edf3bef6c2c', // Bid Sent (entry === sent for legacy rebooks)
+      sent: '9ada8238-1e95-4242-b567-7edf3bef6c2c',
+      depositPaid: 'da6521b1-b945-4484-8251-6c6dc487c860',
+      installed: 'eb773949-401d-4e61-959c-3d5b1d92f77e',
+      declined: 'abe1ed98-1091-4b70-bc6f-ae786cbea333',
+    });
+    // Never the Christmas Lights pipeline — the whole point of #156.
+    expect(stages.pipelineId).not.toBe(resolvePipelineStages('holiday').pipelineId);
+  });
+
+  it('legacy_rebook (#156): legacyRebook=true wins regardless of service_type (positive gate checked before service-type dispatch)', () => {
+    const holidayStages = resolvePipelineStages('holiday', { legacyRebook: true });
+    const eventStages = resolvePipelineStages('event', { legacyRebook: true });
+    const permanentStages = resolvePipelineStages('permanent', { legacyRebook: true });
+    expect(eventStages).toEqual(holidayStages);
+    expect(permanentStages).toEqual(holidayStages);
+  });
+
+  it('legacy_rebook (#156): legacyRebook=false or absent returns the OLD maps byte-identical (no regression)', () => {
+    expect(resolvePipelineStages('holiday', { legacyRebook: false })).toEqual(resolvePipelineStages('holiday'));
+    expect(resolvePipelineStages('holiday')).toEqual({
+      pipelineId: 'sC6JEcxlGnNDasanlXDN',
+      entry: '478396dd-a052-41ad-ae73-d528909cd5f4',
+      sent: 'd15bc673-2b97-48a6-8a5c-bdf3b6e4d076',
+      depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9',
+      installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b',
+      declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+    });
+  });
+
+  it('legacy_rebook (#156): env overrides win over the hardcoded Neighbors ids', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID_NEIGHBORS = 'env-neighbors-pipeline';
+    process.env.HIGHLEVEL_STAGE_NEIGHBORS_SENT = 'env-neighbors-sent';
+    process.env.HIGHLEVEL_STAGE_NEIGHBORS_DEPOSIT_PAID = 'env-neighbors-deposit';
+    process.env.HIGHLEVEL_STAGE_NEIGHBORS_INSTALLED = 'env-neighbors-installed';
+    process.env.HIGHLEVEL_STAGE_NEIGHBORS_DECLINED = 'env-neighbors-declined';
+
+    const stages = resolvePipelineStages('holiday', { legacyRebook: true });
+    expect(stages).toEqual({
+      pipelineId: 'env-neighbors-pipeline',
+      entry: 'env-neighbors-sent',
+      sent: 'env-neighbors-sent',
+      depositPaid: 'env-neighbors-deposit',
+      installed: 'env-neighbors-installed',
+      declined: 'env-neighbors-declined',
+    });
+  });
+
+  it('legacy_rebook (#156): envOverrides:false returns the raw hardcoded Neighbors ids even when env vars are set', () => {
+    process.env.HIGHLEVEL_PIPELINE_ID_NEIGHBORS = 'env-neighbors-pipeline';
+
+    const stages = resolvePipelineStages('holiday', { legacyRebook: true, envOverrides: false });
+    expect(stages.pipelineId).toBe('TIYqklVJ349F5heaSkCs');
+  });
+
   it('unknown service_type falls back to holiday (the default)', () => {
     const stages = resolvePipelineStages('not-a-real-type');
     expect(stages.pipelineId).toBe('sC6JEcxlGnNDasanlXDN');
@@ -210,6 +275,21 @@ describe('quoteLinkFieldId', () => {
     expect(quoteLinkFieldId('holiday')).toBeUndefined();
     delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK;
   });
+
+  it('legacy_rebook (#156): legacyRebook=true resolves the NEIGHBOR field, regardless of service_type', () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR = 'field_neighbor';
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_holiday';
+
+    expect(quoteLinkFieldId('holiday', { legacyRebook: true })).toBe('field_neighbor');
+    expect(quoteLinkFieldId('holiday', { legacyRebook: true })).not.toBe(quoteLinkFieldId('holiday'));
+  });
+
+  it('legacy_rebook (#156): CRITICAL — legacyRebook=true with the neighbor field UNSET returns undefined, NEVER falls back to the holiday field', () => {
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR;
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_holiday';
+
+    expect(quoteLinkFieldId('holiday', { legacyRebook: true })).toBeUndefined();
+  });
 });
 
 describe('quoteLinkFieldEnvVar', () => {
@@ -222,5 +302,10 @@ describe('quoteLinkFieldEnvVar', () => {
   it('default/unknown service_type names the HOLIDAY var', () => {
     expect(quoteLinkFieldEnvVar(null)).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY');
     expect(quoteLinkFieldEnvVar('not-a-real-type')).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY');
+  });
+
+  it('legacy_rebook (#156): legacyRebook=true names the NEIGHBOR var regardless of service_type', () => {
+    expect(quoteLinkFieldEnvVar('holiday', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
+    expect(quoteLinkFieldEnvVar('permanent', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
   });
 });

@@ -41,6 +41,9 @@ export type QuoteListItem = {
   // Service line (#123): holiday (default) / permanent / event. NULL on legacy
   // pre-migration rows — the admin list reads it as DEFAULT_SERVICE_TYPE.
   service_type: ServiceType | null;
+  // Legacy rebook (#155/#158): quote migrated from last year's Jobber data —
+  // the admin list shows a "YLL Neighbor" badge (YllNeighborBadge).
+  legacy_rebook: boolean;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -52,7 +55,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -437,10 +440,18 @@ export type QuoteRaw = {
   total: number | null;
   // The frozen approval snapshot jsonb (#83 Phase 4): the customer's signed
   // selection plus the post-approval `amendments[]` trail. Untyped beyond the
-  // amendments array the detail view reads — old/future snapshots degrade
-  // gracefully.
+  // amendments array + the #155 customerSelection color fields the detail
+  // view reads — old/future snapshots degrade gracefully.
   approval_snapshot: {
     amendments?: AmendmentTrailEntry[];
+    // #155: the customer's approved light color/pattern (mirrors adapter.ts's
+    // ApprovalSnapshotJson), read by the admin detail page to show "Chosen
+    // light color" for a legacy rebook. Absent when the quote isn't approved.
+    customerSelection?: {
+      colorSchemeId?: string;
+      customPattern?: string[];
+      [key: string]: unknown;
+    };
     [key: string]: unknown;
   } | null;
   // Explicit lifecycle status + display number (ledger #83 Phase 1). NULL on
@@ -451,6 +462,9 @@ export type QuoteRaw = {
   // Test Quote (ledger #93) — so editing a test quote keeps it in TEST MODE
   // (derived from the saved row, never re-set from the URL on edit).
   is_test: boolean;
+  // Legacy rebook (#155): quote migrated from last year's Jobber data — the
+  // admin detail page shows a badge + (once approved) the chosen light color.
+  legacy_rebook: boolean;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -460,7 +474,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook',
     )
     .eq('id', id)
     .maybeSingle();

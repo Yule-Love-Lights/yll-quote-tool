@@ -306,6 +306,19 @@ describe('POST /api/quotes/[id]/decline — GHL card move (#GHL pipeline sync)',
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 
+  it('legacy_rebook (#156): moves a legacy rebook card to the Neighbors Declined stage, never the holiday one', async () => {
+    const { client } = makeSb(
+      baseQuote({ highlevel_opportunity_id: 'opp_1', service_type: 'holiday', legacy_rebook: true }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_1', {
+      pipelineStageId: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2025 (Neighbors)
+    });
+  });
+
   it('never touches GHL for a TEST quote', async () => {
     const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_1', is_test: true }));
     sbRef.current = client;
@@ -426,6 +439,36 @@ describe('POST /api/quotes/[id]/decline — decline clears the quote-link field'
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
 
     delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+  });
+
+  it('legacy_rebook (#156): CRITICAL — clears the NEIGHBOR field, never falls back to the holiday field when unset', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR;
+    const { client } = makeSb(
+      baseQuote({ highlevel_contact_id: 'contact_1', service_type: 'holiday', legacy_rebook: true }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    // Never stamps/clears the holiday field for a legacy rebook.
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+  });
+
+  it('legacy_rebook (#156): clears the NEIGHBOR field when its env var IS configured', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR = 'field_quote_link_neighbor';
+    const { client } = makeSb(
+      baseQuote({ highlevel_contact_id: 'contact_1', service_type: 'holiday', legacy_rebook: true }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'Budget' }), { params });
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'field_quote_link_neighbor', '');
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR;
   });
 
   it('skips the clear entirely when HighLevel is not configured', async () => {

@@ -102,6 +102,9 @@ type QuoteRow = {
   // Test Quote (ledger #93): true ⇒ simulate the send (stamp quote_sent_at but
   // never move a real GHL card or text/email the customer).
   is_test: boolean;
+  // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
+  // service_type's own map — see resolvePipelineStages.
+  legacy_rebook: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -143,7 +146,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -231,10 +234,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // and never touch a real contact); a ?retryGhl reconcile is exempt too (the
   // original send already passed this gate).
   if (!isGhlRetry && !quote.is_test && !quote.highlevel_contact_id) {
+    const customerLabel = quote.customer_name?.trim() || 'this customer';
     return NextResponse.json(
       {
         error:
-          'Pick a HighLevel contact for this quote before sending — without one we can’t text or email the customer or move their pipeline card.',
+          `No HighLevel contact linked for ${customerLabel} — a matching contact must already exist in HighLevel and be linked to this quote before sending (we never auto-create one). Link a contact from the search, then send again.`,
         code: 'no-contact',
       },
       { status: 400 },
@@ -297,7 +301,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Per-service-type pipeline/stage resolution (#GHL pipeline sync) — holiday
   // still honors the legacy HIGHLEVEL_PIPELINE_ID/STAGE_* env vars when set
   // (prod back-compat); permanent/event always use their own pipeline.
-  const stages = resolvePipelineStages(quote.service_type);
+  // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
+  // routing to the Neighbors pipeline instead of Christmas Lights.
+  const stages = resolvePipelineStages(quote.service_type, { legacyRebook: quote.legacy_rebook });
   // Card title = the customer's name; value = the "Full Yule" ceiling (#107),
   // falling back to the billed total on pre-#107 quotes.
   const cardName = quote.customer_name?.trim() || 'Yule Love Lights quote';
@@ -398,10 +404,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // and sets the per-type env var) — until then, skip silently with one warn
     // rather than treating a missing field as a send failure.
     if (stageUpdated && !quote.is_test && quote.highlevel_contact_id) {
-      const fieldId = quoteLinkFieldId(quote.service_type);
+      const fieldId = quoteLinkFieldId(quote.service_type, { legacyRebook: quote.legacy_rebook });
       if (!fieldId) {
         console.warn(
-          `[api/quotes/:id/send] ${quoteLinkFieldEnvVar(quote.service_type)} not set — skipping quote-link custom field stamp`,
+          `[api/quotes/:id/send] ${quoteLinkFieldEnvVar(quote.service_type, { legacyRebook: quote.legacy_rebook })} not set — skipping quote-link custom field stamp`,
         );
       } else {
         try {

@@ -570,6 +570,18 @@ describe('Valor webhook — per-service-type pipeline (#GHL pipeline sync)', () 
     });
   });
 
+  it('legacy_rebook (#156): a legacy rebook holiday quote moves its card to the Neighbors Booked stage, NOT the legacy env-configured holiday stage', async () => {
+    const { client } = makeSb({ ...QUOTE, service_type: 'holiday', legacy_rebook: true }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'da6521b1-b945-4484-8251-6c6dc487c860', // Booked (Neighbors)
+      monetaryValue: 2700,
+    });
+  });
+
   it('a missing service_type (legacy row) defaults to holiday and still honors the env var', async () => {
     const { client } = makeSb({ ...QUOTE, service_type: null }, [{ id: 'quote-1' }]);
     sbRef.current = client;

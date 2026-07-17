@@ -134,6 +134,19 @@ describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', 
     );
   });
 
+  it('legacy_rebook (#156): a legacy rebook quote (service_type holiday) routes to the Neighbors pipeline, never Christmas Lights', async () => {
+    sbRef.current = makeSb({ id: QUOTE_ID, service_type: 'holiday', legacy_rebook: true }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineId: 'TIYqklVJ349F5heaSkCs', // Yule Love Lights Neighbors
+        fallbackStageId: '9ada8238-1e95-4242-b567-7edf3bef6c2c', // Bid Sent
+      }),
+    );
+  });
+
   it('a quote whose row cannot be read defaults to the holiday pipeline (fail-open)', async () => {
     sbRef.current = makeSb(null, null); // maybeSingle → no row
 

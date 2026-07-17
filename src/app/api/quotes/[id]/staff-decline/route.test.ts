@@ -328,6 +328,22 @@ describe('POST /api/quotes/[id]/staff-decline — GHL card move (#GHL pipeline s
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 
+  it('legacy_rebook (#156): moves a legacy rebook card to the Neighbors Declined stage, never the holiday one', async () => {
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_opportunity_id: 'opp_1',
+      service_type: 'holiday',
+      legacy_rebook: true,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_1', {
+      pipelineStageId: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2025 (Neighbors)
+    });
+  });
+
   it('never touches GHL for a TEST quote', async () => {
     const { client } = makeSb({ ...BASE_SENT_QUOTE, highlevel_opportunity_id: 'opp_1', is_test: true });
     sbRef.current = client;
@@ -477,6 +493,24 @@ describe('POST /api/quotes/[id]/staff-decline — decline clears the quote-link 
     hl.configured.value = false;
     process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
     const { client } = makeSb({ ...BASE_SENT_QUOTE, highlevel_contact_id: 'contact_1', service_type: 'holiday' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY;
+  });
+
+  it('legacy_rebook (#156): CRITICAL — clears the NEIGHBOR field, never falls back to the holiday field when unset', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_HOLIDAY = 'field_quote_link_holiday';
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR;
+    const { client } = makeSb({
+      ...BASE_SENT_QUOTE,
+      highlevel_contact_id: 'contact_1',
+      service_type: 'holiday',
+      legacy_rebook: true,
+    });
     sbRef.current = client;
 
     const res = await POST(makeReq({ reason: 'x' }), ctx());

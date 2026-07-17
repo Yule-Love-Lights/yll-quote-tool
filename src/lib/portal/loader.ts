@@ -60,7 +60,9 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
           // to their own package derivation + rate-snapshot minimum gate.
           // #41: added customer_id so the booked-page referral section can
           // ensure/read this customer's referral code.
-          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type',
+          // #155: added legacy_rebook so the portal can show the legacy-rebook
+          // variant (LightColorPicker copy/toggle + WhatsIncluded read-only items).
+          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type, legacy_rebook',
         )
         .eq('id', id)
         .maybeSingle<QuoteRowForPortal>(),
@@ -122,7 +124,12 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       // (!== permanent && !== event) silently handed that clobber to bistro,
       // the exact AGENTS.md negative-gate pitfall. A null/legacy service_type
       // reads as holiday — the DEFAULT.
-      if (data.service_type == null || data.service_type === 'holiday') {
+      // LEGACY REBOOK carve-out (#155): a legacy rebook IS a holiday quote,
+      // but its adapter repurposes 'D' as the single "Last Year's Design"
+      // bundle (same reason the other verticals are excluded), so the
+      // positively-matched legacy flag skips the rewrite here too.
+      const isLegacyRebook = data.legacy_rebook === true;
+      if (!isLegacyRebook && (data.service_type == null || data.service_type === 'holiday')) {
         portal.packages = applyOurRecommendation(
           portal.packages,
           portal.lineItems,

@@ -214,7 +214,14 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseClient: () => null,
 }));
 
-import { ensureFollowUp, listOpenItems, listEscalatableItems, markFollowUpDone } from './store';
+import {
+  ensureFollowUp,
+  EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
+  excludeLegacyRebookItems,
+  listOpenItems,
+  listEscalatableItems,
+  markFollowUpDone,
+} from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
  *  All intermediate chaining methods (select, eq, order, limit, in, or, is) return
@@ -232,6 +239,55 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   self.then = (resolve: (v: unknown) => void) => resolve(result);
   return { builder: self, calls };
 }
+
+// ─── excludeLegacyRebookItems — #157 (pure) ──────────────────────────────────
+
+describe('excludeLegacyRebookItems (#157 — YLL Neighbors inbox exclusion)', () => {
+  it('the reversible seam defaults ON (excluding legacy-rebook items from the inbox)', () => {
+    expect(EXCLUDE_LEGACY_REBOOK_FROM_INBOX).toBe(true);
+  });
+
+  it('drops a quotetool item whose external_id is a legacy_rebook quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-legacy' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toHaveLength(0);
+  });
+
+  it('keeps a quotetool item whose external_id is NOT a legacy_rebook quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-normal' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toEqual(items);
+  });
+
+  it('never touches a non-quotetool item, even if its external_id collides with a legacy quote id', () => {
+    const items = [
+      { source: 'ghl', external_id: 'quote-legacy' },
+      { source: 'gmail', external_id: 'quote-legacy' },
+      { source: 'homeworks', external_id: 'quote-legacy' },
+    ];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toEqual(items);
+  });
+
+  it('passes every item through unchanged when legacyQuoteIds is empty', () => {
+    const items = [
+      { source: 'quotetool', external_id: 'q1' },
+      { source: 'ghl', external_id: 'msg-1' },
+    ];
+    const result = excludeLegacyRebookItems(items, new Set());
+    expect(result).toEqual(items);
+  });
+
+  it('filters a mixed batch: legacy quotetool dropped, normal quotetool + other sources kept', () => {
+    const items = [
+      { source: 'quotetool', external_id: 'quote-legacy' },
+      { source: 'quotetool', external_id: 'quote-normal' },
+      { source: 'ghl', external_id: 'ghl-msg-1' },
+    ];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result.map((i) => i.external_id)).toEqual(['quote-normal', 'ghl-msg-1']);
+  });
+});
 
 describe('listOpenItems — select string, sort order, and field mapping', () => {
   beforeEach(() => {
@@ -409,6 +465,96 @@ describe('listOpenItems — truncation signal (WT-41)', () => {
 
     expect(result.totalOpen).toBe(0);
     expect(result.truncated).toBe(false);
+  });
+});
+
+// ─── listOpenItems — legacy-rebook exclusion wiring (#157) ──────────────────
+//
+// listOpenItems makes a THIRD sb.from('quotes') call ONLY when the fetched page
+// contains 'quotetool' items — proving the STORE (not just the pure function)
+// actually excludes legacy-rebook drafts, and that every consumer (inbox page,
+// nav badge via buildInboxSummary, /api/inbox) inherits it automatically since
+// they all read through this one function.
+
+describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const row = (id: string, source: string, externalId: string) => ({
+    id,
+    source,
+    external_id: externalId,
+    channel: 'app',
+    direction: 'inbound',
+    last_message_at: '2026-07-16T10:00:00Z',
+    preview: null,
+    subject: null,
+    escalation_level: 0,
+    contact_id: null,
+    lead_kind: null,
+    quote_value: null,
+    dashboard_contacts: null,
+  });
+
+  it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', 'quote-legacy'),
+      row('i-normal', 'quotetool', 'quote-normal'),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: 'quote-legacy', legacy_rebook: true },
+        { id: 'quote-normal', legacy_rebook: false },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((i) => i.id)).toEqual(['i-normal', 'i-ghl']);
+    expect(result.totalOpen).toBe(2); // 3 total − 1 excluded legacy item
+    expect(result.truncated).toBe(false);
+
+    // The quotes lookup only queried the ids seen on THIS page (the quotetool
+    // ones) — never the ghl item's external_id.
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall).toBeDefined();
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining(['quote-legacy', 'quote-normal']));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  it('skips the quotes lookup entirely when the page has no quotetool items', async () => {
+    const rows = [row('i-ghl', 'ghl', 'ghl-msg-1')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 1 });
+
+    let fromCalls = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items).toHaveLength(1);
+    // No contact_id → no returning-proxy call; no quotetool ids → no quotes call.
+    expect(fromCalls).toBe(1);
   });
 });
 
