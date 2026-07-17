@@ -32,6 +32,18 @@ describe('parseWebhookEvent — order ref extraction', () => {
     expect(ev.orderRef).toBeNull();
     expect(ev.approved).toBe(true);
   });
+
+  // #165: Valor reports the webhook amount in CENTS. Confirmed live 2026-07-17 —
+  // a $5.44 deposit came back as data.amount "544" and booked at $544 (100×).
+  it('converts the CENTS amount to dollars (data.amount "544" → 5.44)', () => {
+    const ev = parseWebhookEvent(JSON.stringify({ data: { response_code: '00', amount: '544', invoice_no: 'qx' } }));
+    expect(ev.amountUsd).toBe(5.44);
+  });
+
+  it('converts a whole-dollar cents amount (135000 → 1350) and null when absent', () => {
+    expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00', amount: '135000' } })).amountUsd).toBe(1350);
+    expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00' } })).amountUsd).toBeNull();
+  });
 });
 
 // #161: the deposit hosted-page call asks Valor to vault the card (save_card=1)
