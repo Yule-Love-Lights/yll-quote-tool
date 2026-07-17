@@ -241,6 +241,38 @@ describe('Valor webhook — happy path', () => {
     expect(notifyTelegram.mock.calls[0][0]).toContain('C9 Warm White');
   });
 
+  it('#159: books a quote from the REAL Valor E-Invoice shape (ref nested at data.invoice_no)', async () => {
+    // Regression for the first-real-payment incident (2026-07-17): Valor's
+    // hosted-page / E-Invoice confirmation webhook nests the transaction under
+    // `data` and echoes our order ref as `data.invoice_no` (NOT `invoicenumber`).
+    // That field was absent from parseWebhookEvent's pick-list, so a real deposit
+    // charged fine but the webhook saw hasOrderRef:false and IGNORED it → the
+    // quote never auto-booked. This pins the exact production payload now books.
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const realShape = {
+      data: {
+        txn_id: 'TXN-REAL',
+        response_code: '00',
+        amount: '489.38',
+        approval_code: 'AUTH42',
+        receipt_url: 'https://valor/receipt/real',
+        invoice_no: 'qaf7affe2379dfd8a', // our valor_order_ref, echoed here
+      },
+    };
+
+    const res = await POST(signedReq(realShape));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0].deposit_paid_at).toBeTruthy();
+    expect(updatePayloads[0].valor_txn_id).toBe('TXN-REAL');
+    expect(createJobFromQuote).toHaveBeenCalledWith('quote-1');
+  });
+
   it('still books even if the job auto-create throws (best-effort)', async () => {
     const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
