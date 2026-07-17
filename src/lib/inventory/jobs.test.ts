@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { isActiveFulfillment, groupByStage, computeStockDeductions, type FulfillmentCard } from './jobs';
+import { isActiveFulfillment, groupByStage, computeStockDeductions, selectedSceneItemIds, type FulfillmentCard } from './jobs';
+import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { applyProjectionToInputs } from '@/lib/design/projectScene';
+import type { Scene, StrandItem, SpritzerItem, GarlandItem } from '@/lib/design/sceneTypes';
 
 const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   id: 'j1',
@@ -60,5 +63,159 @@ describe('computeStockDeductions (#82 Phase 2)', () => {
       { sku: 'A', before: 10, deducted: 3, after: 7 },
       { sku: 'B', before: 5, deducted: 5, after: 0 },
     ]);
+  });
+});
+
+// ── selectedSceneItemIds (#160 — BOM respects the approved selection) ────────
+
+function baseInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
+  return {
+    santasFootage: 0,
+    santasDifficulty: 'medium',
+    gingerbreadFootage: 0,
+    gingerbreadDifficulty: 'medium',
+    winterWonderlandFootage: 0,
+    winterWonderlandDifficulty: 'medium',
+    stakeLightingFootage: 0,
+    stakeLightingDifficulty: 'medium',
+    miniLightItems: [],
+    spritzers: [],
+    wreaths: [],
+    garland: [],
+    takedown: 'included',
+    rushFee: false,
+    ...overrides,
+  };
+}
+
+function bushStrand(id: string): StrandItem {
+  return {
+    id,
+    yardstickId: null,
+    kind: 'strand',
+    bulbType: 'mini',
+    spacingIn: 6,
+    drawingStyle: 'strand',
+    colorPattern: ['warm-white'],
+    points: [0, 0, 10, 0],
+    surface: 'bush',
+    included: true,
+    stringCount: 2,
+  };
+}
+
+function spritzerItem(id: string): SpritzerItem {
+  return {
+    id,
+    yardstickId: null,
+    kind: 'spritzer',
+    x: 0,
+    y: 0,
+    sizeIn: 24,
+    colorPattern: ['warm-white'],
+    quoteSize: '24',
+    included: true,
+  };
+}
+
+function garlandItem(id: string): GarlandItem {
+  return {
+    id,
+    yardstickId: null,
+    kind: 'garland',
+    points: [0, 0, 5, 0],
+    drawingStyle: 'strand',
+    withLights: true,
+    included: true,
+    quoteLength: '9ft',
+    quoteSections: 1,
+    tier: 'bow',
+  };
+}
+
+function rooflineStrand(id: string, surface: 'santas-roofline' | 'gingerbread'): StrandItem {
+  return {
+    id,
+    yardstickId: null,
+    kind: 'strand',
+    bulbType: 'c9',
+    spacingIn: 12,
+    drawingStyle: 'strand',
+    colorPattern: ['warm-white'],
+    points: [0, 0, 20, 0],
+    surface,
+    included: true,
+  };
+}
+
+// A real scene (bush + spritzer) run through the actual projection + pricing
+// engine, so the line-item ids/labels/stableIds are exactly what a live quote
+// would produce (not hand-guessed). `liveScene` additionally carries a THIRD
+// item (a garland) that was NEVER priced — simulating a design edited after the
+// last Calculate — to exercise the fail-open guarantee.
+const pricedItems = [bushStrand('bush1'), spritzerItem('spritzer1')];
+const pricedScene: Scene = { yardsticks: [], items: pricedItems };
+const projectedInputs = applyProjectionToInputs(baseInputs(), pricedScene);
+const result = calculateQuote(projectedInputs);
+const liveScene: Scene = { yardsticks: [], items: [...pricedItems, garlandItem('garland1')] };
+
+describe('selectedSceneItemIds — (a) excludes an unselected item, fails open on an unlinked one', () => {
+  it('keeps the selected bush, drops the unselected spritzer, keeps the never-priced garland', () => {
+    const snapshot = { customerSelection: { selectedItemIds: ['bush-1'] } };
+    const keep = selectedSceneItemIds(liveScene, result, projectedInputs, snapshot);
+    expect(keep).not.toBeNull();
+    expect(keep!.has('bush1')).toBe(true);
+    expect(keep!.has('spritzer1')).toBe(false);
+    // garland1 has no corresponding line item at all (predates the last
+    // Calculate) — we can't tell if it was "selected", so it stays IN.
+    expect(keep!.has('garland1')).toBe(true);
+  });
+});
+
+describe('selectedSceneItemIds — (b) no snapshot → null (unfiltered, unchanged behavior)', () => {
+  it('returns null for a missing / empty / no-customerSelection snapshot', () => {
+    expect(selectedSceneItemIds(pricedScene, result, projectedInputs, null)).toBeNull();
+    expect(selectedSceneItemIds(pricedScene, result, projectedInputs, undefined)).toBeNull();
+    expect(selectedSceneItemIds(pricedScene, result, projectedInputs, {})).toBeNull();
+  });
+});
+
+describe('selectedSceneItemIds — (c) unresolvable / empty selection → null (fail open)', () => {
+  it('returns null when selectedItemIds is empty', () => {
+    const snapshot = { customerSelection: { selectedItemIds: [] } };
+    expect(selectedSceneItemIds(pricedScene, result, projectedInputs, snapshot)).toBeNull();
+  });
+
+  it('returns null when selectedItemIds are all unknown/stale ids', () => {
+    const snapshot = { customerSelection: { selectedItemIds: ['does-not-exist'] } };
+    expect(selectedSceneItemIds(pricedScene, result, projectedInputs, snapshot)).toBeNull();
+  });
+
+  it('returns null when there is no saved pricing result to rebuild line items from', () => {
+    const snapshot = { customerSelection: { selectedItemIds: ['bush-1'] } };
+    expect(selectedSceneItemIds(pricedScene, null, projectedInputs, snapshot)).toBeNull();
+  });
+});
+
+describe('selectedSceneItemIds — (d) mutually-exclusive roofline', () => {
+  const rooflineScene: Scene = {
+    yardsticks: [],
+    items: [rooflineStrand('front1', 'santas-roofline'), rooflineStrand('ridge1', 'gingerbread')],
+  };
+  const rooflineInputs = baseInputs({ santasFootage: 100, gingerbreadFootage: 50, rooflineChoice: 'santas' });
+  const rooflineResult = calculateQuote(rooflineInputs);
+
+  it("selecting Santa's only keeps the front strand, drops the ridge-only strand", () => {
+    const snapshot = { customerSelection: { selectedItemIds: ['roofline-santas'] } };
+    const keep = selectedSceneItemIds(rooflineScene, rooflineResult, rooflineInputs, snapshot);
+    expect(keep!.has('front1')).toBe(true);
+    expect(keep!.has('ridge1')).toBe(false);
+  });
+
+  it('selecting Gingerbread (the superset, even though NOT the recommended/billed option) keeps both', () => {
+    const snapshot = { customerSelection: { selectedItemIds: ['roofline-gingerbread'] } };
+    const keep = selectedSceneItemIds(rooflineScene, rooflineResult, rooflineInputs, snapshot);
+    expect(keep!.has('front1')).toBe(true);
+    expect(keep!.has('ridge1')).toBe(true);
   });
 });

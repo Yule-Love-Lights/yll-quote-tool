@@ -9,7 +9,8 @@ import { getSupabaseServiceClient } from '../supabase';
 import { listJobs, getJob, type JobRow } from '../jobs';
 import type { JobStatus } from '../jobStatus';
 import type { Scene } from '@/lib/design/sceneTypes';
-import { getInventoryBindings } from './bindings';
+import type { QuoteResult, QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { getInventoryBindings, type Bindings, type ClipRules } from './bindings';
 import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, adjustOnHandAtomic } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
@@ -19,6 +20,8 @@ import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 import { BISTRO_CATALOG, costOverridesFromBistroCatalog } from './bistroCatalog';
+import { buildPortalLineItems } from '@/lib/portal/adapter';
+import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import {
   fulfillmentStageOf,
   FULFILLMENT_STAGES,
@@ -186,6 +189,93 @@ function materialLinesFromBistroBom(lines: { sku: string; qty: number; asNeeded?
     }));
 }
 
+// #160: the BOM/materials-view scene item ids to KEEP for a holiday/event job,
+// derived from the customer's APPROVED selection (approval_snapshot.customer-
+// Selection.selectedItemIds — PortalLineItem ids) instead of the full scene. A
+// partial-selection job (e.g. a spritzer priced-but-not-selected before paying)
+// must not order materials for items the customer never bought.
+//
+// Returns null — "keep everything", today's unfiltered behavior — whenever the
+// selection can't be confidently resolved: no snapshot / no customerSelection, an
+// empty or unparseable selectedItemIds, no saved pricing `result` to rebuild the
+// portal line items from, or a selection that (after dropping unknown/stale ids)
+// resolves to nothing real. This never regresses an existing/legacy job to an
+// empty materials list.
+//
+// FAIL-OPEN past the top-level null too: a scene item is excluded ONLY when we
+// can positively identify the (real, scene-linked) line item backing it AND that
+// line item was not selected. Any scene item whose backing line item can't be
+// pinned down — attachSceneLinks' per-category count-mismatch guard skipped its
+// category (design edited after the last Calculate), or its kind isn't one
+// sceneLinks classifies at all — stays in the KEPT set by default. Money-
+// adjacent: under-ordering a real job (a silently missing material) is worse
+// than a redundant pull-list line for an item that was actually deselected.
+//
+// Mutually-exclusive roofline (Santa's / Gingerbread): NOT special-cased here —
+// it falls out of attachSceneLinks' own sceneItemIds for the pair (Santa's is a
+// SUBSET of Gingerbread's — see sceneLinks.ts), so selecting either one alone
+// naturally keeps exactly its own scene items and no more. Deliberately NOT filtered
+// through billableLineItemIds (the "as sent" single-recommended-option view) —
+// the customer can approve EITHER roofline option via the portal toggle (mirrors
+// the approve route's own `realIds = all lineItems`, not the billable subset), so
+// gating on billable-only would wrongly exclude a real customer's non-default
+// roofline pick.
+export function selectedSceneItemIds(
+  scene: Scene,
+  result: QuoteResult | null,
+  inputs: QuoteInputs | null,
+  approvalSnapshot: unknown,
+): Set<string> | null {
+  const sel = (approvalSnapshot as { customerSelection?: { selectedItemIds?: unknown } } | null | undefined)
+    ?.customerSelection;
+  const rawSelectedIds = Array.isArray(sel?.selectedItemIds) ? sel.selectedItemIds : null;
+  const selectedItemIds = rawSelectedIds?.filter((x): x is string => typeof x === 'string') ?? null;
+  if (!selectedItemIds || selectedItemIds.length === 0) return null; // no / empty selection
+  if (!result) return null; // no saved pricing result → can't rebuild the portal line items
+
+  const { lineItems } = buildPortalLineItems(result, inputs);
+  // Mirrors the approve route's own tamper-guard (realIds = every line item id,
+  // not just the billable/recommended subset) — drops unknown/stale ids only.
+  const realIds = new Set(lineItems.map((li) => li.id));
+  const selectedIds = new Set(selectedItemIds.filter((lid) => realIds.has(lid)));
+  if (selectedIds.size === 0) return null; // selection didn't resolve to any real line item
+
+  const linked = attachSceneLinks(lineItems, scene);
+  const linkedSceneItemIds = new Set<string>(); // every scene item claimed by SOME linked line
+  const selectedSceneIds = new Set<string>(); // scene items claimed by a SELECTED, linked line
+  for (const li of linked) {
+    const ids = li.sceneItemIds;
+    if (!ids || ids.length === 0) continue; // unlinked → doesn't inform inclusion/exclusion
+    for (const sceneId of ids) {
+      linkedSceneItemIds.add(sceneId);
+      if (selectedIds.has(li.id)) selectedSceneIds.add(sceneId);
+    }
+  }
+
+  const keep = new Set<string>();
+  for (const item of scene.items ?? []) {
+    if (selectedSceneIds.has(item.id) || !linkedSceneItemIds.has(item.id)) keep.add(item.id);
+  }
+  return keep;
+}
+
+// #160: like projectMaterials, but narrowed to selectedSceneItemIds above — the
+// ONLY call site for the filter, so a permanent/bistro job (its own BOM engine,
+// no scene projection at all) never even computes it.
+function holidayMaterialLines(
+  scene: Scene,
+  bindings: Bindings,
+  clipRules: ClipRules,
+  colorChoice: string[] | null,
+  result: QuoteResult | null,
+  inputs: QuoteInputs | null,
+  approvalSnapshot: unknown,
+): MaterialLine[] {
+  const lines = projectMaterials(scene, bindings, clipRules, colorChoice);
+  const keep = selectedSceneItemIds(scene, result, inputs, approvalSnapshot);
+  return keep === null ? lines : lines.filter((l) => keep.has(l.sceneItemId));
+}
+
 export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   const db = getSupabaseServiceClient();
   if (!db) return null;
@@ -206,12 +296,18 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   let permanentFields: PermanentQuoteFields | undefined;
   let bistroFields: PermanentBistroInputFields | undefined;
   let colorChoice: string[] | null = null; // #92 — the customer's approved color pick
+  // #160 — carried through so a holiday/event job can narrow its materials to the
+  // customer's APPROVED selection (see selectedSceneItemIds). Unused by the
+  // permanent/bistro branches (their own BOM engines never touch the scene).
+  let quoteResult: QuoteResult | null = null;
+  let quoteInputs: QuoteInputs | null = null;
+  let approvalSnapshotRaw: unknown = null;
   if (job.quote_id) {
     const [{ data: design }, { data: quote }] = await Promise.all([
       db.from('designs').select('scene').eq('quote_id', job.quote_id).maybeSingle(),
       db
         .from('quotes')
-        .select('customer_name, customer_address, is_test, approval_snapshot, service_type, inputs')
+        .select('customer_name, customer_address, is_test, approval_snapshot, service_type, inputs, result')
         .eq('id', job.quote_id)
         .maybeSingle(),
     ]);
@@ -223,7 +319,8 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
         is_test: boolean | null;
         approval_snapshot: unknown;
         service_type: string | null;
-        inputs: { permanent?: PermanentQuoteFields; permanentBistro?: PermanentBistroInputFields } | null;
+        inputs: QuoteInputs | null;
+        result: QuoteResult | null;
       };
       customerName = q.customer_name ?? null;
       customerAddress = q.customer_address ?? null;
@@ -233,6 +330,9 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
       permanentFields = q.inputs?.permanent;
       bistroFields = q.inputs?.permanentBistro;
       colorChoice = colorChoiceFromSnapshot(q.approval_snapshot);
+      quoteResult = q.result ?? null;
+      quoteInputs = q.inputs ?? null;
+      approvalSnapshotRaw = q.approval_snapshot ?? null;
     }
   }
 
@@ -259,7 +359,7 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
             costOverridesFromBistroCatalog(await listCatalog()),
           )?.lines ?? [],
         )
-      : projectMaterials(scene, bindings, clipRules, colorChoice);
+      : holidayMaterialLines(scene, bindings, clipRules, colorChoice, quoteResult, quoteInputs, approvalSnapshotRaw);
   const [catalog, onHand] = await Promise.all([listCatalog(), listOnHand()]);
   const nameOf = new Map(catalog.map((c) => [c.sku, c.name]));
   // #117: bistro's SKUs live in the STATIC bistro catalog (no inventory_catalog
