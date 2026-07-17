@@ -4,6 +4,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -141,11 +142,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Test
             </span>
           )}
-          {quote.legacy_rebook && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
-              Legacy rebook
-            </span>
-          )}
+          {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
+          {quote.legacy_rebook && <YllNeighborBadge />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to

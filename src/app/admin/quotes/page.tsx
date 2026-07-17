@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
+import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { SERVICE_TYPE_LABELS, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 
 // Service-line badge palette (#123) — so an operator can tell holiday vs event
@@ -300,6 +301,8 @@ export default function QuotesAdminPage() {
                               Test
                             </span>
                           )}
+                          {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
+                          {q.legacy_rebook && <YllNeighborBadge />}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{q.customer_address ?? '—'}</td>

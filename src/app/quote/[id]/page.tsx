@@ -66,6 +66,8 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         // Reopened test quote stays in TEST MODE (ledger #93) — from the saved
         // row, not the URL (is_test is immutable once set).
         isTest: quote.is_test,
+        // YLL Neighbor (#158): getQuoteRaw already selects legacy_rebook (#155).
+        legacyRebook: quote.legacy_rebook,
       }}
     />
   );
