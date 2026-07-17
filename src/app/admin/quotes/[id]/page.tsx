@@ -5,6 +5,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
+import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -144,6 +145,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
           {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
           {quote.legacy_rebook && <YllNeighborBadge />}
+          {/* Staff-only toggle (detail page only, not the /admin/quotes list) —
+              lets staff set/unset the flag for a hand-built quote that missed
+              the migration (e.g. #1191). */}
+          <LegacyRebookToggle quoteId={id} legacyRebook={quote.legacy_rebook} status={status} />
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
