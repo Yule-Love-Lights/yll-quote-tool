@@ -163,7 +163,7 @@ function signedReq(
 const APPROVED_PAYLOAD = {
   txn_id: 'TXN-123',
   response_code: '00',
-  amount: '1350.00',
+  amount: '135000', // Valor reports CENTS → $1350.00 (parseWebhookEvent ÷100)
   approval_code: 'AUTH99',
   receipt_url: 'https://valor/receipt/123',
   vault_token: 'vault_abc',
@@ -255,7 +255,7 @@ describe('Valor webhook — happy path', () => {
       data: {
         txn_id: 'TXN-REAL',
         response_code: '00',
-        amount: '489.38',
+        amount: '48938', // cents → $489.38
         approval_code: 'AUTH42',
         receipt_url: 'https://valor/receipt/real',
         invoice_no: 'qaf7affe2379dfd8a', // our valor_order_ref, echoed here
@@ -345,7 +345,7 @@ describe('Valor webhook — deposit amount (records actual charged, flags shortf
   it('records the actual amount when it matches the intended deposit', async () => {
     const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
-    const res = await POST(signedReq(APPROVED_PAYLOAD)); // amount 1350 == intended 1350
+    const res = await POST(signedReq(APPROVED_PAYLOAD)); // 135000 cents = $1350 == intended 1350
     expect(res.status).toBe(200);
     expect(updatePayloads[0].deposit_amount_usd).toBe(1350);
   });
@@ -354,7 +354,7 @@ describe('Valor webhook — deposit amount (records actual charged, flags shortf
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
-    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, amount: '1000.00' }));
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, amount: '100000' })); // cents → $1000
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true);
@@ -725,7 +725,7 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
     getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
 
-    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '100' }));
     const json = await res.json();
 
     expect(res.status).toBe(200);
@@ -763,7 +763,7 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
     hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
 
-    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '1.00' }));
+    const res = await POST(signedReq({ ...BAL_PAYLOAD, amount: '100' }));
     const json = await res.json();
 
     expect(res.status).toBe(200);
