@@ -157,6 +157,9 @@ type QuoteRow = {
   // In practice one can't reach here (a test quote has no valor_order_ref — /pay
   // refuses it), but we guard defensively, symmetric with /pay + /simulate-deposit.
   is_test: boolean;
+  // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
+  // service_type's own map — see resolvePipelineStages.
+  legacy_rebook: boolean;
   // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
   // this booking can stamp their referral code too (see below).
   customer_id: string | null;
@@ -287,7 +290,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, customer_id',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -524,7 +527,7 @@ export async function POST(req: NextRequest) {
   // SIGNED, same stage id per the ledger) so prod behavior is byte-identical;
   // permanent/event always use their own pipeline's depositPaid stage.
   const hlStageMove = async () => {
-    const stages = resolvePipelineStages(quote.service_type);
+    const stages = resolvePipelineStages(quote.service_type, { legacyRebook: quote.legacy_rebook });
     if (!quote.highlevel_opportunity_id) {
       stageError = 'No HighLevel opportunity linked to this quote';
       return;

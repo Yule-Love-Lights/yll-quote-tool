@@ -219,6 +219,20 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
   });
 
+  it('legacy_rebook (#156): routes the Bid-Sent move to the Neighbors pipeline, never the holiday env-configured stage', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, service_type: 'holiday', legacy_rebook: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    // Neighbors' hardcoded Bid Sent stage id — NOT 'stage_bid_sent' (the
+    // HIGHLEVEL_STAGE_QUOTE_SENT holiday env var set in beforeEach).
+    expect(hl.updateOpportunity).toHaveBeenCalledWith(
+      'opp_1',
+      expect.objectContaining({ pipelineStageId: '9ada8238-1e95-4242-b567-7edf3bef6c2c' }),
+    );
+  });
+
   it('still sends a TEST quote with no contact (simulated — contact not required)', async () => {
     const { client, updatePayloads } = makeSb({
       ...FRESH_QUOTE,

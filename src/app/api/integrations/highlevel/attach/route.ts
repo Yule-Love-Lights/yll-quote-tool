@@ -94,16 +94,20 @@ export async function POST(req: NextRequest) {
   // (kept as a defensive guard with the same code/status as before).
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
-    .select('id, service_type')
+    .select('id, service_type, legacy_rebook')
     .eq('id', body.quoteId)
-    .maybeSingle<{ id: string; service_type: string | null }>();
+    .maybeSingle<{ id: string; service_type: string | null; legacy_rebook: boolean }>();
   if (quoteErr) {
     console.warn(
       '[api/integrations/highlevel/attach] service_type read failed — defaulting to the holiday pipeline:',
       quoteErr.message,
     );
   }
-  const stages = resolvePipelineStages(quoteRow?.service_type);
+  // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
+  // routing to the Neighbors pipeline instead of Christmas Lights — a staff
+  // member manually attaching a migrated quote to a GHL contact must never
+  // create/find its card in the regular holiday pipeline.
+  const stages = resolvePipelineStages(quoteRow?.service_type, { legacyRebook: quoteRow?.legacy_rebook });
   if (!stages.pipelineId || !stages.entry) {
     return NextResponse.json(
       {
