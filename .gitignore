@@ -45,6 +45,11 @@ next-env.d.ts
 !.claude/skills/
 !.claude/commands/
 
+# generated Codex mirror of .claude/skills + commands (auto-created per session,
+# same content with Claude->Codex wording swapped). Generated output, never edit
+# by hand — fix the source in .claude/skills/ instead.
+.agents/
+
 # graphify knowledge-graph output (generated, local)
 graphify-out/
 
