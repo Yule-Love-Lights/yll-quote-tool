@@ -12,7 +12,7 @@ metadata:
 >
 > **ACTIVE** (S38 ×2 siblings / S37 / S36 / S35 below; S34 and older still inline pending a careful archive pass, the log's concurrent-edit structure needs one; S31 and older already in `session_log_naldo_archive.md`).
 >
-> ⚠️ **TWO concurrent S38 conversations** ran on Naldo's machine (same collision class as the S32 siblings): the **handoff / merge-queue** session (this one, entry directly below) and the **Wisetack #154** planning session (entry after it). Recorded as sibling S38 entries to keep the collision honest rather than renumbering either. **Next fresh conversation = S39.**
+> ⚠️ **TWO concurrent S38 conversations** ran on Naldo's machine (same collision class as the S32 siblings): the **handoff / merge-queue** session (this one, entry directly below) and the **Wisetack #154** planning session (entry after it). Both were handed off as "S38", so both are recorded as sibling S38 entries to keep the collision honest rather than renumbering either mid-conversation. **S39 (cloud) and S40 (local) are ALSO taken**, by the legacy Jobber migration sessions (#556 and PRs #558-#561). **Next fresh conversation = S41** (per the S37 final close, #562).
 
 ### Naldo S38 (handoff / merge-queue track, sibling to the Wisetack S38 below): cleared the open-PR queue. #553 deposit-cents MERGED + deploy-verified · #541/#542/#519 CLOSED · #72 ledger row dropped (#557). My track ended at master `13e5b6f`, gates tsc 0 / eslint 0 / vitest 3423; master then moved to `cfda4f0` under a concurrent session (2026-07-16)
 
