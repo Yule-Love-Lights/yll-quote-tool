@@ -52,3 +52,6 @@ next-env.d.ts
 
 # graphify knowledge-graph output (generated, local)
 graphify-out/
+
+# legacy Jobber migration working data (PII: manifest, photos, state) — never commit
+scripts/legacy-migration-data/

@@ -10,9 +10,36 @@ metadata:
 
 > Naldo's per-session log. **Append-only; newest entry on top.** This is the dashboard-area (#58) continuity thread — Jason's thread is `session_log.md`. Each dev edits ONLY their own log so the two machines never clobber each other (see the "Multi-dev collaboration" section in `AGENTS.md`). The shared `task_ledger.md` + `project_quote_tool.md` stay unified.
 >
-> **ACTIVE** (S38 ×2 siblings / S37 / S36 / S35 below; S34 and older still inline pending a careful archive pass, the log's concurrent-edit structure needs one; S31 and older already in `session_log_naldo_archive.md`).
+> **ACTIVE** (S40 / S39 / S38 ×2 siblings / S37 / S36 / S35 below; S34 and older still inline pending a careful archive pass, the log's concurrent-edit structure needs one; S31 and older already in `session_log_naldo_archive.md`).
 >
 > ⚠️ **TWO concurrent S38 conversations** ran on Naldo's machine (same collision class as the S32 siblings): the **handoff / merge-queue** session (this one, entry directly below) and the **Wisetack #154** planning session (entry after it). Both were handed off as "S38", so both are recorded as sibling S38 entries to keep the collision honest rather than renumbering either mid-conversation. **S39 (cloud) and S40 (local) are ALSO taken**, by the legacy Jobber migration sessions (#556 and PRs #558-#561). **Next fresh conversation = S41** (per the S37 final close, #562).
+
+### Naldo S40, Legacy migration LIVE + revised on pilot review; send-side buildout queued (#156-158) (2026-07-16)
+
+> Naldo's LOCAL machine (cloud S39 handed off the branch); this addendum was written from the S39 cloud session, which observed it live via PR #556 webhooks. Ran the pilot, revised the approach on what the real output looked like, then ran it for real: **114 legacy rebook drafts are LIVE in prod, none sent.** Next fresh conversation = **S41**.
+
+- **#155 LIVE:** 114 real draft quotes inserted into prod (holiday vertical). NOT sent — held for the send-side buildout below.
+- **Pilot-driven revisions (commit `121d981`), all Naldo's calls after seeing real output:**
+  - **No analyzer** — auto-drawings on top of real lit installs looked bad; the design is now the CLEAN completed-install photo (the photo IS the display). `ANTHROPIC_API_KEY` no longer needed.
+  - **ONE bundled line item** at the pre-tax net (discount folded in, tax verbatim, total = what they paid) — replaces the per-item spread; per-item toggles were inviting $0 recomputes.
+  - **`legacy_rebook=true` stamp** on every quote (post-insert UPDATE) -> portal renders a rebooking variant (color-change copy, no daylight toggle, read-only items). Column applied to prod FIRST (S39 flagged the migration-order + orphan/dup risk; handled migration-first, so all 114 stamps succeeded).
+- **Send-side buildout QUEUED (ledger #156-158, do BEFORE any send wave):** #156 route legacy sends to a dedicated **"YLL Neighbors" GHL pipeline** (new *Bid Sent* stage, own workflows — NEVER the Christmas Lights pipeline); #157 **exclude legacy quotes from inbox + stats** until #156 ships; #158 a visible **"YLL Neighbor" tag** wherever legacy quotes surface. Do #156 first — #157/#158 both key off the `legacy_rebook` flag.
+- **PR #556 still OPEN** (migrate script + S39/S40 docs). The live data was written by running the script against prod directly (service-role), independent of merge — the PR is record-keeping. Gates green (tsc · lint 0 err · vitest 3423).
+- **Migration data (manifest / photos / build_manifest.py) stays gitignored + local** — never in the repo.
+
+
+### Naldo S39, Legacy Jobber quote migration (#155): pipeline built + invoice-truth money, PR #556 GREEN — live pilot runs on Naldo's LOCAL machine next (2026-07-15/16)
+
+> One conversation. Naldo: "get all past Jobber clients into the quote tool, analyze their install photos, remake their quotes with our design features." 3-agent recon (quote model / analyzer / design) -> built the data pipeline + a resumable `tsx` migrate script -> corrected ALL money to invoice truth. Ends BEFORE the live pilot (cloud has no secrets/photos); Naldo runs it on his machine. Next fresh conversation = **S40**.
+
+- **New task #155 (Backlog -> BUILT, live pilot pending):** legacy-quote migration = a REBOOKING play (distinct from #72 Jobber->Insights revenue-history). Per past install: completed-install photo -> analyzer `mode:'completed'` seeds an editable design -> insert a **draft holiday quote** carrying the real paid price -> interactive portal render.
+- **Ships as `scripts/migrate-legacy-quotes.ts` (PR #556, draft, GREEN, awaiting merge-go).** 3 commits; gates tsc·lint·vitest 3423 green; `--dry-run` over the real 114-row manifest passes. `is_test=true` default (wipeable via Delete-test-data); `--live` deliberate; resumable via migration-state.json.
+- **MONEY invariant LOCKED (Naldo, load-bearing): the price the customer PAID is untouchable — never engine-repriced.** Source of truth = the **INVOICE export ("Total paid")**, NOT the quote export, which proved wildly wrong both ways (Riza Bueser quote $15,756 vs $3,704 paid; cindy small $0 quote vs $2,346 paid; Carl Laurent $5,301 vs $1,682; 81 invoices carried discounts the quotes hid). Invoice line items = the real billed items (no selection-guessing). Every migrating row cent-verified.
+- **Decisions LOCKED:** holiday-only (incl. commercial holiday); completed-install photos as analyzer input + portal hero; invoice-primary manifest; tips excluded from the rebook total. **HELD from auto-migrate:** 5 past-due (4 Kimberly McNulty Glen Cove + Mirelle's Restaurant) + 2 $0-comped (Joe DeGaetano, Michelle Richards).
+- **Manifest = 114 READY** (paid invoice + photo + holiday), invoice-sourced + cent-exact. **All PII data (roster/photos/manifest/invoices/build_manifest.py) is gitignored** (`scripts/legacy-migration-data/`) — lives session-side only, delivered to Naldo as files; NOT in the repo.
+- **Data-quality catches:** Jobber `(DELETE & MOVE)` dup-name invoices (Morton/Capobianco) broke matching -> builder strips them; extension-less Drive photo ("Marie Mulligan") -> script sniffs image type by magic bytes.
+- **▶ NEXT (Naldo, LOCAL machine):** pull the branch, drop `manifest.csv` + the "2025 Installs" Drive photos into `scripts/legacy-migration-data/photos/`, run `npx tsx scripts/migrate-legacy-quotes.ts --manifest scripts/legacy-migration-data/manifest.csv --photos scripts/legacy-migration-data/photos --limit 10` (is_test), eyeball designs+prices, then scale. Open items: architectural (Carl Laurent/Foss/DeGaetano) + promo $0-line cleanup (my call pending Naldo); 56 paid customers with NO photo; 6 off-roster payers to add (Willard Grant, Renee Albertella, Gul Zaidi, Tamare Orilus, John Pierson x2).
+- **Cross-dev heads-up (Jason):** new `scripts/migrate-legacy-quotes.ts` (imports pricing/quotes/designs libs READ-ONLY; no changes to your files); `.gitignore` gained `scripts/legacy-migration-data/`.
 
 ### Naldo S38 (handoff / merge-queue track, sibling to the Wisetack S38 below): cleared the open-PR queue. #553 deposit-cents MERGED + deploy-verified · #541/#542/#519 CLOSED · #72 ledger row dropped (#557). My track ended at master `13e5b6f`, gates tsc 0 / eslint 0 / vitest 3423; master then moved to `cfda4f0` under a concurrent session (2026-07-16)
 
@@ -27,6 +54,7 @@ metadata:
 - **Cross-dev (Jason):** #553 touches `src/lib/portal/adapter.ts` (his portal area). It is a one-line `roundMoney` swap plus 1 regression test, FYI-level.
 - **Env / tooling gotchas hit:** `npm ci` was needed because OneDrive had left `node_modules` present-but-stale, missing `@react-pdf/renderer` (added by #528), which surfaced as 15 phantom tsc errors that were NOT a code fault · **the Vercel MCP is connected to Naldo's account** (team `Naldoven Seizeme's projects`) and verifies deploy SHAs directly with no dashboard login, which closes the recurring "deploy verify owed to Naldo's Vercel" item · `gh pr merge --delete-branch` fails its LOCAL cleanup step when another worktree holds the branch or `master` checked out, while the remote merge still lands, so verify the merge rather than trusting the error · the Bash tool hit a **safety-classifier outage** at wrap time (the S12 class).
 - **Did-right:** verified the handoff against live state instead of executing it (it was stale in 3 places); read S37's authoritative close notes before touching #541/#542 rather than re-deriving their disposition; verified #557's merge by **grepping master for the deleted row** instead of trusting `gh`'s exit code; checked residual `#72` references and distinguished a dangling pointer (fixed) from a historical note (kept); routed the ledger surgery through **script files** per the S25 rule.
+
 
 ### Naldo S38, Wisetack portal financing (#154): captured, scoped, and PLANNED (spec + implementation plan committed); paused before build on P0 (2026-07-14)
 
