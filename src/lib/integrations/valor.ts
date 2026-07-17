@@ -324,7 +324,14 @@ export function parseWebhookEvent(rawBody: string): ValorWebhookEvent {
       'orderId',
       'order_ref',
       'orderRef',
-      'invoicenumber', // hosted-page sale echoes our ref here
+      // ✅ CONFIRMED live (#159, first real payment 2026-07-17): Valor's
+      // E-Invoice confirmation webhook echoes our `invoicenumber` back as
+      // `data.invoice_no` — NOT `invoicenumber`/`invoice_number`. Its absence
+      // from this list is why a real hosted-page deposit charged but never
+      // auto-booked (hasOrderRef:false → the webhook ignored a payment it owned).
+      // Captured via the #159 diagnostic key-name log on the no-order-ref branch.
+      'invoice_no',
+      'invoicenumber', // hosted-page docs said our ref echoes here (kept as a fallback)
       'invoice_number',
       'invoice',
       'invoice_id',
