@@ -22,7 +22,16 @@ type Props = {
 };
 
 export function QuotePdf({ model, logo }: Props) {
-  const rows = [...itemizedRows(model), { label: 'Total', amount: model.total, bold: true }, { label: 'Deposit due', amount: model.depositDue }];
+  // Booking bug batch 2026-07-17: a paid deposit prints "Deposit paid (date)"
+  // + "Balance due" instead of asking for the deposit again; an unpaid quote
+  // renders exactly as before.
+  const depositRows = model.depositPaid
+    ? [
+        { label: `Deposit paid (${model.depositPaid.date})`, amount: model.depositPaid.amount },
+        { label: 'Balance due', amount: model.balanceDue! },
+      ]
+    : [{ label: 'Deposit due', amount: model.depositDue }];
+  const rows = [...itemizedRows(model), { label: 'Total', amount: model.total, bold: true }, ...depositRows];
 
   return (
     <Document title={`Yule Love Lights Quote ${model.quoteNumber}`}>

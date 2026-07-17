@@ -161,6 +161,62 @@ describe('buildQuoteDocModel', () => {
   });
 });
 
+// Booking bug batch 2026-07-17: the quote PDF must reflect a paid deposit —
+// once deposit_paid_at is set, "Deposit due" becomes "Deposit paid (date)"
+// plus a "Balance due" row (total minus deposit), while an unpaid quote
+// renders exactly as before (regression guard).
+describe('buildQuoteDocModel — paid deposit', () => {
+  function approvedQuote(overrides: Partial<NonNullable<PortalQuote['approval']>> = {}): PortalQuote {
+    return {
+      ...BASE_QUOTE,
+      serviceType: 'holiday',
+      approval: {
+        approvedAt: '2026-06-01T10:00:00Z',
+        packageId: 'A',
+        packageName: 'Classic Glow',
+        totalUsd: 1254.62,
+        depositUsd: 627.31,
+        selectedItemCount: 2,
+        selectedItemIds: ['roofline-santas', 'spritzers'],
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+        ...overrides,
+      },
+    };
+  }
+
+  it('unpaid quote: depositDue unchanged, no paid/balance fields (regression guard)', () => {
+    const model = buildQuoteDocModel(approvedQuote());
+    expect(model.depositDue).toBe('$627.31');
+    expect(model.depositPaid).toBeNull();
+    expect(model.balanceDue).toBeNull();
+  });
+
+  it('paid quote: shows the paid deposit (amount + formatted date) and a balance due that catches float drift', () => {
+    const model = buildQuoteDocModel(
+      approvedQuote({
+        totalUsd: 978.76,
+        depositUsd: 489.38,
+        depositPaidAt: '2026-06-05T12:00:00Z',
+      }),
+    );
+    expect(model.depositPaid).toEqual({ amount: '$489.38', date: 'Jun 5, 2026' });
+    expect(model.balanceDue).toBe('$489.38');
+  });
+
+  it('deposit equal to total: balance due is $0.00, never negative', () => {
+    const model = buildQuoteDocModel(
+      approvedQuote({
+        totalUsd: 900,
+        depositUsd: 900,
+        depositPaidAt: '2026-06-05T12:00:00Z',
+      }),
+    );
+    expect(model.balanceDue).toBe('$0.00');
+  });
+});
+
 // ─── resolveAgreedLineItems ─────────────────────────────────────────────────
 
 describe('resolveAgreedLineItems', () => {
