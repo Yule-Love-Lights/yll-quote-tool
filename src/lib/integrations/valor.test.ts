@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseWebhookEvent } from './valor';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { parseWebhookEvent, createHostedPageSale } from './valor';
 
 // #159 (first real payment, 2026-07-17): Valor's E-Invoice confirmation webhook
 // nests the transaction under `data` and echoes our order ref as `data.invoice_no`.
@@ -31,5 +31,42 @@ describe('parseWebhookEvent — order ref extraction', () => {
     const ev = parseWebhookEvent(JSON.stringify({ data: { txn_id: 'T', response_code: '00' } }));
     expect(ev.orderRef).toBeNull();
     expect(ev.approved).toBe(true);
+  });
+});
+
+// #161: the deposit hosted-page call asks Valor to vault the card (save_card=1)
+// so we can later auto-charge the balance. This does not charge the card; the
+// auto-charge stays gated behind VALOR_AUTO_CHARGE_ENABLED.
+describe('createHostedPageSale — request body', () => {
+  const OLD_ENV = process.env;
+  beforeEach(() => {
+    process.env = { ...OLD_ENV, VALOR_APP_ID: 'app', VALOR_APP_KEY: 'key', VALOR_EPI: 'epi', VALOR_IS_DEMO: 'true' };
+  });
+  afterEach(() => {
+    process.env = OLD_ENV;
+    vi.restoreAllMocks();
+  });
+
+  it('sends save_card=1 to vault the card at deposit (and still charges EXACTLY the amount)', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const fetchMock = vi.fn(async (_url: unknown, init: { body: string }) => {
+      capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ url: 'https://valor/pay/abc', uid: 'u1' }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await createHostedPageSale({
+      amountUsd: 489.38,
+      orderRef: 'qaf7affe2379dfd8a',
+      successUrl: 'https://app/success',
+      failureUrl: 'https://app/fail',
+    });
+
+    expect(r.url).toBe('https://valor/pay/abc');
+    expect(capturedBody.save_card).toBe(1);
+    // Unchanged money-safety flags: charge exactly the amount, our ref round-trips.
+    expect(capturedBody.ignore_surcharge_calc).toBe(1);
+    expect(capturedBody.surcharge).toBe(0);
+    expect(capturedBody.invoicenumber).toBe('qaf7affe2379dfd8a');
   });
 });
