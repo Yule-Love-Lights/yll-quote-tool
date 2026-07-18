@@ -2685,23 +2685,23 @@ export default function QuoteBuilder({
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className={lbl}>Name</label>
-                <input className={inp} placeholder="Jane Smith (optional)"
+                <label className={lbl} htmlFor="customer-name">Name</label>
+                <input id="customer-name" className={inp} placeholder="Jane Smith (optional)"
                   value={form.customer.name} onChange={e => setCustomer('name', e.target.value)} />
               </div>
               <div>
-                <label className={lbl}>Phone</label>
-                <input className={inp} placeholder="(516) 555-0123"
+                <label className={lbl} htmlFor="customer-phone">Phone</label>
+                <input id="customer-phone" className={inp} placeholder="(516) 555-0123"
                   value={form.customer.phone} onChange={e => setCustomer('phone', e.target.value)} />
               </div>
               <div>
-                <label className={lbl}>Email</label>
-                <input className={inp} type="email" placeholder="jane@example.com"
+                <label className={lbl} htmlFor="customer-email">Email</label>
+                <input id="customer-email" className={inp} type="email" placeholder="jane@example.com"
                   value={form.customer.email} onChange={e => setCustomer('email', e.target.value)} />
               </div>
               <div>
-                <label className={lbl}>Property Address</label>
-                <input className={inp} placeholder="123 Main St, Smithtown, NY 11787"
+                <label className={lbl} htmlFor="customer-address">Property Address</label>
+                <input id="customer-address" className={inp} placeholder="123 Main St, Smithtown, NY 11787"
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
             </div>
