@@ -119,7 +119,9 @@ describe('POST /api/quotes/[id]/pay', () => {
     expect(valor.createHostedPageSale).toHaveBeenCalledWith(
       expect.objectContaining({
         amountUsd: 1350,
-        successUrl: `https://quote.example.com/portal/${ID}/approved`,
+        // #166 — the deposit success URL carries ?confirming=1 so /approved can
+        // show a pending state until the async booking webhook lands.
+        successUrl: `https://quote.example.com/portal/${ID}/approved?confirming=1`,
         failureUrl: `https://quote.example.com/portal/${ID}`,
       }),
     );
