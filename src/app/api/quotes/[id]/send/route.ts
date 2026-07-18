@@ -524,13 +524,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // preserving the original "a; b" concatenation shape.
   const messageError =
     [smsError, emailError].filter(Boolean).join('; ') || undefined;
-  const requestedChannels = [doSms ? 'sms' : null, doEmail ? 'email' : null].filter(
-    (value): value is 'sms' | 'email' => value != null,
-  );
+  const requestedChannels = isGhlRetry || quote.is_test
+    ? []
+    : [doSms ? 'sms' : null, doEmail ? 'email' : null].filter(
+        (value): value is 'sms' | 'email' => value != null,
+      );
   const failedChannels = requestedChannels.filter(
     (requested) => (requested === 'sms' ? !smsSent : !emailSent),
   );
-  const deliveryAttempted = !isGhlRetry && !quote.is_test && requestedChannels.length > 0;
+  const deliveryAttempted = requestedChannels.length > 0;
   const everyRequestedDeliveryFailed =
     deliveryAttempted && failedChannels.length === requestedChannels.length;
 
