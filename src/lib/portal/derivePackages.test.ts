@@ -279,7 +279,7 @@ describe('priceSelection — real price, no $1,000 floor (#18)', () => {
     expect(p.rushFee).toBe(150);
     expect(p.takedown).toBe(150);
     expect(p.taxable).toBe(2300);
-    expect(p.total).toBe(2498.37); // 2300 * 1.08625, rounded to cents
+    expect(p.total).toBe(2498.38); // $198.375 tax rounds half-up to $198.38
   });
 
   it('Subtotal + fees + Tax tie out to the Total (so the breakdown is honest)', () => {
