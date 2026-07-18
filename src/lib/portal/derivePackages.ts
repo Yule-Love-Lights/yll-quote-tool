@@ -142,12 +142,12 @@ export function priceSelection(
   // Capped so it never exceeds the subtotal. 0 when no discount applies.
   const discount = Math.min(
     subtotal,
-    round2(subtotal * (charges.discountRate ?? 0) + (charges.discountFlat ?? 0)),
+    round2(moneyTimesRate(subtotal, charges.discountRate ?? 0) + (charges.discountFlat ?? 0)),
   );
   const taxable = subtotal - discount + charges.rushFee + charges.takedown;
   const tax = moneyTimesRate(taxable, charges.taxRate);
   const total = round2(taxable + tax);
-  const deposit = round2(total * BUSINESS_RULES.depositPercentage);
+  const deposit = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
   return {
     subtotal,
     discount,
