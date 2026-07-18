@@ -5,6 +5,8 @@ const requiredEnvironment = [
   'TEST_LOGIN_PASSWORD',
   'TEST_CUSTOMER_EMAIL',
 ] as const;
+const emailEnvironment = ['TEST_LOGIN_EMAIL', 'TEST_CUSTOMER_EMAIL'] as const;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 function required(name: (typeof requiredEnvironment)[number]): string {
   const value = process.env[name];
@@ -23,6 +25,14 @@ test.describe.serial('Codex production quote audit', () => {
     const missing = requiredEnvironment.filter((name) => !process.env[name]);
     if (missing.length > 0) {
       throw new Error(`Production verifier blocked. Missing: ${missing.join(', ')}`);
+    }
+    const invalidEmails = emailEnvironment.filter(
+      (name) => !EMAIL_RE.test(process.env[name] ?? ''),
+    );
+    if (invalidEmails.length > 0) {
+      throw new Error(
+        `Production verifier blocked. Invalid email shape: ${invalidEmails.join(', ')}`,
+      );
     }
   });
 
@@ -67,6 +77,7 @@ test.describe.serial('Codex production quote audit', () => {
       type: 'production-test-quote',
       description: `${testQuoteTitle} | ${quoteId}`,
     });
+    console.log(`CODEX_TEST_QUOTE=${testQuoteTitle}|${quoteId}`);
 
     await expect(page.getByRole('heading', { name: 'Send Quote to Customer' })).toBeVisible();
 
