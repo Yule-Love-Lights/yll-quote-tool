@@ -17,7 +17,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIGNATURE_NAME_MIN = 2;
 const SIGNATURE_NAME_MAX = 200;
 const SIGNATURE_VALUE_MAX = 200_000;
