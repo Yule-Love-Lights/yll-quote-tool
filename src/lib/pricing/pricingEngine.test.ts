@@ -975,7 +975,7 @@ describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
 });
 
 
-describe('calculateQuote — exact half-cent tax rounding', () => {
+describe('calculateQuote — exact half-cent percentage rounding', () => {
   it('rounds $1,002.80 at 8.75% to $87.75 tax', () => {
     const r = calculateQuote(emptyInputs({
       customLineItems: [{ label: 'Half-cent boundary', amount: 1002.8 }],
@@ -983,5 +983,31 @@ describe('calculateQuote — exact half-cent tax rounding', () => {
     expect(r.taxAmount).toBe(87.75);
     expect(r.total).toBe(1090.55);
     expect(r.depositAmount).toBe(545.28);
+  });
+
+  it('rounds an odd-cent 50% deposit up instead of losing a cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Deposit boundary', amount: 1000.08 }],
+    }));
+    expect(r.taxAmount).toBe(87.51);
+    expect(r.total).toBe(1087.59);
+    expect(r.depositAmount).toBe(543.8);
+    expect(r.balanceDue).toBe(543.79);
+  });
+
+  it('rounds a manual percentage discount at an exact half-cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Discount boundary', amount: 1281.05 }],
+      discount: { type: 'percentage', amount: 0.1 },
+    }));
+    expect(r.discountAmount).toBe(128.11);
+  });
+
+  it('rounds the September percentage discount at an exact half-cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Early-install boundary', amount: 1000.1 }],
+      installTiming: 'september',
+    }));
+    expect(r.earlyInstallDiscountAmount).toBe(150.02);
   });
 });
