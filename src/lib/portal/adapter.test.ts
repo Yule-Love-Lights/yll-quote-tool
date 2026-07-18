@@ -954,3 +954,65 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
     );
   });
 });
+
+
+describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
+  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }) {
+    const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
+    const result = calculateQuote(inputs);
+    const row = rowWith(result, inputs);
+    row.customer_approved_at = '2026-07-01T00:00:00.000Z';
+    row.deposit_paid_at = '2026-07-01T00:10:00.000Z';
+    row.status = 'booked';
+    row.approval_snapshot = {
+      approvedAt: '2026-07-01T00:00:00.000Z',
+      customerSelection: {
+        packageId: 'A',
+        activeName: 'Original order',
+        selectedItemIds: ['custom-0'],
+        currentTotalUsd: 2000,
+        currentDepositUsd: 1000,
+      },
+      amendments: [{
+        amended_at: '2026-07-18T12:00:00.000Z',
+        by: 'staff:ops',
+        reason: 'Added front wreaths',
+        previous_total: 2000,
+        new_total: 2400,
+        previous_balance: 1000,
+        new_balance: 1400,
+        deposit_applied: 1000,
+        delta: 400,
+        line_item_changes: [],
+        consent,
+      }],
+    };
+    return quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+  }
+
+  it('exposes the latest unsigned amendment with its money comparison', () => {
+    expect(amendedPortal({ status: 'pending' }).approval?.pendingAmendment).toEqual({
+      amendedAt: '2026-07-18T12:00:00.000Z',
+      reason: 'Added front wreaths',
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      depositAppliedUsd: 1000,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  it('hides the re-consent prompt after the signature is accepted', () => {
+    expect(amendedPortal({
+      status: 'accepted',
+      accepted_at: '2026-07-18T12:05:00.000Z',
+      signature: {
+        name: 'Jordan Smith',
+        kind: 'typed',
+        value: 'Jordan Smith',
+        signed_at: '2026-07-18T12:05:00.000Z',
+        ip: null,
+      },
+    }).approval?.pendingAmendment).toBeUndefined();
+  });
+});
