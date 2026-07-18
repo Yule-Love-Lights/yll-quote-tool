@@ -125,7 +125,8 @@ export default async function PortalApprovedPage({
   // #154 interim — Wisetack financing CTA for the remaining balance. Shows only
   // when the server flag + prequal URL are configured (quote.financing set by
   // the loader), the APPROVED balance is known (agreed total minus the frozen
-  // deposit), the service type is holiday/permanent, and that balance sits in
+  // deposit), the service type is holiday/permanent, the job total is at least
+  // $1,500 (YLL floor, Naldo 2026-07-18), and that balance sits in
   // Wisetack's $500–$25,000 range. Hidden once the balance is paid in full
   // (?balance=paid) — nothing left to finance. Informational link only; the
   // deposit/booking flow is untouched.
@@ -133,10 +134,12 @@ export default async function PortalApprovedPage({
   const showFinancing =
     !balancePaid &&
     financing != null &&
+    financing.approvedTotalUsd != null &&
     financing.approvedBalanceUsd != null &&
     isFinancingEligible({
       enabled: true, // quote.financing existing = the flag + URL are on
       serviceType: quote.serviceType,
+      totalUsd: financing.approvedTotalUsd,
       balanceUsd: financing.approvedBalanceUsd,
     });
 

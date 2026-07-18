@@ -20,6 +20,12 @@ import type { ServiceType } from '@/lib/serviceType';
 export const WISETACK_MIN_USD = 500;
 export const WISETACK_MAX_USD = 25000;
 
+// YLL business floor (Naldo, 2026-07-18): financing is offered only on jobs
+// of $1,500 and up — gated on the JOB TOTAL (the agreed, tax-inclusive price),
+// not the financed balance. Wisetack's own [500, 25000] range still applies to
+// the balance on top of this.
+export const YLL_FINANCING_MIN_JOB_TOTAL_USD = 1500;
+
 /** The financed amount: agreed total minus the deposit, rounded to cents. */
 export function financedBalanceUsd(agreedTotalUsd: number, depositUsd: number): number {
   return round2(agreedTotalUsd - depositUsd);
@@ -29,14 +35,17 @@ export function financedBalanceUsd(agreedTotalUsd: number, depositUsd: number): 
  * Whether the financing CTA shows. POSITIVE gate on every leg (per the
  * AGENTS.md seam rule): the flag must be exactly on, the service type exactly
  * holiday or permanent (event / bistro / unknown are OUT — a future vertical
- * must opt in, never inherit), and the balance inside [$500, $25,000].
+ * must opt in, never inherit), the JOB TOTAL at least $1,500 (the YLL business
+ * floor), and the balance inside Wisetack's [$500, $25,000].
  */
 export function isFinancingEligible(input: {
   enabled: boolean;
   serviceType: ServiceType | null | undefined;
+  totalUsd: number;
   balanceUsd: number;
 }): boolean {
   if (input.enabled !== true) return false;
   if (input.serviceType !== 'holiday' && input.serviceType !== 'permanent') return false;
+  if (!(input.totalUsd >= YLL_FINANCING_MIN_JOB_TOTAL_USD)) return false;
   return input.balanceUsd >= WISETACK_MIN_USD && input.balanceUsd <= WISETACK_MAX_USD;
 }

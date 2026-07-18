@@ -7,7 +7,8 @@
 // from what the balance code would bill.
 //
 // Eligibility is a POSITIVE gate (per AGENTS.md seam rules): flag exactly on,
-// service type exactly holiday or permanent, balance inside [$500, $25,000]
+// service type exactly holiday or permanent, job total at least $1,500 (the
+// YLL business floor, Naldo 2026-07-18), balance inside [$500, $25,000]
 // inclusive. Event / bistro / unknown service types are OUT — a future
 // vertical must opt in, never inherit.
 
@@ -16,6 +17,7 @@ import { roundMoneyGuarded as round2 } from '@/lib/money';
 import {
   WISETACK_MIN_USD,
   WISETACK_MAX_USD,
+  YLL_FINANCING_MIN_JOB_TOTAL_USD,
   financedBalanceUsd,
   isFinancingEligible,
 } from './eligibility';
@@ -24,6 +26,10 @@ describe('financing range constants', () => {
   it('match the Wisetack range ($500–$25,000)', () => {
     expect(WISETACK_MIN_USD).toBe(500);
     expect(WISETACK_MAX_USD).toBe(25000);
+  });
+
+  it('YLL job floor is $1,500 (Naldo, 2026-07-18)', () => {
+    expect(YLL_FINANCING_MIN_JOB_TOTAL_USD).toBe(1500);
   });
 });
 
@@ -45,14 +51,33 @@ describe('financedBalanceUsd', () => {
 });
 
 describe('isFinancingEligible', () => {
-  const eligibleBase = { enabled: true, serviceType: 'holiday' as const, balanceUsd: 2500 };
+  const eligibleBase = {
+    enabled: true,
+    serviceType: 'holiday' as const,
+    totalUsd: 5000,
+    balanceUsd: 2500,
+  };
 
-  it('eligible: flag on, holiday, balance in range', () => {
+  it('eligible: flag on, holiday, total over the job floor, balance in range', () => {
     expect(isFinancingEligible(eligibleBase)).toBe(true);
   });
 
   it('flag off → never eligible, even with a perfect balance', () => {
     expect(isFinancingEligible({ ...eligibleBase, enabled: false })).toBe(false);
+  });
+
+  describe('the $1,500 YLL job floor gates on the TOTAL, not the balance', () => {
+    it('total 1499.99 → no, even with a financeable balance', () => {
+      expect(
+        isFinancingEligible({ ...eligibleBase, totalUsd: 1499.99, balanceUsd: 749.99 }),
+      ).toBe(false);
+    });
+    it('total 1500 → yes (floor inclusive; its $750 balance is in the Wisetack range)', () => {
+      expect(isFinancingEligible({ ...eligibleBase, totalUsd: 1500, balanceUsd: 750 })).toBe(true);
+    });
+    it('a $1,000 job is out even though its $500 balance meets the Wisetack floor', () => {
+      expect(isFinancingEligible({ ...eligibleBase, totalUsd: 1000, balanceUsd: 500 })).toBe(false);
+    });
   });
 
   describe('balance bounds are inclusive', () => {

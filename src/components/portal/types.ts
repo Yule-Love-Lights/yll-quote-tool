@@ -303,6 +303,9 @@ export type PortalQuote = {
   // each render site via isFinancingEligible.
   financing?: {
     prequalUrl: string;
+    /** The agreed job total (amendment-aware) — null until approved. Gates the
+     *  $1,500 YLL job floor on /approved alongside the balance range. */
+    approvedTotalUsd: number | null;
     approvedBalanceUsd: number | null;
   };
 };

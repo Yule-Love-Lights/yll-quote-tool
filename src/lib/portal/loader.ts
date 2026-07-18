@@ -151,11 +151,12 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
       if (isWisetackFinancingEnabled() && prequalUrl) {
         const snap = data.approval_snapshot;
         const dep = snap?.customerSelection?.currentDepositUsd;
+        const hasApprovedMoney =
+          !!data.customer_approved_at && !!snap && typeof dep === 'number' && Number.isFinite(dep);
+        const approvedTotalUsd = hasApprovedMoney ? resolveAgreedTotal(snap, data.result) : null;
         const approvedBalanceUsd =
-          data.customer_approved_at && snap && typeof dep === 'number' && Number.isFinite(dep)
-            ? financedBalanceUsd(resolveAgreedTotal(snap, data.result), dep)
-            : null;
-        portal.financing = { prequalUrl, approvedBalanceUsd };
+          approvedTotalUsd != null ? financedBalanceUsd(approvedTotalUsd, dep as number) : null;
+        portal.financing = { prequalUrl, approvedTotalUsd, approvedBalanceUsd };
       }
     }
     return portal;

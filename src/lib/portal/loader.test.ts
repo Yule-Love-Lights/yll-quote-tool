@@ -275,7 +275,11 @@ describe('loadPortalQuote — Wisetack financing threading (#154 interim)', () =
     enableFinancing();
     sbRef.current = makeSb(baseRow(approvedOverrides()));
     const portal = await loadPortalQuote(ID);
-    expect(portal!.financing).toEqual({ prequalUrl: URL, approvedBalanceUsd: 2500 });
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: 5000,
+      approvedBalanceUsd: 2500,
+    });
   });
 
   it('an amendment supersedes the approved total (resolveAgreedTotal precedence)', async () => {
@@ -284,21 +288,33 @@ describe('loadPortalQuote — Wisetack financing threading (#154 interim)', () =
     (overrides.approval_snapshot as Record<string, unknown>).amendments = [{ new_total: 6000 }];
     sbRef.current = makeSb(baseRow(overrides));
     const portal = await loadPortalQuote(ID);
-    expect(portal!.financing).toEqual({ prequalUrl: URL, approvedBalanceUsd: 3500 });
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: 6000,
+      approvedBalanceUsd: 3500,
+    });
   });
 
   it('unapproved quote → financing present (for the live-selection CTA) with a null approved balance', async () => {
     enableFinancing();
     sbRef.current = makeSb(baseRow());
     const portal = await loadPortalQuote(ID);
-    expect(portal!.financing).toEqual({ prequalUrl: URL, approvedBalanceUsd: null });
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: null,
+      approvedBalanceUsd: null,
+    });
   });
 
   it('approved but the snapshot has no deposit → null balance (never guess a financed amount)', async () => {
     enableFinancing();
     sbRef.current = makeSb(baseRow(approvedOverrides({ currentDepositUsd: undefined })));
     const portal = await loadPortalQuote(ID);
-    expect(portal!.financing).toEqual({ prequalUrl: URL, approvedBalanceUsd: null });
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: null,
+      approvedBalanceUsd: null,
+    });
   });
 
   it('flag off → financing absent (portal output unchanged)', async () => {
