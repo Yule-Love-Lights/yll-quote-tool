@@ -192,6 +192,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Every real total change gets an explicit pending-consent marker. Historical
+  // entries without this field are still treated as pending by amend.ts, but new
+  // writes are self-describing for the portal and settlement gates.
+  if (requiresReconsent(amendment)) {
+    amendment.consent = { status: 'pending' };
+  }
+
   // No real price change → guide the operator to re-price in the builder first
   // (this MVP records the financial delta; line-level edits happen in the builder).
   if (Math.abs(amendment.delta) < 0.005) {
