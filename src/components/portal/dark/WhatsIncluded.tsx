@@ -12,7 +12,7 @@ import type { BulbColor } from '@/lib/design/sceneTypes';
 import type { ServiceType } from '@/lib/serviceType';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { useSelection, frozenMutatorGroups } from '../SelectionContext';
-import { formatUsd } from '../format';
+import { formatIncludedHeading, formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
@@ -255,7 +255,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             id="portal-dark-included-heading"
             className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
           >
-            Your {activeName} — line by line.
+            {formatIncludedHeading(activeName)}
           </h2>
           {(locked || legacyRebook === true || items.length > 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
@@ -278,6 +278,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                 <button
                   type="button"
                   aria-pressed={selected}
+                  disabled={itemsReadOnly}
                   onClick={() => toggleItem(item.id)}
                   className={[
                     'w-full flex items-center gap-4 p-4 md:p-5 rounded-2xl cursor-pointer transition-[background-color,border-color,box-shadow] duration-300 text-left',
@@ -385,8 +386,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
               title="Rush install"
               blurb="Bump your install to the front of the queue."
               amount={rushAmount}
-              disabled={installTiming !== 'none'}
-              disabledHint="Not available with an early-install discount."
+              disabled={locked || installTiming !== 'none'}
+              disabledHint={locked ? 'This booked quote is read-only.' : 'Not available with an early-install discount.'}
             />
             <AddOnToggle
               selected={takedownSelected}
@@ -394,6 +395,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
               title="Premium takedown"
               blurb="We take everything down before Jan 9 (standard is Jan 9 – Feb 3)."
               amount={takedownAmount}
+              disabled={locked}
+              disabledHint="This booked quote is read-only."
             />
           </ul>
         </div>
@@ -413,16 +416,16 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
             <DiscountToggle
               selected={installTiming === 'september'}
-              disabled={rushSelected}
+              disabled={locked || rushSelected}
               onToggle={() => toggleInstallTiming('september')}
               title="September install"
               blurb="We hang your roof lights in mid–late September."
               percentLabel={`${Math.round(septemberDiscountRate * 100)}% off`}
-              disabledHint="Not available with rush install."
+              disabledHint={locked ? 'This booked quote is read-only.' : 'Not available with rush install.'}
             />
             <DiscountToggle
               selected={installTiming === 'october'}
-              disabled={rushSelected}
+              disabled={locked || rushSelected}
               onToggle={() => toggleInstallTiming('october')}
               title="October install"
               blurb="We hang your roof lights anytime in October."
