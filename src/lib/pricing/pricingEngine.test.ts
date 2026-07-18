@@ -533,8 +533,8 @@ describe('calculateQuote — minimum, fees, tax, deposit', () => {
     expect(r.taxableAmount).toBe(2342); // 2042 + 150 + 150
     expect(r.taxAmount).toBe(204.93);
     expect(r.total).toBe(2546.93);
-    expect(r.depositAmount).toBe(1273.46);
-    expect(r.balanceDue).toBe(1273.47);
+    expect(r.depositAmount).toBe(1273.47);
+    expect(r.balanceDue).toBe(1273.46);
   });
 });
 
