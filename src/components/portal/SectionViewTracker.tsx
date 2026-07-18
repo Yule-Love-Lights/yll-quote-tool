@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { track } from '@/lib/analytics/posthog';
 import type { ServiceType } from '@/lib/serviceType';
-import { useSelection } from './SelectionContext';
+import { useSelectionOptional } from './SelectionContext';
 
 // PostHog Wave 4 — generalizes PackagesViewTracker's (v1) one-shot
 // IntersectionObserver pattern into a single reusable tracker for any
@@ -39,7 +39,12 @@ export function shouldFireSectionView(alreadyFired: boolean, isIntersecting: boo
 }
 
 export function SectionViewTracker({ section }: { section: string }) {
-  const { quoteId, serviceType } = useSelection();
+  // Null-safe: the refer page mounts Gallery (and this tracker) with no
+  // SelectionProvider — quote_id/service_type just report undefined there
+  // (buildSectionViewedProperties already types both as optional).
+  const sel = useSelectionOptional();
+  const quoteId = sel?.quoteId;
+  const serviceType = sel?.serviceType;
   const ref = useRef<HTMLDivElement>(null);
   const firedRef = useRef(false);
 

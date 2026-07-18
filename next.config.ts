@@ -15,6 +15,11 @@ const SECURITY_HEADERS = [
 ];
 
 const nextConfig: NextConfig = {
+  // Pin the workspace root to THIS checkout. Without it, Turbopack sees the
+  // parent repo's package-lock.json from inside a .claude/worktrees/* copy and
+  // silently serves the MAIN checkout's code (whatever stale branch it's on)
+  // while you edit the worktree — routes 404 with no error anywhere.
+  turbopack: { root: __dirname },
   allowedDevOrigins: ['127.0.0.1'],
   async headers() {
     return [{ source: '/:path*', headers: SECURITY_HEADERS }];

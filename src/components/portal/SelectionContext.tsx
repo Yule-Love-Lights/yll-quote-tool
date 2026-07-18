@@ -260,6 +260,15 @@ export function useSelection(): SelectionContextValue {
   return ctx;
 }
 
+// Null-safe read for components that can mount OUTSIDE the portal (referral
+// page bug batch 2026-07-17: the refer page reuses Gallery, whose
+// SectionViewTracker sat on useSelection and crashed the whole /refer SSR
+// with "useSelection must be inside <SelectionProvider>"). Portal mounts get
+// the real context; provider-less mounts get null and degrade gracefully.
+export function useSelectionOptional(): SelectionContextValue | null {
+  return useContext(SelectionContext);
+}
+
 export type SelectionProviderProps = {
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
