@@ -414,6 +414,18 @@ export default async function PortalPage({
           />
         )}
 
+        {/* 3.9 How financing works (#154 interim, Wisetack) — FIRST after the
+            price/What's Included flow (Naldo, 2026-07-18: financing right
+            below the price, then protection, then trust). Client component:
+            gates ITSELF on the live selection (useSelection) with the same
+            pure eligibility rules as the sign-modal CTA — flag/URL threaded
+            from the server, holiday/permanent/bistro only, $1,500 job floor,
+            $500–$25,000 balance. Renders nothing when off or ineligible. */}
+        <FinancingSection
+          prequalUrl={quote.financing?.prequalUrl}
+          serviceType={quote.serviceType}
+        />
+
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
              event/holiday branch their copy inside RiskReversal via serviceType (#96) */}
         <SectionViewTracker section="warranty" />
@@ -425,16 +437,6 @@ export default async function PortalPage({
         ) : (
           <RiskReversal serviceType={quote.serviceType} />
         )}
-
-        {/* 4.4 How financing works (#154 interim, Wisetack). Client component:
-            gates ITSELF on the live selection (useSelection) with the same
-            pure eligibility rules as the sign-modal CTA — flag/URL threaded
-            from the server, holiday/permanent/bistro only, $1,500 job floor,
-            $500–$25,000 balance. Renders nothing when off or ineligible. */}
-        <FinancingSection
-          prequalUrl={quote.financing?.prequalUrl}
-          serviceType={quote.serviceType}
-        />
 
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
