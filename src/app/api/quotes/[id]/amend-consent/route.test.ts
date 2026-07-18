@@ -30,6 +30,7 @@ const amendment: AmendmentTrailEntry = {
 
 function makeSb(quote: Record<string, unknown>, updatedRows: unknown[] = [{ id: ID }]) {
   const updatePayloads: Array<Record<string, unknown>> = [];
+  const eqCalls: Array<[string, unknown]> = [];
   const builder: Record<string, unknown> = {};
   let updating = false;
   Object.assign(builder, {
@@ -40,7 +41,10 @@ function makeSb(quote: Record<string, unknown>, updatedRows: unknown[] = [{ id: 
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => builder,
+    eq: (column: string, value: unknown) => {
+      eqCalls.push([column, value]);
+      return builder;
+    },
     single: async () => ({ data: quote, error: null }),
     then: (resolve: (value: unknown) => void) => {
       const value = updating ? { data: updatedRows, error: null } : { data: quote, error: null };
@@ -48,7 +52,7 @@ function makeSb(quote: Record<string, unknown>, updatedRows: unknown[] = [{ id: 
       resolve(value);
     },
   });
-  return { client: builder, updatePayloads };
+  return { client: builder, updatePayloads, eqCalls };
 }
 
 function req(body: Record<string, unknown>): NextRequest {
@@ -75,7 +79,7 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
   });
 
   it('atomically records the customer signature on the latest amendment', async () => {
-    const { client, updatePayloads } = makeSb({
+    const { client, updatePayloads, eqCalls } = makeSb({
       id: ID,
       status: 'booked',
       quote_sent_at: '2026-06-20T00:00:00.000Z',
@@ -90,6 +94,10 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
 
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
+    expect(eqCalls).toContainEqual([
+      'approval_snapshot',
+      JSON.stringify({ amendments: [amendment] }),
+    ]);
     const snapshot = updatePayloads[0].approval_snapshot as { amendments: AmendmentTrailEntry[] };
     expect(snapshot.amendments[0].consent).toMatchObject({
       status: 'accepted',
