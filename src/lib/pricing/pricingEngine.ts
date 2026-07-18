@@ -4,6 +4,7 @@
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
 import type { EventRates, EventInputFields } from '@/lib/event/types';
 import type { PermanentBistroRates, PermanentBistroInputFields } from '@/lib/permanentBistro/types';
+import { moneyTimesRate } from '@/lib/money';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -897,7 +898,7 @@ export function computeTotalsTail(
   const takedownAmount = inputs.takedown === 'premium' ? BUSINESS_RULES.premiumTakedownFee : 0;
 
   const taxableAmount = subtotalAfterDiscount + rushFeeAmount + takedownAmount;
-  const taxAmount = Math.round(taxableAmount * BUSINESS_RULES.taxRate * 100) / 100;
+  const taxAmount = moneyTimesRate(taxableAmount, BUSINESS_RULES.taxRate);
   const total = Math.round((taxableAmount + taxAmount) * 100) / 100;
   const depositAmount = Math.round(total * BUSINESS_RULES.depositPercentage * 100) / 100;
   const balanceDue = Math.round((total - depositAmount) * 100) / 100;
