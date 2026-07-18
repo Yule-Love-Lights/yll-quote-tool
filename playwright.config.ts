@@ -8,7 +8,9 @@ export default defineConfig({
   expect: {
     timeout: 15_000,
   },
-  retries: 1,
+  // Production verifier: never auto-retry after a partial flow, because a retry
+  // could create a second test quote before the first failure is investigated.
+  retries: 0,
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report/codex-audit', open: 'never' }],
