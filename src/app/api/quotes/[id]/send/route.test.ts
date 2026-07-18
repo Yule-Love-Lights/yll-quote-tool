@@ -92,10 +92,12 @@ function makeReq(retryGhl = false): NextRequest {
   } as unknown as NextRequest;
 }
 
-function makeReqWithBody(body: Record<string, unknown>): NextRequest {
+function makeReqWithBody(body: Record<string, unknown>, retryDelivery = false): NextRequest {
+  const searchParams = new URLSearchParams();
+  if (retryDelivery) searchParams.set('retryDelivery', '1');
   return {
     headers: { get: () => null },
-    nextUrl: { origin: 'https://quote.example.com', searchParams: new URLSearchParams() },
+    nextUrl: { origin: 'https://quote.example.com', searchParams },
     json: async () => body,
   } as unknown as NextRequest;
 }
@@ -107,6 +109,7 @@ const FRESH_QUOTE = {
   highlevel_contact_id: 'contact_1',
   customer_name: 'Jordan Smith',
   total: 4200,
+  result: { total: 4200, lineItems: [{ amount: 4200 }] },
   quote_sent_at: null,
   customer_approved_at: null,
   ghl_stage_synced_at: null,
@@ -141,7 +144,7 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     const { client } = makeSb({
       ...FRESH_QUOTE,
       total: 4200, // billed (selected roofline)
-      result: { total: 4200, fullYule: { total: 5000 } }, // ceiling
+      result: { total: 4200, lineItems: [{ amount: 4200 }], fullYule: { total: 5000 } }, // ceiling
     });
     sbRef.current = client;
 
@@ -763,5 +766,81 @@ describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
       expect.anything(),
     );
     err.mockRestore();
+  });
+});
+
+
+describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
+  it('rejects a zero-line-item quote before stamping or contacting HighLevel', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      total: 0,
+      result: { total: 0, lineItems: [] },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('empty-quote');
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('returns 502 when every requested customer channel fails', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json).toMatchObject({
+      ok: false,
+      code: 'delivery-failed',
+      locallySent: true,
+      failedChannels: ['sms', 'email'],
+    });
+    expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(true);
+  });
+
+  it('returns success with a channel receipt when at least one requested channel delivers', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.smsSent).toBe(false);
+    expect(json.emailSent).toBe(true);
+    expect(json.failedChannels).toEqual(['sms']);
+  });
+
+  it('retries only customer delivery without re-stamping or moving the CRM card', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'sent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.deliveryRetry).toBe(true);
+    expect(json.smsSent).toBe(true);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
   });
 });
