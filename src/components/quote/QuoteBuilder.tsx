@@ -394,6 +394,11 @@ export default function QuoteBuilder({
   // from a send FAILURE so we never tell the operator to share the link manually.
   const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Customer delivery is distinct from the local sent stamp and CRM stage. A
+  // partial failure stays visible with a channel-specific retry; an all-channel
+  // failure puts Send in the error state while preserving the valid portal URL.
+  const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
+  const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -489,6 +494,10 @@ export default function QuoteBuilder({
     [breakdownScene, offeredColors],
   );
   const hasUnfulfillable = unfulfillable.length > 0;
+  const hasNoPricedItems =
+    !!result &&
+    (result.total <= 0 ||
+      !result.lineItems.some((item) => typeof item.amount === 'number' && item.amount > 0));
   // #5 client half — EventSection surfaces an advisory date-order warning
   // (takedown ≥ event ≥ install) but can't gate Send on its own; it lifts
   // validity here via onValidityChange so Send can be disabled for event quotes
@@ -2091,10 +2100,16 @@ export default function QuoteBuilder({
     // this below, but the handler guards too (belt-and-suspenders for a
     // money-safety path). The message renders next to the Send button.
     if (referralCreditUnsaved) return;
+    if (hasNoPricedItems) {
+      setSendBlockedMsg('Add at least one priced line item and click Calculate before sending.');
+      return;
+    }
     setSendStatus('sending');
     setSendError(null);
     setSendBlockedMsg(null);
     setGhlSyncWarning(null);
+    setDeliveryWarning(null);
+    setDeliveryRetryChannel(null);
     setCopiedUrl(false);
 
     // #92 — re-check fulfillability against the FRESHEST design at Send time: the
@@ -2148,8 +2163,23 @@ export default function QuoteBuilder({
     try {
       const res = await fetch(`/api/quotes/${savedQuoteId}/send`, { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Send failed (${res.status})`);
+      const failedChannels = Array.isArray(data.failedChannels)
+        ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
+        : [];
+      if (!res.ok) {
+        if (data.code === 'delivery-failed' && failedChannels.length > 0) {
+          setDeliveryRetryChannel(failedChannels.length === 2 ? 'both' : failedChannels[0]);
+        }
+        throw new Error(data.error ?? `Send failed (${res.status})`);
+      }
       setSendStatus('sent');
+      if (failedChannels.length > 0) {
+        const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
+        setDeliveryRetryChannel(retryChannel);
+        setDeliveryWarning(
+          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.`,
+        );
+      }
       // PostHog v1 — staff-side confirmation the quote actually sent.
       track('quote_sent', { quote_id: savedQuoteId, service_type: form.serviceType });
       // The quote is sent locally regardless; surface a non-blocking warning if
@@ -2175,6 +2205,27 @@ export default function QuoteBuilder({
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Send failed');
+    }
+  };
+
+  const handleRetryDelivery = async () => {
+    if (!savedQuoteId || !deliveryRetryChannel) return;
+    setSendStatus('sending');
+    setSendError(null);
+    try {
+      const res = await fetch(`/api/quotes/${savedQuoteId}/send?retryDelivery=1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: deliveryRetryChannel }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      setSendStatus('sent');
+      setDeliveryWarning(null);
+      setDeliveryRetryChannel(null);
+    } catch (err) {
+      setSendStatus('error');
+      setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
     }
   };
 
@@ -4522,6 +4573,11 @@ export default function QuoteBuilder({
               </div>
             )}
 
+            {hasNoPricedItems && (
+              <p className="mb-3 text-sm text-red-600 font-medium">
+                Add at least one priced line item and click Calculate before sending.
+              </p>
+            )}
             {hasUnfulfillable && (
               <p className="mb-3 text-sm text-red-600 font-medium">
                 {`⚠️ This design has ${unfulfillable.length} item${unfulfillable.length === 1 ? '' : 's'} we can’t supply — see the red notes in `}
@@ -4553,10 +4609,12 @@ export default function QuoteBuilder({
               <button
                 type="button"
                 onClick={handleSendToCustomer}
-                disabled={sendStatus === 'sending' || hasUnfulfillable || referralCreditUnsaved || (form.serviceType === 'event' && !eventDatesValid)}
+                disabled={sendStatus === 'sending' || hasNoPricedItems || hasUnfulfillable || referralCreditUnsaved || (form.serviceType === 'event' && !eventDatesValid)}
                 title={
-                  referralCreditUnsaved
-                    ? 'Click Calculate to save the referral credit change before sending.'
+                  hasNoPricedItems
+                    ? 'Add at least one priced line item and click Calculate before sending.'
+                    : referralCreditUnsaved
+                      ? 'Click Calculate to save the referral credit change before sending.'
                     : form.serviceType === 'event' && !eventDatesValid
                       ? 'Fix the event dates above — install, event, and takedown dates must be in order before sending.'
                       : undefined
@@ -4571,9 +4629,31 @@ export default function QuoteBuilder({
             </div>
 
             {sendStatus === 'error' && (
-              <p className="mt-3 text-sm text-red-600">
-                Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.
-              </p>
+              <div className="mt-3 text-sm text-red-600">
+                <p>Send failed: {sendError}. The portal URL is still valid — you can copy it manually and share.</p>
+                {deliveryRetryChannel && (
+                  <button
+                    type="button"
+                    onClick={handleRetryDelivery}
+                    className="mt-2 font-medium underline hover:no-underline"
+                  >
+                    Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {sendStatus === 'sent' && deliveryWarning && deliveryRetryChannel && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>{deliveryWarning}</p>
+                <button
+                  type="button"
+                  onClick={handleRetryDelivery}
+                  className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                >
+                  Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}
+                </button>
+              </div>
             )}
 
             {sendBlockedMsg && (
