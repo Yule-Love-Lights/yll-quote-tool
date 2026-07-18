@@ -10,6 +10,7 @@
 - CODX-R-001 | 2026-07-18 | Low | refuted | src/lib/invoices.ts:468 | Proportional tax scaling for a partial selection is exact while one flat tax rate applies to every taxable item.
 - CODX-R-002 | 2026-07-18 | Low | refuted | src/lib/pdf/docModels.ts:286 | The quote PDF using the original approval total is intentional as the signed snapshot; current amendment presentation is covered by CODX-F-003.
 - CODX-R-003 | 2026-07-18 | Low | refuted | src/lib/portal/derivePackages.ts:178 | The order minimum is intentionally checked before discounts so a promotion cannot make an otherwise eligible order unapprovable.
+- CODX-R-004 | 2026-07-18 | High | refuted | src/lib/integrations/valor.ts:345 | The current Valor parser recognizes the live `data.invoice_no` order reference; the older webhook diagnostic comment describing dropped hosted-page deposits is stale.
 
 ## SUGGESTIONS
 
