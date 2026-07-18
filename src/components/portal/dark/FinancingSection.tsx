@@ -94,16 +94,21 @@ export function FinancingSection({
           ))}
         </ol>
 
-        <a
-          href={prequalUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-8 inline-flex items-center min-h-[44px] text-[15px] font-semibold text-[#FFB744] underline underline-offset-4 hover:text-[#FFD07A] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] rounded-sm"
-        >
-          See financing options
-        </a>
+        {/* Centered solid-amber pill (Naldo 2026-07-18: look like a button,
+            centered). Amber, not the Approve red — that pill stays reserved
+            for the one money action. */}
+        <div className="mt-8 flex justify-center">
+          <a
+            href={prequalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center min-h-[48px] px-7 py-3 rounded-full bg-[#E8B862] text-[#0B140F] font-semibold text-[15px] cursor-pointer transition-colors duration-200 hover:bg-[#FFD07A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B140F]"
+          >
+            See financing options
+          </a>
+        </div>
 
-        <p className="mt-4 text-[12px] text-[#7B7361] leading-[1.6] max-w-xl">
+        <p className="mt-4 text-[12px] text-[#7B7361] leading-[1.6] max-w-xl mx-auto text-center">
           All financing is subject to credit approval through Wisetack and its lending partners.
           Terms vary.
         </p>
