@@ -30,6 +30,8 @@ type ApprovalSnapshot = {
 type QuoteRow = {
   id: string;
   status: QuoteStatus | null;
+  quote_sent_at: string | null;
+  customer_approved_at: string | null;
   deposit_paid_at: string | null;
   approval_snapshot: ApprovalSnapshot | null;
 };
@@ -93,7 +95,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: readError } = await sb
     .from('quotes')
-    .select('id, status, deposit_paid_at, approval_snapshot')
+    .select('id, status, quote_sent_at, customer_approved_at, deposit_paid_at, approval_snapshot')
     .eq('id', id)
     .single<QuoteRow>();
   if (readError || !quote) {
@@ -102,6 +104,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const lifecycle = deriveStatus({
     status: quote.status,
+    quote_sent_at: quote.quote_sent_at,
+    customer_approved_at: quote.customer_approved_at,
     deposit_paid_at: quote.deposit_paid_at,
   });
   if (!quote.deposit_paid_at || lifecycle !== 'booked') {
