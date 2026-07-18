@@ -7,6 +7,7 @@ const requiredEnvironment = [
 ] as const;
 const emailEnvironment = ['TEST_LOGIN_EMAIL', 'TEST_CUSTOMER_EMAIL'] as const;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const MIN_PASSWORD_LENGTH = 6;
 
 function required(name: (typeof requiredEnvironment)[number]): string {
   const value = process.env[name];
@@ -33,6 +34,9 @@ test.describe.serial('Codex production quote audit', () => {
       throw new Error(
         `Production verifier blocked. Invalid email shape: ${invalidEmails.join(', ')}`,
       );
+    }
+    if ((process.env.TEST_LOGIN_PASSWORD ?? '').length < MIN_PASSWORD_LENGTH) {
+      throw new Error('Production verifier blocked. Invalid length: TEST_LOGIN_PASSWORD');
     }
   });
 
