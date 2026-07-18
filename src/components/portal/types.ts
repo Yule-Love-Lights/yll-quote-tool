@@ -100,6 +100,16 @@ export type PortalVideo = {
 //
 // Mirrors the ApprovalSnapshot shape written by /api/quotes/[id]/approve;
 // translated into camelCase here for the frontend.
+export type PortalPendingAmendment = {
+  amendedAt: string;
+  reason: string;
+  previousTotalUsd: number;
+  newTotalUsd: number;
+  deltaUsd: number;
+  depositAppliedUsd: number;
+  newBalanceUsd: number;
+};
+
 export type PortalApproval = {
   approvedAt: string;        // ISO timestamp
   depositPaidAt?: string | null; // #38 — set once the deposit webhook confirms; null = approved-but-unpaid
@@ -120,6 +130,9 @@ export type PortalApproval = {
   // customer agreed to, frozen at approval. null for non-permanent quotes or
   // older snapshots; the portal then renders the LIVE settings copy instead.
   permanentWarranty?: PermanentWarranty | null;
+  // Latest total-changing booked amendment that still needs the customer's
+  // signature. Absent once accepted or when there is no amendment.
+  pendingAmendment?: PortalPendingAmendment;
 };
 
 // The customer's early-install timing choice on the portal (#40). Picking
