@@ -50,10 +50,11 @@ test.describe.serial('Codex production quote audit', () => {
     await page.goto('/quote/new?test=1');
     await expect(page.getByText('Test Mode')).toBeVisible();
 
-    await page.getByPlaceholder('Jane Smith (optional)').fill(testQuoteTitle);
-    await page.getByPlaceholder('jane@example.com').fill(required('TEST_CUSTOMER_EMAIL'));
+    await page.getByLabel('Name', { exact: true }).fill(testQuoteTitle);
+    await expect(page.getByLabel('Phone', { exact: true })).toBeVisible();
+    await page.getByLabel('Email', { exact: true }).fill(required('TEST_CUSTOMER_EMAIL'));
     await page
-      .getByPlaceholder('123 Main St, Smithtown, NY 11787')
+      .getByLabel('Property Address', { exact: true })
       .fill('1600 Pennsylvania Avenue NW, Washington, DC 20500');
 
     await page.getByRole('button', { name: /Analyze from Address/ }).click();
