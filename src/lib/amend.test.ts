@@ -237,6 +237,31 @@ describe('blocksSettlement — WT-18 re-consent settlement gate', () => {
   });
 });
 
+describe('amendment consent — booked re-sign flow', () => {
+  it('treats an unsigned historical or pending amendment as awaiting consent', () => {
+    const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    expect(blocksSettlement(inc)).toBe(true);
+    expect(amendedQuoteStatus(inc, 'booked')).toBe('changes_requested');
+  });
+
+  it('releases settlement and preserves booked status after customer consent', () => {
+    const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    inc.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-18T12:00:00.000Z',
+      signature: {
+        name: 'Jordan Smith',
+        kind: 'typed',
+        value: 'Jordan Smith',
+        signed_at: '2026-07-18T12:00:00.000Z',
+        ip: null,
+      },
+    };
+    expect(blocksSettlement(inc)).toBe(false);
+    expect(amendedQuoteStatus(inc, 'booked')).toBe('booked');
+  });
+});
+
 describe('repeated amendments — each entry stands alone', () => {
   it('a second amendment chains off the first amended total/balance', () => {
     const first = computeAmendment({ ...bookedBase(), newTotal: 6000 });
