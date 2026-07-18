@@ -120,6 +120,13 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     // (the default, "calculate fee from portal") double-charged tax + added a
     // card-difference surcharge — the customer must pay the deposit we showed.
     ignore_surcharge_calc: 1,
+    // #161: `save_card: 1` was PROBED here to vault the card at deposit (for the
+    // future #83 balance auto-charge) — but a live test (2026-07-17) confirmed
+    // the HOSTED-PAGE product does NOT honor it: the card never landed in the
+    // Valor Vault and the webhook returned no token. Reverted (a dead param).
+    // Card-on-file needs a different path (the correct hosted-page param per
+    // Valor support, or the separate valor-vault REST profile API) — see #161
+    // in the ledger + docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md §1.
     shipping_country: 'US',
     customer_name: input.customerName?.trim() || 'Customer',
     success_url: input.successUrl,
@@ -299,14 +306,22 @@ export function parseWebhookEvent(rawBody: string): ValorWebhookEvent {
         : o;
 
   const responseCode = pick(inner, 'response_code', 'responseCode', 'rcode');
-  const amountStr = pick(inner, 'amount', 'amt', 'transaction_amount');
-  const amountUsd = amountStr != null ? Number(amountStr) : null;
+  // Valor's confirmation webhook reports the amount in CENTS (minor units) —
+  // CONFIRMED live 2026-07-17: a $5.44 deposit came back as data.amount "544",
+  // which booked the quote at $544 (a 100× over-record + a "$544" customer SMS).
+  // createHostedPageSale SENDS dollars (amount: 5.44); the webhook ECHOES cents.
+  // Convert to dollars here so every consumer works in dollars — the deposit
+  // stamp (recordedDeposit), the deposit-shortfall check, and the balance
+  // underpayment (WT-15) all compare event.amountUsd against dollar amounts.
+  const amountCentsStr = pick(inner, 'amount', 'amt', 'transaction_amount');
+  const amountCents = amountCentsStr != null ? Number(amountCentsStr) : null;
+  const amountUsd = amountCents != null && Number.isFinite(amountCents) ? amountCents / 100 : null;
 
   return {
     txnId: pick(inner, 'txn_id', 'transaction_id', 'txnId', 'transactionId'),
     responseCode,
     approved: responseCode === '00',
-    amountUsd: amountUsd != null && Number.isFinite(amountUsd) ? amountUsd : null,
+    amountUsd,
     approvalCode: pick(inner, 'approval_code', 'approvalCode', 'auth_code', 'authCode'),
     receiptUrl: pick(inner, 'receipt_url', 'receiptUrl', 'receipt'),
     vaultToken: pick(
