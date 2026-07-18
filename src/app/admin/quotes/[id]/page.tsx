@@ -6,6 +6,9 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
+import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
+import { buildPortalLineItems } from '@/lib/portal/adapter';
+import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -92,6 +95,22 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+
+  // #162 — the FREE ($0) items currently on the approved selection, so staff can
+  // add/remove more (e.g. the free spritzers on #1191). Only an approved/booked
+  // quote has a signed selection to edit; a priced line never appears here.
+  const canEditFreeItems = (status === 'approved' || status === 'booked') && !!quote.result;
+  const freeItems = canEditFreeItems && quote.result
+    ? (() => {
+        const { lineItems } = buildPortalLineItems(quote.result, quote.inputs as QuoteInputs | null);
+        const ids =
+          (quote.approval_snapshot?.customerSelection?.selectedItemIds as string[] | undefined) ?? [];
+        const selected = new Set(ids);
+        return lineItems
+          .filter((li) => li.price === 0 && selected.has(li.id))
+          .map((li) => ({ id: li.id, label: li.label }));
+      })()
+    : [];
 
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
@@ -275,6 +294,9 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </>
           )}
         </div>
+
+        {/* Free items (#162) — add/remove $0 items on an approved order. */}
+        {canEditFreeItems && <FreeItemsPanel quoteId={id} items={freeItems} />}
 
         {/* Permanent BOM (#88 P7) — operator ordering material list + wholesale cost. */}
         {bom && (
