@@ -973,3 +973,15 @@ describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
     expect(r.fullYule?.total).toBe(1370.25);      // (1400 − 140) × 1.0875
   });
 });
+
+
+describe('calculateQuote — exact half-cent tax rounding', () => {
+  it('rounds $1,002.80 at 8.75% to $87.75 tax', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Half-cent boundary', amount: 1002.8 }],
+    }));
+    expect(r.taxAmount).toBe(87.75);
+    expect(r.total).toBe(1090.55);
+    expect(r.depositAmount).toBe(545.28);
+  });
+});
