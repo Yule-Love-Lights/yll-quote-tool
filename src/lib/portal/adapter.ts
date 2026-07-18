@@ -29,6 +29,7 @@ import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
+import { isAmendmentConsentPending, latestAmendment, type AmendmentTrailEntry } from '@/lib/amend';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -64,6 +65,7 @@ type ApprovalSnapshotJson = {
     bullets?: string[];
     version?: number;
   };
+  amendments?: AmendmentTrailEntry[];
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -468,6 +470,22 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
+    ...(() => {
+      const amendment = latestAmendment(snap?.amendments);
+      return isAmendmentConsentPending(amendment)
+        ? {
+            pendingAmendment: {
+              amendedAt: amendment!.amended_at,
+              reason: amendment!.reason,
+              previousTotalUsd: amendment!.previous_total,
+              newTotalUsd: amendment!.new_total,
+              deltaUsd: amendment!.delta,
+              depositAppliedUsd: amendment!.deposit_applied,
+              newBalanceUsd: amendment!.new_balance,
+            },
+          }
+        : {};
+    })(),
   };
 }
 
