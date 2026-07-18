@@ -68,6 +68,8 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
     const { client, updatePayloads } = makeSb({
       id: ID,
       status: 'booked',
+      quote_sent_at: '2026-06-20T00:00:00.000Z',
+      customer_approved_at: '2026-06-25T00:00:00.000Z',
       deposit_paid_at: '2026-07-01T00:00:00.000Z',
       approval_snapshot: { amendments: [amendment] },
     });
@@ -97,6 +99,8 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
     const { client, updatePayloads } = makeSb({
       id: ID,
       status: 'booked',
+      quote_sent_at: '2026-06-20T00:00:00.000Z',
+      customer_approved_at: '2026-06-25T00:00:00.000Z',
       deposit_paid_at: '2026-07-01T00:00:00.000Z',
       approval_snapshot: { amendments: [amendment] },
     });
@@ -112,6 +116,8 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
       {
         id: ID,
         status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
         deposit_paid_at: '2026-07-01T00:00:00.000Z',
         approval_snapshot: { amendments: [amendment] },
       },
