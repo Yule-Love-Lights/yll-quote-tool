@@ -204,7 +204,11 @@ describe('POST /api/quotes/[id]/amend', () => {
     };
     expect(snap.customerSelection?.currentTotalUsd).toBe(5000);
     expect(snap.amendments).toHaveLength(1);
-    expect(snap.amendments![0]).toMatchObject({ new_total: 5600, reason: 'added an extra wreath' });
+    expect(snap.amendments![0]).toMatchObject({
+      new_total: 5600,
+      reason: 'added an extra wreath',
+      consent: { status: 'pending' },
+    });
     expect('status' in quoteUpdate).toBe(false);
 
     // Invoice re-synced to the amended totals (still has a balance → draft kept).
