@@ -540,11 +540,27 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
 });
 
 
-describe('priceSelection — exact half-cent tax rounding', () => {
+describe('priceSelection — exact half-cent percentage rounding', () => {
   it('matches the pricing engine at the $1,002.80 × 8.75% boundary', () => {
     const p = priceSelection(1002.8, { rushFee: 0, takedown: 0, taxRate: 0.0875 });
     expect(p.tax).toBe(87.75);
     expect(p.total).toBe(1090.55);
     expect(p.deposit).toBe(545.28);
+  });
+
+  it('rounds percentage discounts on the same cent boundary as the engine', () => {
+    expect(priceSelection(1281.05, {
+      rushFee: 0, takedown: 0, taxRate: 0.0875, discountRate: 0.1,
+    }).discount).toBe(128.11);
+    expect(priceSelection(1000.1, {
+      rushFee: 0, takedown: 0, taxRate: 0.0875, discountRate: 0.15,
+    }).discount).toBe(150.02);
+  });
+
+  it('rounds an odd-cent 50% deposit up instead of losing a cent', () => {
+    const p = priceSelection(1000.08, { rushFee: 0, takedown: 0, taxRate: 0.0875 });
+    expect(p.tax).toBe(87.51);
+    expect(p.total).toBe(1087.59);
+    expect(p.deposit).toBe(543.8);
   });
 });
