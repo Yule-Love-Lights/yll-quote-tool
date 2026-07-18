@@ -429,7 +429,7 @@ export default async function PortalPage({
         {/* 4.4 How financing works (#154 interim, Wisetack). Client component:
             gates ITSELF on the live selection (useSelection) with the same
             pure eligibility rules as the sign-modal CTA — flag/URL threaded
-            from the server, holiday/permanent only, $1,500 job floor,
+            from the server, holiday/permanent/bistro only, $1,500 job floor,
             $500–$25,000 balance. Renders nothing when off or ineligible. */}
         <FinancingSection
           prequalUrl={quote.financing?.prequalUrl}

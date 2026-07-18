@@ -34,10 +34,17 @@ export function financedBalanceUsd(agreedTotalUsd: number, depositUsd: number): 
 /**
  * Whether the financing CTA shows. POSITIVE gate on every leg (per the
  * AGENTS.md seam rule): the flag must be exactly on, the service type exactly
- * holiday or permanent (event / bistro / unknown are OUT — a future vertical
- * must opt in, never inherit), the JOB TOTAL at least $1,500 (the YLL business
- * floor), and the balance inside Wisetack's [$500, $25,000].
+ * holiday, permanent, or permanent_bistro (bistro added by Naldo 2026-07-18;
+ * event / unknown are OUT — a future vertical must opt in, never inherit),
+ * the JOB TOTAL at least $1,500 (the YLL business floor), and the balance
+ * inside Wisetack's [$500, $25,000].
  */
+const FINANCEABLE_SERVICE_TYPES: ReadonlySet<ServiceType> = new Set([
+  'holiday',
+  'permanent',
+  'permanent_bistro',
+]);
+
 export function isFinancingEligible(input: {
   enabled: boolean;
   serviceType: ServiceType | null | undefined;
@@ -45,7 +52,7 @@ export function isFinancingEligible(input: {
   balanceUsd: number;
 }): boolean {
   if (input.enabled !== true) return false;
-  if (input.serviceType !== 'holiday' && input.serviceType !== 'permanent') return false;
+  if (input.serviceType == null || !FINANCEABLE_SERVICE_TYPES.has(input.serviceType)) return false;
   if (!(input.totalUsd >= YLL_FINANCING_MIN_JOB_TOTAL_USD)) return false;
   return input.balanceUsd >= WISETACK_MIN_USD && input.balanceUsd <= WISETACK_MAX_USD;
 }

@@ -7,10 +7,11 @@
 // from what the balance code would bill.
 //
 // Eligibility is a POSITIVE gate (per AGENTS.md seam rules): flag exactly on,
-// service type exactly holiday or permanent, job total at least $1,500 (the
+// service type exactly holiday, permanent, or permanent_bistro, job total at
+// least $1,500 (the
 // YLL business floor, Naldo 2026-07-18), balance inside [$500, $25,000]
-// inclusive. Event / bistro / unknown service types are OUT — a future
-// vertical must opt in, never inherit.
+// inclusive. Event / unknown service types are OUT — a future vertical must
+// opt in, never inherit.
 
 import { describe, it, expect } from 'vitest';
 import { roundMoneyGuarded as round2 } from '@/lib/money';
@@ -102,11 +103,11 @@ describe('isFinancingEligible', () => {
     it('permanent → eligible', () => {
       expect(isFinancingEligible({ ...eligibleBase, serviceType: 'permanent' })).toBe(true);
     });
+    it('permanent_bistro → eligible (added by Naldo 2026-07-18)', () => {
+      expect(isFinancingEligible({ ...eligibleBase, serviceType: 'permanent_bistro' })).toBe(true);
+    });
     it('event → not eligible', () => {
       expect(isFinancingEligible({ ...eligibleBase, serviceType: 'event' })).toBe(false);
-    });
-    it('permanent_bistro → not eligible', () => {
-      expect(isFinancingEligible({ ...eligibleBase, serviceType: 'permanent_bistro' })).toBe(false);
     });
     it('unknown (undefined/null) → not eligible', () => {
       expect(isFinancingEligible({ ...eligibleBase, serviceType: undefined })).toBe(false);

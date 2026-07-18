@@ -553,7 +553,8 @@ export function StickyBottomBar({
           // #154 interim — Wisetack financing CTA under the deposit line.
           // Positive gate on the LIVE selection: the server-threaded prequal
           // URL must exist (flag on + URL configured), the service type must
-          // be holiday/permanent, the job total at least $1,500 (YLL floor,
+          // be holiday, permanent, or permanent_bistro, the job total at
+          // least $1,500 (YLL floor,
           // Naldo 2026-07-18), and the live balance (total − deposit, the
           // SAME numbers the modal displays) must sit in [$500, $25,000].
           // Informational link only — the pay flow and money math are untouched.

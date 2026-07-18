@@ -7,10 +7,11 @@
 //
 // Client component because it gates itself on the LIVE selection (useSelection)
 // with the SAME pure rules as the sign-modal CTA site: server-threaded prequal
-// URL present (flag on + URL configured), service type holiday/permanent, job
+// URL present (flag on + URL configured), service type holiday, permanent, or
+// permanent_bistro, job
 // total at least the $1,500 YLL floor, balance inside Wisetack's $500–$25,000.
 // One portal page serves every vertical, so this gate is what keeps the section
-// off event/bistro automatically. If the customer's selection dips below the
+// off event automatically. If the customer's selection dips below the
 // floor mid-browse the section disappears — intended and consistent with the
 // modal CTA. Renders null (zero DOM) whenever ineligible or the feature is off.
 
