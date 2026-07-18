@@ -64,6 +64,16 @@ const ctx = { params: Promise.resolve({ id: ID }) };
 beforeEach(() => vi.clearAllMocks());
 
 describe('POST /api/quotes/[id]/amend-consent', () => {
+  it('rejects a malformed capability token before reading the quote', async () => {
+    const { client, updatePayloads } = makeSb({});
+    sbRef.current = client;
+    const res = await POST(req({ amendedAt: AMENDED_AT, signature }), {
+      params: Promise.resolve({ id: 'not-a-quote-id' }),
+    });
+    expect(res.status).toBe(400);
+    expect(updatePayloads).toHaveLength(0);
+  });
+
   it('atomically records the customer signature on the latest amendment', async () => {
     const { client, updatePayloads } = makeSb({
       id: ID,
