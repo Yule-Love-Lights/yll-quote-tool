@@ -20,6 +20,8 @@ import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permane
 import type { ServiceType } from '@/lib/serviceType';
 import { track } from '@/lib/analytics/posthog';
 import { categorizeApproveError } from '@/lib/analytics/errorCategory';
+import { FinancingCta } from '../FinancingCta';
+import { financedBalanceUsd, isFinancingEligible } from '@/lib/financing/eligibility';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -135,6 +137,12 @@ export type StickyBottomBarProps = {
   quoteStatus?: string | null;
   /** PostHog v1 — included on the quote_approved event's properties. */
   serviceType?: ServiceType;
+  /** #154 interim — the merchant's Wisetack prequal URL, threaded from the
+   *  SERVER (PortalQuote.financing, set only when the flag is exactly on AND a
+   *  URL is configured). Undefined = financing is off and nothing here changes.
+   *  Eligibility against the LIVE selection balance is checked at the sign
+   *  modal's render site below. */
+  financingPrequalUrl?: string;
 };
 
 export function StickyBottomBar({
@@ -146,6 +154,7 @@ export function StickyBottomBar({
   isTest = false,
   quoteStatus,
   serviceType,
+  financingPrequalUrl,
 }: StickyBottomBarProps) {
   const {
     activeName,
@@ -541,6 +550,21 @@ export function StickyBottomBar({
           }}
           total={currentTotal}
           deposit={currentDeposit}
+          // #154 interim — Wisetack financing CTA under the deposit line.
+          // Positive gate on the LIVE selection: the server-threaded prequal
+          // URL must exist (flag on + URL configured), the service type must
+          // be holiday/permanent, and the live balance (total − deposit, the
+          // SAME numbers the modal displays) must sit in [$500, $25,000].
+          // Informational link only — the pay flow and money math are untouched.
+          financingUrl={
+            isFinancingEligible({
+              enabled: financingPrequalUrl != null,
+              serviceType,
+              balanceUsd: financedBalanceUsd(currentTotal, currentDeposit),
+            })
+              ? financingPrequalUrl
+              : undefined
+          }
         />
       )}
       {/* #83 Slice B — Decline / Request-changes modals. */}
@@ -625,6 +649,7 @@ function SignModal({
   onConfirm,
   total,
   deposit,
+  financingUrl,
 }: {
   submitting: boolean;
   errorMsg: string | null;
@@ -634,6 +659,9 @@ function SignModal({
   onConfirm: () => void;
   total: number;
   deposit: number;
+  /** #154 interim — the Wisetack prequal link, present only when this quote's
+   *  live selection is financing-eligible (gated by the caller). */
+  financingUrl?: string;
 }) {
   // a11y fix (W4-015): move focus into the dialog on open, trap Tab within
   // it, and restore focus to the Approve button (the trigger) on close.
@@ -664,6 +692,11 @@ function SignModal({
           <span className="text-[#FFD07A] font-semibold">{formatUsd(deposit)}</span> deposit. Sign
           below to confirm.
         </p>
+
+        {/* #154 interim — financing option for the balance, under the deposit
+            line. Renders ONLY when the caller found this selection eligible;
+            purely informational (the approve/pay flow is untouched). */}
+        {financingUrl && <FinancingCta url={financingUrl} />}
 
         <SignaturePad onChange={onSignatureChange} />
 

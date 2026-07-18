@@ -498,6 +498,9 @@ export default async function PortalPage({
           isTest={quote.isTest}
           quoteStatus={quote.quoteStatus}
           serviceType={quote.serviceType}
+          // #154 interim — server-threaded Wisetack prequal URL (present only
+          // when the flag is on + a URL is configured; see the loader).
+          financingPrequalUrl={quote.financing?.prequalUrl}
         />
       </SelectionProvider>
     </main>

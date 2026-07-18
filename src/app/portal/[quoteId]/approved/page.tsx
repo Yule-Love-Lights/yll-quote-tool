@@ -23,6 +23,8 @@ import { ensureReferralCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } fr
 import { referralQrSvg } from '@/lib/referralQr';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { getInvoiceByQuote } from '@/lib/invoices';
+import { FinancingCta } from '@/components/portal/FinancingCta';
+import { isFinancingEligible } from '@/lib/financing/eligibility';
 
 type Params = { quoteId: string };
 
@@ -119,6 +121,24 @@ export default async function PortalApprovedPage({
   // BOOKED" page (deposit received) instead of the placeholder "we'll reach out
   // to collect it". Drives the headline, intro line, and step 1 below.
   const isPaid = !!quote.approval?.depositPaidAt;
+
+  // #154 interim — Wisetack financing CTA for the remaining balance. Shows only
+  // when the server flag + prequal URL are configured (quote.financing set by
+  // the loader), the APPROVED balance is known (agreed total minus the frozen
+  // deposit), the service type is holiday/permanent, and that balance sits in
+  // Wisetack's $500–$25,000 range. Hidden once the balance is paid in full
+  // (?balance=paid) — nothing left to finance. Informational link only; the
+  // deposit/booking flow is untouched.
+  const financing = quote.financing;
+  const showFinancing =
+    !balancePaid &&
+    financing != null &&
+    financing.approvedBalanceUsd != null &&
+    isFinancingEligible({
+      enabled: true, // quote.financing existing = the flag + URL are on
+      serviceType: quote.serviceType,
+      balanceUsd: financing.approvedBalanceUsd,
+    });
 
   const nextSteps: Array<{
     icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
@@ -253,6 +273,8 @@ export default async function PortalApprovedPage({
               </div>
             </dl>
           </div>
+          {/* #154 interim — financing option for the remaining balance. */}
+          {showFinancing && financing && <FinancingCta url={financing.prequalUrl} />}
         </div>
       </section>
 
