@@ -13,12 +13,38 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { createJobFromQuote, requireOperatorMock, sbRef, accrueOnBooking, ensureReferralCode } = vi.hoisted(() => ({
+const {
+  createJobFromQuote,
+  requireOperatorMock,
+  sbRef,
+  accrueOnBooking,
+  ensureReferralCode,
+  hl,
+  resolvePipelineStagesMock,
+} = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   sbRef: { current: null as unknown },
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  // GHL pipeline sync (booking bug batch 2026-07-17) — mirrors how the Valor
+  // webhook's own test mocks updateOpportunity / isHighLevelConfigured.
+  hl: {
+    updateOpportunity: vi.fn(async () => ({})),
+    configured: { value: true },
+  },
+  // Unlike the webhook test (which exercises the REAL ghlPipelineMap against
+  // known env-var/stage-id fallbacks), this route's tests mock
+  // resolvePipelineStages directly so the legacy-rebook assertion can check
+  // its call args (legacyRebook passthrough) without coupling to real GHL ids.
+  resolvePipelineStagesMock: vi.fn(() => ({
+    pipelineId: 'pipe-1',
+    entry: 'stage-entry',
+    sent: 'stage-sent',
+    depositPaid: 'stage-deposit-paid',
+    installed: 'stage-installed',
+    declined: 'stage-declined',
+  })),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -28,6 +54,13 @@ vi.mock('@/lib/supabase', () => ({
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
 vi.mock('@/lib/referrals', () => ({ accrueOnBooking, ensureReferralCode }));
+vi.mock('@/lib/integrations/highlevel', () => ({
+  updateOpportunity: hl.updateOpportunity,
+  isHighLevelConfigured: () => hl.configured.value,
+}));
+vi.mock('@/lib/integrations/ghlPipelineMap', () => ({
+  resolvePipelineStages: resolvePipelineStagesMock,
+}));
 
 import { POST } from './route';
 
@@ -91,6 +124,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
   createJobFromQuote.mockResolvedValue({ id: JOB_ID, status: 'to_schedule' });
+  hl.configured.value = true;
+  hl.updateOpportunity.mockResolvedValue({});
+  resolvePipelineStagesMock.mockReturnValue({
+    pipelineId: 'pipe-1',
+    entry: 'stage-entry',
+    sent: 'stage-sent',
+    depositPaid: 'stage-deposit-paid',
+    installed: 'stage-installed',
+    declined: 'stage-declined',
+  });
 });
 
 describe('POST /api/quotes/[id]/convert-to-job', () => {
@@ -374,5 +417,127 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.depositUsd).toBe(0);
+  });
+});
+
+// GHL pipeline sync (booking bug batch 2026-07-17): a staff conversion is an
+// offline close (cash/check/terminal deposit) — the same lifecycle event the
+// Valor webhook already syncs to HighLevel. Diagnosed live: a real booking
+// recorded through this route left the customer's pipeline card stuck in its
+// entry stage because this route never touched GHL at all. These tests lock
+// in the fix: the card moves to the resolved deposit-paid stage AFTER the
+// booking write succeeds, non-fatally, honoring the #156 Neighbors routing.
+describe('POST /api/quotes/[id]/convert-to-job — GoHighLevel pipeline sync (booking bug batch 2026-07-17)', () => {
+  it('moves the card to the resolved deposit-paid stage with the AGREED total, and reports stageUpdated:true', async () => {
+    const { client } = makeSb({
+      ...BASE_QUOTE,
+      highlevel_opportunity_id: 'opp-1',
+      service_type: 'holiday',
+      legacy_rebook: false,
+      total: 1500,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(json.stageUpdated).toBe(true);
+    expect(json.stageError).toBeUndefined();
+    expect(hl.updateOpportunity).toHaveBeenCalledOnce();
+    // The AGREED total (quote.total here, no snapshot) — NOT the $250 deposit.
+    expect(hl.updateOpportunity).toHaveBeenCalledWith('opp-1', {
+      pipelineStageId: 'stage-deposit-paid',
+      monetaryValue: 1500,
+    });
+  });
+
+  it('#156: a legacy rebook quote passes legacyRebook:true through to resolvePipelineStages (Neighbors routing)', async () => {
+    const { client } = makeSb({
+      ...BASE_QUOTE,
+      highlevel_opportunity_id: 'opp-1',
+      service_type: 'holiday',
+      legacy_rebook: true,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    expect(res.status).toBe(200);
+    expect(resolvePipelineStagesMock).toHaveBeenCalledWith('holiday', { legacyRebook: true });
+  });
+
+  it('no linked opportunity: skips the GHL move, conversion still succeeds, response carries the reason', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, highlevel_opportunity_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(json.stageUpdated).toBe(false);
+    expect(json.stageError).toMatch(/no highlevel opportunity/i);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  it('updateOpportunity throws: conversion still succeeds (200), stageUpdated false, stageError set', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, highlevel_opportunity_id: 'opp-1', service_type: 'holiday' });
+    sbRef.current = client;
+    hl.updateOpportunity.mockRejectedValueOnce(new Error('GHL 500'));
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(json.stageUpdated).toBe(false);
+    expect(json.stageError).toBe('GHL 500');
+  });
+
+  it('HighLevel not configured: skips the GHL move, conversion still succeeds', async () => {
+    hl.configured.value = false;
+    const { client } = makeSb({ ...BASE_QUOTE, highlevel_opportunity_id: 'opp-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.stageUpdated).toBe(false);
+    expect(json.stageError).toMatch(/not configured/i);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  // Test Quote (#93): a test quote must never touch a real GHL card, mirrored
+  // defensively here even though a test quote wouldn't realistically carry a
+  // real opportunity id (same defensive posture as the Valor webhook's own
+  // is_test guard).
+  it('test quote: never touches a real GHL card even with a linked opportunity id (#93)', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, highlevel_opportunity_id: 'opp-1', is_test: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.stageUpdated).toBe(false);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+  });
+
+  it('does not run the GHL move on the alreadyBooked idempotent path', async () => {
+    const { client } = makeSb({
+      ...BASE_QUOTE,
+      deposit_paid_at: '2026-07-01T01:00:00Z',
+      highlevel_opportunity_id: 'opp-1',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alreadyBooked).toBe(true);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });
