@@ -283,13 +283,19 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
         </div>
       </section>
 
+      {/* ── Contact info — directly under the form (owner call 2026-07-18):
+          a visitor who won't fill the form gets the phone number before the
+          long scroll starts. ── */}
+      <PersonalContact leaderName={team.leaderName} photo={team.photo} phone={team.phone} />
+
       {/* ── Trust ── */}
       <TrustSection />
 
       {/* Referral page bug batch 2026-07-17 (ledger #41) fix 3: the sections
           below the form were missing entirely — this page stopped at Trust.
           Owner-approved order: reviews, install photos, steps, protection,
-          FAQ, about us, contact info. Every prop below is sourced exactly
+          FAQ, about us (contact info moved above Trust, owner call
+          2026-07-18). Every prop below is sourced exactly
           like src/app/portal/[quoteId]/page.tsx (same components, same
           fallbacks); no quote-specific customer data is read anywhere here —
           only generic/curated content plus the referrer's own hero above. */}
@@ -321,9 +327,6 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
 
       {/* ── About us ── */}
       <MeetYourTeam photo={team.photo} paragraphs={team.companyBio} badges={team.badges} />
-
-      {/* ── Contact info ── */}
-      <PersonalContact leaderName={team.leaderName} photo={team.photo} phone={team.phone} />
 
       {/* ── Urgency line (rating moved above the fold, see hero) ── */}
       {bookedThrough && (
