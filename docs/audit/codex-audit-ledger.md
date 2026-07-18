@@ -7,6 +7,7 @@
 - CODX-F-003 | 2026-07-18 | High | confirmed | src/app/api/quotes/[id]/amend/route.ts:231 | A changed booked order requires re-consent, but the customer portal has no re-consent path.
 - CODX-F-004 | 2026-07-18 | Low | confirmed | src/components/quote/QuoteBuilder.tsx:2688 | Customer information labels are not programmatically associated with their inputs.
 - CODX-F-005 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/send/route.ts:491 | The send API and builder report success when every requested customer message fails.
+- CODX-F-006 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/send/route.ts:262 | A zero-line-item quote can be stamped sent even though its customer portal only renders the finalized placeholder.
 - CODX-R-001 | 2026-07-18 | Low | refuted | src/lib/invoices.ts:468 | Proportional tax scaling for a partial selection is exact while one flat tax rate applies to every taxable item.
 - CODX-R-002 | 2026-07-18 | Low | refuted | src/lib/pdf/docModels.ts:286 | The quote PDF using the original approval total is intentional as the signed snapshot; current amendment presentation is covered by CODX-F-003.
 - CODX-R-003 | 2026-07-18 | Low | refuted | src/lib/portal/derivePackages.ts:178 | The order minimum is intentionally checked before discounts so a promotion cannot make an otherwise eligible order unapprovable.
