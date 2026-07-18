@@ -377,10 +377,10 @@ describe('POST /api/quotes/[id]/approve — discount/waiver/timing/fee branches 
     const snap = updatePayloads[0].approval_snapshot as {
       customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
     };
-    // $1500 - $150 flat = $1350 taxable, +8.75% tax ($118.12, floating-point
-    // rounds 118.125 down) = $1468.12, deposit = $734.06.
-    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1468.12, 2);
-    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(734.06, 2);
+    // $1500 - $150 flat = $1350 taxable, +8.75% tax ($118.125 exact,
+    // rounded half-up to $118.13) = $1468.13, deposit = $734.07.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1468.13, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(734.07, 2);
   });
 
   it('waiveMinimum:true approves a sub-$1,000 selection that would otherwise 400', async () => {
