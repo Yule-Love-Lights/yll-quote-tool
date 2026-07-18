@@ -144,14 +144,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     amendments: [...amendments.slice(0, -1), accepted],
   };
 
-  // Compare-and-swap the full jsonb snapshot. Two tabs can read the same pending
-  // entry, but only the first update still matches the old snapshot; the loser
-  // gets a clean conflict instead of overwriting the winning signature.
+  // Compare-and-swap the full jsonb snapshot. PostgREST filter values are
+  // string-interpolated, so serialize explicitly; passing the object itself
+  // would become "[object Object]" and no valid jsonb row could match it.
+  // Two tabs can read the same pending entry, but only the first update still
+  // matches the old snapshot; the loser gets a clean conflict.
   const { data: updated, error: updateError } = await sb
     .from('quotes')
     .update({ approval_snapshot: nextSnapshot })
     .eq('id', id)
-    .eq('approval_snapshot', snapshot)
+    .eq('approval_snapshot', JSON.stringify(snapshot))
     .select('id');
   if (updateError) {
     console.error('[api/quotes/:id/amend-consent] update failed:', updateError);
