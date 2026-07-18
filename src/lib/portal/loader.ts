@@ -16,6 +16,9 @@ import { fetchPortalPhotos } from './photos';
 import { getDesignByQuote } from '@/lib/designs';
 import { attachSceneLinks } from './sceneLinks';
 import { applyOurRecommendation } from './derivePackages';
+import { isWisetackFinancingEnabled, getWisetackPrequalUrl } from '@/lib/integrations/wisetack';
+import { financedBalanceUsd } from '@/lib/financing/eligibility';
+import { resolveAgreedTotal } from '@/lib/agreedTotal';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -136,6 +139,24 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
           portal.roofline,
           portal.charges,
         );
+      }
+      // #154 interim — Wisetack prequal financing. Server-read env (never
+      // bundled client-side), attached ONLY when the flag is exactly on AND a
+      // prequal URL exists — flag off leaves the portal object untouched.
+      // approvedBalanceUsd follows the plan's money note: the agreed total
+      // (amendment-aware, via resolveAgreedTotal) minus the snapshot's frozen
+      // deposit; null when unapproved or the deposit is unknown (POSITIVE
+      // gate — never guess a financed amount from a partial snapshot).
+      const prequalUrl = getWisetackPrequalUrl();
+      if (isWisetackFinancingEnabled() && prequalUrl) {
+        const snap = data.approval_snapshot;
+        const dep = snap?.customerSelection?.currentDepositUsd;
+        const hasApprovedMoney =
+          !!data.customer_approved_at && !!snap && typeof dep === 'number' && Number.isFinite(dep);
+        const approvedTotalUsd = hasApprovedMoney ? resolveAgreedTotal(snap, data.result) : null;
+        const approvedBalanceUsd =
+          approvedTotalUsd != null ? financedBalanceUsd(approvedTotalUsd, dep as number) : null;
+        portal.financing = { prequalUrl, approvedTotalUsd, approvedBalanceUsd };
       }
     }
     return portal;

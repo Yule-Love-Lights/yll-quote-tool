@@ -29,6 +29,7 @@ import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
 import { PermanentEffectPicker } from '@/components/portal/dark/PermanentEffectPicker';
 import { RiskReversal } from '@/components/portal/dark/RiskReversal';
+import { FinancingSection } from '@/components/portal/dark/FinancingSection';
 import { RiskReversalPermanent } from '@/components/portal/dark/RiskReversalPermanent';
 import { WhatHappensNextPermanent } from '@/components/portal/dark/WhatHappensNextPermanent';
 import { EventSchedule } from '@/components/portal/dark/EventSchedule';
@@ -425,6 +426,16 @@ export default async function PortalPage({
           <RiskReversal serviceType={quote.serviceType} />
         )}
 
+        {/* 4.4 How financing works (#154 interim, Wisetack). Client component:
+            gates ITSELF on the live selection (useSelection) with the same
+            pure eligibility rules as the sign-modal CTA — flag/URL threaded
+            from the server, holiday/permanent/bistro only, $1,500 job floor,
+            $500–$25,000 balance. Renders nothing when off or ineligible. */}
+        <FinancingSection
+          prequalUrl={quote.financing?.prequalUrl}
+          serviceType={quote.serviceType}
+        />
+
         {/* 4.5 Trust / social proof (#70) — client partner + press marquees */}
         <TrustSection />
 
@@ -498,6 +509,9 @@ export default async function PortalPage({
           isTest={quote.isTest}
           quoteStatus={quote.quoteStatus}
           serviceType={quote.serviceType}
+          // #154 interim — server-threaded Wisetack prequal URL (present only
+          // when the flag is on + a URL is configured; see the loader).
+          financingPrequalUrl={quote.financing?.prequalUrl}
         />
       </SelectionProvider>
     </main>

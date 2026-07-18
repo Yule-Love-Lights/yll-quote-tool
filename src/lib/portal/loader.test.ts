@@ -8,7 +8,7 @@
 //   3. the best-effort contract is unchanged — a design-lookup rejection never
 //      blocks/nulls the quote (matches the pre-existing try/catch around it).
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
 import type { DesignWithPhoto } from '@/lib/designs';
@@ -229,6 +229,106 @@ describe('loadPortalQuote — legacy rebook skips the "Our Recommendation" rewri
     const D = portal!.packages.find((p) => p.id === 'D')!;
     expect(D.name).toBe('Our Recommendation');
     expect(D.includedItemIds.length).toBeGreaterThan(0);
+  });
+});
+
+// #154 interim — Wisetack prequal financing threading. The loader is the ONE
+// server seam that turns the two env vars into PortalQuote.financing:
+//   - flag exactly 'true' AND a non-blank prequal URL → financing present;
+//   - anything else → financing absent (flag-off portal output is unchanged);
+//   - approvedBalanceUsd = resolveAgreedTotal(snapshot, result) − the
+//     snapshot's currentDepositUsd, or null when unapproved / deposit unknown.
+describe('loadPortalQuote — Wisetack financing threading (#154 interim)', () => {
+  const savedEnv = { ...process.env };
+  beforeEach(() => {
+    delete process.env.WISETACK_FINANCING_ENABLED;
+    delete process.env.WISETACK_PREQUAL_URL;
+    getDesignByQuoteMock.mockResolvedValue(null);
+  });
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  const URL = 'https://wisetack.us/#/example/prequalify';
+  function enableFinancing() {
+    process.env.WISETACK_FINANCING_ENABLED = 'true';
+    process.env.WISETACK_PREQUAL_URL = URL;
+  }
+  function approvedOverrides(extra: Record<string, unknown> = {}) {
+    return {
+      customer_approved_at: '2026-07-01T12:00:00Z',
+      approval_snapshot: {
+        approvedAt: '2026-07-01T12:00:00Z',
+        customerSelection: {
+          packageId: 'C',
+          activeName: 'Package C',
+          selectedItemIds: [],
+          currentTotalUsd: 5000,
+          currentDepositUsd: 2500,
+          ...extra,
+        },
+      },
+    };
+  }
+
+  it('flag on + URL + approved → financing carries the URL and the snapshot balance', async () => {
+    enableFinancing();
+    sbRef.current = makeSb(baseRow(approvedOverrides()));
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: 5000,
+      approvedBalanceUsd: 2500,
+    });
+  });
+
+  it('an amendment supersedes the approved total (resolveAgreedTotal precedence)', async () => {
+    enableFinancing();
+    const overrides = approvedOverrides();
+    (overrides.approval_snapshot as Record<string, unknown>).amendments = [{ new_total: 6000 }];
+    sbRef.current = makeSb(baseRow(overrides));
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: 6000,
+      approvedBalanceUsd: 3500,
+    });
+  });
+
+  it('unapproved quote → financing present (for the live-selection CTA) with a null approved balance', async () => {
+    enableFinancing();
+    sbRef.current = makeSb(baseRow());
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: null,
+      approvedBalanceUsd: null,
+    });
+  });
+
+  it('approved but the snapshot has no deposit → null balance (never guess a financed amount)', async () => {
+    enableFinancing();
+    sbRef.current = makeSb(baseRow(approvedOverrides({ currentDepositUsd: undefined })));
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toEqual({
+      prequalUrl: URL,
+      approvedTotalUsd: null,
+      approvedBalanceUsd: null,
+    });
+  });
+
+  it('flag off → financing absent (portal output unchanged)', async () => {
+    process.env.WISETACK_PREQUAL_URL = URL; // URL alone is not enough
+    sbRef.current = makeSb(baseRow(approvedOverrides()));
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toBeUndefined();
+  });
+
+  it('flag on but no URL → financing absent (nothing safe to link to)', async () => {
+    process.env.WISETACK_FINANCING_ENABLED = 'true';
+    sbRef.current = makeSb(baseRow(approvedOverrides()));
+    const portal = await loadPortalQuote(ID);
+    expect(portal!.financing).toBeUndefined();
   });
 });
 

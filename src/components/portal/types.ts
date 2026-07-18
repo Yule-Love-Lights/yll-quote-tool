@@ -292,6 +292,22 @@ export type PortalQuote = {
   // popular add-ons not already on the quote. Present only for an event quote
   // with suggestions; undefined otherwise.
   eventSuggestions?: Array<{ key: string; label: string; blurb: string }>;
+  // #154 interim — Wisetack financing prequal CTA. Present ONLY when the
+  // server-read flag is exactly on AND a prequal URL is configured (the loader
+  // is the single seam that sets it); absent = the feature is off and the
+  // portal renders byte-identical to before. `approvedBalanceUsd` is the
+  // financed balance for an APPROVED quote (agreed total via resolveAgreedTotal
+  // minus the snapshot deposit) or null pre-approval / when the snapshot has no
+  // deposit — the pre-approval CTA computes its balance from the LIVE selection
+  // instead. Eligibility (service type + the $500–$25,000 range) is checked at
+  // each render site via isFinancingEligible.
+  financing?: {
+    prequalUrl: string;
+    /** The agreed job total (amendment-aware) — null until approved. Gates the
+     *  $1,500 YLL job floor on /approved alongside the balance range. */
+    approvedTotalUsd: number | null;
+    approvedBalanceUsd: number | null;
+  };
 };
 
 export type PortalSelection = {
