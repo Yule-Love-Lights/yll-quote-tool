@@ -11,6 +11,14 @@ export function formatUsd(amount: number, opts?: { fraction?: boolean }): string
   }).format(amount);
 }
 
+
+/** Build the What's Included heading without producing "Your The …". */
+export function formatIncludedHeading(activeName: string): string {
+  const name = activeName.trim();
+  const lead = /^the\b/i.test(name) ? name : `Your ${name}`;
+  return `${lead} — line by line.`;
+}
+
 // Sum selected line items against a map for the Build Your Own / Custom path.
 export function sumSelectedItems(
   selectedIds: Set<string>,
