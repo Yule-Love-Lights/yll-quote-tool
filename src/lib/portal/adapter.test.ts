@@ -991,7 +991,10 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
   }
 
   it('exposes the latest unsigned amendment with its money comparison', () => {
-    expect(amendedPortal({ status: 'pending' }).approval?.pendingAmendment).toEqual({
+    const approval = amendedPortal({ status: 'pending' }).approval;
+    expect(approval?.totalUsd).toBe(2000);
+    expect(approval?.depositUsd).toBe(1000);
+    expect(approval?.pendingAmendment).toEqual({
       amendedAt: '2026-07-18T12:00:00.000Z',
       reason: 'Added front wreaths',
       previousTotalUsd: 2000,
@@ -1002,8 +1005,8 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
     });
   });
 
-  it('hides the re-consent prompt after the signature is accepted', () => {
-    expect(amendedPortal({
+  it('uses the accepted amendment as the durable booked total', () => {
+    const approval = amendedPortal({
       status: 'accepted',
       accepted_at: '2026-07-18T12:05:00.000Z',
       signature: {
@@ -1013,6 +1016,9 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
         signed_at: '2026-07-18T12:05:00.000Z',
         ip: null,
       },
-    }).approval?.pendingAmendment).toBeUndefined();
+    }).approval;
+    expect(approval?.pendingAmendment).toBeUndefined();
+    expect(approval?.totalUsd).toBe(2400);
+    expect(approval?.depositUsd).toBe(1000);
   });
 });
