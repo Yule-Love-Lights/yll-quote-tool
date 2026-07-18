@@ -264,7 +264,13 @@ export type QuoteDocModel = {
   taxLabel: string | null;
   tax: string | null;
   total: string;
-  depositDue: string;
+  depositDue: string; // unpaid path — unchanged, still populated when depositPaid is set (unused then)
+  // Booking bug batch 2026-07-17: once the deposit webhook stamps
+  // deposit_paid_at, the quote PDF must show what was actually paid instead
+  // of asking for the deposit again. Mirrors ReceiptDocModel's depositPaid
+  // shape below. null on an unpaid quote — QuotePdf renders depositDue then.
+  depositPaid: { amount: string; date: string } | null;
+  balanceDue: string | null; // total minus the paid deposit; null when unpaid
   status: 'cancelled' | null; // for the diagonal watermark
 };
 
@@ -302,6 +308,17 @@ export function buildQuoteDocModel(quote: PortalQuote): QuoteDocModel {
       })
     : null;
 
+  // Booking bug batch 2026-07-17: once deposit_paid_at is set, print what was
+  // actually paid + what's left, instead of asking for the deposit again.
+  // Clamped at 0 (never negative) the same way the invoice/receipt models
+  // clamp their reconstructed balances (src/lib/invoices.ts's max(0, …)
+  // pattern) — a deposit can never exceed the total in practice, but the
+  // printed balance must never read negative if it somehow did.
+  const depositPaid = approval.depositPaidAt
+    ? { amount: money(approval.depositUsd), date: formatDate(new Date(approval.depositPaidAt)) }
+    : null;
+  const balanceDue = depositPaid ? money(Math.max(0, roundMoney(approval.totalUsd - approval.depositUsd))) : null;
+
   return {
     quoteNumber: formatQuoteRef(quote.id),
     date: formatDate(new Date(approval.approvedAt)),
@@ -321,6 +338,8 @@ export function buildQuoteDocModel(quote: PortalQuote): QuoteDocModel {
     tax: breakdown?.tax ?? null,
     total: formatUsd(approval.totalUsd),
     depositDue: formatUsd(approval.depositUsd),
+    depositPaid,
+    balanceDue,
     // A quote can be cancelled post-approval (order cancelled before install);
     // never print a clean-looking quote for a dead order.
     status: quote.quoteStatus === 'cancelled' ? 'cancelled' : null,

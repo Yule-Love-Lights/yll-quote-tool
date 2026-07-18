@@ -12,7 +12,7 @@
 
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Truck, MessageSquare, PackageOpen, Phone, CreditCard, ArrowRight } from 'lucide-react';
+import { Truck, MessageSquare, PackageOpen, Phone, CreditCard, ArrowRight, CalendarCheck } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/dark/ApprovalCelebration';
 import { ReferralSection } from '@/components/portal/dark/ReferralSection';
@@ -138,6 +138,15 @@ export default async function PortalApprovedPage({
           title: 'We reach out to collect your deposit',
           body: `A quick call or text to take your 50% deposit${depositPhrase} and confirm your install date — that locks in your spot.`,
         },
+    // Booking bug batch 2026-07-17: new step 2 — tells the customer we give
+    // them their install date ahead of time. Type-neutral copy: every
+    // service type (holiday, permanent, permanent bistro, event) gets a
+    // scheduled install date, so one card covers all four.
+    {
+      icon: CalendarCheck,
+      title: 'We schedule your install',
+      body: 'We reach out ahead of time with your install date so you can plan around it.',
+    },
     {
       icon: MessageSquare,
       title: 'We text you the day before',
