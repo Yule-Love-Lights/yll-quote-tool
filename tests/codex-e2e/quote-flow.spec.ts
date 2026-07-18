@@ -60,6 +60,16 @@ test.describe.serial('Codex production quote audit', () => {
     await expect(page.getByText(/Analysis complete/i)).toBeVisible({ timeout: 120_000 });
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 30_000 });
 
+    // A public landmark can legitimately produce no auto-detected lighting
+    // items. Add one explicit test-only line so the sent portal is actionable
+    // and the verifier never relies on nondeterministic vision output.
+    await page.getByRole('button', { name: '+ Add custom line item' }).click();
+    const customLabel = page.getByPlaceholder('e.g. Custom monogram display');
+    await customLabel.fill('Codex E2E custom lighting');
+    const customRow = customLabel.locator('..');
+    await customRow.locator('input[type="number"]').nth(0).fill('1200');
+    await customRow.locator('input[type="number"]').nth(1).fill('1');
+
     const calculateResponsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&
