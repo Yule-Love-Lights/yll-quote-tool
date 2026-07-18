@@ -538,3 +538,13 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
     expect(effectiveCharges(config, false, false, 0, 100)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 100 });
   });
 });
+
+
+describe('priceSelection — exact half-cent tax rounding', () => {
+  it('matches the pricing engine at the $1,002.80 × 8.75% boundary', () => {
+    const p = priceSelection(1002.8, { rushFee: 0, takedown: 0, taxRate: 0.0875 });
+    expect(p.tax).toBe(87.75);
+    expect(p.total).toBe(1090.55);
+    expect(p.deposit).toBe(545.28);
+  });
+});
