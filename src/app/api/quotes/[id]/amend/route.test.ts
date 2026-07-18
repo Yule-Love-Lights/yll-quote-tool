@@ -57,9 +57,15 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 type Row = Record<string, unknown>;
 // `single()` serves the initial load; `maybeSingle()` serves the pre-write re-read
 // (the concurrency guard) — pass `fresh` to simulate a racing write.
-function makeSb(quote: Row | null, fresh: Row | null = quote) {
+function makeSb(
+  quote: Row | null,
+  fresh: Row | null = quote,
+  quoteUpdateRows: Row[] = [{ id: ID }],
+) {
   const updates: { quotes: Row[]; invoices: Row[] } = { quotes: [], invoices: [] };
+  const eqCalls: Array<[string, unknown]> = [];
   let table = '';
+  let updating = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: (t: string) => {
@@ -68,15 +74,23 @@ function makeSb(quote: Row | null, fresh: Row | null = quote) {
     },
     select: () => b,
     update: (payload: Row) => {
+      updating = true;
       (updates as Record<string, Row[]>)[table].push(payload);
       return b;
     },
-    eq: () => b,
+    eq: (column: string, value: unknown) => {
+      eqCalls.push([column, value]);
+      return b;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
-    then: (resolve: (v: unknown) => void) => resolve({ data: null, error: null }),
+    then: (resolve: (v: unknown) => void) => {
+      const data = updating && table === 'quotes' ? quoteUpdateRows : null;
+      updating = false;
+      resolve({ data, error: null });
+    },
   });
-  return { client: b, updates };
+  return { client: b, updates, eqCalls };
 }
 
 // A NON-diverged booking (agreed selection === the full quote at approval): the
@@ -210,6 +224,10 @@ describe('POST /api/quotes/[id]/amend', () => {
       consent: { status: 'pending' },
     });
     expect('status' in quoteUpdate).toBe(false);
+    expect(sb.eqCalls).toContainEqual([
+      'approval_snapshot',
+      JSON.stringify(BOOKED_QUOTE.approval_snapshot),
+    ]);
 
     // Invoice re-synced to the amended totals (still has a balance → draft kept).
     expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
@@ -367,6 +385,20 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(res.status).toBe(409);
     expect(json.code).toBe('concurrent-amend');
     expect(sb.updates.quotes).toHaveLength(0); // never wrote
+  });
+
+  it('409s when the atomic snapshot compare-and-swap loses after the re-read', async () => {
+    const sb = makeSb(BOOKED_QUOTE, BOOKED_QUOTE, []);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'simultaneous amendment' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('concurrent-amend');
+    expect(sb.updates.quotes).toHaveLength(1); // attempted, but CAS matched no row
+    expect(sb.updates.invoices).toHaveLength(0);
   });
 
   it('does not touch an invoice when the job has not been completed yet', async () => {
