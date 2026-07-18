@@ -18,7 +18,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
     // The portal lets the customer approve, pay, view, decline, request changes,
     // and signal interest — all gated only by the quote UUID, never operator auth.
     // Missing any one of these 401s a real customer once the gate is enabled.
-    for (const sub of ['approve', 'pay', 'pay-balance', 'view', 'decline', 'request-changes', 'interested', 'simulate-deposit']) {
+    for (const sub of ['approve', 'amend-consent', 'pay', 'pay-balance', 'view', 'decline', 'request-changes', 'interested', 'simulate-deposit']) {
       const p = `/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/${sub}`;
       expect(isPublicPath(p), p).toBe(true);
     }
