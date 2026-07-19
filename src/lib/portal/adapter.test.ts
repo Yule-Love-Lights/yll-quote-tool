@@ -957,7 +957,7 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
 
 
 describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
-  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }) {
+  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }, trailingCosmetic = false) {
     const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
     const result = calculateQuote(inputs);
     const row = rowWith(result, inputs);
@@ -985,7 +985,18 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
         delta: 400,
         line_item_changes: [],
         consent,
-      }],
+      }, ...(trailingCosmetic ? [{
+        amended_at: '2026-07-18T12:10:00.000Z',
+        by: 'staff:ops',
+        reason: 'Added free spritzers',
+        previous_total: 2400,
+        new_total: 2400,
+        previous_balance: 1400,
+        new_balance: 1400,
+        deposit_applied: 1000,
+        delta: 0,
+        line_item_changes: [{ id: 'free-spritzers', label: 'Free spritzers', change: 'added' as const, price: 0 }],
+      }] : [])],
     };
     return quoteRowToPortalQuote({ row, photos: PHOTOS })!;
   }
@@ -1017,6 +1028,30 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
         ip: null,
       },
     }).approval;
+    expect(approval?.pendingAmendment).toBeUndefined();
+    expect(approval?.totalUsd).toBe(2400);
+    expect(approval?.depositUsd).toBe(1000);
+  });
+
+  it('keeps pending consent visible after a later zero-dollar edit', () => {
+    const approval = amendedPortal({ status: 'pending' }, true).approval;
+    expect(approval?.pendingAmendment?.amendedAt).toBe('2026-07-18T12:00:00.000Z');
+    expect(approval?.pendingAmendment?.newTotalUsd).toBe(2400);
+    expect(approval?.totalUsd).toBe(2000);
+  });
+
+  it('keeps the accepted amended total after a later zero-dollar edit', () => {
+    const approval = amendedPortal({
+      status: 'accepted',
+      accepted_at: '2026-07-18T12:05:00.000Z',
+      signature: {
+        name: 'Jordan Smith',
+        kind: 'typed',
+        value: 'Jordan Smith',
+        signed_at: '2026-07-18T12:05:00.000Z',
+        ip: null,
+      },
+    }, true).approval;
     expect(approval?.pendingAmendment).toBeUndefined();
     expect(approval?.totalUsd).toBe(2400);
     expect(approval?.depositUsd).toBe(1000);
