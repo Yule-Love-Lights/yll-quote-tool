@@ -306,6 +306,12 @@ export async function POST(req: NextRequest) {
       .from('website_leads')
       .select('id', { count: 'exact', head: true })
       .eq('ip', ip)
+      // Exclude 'partial' (abandoned-form capture) rows: this cap counts real
+      // SUBMISSIONS, and POST /api/leads/partial can write several capture rows
+      // per visitor. Counting them would let a normal visitor's own partial
+      // captures burn down this budget and false-429 their real submit (which
+      // fires from THIS route). Partial has its own separate per-IP cap.
+      .not('sync_status', 'eq', 'partial')
       .gte('created_at', oneHourAgo);
     if (countErr) {
       console.warn('[api/leads] rate-limit count query failed (failing open):', countErr.message);

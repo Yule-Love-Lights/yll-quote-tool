@@ -44,6 +44,8 @@ next-env.d.ts
 .claude/*
 !.claude/skills/
 !.claude/commands/
+# ...and shared project-scope settings (permission allow-rules the whole team gets)
+!.claude/settings.json
 
 # generated Codex mirror of .claude/skills + commands (auto-created per session,
 # same content with Claude->Codex wording swapped). Generated output, never edit

@@ -37,6 +37,10 @@ const FILTERS: Array<{ label: string; statuses: string[] | null }> = [
   { label: 'Deferred', statuses: ['deferred'] },
   { label: 'Failed', statuses: ['failed'] },
   { label: 'Synced', statuses: ['synced'] },
+  // Abandoned-form leads (quote-forms-partial-save): captured WITHOUT SMS
+  // consent, so they're never drip-synced — follow up by hand (call, or invite
+  // them to complete the form). No Retry button (see RETRIABLE below).
+  { label: 'Partial', statuses: ['partial'] },
   { label: 'Rate limited', statuses: ['rate_limited'] },
   { label: 'Spam', statuses: ['spam'] },
   { label: 'All', statuses: null },
@@ -51,6 +55,7 @@ const STATUS_STYLE: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
   deferred: 'bg-blue-100 text-blue-700',
   failed: 'bg-red-100 text-red-700',
+  partial: 'bg-indigo-100 text-indigo-700',
   rate_limited: 'bg-orange-100 text-orange-700',
   spam: 'bg-gray-100 text-gray-500',
 };
