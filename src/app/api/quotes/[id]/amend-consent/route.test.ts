@@ -62,6 +62,19 @@ function req(body: Record<string, unknown>): NextRequest {
   } as unknown as NextRequest;
 }
 
+const cosmeticAmendment: AmendmentTrailEntry = {
+  amended_at: '2026-07-18T12:10:00.000Z',
+  by: 'staff:ops',
+  reason: 'Added free spritzers',
+  previous_total: 2400,
+  new_total: 2400,
+  previous_balance: 1400,
+  new_balance: 1400,
+  deposit_applied: 1000,
+  delta: 0,
+  line_item_changes: [{ id: 'free-spritzers', label: 'Free spritzers', change: 'added', price: 0 }],
+};
+
 const signature = { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' };
 const ctx = { params: Promise.resolve({ id: ID }) };
 
@@ -103,6 +116,27 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
       status: 'accepted',
       signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' },
     });
+  });
+
+  it('signs the pending price change while preserving a later cosmetic entry', async () => {
+    const originalSnapshot = { amendments: [amendment, cosmeticAmendment] };
+    const { client, updatePayloads, eqCalls } = makeSb({
+      id: ID,
+      status: 'booked',
+      quote_sent_at: '2026-06-20T00:00:00.000Z',
+      customer_approved_at: '2026-06-25T00:00:00.000Z',
+      deposit_paid_at: '2026-07-01T00:00:00.000Z',
+      approval_snapshot: originalSnapshot,
+    });
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+    expect(res.status).toBe(200);
+    expect(eqCalls).toContainEqual(['approval_snapshot', JSON.stringify(originalSnapshot)]);
+    const snapshot = updatePayloads[0].approval_snapshot as { amendments: AmendmentTrailEntry[] };
+    expect(snapshot.amendments).toHaveLength(2);
+    expect(snapshot.amendments[0].consent?.status).toBe('accepted');
+    expect(snapshot.amendments[1]).toEqual(cosmeticAmendment);
   });
 
   it('rejects a missing signature before writing', async () => {
