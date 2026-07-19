@@ -29,7 +29,7 @@ import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
-import { isAmendmentConsentPending, latestAmendment, type AmendmentTrailEntry } from '@/lib/amend';
+import { isAmendmentConsentPending, latestConsentAmendment, type AmendmentTrailEntry } from '@/lib/amend';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -437,7 +437,7 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     );
   }
   const packageId = (sel?.packageId ?? pickFallbackApprovalPackageId(packages)) as PackageId;
-  const amendment = latestAmendment(snap?.amendments);
+  const amendment = latestConsentAmendment(snap?.amendments);
   const acceptedAmendment = amendment?.consent?.status === 'accepted' ? amendment : undefined;
   // Once re-consent is accepted, the amended total is the durable customer
   // agreement. Keep the booked portal aligned with billing instead of falling
