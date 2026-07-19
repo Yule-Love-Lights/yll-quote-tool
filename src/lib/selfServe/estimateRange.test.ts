@@ -100,6 +100,20 @@ describe('analysisToHolidayInputs', () => {
     expect(inputs.santasFootage).toBe(120);
     expect(inputs.gingerbreadFootage).toBe(200);
   });
+
+  it('falls back to satellite footage when street is preferred but zero (no $0 collapse)', () => {
+    const inputs = analysisToHolidayInputs(
+      makeResult({
+        preferredSource: 'street',
+        santasFootage: 0,
+        gingerbreadFootage: 0,
+        satelliteSantasFootage: 55,
+        satelliteGingerbreadFootage: 90,
+      }),
+    );
+    expect(inputs.santasFootage).toBe(55);
+    expect(inputs.gingerbreadFootage).toBe(90);
+  });
 });
 
 describe('isMeasurable', () => {
@@ -126,5 +140,21 @@ describe('isMeasurable', () => {
 
   it('false for a null result (analyzer outage)', () => {
     expect(isMeasurable(null)).toBe(false);
+  });
+
+  it('true for a satellite-only house even when street is preferred (agrees with the mapping)', () => {
+    // Regression: isMeasurable must not pass a house that the mapping would then
+    // price to $0 — both derive from effectiveRooflineFootage now.
+    expect(
+      isMeasurable(
+        makeResult({
+          preferredSource: 'street',
+          santasFootage: 0,
+          gingerbreadFootage: 0,
+          satelliteSantasFootage: 55,
+          satelliteGingerbreadFootage: 0,
+        }),
+      ),
+    ).toBe(true);
   });
 });

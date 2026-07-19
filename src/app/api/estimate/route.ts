@@ -27,7 +27,7 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 import { isGoogleMapsConfigured, getCachedAddressImagery, geocodeAddress, NoStreetViewError } from '@/lib/googleMaps';
 import { isServedArea } from '@/lib/selfServe/serviceArea';
-import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote } from '@/lib/quotes';
 import {
   isMeasurable,
@@ -40,6 +40,7 @@ export const maxDuration = 60;
 
 const TOO_FAST_MS = 2000;
 const MAX_ADDRESS_LEN = 500;
+const MAX_HOUSE_STYLE_LEN = 80;
 
 // Marker stashed in the saved quote's `inputs` jsonb so staff can tell a fresh
 // self-serve draft from a staff-built one. The holiday engine never reads it;
@@ -83,8 +84,12 @@ export async function POST(req: NextRequest) {
   if (address.length > MAX_ADDRESS_LEN) {
     return NextResponse.json({ error: `address must be at most ${MAX_ADDRESS_LEN} characters` }, { status: 400 });
   }
+  // Capped like the contact route's fields — an uncapped hint feeds the paid
+  // Anthropic analyzer (token-cost + prompt-injection surface).
   const houseStyleHint =
-    typeof body.houseStyle === 'string' && body.houseStyle.trim() ? body.houseStyle.trim() : undefined;
+    typeof body.houseStyle === 'string' && body.houseStyle.trim()
+      ? body.houseStyle.trim().slice(0, MAX_HOUSE_STYLE_LEN)
+      : undefined;
 
   // Upstream config — a public customer must get a clean "try later", never a
   // stack trace, when a key is missing.
@@ -146,7 +151,14 @@ export async function POST(req: NextRequest) {
   try {
     quoteInputs = analysisToHolidayInputs(result!);
     priced = calculateQuote(quoteInputs);
-    ({ low, high } = computeEstimateRange(priced.total));
+    // Floor the SHOWN range at the $1,000 job minimum. calculateQuote.total does
+    // NOT apply that minimum (it's enforced at the portal approval gate), so a
+    // small home can price below $1,000 — but the customer will still pay at
+    // least the minimum, and anchoring them on a sub-$1,000 range they can never
+    // actually get would be misleading. The saved draft keeps the raw engine
+    // total; only the customer-facing range is floored.
+    const shownTotal = Math.max(priced.total, BUSINESS_RULES.minimumQuoteAmount);
+    ({ low, high } = computeEstimateRange(shownTotal));
   } catch (err) {
     console.error('[api/estimate] pricing failed:', err);
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
