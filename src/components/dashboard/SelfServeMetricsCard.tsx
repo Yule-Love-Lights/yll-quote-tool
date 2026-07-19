@@ -34,9 +34,9 @@ export function SelfServeMetricsCard({ data }: { data: SelfServeMetrics }) {
               </dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Reviewed</dt>
+              <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>Verified</dt>
               <dd className="mt-1 text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
-                {data.reviewedCount}
+                {data.verifiedCount}
               </dd>
             </div>
             <div>

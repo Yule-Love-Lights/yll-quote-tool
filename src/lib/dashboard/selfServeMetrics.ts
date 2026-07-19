@@ -5,10 +5,18 @@
 // batched I/O.
 //
 // The signal: for each self-serve quote we stored the RANGE the customer was
-// shown (self_serve_estimates), and we read the current quotes.total live. Once
-// staff review a quote (it leaves 'draft'), its total is the verified-final —
-// so "how often did the verified-final land inside the shown range" is the
-// accuracy that decides when Phase A can graduate to Phase B deposits.
+// shown AND the raw engine total it was built from (self_serve_estimates), and
+// we read the current quotes.total live.
+//
+// CRITICAL — "verified" ≠ "left draft". The shown range is built by bracketing
+// the SAME engine total that gets saved as quotes.total, so that saved total is
+// ALWAYS inside the range by construction. A quote that is merely sent/declined
+// UNCHANGED would therefore count as a trivial in-range hit and inflate the
+// metric toward 100% — exactly the number used to decide Phase B. So a row only
+// counts as VERIFIED once staff actually re-priced it (its total moved off the
+// original estimate total); an unchanged send is not independent evidence and is
+// excluded. This biases the accuracy DOWN (conservative), which is the safe
+// direction for a go/no-go gate.
 
 import { getSupabaseServiceClient, getSupabaseClient } from '@/lib/supabase';
 
@@ -18,24 +26,26 @@ export type SelfServeMetricsRow = {
   high: number;
   /** Live quotes.total; null when the quote row is gone or unpriced. */
   total: number | null;
-  /** True once staff have moved the quote past 'draft' (reviewed it). */
-  reviewed: boolean;
+  /** The raw engine total stored at estimate time (self_serve_estimates.estimate_total). */
+  estimateTotal: number | null;
+  /** Live quotes.status. */
+  status: string | null;
 };
 
 export type SelfServeMetrics = {
   /** All self-serve estimates generated (test quotes excluded). */
   totalEstimates: number;
-  /** Estimates whose quote staff have reviewed (left 'draft') AND is priced. */
-  reviewedCount: number;
-  /** reviewed-in-range / reviewedCount. Null when reviewedCount is 0. */
+  /** Estimates whose quote staff re-priced (an independent verified number). */
+  verifiedCount: number;
+  /** verified-in-range / verifiedCount. Null when verifiedCount is 0. */
   inRangeRate: number | null;
-  /** Median |final − midpoint| / midpoint over reviewed rows. Null when none. */
+  /** Median |final − midpoint| / midpoint over verified rows. Null when none. */
   medianMissPct: number | null;
 };
 
 const EMPTY_METRICS: SelfServeMetrics = {
   totalEstimates: 0,
-  reviewedCount: 0,
+  verifiedCount: 0,
   inRangeRate: null,
   medianMissPct: null,
 };
@@ -47,20 +57,36 @@ function median(sorted: number[]): number {
 }
 
 /**
- * Pure compute: in-range accuracy + median miss over the reviewed rows. No I/O.
+ * A row is VERIFIED evidence only when staff actually produced an independent
+ * price: the quote left 'draft' AND its live total moved off the raw engine
+ * total we estimated from. A sent/declined-unchanged quote (total ===
+ * estimateTotal) is trivially in-range and is NOT counted.
+ */
+export function isVerified(r: SelfServeMetricsRow): boolean {
+  return (
+    r.status != null &&
+    r.status !== 'draft' &&
+    typeof r.total === 'number' &&
+    typeof r.estimateTotal === 'number' &&
+    r.total !== r.estimateTotal
+  );
+}
+
+/**
+ * Pure compute: in-range accuracy + median miss over the VERIFIED rows. No I/O.
  */
 export function computeSelfServeMetrics(rows: SelfServeMetricsRow[]): SelfServeMetrics {
   const totalEstimates = rows.length;
   if (totalEstimates === 0) return EMPTY_METRICS;
 
-  const reviewed = rows.filter((r) => r.reviewed && typeof r.total === 'number');
-  const reviewedCount = reviewed.length;
-  if (reviewedCount === 0) {
-    return { totalEstimates, reviewedCount: 0, inRangeRate: null, medianMissPct: null };
+  const verified = rows.filter(isVerified);
+  const verifiedCount = verified.length;
+  if (verifiedCount === 0) {
+    return { totalEstimates, verifiedCount: 0, inRangeRate: null, medianMissPct: null };
   }
 
-  const inRange = reviewed.filter((r) => r.total! >= r.low && r.total! <= r.high).length;
-  const misses = reviewed
+  const inRange = verified.filter((r) => r.total! >= r.low && r.total! <= r.high).length;
+  const misses = verified
     .map((r) => {
       const mid = (r.low + r.high) / 2;
       return mid > 0 ? Math.abs(r.total! - mid) / mid : 0;
@@ -69,11 +95,17 @@ export function computeSelfServeMetrics(rows: SelfServeMetricsRow[]): SelfServeM
 
   return {
     totalEstimates,
-    reviewedCount,
-    inRangeRate: inRange / reviewedCount,
+    verifiedCount,
+    inRangeRate: inRange / verifiedCount,
     medianMissPct: median(misses),
   };
 }
+
+// PostgREST caps a select at 1000 rows by default; an explicit high ceiling +
+// deterministic order keeps totalEstimates honest (and the sample stable) well
+// past Phase-A volume. If self-serve ever exceeds this, switch to server-side
+// aggregation rather than silently truncating.
+const MAX_ESTIMATE_ROWS = 5000;
 
 /**
  * Batched read + compute for the dashboard tile. Two round trips: all estimate
@@ -89,12 +121,19 @@ export async function loadSelfServeMetrics(): Promise<SelfServeMetrics> {
   try {
     const { data, error } = await sb
       .from('self_serve_estimates')
-      .select('quote_id, estimate_low, estimate_high');
+      .select('quote_id, estimate_low, estimate_high, estimate_total')
+      .order('created_at', { ascending: false })
+      .limit(MAX_ESTIMATE_ROWS);
     if (error) {
       console.warn('loadSelfServeMetrics (table not migrated yet?):', error.message);
       return EMPTY_METRICS;
     }
-    const estimates = (data ?? []) as Array<{ quote_id: string; estimate_low: number; estimate_high: number }>;
+    const estimates = (data ?? []) as Array<{
+      quote_id: string;
+      estimate_low: number;
+      estimate_high: number;
+      estimate_total: number | null;
+    }>;
     if (estimates.length === 0) return EMPTY_METRICS;
 
     const quoteIds = [...new Set(estimates.map((e) => e.quote_id))];
@@ -116,7 +155,8 @@ export async function loadSelfServeMetrics(): Promise<SelfServeMetrics> {
         low: e.estimate_low,
         high: e.estimate_high,
         total: typeof q.total === 'number' ? q.total : null,
-        reviewed: q.status != null && q.status !== 'draft',
+        estimateTotal: typeof e.estimate_total === 'number' ? e.estimate_total : null,
+        status: q.status,
       });
     }
 

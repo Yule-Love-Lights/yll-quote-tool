@@ -30,6 +30,11 @@ create table if not exists public.self_serve_estimates (
   quote_id       uuid not null references public.quotes(id) on delete cascade,
   estimate_low   numeric(10,2) not null,
   estimate_high  numeric(10,2) not null,
+  -- The RAW engine total at estimate time (the number the range was built from).
+  -- The dashboard compares the quote's LIVE total against this to tell whether
+  -- staff actually re-priced (verified) the quote vs sent it unchanged — an
+  -- unchanged send is trivially in-range and must not inflate the accuracy tile.
+  estimate_total numeric(10,2),
   confidence     text
 );
 
