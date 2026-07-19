@@ -15,6 +15,7 @@ import { notFound } from 'next/navigation';
 import { Truck, MessageSquare, PackageOpen, Phone, CreditCard, ArrowRight, CalendarCheck } from 'lucide-react';
 import { MOCK_QUOTE, MOCK_TEAM } from '@/components/portal/mockQuote';
 import { ApprovalCelebration } from '@/components/portal/dark/ApprovalCelebration';
+import { BookingConfirmingOverlay } from '@/components/portal/dark/BookingConfirmingOverlay';
 import { ReferralSection } from '@/components/portal/dark/ReferralSection';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { formatQuoteRef, formatUsd } from '@/components/portal/format';
@@ -50,13 +51,15 @@ export default async function PortalApprovedPage({
   searchParams,
 }: {
   params: Promise<Params>;
-  searchParams: Promise<{ balance?: string }>;
+  searchParams: Promise<{ balance?: string; confirming?: string }>;
 }) {
   const { quoteId } = await params;
   // `?balance=paid` (set by the pay-balance hosted-page successUrl) means the
   // customer just paid off the remaining balance, not the deposit. The copy
   // below must confirm that payment instead of saying it's still owed.
-  const { balance } = await searchParams;
+  // `?confirming=1` (#166, deposit hosted-page successUrl) means they just paid
+  // the DEPOSIT and the booking webhook may not have landed yet.
+  const { balance, confirming } = await searchParams;
   const balancePaid = balance === 'paid';
   const quote = await resolveQuote(quoteId);
   // Referral program (#41): ensure this customer's referral code server-side
@@ -211,6 +214,9 @@ export default async function PortalApprovedPage({
 
   return (
     <main className="relative min-h-screen w-full bg-[#060B0F] overflow-hidden">
+      {/* #166 — cover the deposit-webhook race: if they just paid but the booking
+          hasn't been confirmed yet, show a pending state that polls until it is. */}
+      <BookingConfirmingOverlay confirming={confirming} isPaid={isPaid} />
       <ApprovalCelebration />
 
       <section aria-labelledby="snow-approved-headline" className="relative w-full">

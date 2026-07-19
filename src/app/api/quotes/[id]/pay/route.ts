@@ -179,8 +179,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // Where Valor returns the customer after they pay (or fail/cancel). The
   // booked page is gated to an approved quote; the portal page lets them retry.
+  // #166: `?confirming=1` marks a just-paid deposit return so /approved can show
+  // a "confirming your payment" pending state until the async webhook writes
+  // deposit_paid_at — otherwise the customer briefly sees the pre-booked variant.
+  // Same round-trips-through-Valor pattern the pay-balance successUrl uses.
   const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
-  const successUrl = `${baseUrl}/portal/${id}/approved`;
+  const successUrl = `${baseUrl}/portal/${id}/approved?confirming=1`;
   const failureUrl = `${baseUrl}/portal/${id}`;
 
   try {
