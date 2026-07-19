@@ -236,6 +236,23 @@ export function latestAmendment(
 }
 
 /**
+ * Return the newest total-changing amendment, ignoring later cosmetic entries.
+ *
+ * Consent belongs to the latest price change, not necessarily the final audit
+ * entry. A later zero-dollar scope edit must not hide pending consent, unblock
+ * settlement, or make an accepted amended total disappear from the portal.
+ */
+export function latestConsentAmendment(
+  amendments: AmendmentTrailEntry[] | null | undefined,
+): AmendmentTrailEntry | null {
+  if (!Array.isArray(amendments)) return null;
+  for (let index = amendments.length - 1; index >= 0; index -= 1) {
+    if (requiresReconsent(amendments[index])) return amendments[index];
+  }
+  return null;
+}
+
+/**
  * WT-18 — the settlement re-consent gate. mark-paid / charge-balance /
  * job-close all call this before moving money, on the quote's LATEST
  * amendment (via latestAmendment).
