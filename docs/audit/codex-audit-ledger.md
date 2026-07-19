@@ -14,6 +14,8 @@
 - CODX-F-010 | 2026-07-18 | High | confirmed | src/app/api/quotes/[id]/amend/route.ts | Concurrent booked amendments could overwrite the JSONB amendment trail and lose a financial change.
 - CODX-F-011 | 2026-07-18 | Medium | confirmed | src/lib/portal/adapter.ts | After accepting an amendment, the portal dropped the amendment card and reverted to the original total and deposit.
 - CODX-F-012 | 2026-07-18 | Medium | confirmed | src/lib/pricing/pricingEngine.ts | Percentage discounts, early-install discounts, and 50% deposits still used raw binary floating-point rounding after the tax fix, producing inconsistent half-cent results in the engine and portal projection.
+- CODX-F-013 | 2026-07-19 | High | fixed | src/lib/amend.ts | A trailing zero-dollar amendment could hide pending financial consent, unblock settlement, or revert the portal to the original accepted total.
+- CODX-F-014 | 2026-07-19 | High | fixed | src/app/api/quotes/[id]/free-items/route.ts | The free-item concurrency check was not atomic, so a stale writer could erase a concurrent financial amendment and pricing result.
 - CODX-R-001 | 2026-07-18 | Low | refuted | src/lib/invoices.ts:468 | Proportional tax scaling for a partial selection is exact while one flat tax rate applies to every taxable item.
 - CODX-R-002 | 2026-07-18 | Low | refuted | src/lib/pdf/docModels.ts:286 | The quote PDF using the original approval total is intentional as the signed snapshot; current amendment presentation is covered by CODX-F-003.
 - CODX-R-003 | 2026-07-18 | Low | refuted | src/lib/portal/derivePackages.ts:178 | The order minimum is intentionally checked before discounts so a promotion cannot make an otherwise eligible order unapprovable.
