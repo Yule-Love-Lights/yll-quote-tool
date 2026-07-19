@@ -90,6 +90,12 @@ export function EstimateFlow() {
       } else if (data.reason === 'address_not_found') {
         setError("We couldn't find that address. Please check it and try again.");
         setStep('address');
+      } else if (data.reason === 'unavailable') {
+        // Honeypot / too-fast guard fired. A real (fast-autofill) visitor lands
+        // here too, so send them back to retry rather than dead-ending them in
+        // the "we'll reach out" capture with no price.
+        setError('One moment — please try that again.');
+        setStep('address');
       } else {
         // no_streetview / low_confidence / no_footage / analyzer_unavailable
         setStep('followup');
@@ -277,17 +283,17 @@ function ContactCard(p: ContactCardProps) {
       <div className="mt-4 flex flex-col gap-3">
         <input
           type="text" value={p.name} onChange={(e) => p.setName(e.target.value)}
-          placeholder="Full name" autoComplete="name"
+          placeholder="Full name" autoComplete="name" aria-label="Full name"
           className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
         />
         <input
           type="email" value={p.email} onChange={(e) => p.setEmail(e.target.value)} onBlur={p.savePartial}
-          placeholder="Email" autoComplete="email"
+          placeholder="Email" autoComplete="email" aria-label="Email"
           className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
         />
         <input
           type="tel" value={p.phone} onChange={(e) => p.setPhone(e.target.value)} onBlur={p.savePartial}
-          placeholder="Phone" autoComplete="tel"
+          placeholder="Phone" autoComplete="tel" aria-label="Phone"
           className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
         />
         <label className="flex items-start gap-2 text-sm text-slate-600">
