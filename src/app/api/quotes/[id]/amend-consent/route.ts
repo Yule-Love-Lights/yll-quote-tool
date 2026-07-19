@@ -1,14 +1,14 @@
 // Customer consent for the latest total-changing amendment on a booked order.
 // The quote UUID is the capability token, matching the public approval route.
 // This endpoint never moves money or changes lifecycle status. It only replaces
-// the latest amendment's pending marker with a server-stamped signature.
+// the latest total-changing amendment's pending marker with a server-stamped signature.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
   isAmendmentConsentPending,
-  latestAmendment,
+  latestConsentAmendment,
   requiresReconsent,
   type AmendmentConsentSignature,
   type AmendmentTrailEntry,
@@ -117,13 +117,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const snapshot = quote.approval_snapshot ?? {};
   const amendments = Array.isArray(snapshot.amendments) ? snapshot.amendments : [];
-  const latest = latestAmendment(amendments);
+  const latest = latestConsentAmendment(amendments);
   if (!latest || latest.amended_at !== amendedAt) {
     return NextResponse.json(
-      { error: 'This amendment is no longer the latest version', code: 'stale-amendment' },
+      { error: 'This amendment is no longer the latest price change', code: 'stale-amendment' },
       { status: 409 },
     );
   }
+  const consentIndex = amendments.lastIndexOf(latest);
   if (!requiresReconsent(latest)) {
     return NextResponse.json(
       { error: 'This amendment does not require customer consent', code: 'consent-not-required' },
@@ -141,7 +142,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   };
   const nextSnapshot: ApprovalSnapshot = {
     ...snapshot,
-    amendments: [...amendments.slice(0, -1), accepted],
+    amendments: amendments.map((entry, index) => index === consentIndex ? accepted : entry),
   };
 
   // Compare-and-swap the full jsonb snapshot. PostgREST filter values are
