@@ -161,10 +161,13 @@ type SignatureSnapshot = {
 // Mirrors the client-side minimum in SignaturePad.tsx.
 const SIGNATURE_NAME_MIN = 2;
 const SIGNATURE_NAME_MAX = 200;
-// A drawn signature is a base64 PNG/JPEG data-URL; a typed one is just the name.
-// Cap the value so a giant canvas export can't bloat the row (a normal small
-// signature canvas PNG is well under this).
-const SIGNATURE_VALUE_MAX = 200_000;
+// The signature is stored INSIDE approval_snapshot, and amend / free-items /
+// amend-consent compare-and-swap that snapshot by its full serialization in a
+// PostgREST URL filter — a large value here would push those URLs past gateway
+// limits and permanently break amending the quote. The UI only produces typed
+// signatures (value = the name, ≤200 chars); keep this cap tight until drawn
+// signatures exist and store their image out-of-band.
+const SIGNATURE_VALUE_MAX = 1_000;
 
 /**
  * Parse and validate the required signature from the request body.

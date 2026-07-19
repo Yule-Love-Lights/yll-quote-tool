@@ -505,6 +505,23 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
     expect(snap.signature!.value).toBe(dataUrl);
   });
 
+  it('rejects an oversized signature value before any approval write (snapshot is CAS-matched by serialized size)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReq({
+        ...validBody,
+        signature: { name: 'Jordan Smith', kind: 'drawn', value: `data:image/png;base64,${'A'.repeat(2_000)}` },
+      }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('bad-signature');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
   it('rejects a missing signature before any approval write', async () => {
     const { signature: _signature, ...bodyWithoutSignature } = validBody;
     const { client, updatePayloads } = makeSb(baseQuote());

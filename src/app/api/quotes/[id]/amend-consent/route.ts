@@ -20,7 +20,12 @@ export const runtime = 'nodejs';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIGNATURE_NAME_MIN = 2;
 const SIGNATURE_NAME_MAX = 200;
-const SIGNATURE_VALUE_MAX = 200_000;
+// This signature is written INTO approval_snapshot, which this route (and
+// amend / free-items) compare-and-swaps by its full serialization in a
+// PostgREST URL filter — a large value would push those URLs past gateway
+// limits and permanently break amending the quote. Matches approve/route.ts;
+// keep tight until drawn signatures store their image out-of-band.
+const SIGNATURE_VALUE_MAX = 1_000;
 
 type ApprovalSnapshot = {
   amendments?: AmendmentTrailEntry[];
