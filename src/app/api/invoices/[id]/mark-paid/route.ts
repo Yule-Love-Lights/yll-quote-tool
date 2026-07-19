@@ -24,7 +24,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
-import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .select('approval_snapshot, status')
       .eq('id', invoice.quote_id)
       .maybeSingle<QuoteReconsentRow>();
-    const latest = latestAmendment(quoteRow?.approval_snapshot?.amendments);
+    const latest = latestConsentAmendment(quoteRow?.approval_snapshot?.amendments);
     if (blocksSettlement(latest)) {
       console.warn(
         `[api/invoices/:id/mark-paid] blocked settlement for invoice ${id} — reconsent required ` +
