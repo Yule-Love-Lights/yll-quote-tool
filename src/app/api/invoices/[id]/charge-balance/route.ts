@@ -45,7 +45,7 @@ import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { planBalanceCollection } from '@/lib/balanceCollection';
 import { chargeBalanceOnFile, isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
-import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (!override) {
-    const latest = latestAmendment(quote.approval_snapshot?.amendments);
+    const latest = latestConsentAmendment(quote.approval_snapshot?.amendments);
     if (blocksSettlement(latest)) {
       console.warn(
         `[api/invoices/:id/charge-balance] blocked charge for invoice ${id} — reconsent required ` +
