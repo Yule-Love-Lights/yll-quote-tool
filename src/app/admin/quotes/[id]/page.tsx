@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
+import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
@@ -95,6 +96,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+
+  // #163 Slice B — a pending customer colour-change request (set by the portal
+  // "Request colour change" button). Staff Apply (re-freeze) or Dismiss it.
+  const pendingColorRequest = quote.approval_snapshot?.pendingColorRequest as
+    | { label?: string }
+    | undefined;
 
   // #162 — the FREE ($0) items currently on the approved selection, so staff can
   // add/remove more (e.g. the free spritzers on #1191). Only an approved/booked
@@ -294,6 +301,11 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </>
           )}
         </div>
+
+        {/* Colour change request (#163 Slice B) — apply/dismiss a pending request. */}
+        {pendingColorRequest?.label && (
+          <ColorRequestPanel quoteId={id} label={pendingColorRequest.label} />
+        )}
 
         {/* Free items (#162) — add/remove $0 items on an approved order. */}
         {canEditFreeItems && <FreeItemsPanel quoteId={id} items={freeItems} />}
