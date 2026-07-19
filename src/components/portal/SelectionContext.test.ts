@@ -296,4 +296,22 @@ describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
       appearance: true,
     });
   });
+
+  // #163 — a booked customer can recolor the LIVE preview (appearance unfrozen)
+  // while items/fees stay locked. The flag NEVER touches items/fees.
+  it('locked + colorPreviewWhenLocked: unfreezes appearance ONLY (items/fees stay locked)', () => {
+    expect(frozenMutatorGroups({ locked: true, legacyRebook: false, colorPreviewWhenLocked: true })).toEqual({
+      items: true,
+      fees: true,
+      appearance: false,
+    });
+  });
+
+  it('colorPreviewWhenLocked is a no-op when the order is not locked (already all live)', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, colorPreviewWhenLocked: true })).toEqual({
+      items: false,
+      fees: false,
+      appearance: false,
+    });
+  });
 });
