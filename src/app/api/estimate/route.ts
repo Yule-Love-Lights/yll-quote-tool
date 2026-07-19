@@ -25,7 +25,8 @@ import { isClaudeConfigured } from '@/lib/claude';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
-import { isGoogleMapsConfigured, getCachedAddressImagery, NoStreetViewError } from '@/lib/googleMaps';
+import { isGoogleMapsConfigured, getCachedAddressImagery, geocodeAddress, NoStreetViewError } from '@/lib/googleMaps';
+import { isServedArea } from '@/lib/selfServe/serviceArea';
 import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote } from '@/lib/quotes';
 import {
@@ -89,6 +90,20 @@ export async function POST(req: NextRequest) {
   // stack trace, when a key is missing.
   if (!isClaudeConfigured() || !isGoogleMapsConfigured() || !isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
+  }
+
+  // ── 0. Service-area gate — geocode FIRST and stop out-of-area homes BEFORE
+  // the expensive imagery + analyzer ever run (Nassau + Suffolk only). ────────
+  try {
+    const placed = await geocodeAddress(address);
+    if (!isServedArea(placed.county, placed.state)) {
+      return NextResponse.json({ served: false, reason: 'out_of_area' }, { status: 200 });
+    }
+  } catch (err) {
+    // A geocode that can't resolve the address (bad/typo'd) — ask the customer
+    // to check it. (A transient Google error lands here too; a retry recovers.)
+    console.error('[api/estimate] geocode (service-area gate) failed:', err);
+    return NextResponse.json({ measured: false, reason: 'address_not_found' }, { status: 200 });
   }
 
   // ── 1. Imagery (geocode + Street View + satellite) ────────────────────────

@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-type Step = 'address' | 'measuring' | 'result' | 'followup' | 'done';
+type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
@@ -84,6 +84,12 @@ export function EstimateFlow() {
         setRange({ low: data.low, high: data.high });
         setFormattedAddress(data.formattedAddress ?? addr);
         setStep('result');
+      } else if (data.served === false) {
+        // Outside Nassau/Suffolk — no price, offer to leave info for expansion.
+        setStep('outofarea');
+      } else if (data.reason === 'address_not_found') {
+        setError("We couldn't find that address. Please check it and try again.");
+        setStep('address');
       } else {
         // no_streetview / low_confidence / no_footage / analyzer_unavailable
         setStep('followup');
@@ -217,6 +223,21 @@ export function EstimateFlow() {
             cta="Get my custom quote"
             {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
           />
+        )}
+
+        {step === 'outofarea' && (
+          <section className="flex flex-col gap-5">
+            <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
+              <p className="text-lg font-medium text-slate-800">We&apos;re not in your area just yet</p>
+              <p className="mt-2 text-sm text-slate-600">We currently install across Nassau and Suffolk County. Leave your info and we&apos;ll reach out if we expand near you.</p>
+            </div>
+            <ContactCard
+              heading="Get on the list"
+              blurb="We'll let you know as soon as we're installing in your area."
+              cta="Keep me posted"
+              {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
+            />
+          </section>
         )}
 
         {step === 'done' && (
