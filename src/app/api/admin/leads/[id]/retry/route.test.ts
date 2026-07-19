@@ -87,6 +87,14 @@ describe('POST /api/admin/leads/[id]/retry — guards', () => {
     expect(res.status).toBe(400);
     expect(retryOneLeadMock).not.toHaveBeenCalled();
   });
+
+  it("400s a 'partial' row and NEVER retries it — a partial has no SMS consent, so re-driving it would enrol a non-consenter in the drips (quote-forms-partial-save)", async () => {
+    sbRef.current = makeSb({ id: VALID_ID, sync_status: 'partial' });
+    const res = await POST({} as NextRequest, ctx(VALID_ID));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/consent/i);
+    expect(retryOneLeadMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/admin/leads/[id]/retry — success', () => {

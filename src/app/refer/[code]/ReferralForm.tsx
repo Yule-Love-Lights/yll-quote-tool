@@ -19,6 +19,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { track } from '@/lib/analytics/posthog';
+import { usePartialCapture } from '@/lib/leads/usePartialCapture';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
 import type { ReferralAutoAnalyzePreview } from '@/lib/referralAutoAnalyze';
 
@@ -93,6 +94,16 @@ export function ReferralForm({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [preview, setPreview] = useState<ReferralAutoAnalyzePreview | null>(null);
 
+  // Partial / abandoned-form capture (quote-forms-partial-save): save the
+  // contact info even if the visitor never hits submit. Disabled once the
+  // submit succeeds (status 'done'). Kept out of the SMS drips server-side.
+  const { onBlur: capturePartial } = usePartialCapture({
+    enabled: status !== 'done',
+    source: 'referral',
+    formVariant: `referral:${code}`.slice(0, 50),
+    fields: { name, email, phone, address },
+  });
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!name.trim() || !phone.trim() || !address.trim()) return;
@@ -139,6 +150,7 @@ export function ReferralForm({
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
+          onBlur={capturePartial}
           className={inputClass}
           placeholder="Your name"
         />
@@ -151,6 +163,7 @@ export function ReferralForm({
           type="tel"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
+          onBlur={capturePartial}
           className={inputClass}
           placeholder="(516) 555-0123"
         />
@@ -162,6 +175,7 @@ export function ReferralForm({
           required
           value={address}
           onChange={(e) => setAddress(e.target.value)}
+          onBlur={capturePartial}
           className={inputClass}
           placeholder="123 Main St, Smithtown, NY"
         />
@@ -173,6 +187,7 @@ export function ReferralForm({
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          onBlur={capturePartial}
           className={inputClass}
           placeholder="you@example.com"
         />
