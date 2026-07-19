@@ -1,0 +1,61 @@
+// Self-serve draft enrichment (Phase A). The /api/estimate route saves an
+// Anonymous draft quote at the moment the price is measured (so an abandoned
+// visit still leaves staff a "someone quoted 123 Main St for $X" row). When the
+// customer then submits their contact info, this links their real name/email/
+// phone and the GHL contact/opportunity onto that same draft.
+//
+// A focused, direct update (service-role, RLS-bypassing) rather than routing
+// through updateQuote() — updateQuote re-PRICES the row, which is wrong here:
+// enrichment must never move the money, only attach who the customer is.
+
+import { getSupabaseServiceClient } from '@/lib/supabase';
+
+export type SelfServeContact = {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+};
+
+function clean(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const t = v.trim();
+  return t.length ? t : null;
+}
+
+/**
+ * Attach contact info + GHL ids to an existing self-serve draft quote. Best-
+ * effort and non-throwing: the draft row is already saved (source of truth), so
+ * a failure here is logged and reported via the boolean, never surfaced to the
+ * customer as an error. Only writes fields that were actually provided — a null
+ * name leaves the row's existing customer_name (the 'Anonymous' default) intact
+ * rather than blanking it.
+ */
+export async function enrichSelfServeQuote(
+  quoteId: string,
+  contact: SelfServeContact,
+  ghl?: { contactId?: string | null; opportunityId?: string | null },
+): Promise<boolean> {
+  const supabase = getSupabaseServiceClient();
+  if (!supabase) return false;
+
+  const patch: Record<string, string> = {};
+  const name = clean(contact.name);
+  const email = clean(contact.email);
+  const phone = clean(contact.phone);
+  if (name) patch.customer_name = name;
+  if (email) patch.customer_email = email;
+  if (phone) patch.customer_phone = phone;
+  const ghlContactId = clean(ghl?.contactId);
+  const ghlOpportunityId = clean(ghl?.opportunityId);
+  if (ghlContactId) patch.highlevel_contact_id = ghlContactId;
+  if (ghlOpportunityId) patch.highlevel_opportunity_id = ghlOpportunityId;
+
+  if (Object.keys(patch).length === 0) return true; // nothing to write
+
+  const { error } = await supabase.from('quotes').update(patch).eq('id', quoteId);
+  if (error) {
+    console.error('[selfServe] enrichSelfServeQuote update failed:', error.message);
+    return false;
+  }
+  return true;
+}
