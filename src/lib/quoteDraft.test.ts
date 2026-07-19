@@ -3,7 +3,13 @@
 // install a Map-backed fake window + control Date.now for the TTL.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty } from './quoteDraft';
+import {
+  loadQuoteDraft,
+  saveQuoteDraft,
+  clearQuoteDraft,
+  customerIsEmpty,
+  draftAutosaveActive,
+} from './quoteDraft';
 
 const KEY = 'yll_quote_draft_v1';
 const EMPTY = { name: '', phone: '', email: '', address: '' };
@@ -79,5 +85,17 @@ describe('quoteDraft', () => {
   it('customerIsEmpty detects blank vs filled', () => {
     expect(customerIsEmpty(EMPTY)).toBe(true);
     expect(customerIsEmpty({ ...EMPTY, email: 'x@y.z' })).toBe(false);
+  });
+});
+
+describe('draftAutosaveActive (reopen-safety gate)', () => {
+  it('is active ONLY for a new, non-test, unsaved quote', () => {
+    expect(draftAutosaveActive({ editMode: false, isTest: false, savedQuoteId: null })).toBe(true);
+  });
+
+  it('is inactive for a reopened/edit quote, a test quote, or one already saved', () => {
+    expect(draftAutosaveActive({ editMode: true, isTest: false, savedQuoteId: null })).toBe(false);
+    expect(draftAutosaveActive({ editMode: false, isTest: true, savedQuoteId: null })).toBe(false);
+    expect(draftAutosaveActive({ editMode: false, isTest: false, savedQuoteId: 'q-1' })).toBe(false);
   });
 });

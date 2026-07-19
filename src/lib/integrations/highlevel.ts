@@ -480,15 +480,17 @@ export async function upsertContact(
   input: UpsertContactInput,
 ): Promise<{ contact: HighLevelContact; new: boolean }> {
   const { locationId } = requireConfig();
-  const body = {
-    locationId,
-    firstName: input.firstName,
-    lastName: input.lastName,
-    email: input.email,
-    phone: input.phone,
-    address1: input.address1,
-    source: input.source,
-  };
+  // Only include identifiers that are actually present. undefined keys are
+  // already dropped by JSON.stringify, but this also guards a caller that passes
+  // an empty string — a blank email/phone must be OMITTED, not sent to GHL as a
+  // real (empty) value that could clobber an existing contact's field.
+  const body: Record<string, unknown> = { locationId };
+  if (input.firstName !== undefined) body.firstName = input.firstName;
+  if (input.lastName !== undefined) body.lastName = input.lastName;
+  if (input.email) body.email = input.email;
+  if (input.phone) body.phone = input.phone;
+  if (input.address1 !== undefined) body.address1 = input.address1;
+  if (input.source !== undefined) body.source = input.source;
   return ghlFetch<{ contact: HighLevelContact; new: boolean }>('/contacts/upsert', {
     method: 'POST',
     body: JSON.stringify(body),
