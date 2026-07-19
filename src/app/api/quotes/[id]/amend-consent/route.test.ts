@@ -147,6 +147,21 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
     expect(updatePayloads).toHaveLength(0);
   });
 
+  it('rejects an oversized signature value before writing (snapshot is CAS-matched by serialized size)', async () => {
+    const { client, updatePayloads } = makeSb({});
+    sbRef.current = client;
+    const res = await POST(
+      req({
+        amendedAt: AMENDED_AT,
+        signature: { name: 'Jordan Smith', kind: 'drawn', value: `data:image/png;base64,${'A'.repeat(2_000)}` },
+      }),
+      ctx,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('bad-consent');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
   it('rejects an outdated amendment id', async () => {
     const { client, updatePayloads } = makeSb({
       id: ID,
