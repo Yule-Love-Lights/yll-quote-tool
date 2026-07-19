@@ -71,6 +71,11 @@ function row(overrides: LeadRow = {}): LeadRow {
     retry_count: 0,
     last_retried_at: null,
     is_test: false,
+    // Every real pending/deferred/failed row has consent (POST /api/leads
+    // refuses to insert a syncable row without consent:true); the retry
+    // consent-guard reflects that. Non-consented 'partial' rows are covered by
+    // their own test below.
+    consent: true,
     ...overrides,
   };
 }
@@ -168,6 +173,24 @@ describe('retryStuckLeads — row selection', () => {
     sbRef.current = sb.client;
     await retryStuckLeads({ now: NOW, batch: 5 });
     expect(sb.query.limit).toBe(5);
+  });
+});
+
+describe('applyRetry — consent guard (quote-forms-partial-save)', () => {
+  it('NEVER drip-syncs a row without SMS consent (e.g. a partial abandoned-form row)', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    const outcome = await retryOneLead(
+      row({ id: 'partial-1', sync_status: 'partial', consent: false }),
+      { now: NOW },
+    );
+    // syncLeadToGhl (which adds the drip-enrolling 'new lead' tag) is never called
+    expect(svc.syncLeadToGhl).not.toHaveBeenCalled();
+    // status left untouched, a forensic sync_error recorded
+    expect(outcome).toBe('partial');
+    expect(sb.updates).toHaveLength(1);
+    expect(sb.updates[0]!.payload.sync_error).toContain('no SMS consent');
+    expect(sb.updates[0]!.payload.sync_status).toBeUndefined();
   });
 });
 

@@ -330,6 +330,10 @@ export default async function PortalPage({
         initialPackageId={initialPackageId}
         initialSelectedItemIds={initialSelectedItemIds}
         locked={isApproved}
+        // #163 — a BOOKED customer keeps the light-color picker live for preview
+        // (appearance-only; items/fees stay locked). The change never persists —
+        // the picker's "Request colour change" button notifies staff instead.
+        colorPreviewWhenLocked={isBooked}
         legacyRebook={quote.legacyRebook === true}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={

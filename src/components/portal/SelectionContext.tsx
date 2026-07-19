@@ -133,6 +133,12 @@ type SelectionContextValue = {
    *  selection setter below becomes a no-op, and consumers disable their
    *  controls so a booked customer can't change packages/items/fees/colors. */
   locked: boolean;
+  /** #163 — whether the COLOUR/pattern picker specifically is frozen. Usually
+   *  equals `locked`, but a BOOKED quote (colorPreviewWhenLocked) leaves it false
+   *  so the picker stays interactive for a live preview while packages/items/fees
+   *  remain locked. `locked && !colorLocked` ⇒ the "booked colour preview" mode
+   *  where the picker shows a "Request colour change" button instead of persisting. */
+  colorLocked: boolean;
   /** #155 — true when this quote was migrated from last year's Jobber data
    *  (a legacy rebook). Drives the Light Color band's rebook copy (no "see it
    *  in daylight" toggle) and the read-only What's Included list — the color
@@ -246,11 +252,17 @@ export function nextPackageSelectedItemIds(
 export function frozenMutatorGroups(state: {
   locked: boolean;
   legacyRebook: boolean;
+  // #163: a booked customer may still recolor the LIVE preview (appearance
+  // unfrozen) while items/fees stay locked. The change is never persisted to the
+  // frozen order — a separate "Request colour change" action notifies staff, who
+  // apply it deliberately. Off by default, so every existing caller is
+  // byte-identical (items/fees are unaffected by this flag either way).
+  colorPreviewWhenLocked?: boolean;
 }): { items: boolean; fees: boolean; appearance: boolean } {
   return {
     items: state.locked || state.legacyRebook === true,
     fees: state.locked,
-    appearance: state.locked,
+    appearance: state.locked && state.colorPreviewWhenLocked !== true,
   };
 }
 
@@ -294,6 +306,11 @@ export type SelectionProviderProps = {
   // #43 — when true the portal is read-only (the quote is already approved):
   // all selection setters no-op and consumers render their controls disabled.
   locked?: boolean;
+  // #163 — when true (a booked quote), the light-color/pattern picker stays
+  // interactive for a LIVE preview even though the order is locked; the change
+  // never persists (a separate "Request colour change" action notifies staff).
+  // Only unfreezes the appearance group — items/fees stay locked. Default false.
+  colorPreviewWhenLocked?: boolean;
   // #155 — true for a quote migrated from last year's Jobber data (a legacy
   // rebook). Passed straight through onto the context value (see
   // SelectionContextValue.legacyRebook) so LightColorPicker/WhatsIncluded can
@@ -331,6 +348,7 @@ export function SelectionProvider({
   initialPackageId = 'A',
   initialSelectedItemIds,
   locked = false,
+  colorPreviewWhenLocked = false,
   legacyRebook = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
@@ -540,7 +558,7 @@ export function SelectionProvider({
   // #155 — which setter groups no-op for this quote (pure, unit-tested seam).
   // locked freezes all three groups (unchanged #43 behavior); a legacy rebook
   // freezes only the item/package setters — fees and colors stay interactive.
-  const frozen = frozenMutatorGroups({ locked, legacyRebook });
+  const frozen = frozenMutatorGroups({ locked, legacyRebook, colorPreviewWhenLocked });
 
   const value: SelectionContextValue = {
     packageId,
@@ -584,6 +602,10 @@ export function SelectionProvider({
     permanentEffect,
     setPermanentEffect: frozen.appearance ? noop : setPermanentEffect,
     locked,
+    // #163 — whether the COLOUR/pattern picker is frozen. Normally equals
+    // `locked`, but a booked quote with colorPreviewWhenLocked leaves it false so
+    // the picker stays interactive for a live preview (the change never persists).
+    colorLocked: frozen.appearance,
     legacyRebook,
     showDaylight,
     toggleDaylight,

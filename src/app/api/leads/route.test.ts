@@ -483,6 +483,14 @@ describe('POST /api/leads — isTest counts toward the rate limit (F1)', () => {
     expect(inserted[0]!.is_test).toBe(true);
     expect(hl.upsertContact).toHaveBeenCalledTimes(1);
   });
+
+  it("the rate-limit count EXCLUDES 'partial' capture rows (they must not burn a visitor's real-submit budget)", async () => {
+    const { client, notCalls } = makeSb({ leadCount: 0 });
+    sbRef.current = client;
+    const res = await POST(makeReq(validBody(), { ip: '198.51.100.20' }));
+    expect(res.status).toBe(200);
+    expect(notCalls).toContainEqual(['sync_status', 'eq', 'partial']);
+  });
 });
 
 describe('POST /api/leads — rate-limit IP key prefers x-real-ip (F2)', () => {

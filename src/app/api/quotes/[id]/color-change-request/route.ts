@@ -1,0 +1,158 @@
+// Customer-requested colour change on a BOOKED order (ledger #163).
+//
+// POST /api/quotes/[id]/color-change-request   (public — quote UUID is the token)
+// Body: { colorSchemeId?: string, customPattern?: string[] }
+// Response: { ok: true, label } | { error, code? }
+//
+// A booked customer previews a different light colour on the portal and asks us
+// to change it. This does NOT alter the booked order — it records the requested
+// colour on the quote (approval_snapshot.pendingColorRequest) so staff can review
+// + apply it deliberately (ledger #163 "one-click apply", separate route), and
+// drops an /inbox notification so it lands in the operator queue. The colour is
+// sanitized here exactly like the approve route (never trust the client), so a
+// later apply re-freezes a known-good scheme/pattern.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { rateLimitResponse } from '@/lib/rateLimit';
+import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { getAppSettings } from '@/lib/appSettings';
+import {
+  CUSTOM_SCHEME_ID,
+  DEFAULT_COLOR_SCHEME_ID,
+  isKnownColorSchemeId,
+  sanitizeCustomPattern,
+  getColorScheme,
+} from '@/lib/design/colorSchemes';
+import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
+import { ingestTouch } from '@/lib/dashboard/inbox/store';
+import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
+
+export const runtime = 'nodejs';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type QuoteRow = {
+  id: string;
+  customer_name: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  highlevel_contact_id: string | null;
+  service_type: string | null;
+  customer_approved_at: string | null;
+  total: number | null;
+  approval_snapshot: { customerSelection?: unknown; [key: string]: unknown } | null;
+};
+
+/** Human label for the requested colour, for the inbox preview + the staff panel. */
+export function colorChangeLabel(colorSchemeId: string, customPattern: string[]): string {
+  if (colorSchemeId === CUSTOM_SCHEME_ID || customPattern.length > 0) {
+    return `Custom pattern (${customPattern.length} colour${customPattern.length === 1 ? '' : 's'})`;
+  }
+  return getColorScheme(colorSchemeId).label;
+}
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+  // A customer isn't clicking this many times a minute; block a bot spamming it.
+  const rl = rateLimitResponse(req, { bucket: 'color-change-request', limit: 5, windowMs: 60_000 });
+  if (rl) return rl;
+
+  const { id } = await params;
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
+  }
+
+  let body: { colorSchemeId?: unknown; customPattern?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    body = {};
+  }
+
+  const sb = getSupabaseServiceClient()!;
+  const { data: quote, error: fetchErr } = await sb
+    .from('quotes')
+    .select(
+      'id, customer_name, customer_email, customer_phone, highlevel_contact_id, service_type, customer_approved_at, total, approval_snapshot',
+    )
+    .eq('id', id)
+    .single<QuoteRow>();
+  if (fetchErr || !quote) {
+    return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+  // Only an approved/booked order has colours to change.
+  if (!quote.customer_approved_at || !quote.approval_snapshot?.customerSelection) {
+    return NextResponse.json(
+      { error: 'This order is not booked yet', code: 'not-booked' },
+      { status: 409 },
+    );
+  }
+
+  // Sanitize the requested colour EXACTLY like the approve route: validate the
+  // scheme id against the live swatch list for this vertical, sanitize a custom
+  // pattern against the buildable palette, and resolve the effective color ids.
+  const isPermanent = quote.service_type === 'permanent';
+  const { swatches, permanentSwatches } = await getAppSettings();
+  const activeSchemes = isPermanent ? permanentSwatches.schemes : swatches.schemes;
+  const activeBuildable = isPermanent ? permanentSwatches.buildableColorIds : swatches.buildableColorIds;
+
+  const requestedSchemeId = isKnownColorSchemeId(body.colorSchemeId, activeSchemes)
+    ? (body.colorSchemeId as string)
+    : DEFAULT_COLOR_SCHEME_ID;
+  const customPattern =
+    requestedSchemeId === CUSTOM_SCHEME_ID ? sanitizeCustomPattern(body.customPattern, activeBuildable) : [];
+  // Collapse an empty custom pick back to the default (mirrors the approve route).
+  const colorSchemeId =
+    requestedSchemeId === CUSTOM_SCHEME_ID && customPattern.length === 0
+      ? DEFAULT_COLOR_SCHEME_ID
+      : requestedSchemeId;
+  const colorIds = resolveColorChoice(colorSchemeId, customPattern, activeSchemes);
+  const label = colorChangeLabel(colorSchemeId, customPattern);
+
+  // Record the request on the quote (the source of truth the staff apply reads).
+  const pendingColorRequest = {
+    colorSchemeId,
+    customPattern,
+    colorIds,
+    label,
+    requestedAt: new Date().toISOString(),
+  };
+  const newSnapshot = { ...quote.approval_snapshot, pendingColorRequest };
+  const { error: upErr } = await sb.from('quotes').update({ approval_snapshot: newSnapshot }).eq('id', id);
+  if (upErr) {
+    console.error('[api/quotes/:id/color-change-request] save failed:', upErr);
+    return NextResponse.json({ error: 'Could not record your request' }, { status: 500 });
+  }
+
+  // Notify staff via the unified inbox (best-effort — the request is already
+  // saved on the quote, so an inbox hiccup never loses it). Reuses the quotetool
+  // source with a distinct external_id so it never collides with the quote-sent
+  // reconcile item (bare quote id) or the legacy-rebook exclusion.
+  const touch: NormalizedTouch = {
+    source: 'quotetool',
+    externalId: `${id}:color-request`,
+    direction: 'inbound',
+    channel: null,
+    lastMessageAt: new Date(),
+    preview: `Colour change requested: ${label}`,
+    subject: 'Colour change request',
+    identity: {
+      ghlContactId: quote.highlevel_contact_id,
+      emails: quote.customer_email ? [quote.customer_email] : [],
+      phones: quote.customer_phone ? [quote.customer_phone] : [],
+      displayName: quote.customer_name,
+    },
+    raw: { quoteId: id, colorSchemeId, customPattern, label, kind: 'color-change-request' },
+    leadKind: 'lead',
+    quoteValue: quote.total,
+  };
+  try {
+    await ingestTouch(touch, new Date());
+  } catch (e) {
+    console.warn('[api/quotes/:id/color-change-request] inbox notify failed (request still saved):', e);
+  }
+
+  return NextResponse.json({ ok: true, label });
+}
