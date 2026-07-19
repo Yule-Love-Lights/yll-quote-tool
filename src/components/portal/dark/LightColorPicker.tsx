@@ -7,6 +7,7 @@
 // targets. Recolors the live design in real time via SelectionContext; the
 // portal page renders this only when a design is linked.
 
+import { useState } from 'react';
 import { Sun } from 'lucide-react';
 import { useSelection } from '../SelectionContext';
 import {
@@ -68,6 +69,7 @@ export function LightColorPicker() {
     schemes,
     buildableColorIds,
     locked,
+    colorLocked,
     legacyRebook,
     showDaylight,
     toggleDaylight,
@@ -76,10 +78,31 @@ export function LightColorPicker() {
     serviceType,
   } = useSelection();
 
+  // #163 — a BOOKED quote leaves colorLocked false (colorPreviewWhenLocked) so
+  // the picker recolors the live preview even though the order is locked. In that
+  // mode we surface a "Request colour change" button: the preview never persists,
+  // so this is the only path to actually change a booked order's colours.
+  const bookedColorPreview = locked && !colorLocked;
+  const [requestState, setRequestState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const requestColorChange = async () => {
+    if (!quoteId) return;
+    setRequestState('sending');
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}/color-change-request`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ colorSchemeId, customPattern }),
+      });
+      setRequestState(res.ok ? 'sent' : 'error');
+    } catch {
+      setRequestState('error');
+    }
+  };
+
   const customActive = colorSchemeId === CUSTOM_SCHEME_ID;
   const atMax = customPattern.length >= MAX_CUSTOM_PATTERN;
   const addColor = (id: string) => {
-    if (locked || customPattern.length >= MAX_CUSTOM_PATTERN) return;
+    if (colorLocked || customPattern.length >= MAX_CUSTOM_PATTERN) return;
     setColorScheme(CUSTOM_SCHEME_ID);
     setCustomPattern([...customPattern, id]);
     track('color_changed', customColorAddedProps(quoteId, serviceType, id));
@@ -89,12 +112,12 @@ export function LightColorPicker() {
   // renders identically to as-designed, so leaving 'custom' selected would show a
   // gold-highlighted chip over an unchanged picture.
   const clearCustom = () => {
-    if (locked) return;
+    if (colorLocked) return;
     setCustomPattern([]);
     setColorScheme(DEFAULT_COLOR_SCHEME_ID);
   };
   const removeAt = (i: number) => {
-    if (locked) return;
+    if (colorLocked) return;
     const next = customPattern.filter((_, idx) => idx !== i);
     setCustomPattern(next);
     if (next.length === 0) setColorScheme(DEFAULT_COLOR_SCHEME_ID);
@@ -144,8 +167,8 @@ export function LightColorPicker() {
         <div
           role="radiogroup"
           aria-label="Choose your light color"
-          aria-disabled={locked || undefined}
-          className={`flex flex-wrap gap-2.5 md:gap-3 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
+          aria-disabled={colorLocked || undefined}
+          className={`flex flex-wrap gap-2.5 md:gap-3 ${colorLocked ? 'opacity-60 pointer-events-none' : ''}`}
         >
           {schemes.map((s) => {
             const active = colorSchemeId === s.id;
@@ -206,7 +229,7 @@ export function LightColorPicker() {
         {/* Custom pattern builder (#49) — tap palette colors to build an ordered
             sequence the bulbs cycle through; the design recolors live as you go. */}
         {customActive && (
-          <div className={`mt-4 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
+          <div className={`mt-4 ${colorLocked ? 'opacity-60 pointer-events-none' : ''}`}>
             <p className="text-[12px] md:text-[13px] text-[#A89F87] mb-2">
               {customPattern.length > 0
                 ? 'Your pattern — the lights repeat this sequence. Tap a color to remove it.'
@@ -278,6 +301,40 @@ export function LightColorPicker() {
               <p role="status" aria-live="polite" className="text-[11px] text-[#A89F87] mt-2">
                 That&apos;s the max ({MAX_CUSTOM_PATTERN} colors) — remove one to add another.
               </p>
+            )}
+          </div>
+        )}
+
+        {/* #163 — booked customers preview any colour above, then request the
+            change. This never alters the booked order; it notifies staff, who
+            apply it. */}
+        {bookedColorPreview && (
+          <div className="mt-6 border-t border-[#1F2A23] pt-4">
+            {requestState === 'sent' ? (
+              <p role="status" aria-live="polite" className="text-[14px] text-[#8FCBA3]">
+                Got it. We&apos;ll be in touch about your colour change. Your booking stays exactly as it
+                is until we confirm.
+              </p>
+            ) : (
+              <>
+                <p className="text-[13px] md:text-[14px] text-[#A89F87] mb-2.5">
+                  Want a different look? Preview any colour above, then send us the request and we&apos;ll
+                  follow up.
+                </p>
+                <button
+                  type="button"
+                  onClick={requestColorChange}
+                  disabled={requestState === 'sending'}
+                  className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-full bg-[#E8B862] text-[#0D1519] text-[13px] md:text-[14px] font-semibold cursor-pointer transition-colors duration-200 hover:bg-[#F5CC7A] disabled:opacity-60 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519]"
+                >
+                  {requestState === 'sending' ? 'Sending…' : 'Request colour change'}
+                </button>
+                {requestState === 'error' && (
+                  <p role="status" aria-live="polite" className="text-[12px] text-[#F5A9A9] mt-2">
+                    Something went wrong. Please try again, or text us and we&apos;ll sort it out.
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
