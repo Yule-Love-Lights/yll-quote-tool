@@ -229,3 +229,60 @@ and have `charge-balance` refuse to auto-charge while it's set (pay-link/mark-pa
 stay allowed — customer/operator action implies consent), OR explicitly document
 re-consent as an operator-judgment process and remove the unenforced promise from the
 route header. Full finding: `docs/audit/AUDIT-2026-07.md`.
+
+---
+
+# UPDATE — 2026-07-19 (Naldo S42): current Valor blockers for JASON — 2 open questions
+
+> Naldo asked me to mark the Valor problem for you. Two items are PARKED on
+> answers only Valor can give. Both are your lane. Everything else in this doc is
+> still accurate context; this section is the current front line.
+
+## 1. #161 — vaulting the deposit card (still blocks auto-charge)
+
+**NEW (the important update): the "just add `save_card=1` to the hosted page" path
+— original item #1 near the top of this doc — was TRIED LIVE on 2026-07-17 and
+FAILED.** A real deposit confirmed the Valor **hosted page does NOT vault via
+`save_card=1`**: the card never hit the Vault and the webhook returned no token.
+The flag was reverted (PR #575). So the hosted page alone will not save the card.
+
+Remaining paths, either of which needs a Valor answer:
+- **Ask Valor support the CORRECT hosted-page parameter** to vault a card at
+  deposit (if one exists at all), OR
+- **Use the separate valor-vault REST profile chain** (steps 1–4 in the S21 table
+  above): `addcustomer` → `addpaymentprofiletxn(ref_txn_id)` → `getpaymentprofile`
+  → `/?saleToken`. Header-auth (`Valor-App-ID`/`Valor-App-Key`) + a `vault_id` we
+  don't persist; the Vault is a premium ISO add-on that may not be provisioned for
+  our EPI.
+
+Still-open Valor confirmations (unchanged): (a) API token-charging enabled for our
+EPI, (b) `getpaymentprofile` token reusable as a `/?saleToken` input, (c)
+MIT/stored-credential indicator set automatically, (d) the prod vault base URL.
+And the **W1-012 re-consent blocker (section above) must be closed before the flag
+ever flips.**
+
+## 2. #164 — pass the Valor processing fee to the customer
+
+Today YLL **eats** the Valor fee: `createHostedPageSale` sends `surcharge:0` +
+`ignore_surcharge_calc:1` on both the deposit and the balance pay-link, and the
+pricing engine adds **no** fee line (grep-verified). Naldo wants a **visible
+card-fee line baked into the quote total**.
+
+**BLOCKED on: the EXACT effective Valor rate from the merchant agreement** — flat
+% vs % + fixed cents. The feature can't be built without the real number.
+
+Decided (Naldo): the rate is **Settings-editable + freezes per-quote**
+(new-quotes-only on change, like tax / permanent rates); baked into the total so
+it auto-applies to deposit + balance (each 50% of the new total); the line sits
+**below tax and is itself NOT taxed**. Un-decided bits default (Naldo, no
+preference) to **all verticals** + **fee base = subtotal+tax**.
+
+**Compliance (your risk call before ship):** confirm surcharging is allowed (+ any
+%-cap) in YLL's operating states; **debit-card surcharge is generally barred** and
+the portal can't tell card type.
+
+## What Naldo needs from you
+
+Get Valor (phone/email) to answer: **the vault question (#161 — the 4 confirmations
+above)** AND **the exact processing rate (#164)**. Both features are built-ready
+behind those two answers. Ledger rows: #161 + #164 (both PARKED).
