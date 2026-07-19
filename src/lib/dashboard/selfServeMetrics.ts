@@ -107,6 +107,10 @@ export function computeSelfServeMetrics(rows: SelfServeMetricsRow[]): SelfServeM
 // aggregation rather than silently truncating.
 const MAX_ESTIMATE_ROWS = 5000;
 
+// Batch size for the quotes .in() lookup — keeps the query string bounded even
+// at the MAX_ESTIMATE_ROWS ceiling.
+const QUOTE_LOOKUP_CHUNK = 500;
+
 /**
  * Batched read + compute for the dashboard tile. Two round trips: all estimate
  * rows, then one `.in()` for the linked quotes (total + status + is_test for
@@ -138,12 +142,18 @@ export async function loadSelfServeMetrics(): Promise<SelfServeMetrics> {
 
     const quoteIds = [...new Set(estimates.map((e) => e.quote_id))];
     const quoteById = new Map<string, { total: number | null; status: string | null; isTest: boolean }>();
-    const { data: qrows } = await sb
-      .from('quotes')
-      .select('id, total, status, is_test')
-      .in('id', quoteIds);
-    for (const q of (qrows ?? []) as Array<{ id: string; total: number | null; status: string | null; is_test: boolean | null }>) {
-      quoteById.set(q.id, { total: q.total, status: q.status, isTest: !!q.is_test });
+    // Chunk the .in() lookup so a large id set can't build an oversized query
+    // string (PostgREST puts .in() values in the URL). At Phase-A volume this is
+    // a single batch; the chunking just keeps it safe past MAX_ESTIMATE_ROWS.
+    for (let i = 0; i < quoteIds.length; i += QUOTE_LOOKUP_CHUNK) {
+      const batch = quoteIds.slice(i, i + QUOTE_LOOKUP_CHUNK);
+      const { data: qrows } = await sb
+        .from('quotes')
+        .select('id, total, status, is_test')
+        .in('id', batch);
+      for (const q of (qrows ?? []) as Array<{ id: string; total: number | null; status: string | null; is_test: boolean | null }>) {
+        quoteById.set(q.id, { total: q.total, status: q.status, isTest: !!q.is_test });
+      }
     }
 
     const rows: SelfServeMetricsRow[] = [];

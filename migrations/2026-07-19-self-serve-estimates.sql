@@ -38,6 +38,13 @@ create table if not exists public.self_serve_estimates (
   confidence     text
 );
 
+-- Idempotency for estimate_total (slice-2b review fix): the `create table if not
+-- exists` above is a no-op on a DB where an EARLIER version of this table was
+-- already created WITHOUT this column, which would silently leave estimate_total
+-- missing (and defeat the accuracy metric). Add it explicitly. Harmless when the
+-- create just ran with the column present.
+alter table public.self_serve_estimates add column if not exists estimate_total numeric(10,2);
+
 -- Dashboard join (self_serve_estimates → quotes) + newest-first reads.
 create index if not exists self_serve_estimates_quote_id_idx
   on public.self_serve_estimates (quote_id);
