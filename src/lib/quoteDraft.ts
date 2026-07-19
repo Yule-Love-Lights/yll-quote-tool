@@ -16,6 +16,12 @@ import type { ServiceType } from './serviceType';
 
 const KEY = 'yll_quote_draft_v1';
 
+// A draft is a convenience for an operator who steps away and comes back soon —
+// not a permanent store of a customer's contact PII. Expire (and clear) anything
+// older than a week on load, so a stale draft can't resurface a prior customer's
+// details for the next person on a shared machine.
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type QuoteDraft = {
   customer: FormCustomer;
   serviceType: ServiceType;
@@ -36,6 +42,12 @@ export function loadQuoteDraft(): QuoteDraft | null {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<QuoteDraft>;
+    const savedAt = typeof parsed.savedAt === 'number' ? parsed.savedAt : 0;
+    // TTL: drop + clear an expired draft so stale customer PII can't resurface.
+    if (savedAt && Date.now() - savedAt > MAX_AGE_MS) {
+      clearQuoteDraft();
+      return null;
+    }
     const c = parsed.customer;
     if (!c || typeof c !== 'object') return null;
     const customer: FormCustomer = {
@@ -46,11 +58,7 @@ export function loadQuoteDraft(): QuoteDraft | null {
     };
     // A draft with nothing in the customer block is worthless — treat as absent.
     if (customerIsEmpty(customer)) return null;
-    return {
-      customer,
-      serviceType: (parsed.serviceType as ServiceType) ?? 'holiday',
-      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : 0,
-    };
+    return { customer, serviceType: (parsed.serviceType as ServiceType) ?? 'holiday', savedAt };
   } catch {
     return null;
   }

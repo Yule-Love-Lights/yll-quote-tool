@@ -936,9 +936,14 @@
       var payload = buildPartialPayload();
       if (!payload) return;
       var key = captureKey(payload);
-      // Skip an unchanged repeat — but always let the final page-leave beacon
-      // through (it may be the only capture that ever fires).
-      if (!useBeacon && key === lastCaptureKey) return;
+      // Skip an unchanged repeat. This applies to the page-leave beacon too:
+      // one navigation can fire BOTH visibilitychange:hidden and pagehide, and
+      // without this the two would write the same partial twice (two rows for
+      // one abandoned fill) whenever no debounced fetch had learned a captureId
+      // yet. A prior send already persisted this exact payload; a beacon with
+      // genuinely new data (tab hidden, edited, left again) still has a fresh
+      // key and goes through.
+      if (key === lastCaptureKey) return;
       lastCaptureKey = key;
       var url = config.apiBase + '/api/leads/partial';
       var bodyStr = JSON.stringify(payload);

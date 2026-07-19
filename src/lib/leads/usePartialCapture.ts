@@ -75,9 +75,11 @@ export function usePartialCapture(opts: {
     const payload = buildPayload();
     if (!payload) return;
     const key = [payload.name, payload.email, payload.phone, payload.address, payload.notes].join('|');
-    // Skip an unchanged repeat — but always let the final page-leave beacon
-    // through (it may be the only capture that fires).
-    if (!useBeacon && key === lastKeyRef.current) return;
+    // Skip an unchanged repeat — applies to the page-leave beacon too, so a
+    // single navigation firing BOTH visibilitychange:hidden and pagehide can't
+    // write the same partial twice. A beacon with genuinely new data still has
+    // a fresh key and goes through.
+    if (key === lastKeyRef.current) return;
     lastKeyRef.current = key;
     const body = JSON.stringify(payload);
     const url = '/api/leads/partial';
