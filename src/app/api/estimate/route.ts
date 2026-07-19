@@ -34,6 +34,7 @@ import {
   analysisToHolidayInputs,
   computeEstimateRange,
 } from '@/lib/selfServe/estimateRange';
+import { recordSelfServeEstimate } from '@/lib/selfServe/telemetry';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -164,6 +165,9 @@ export async function POST(req: NextRequest) {
     } as QuoteInputs & SelfServeMeta;
     const saved = await saveQuote({ address: geo.formattedAddress }, inputsWithMeta, priced, 'holiday');
     quoteId = saved?.id ?? null;
+    // Telemetry (slice 2b): record the shown range so the dashboard can compare
+    // it against the staff-verified final. Best-effort — never blocks the price.
+    if (quoteId) await recordSelfServeEstimate(quoteId, low, high, result!.confidence);
   } catch (err) {
     console.error('[api/estimate] draft save failed (returning price anyway):', err);
   }
