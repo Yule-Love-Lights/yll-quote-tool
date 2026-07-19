@@ -21,6 +21,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSelfServeEstimateEnabled } from '@/lib/selfServe/estimateFlag';
+import { rateLimitResponse } from '@/lib/rateLimit';
 import { isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { syncLeadToGhl } from '@/lib/leads/leadService';
 import { syncPartialLeadToGhl } from '@/lib/leads/partialLead';
@@ -47,6 +48,14 @@ export async function POST(req: NextRequest) {
   if (!isSelfServeEstimateEnabled()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
+
+  // Every accepted call can trigger a GHL contact/opportunity write (and the
+  // final path adds the 'new lead' tag that enrolls the number in SMS drips), so
+  // cap hard per IP. Headroom for one real fill: partial-on-blur of email + phone
+  // + the final submit ≈ 3 calls, plus re-edits. 15/min stays well clear of that
+  // while stopping a script from mass-creating GHL leads / drip-enrolling numbers.
+  const blocked = rateLimitResponse(req, { bucket: 'self-serve-contact', limit: 15, windowMs: 60_000 });
+  if (blocked) return blocked;
 
   let body: Record<string, unknown>;
   try {
