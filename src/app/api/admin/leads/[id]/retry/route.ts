@@ -40,6 +40,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (row.sync_status === 'synced') {
     return NextResponse.json({ error: 'Lead is already synced' }, { status: 400 });
   }
+  // A 'partial' (abandoned-form) lead was captured WITHOUT the SMS-consent box
+  // ticked — syncing it via retryOneLead would add the 'new lead' tag and enrol
+  // a non-consenter in the drips. It's never a retry target; the customer
+  // completing the form (POST /api/leads, consent required) is what enrols them.
+  if (row.sync_status === 'partial') {
+    return NextResponse.json(
+      { error: 'Partial leads have no SMS consent and are never synced to the drips' },
+      { status: 400 },
+    );
+  }
 
   const outcome = await retryOneLead(row, { now: new Date() });
   return NextResponse.json({ ok: true, id, outcome });

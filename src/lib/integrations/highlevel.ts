@@ -463,8 +463,15 @@ export type UpsertContactInput = {
   // existing contact's name via GHL's email/phone-matched upsert.
   firstName?: string;
   lastName?: string;
-  email: string;
-  phone: string;
+  // email/phone are each optional — GHL's /contacts/upsert matches on EITHER
+  // identifier, so a caller with only one (e.g. a partial/abandoned-form lead
+  // that got a phone typed but no email yet — see leads/partialLead.ts) can
+  // upsert with just that one. The caller is responsible for supplying at
+  // least one; sending neither would create an unmatchable orphan contact.
+  // undefined keys are dropped by JSON.stringify below, so an omitted field is
+  // simply not sent.
+  email?: string;
+  phone?: string;
   address1?: string;
   source?: string;
 };

@@ -761,6 +761,9 @@
     }
 
     var submitting = false;
+    // Partial capture (quote-forms-partial-save): flips true once the real
+    // submit succeeds, so page-leave/blur never re-saves a completed lead.
+    var completed = false;
     function setSubmitting(isSubmitting) {
       submitting = isSubmitting;
       submitBtn.disabled = isSubmitting;
@@ -865,6 +868,7 @@
         .then(function (result) {
           setSubmitting(false);
           if (result.status >= 200 && result.status < 300 && result.data && result.data.ok) {
+            completed = true; // stop any further partial capture for this fill
             track('yll_lead_form_submitted', { variant: config.variant, service: v.service });
             showThankYou();
           } else {
@@ -886,6 +890,113 @@
           track('yll_lead_form_error', { variant: config.variant, kind: 'network' });
         });
     });
+
+    // ── Partial / abandoned-form capture (quote-forms-partial-save) ────────
+    // Save whatever contact info the visitor typed BEFORE they finish +
+    // consent, so an abandoned form isn't a lost lead. Fires debounced on
+    // contact-field blur and once on page-leave (sendBeacon). The server
+    // (POST /api/leads/partial) keeps these OUT of the SMS drips — the visitor
+    // never gets auto-texted until they actually submit WITH consent. Never
+    // fires after a successful submit (`completed`).
+    var partialCaptureId = null; // website_leads row id, learned from the first capture
+    var lastCaptureKey = null; // skip an identical repeat (blur with no change)
+    var blurTimer = null;
+
+    function buildPartialPayload() {
+      var v = values();
+      var email = v.email.trim();
+      var phone = v.phone.trim();
+      var hasEmail = isValidEmail(email);
+      var hasPhone = phoneDigitCount(phone) >= PHONE_MIN_DIGITS;
+      if (!hasEmail && !hasPhone) return null; // a lone name isn't a lead yet
+      var storedUtm = getStoredUtm();
+      return {
+        captureId: partialCaptureId || undefined,
+        name: v.name.trim() || undefined,
+        email: hasEmail ? email : undefined,
+        phone: phone || undefined,
+        address: v.address.trim() || undefined,
+        notes: v.notes.trim() || undefined,
+        service: v.service || undefined,
+        formVariant: config.variant,
+        source: 'website',
+        company: honeypot.value || '', // honeypot rides along, same as submit
+        utm: buildUtmForPayload(storedUtm),
+        landingUrl: ((storedUtm && storedUtm.landing) || location.href).slice(0, 1000),
+        isTest: hasTestFlag(),
+      };
+    }
+
+    function captureKey(p) {
+      return [p.name, p.email, p.phone, p.address, p.notes, p.service].join('|');
+    }
+
+    function capturePartial(useBeacon) {
+      if (completed) return;
+      var payload = buildPartialPayload();
+      if (!payload) return;
+      var key = captureKey(payload);
+      // Skip an unchanged repeat — but always let the final page-leave beacon
+      // through (it may be the only capture that ever fires).
+      if (!useBeacon && key === lastCaptureKey) return;
+      lastCaptureKey = key;
+      var url = config.apiBase + '/api/leads/partial';
+      var bodyStr = JSON.stringify(payload);
+      // text/plain keeps this a CORS-simple request (no preflight); the route
+      // parses the body regardless of content-type.
+      if (useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        try {
+          navigator.sendBeacon(url, new Blob([bodyStr], { type: 'text/plain' }));
+        } catch (e) {
+          /* best-effort — a failed beacon is never surfaced */
+        }
+        return;
+      }
+      if (typeof fetch !== 'function') return;
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: bodyStr,
+        keepalive: true, // let it outlive a fast navigation
+      })
+        .then(function (res) {
+          return res.json().catch(function () {
+            return {};
+          });
+        })
+        .then(function (data) {
+          if (data && typeof data.id === 'string') partialCaptureId = data.id;
+        })
+        .catch(function () {
+          /* silent — partial capture never bothers the visitor */
+        });
+    }
+
+    function scheduleCapture() {
+      if (blurTimer) clearTimeout(blurTimer);
+      blurTimer = setTimeout(function () {
+        capturePartial(false);
+      }, 800);
+    }
+
+    [nameF, emailF, phoneF, addressF].forEach(function (f) {
+      if (!f) return;
+      f.input.addEventListener('blur', scheduleCapture);
+    });
+
+    function onLeave() {
+      if (blurTimer) {
+        clearTimeout(blurTimer);
+        blurTimer = null;
+      }
+      capturePartial(true);
+    }
+    // visibilitychange:hidden is the reliable mobile "leaving" signal; pagehide
+    // covers desktop nav/close. Both guarded by `completed`.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') onLeave();
+    });
+    window.addEventListener('pagehide', onLeave);
 
     return { root: root, form: form };
   }

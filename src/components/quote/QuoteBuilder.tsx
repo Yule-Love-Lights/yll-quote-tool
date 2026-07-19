@@ -46,6 +46,7 @@ import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
+import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty } from '@/lib/quoteDraft';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -404,6 +405,54 @@ export default function QuoteBuilder({
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
+
+  // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
+  // Save the customer block to localStorage as staff type, so a brand-new
+  // quote's contact info isn't lost if they navigate away before Calculate
+  // (the first thing that persists anything). Active ONLY for a new, non-test
+  // quote that hasn't saved yet — once savedQuoteId exists the row IS the
+  // store; a reopened/test quote is never touched (reopen-safety, mirrors the
+  // satellite/footage effects). No design/pricing state, no GHL — see
+  // src/lib/quoteDraft.ts.
+  const draftActive = !editMode && !isTest && !savedQuoteId;
+  const [draftRestored, setDraftRestored] = useState(false);
+  const draftRestoreTriedRef = useRef(false);
+
+  // Restore once on mount: a blank new builder + a saved draft → prefill the
+  // customer block + service type. queueMicrotask defers the setState out of
+  // the effect body (react-hooks/set-state-in-effect is at error here).
+  useEffect(() => {
+    if (!draftActive || draftRestoreTriedRef.current) return;
+    draftRestoreTriedRef.current = true;
+    const draft = loadQuoteDraft();
+    if (!draft) return;
+    queueMicrotask(() => {
+      // Only fill an empty block — never clobber anything already typed.
+      setForm((f) =>
+        customerIsEmpty(f.customer)
+          ? { ...f, customer: draft.customer, serviceType: draft.serviceType }
+          : f,
+      );
+      setDraftRestored(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autosave the customer block (debounced). saveQuoteDraft clears the store
+  // by itself once the block goes empty.
+  useEffect(() => {
+    if (!draftActive) return;
+    const t = setTimeout(() => saveQuoteDraft(form.customer, form.serviceType), 600);
+    return () => clearTimeout(t);
+  }, [draftActive, form.customer, form.serviceType]);
+
+  // Dismiss the restored-draft note and wipe both the store and the fields it
+  // filled (a user action — setState here is fine, it's not an effect).
+  const clearDraftAndReset = () => {
+    clearQuoteDraft();
+    setForm((f) => ({ ...f, customer: { name: '', phone: '', email: '', address: '' } }));
+    setDraftRestored(false);
+  };
 
   // Referral program redemption (#41 PR 2): resolve the linked customer's
   // LIVE credit balance client-side (rather than trusting a page-load-stale
@@ -2300,7 +2349,13 @@ export default function QuoteBuilder({
       // previously-valid id here would orphan that row and make the next
       // Calculate INSERT a duplicate instead of updating it. Mirrors the same
       // guard already used by recommendRoofline below.
-      if (newQuoteId) setSavedQuoteId(newQuoteId);
+      if (newQuoteId) {
+        setSavedQuoteId(newQuoteId);
+        // Draft autosave (quote-forms-partial-save): the saved row is now the
+        // store of record, so drop the local draft + hide the restored note.
+        clearQuoteDraft();
+        setDraftRestored(false);
+      }
       // Persist the staff-confirmed satellite measurement lines onto the
       // design (#8 Stage A) — Calculate is the "measurement finalized"
       // moment. Only when a satellite session is actually active: a reopened
@@ -2682,6 +2737,21 @@ export default function QuoteBuilder({
                 A HighLevel contact is required before this quote can be sent. Pick one above, or fill in the
                 fields below and link a contact before sending.
               </p>
+            )}
+            {/* Draft autosave (quote-forms-partial-save): restored the customer
+                info this browser had unsaved from a previous, un-Calculated
+                quote. Dismiss+wipe with Clear. */}
+            {draftRestored && (
+              <div className="flex items-center justify-between gap-3 mb-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                <span>Restored customer info you started earlier but didn&apos;t save.</span>
+                <button
+                  type="button"
+                  onClick={clearDraftAndReset}
+                  className="font-semibold underline hover:text-blue-900 whitespace-nowrap"
+                >
+                  Clear
+                </button>
+              </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>

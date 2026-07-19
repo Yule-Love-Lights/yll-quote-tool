@@ -93,6 +93,20 @@ async function applyRetry(
     last_retried_at: now.toISOString(),
   };
 
+  // Load-bearing consent guard (quote-forms-partial-save): syncLeadToGhl adds
+  // the 'new lead' tag that enrols a contact in the SMS drips, so it must NEVER
+  // run for a lead without SMS consent — e.g. a 'partial' abandoned-form row
+  // (consent false by construction). POST /api/leads already refuses to insert
+  // a syncable row without consent:true, and the manual retry route rejects
+  // 'partial' up front — this is the defense-in-depth backstop that protects
+  // EVERY caller (and any future one). Leave the row's status untouched; only
+  // note why it was skipped.
+  if (row.consent !== true) {
+    update.sync_error = 'Skipped: no SMS consent — never synced to the drips';
+    await sb.from(LEADS_TABLE).update(update).eq('id', row.id);
+    return (typeof row.sync_status === 'string' ? row.sync_status : 'pending') as RetryOutcome;
+  }
+
   const service = asLeadService(row.service);
   if (!service) {
     // A row whose service isn't one of the 4 known values can never sync — park
