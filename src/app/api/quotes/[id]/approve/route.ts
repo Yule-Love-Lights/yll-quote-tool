@@ -140,8 +140,8 @@ type ApproveBody = {
   permanentEffect?: unknown; // #88 P6b-4 — permanent animation effect (validated server-side)
   installTiming?: 'none' | 'september' | 'october';
   installDiscountUsd?: number;
-  // #83 Slice B — optional e-signature captured at approval. Backward-compatible:
-  // older portal clients omit it and the snapshot records signature: null.
+  // Customer e-signature. The public approval endpoint requires it; staff or
+  // legacy approval exceptions belong on separately authenticated paths.
   signature?: unknown;
 };
 
@@ -167,18 +167,16 @@ const SIGNATURE_NAME_MAX = 200;
 const SIGNATURE_VALUE_MAX = 200_000;
 
 /**
- * Parse + validate the optional signature from the request body.
- * Returns:
- *   - { ok: true, signature: null }            when none was provided (back-compat)
- *   - { ok: true, signature: SignatureSnapshot } when a valid one was provided
- *   - { ok: false }                            when one was provided but malformed
- * server-stamps signed_at + ip (caller passes the request ip).
+ * Parse and validate the required signature from the request body.
+ * Returns a server-stamped snapshot for a valid signature and rejects a missing
+ * or malformed value. The public capability-token route never has a no-signature
+ * exception.
  */
 function parseSignature(
   raw: unknown,
   ip: string | null,
-): { ok: true; signature: SignatureSnapshot | null } | { ok: false } {
-  if (raw == null) return { ok: true, signature: null };
+): { ok: true; signature: SignatureSnapshot } | { ok: false } {
+  if (raw == null) return { ok: false };
   if (typeof raw !== 'object') return { ok: false };
   const s = raw as Record<string, unknown>;
   const name = typeof s.name === 'string' ? s.name.trim() : '';
@@ -239,10 +237,9 @@ type ApprovalSnapshot = {
   // Full pricing result as it existed at approval time. If an admin
   // later edits the quote, this snapshot remembers the original.
   pricing: QuoteResult | null;
-  // #83 Slice B — the e-signature the customer gave at approval (typed or drawn).
-  // null when none was captured (older clients / not provided). The signature
-  // attests to this exact frozen snapshot.
-  signature: SignatureSnapshot | null;
+  // The required e-signature the customer gave at approval. Older stored
+  // snapshots may still lack it, but every new public approval must carry one.
+  signature: SignatureSnapshot;
   // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
   // customer agreed to, frozen so a later Settings edit can never retro-change a
   // booked customer's terms. Set only for permanent quotes; null for holiday/event
@@ -310,9 +307,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ? body.installDiscountUsd
       : 0;
 
-  // #83 Slice B — optional e-signature. Validated up front so a malformed one
-  // fails fast (400) before any DB work. Absent ⇒ signature stays null
-  // (backward-compatible with older portal clients).
+  // Required customer e-signature. Validate before any DB work so a missing or
+  // malformed signature cannot advance the quote or write a partial snapshot.
   const sigParse = parseSignature(body.signature, clientIp(req));
   if (!sigParse.ok) {
     return NextResponse.json(

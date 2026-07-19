@@ -28,7 +28,7 @@ import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 // #110 W1-064: shared plain round-to-cents (was copy-pasted here / approve route).
 // Aliased to `round2` so call sites are byte-identical.
-import { roundMoney as round2 } from '@/lib/money';
+import { moneyTimesRate, roundMoney as round2 } from '@/lib/money';
 import type {
   InstallTiming,
   PackageId,
@@ -142,12 +142,12 @@ export function priceSelection(
   // Capped so it never exceeds the subtotal. 0 when no discount applies.
   const discount = Math.min(
     subtotal,
-    round2(subtotal * (charges.discountRate ?? 0) + (charges.discountFlat ?? 0)),
+    round2(moneyTimesRate(subtotal, charges.discountRate ?? 0) + (charges.discountFlat ?? 0)),
   );
   const taxable = subtotal - discount + charges.rushFee + charges.takedown;
-  const tax = round2(taxable * charges.taxRate);
+  const tax = moneyTimesRate(taxable, charges.taxRate);
   const total = round2(taxable + tax);
-  const deposit = round2(total * BUSINESS_RULES.depositPercentage);
+  const deposit = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
   return {
     subtotal,
     discount,

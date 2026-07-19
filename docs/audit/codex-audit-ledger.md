@@ -1,0 +1,31 @@
+# Codex Audit Ledger
+
+## FINDINGS
+
+- CODX-F-001 | 2026-07-18 | Low | confirmed | src/lib/pricing/pricingEngine.ts:900 | Binary floating-point rounds some exact half-cent tax amounts down by one cent.
+- CODX-F-002 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/approve/route.ts:180 | The public approval endpoint accepts a missing e-signature and records signature null.
+- CODX-F-003 | 2026-07-18 | High | confirmed | src/app/api/quotes/[id]/amend/route.ts:231 | A changed booked order requires re-consent, but the customer portal has no re-consent path.
+- CODX-F-004 | 2026-07-18 | Low | confirmed | src/components/quote/QuoteBuilder.tsx:2688 | Customer information labels are not programmatically associated with their inputs.
+- CODX-F-005 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/send/route.ts:491 | The send API and builder report success when every requested customer message fails.
+- CODX-F-006 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/send/route.ts:262 | A zero-line-item quote can be stamped sent even though its customer portal only renders the finalized placeholder.
+- CODX-F-007 | 2026-07-18 | Medium | confirmed | src/app/api/quotes/[id]/amend-consent/route.ts | The amendment consent compare-and-swap passed a JavaScript object to a JSONB equality filter, so a valid customer consent could fail to persist.
+- CODX-F-008 | 2026-07-18 | Low | confirmed | src/components/quote/QuoteBuilder.tsx | Booked quote controls looked interactive even though their handlers were intentionally no-ops.
+- CODX-F-009 | 2026-07-18 | Low | confirmed | src/components/quote/QuoteBuilder.tsx | A booked package heading rendered the ungrammatical phrase `Your The Full Yule`.
+- CODX-F-010 | 2026-07-18 | High | confirmed | src/app/api/quotes/[id]/amend/route.ts | Concurrent booked amendments could overwrite the JSONB amendment trail and lose a financial change.
+- CODX-F-011 | 2026-07-18 | Medium | confirmed | src/lib/portal/adapter.ts | After accepting an amendment, the portal dropped the amendment card and reverted to the original total and deposit.
+- CODX-F-012 | 2026-07-18 | Medium | confirmed | src/lib/pricing/pricingEngine.ts | Percentage discounts, early-install discounts, and 50% deposits still used raw binary floating-point rounding after the tax fix, producing inconsistent half-cent results in the engine and portal projection.
+- CODX-F-013 | 2026-07-19 | High | fixed | src/lib/amend.ts | A trailing zero-dollar amendment could hide pending financial consent, unblock settlement, or revert the portal to the original accepted total.
+- CODX-F-014 | 2026-07-19 | High | fixed | src/app/api/quotes/[id]/free-items/route.ts | The free-item concurrency check was not atomic, so a stale writer could erase a concurrent financial amendment and pricing result.
+- CODX-R-001 | 2026-07-18 | Low | refuted | src/lib/invoices.ts:468 | Proportional tax scaling for a partial selection is exact while one flat tax rate applies to every taxable item.
+- CODX-R-002 | 2026-07-18 | Low | refuted | src/lib/pdf/docModels.ts:286 | The quote PDF using the original approval total is intentional as the signed snapshot; current amendment presentation is covered by CODX-F-003.
+- CODX-R-003 | 2026-07-18 | Low | refuted | src/lib/portal/derivePackages.ts:178 | The order minimum is intentionally checked before discounts so a promotion cannot make an otherwise eligible order unapprovable.
+- CODX-R-004 | 2026-07-18 | High | refuted | src/lib/integrations/valor.ts:345 | The current Valor parser recognizes the live `data.invoice_no` order reference; the older webhook diagnostic comment describing dropped hosted-page deposits is stale.
+- CODX-R-005 | 2026-07-18 | Medium | refuted | src/lib/referral.ts | Supported referral writers cannot attach a pending referral to an `is_test` quote, so the proposed test-quote referral accrual path is not reachable.
+
+## SUGGESTIONS
+
+- CODX-S-001 | 2026-07-18 | implemented | Add a customer amendment comparison and re-sign screen | amendments and customer portal.
+- CODX-S-002 | 2026-07-18 | implemented | Show separate SMS and email delivery receipts with retry actions | quote sending.
+- CODX-S-003 | 2026-07-18 | proposed | Give the customer a durable approval receipt with signer, selection, and money details | approval and trust.
+- CODX-S-004 | 2026-07-18 | proposed | Add a run-scoped QA console that lists and cleans up only one audit run's test quotes | QA safety.
+- CODX-S-005 | 2026-07-18 | proposed | Add a guided first-quote walkthrough for new operators | operator onboarding.

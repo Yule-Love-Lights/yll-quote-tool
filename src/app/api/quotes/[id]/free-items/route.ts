@@ -253,13 +253,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
     amendments: [...freshAmendments, amendment],
   };
-  const { error: upErr } = await sb
+  // Atomically bind the line-item/result write to the exact snapshot we read.
+  // A financial amend or another free-item edit that wins this race changes the
+  // jsonb value, so this stale writer cannot erase its trail or pricing result.
+  const { data: updatedQuotes, error: upErr } = await sb
     .from('quotes')
     .update({ inputs: newInputs, result: newResult, approval_snapshot: newSnapshot })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('approval_snapshot', JSON.stringify(baseSnap))
+    .select('id');
   if (upErr) {
     console.error('[api/quotes/:id/free-items] update failed:', upErr);
     return NextResponse.json({ error: 'Failed to save the change' }, { status: 500 });
+  }
+  if (!updatedQuotes || updatedQuotes.length === 0) {
+    return NextResponse.json(
+      { error: 'The order changed while you were editing — please retry.', code: 'concurrent-edit' },
+      { status: 409 },
+    );
   }
 
   return NextResponse.json({

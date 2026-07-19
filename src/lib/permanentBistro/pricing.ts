@@ -20,6 +20,7 @@ import {
   type QuoteInputs,
   type QuoteResult,
 } from '@/lib/pricing/pricingEngine';
+import { moneyTimesRate, roundMoney } from '@/lib/money';
 import type { PermanentBistroRates } from './types';
 import { DEFAULT_PERMANENT_BISTRO_RATES } from './types';
 
@@ -213,15 +214,15 @@ export function calculatePermanentBistro(
       Number.isFinite(inputs.discount.amount) && inputs.discount.amount > 0 ? inputs.discount.amount : 0;
     discountAmount =
       inputs.discount.type === 'percentage'
-        ? Math.round(subtotalBeforeDiscount * amount * 100) / 100
+        ? moneyTimesRate(subtotalBeforeDiscount, amount)
         : amount;
   }
   const subtotalAfterDiscount = Math.max(0, subtotalBeforeDiscount - discountAmount);
   const taxableAmount = subtotalAfterDiscount;
-  const taxAmount = Math.round(taxableAmount * BUSINESS_RULES.taxRate * 100) / 100;
-  const total = Math.round((taxableAmount + taxAmount) * 100) / 100;
-  const depositAmount = Math.round(total * BUSINESS_RULES.depositPercentage * 100) / 100;
-  const balanceDue = Math.round((total - depositAmount) * 100) / 100;
+  const taxAmount = moneyTimesRate(taxableAmount, BUSINESS_RULES.taxRate);
+  const total = roundMoney(taxableAmount + taxAmount);
+  const depositAmount = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  const balanceDue = roundMoney(total - depositAmount);
 
   return {
     lineItems,

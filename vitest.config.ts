@@ -15,6 +15,6 @@ export default defineConfig({
     // #110 W6-012: exclude nested agent worktrees (.claude/worktrees/**) so a
     // bare `vitest run src` doesn't pick up their duplicated test files. Spread
     // the defaults so node_modules/dist/etc. stay excluded too.
-    exclude: [...configDefaults.exclude, '**/.claude/**'],
+    exclude: [...configDefaults.exclude, '**/.claude/**', 'tests/codex-e2e/**'],
   },
 });

@@ -322,3 +322,16 @@ describe('calculatePermanentBistro — float footage label formatting', () => {
     expect(result.lineItems[0].label).toBe('Permanent Bistro Lighting – 17.4ft');
   });
 });
+
+describe('calculatePermanentBistro — half-cent boundaries', () => {
+  it('rounds 8.75% tax and the deposit half-up from integer money units', () => {
+    const result = calculatePermanentBistro(
+      baseInputs({ customLineItems: [{ label: 'Boundary bistro item', amount: 1002.8 }] }),
+      R,
+    );
+    expect(result.taxAmount).toBe(87.75);
+    expect(result.total).toBe(1090.55);
+    expect(result.depositAmount).toBe(545.28);
+    expect(result.balanceDue).toBe(545.27);
+  });
+});

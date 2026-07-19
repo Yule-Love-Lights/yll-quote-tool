@@ -290,3 +290,16 @@ describe('holiday engine is untouched (both-mode regression)', () => {
     expect(event.subtotalBeforeDiscount).toBe(0);
   });
 });
+
+describe('calculateEventQuote — half-cent boundaries', () => {
+  it('rounds 8.75% tax and the deposit half-up from integer money units', () => {
+    const result = calculateEventQuote(
+      baseInputs({ customLineItems: [{ label: 'Boundary event item', amount: 1002.8 }] }),
+      R,
+    );
+    expect(result.taxAmount).toBe(87.75);
+    expect(result.total).toBe(1090.55);
+    expect(result.depositAmount).toBe(545.28);
+    expect(result.balanceDue).toBe(545.27);
+  });
+});

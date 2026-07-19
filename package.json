@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed-admin": "tsx scripts/seed-admin.ts",
-    "seed-ascend-catalog": "tsx scripts/seed-ascend-catalog.ts"
+    "seed-ascend-catalog": "tsx scripts/seed-ascend-catalog.ts",
+    "test:codex-e2e": "playwright test --config=playwright.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
@@ -27,6 +28,7 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/qrcode": "^1.5.6",

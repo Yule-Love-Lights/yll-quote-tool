@@ -29,6 +29,7 @@ import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
+import { isAmendmentConsentPending, latestConsentAmendment, type AmendmentTrailEntry } from '@/lib/amend';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -64,6 +65,7 @@ type ApprovalSnapshotJson = {
     bullets?: string[];
     version?: number;
   };
+  amendments?: AmendmentTrailEntry[];
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -435,14 +437,23 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     );
   }
   const packageId = (sel?.packageId ?? pickFallbackApprovalPackageId(packages)) as PackageId;
+  const amendment = latestConsentAmendment(snap?.amendments);
+  const acceptedAmendment = amendment?.consent?.status === 'accepted' ? amendment : undefined;
+  // Once re-consent is accepted, the amended total is the durable customer
+  // agreement. Keep the booked portal aligned with billing instead of falling
+  // back to the original approval total after the pending card disappears.
   const totalUsd =
-    typeof sel?.currentTotalUsd === 'number'
-      ? sel.currentTotalUsd
-      : (row.total ?? 0);
+    acceptedAmendment
+      ? acceptedAmendment.new_total
+      : typeof sel?.currentTotalUsd === 'number'
+        ? sel.currentTotalUsd
+        : (row.total ?? 0);
   const depositUsd =
-    typeof sel?.currentDepositUsd === 'number'
-      ? sel.currentDepositUsd
-      : roundMoney(totalUsd * 0.5); // half the total, rounded to CENTS (was whole dollars — a legacy/staff-approved snapshot could show a deposit ~49¢ off)
+    acceptedAmendment
+      ? acceptedAmendment.deposit_applied
+      : typeof sel?.currentDepositUsd === 'number'
+        ? sel.currentDepositUsd
+        : roundMoney(totalUsd * 0.5); // half the total, rounded to CENTS (was whole dollars — a legacy/staff-approved snapshot could show a deposit ~49¢ off)
   return {
     approvedAt: snap?.approvedAt ?? row.customer_approved_at,
     depositPaidAt: row.deposit_paid_at ?? null,
@@ -468,6 +479,21 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
+    ...(() => {
+      return isAmendmentConsentPending(amendment)
+        ? {
+            pendingAmendment: {
+              amendedAt: amendment!.amended_at,
+              reason: amendment!.reason,
+              previousTotalUsd: amendment!.previous_total,
+              newTotalUsd: amendment!.new_total,
+              deltaUsd: amendment!.delta,
+              depositAppliedUsd: amendment!.deposit_applied,
+              newBalanceUsd: amendment!.new_balance,
+            },
+          }
+        : {};
+    })(),
   };
 }
 

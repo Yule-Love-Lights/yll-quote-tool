@@ -87,7 +87,11 @@ type QuoteRow = {
   total: number | null;
   // #107: the saved pricing result carries the "Full Yule" ceiling total; the
   // Bid-Sent card value uses it (falling back to `total` on pre-#107 quotes).
-  result: { total?: number | null; fullYule?: { total?: number | null } | null } | null;
+  result: {
+    total?: number | null;
+    fullYule?: { total?: number | null } | null;
+    lineItems?: Array<{ amount?: number | null }> | null;
+  } | null;
   quote_sent_at: string | null;
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
@@ -106,6 +110,17 @@ type QuoteRow = {
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
 };
+
+export function hasDeliverableQuoteResult(
+  result: QuoteRow['result'],
+): boolean {
+  if (!result || typeof result.total !== 'number' || result.total <= 0) return false;
+  return (
+    Array.isArray(result.lineItems) &&
+    result.lineItems.some((item) => typeof item?.amount === 'number' && item.amount > 0)
+  );
+}
+
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
@@ -131,6 +146,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // the local-send idempotency key (quote_sent_at) from the GHL-stage key so a
   // failed card move can be reconciled without re-stamping/re-messaging.
   const retryGhl = req.nextUrl.searchParams.get('retryGhl') != null;
+  // A delivery-only retry re-sends the requested customer channel(s) for a
+  // locally-sent quote without re-stamping the lifecycle or moving the CRM card.
+  const retryDelivery = req.nextUrl.searchParams.get('retryDelivery') != null;
 
   // Task 10 — Send channel split: accept an optional body { channel?: 'email' | 'sms' | 'both' }.
   // Default is 'both' (back-compat — the admin Send button posts no body).
@@ -217,13 +235,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     retryGhl &&
     quote.ghl_stage_synced_at == null &&
     (currentStatus === 'sent' || currentStatus === 'viewed');
-  if (quote.quote_sent_at && !isGhlRetry && !isResend && !isRevive) {
+  const isDeliveryRetry =
+    !!quote.quote_sent_at &&
+    retryDelivery &&
+    (currentStatus === 'sent' || currentStatus === 'viewed');
+  if (quote.quote_sent_at && !isGhlRetry && !isDeliveryRetry && !isResend && !isRevive) {
     return NextResponse.json({
       ok: true,
       sentAt: quote.quote_sent_at,
       stageUpdated: false,
       alreadySent: true,
     });
+  }
+
+  // Reject a quote whose current portal projection has no priced item. The
+  // portal's finalized placeholder remains defense in depth for historical rows,
+  // but a fresh send must never deliver that dead-end to a customer. GHL-only and
+  // delivery-only retries operate on an already-sent quote and bypass this guard.
+  if (!isGhlRetry && !isDeliveryRetry && !hasDeliverableQuoteResult(quote.result)) {
+    return NextResponse.json(
+      {
+        error: 'Add at least one priced line item and calculate the quote before sending.',
+        code: 'empty-quote',
+      },
+      { status: 409 },
+    );
   }
 
   // Require a linked HighLevel contact for a real (non-test) send. Without one
@@ -249,13 +285,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // On a resend (changes_requested → sent) or a revive (declined/lost → sent)
   // we re-stamp with the current time so the audit trail reflects when the
   // quote was (re-)delivered.
-  const sentAt = (isGhlRetry && !isResend)
+  const sentAt = ((isGhlRetry || isDeliveryRetry) && !isResend)
     ? (quote.quote_sent_at ?? new Date().toISOString())
     : new Date().toISOString();
 
   // Stamp the DB FIRST (fresh send only), before the HL call, so we don't
   // double-fire the stage move on retries. Same pattern as /approve.
-  if (!isGhlRetry) {
+  if (!isGhlRetry && !isDeliveryRetry) {
     // Advance the explicit lifecycle status alongside the timestamp (ledger
     // #83). quote_sent_at stays the idempotency key; status mirrors it so the
     // explicit-status read path agrees with deriveStatus().
@@ -326,6 +362,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // find-or-create → relink → persist sync outcome); the messages keep their own
   // shape. Each task still logs its own failure non-fatally exactly as today.
   const ghlStageChain = async () => {
+    if (isDeliveryRetry) return;
     if (quote.is_test) {
       // Test Quote (#93): simulate the send — never move a real GHL pipeline card.
       // stageUpdated stays false; the sync-outcome write below marks it "synced"
@@ -487,6 +524,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // preserving the original "a; b" concatenation shape.
   const messageError =
     [smsError, emailError].filter(Boolean).join('; ') || undefined;
+  const requestedChannels = isGhlRetry || quote.is_test
+    ? []
+    : [doSms ? 'sms' : null, doEmail ? 'email' : null].filter(
+        (value): value is 'sms' | 'email' => value != null,
+      );
+  const failedChannels = requestedChannels.filter(
+    (requested) => (requested === 'sms' ? !smsSent : !emailSent),
+  );
+  const deliveryAttempted = requestedChannels.length > 0;
+  const everyRequestedDeliveryFailed =
+    deliveryAttempted && failedChannels.length === requestedChannels.length;
+
+  // The local sent stamp is an audit/idempotency record, not proof of delivery.
+  // If every requested channel failed, return a real failure so the builder cannot
+  // claim success. The response preserves locallySent=true and the exact failed
+  // channels so the UI can offer a delivery-only retry without re-stamping or
+  // moving the CRM card.
+  if (everyRequestedDeliveryFailed) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: 'delivery-failed',
+        error: messageError ?? 'No requested customer message was delivered.',
+        locallySent: true,
+        sentAt,
+        smsSent,
+        emailSent,
+        failedChannels,
+        channel,
+        deliveryRetry: isDeliveryRetry,
+      },
+      { status: 502 },
+    );
+  }
 
   return NextResponse.json({
     ok: true,
@@ -499,10 +570,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // the operator UI can distinguish it from a fresh send; ghlSynced lets the
     // UI surface the durable sync state (and offer a retry when false).
     ghlRetry: isGhlRetry,
-    ghlSynced: stageUpdated,
+    deliveryRetry: isDeliveryRetry,
+    ghlSynced: stageUpdated || (isDeliveryRetry && quote.ghl_stage_synced_at != null),
     smsSent,
     emailSent,
     messageError,
+    failedChannels,
     // Task 10 — channel split: echo the resolved channel for observability.
     channel,
     // #116: flags a revive run (declined/lost → sent on the SAME quote) so

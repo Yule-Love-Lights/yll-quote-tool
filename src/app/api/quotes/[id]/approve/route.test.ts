@@ -216,6 +216,7 @@ const validBody = {
   currentTotal: 999999, // tampered — server must ignore
   currentDeposit: 0,
   installDiscountUsd: 999999, // tampered
+  signature: { name: 'Jordan Smith', kind: 'typed' as const, value: 'Jordan Smith' },
 };
 
 beforeEach(() => {
@@ -376,10 +377,10 @@ describe('POST /api/quotes/[id]/approve — discount/waiver/timing/fee branches 
     const snap = updatePayloads[0].approval_snapshot as {
       customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
     };
-    // $1500 - $150 flat = $1350 taxable, +8.75% tax ($118.12, floating-point
-    // rounds 118.125 down) = $1468.12, deposit = $734.06.
-    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1468.12, 2);
-    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(734.06, 2);
+    // $1500 - $150 flat = $1350 taxable, +8.75% tax ($118.125 exact,
+    // rounded half-up to $118.13) = $1468.13, deposit = $734.07.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1468.13, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(734.07, 2);
   });
 
   it('waiveMinimum:true approves a sub-$1,000 selection that would otherwise 400', async () => {
@@ -504,14 +505,16 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
     expect(snap.signature!.value).toBe(dataUrl);
   });
 
-  it('is backward-compatible — no signature field ⇒ signature: null, still 200', async () => {
+  it('rejects a missing signature before any approval write', async () => {
+    const { signature: _signature, ...bodyWithoutSignature } = validBody;
     const { client, updatePayloads } = makeSb(baseQuote());
     sbRef.current = client;
 
-    const res = await POST(makeReq(validBody), { params });
-    expect(res.status).toBe(200);
-    const snap = updatePayloads[0].approval_snapshot as { signature: unknown };
-    expect(snap.signature).toBeNull();
+    const res = await POST(makeReq(bodyWithoutSignature), { params });
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('bad-signature');
+    expect(updatePayloads).toHaveLength(0);
   });
 
   it('rejects a malformed signature (missing name) → 400', async () => {

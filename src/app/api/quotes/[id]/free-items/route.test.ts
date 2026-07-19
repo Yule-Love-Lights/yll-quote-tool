@@ -55,9 +55,15 @@ function emptyInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
 
 type Row = Record<string, unknown>;
 // `single()` serves the initial load; `maybeSingle()` serves the concurrency re-read.
-function makeSb(quote: Row | null, fresh: Row | null = quote) {
+function makeSb(
+  quote: Row | null,
+  fresh: Row | null = quote,
+  updatedRows: unknown[] = [{ id: ID }],
+) {
   const updates: { quotes: Row[] } = { quotes: [] };
+  const eqCalls: Array<[string, unknown]> = [];
   let table = '';
+  let updating = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: (t: string) => {
@@ -66,15 +72,23 @@ function makeSb(quote: Row | null, fresh: Row | null = quote) {
     },
     select: () => b,
     update: (payload: Row) => {
+      updating = true;
       (updates as Record<string, Row[]>)[table].push(payload);
       return b;
     },
-    eq: () => b,
+    eq: (column: string, value: unknown) => {
+      eqCalls.push([column, value]);
+      return b;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
-    then: (resolve: (v: unknown) => void) => resolve({ data: null, error: null }),
+    then: (resolve: (v: unknown) => void) => {
+      const value = updating ? { data: updatedRows, error: null } : { data: null, error: null };
+      updating = false;
+      resolve(value);
+    },
   });
-  return { client: b, updates };
+  return { client: b, updates, eqCalls };
 }
 
 function approvedQuote(overrides: Row = {}) {
@@ -284,6 +298,21 @@ describe('POST /api/quotes/[id]/free-items', () => {
     expect(res.status).toBe(200);
     expect(body.alreadyPresent).toBe(true);
     expect(updates.quotes).toHaveLength(0); // no write on a no-op
+  });
+
+  it('409s an atomic compare-and-swap loss instead of overwriting a concurrent amendment', async () => {
+    const quote = approvedQuote();
+    const { client, updates, eqCalls } = makeSb(quote, quote, []);
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'add', label: 'Free spritzers' }), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('concurrent-edit');
+    expect(updates.quotes).toHaveLength(1);
+    expect(eqCalls).toContainEqual([
+      'approval_snapshot',
+      JSON.stringify(quote.approval_snapshot),
+    ]);
   });
 
   it('409s when trying to remove a priced (non-$0) line', async () => {

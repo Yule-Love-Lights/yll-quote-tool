@@ -17,10 +17,13 @@
 // request-changes (QuoteResponseModal) / interested (StickyBottomBar). Note: a
 // quote's `send` sub-route is the OPERATOR action and is intentionally NOT here.
 // 'simulate-deposit' (#81 W6-008) is the anonymous portal's TEST-quote deposit
-// simulator (DepositCheckout.tsx) — the route itself re-verifies is_test===true
+// simulator (DepositCheckout.tsx) — amend-consent records a signature only on
+// the latest pending booked amendment; the route validates the quote and compare-
+// and-swaps the snapshot. simulate-deposit itself re-verifies is_test===true
 // before doing anything, so allowlisting it here only ever affects test rows.
 const PUBLIC_QUOTE_SUBROUTES = new Set([
   'approve',
+  'amend-consent',
   'pay',
   'pay-balance', // customer pays the remaining 50% balance (#83 pay-link)
   'view',

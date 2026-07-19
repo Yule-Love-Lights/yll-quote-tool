@@ -25,13 +25,15 @@ export type CapturedSignature = {
 type Props = {
   /** Fires whenever the signature becomes valid/invalid. null ⇒ not yet signed. */
   onChange: (sig: CapturedSignature | null) => void;
+  /** Override when more than one signing surface can exist on a page. */
+  inputId?: string;
 };
 
 // Bug fix (PS-D6): a single character was accepted as a legal e-signature.
 // Mirrors the server-side minimum in approve/route.ts's parseSignature.
 const SIGNATURE_NAME_MIN = 2;
 
-export function SignaturePad({ onChange }: Props) {
+export function SignaturePad({ onChange, inputId = 'sig-name' }: Props) {
   const [name, setName] = useState('');
 
   // Emit the typed signature (or null while the name is too short) on every change.
@@ -42,11 +44,11 @@ export function SignaturePad({ onChange }: Props) {
 
   return (
     <div className="mt-4">
-      <label htmlFor="sig-name" className="block text-[13px] text-[#A89F87] mb-1.5">
+      <label htmlFor={inputId} className="block text-[13px] text-[#A89F87] mb-1.5">
         Type your full name to sign
       </label>
       <input
-        id="sig-name"
+        id={inputId}
         type="text"
         value={name}
         onChange={(e) => setName(e.target.value)}

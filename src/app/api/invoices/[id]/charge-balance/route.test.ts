@@ -204,6 +204,22 @@ describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement
     expect(chargeMock).not.toHaveBeenCalled();
   });
 
+  it('still blocks when a cosmetic amendment follows the pending increase', async () => {
+    sbRef.current = makeSb({
+      ...QUOTE,
+      approval_snapshot: {
+        amendments: [
+          { delta: 500, new_total: 6000, consent: { status: 'pending' } },
+          { delta: 0, previous_total: 6000, new_total: 6000 },
+        ],
+      },
+    });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('reconsent-required');
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
   it('succeeds with an operator override in the body', async () => {
     sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
     const res = await POST(req({ overrideReconsent: true }), ctx());
@@ -214,6 +230,32 @@ describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement
   it('succeeds with an operator override via the ?override=true query param', async () => {
     sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
     const res = await POST(req(undefined, 'override=true'), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('allows settlement after the customer signed the latest price increase', async () => {
+    sbRef.current = makeSb({
+      ...QUOTE,
+      approval_snapshot: {
+        amendments: [{
+          delta: 500,
+          new_total: 6000,
+          consent: {
+            status: 'accepted',
+            accepted_at: '2026-07-18T12:00:00.000Z',
+            signature: {
+              name: 'Jordan Smith',
+              kind: 'typed',
+              value: 'Jordan Smith',
+              signed_at: '2026-07-18T12:00:00.000Z',
+              ip: null,
+            },
+          },
+        }],
+      },
+    });
+    const res = await POST(req({}), ctx());
     expect(res.status).toBe(200);
     expect(chargeMock).toHaveBeenCalled();
   });

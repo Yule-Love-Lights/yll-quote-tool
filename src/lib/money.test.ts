@@ -3,7 +3,7 @@
 // rounding at the call sites that switched to it).
 
 import { describe, it, expect } from 'vitest';
-import { roundMoney, roundMoneyGuarded } from './money';
+import { moneyTimesRate, roundMoney, roundMoneyGuarded } from './money';
 
 describe('roundMoneyGuarded (invoice/amend/balance variant)', () => {
   it('rounds to cents', () => {
@@ -33,5 +33,17 @@ describe('roundMoney (portal/approve variant)', () => {
   it('does NOT guard non-finite inputs (call sites validate upstream)', () => {
     expect(roundMoney(NaN)).toBeNaN();
     expect(roundMoney(Infinity)).toBe(Infinity);
+  });
+});
+
+
+describe('moneyTimesRate', () => {
+  it('rounds an exact half-cent up after decimal rate multiplication', () => {
+    expect(moneyTimesRate(1002.8, 0.0875)).toBe(87.75);
+  });
+
+  it('keeps ordinary below-half and above-half results unchanged', () => {
+    expect(moneyTimesRate(1000, 0.0875)).toBe(87.5);
+    expect(moneyTimesRate(850, 0.0875)).toBe(74.38);
   });
 });

@@ -5,6 +5,7 @@ import {
   amendedQuoteStatus,
   AMEND_RECONSENT_STATUS,
   latestAmendment,
+  latestConsentAmendment,
   blocksSettlement,
   type AmendmentTrailEntry,
 } from './amend';
@@ -205,6 +206,55 @@ describe('latestAmendment — trail lookup (WT-18 settlement gate)', () => {
   });
 });
 
+describe('latestConsentAmendment — consent survives cosmetic trail entries', () => {
+  it('returns the newest total-changing entry instead of a later cosmetic entry', () => {
+    const financial = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    financial.consent = { status: 'pending' };
+    const cosmetic = computeAmendment({
+      previousTotal: 6000,
+      depositPaid: financial.deposit_applied,
+      previousBalance: financial.new_balance,
+      newTotal: 6000,
+      by: 'staff:naldo',
+      reason: 'added free spritzers',
+    });
+
+    expect(latestAmendment([financial, cosmetic])).toBe(cosmetic);
+    expect(latestConsentAmendment([financial, cosmetic])).toBe(financial);
+  });
+
+  it('returns null when the trail contains only cosmetic entries', () => {
+    const cosmetic = computeAmendment({ ...bookedBase(), newTotal: 5000 });
+    expect(latestConsentAmendment([cosmetic])).toBeNull();
+    expect(latestConsentAmendment([])).toBeNull();
+  });
+
+  it('keeps an accepted financial amendment accepted after a cosmetic edit', () => {
+    const financial = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    financial.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-18T12:00:00.000Z',
+      signature: {
+        name: 'Jordan Smith',
+        kind: 'typed',
+        value: 'Jordan Smith',
+        signed_at: '2026-07-18T12:00:00.000Z',
+        ip: null,
+      },
+    };
+    const cosmetic = computeAmendment({
+      previousTotal: 6000,
+      depositPaid: financial.deposit_applied,
+      previousBalance: financial.new_balance,
+      newTotal: 6000,
+      by: 'staff:naldo',
+      reason: 'added free spritzers',
+    });
+
+    expect(blocksSettlement(latestConsentAmendment([financial, cosmetic]))).toBe(false);
+  });
+});
+
 describe('blocksSettlement — WT-18 re-consent settlement gate', () => {
   it('blocks a price-INCREASING amendment', () => {
     const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
@@ -234,6 +284,31 @@ describe('blocksSettlement — WT-18 re-consent settlement gate', () => {
   it('does NOT block when there is no amendment at all (null/undefined)', () => {
     expect(blocksSettlement(null)).toBe(false);
     expect(blocksSettlement(undefined)).toBe(false);
+  });
+});
+
+describe('amendment consent — booked re-sign flow', () => {
+  it('treats an unsigned historical or pending amendment as awaiting consent', () => {
+    const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    expect(blocksSettlement(inc)).toBe(true);
+    expect(amendedQuoteStatus(inc, 'booked')).toBe('changes_requested');
+  });
+
+  it('releases settlement and preserves booked status after customer consent', () => {
+    const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    inc.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-18T12:00:00.000Z',
+      signature: {
+        name: 'Jordan Smith',
+        kind: 'typed',
+        value: 'Jordan Smith',
+        signed_at: '2026-07-18T12:00:00.000Z',
+        ip: null,
+      },
+    };
+    expect(blocksSettlement(inc)).toBe(false);
+    expect(amendedQuoteStatus(inc, 'booked')).toBe('booked');
   });
 });
 

@@ -4,6 +4,7 @@
 import type { PermanentQuoteFields, PermanentRates } from '@/lib/permanent/types';
 import type { EventRates, EventInputFields } from '@/lib/event/types';
 import type { PermanentBistroRates, PermanentBistroInputFields } from '@/lib/permanentBistro/types';
+import { moneyTimesRate, roundMoney } from '@/lib/money';
 
 // ─────────────────────────────────────────────────────────
 // Business rules — the ONLY place adjustable numbers live
@@ -867,7 +868,7 @@ export function computeTotalsTail(
         ? inputs.discount.amount
         : 0;
     discountAmount = inputs.discount.type === 'percentage'
-      ? Math.round(subtotalBeforeDiscount * amount * 100) / 100
+      ? moneyTimesRate(subtotalBeforeDiscount, amount)
       : amount;
   }
 
@@ -883,7 +884,7 @@ export function computeTotalsTail(
         ? BUSINESS_RULES.earlyInstallDiscounts.october
         : 0;
   const earlyInstallDiscountAmount =
-    Math.round(subtotalBeforeDiscount * earlyInstallRate * 100) / 100;
+    moneyTimesRate(subtotalBeforeDiscount, earlyInstallRate);
 
   // Clamp at 0: an over-large manual discount and/or early-install promo must
   // never drive the item subtotal — and therefore the total/deposit — negative.
@@ -897,10 +898,10 @@ export function computeTotalsTail(
   const takedownAmount = inputs.takedown === 'premium' ? BUSINESS_RULES.premiumTakedownFee : 0;
 
   const taxableAmount = subtotalAfterDiscount + rushFeeAmount + takedownAmount;
-  const taxAmount = Math.round(taxableAmount * BUSINESS_RULES.taxRate * 100) / 100;
-  const total = Math.round((taxableAmount + taxAmount) * 100) / 100;
-  const depositAmount = Math.round(total * BUSINESS_RULES.depositPercentage * 100) / 100;
-  const balanceDue = Math.round((total - depositAmount) * 100) / 100;
+  const taxAmount = moneyTimesRate(taxableAmount, BUSINESS_RULES.taxRate);
+  const total = roundMoney(taxableAmount + taxAmount);
+  const depositAmount = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  const balanceDue = roundMoney(total - depositAmount);
 
   return {
     discountAmount,

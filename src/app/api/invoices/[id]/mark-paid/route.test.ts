@@ -163,6 +163,22 @@ describe('POST /api/invoices/[id]/mark-paid — WT-18 re-consent settlement gate
     expect(markInvoicePaidManually).not.toHaveBeenCalled();
   });
 
+  it('still blocks when a cosmetic amendment follows the pending increase', async () => {
+    sbRef.current = makeSb({
+      approval_snapshot: {
+        amendments: [
+          { delta: 500, new_total: 6000, consent: { status: 'pending' } },
+          { delta: 0, previous_total: 6000, new_total: 6000 },
+        ],
+      },
+      status: 'booked',
+    });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('reconsent-required');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
   it('succeeds with an operator override in the body', async () => {
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
     const res = await POST(req({ overrideReconsent: true }), ctx());

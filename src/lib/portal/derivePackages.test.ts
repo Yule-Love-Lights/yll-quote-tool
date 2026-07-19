@@ -279,7 +279,7 @@ describe('priceSelection — real price, no $1,000 floor (#18)', () => {
     expect(p.rushFee).toBe(150);
     expect(p.takedown).toBe(150);
     expect(p.taxable).toBe(2300);
-    expect(p.total).toBe(2498.37); // 2300 * 1.08625, rounded to cents
+    expect(p.total).toBe(2498.38); // $198.375 tax rounds half-up to $198.38
   });
 
   it('Subtotal + fees + Tax tie out to the Total (so the breakdown is honest)', () => {
@@ -536,5 +536,31 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
   it('passes through a discount rate and a flat discount', () => {
     expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15, discountFlat: 0 });
     expect(effectiveCharges(config, false, false, 0, 100)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 100 });
+  });
+});
+
+
+describe('priceSelection — exact half-cent percentage rounding', () => {
+  it('matches the pricing engine at the $1,002.80 × 8.75% boundary', () => {
+    const p = priceSelection(1002.8, { rushFee: 0, takedown: 0, taxRate: 0.0875 });
+    expect(p.tax).toBe(87.75);
+    expect(p.total).toBe(1090.55);
+    expect(p.deposit).toBe(545.28);
+  });
+
+  it('rounds percentage discounts on the same cent boundary as the engine', () => {
+    expect(priceSelection(1281.05, {
+      rushFee: 0, takedown: 0, taxRate: 0.0875, discountRate: 0.1,
+    }).discount).toBe(128.11);
+    expect(priceSelection(1000.1, {
+      rushFee: 0, takedown: 0, taxRate: 0.0875, discountRate: 0.15,
+    }).discount).toBe(150.02);
+  });
+
+  it('rounds an odd-cent 50% deposit up instead of losing a cent', () => {
+    const p = priceSelection(1000.08, { rushFee: 0, takedown: 0, taxRate: 0.0875 });
+    expect(p.tax).toBe(87.51);
+    expect(p.total).toBe(1087.59);
+    expect(p.deposit).toBe(543.8);
   });
 });

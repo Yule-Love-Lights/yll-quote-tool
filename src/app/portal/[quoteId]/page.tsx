@@ -24,6 +24,7 @@ import { InteractiveHero } from '@/components/portal/snowglobe/InteractiveHero';
 import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo';
 import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
 import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
+import { AmendmentConsentCard } from '@/components/portal/snowglobe/AmendmentConsentCard';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
 import { LightColorPicker } from '@/components/portal/dark/LightColorPicker';
@@ -314,6 +315,9 @@ export default async function PortalPage({
           approvedAt={quote.approval?.approvedAt}
           depositFlow={checkoutEnabled || !!quote.isTest}
         />
+      )}
+      {quote.approval?.pendingAmendment && (
+        <AmendmentConsentCard quoteId={quoteId} amendment={quote.approval.pendingAmendment} />
       )}
       <SelectionProvider
         quoteId={quoteId}

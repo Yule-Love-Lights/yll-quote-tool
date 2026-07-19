@@ -23,6 +23,19 @@ export function roundMoneyGuarded(n: number): number {
 // Plain round-to-cents (portal/approve variant). Used by derivePackages.ts and
 // the approve route, whose inputs are validated upstream and which must mirror
 // the pricing engine's own Math.round(x * 100) / 100.
+// Multiply a currency amount by a decimal rate without letting binary floating-
+// point move an exact half-cent below the rounding boundary. Both operands are
+// converted to integers first: cents for the amount, millionths for the rate.
+// One millionth supports rates through four decimal places (including 8.75%)
+// with room for future local-rate precision. Quote-sized values stay well below
+// Number.MAX_SAFE_INTEGER during the multiplication.
+export function moneyTimesRate(amountUsd: number, rate: number): number {
+  if (!Number.isFinite(amountUsd) || !Number.isFinite(rate)) return NaN;
+  const amountCents = Math.round(amountUsd * 100);
+  const rateMillionths = Math.round(rate * 1_000_000);
+  return Math.round((amountCents * rateMillionths) / 1_000_000) / 100;
+}
+
 export function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }

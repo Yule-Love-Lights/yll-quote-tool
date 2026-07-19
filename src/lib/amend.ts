@@ -57,6 +57,18 @@ export type AmendmentLineItemChange = {
  * agreement; this is the versioned trail of what changed after (SPEC §4.4). A
  * plain serializable object (safe to JSON-store as jsonb).
  */
+export type AmendmentConsentSignature = {
+  name: string;
+  kind: 'typed' | 'drawn';
+  value: string;
+  signed_at: string;
+  ip: string | null;
+};
+
+export type AmendmentConsent =
+  | { status: 'pending' }
+  | { status: 'accepted'; accepted_at: string; signature: AmendmentConsentSignature };
+
 export type AmendmentTrailEntry = {
   amended_at: string; // ISO 8601
   by: string; // operator identity (e.g. 'staff:naldo') — supplied by the caller
@@ -77,6 +89,10 @@ export type AmendmentTrailEntry = {
   // Absent on a normal amendment.
   credit_note?: number;
   overpayment?: boolean;
+  // Total-changing amendments start pending. The public portal replaces this
+  // with an accepted, server-stamped signature without changing booked status.
+  // Missing on historical entries means pending for backward compatibility.
+  consent?: AmendmentConsent;
 };
 
 export type ComputeAmendmentInput = {
@@ -204,7 +220,7 @@ export function amendedQuoteStatus(
   amendment: AmendmentTrailEntry,
   currentStatus: QuoteStatus,
 ): QuoteStatus {
-  return requiresReconsent(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
+  return isAmendmentConsentPending(amendment) ? AMEND_RECONSENT_STATUS : currentStatus;
 }
 
 /**
@@ -217,6 +233,23 @@ export function latestAmendment(
 ): AmendmentTrailEntry | null {
   if (!Array.isArray(amendments) || amendments.length === 0) return null;
   return amendments[amendments.length - 1];
+}
+
+/**
+ * Return the newest total-changing amendment, ignoring later cosmetic entries.
+ *
+ * Consent belongs to the latest price change, not necessarily the final audit
+ * entry. A later zero-dollar scope edit must not hide pending consent, unblock
+ * settlement, or make an accepted amended total disappear from the portal.
+ */
+export function latestConsentAmendment(
+  amendments: AmendmentTrailEntry[] | null | undefined,
+): AmendmentTrailEntry | null {
+  if (!Array.isArray(amendments)) return null;
+  for (let index = amendments.length - 1; index >= 0; index -= 1) {
+    if (requiresReconsent(amendments[index])) return amendments[index];
+  }
+  return null;
 }
 
 /**
@@ -237,8 +270,18 @@ export function latestAmendment(
  * requiresReconsent) AND it is a positive delta (the customer owes MORE than
  * the last total they're on record as having agreed to).
  */
+export function isAmendmentConsentPending(
+  amendment: AmendmentTrailEntry | null | undefined,
+): boolean {
+  return (
+    !!amendment &&
+    requiresReconsent(amendment) &&
+    amendment.consent?.status !== 'accepted'
+  );
+}
+
 export function blocksSettlement(amendment: AmendmentTrailEntry | null | undefined): boolean {
-  return !!amendment && requiresReconsent(amendment) && amendment.delta > 0;
+  return !!amendment && isAmendmentConsentPending(amendment) && amendment.delta > 0;
 }
 
 // #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The

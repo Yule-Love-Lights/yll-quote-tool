@@ -192,6 +192,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Every real total change gets an explicit pending-consent marker. Historical
+  // entries without this field are still treated as pending by amend.ts, but new
+  // writes are self-describing for the portal and settlement gates.
+  if (requiresReconsent(amendment)) {
+    amendment.consent = { status: 'pending' };
+  }
+
   // No real price change → guide the operator to re-price in the builder first
   // (this MVP records the financial delta; line-level edits happen in the builder).
   if (Math.abs(amendment.delta) < 0.005) {
@@ -205,13 +212,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Concurrency guard (review HIGH): re-read the snapshot immediately before the
-  // write and abort if the amendments trail grew since our initial read. This
-  // narrows the read-modify-write window on the auditable financial trail. A FULLY
-  // atomic append would be a Postgres RPC (jsonb concat) — flagged for Jason's data
-  // layer; `quotes` has no updated_at trigger to optimistic-lock on. The realistic
-  // double-click/retry is already blocked by the no-change 409 above + the UI
-  // disabling the button mid-request.
+  // Re-read immediately before the write for a fast conflict response. The
+  // update below also compare-and-swaps the serialized full snapshot, which closes
+  // the remaining window where two requests could both pass this length check and
+  // the last writer would erase the other financial trail entry.
   const { data: fresh } = await sb
     .from('quotes')
     .select('approval_snapshot')
@@ -233,14 +237,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // NOT by overloading the quote status: booked→changes_requested is not a legal
   // transition (quoteStatus.ts) and would make a paid order read as a change-request
   // everywhere deriveStatus() is used (review HIGH ×3).
-  const newSnapshot = { ...(fresh?.approval_snapshot ?? snap), amendments: [...freshAmendments, amendment] };
-  const { error: upErr } = await sb
+  const priorSnapshot = fresh?.approval_snapshot ?? snap;
+  const newSnapshot = { ...priorSnapshot, amendments: [...freshAmendments, amendment] };
+  const { data: updatedQuotes, error: upErr } = await sb
     .from('quotes')
     .update({ approval_snapshot: newSnapshot })
-    .eq('id', id);
+    .eq('id', id)
+    // PostgREST string-interpolates filter values. Serialize jsonb explicitly;
+    // passing the object would produce "[object Object]" and never match.
+    .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+    .select('id');
   if (upErr) {
     console.error('[api/quotes/:id/amend] snapshot update failed:', upErr);
     return NextResponse.json({ error: 'Failed to record the amendment' }, { status: 500 });
+  }
+  if (!updatedQuotes || updatedQuotes.length === 0) {
+    return NextResponse.json(
+      { error: 'The order changed while you were amending — please retry.', code: 'concurrent-amend' },
+      { status: 409 },
+    );
   }
 
   // Re-sync the linked invoice (if the job was completed) to the re-priced totals,

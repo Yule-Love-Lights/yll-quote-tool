@@ -533,8 +533,8 @@ describe('calculateQuote — minimum, fees, tax, deposit', () => {
     expect(r.taxableAmount).toBe(2342); // 2042 + 150 + 150
     expect(r.taxAmount).toBe(204.93);
     expect(r.total).toBe(2546.93);
-    expect(r.depositAmount).toBe(1273.46);
-    expect(r.balanceDue).toBe(1273.47);
+    expect(r.depositAmount).toBe(1273.47);
+    expect(r.balanceDue).toBe(1273.46);
   });
 });
 
@@ -971,5 +971,43 @@ describe('calculateQuote — "Full Yule" ceiling figures (#107)', () => {
     expect(r.discountAmount).toBe(100);          // 10% of 1000
     expect(r.fullYule?.discountAmount).toBe(140); // 10% of 1400
     expect(r.fullYule?.total).toBe(1370.25);      // (1400 − 140) × 1.0875
+  });
+});
+
+
+describe('calculateQuote — exact half-cent percentage rounding', () => {
+  it('rounds $1,002.80 at 8.75% to $87.75 tax', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Half-cent boundary', amount: 1002.8 }],
+    }));
+    expect(r.taxAmount).toBe(87.75);
+    expect(r.total).toBe(1090.55);
+    expect(r.depositAmount).toBe(545.28);
+  });
+
+  it('rounds an odd-cent 50% deposit up instead of losing a cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Deposit boundary', amount: 1000.08 }],
+    }));
+    expect(r.taxAmount).toBe(87.51);
+    expect(r.total).toBe(1087.59);
+    expect(r.depositAmount).toBe(543.8);
+    expect(r.balanceDue).toBe(543.79);
+  });
+
+  it('rounds a manual percentage discount at an exact half-cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Discount boundary', amount: 1281.05 }],
+      discount: { type: 'percentage', amount: 0.1 },
+    }));
+    expect(r.discountAmount).toBe(128.11);
+  });
+
+  it('rounds the September percentage discount at an exact half-cent', () => {
+    const r = calculateQuote(emptyInputs({
+      customLineItems: [{ label: 'Early-install boundary', amount: 1000.1 }],
+      installTiming: 'september',
+    }));
+    expect(r.earlyInstallDiscountAmount).toBe(150.02);
   });
 });
