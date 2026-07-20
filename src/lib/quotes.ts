@@ -452,6 +452,16 @@ export type QuoteRaw = {
       customPattern?: string[];
       [key: string]: unknown;
     };
+    // #163 — a booked customer's requested colour change awaiting staff review
+    // (written by color-change-request/route.ts; cleared by color-change-apply/
+    // route.ts on apply or dismiss). Absent when there's no pending request.
+    pendingColorRequest?: {
+      colorSchemeId: string;
+      customPattern: string[];
+      colorIds: string[] | null;
+      label: string;
+      requestedAt: string;
+    };
     [key: string]: unknown;
   } | null;
   // Explicit lifecycle status + display number (ledger #83 Phase 1). NULL on

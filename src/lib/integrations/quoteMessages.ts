@@ -660,3 +660,25 @@ export function lowStockEmailHtml(rows: LowStockEmailRow[]): string {
     `<p style="color:#666;font-size:12px;">Generate a purchase order in the tool: /inventory/orders</p>`,
   ].join('\n');
 }
+
+// ─── Colour change applied (ledger #163, staff apply half) ──────────────────
+// Fired (best-effort) when staff APPLY a booked customer's requested colour
+// change (color-change-apply/route.ts) — confirms the new colour is locked in
+// for the install. NOT sent on a dismiss (nothing changed for the customer).
+
+export const COLOR_CHANGE_APPLIED_EMAIL_SUBJECT = 'Your colour change is confirmed';
+
+export function colorChangeAppliedSmsBody(label: string): string {
+  return `Yule Love Lights: your light colour change to ${label} is confirmed! It will be reflected on your install.`;
+}
+
+export function colorChangeAppliedEmailHtml(firstName: string, label: string): string {
+  const name = escapeHtml(firstName);
+  const safeLabel = escapeHtml(label);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>Your light colour change to <strong>${safeLabel}</strong> is confirmed! It will be reflected on your install.</p>`,
+    `<p>Questions? Just reply here or text/call us, we're happy to help!</p>`,
+    `<p>Warm wishes,<br>Yule Love Lights team</p>`,
+  ].join('\n');
+}

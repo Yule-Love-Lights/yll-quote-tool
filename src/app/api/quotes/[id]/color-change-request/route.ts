@@ -120,10 +120,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requestedAt: new Date().toISOString(),
   };
   const newSnapshot = { ...quote.approval_snapshot, pendingColorRequest };
-  const { error: upErr } = await sb.from('quotes').update({ approval_snapshot: newSnapshot }).eq('id', id);
+  // Atomically bind the write to the exact snapshot we read (same race class
+  // #580's F-014 fixed in free-items/route.ts): a concurrent amendment / staff
+  // edit that lands between our read and this write changes the jsonb value,
+  // so a stale writer here can't silently clobber it. Zero updated rows means
+  // we lost the race — 409 and ask the customer to retry rather than overwrite
+  // whatever just landed.
+  const { data: updatedQuotes, error: upErr } = await sb
+    .from('quotes')
+    .update({ approval_snapshot: newSnapshot })
+    .eq('id', id)
+    .eq('approval_snapshot', JSON.stringify(quote.approval_snapshot))
+    .select('id');
   if (upErr) {
     console.error('[api/quotes/:id/color-change-request] save failed:', upErr);
     return NextResponse.json({ error: 'Could not record your request' }, { status: 500 });
+  }
+  if (!updatedQuotes || updatedQuotes.length === 0) {
+    return NextResponse.json(
+      { error: 'This order changed just now — please try again.', code: 'concurrent-edit' },
+      { status: 409 },
+    );
   }
 
   // Notify staff via the unified inbox (best-effort — the request is already

@@ -34,20 +34,34 @@ const req = (body: unknown) =>
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null) {
+// `single()` serves the initial load; the final `.update().eq().eq().select()`
+// CAS chain is awaited as a thenable (mirrors free-items/route.test.ts's
+// harness) — `updatedRows` controls how many rows the atomic write "affects".
+function makeSb(quote: Row | null, updatedRows: unknown[] = [{ id: ID }]) {
   const updates: Row[] = [];
+  const eqCalls: Array<[string, unknown]> = [];
+  let updating = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
     select: () => b,
     update: (payload: Row) => {
+      updating = true;
       updates.push(payload);
       return b;
     },
-    eq: () => b,
+    eq: (column: string, value: unknown) => {
+      eqCalls.push([column, value]);
+      return b;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    then: (resolve: (v: unknown) => void) => {
+      const value = updating ? { data: updatedRows, error: null } : { data: null, error: null };
+      updating = false;
+      resolve(value);
+    },
   });
-  return { client: b, updates };
+  return { client: b, updates, eqCalls };
 }
 
 function bookedQuote(overrides: Row = {}) {
@@ -126,5 +140,19 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
     expect(res.status).toBe(200);
     expect(updates).toHaveLength(1); // the request was still recorded
+  });
+
+  it('409s an atomic compare-and-swap loss instead of overwriting a concurrent edit', async () => {
+    const quote = bookedQuote();
+    const { client, updates, eqCalls } = makeSb(quote, []);
+    sbRef.current = client;
+
+    const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('concurrent-edit');
+    expect(updates).toHaveLength(1);
+    expect(eqCalls).toContainEqual(['approval_snapshot', JSON.stringify(quote.approval_snapshot)]);
+    // the inbox is never pinged for a request that lost the race
+    expect(ingestTouchMock).not.toHaveBeenCalled();
   });
 });

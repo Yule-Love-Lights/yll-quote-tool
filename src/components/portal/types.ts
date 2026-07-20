@@ -126,6 +126,11 @@ export type PortalApproval = {
   installTiming: InstallTiming; // #40 — Sep/Oct early-install choice (or 'none')
   rushSelected: boolean;        // #4 — rush-install add-on chosen (frozen at approval)
   takedownSelected: boolean;    // #4 — premium (before-Jan-9) takedown chosen
+  // #163 — the FROZEN light colour on the order (#10 approved choice, or a
+  // staff-applied colour change). The booked portal opens its picker/render on
+  // this. Optional/back-compat: older snapshots predate the colour freeze.
+  colorSchemeId?: string;
+  customPattern?: string[];
   // #88 P6b-2 — the permanent "Your Protection" warranty copy + version the
   // customer agreed to, frozen at approval. null for non-permanent quotes or
   // older snapshots; the portal then renders the LIVE settings copy instead.

@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
+import { PendingColorRequestCard } from '@/components/admin/PendingColorRequestCard';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
@@ -117,6 +118,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // normal (non-rebook) quote — the line simply doesn't render.
   const chosenLightColor =
     quote.legacy_rebook ? chosenLightColorLabel(quote.approval_snapshot?.customerSelection) : null;
+
+  // #163 — a booked customer's requested colour change awaiting staff review.
+  // null unless the portal's "Request colour change" wrote one to the snapshot.
+  const pendingColorRequest = quote.approval_snapshot?.pendingColorRequest ?? null;
 
   // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
   // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials
@@ -297,6 +302,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
         {/* Free items (#162) — add/remove $0 items on an approved order. */}
         {canEditFreeItems && <FreeItemsPanel quoteId={id} items={freeItems} />}
+
+        {/* Pending colour change request (#163) — staff apply/dismiss a booked
+            customer's requested colour change. */}
+        {pendingColorRequest && <PendingColorRequestCard quoteId={id} request={pendingColorRequest} />}
 
         {/* Permanent BOM (#88 P7) — operator ordering material list + wholesale cost. */}
         {bom && (
