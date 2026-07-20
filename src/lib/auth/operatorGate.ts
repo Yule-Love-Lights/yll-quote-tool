@@ -146,9 +146,16 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // /api/leads/partial is the abandoned-form sibling (#leads partial-save): the
   // same embed fires it on contact-field blur and on page-leave, from the same
   // cross-origin WordPress page, and it self-gates the same way (honeypot +
-  // per-IP rate limit + a required contact handle). Shipping it without this
-  // entry default-denied every real visitor's partial with a 401 — invisible in
-  // testing because an operator's own session passes the gate (S42).
+  // per-IP call/insert caps + a required contact handle). Shipping it without
+  // this entry default-denied every real visitor's partial with a 401 —
+  // invisible in testing because an operator's own session passes the gate (S42).
+  // NOTE the preflight rationale above is /api/leads-specific: that form POSTs
+  // application/json, which forces an OPTIONS preflight. The partial capture
+  // posts text/plain (fetch AND sendBeacon), a CORS-SIMPLE request that is never
+  // preflighted, so OPTIONS is not load-bearing here. It is allowed anyway, to
+  // stay consistent with its sibling and to avoid a mystery 401 if the payload
+  // ever moves to application/json — the handler only echoes CORS headers and
+  // touches neither the database nor GHL.
   if (path === '/api/leads' || path === '/api/leads/partial') {
     const m = method.toUpperCase();
     if (m === 'POST' || m === 'OPTIONS') return true;
