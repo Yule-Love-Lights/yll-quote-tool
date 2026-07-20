@@ -7,10 +7,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { sbRef, requireOperatorMock, getOperatorMock } = vi.hoisted(() => ({
+const { sbRef, requireOperatorMock, getOperatorMock, sendSmsMock, sendEmailMock, hlConfiguredRef } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   getOperatorMock: vi.fn(async (): Promise<unknown> => ({ name: 'naldo' })),
+  sendSmsMock: vi.fn(async (): Promise<unknown> => ({})),
+  sendEmailMock: vi.fn(async (): Promise<unknown> => ({})),
+  // Default false so every pre-notify test runs exactly as before (no sends).
+  hlConfiguredRef: { current: false },
+}));
+
+vi.mock('@/lib/integrations/highlevel', () => ({
+  isHighLevelConfigured: () => hlConfiguredRef.current,
+  sendSms: sendSmsMock,
+  sendEmail: sendEmailMock,
+  HighLevelError: class HighLevelError extends Error {},
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -112,6 +123,7 @@ beforeEach(() => {
   requireOperatorMock.mockResolvedValue(null);
   getOperatorMock.mockResolvedValue({ name: 'naldo' });
   sbRef.current = null;
+  hlConfiguredRef.current = false;
 });
 
 describe('POST /api/quotes/[id]/apply-color-request', () => {
@@ -244,5 +256,67 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     // rather than letting a stale colour be frozen.
     const casValues = eqCalls.filter(([c]) => c === 'approval_snapshot').map(([, v]) => v);
     expect(casValues).toContain(JSON.stringify(q.approval_snapshot));
+  });
+
+  // ── #163 notify-on-apply (owner decision: apply notifies, dismiss is silent) ─
+  it('APPLY notifies the customer by SMS + email on a real quote', async () => {
+    hlConfiguredRef.current = true;
+    const { client } = makeSb(
+      bookedQuote({ customer_name: 'Jordan Smith', highlevel_contact_id: 'hl-1', is_test: false }),
+    );
+    sbRef.current = client;
+    const res = await POST(req({ action: 'apply' }), ctx());
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.smsSent).toBe(true);
+    expect(body.emailSent).toBe(true);
+    expect(sendSmsMock).toHaveBeenCalledOnce();
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+    const [sms] = (sendSmsMock.mock.calls as unknown as Array<[{ contactId: string; message: string }]>)[0];
+    expect(sms.contactId).toBe('hl-1');
+    expect(sms.message).toContain('confirmed');
+  });
+
+  it('APPLY notify is SUPPRESSED for a Test Quote (#93)', async () => {
+    hlConfiguredRef.current = true;
+    const { client } = makeSb(
+      bookedQuote({ customer_name: 'Jordan Smith', highlevel_contact_id: 'hl-1', is_test: true }),
+    );
+    sbRef.current = client;
+    const res = await POST(req({ action: 'apply' }), ctx());
+    expect(res.status).toBe(200);
+    expect(sendSmsMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('a notify failure never fails the apply (best-effort)', async () => {
+    hlConfiguredRef.current = true;
+    sendSmsMock.mockRejectedValueOnce(new Error('HL down'));
+    sendEmailMock.mockRejectedValueOnce(new Error('HL down'));
+    const { client, updates } = makeSb(
+      bookedQuote({ customer_name: 'Jordan Smith', highlevel_contact_id: 'hl-1', is_test: false }),
+    );
+    sbRef.current = client;
+    const res = await POST(req({ action: 'apply' }), ctx());
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.smsSent).toBe(false);
+    expect(body.emailSent).toBe(false);
+    // the colour was still applied
+    const snap = updates.quotes[0].approval_snapshot as { pendingColorRequest?: unknown };
+    expect(snap.pendingColorRequest).toBeUndefined();
+  });
+
+  it('DISMISS never notifies the customer', async () => {
+    hlConfiguredRef.current = true;
+    const { client } = makeSb(
+      bookedQuote({ customer_name: 'Jordan Smith', highlevel_contact_id: 'hl-1', is_test: false }),
+    );
+    sbRef.current = client;
+    const res = await POST(req({ action: 'dismiss', reason: 'discussed by phone' }), ctx());
+    expect(res.status).toBe(200);
+    expect(sendSmsMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 });

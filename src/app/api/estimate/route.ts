@@ -19,14 +19,14 @@
 // binding number: it saves an Anonymous draft (staff confirm every self-serve
 // quote before the customer can pay) and returns a RANGE.
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { isSelfServeEstimateEnabled } from '@/lib/selfServe/estimateFlag';
 import { isClaudeConfigured } from '@/lib/claude';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 import { isGoogleMapsConfigured, getCachedAddressImagery, geocodeAddress, NoStreetViewError } from '@/lib/googleMaps';
-import { isServedArea } from '@/lib/selfServe/serviceArea';
+import { isServedArea, isPreciseAddress } from '@/lib/selfServe/serviceArea';
 import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote } from '@/lib/quotes';
 import {
@@ -35,6 +35,7 @@ import {
   computeEstimateRange,
 } from '@/lib/selfServe/estimateRange';
 import { recordSelfServeEstimate } from '@/lib/selfServe/telemetry';
+import { persistSelfServeDesign } from '@/lib/selfServe/design';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -98,10 +99,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
   }
 
-  // ── 0. Service-area gate — geocode FIRST and stop out-of-area homes BEFORE
-  // the expensive imagery + analyzer ever run (Nassau + Suffolk only). ────────
+  // ── 0. Geocode gate — resolve the address FIRST and stop both unlocatable and
+  // out-of-area homes BEFORE the expensive imagery + analyzer ever run. ───────
   try {
     const placed = await geocodeAddress(address);
+    // Precision check runs BEFORE the area check: an unresolvable street makes
+    // Google return the TOWN centroid, which still carries a valid county and
+    // would sail through isServedArea — then we'd image the middle of the town
+    // and quote a house we never located (found in the first live smoke).
+    if (!isPreciseAddress(placed)) {
+      return NextResponse.json({ measured: false, reason: 'address_not_found' }, { status: 200 });
+    }
     if (!isServedArea(placed.county, placed.state)) {
       return NextResponse.json({ served: false, reason: 'out_of_area' }, { status: 200 });
     }
@@ -184,6 +192,35 @@ export async function POST(req: NextRequest) {
     if (quoteId) await recordSelfServeEstimate(quoteId, { low, high, total: priced.total, confidence: result!.confidence });
   } catch (err) {
     console.error('[api/estimate] draft save failed (returning price anyway):', err);
+  }
+
+  // ── 6. Persist the MEASUREMENT behind the number — AFTER the response ─────
+  // Attach the same design a staff quote gets: the Street View photo with the
+  // analyzer's traced roofline seeded onto it, plus the satellite image, its
+  // feet-per-pixel scale, and the satellite polylines. Without this the quote
+  // stores footage with no visual evidence — nobody (owner or verifying staff)
+  // can check WHERE the number came from, which defeats the Phase A
+  // staff-confirms-every-quote premise.
+  //
+  // Deliberately scheduled with after() rather than awaited inline. This handler
+  // has already spent ~20-40s on the analyzer against a 60s maxDuration, and
+  // this step adds two sharp() passes + two storage uploads. Awaiting it would
+  // put the CUSTOMER's response behind that work, so a slow run could time out
+  // the whole request and lose them a price that was already computed and saved.
+  // after() flushes the response first and does the drawing in the background:
+  // worst case the quote keeps its price and loses only the picture.
+  if (quoteId) {
+    const persistArgs = { result: result!, streetView, satellite, satelliteFeetPerPixel };
+    const idForDesign = quoteId;
+    after(async () => {
+      // persistSelfServeDesign is itself non-throwing; the extra catch guards the
+      // after() task so a rejection can't surface as an unhandled rejection.
+      try {
+        await persistSelfServeDesign(idForDesign, persistArgs);
+      } catch (err) {
+        console.error('[api/estimate] design persist (after) failed:', err instanceof Error ? err.message : 'error');
+      }
+    });
   }
 
   return NextResponse.json(

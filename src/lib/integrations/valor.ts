@@ -328,6 +328,15 @@ export function parseWebhookEvent(rawBody: string): ValorWebhookEvent {
       inner,
       'vault_token',
       'vaultToken',
+      // #161 — Valor's OWN Webhook User Guide documents the TRANSACTION event's
+      // card token as `vtToken` (e.g. "vtToken": "A1C7CA96…"), a name this
+      // pick-list never included — the same missing-field class as #159's
+      // `invoice_no`. `/?saleToken`'s token is described as "received from
+      // sale", i.e. exactly this sale-echoed token, so catching it here may be
+      // the whole card-on-file story: the webhook already stores
+      // event.vaultToken → quotes.valor_vault_token when present.
+      'vtToken',
+      'vt_token',
       'card_token',
       'cardToken',
       'token',
