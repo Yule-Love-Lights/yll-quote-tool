@@ -23,6 +23,10 @@ export function EstimateFlow() {
   const [step, setStep] = useState<Step>('address');
   const [address, setAddress] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Set once an address fails to resolve precisely — reveals the "leave your
+  // info instead" escape hatch so an un-geocodable home still becomes a lead
+  // rather than a bounce.
+  const [canFallback, setCanFallback] = useState(false);
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -88,7 +92,13 @@ export function EstimateFlow() {
         // Outside Nassau/Suffolk — no price, offer to leave info for expansion.
         setStep('outofarea');
       } else if (data.reason === 'address_not_found') {
+        // The precision gate refused a town/ZIP centroid (or Google couldn't
+        // resolve the street at all). Let them fix a typo — but ALSO offer the
+        // manual-quote escape hatch, because some real homes (rural routes, new
+        // construction) never geocode to a rooftop and would otherwise dead-end
+        // here with no lead captured at all.
         setError("We couldn't find that address. Please check it and try again.");
+        setCanFallback(true);
         setStep('address');
       } else if (data.reason === 'unavailable') {
         // Honeypot / too-fast guard fired. A real (fast-autofill) visitor lands
@@ -194,6 +204,17 @@ export function EstimateFlow() {
               See my instant estimate
             </button>
             <p className="mt-3 text-center text-xs text-slate-500">Free. No obligation. Takes about 15 seconds.</p>
+            {canFallback && (
+              <div className="mt-4 border-t border-slate-200 pt-4 text-center">
+                <p className="text-sm text-slate-600">Still not finding your home?</p>
+                <button
+                  onClick={() => { setError(null); setStep('followup'); }}
+                  className="mt-2 text-sm font-semibold text-amber-700 underline underline-offset-2 hover:text-amber-800"
+                >
+                  Leave your info and we&apos;ll quote it by hand
+                </button>
+              </div>
+            )}
           </section>
         )}
 
