@@ -199,10 +199,14 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/api/pdf', 'GET')).toBe(false);
   });
 
-  it('treats the self-serve estimate page as public (ledger self-serve, Phase A)', () => {
-    for (const p of ['/estimate', '/estimate/', '/estimate/anything']) {
-      expect(isPublicPath(p), p).toBe(true);
-    }
+  // #611 tightened the self-serve gate from a prefix to an EXACT match, so the
+  // old prefix test (which asserted /estimate/anything is public) is replaced.
+  it('treats the self-serve estimate page as public — EXACT match only (ledger self-serve, Phase A)', () => {
+    expect(isPublicPath('/estimate')).toBe(true);
+    expect(isPublicPath('/estimate/')).toBe(true); // single trailing slash is normalized
+    // A hypothetical sub-path must NOT be public by prefix — it has to be
+    // allowlisted deliberately (defense-in-depth, review 2026-07-20).
+    expect(isPublicPath('/estimate/anything')).toBe(false);
   });
 
   it('allows POST /api/estimate + /api/estimate/contact but keeps other methods operator-only (self-serve Phase A)', () => {

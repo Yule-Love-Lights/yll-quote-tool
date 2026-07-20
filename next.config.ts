@@ -22,7 +22,29 @@ const nextConfig: NextConfig = {
   turbopack: { root: __dirname },
   allowedDevOrigins: ['127.0.0.1'],
   async headers() {
-    return [{ source: '/:path*', headers: SECURITY_HEADERS }];
+    return [
+      { source: '/:path*', headers: SECURITY_HEADERS },
+      // /estimate is the ONE route meant to be embedded — the self-serve
+      // estimator runs inside an <iframe> on a yulelovelights.com page. The
+      // baseline X-Frame-Options: SAMEORIGIN above would block that, so this
+      // route also sends a CSP frame-ancestors allowlist, which browsers give
+      // precedence over X-Frame-Options. Scoped to THIS path and to our own
+      // marketing origins only — never a wildcard, and never the portal (its
+      // URLs carry the quote UUID that is the customer's only access token, so
+      // framing those anywhere would be a clickjacking + token-leak surface).
+      // If a browser ignored frame-ancestors it would fall back to SAMEORIGIN
+      // and simply refuse to frame — fails closed, never open.
+      {
+        source: '/estimate',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value:
+              "frame-ancestors 'self' https://yulelovelights.com https://www.yulelovelights.com",
+          },
+        ],
+      },
+    ];
   },
   images: {
     // The snowglobe InteractiveHero requests quality 85 for the full-bleed
