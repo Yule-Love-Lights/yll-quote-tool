@@ -80,6 +80,26 @@ inherit its security posture (fail-closed allowlist, signed webhooks, dormant fl
   integrations**. The bot/tool layer is **staff-assist**, never in the customer's
   automatic money path.
 
+## When is an MCP actually warranted? (decision rule)
+
+**Rule:** you need an MCP server when an *interactive AI client — especially one
+you don't host — needs to operate your tools.* If the AI is your own product code,
+a background processor, or a coding agent touching the repo, it is NOT an MCP
+scenario. Common cases:
+
+| Scenario | MCP? | What it actually is |
+|---|---|---|
+| Claude editing the quote tool's **code** | ❌ No | A coding agent with direct repo/git access |
+| Claude editing **data/records** (a quote, inventory) for you | ⚪ Optional | Already possible via the raw **Supabase MCP**; a dedicated YLL MCP just adds business-rule guardrails — worth it only once it's routine |
+| The **Telegram text bot** doing things | ❌ Not yet | One AI client → calls the tool layer directly, no protocol needed |
+| An **AI voice agent** acting mid-call | ✅ **Yes** | The clearest trigger — a *second* interactive AI client. Build the tool layer once, expose via MCP (or the voice platform's own function-calling) |
+| A **third-party AI host** (Claude Desktop, a partner's agent) reaching in | ✅ Yes | External client needs a standard protocol |
+| **GHL call transcripts → action items** | ❌ No | A background event pipeline + an LLM extractor (see the related-opportunity section) |
+
+So: build the **tool layer** now (needed regardless); add an **MCP server** the day
+a second interactive AI client (voice agent, embedded assistant, outside host)
+needs those same tools. The voice system is that day.
+
 ## Roles & permissions (from decision #1)
 
 Each allowlist entry maps a Telegram id → a role. Each tool declares a **minimum
@@ -152,6 +172,13 @@ text/voice/photo in ─► webhook (verify signature + allowlist)     [EXISTS]
 The interpreter's tool *schemas* ARE the future MCP tool definitions — write once,
 serve the bot now and an MCP server later.
 
+**Optimization — use a cheap model for the interpreter.** Intent-parsing is a
+*classification* task, not deep reasoning; route it to a fast, low-cost model
+(Haiku-tier) with the tool schemas + forced structured output, returning a
+**confidence**. Keeps per-message cost near-zero and latency low. Low confidence →
+ask a clarifying question or echo back what it understood, rather than guessing —
+the confirm gate is the safety net, this is the first line.
+
 ## Build phases (risk-ordered; writes are the destination, not deferred forever)
 
 - **Phase 0 — learn, zero code (30 min).** Telegram bot token from @BotFather,
@@ -187,6 +214,34 @@ Each phase ships behind the existing dormant flags; never a big-bang cutover.
   tool layer) — Naldo can drive.
 - **Phase 4 reaches Jason's area** (quote amend, color, pricing). Loop him in
   before building; ride his existing routes rather than new write logic.
+
+## Related opportunity: GHL call transcripts → action items
+
+Turn every sales/support call into structured follow-ups automatically instead of
+relying on memory. **This is NOT an MCP scenario** — the AI is a background
+extractor reacting to a webhook (same direct-integration pattern as the rest of the
+product, plus one LLM call). It feeds the **same Telegram digest**, so it reinforces
+the bot: the transcript pipeline is the *intelligence*, the bot is the *output channel*.
+
+**We're closer than it looks.** The dashboard already ingests GHL conversations
+(`src/lib/dashboard/inbox/ghl.ts` + the `/api/dashboard/ghl/webhook` reconcile) and
+already recognizes `TYPE_CALL` / `TYPE_VOICEMAIL` as a `call` channel — but calls
+currently carry no body, so they show only as "📞 Inbound call". The gap is the
+**transcript + the extraction**.
+
+Pipeline:
+1. **Get the transcript** — on a call-ended event, pull the call transcript from GHL.
+2. **Extract with a cheap LLM** — structured output: `{ action items, follow-ups,
+   quote requests, commitments, callback time, sentiment }`, validated.
+3. **Route the results** into things that already exist — dashboard **needs-action**
+   items + a **Telegram digest ping** ("Call w/ Alvarez: wants the backyard added,
+   install by Dec 15 — draft a change?").
+4. **Close the loop** — that suggested action becomes a one-tap, confirm-gated bot command.
+
+**Prerequisite to confirm before building:** call recording + transcription is a
+paid GHL / Conversation-AI feature — verify it's enabled on the plan and confirm
+the transcript-fetch API surface (a quick spike, like the existing
+`scripts/spikes/ghl-conversations.ts`). Don't assume the endpoint until verified.
 
 ## Open items to resolve during the build
 
