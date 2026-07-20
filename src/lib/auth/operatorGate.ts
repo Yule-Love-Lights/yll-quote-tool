@@ -143,7 +143,13 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // preflight for the cross-origin JSON POST from yulelovelights.com (the
   // referrals carve-out above never needed this — its form is same-origin).
   // All other methods on this path stay operator-gated.
-  if (path === '/api/leads') {
+  // /api/leads/partial is the abandoned-form sibling (#leads partial-save): the
+  // same embed fires it on contact-field blur and on page-leave, from the same
+  // cross-origin WordPress page, and it self-gates the same way (honeypot +
+  // per-IP rate limit + a required contact handle). Shipping it without this
+  // entry default-denied every real visitor's partial with a 401 — invisible in
+  // testing because an operator's own session passes the gate (S42).
+  if (path === '/api/leads' || path === '/api/leads/partial') {
     const m = method.toUpperCase();
     if (m === 'POST' || m === 'OPTIONS') return true;
   }
