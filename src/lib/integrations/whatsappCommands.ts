@@ -12,6 +12,9 @@
 //   stock <sku>                           — on-hand for a SKU
 //   set <sku> <qty>                       — set a SKU's on-hand count
 //   low                                   — low-stock items
+//
+// Anything the parser can't match returns 'unknown' — the dispatcher then hands
+// the raw text to the LLM interpreter (botInterpreter.ts, read tools only).
 
 import type { FulfillmentStage } from '@/lib/inventory/fulfillmentStage';
 
@@ -82,4 +85,5 @@ export const WHATSAPP_HELP = [
   '• stock <sku> — on-hand for a SKU',
   '• set <sku> <qty> — set on-hand',
   '• low — low-stock items',
+  'Or just ask: "status on the Alvarez quote" · "what installs are today?"',
 ].join('\n');
