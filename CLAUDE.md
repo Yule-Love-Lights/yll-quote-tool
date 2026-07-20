@@ -15,9 +15,11 @@
 > positive seam gates · migration order · browser-E2E-or-say-so + rollback lever ·
 > flag-delete names its replacement. Promoted 2026-07-20: blocked-tool-call three-category
 > fallback (transient outage / content false-positive / legit policy block) · concurrent-session
-> re-scan before build · named-consent prod writes · combined-tree gate · inert-fix caller
-> wiring · state-from-origin-master · task-text-is-hypothesis · subagent commit-per-piece ·
-> session-number under concurrency. Don't re-add them here.
+> re-scan before build · named-consent prod writes (folded into the blocked-tool bullet) ·
+> combined-tree gate · inert-fix caller wiring · state-from-origin-master ·
+> task-text-is-hypothesis · OneDrive-scoped subagent commit-per-piece · chain-after-fallible
+> script-file surgery · session-number under concurrency. (Evidence numbers cite Naldo-side
+> records.) Don't re-add them here.
 
 ## Running scorecard (cumulative — skim before starting work)
 
@@ -54,7 +56,7 @@
 - **[S25] Vercel deploys: verify the SHA by API, never trust "a deploy went READY".** One master webhook silently never spawned a deployment, and a dashboard Redeploy rebuilt the OLD commit — it looked live while prod served stale code. Dashboard Create-Deployment (from ref master) is the recovery lever; env-var changes need a fresh deploy to apply.
 - **[S24] `gh pr merge --delete-branch` on a STACK BASE hard-closes the stacked PR — unrecoverable** (GitHub can't retarget or reopen once the base ref is gone; #451 had to be recreated as #456). Retarget the remaining stacked PRs to master BEFORE merging their base, or merge without `--delete-branch` until the stack is flat.
 - **[S24] A derive effect that writes form state must respect REOPEN semantics.** My accessories-derive keyed on session state (`permanentSatLines`) that is NOT rehydrated on quote reopen — it would have clobbered saved counts with zeros/street-only. Gate such effects on the live session (mirror the footage effect's `satellitePreview != null` / hadRef pattern). Caught mid-build by asking "what does this do on a reopened quote?"
-- **[S23] Supabase MCP does DML fine — the "read-only" note is DDL/migrations ONLY.** Used `execute_sql` to read `app_settings`, DELETE the inert flag row, and INSERT a seeded test quote — all worked. Don't route data reads/writes through the browser SQL editor; only DDL (schema/migrations) needs it. (Corrects the S13 note above.)
+- **[S23] Supabase MCP does DML fine; only DDL (schema/migrations) needs the browser SQL editor.** Used `execute_sql` to read `app_settings`, DELETE the inert flag row, and INSERT a seeded test quote — all worked. Don't route data reads/writes through the browser SQL editor. (Supersedes the retired S13 read-only note.)
 - **[S23] A post-merge restarted branch needs `--force-with-lease` to push, and fast-moving master will stale a PR mid-review — re-merge + re-gate the combined tree before landing.** #378 went 23 commits stale (Jason's #379 event-flag removal, mirroring mine) between green and merge; merged master in, resolved a `serviceType`/`isPermanent` prop collision by consolidating onto the shared prop, re-gated (vitest 1607) before merging. "Never merge stale" bites even same-day.
 - **[S20] A big parallel fan-out WILL occasionally hit a transient server-side rate-limit (not your quota) — resume from the journal, don't re-run.** W5's first run lost 10/14 finders to rate-limiting; a resume replayed the 4 cached + re-ran the 10, and because their findings feed dedupe/verify/critic those re-cascaded correctly (the partial 3-HIGH re-adjudicated to the accurate 1-HIGH on the full set). Don't trust a partial workflow result; resume for full coverage.
 - **[S19] Expanding shared link data → audit every downstream consumer first.** The sceneLinks twin-expansion (right, for portal toggling) silently fed twin ids into the photo-tag chip lookup → canonical rows mis-tagged. When a shared structure gains members, grep its readers before shipping.
