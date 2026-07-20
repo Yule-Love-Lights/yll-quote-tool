@@ -83,6 +83,7 @@ import {
   buildLeadNoteBody,
   buildHouseholdNoteBody,
   existingNameDiffers,
+  normalizePhoneForCompare,
   type LeadInput,
 } from './leadService';
 
@@ -462,6 +463,50 @@ describe('syncLeadToGhl — a failure AFTER the contact exists is caught, not th
   });
 });
 
+describe('normalizePhoneForCompare — household-phone compare helper', () => {
+  // The production bug (S42): GHL stores E.164, the form collects 10 digits,
+  // and the old digit-strip compare made them unequal — so a phone-only
+  // household was never detected and the upsert renamed the real contact.
+  it('matches an E.164 stored number against a 10-digit submitted one', () => {
+    expect(normalizePhoneForCompare('+16315550100')).toBe(normalizePhoneForCompare('6315550100'));
+  });
+
+  it('ignores punctuation and spacing', () => {
+    expect(normalizePhoneForCompare('(631) 555-0100')).toBe('6315550100');
+    expect(normalizePhoneForCompare('631.555.0100')).toBe('6315550100');
+    expect(normalizePhoneForCompare('+1 631 555 0100')).toBe('6315550100');
+  });
+
+  it('still distinguishes genuinely different numbers', () => {
+    expect(normalizePhoneForCompare('+16315550100')).not.toBe(normalizePhoneForCompare('6315559999'));
+  });
+
+  // Strips the NANP country code ONLY. A blind last-10 slice would collapse a
+  // longer international number onto a US one — the same identity-clobbering
+  // failure this helper exists to prevent, just in the opposite direction.
+  it('does NOT collapse a longer international number onto a US one', () => {
+    // Mexico +52 631 555 0100 vs Long Island 631-555-0100 — same trailing 10
+    expect(normalizePhoneForCompare('+526315550100')).not.toBe(
+      normalizePhoneForCompare('6315550100'),
+    );
+    // UK +44 20 7946 0958 vs US area code 207
+    expect(normalizePhoneForCompare('+442079460958')).not.toBe(
+      normalizePhoneForCompare('2079460958'),
+    );
+    // a fat-fingered extra digit must not match the real number either
+    expect(normalizePhoneForCompare('96315550100')).not.toBe(
+      normalizePhoneForCompare('6315550100'),
+    );
+  });
+
+  it('returns empty for missing/garbage input (callers gate on truthiness)', () => {
+    expect(normalizePhoneForCompare(null)).toBe('');
+    expect(normalizePhoneForCompare(undefined)).toBe('');
+    expect(normalizePhoneForCompare('   ')).toBe('');
+    expect(normalizePhoneForCompare('abc')).toBe('');
+  });
+});
+
 describe('existingNameDiffers — household-name compare helper', () => {
   it('same name, case-insensitive, is NOT differing', () => {
     expect(existingNameDiffers('Jordan Rivera', 'jordan rivera')).toBe(false);
@@ -608,10 +653,17 @@ describe('syncLeadToGhl — household/spousal contact handling', () => {
     expect(hl.createContactNote).not.toHaveBeenCalled();
   });
 
-  it('(e) phone-fallback match works when email search is empty (digits-only compare)', async () => {
+  // Pins the WHOLE phone-fallback chain against how production actually looks:
+  // GHL stores E.164, the visitor types a formatted number. The old fixture had
+  // the contact stored as bare '6315550301' and asserted the raw string was the
+  // search query — both unreal, which is why this test stayed green while the
+  // real path was broken.
+  it('(e) phone-fallback match works when email search is empty (E.164 stored, formatted submit)', async () => {
     hl.searchContacts.mockImplementation(async (query: string) => {
       if (query === 'jordan@example.com') return [];
-      if (query === '(631) 555-0301') {
+      // Normalized national number, NOT the raw field: a text query for
+      // '(631) 555-0301' does not find a contact stored as '+16315550301'.
+      if (query === '6315550301') {
         return [
           {
             id: 'contact-1',
@@ -620,7 +672,7 @@ describe('syncLeadToGhl — household/spousal contact handling', () => {
             lastName: 'Rivera',
             fullName: 'Jordan Rivera',
             email: 'someone-else@example.com',
-            phone: '6315550301',
+            phone: '+16315550301', // how HighLevel actually stores a US number
           },
         ];
       }
@@ -633,7 +685,7 @@ describe('syncLeadToGhl — household/spousal contact handling', () => {
 
     expect(result.status).toBe('synced');
     expect(hl.searchContacts).toHaveBeenCalledWith('jordan@example.com');
-    expect(hl.searchContacts).toHaveBeenCalledWith('(631) 555-0301');
+    expect(hl.searchContacts).toHaveBeenCalledWith('6315550301');
 
     const upsertCall = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
     expect(upsertCall).not.toHaveProperty('firstName');
@@ -641,6 +693,9 @@ describe('syncLeadToGhl — household/spousal contact handling', () => {
 
     const [, tags] = hl.addContactTags.mock.calls[0]!;
     expect(tags).toContain('household-second-contact');
+    // The full side-effecting household path — the part the partial sync does
+    // NOT have — fires on this newly-reachable match.
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1);
   });
 
   it('the household note is created even when notes/utm/landingUrl are ALL absent (independent guard)', async () => {

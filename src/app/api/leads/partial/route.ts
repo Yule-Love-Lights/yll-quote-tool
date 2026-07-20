@@ -28,6 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { syncPartialLeadToGhl } from '@/lib/leads/partialLead';
+import { checkRateLimitByKey } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
 
@@ -35,9 +36,21 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PHONE_MIN_DIGITS = 7;
 // A partial fill legitimately re-POSTs several times (blur of each field + the
 // page-leave beacon), but each of those UPDATEs one captureId row — only brand
-// new fills INSERT. So this caps distinct abandoned fills per IP, generously
-// (office wifi / CGNAT share an IP); the update path is never rate limited.
+// new fills INSERT. So this caps distinct abandoned FILLS per IP, generously
+// (office wifi / CGNAT share an IP).
 const RATE_LIMIT_MAX_INSERTS_PER_HOUR = 40;
+// ...and this caps CALLS per IP, which the row cap above cannot: an UPDATE
+// creates no row, so a row-count limit never sees the update path at all. That
+// mattered because every accepted call (spam row, update, insert alike) writes
+// to the DB, and the non-honeypot paths also drive a full GHL contact upsert —
+// and the response hands the caller its own row id, which is exactly the
+// captureId needed to re-enter the update path indefinitely. Without a call cap
+// one id was an unlimited ticket to mint GHL contacts against a per-location
+// quota shared with the real lead pipeline and the dashboard crons. A genuine
+// abandoned fill is ~5 calls (four field blurs + the page-leave beacon), so 120
+// leaves ~24 fills/hour on a shared IP. In-memory + per-region like every other
+// user of this helper: a budget guardrail, not DoS protection.
+const RATE_LIMIT_MAX_CALLS_PER_HOUR = 120;
 
 const MAX_LEN = {
   name: 200,
@@ -172,6 +185,23 @@ export async function POST(req: NextRequest) {
 
   const sb = getSupabaseServiceClient()!;
 
+  // Per-IP CALL budget. Deliberately ahead of every write below (spam row,
+  // captureId update, insert) so no path is unmetered — see
+  // RATE_LIMIT_MAX_CALLS_PER_HOUR for why the row-count cap further down cannot
+  // cover the update path. Answers like every other skip here (200 + ok:true, no
+  // 429): this is a background beacon and must never surface anything to the
+  // visitor. Keyed on THIS route's getIp (x-real-ip first) rather than the
+  // limiter module's own helper, which prefers the client-settable
+  // x-forwarded-for.
+  if (ip) {
+    const rl = checkRateLimitByKey(ip, {
+      limit: RATE_LIMIT_MAX_CALLS_PER_HOUR,
+      windowMs: 60 * 60 * 1000,
+      bucket: 'leads-partial',
+    });
+    if (!rl.ok) return jsonResponse(origin, { ok: true, skipped: 'rate-limited' }, 200);
+  }
+
   // The columns are NOT NULL (email/phone/name), so absent handles are stored
   // as '' rather than requiring a schema change — a partial row legitimately
   // has only one contact handle. sync_status 'partial' keeps these rows out of
@@ -227,16 +257,20 @@ export async function POST(req: NextRequest) {
   }
 
   if (!rowId) {
-    // Insert path — rate limited per IP (distinct fills only; updates above are
-    // never limited). A shared-IP false positive just means we skip persisting
+    // Insert path — capped per IP by DISTINCT FILLS (the call cap above governs
+    // request volume). A shared-IP false positive just means we skip persisting
     // this one partial; a real completed submit still lands via POST /api/leads.
+    // Counts 'spam' rows as well as 'partial': they are written by the honeypot
+    // branch above, so excluding them made tripping the bot trap the cheaper way
+    // in — a bot got an uncapped insert channel while an honest visitor was
+    // capped.
     if (ip) {
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const { count, error: countErr } = await sb
         .from('website_leads')
         .select('id', { count: 'exact', head: true })
         .eq('ip', ip)
-        .eq('sync_status', 'partial')
+        .in('sync_status', ['partial', 'spam'])
         .gte('created_at', oneHourAgo);
       if (countErr) {
         console.warn('[api/leads/partial] rate-limit count failed (failing open):', countErr.message);

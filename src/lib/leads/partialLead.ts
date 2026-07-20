@@ -23,7 +23,7 @@
 // then — as they intended.
 
 import { upsertContact, addContactTags, searchContacts } from '@/lib/integrations/highlevel';
-import { splitLeadName, existingNameDiffers } from '@/lib/leads/leadService';
+import { splitLeadName, existingNameDiffers, normalizePhoneForCompare } from '@/lib/leads/leadService';
 import type { CrmContact } from '@/lib/integrations/types';
 
 export type PartialLeadInput = {
@@ -44,9 +44,6 @@ export type SyncPartialLeadResult = {
 function normalizeEmailForCompare(email: string | undefined | null): string {
   return (email ?? '').trim().toLowerCase();
 }
-function normalizePhoneForCompare(phone: string | undefined | null): string {
-  return (phone ?? '').replace(/\D/g, '');
-}
 
 // Same household guard as syncLeadToGhl: find any existing contact by this
 // lead's email (then phone), so we can decide whether it's safe to send name
@@ -58,7 +55,12 @@ async function findExistingContact(input: PartialLeadInput): Promise<CrmContact 
   try {
     let results: CrmContact[] = [];
     if (email) results = await searchContacts(email);
-    if (results.length === 0 && phone) results = await searchContacts(phone);
+    // Search on DIGITS, not the raw field — see findHouseholdMatch in
+    // leadService.ts. A partial fires mid-fill, so a half-formatted phone like
+    // '(631) 555-' is especially likely here.
+    if (results.length === 0 && phone) {
+      results = await searchContacts(normalizePhoneForCompare(phone));
+    }
     const wantEmail = normalizeEmailForCompare(email);
     const wantPhone = normalizePhoneForCompare(phone);
     return (

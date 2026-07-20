@@ -69,6 +69,53 @@ describe('syncPartialLeadToGhl', () => {
     expect(upsertArg.email).toBe('shared@example.com');
   });
 
+  // Regression (production, S42): GHL stores US numbers in E.164 while the
+  // website form collects 10 digits. A raw digit-strip compare made these
+  // unequal, so the guard saw "no existing contact", sent the name fields, and
+  // the upsert — which GHL matches by phone regardless of format — renamed a
+  // real contact. Email deliberately does NOT match here, so the phone is the
+  // only thing that can link the two.
+  it('omits name fields when the existing contact matches by PHONE in E.164 form (10-digit submit)', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', email: 'bob@example.com', phone: '+16315550100' },
+    ]);
+    await syncPartialLeadToGhl({
+      name: 'Alice Smith',
+      email: 'alice@example.com',
+      phone: '6315550100',
+    });
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg.firstName).toBeUndefined();
+    expect(upsertArg.lastName).toBeUndefined();
+  });
+
+  it('still matches a phone-only household when the submitted number is formatted', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', email: 'bob@example.com', phone: '+16315550100' },
+    ]);
+    await syncPartialLeadToGhl({
+      name: 'Alice Smith',
+      email: 'alice@example.com',
+      phone: '(631) 555-0100',
+    });
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg.firstName).toBeUndefined();
+  });
+
+  it('does NOT treat two genuinely different numbers as the same household', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', email: 'bob@example.com', phone: '+16315550100' },
+    ]);
+    await syncPartialLeadToGhl({
+      name: 'Alice Smith',
+      email: 'alice@example.com',
+      phone: '6315559999',
+    });
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg.firstName).toBe('Alice');
+    expect(upsertArg.lastName).toBe('Smith');
+  });
+
   it('supports an email-only partial (no phone key sent)', async () => {
     await syncPartialLeadToGhl({ name: 'Jane', email: 'jane@example.com', phone: null });
     const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
