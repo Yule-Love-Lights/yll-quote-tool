@@ -24,15 +24,21 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
 
 2. **Session review (four lenses, standing order, Naldo 2026-07-20).** Review
    EVERYTHING the session shipped: the diff from the session's starting master SHA
-   to current master, plus any branch still open at close. Spawn four review
-   agents in parallel, in one message, each with an explicit model (Sonnet 5 per
-   the routing table; never let a spawn inherit the session model). Lenses and
+   to current master, plus any branch still open at close. The starting master SHA
+   is the master tip captured in this session's opening git-status snapshot (or
+   the previous session's handoff); if neither exists, use the merge-base of the
+   session's first branch with master. Spawn four review agents in parallel, in
+   one message, each with an explicit model: finders on Sonnet 5, the seat's
+   dispositions on Opus (never let a spawn inherit the session model). Lenses and
    brief shape: AGENTS.md "Review gates". Run it even when every PR was
    lens-reviewed at merge time; the combined tree can break in ways per-PR reviews
-   miss. Disposition every finding: fix / accept with a stated reason / defer to a
-   ledger row. HIGH findings on still-open work get fixed before the close PR;
-   HIGH findings on already-merged work get a ledger row AND a direct flag to the
-   dev. Findings feed Steps 3 and 4.
+   miss. If the session changed a live non-repo customer surface (WordPress,
+   Elementor, GHL, Vercel config), a zero git diff does NOT exempt it: run at
+   least the customer lens against a written description of the change. Disposition
+   every finding: fix / accept with a stated reason / defer to a ledger row.
+   HIGH findings on still-open work get fixed before the close PR; HIGH findings
+   on already-merged work get a ledger row AND a direct flag to the dev. Findings
+   feed Steps 3 and 4.
 
 3. **Update the continuity memory — WITHOUT changing the session number.** One
    conversation = one session; read the current number from the logs and keep it
@@ -53,6 +59,8 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    - Capture: what shipped, the ending state (master SHA + gate counts), confirmed
      decisions (so they aren't re-litigated), and any cross-dev heads-up (shared-file
      or other-area touches the other owner should know about).
+   - **Memory-doc surgery goes through script files only** (python), never a
+     `;`-chained shell write after a fallible statement (the S25 ledger wipe).
 
 4. **Self-assessment + scorecard (the mistakes log; runs EVERY close).**
    - Append a newest-on-top entry to the local memory file
@@ -72,15 +80,19 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    - `git status` for stray untracked files: surface each one to the dev
      (ship it / .gitignore it / delete it, the dev picks). Never silently commit or
      delete a file you didn't create.
-   - `git worktree list` + local branches already merged to master: propose a prune
-     list, prune on the dev's confirm. Never delete unmerged work.
+   - `git worktree list` + local branches already merged to master: check
+     `git status` inside each candidate worktree for uncommitted or untracked work
+     first, then propose a prune list. Prune only on a confirm that names the
+     list; a blanket wrap go does not count (the S31 named-consent rule). Never
+     delete unmerged work.
 
 6. **Commit + open a PR off FRESH master** (PR-not-master applies to docs too).
    - Fetch and branch in ONE command, e.g.
-     `git fetch origin && git switch -c jason/sNN-close origin/master`. Never
-     trust a fetch from earlier in the session (a stale base bit S42 and S43).
-     The PR is then only your delta (git auto-merges non-overlapping edits;
-     hand-resolve only a literal same-line clash).
+     `git fetch origin && git switch -c <jason|naldo>/sNN-close origin/master`.
+     Never trust a fetch from earlier in the session (a stale base bit S42 and
+     S43). If `git switch` refuses over conflicting local edits: stash, switch,
+     pop, resolve. The PR is then only your delta (git auto-merges non-overlapping
+     edits; hand-resolve only a literal same-line clash).
    - Commit (end the message with the `Co-Authored-By: Claude …` line), push, open
      the PR with `gh`.
    - **🛑 STOP HERE. Surface the PR and WAIT for the dev's explicit "merge."** NEVER
@@ -109,4 +121,5 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
 - Don't edit the other dev's session log.
 - Don't skip the session review (Step 2) to save tokens; it is a standing order
   (Naldo 2026-07-20). Scale the agent count down only if the session shipped
-  nothing at all (no diff = nothing to review; say so and move on).
+  nothing at all: no repo diff AND no live non-repo surface touched (then say so
+  and move on).
