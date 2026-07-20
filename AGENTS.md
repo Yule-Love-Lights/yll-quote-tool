@@ -88,6 +88,21 @@ Default habits to keep sessions cheap (S16 task #94):
 
 **5. Model fallback:** if a tier's model is down/unavailable, drop **exactly one tier** (Fable → Opus → Sonnet → Haiku) and **say so** in the output. For anything risky (money math, prod migrations, approve/amend paths, security), do NOT silently substitute — **stop and ask** first.
 
+# Review gates: pre-merge lenses + wrap review (STANDING POLICY, both devs; Naldo 2026-07-20)
+
+**1. Pre-merge lens review (every PR, no exceptions).** Before asking the dev for a merge-go on ANY PR (code, docs, skill, or config), spawn four review agents in parallel, in a single message. Each spawn carries an explicit model (Sonnet 5 per the routing table; never let a spawn inherit the session model, which matters most in Fable sessions). Each brief is self-contained: it names the PR or branch, states that the app is a quoting and portal tool for a residential lighting company, and gives the lens. The four lenses:
+
+- **Customer lens:** what a homeowner hits. The portal, the quote view, emails, the approval and payment flow. Hunt for broken links, wrong or confusing prices shown, dead-end states, mobile rendering breaks.
+- **Staff lens:** what a crew member or office staffer hits. The quote builder, the dashboard, the day-to-day workflow. Hunt for extra clicks, lost work on reload or reopen, broken tools, workflow dead ends.
+- **Admin lens:** what the owner hits. Settings, pricing rules, reporting, permissions, data integrity. Hunt for silent misconfiguration, wrong totals in reports, access gaps, rows that drift out of sync.
+- **Technical lens:** correctness. Money math (integer cents, rounding direction, partial selections), idempotency and retry, duplicate submission, auth and permission gaps, migration order, service-type seam gates (positive-match, per Pitfalls), client/server import boundaries.
+
+The seat dispositions every finding: fix it, accept it with a stated reason, or defer it to a ledger row. HIGH findings get fixed BEFORE the merge-go is asked, not after. The merge-go message shows the dev the dispositioned findings list (never raw agent output) alongside the plain-English diff summary from rule 4 above.
+
+One carve-out: the wrap skill's own docs-only close PR never asks for a merge-go (on Naldo's machine it auto-merges under his standing go), so it takes no lens review of its own. The wrap review below covers it instead; no double-spawn.
+
+**2. Wrap review (every /wrap).** Session close runs a multi-agent review of EVERYTHING the session shipped: the diff from the session's starting master SHA to current master, plus any branch still open at close. It runs even when every PR was lens-reviewed at merge time, because the combined tree can break in ways per-PR reviews miss. Findings go into the session log entry and the self-assessment; findings against the assistant's own work go in its Mistakes list. Step-by-step detail lives in the wrap skill (`.claude/skills/wrap/SKILL.md`).
+
 # Multi-dev collaboration (Jason + Naldo)
 
 Two devs work in this repo on **different machines**. **Naldo owns the dashboard** (the `/` homepage, task #58); **Jason owns everything else** (portal, quote builder, pricing engine, design editor, training, settings). Both **PR into `master` — never commit to `master` directly** — and run the gates (`npx tsc --noEmit` · `npm run lint` · `npm test`) green before committing. New-machine setup → `docs/context/ONBOARDING_NALDO.md`.
