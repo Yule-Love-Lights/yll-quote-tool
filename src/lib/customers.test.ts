@@ -223,9 +223,21 @@ describe('customerMatchKey', () => {
 });
 
 describe('normalizePhone', () => {
-  it('keeps digits only', () => {
-    expect(normalizePhone('+1 (555) 123-4567')).toBe('15551234567');
+  it('strips formatting AND the US country code, so E.164 and 10-digit collapse to one key', () => {
+    // The bug this fixes (S42): GHL stores E.164 ('+16315550100') while every
+    // form stores 10 digits. The old digit-only strip kept the leading 1, so the
+    // same person hashed to phone:16315550100 vs phone:6315550100 -> TWO customer
+    // rows, losing rebook history. Both must now produce the same national number.
+    expect(normalizePhone('+1 (555) 123-4567')).toBe('5551234567');
     expect(normalizePhone('555.123.4567')).toBe('5551234567');
+    expect(normalizePhone('+16315550100')).toBe(normalizePhone('6315550100'));
+    expect(normalizePhone('(631) 555-0100')).toBe(normalizePhone('+16315550100'));
+  });
+  it('strips ONLY the NANP country code — never collapses a longer international number', () => {
+    // A blind last-10 slice would merge unrelated people; strip only 11-digit
+    // leading-1. '+52 631 555 0100' (Mexico) must NOT equal Long Island 631-555-0100.
+    expect(normalizePhone('+526315550100')).not.toBe(normalizePhone('6315550100'));
+    expect(normalizePhone('+442079460958')).not.toBe(normalizePhone('2079460958'));
   });
   it('is null without digits', () => {
     expect(normalizePhone('abc')).toBeNull();

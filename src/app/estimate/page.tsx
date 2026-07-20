@@ -20,7 +20,15 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function EstimatePage() {
+export default async function EstimatePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ embed?: string }>;
+}) {
   if (!isSelfServeEstimateEnabled()) notFound();
-  return <EstimateFlow />;
+  // `?embed=1` — rendered inside the <iframe> on the yulelovelights.com page.
+  // Drops the standalone page chrome (its own hero + full-viewport height), since
+  // the WordPress page supplies the heading and the frame supplies the height.
+  const { embed } = await searchParams;
+  return <EstimateFlow embedded={embed === '1'} />;
 }

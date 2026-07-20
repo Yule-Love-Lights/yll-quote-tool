@@ -869,6 +869,14 @@ export default function QuoteBuilder({
   // the FIRST user line edit (or a fresh address pull / Recount) thaws, and
   // from there numbers follow the visible geometry exactly like a live session.
   const permDeriveFrozenRef = useRef(false);
+  // The same #142 freeze, for the HOLIDAY satellite rehydrate below. Holiday's
+  // derive recomputes santas/gingerbread/C9/stake footage from the satellite
+  // polylines, so hydrating a reopened quote's saved lines would re-derive and
+  // MOVE its billed footage on load — clobbering a hand-typed override, and (for
+  // a self-serve estimate, whose footage came from the STREET analysis) silently
+  // repricing the quote to the satellite total the moment staff opened it.
+  // Frozen = the derive no-ops; the first real line edit thaws it (see getSetter).
+  const holidayDeriveFrozenRef = useRef(false);
   // Deterministic scale from Google Static Maps zoom-20 formula; no user
   // calibration needed. See analyze-address route for the math.
   const [satelliteFeetPerPixel, setSatelliteFeetPerPixel] = useState<number | null>(null);
@@ -930,6 +938,12 @@ export default function QuoteBuilder({
     const hasGingerbreadLines = satelliteGingerbreadLines.length > 0;
     const gingerbreadTarget = hasGingerbreadLines ? gFt : hadGingerbreadLinesRef.current ? 0 : null;
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
+    // #142-style rehydrate freeze (holiday). Deliberately placed AFTER the four
+    // had*LinesRef updates: the refs must record the hydrated geometry even while
+    // frozen, so that once the operator thaws it, deleting the last line still
+    // resets that footage to 0 instead of leaving a stale value. Loading a quote
+    // must never move its billed numbers — only an actual edit may.
+    if (holidayDeriveFrozenRef.current) return;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() => setForm(f => {
       // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
@@ -970,9 +984,28 @@ export default function QuoteBuilder({
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
-    if (type === 'santas') return setSatelliteSantasLines;
-    if (type === 'gingerbread') return setSatelliteGingerbreadLines;
-    if (type === 'stake') return setSatelliteStakeLines;
+    // #142 thaw (holiday): the operator touched the lines, so footage may follow
+    // the visible geometry again — same live-session rule as the permanent
+    // branches below. Until then the rehydrate freeze keeps a reopened quote's
+    // saved footage exactly as staff left it.
+    if (type === 'santas') {
+      return (updater) => {
+        holidayDeriveFrozenRef.current = false;
+        setSatelliteSantasLines(updater);
+      };
+    }
+    if (type === 'gingerbread') {
+      return (updater) => {
+        holidayDeriveFrozenRef.current = false;
+        setSatelliteGingerbreadLines(updater);
+      };
+    }
+    if (type === 'stake') {
+      return (updater) => {
+        holidayDeriveFrozenRef.current = false;
+        setSatelliteStakeLines(updater);
+      };
+    }
     if (type === 'bistro') {
       return (updater) => {
         // #142 thaw: the operator touched the lines — footage follows the
@@ -990,7 +1023,11 @@ export default function QuoteBuilder({
         setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
       };
     }
-    return setSatelliteC9Lines;
+    // C9 custom runs — same holiday thaw as the three branches above.
+    return (updater) => {
+      holidayDeriveFrozenRef.current = false;
+      setSatelliteC9Lines(updater);
+    };
   };
   const activeSantasLines = satelliteSantasLines;
   const activeGingerbreadLines = satelliteGingerbreadLines;
@@ -1201,6 +1238,61 @@ export default function QuoteBuilder({
         // 404'd, or errored) — permanentSatLines now reflects the real trace
         // state either way, so the billed-but-untraced warning can trust it.
         if (!stale) setPermTraceHydrated(true);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [editMode, designId, satellitePreview, form.serviceType]);
+
+  // REHYDRATE the satellite tab on a reopened HOLIDAY quote — the sibling of the
+  // permanent rehydrate above. The design row already persists the satellite
+  // image, its pull scale and the traced polylines (staff draws them, and a
+  // self-serve estimate seeds them server-side), but nothing read them back for
+  // holiday: the tab came up empty and the traced measurement behind a saved
+  // quote was invisible, so verifying one meant a fresh billable address re-pull.
+  //
+  // Derives stay FROZEN until the operator actually edits (holidayDeriveFrozenRef),
+  // and the freeze is set BEFORE the hydrating setState calls — that ordering is
+  // the whole point. Holiday's derive recomputes footage from these very lines,
+  // so without it, merely OPENING a quote would move its billed footage: a
+  // hand-typed override would be overwritten, and a self-serve quote (whose
+  // footage came from the street analysis) would silently reprice to the
+  // satellite total.
+  useEffect(() => {
+    if (!editMode || form.serviceType !== 'holiday') return;
+    let stale = false;
+    (async () => {
+      // Nothing to hydrate (no design yet) or already hydrated/live this session.
+      if (!designId || satellitePreview != null) return;
+      try {
+        const res = await fetch(`/api/designs/${designId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const d = data?.design;
+        if (stale || !d?.satelliteUrl) return;
+        const sl = d.satelliteLines ?? {};
+        const santas: LineSegment[] = sl.santas ?? [];
+        const gingerbread: LineSegment[] = sl.gingerbread ?? [];
+        const c9: LineSegment[] = sl.c9 ?? [];
+        const stake: LineSegment[] = sl.stake ?? [];
+        // Nothing traced — keep the old blank-tab behavior rather than showing
+        // an empty canvas over a satellite image.
+        if (santas.length + gingerbread.length + c9.length + stake.length === 0) return;
+        holidayDeriveFrozenRef.current = true; // freeze BEFORE hydrating (see above)
+        hadSantasLinesRef.current = santas.length > 0;
+        hadGingerbreadLinesRef.current = gingerbread.length > 0;
+        hadC9LinesRef.current = c9.length > 0;
+        hadStakeLinesRef.current = stake.length > 0;
+        setSatelliteSantasLines(santas);
+        setSatelliteGingerbreadLines(gingerbread);
+        setSatelliteC9Lines(c9);
+        setSatelliteStakeLines(stake);
+        setSatelliteFeetPerPixel(d.satelliteFeetPerPixel ?? null);
+        setSatellitePreview(d.satelliteUrl);
+      } catch (err) {
+        // Best-effort: a failed rehydrate just leaves the previous blank tab.
+        console.error('[QuoteBuilder] holiday satellite rehydrate failed:', err);
       }
     })();
     return () => {
