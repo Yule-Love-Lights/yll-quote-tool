@@ -33,6 +33,22 @@ const PUBLIC_QUOTE_SUBROUTES = new Set([
   'simulate-deposit', // TEST quotes only — route re-checks is_test (#81 W6-008)
 ]);
 
+// Customer quote sub-routes that are METHOD-SCOPED, unlike the method-blind set
+// above. Same capability-token model (the quote UUID is the credential), but
+// each opens only the verb the portal actually uses. Both were shipped as
+// public by their route authors — neither has an operator gate of its own, so
+// this list is the ONLY thing in front of them — and both were missed here,
+// which 401'd real customers while working fine for any logged-in operator.
+const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
+  // The three document links on the approved portal page (quote / invoice /
+  // receipt). Its route header notes it has no separate operator gate so the
+  // SAME link serves customer and staff.
+  pdf: 'GET',
+  // The portal colour picker's request against a BOOKED order (#163) — per its
+  // route header, the only path to change a booked order's colours.
+  'color-change-request': 'POST',
+};
+
 // Exact public API paths (webhooks + crons + the login surface).
 const PUBLIC_API_EXACT = new Set([
   '/api/login',
@@ -103,6 +119,7 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // Customer quote sub-routes: /api/quotes/<id>/(approve|pay|view|decline|request-changes|interested|simulate-deposit).
   const m = /^\/api\/quotes\/[^/]+\/([^/]+)$/.exec(path);
   if (m && PUBLIC_QUOTE_SUBROUTES.has(m[1]!)) return true;
+  if (m && PUBLIC_QUOTE_SUBROUTES_BY_METHOD[m[1]!] === method.toUpperCase()) return true;
 
   // Bare /api/quotes/<id> GET is the public capability-token portal read; DELETE
   // on the same path is operator-only and must NOT be allowlisted (#81 W6-005).
