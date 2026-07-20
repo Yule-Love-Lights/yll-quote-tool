@@ -46,7 +46,7 @@ import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
-import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty } from '@/lib/quoteDraft';
+import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -419,7 +419,7 @@ export default function QuoteBuilder({
   // store; a reopened/test quote is never touched (reopen-safety, mirrors the
   // satellite/footage effects). No design/pricing state, no GHL — see
   // src/lib/quoteDraft.ts.
-  const draftActive = !editMode && !isTest && !savedQuoteId;
+  const draftActive = draftAutosaveActive({ editMode, isTest, savedQuoteId });
   const [draftRestored, setDraftRestored] = useState(false);
   const draftRestoreTriedRef = useRef(false);
 
@@ -431,8 +431,11 @@ export default function QuoteBuilder({
     draftRestoreTriedRef.current = true;
     const draft = loadQuoteDraft();
     if (!draft) return;
+    // Only restore (and only then show the note) when the block is genuinely
+    // empty at mount — so the "Restored…" banner can never appear over data we
+    // didn't actually fill, and its Clear can never wipe genuinely-typed input.
+    if (!customerIsEmpty(form.customer)) return;
     queueMicrotask(() => {
-      // Only fill an empty block — never clobber anything already typed.
       setForm((f) =>
         customerIsEmpty(f.customer)
           ? { ...f, customer: draft.customer, serviceType: draft.serviceType }
@@ -455,7 +458,13 @@ export default function QuoteBuilder({
   // filled (a user action — setState here is fine, it's not an effect).
   const clearDraftAndReset = () => {
     clearQuoteDraft();
-    setForm((f) => ({ ...f, customer: { name: '', phone: '', email: '', address: '' } }));
+    // Reset BOTH fields the restore filled — the customer block and the
+    // service type — back to the blank-quote defaults, so Clear fully undoes it.
+    setForm((f) => ({
+      ...f,
+      customer: { name: '', phone: '', email: '', address: '' },
+      serviceType: initialFormData.serviceType,
+    }));
     setDraftRestored(false);
   };
 
