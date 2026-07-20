@@ -108,19 +108,60 @@ role**. The confirm-yes gate applies to sensitive writes **regardless** of role.
 | Role | Who | May do |
 |---|---|---|
 | **crew** | field installers | read schedule / status / inventory; **submit install completion** (photos + material used); move a **job** stage (on-site → installed); capture a **field lead** |
-| **office** | office team | everything crew can + **capture/update contacts**, **move the GHL sales pipeline**, **send / nudge** quotes, reporting, **+ quote / color / price changes (money) + settings** |
-| **admin** | Naldo, Jason | same as office, **plus the one reserved power:** managing the bot itself — the allowlist + who holds which role |
+| **office** | office team | everything crew can + **capture/update contacts**, **move the GHL sales pipeline**, **send / nudge** quotes, reporting, **+ quote / color / price changes (money)** — but **NOT settings/config** |
+| **admin** | Naldo, Jason | everything + **all settings / configuration** (pricing rules, packages, scheduling, integrations) and **managing the bot itself** (allowlist + roles) |
 
 Keep it simple: a `staffId → role` map + a `minRole` on each tool. No per-tool ACL
 sprawl. A crew member texting a money command gets a polite "not permitted", logged.
 
-> **Updated by Naldo (2026-07-19):** the office team gets full write access —
-> including **quote / color / price changes and settings**. That means **office and
-> admin are functionally identical except one thing: only owners (Naldo/Jason)
-> manage the bot's roster** (who's on the allowlist and their role). If you want
-> office to manage the roster too, this collapses cleanly to **two tiers — crew and
-> staff**. Note the safety model is unchanged: the **confirm-yes gate + audit log**
-> are what make broad write access safe, and they apply regardless of role.
+> **Updated by Naldo (2026-07-19):** office/staff gets money writes (**quote / color
+> / price changes**) but **NOT settings / configuration**. All of settings — pricing
+> rules, packages, scheduling, integrations — plus **bot administration** (allowlist
+> + role assignment) is **admin-only**. That's a real three-tier split: crew → staff
+> → admin. The safety model is unchanged: the **confirm-yes gate + audit log** apply
+> regardless of role. Full per-permission matrix below.
+
+### Full permission matrix
+
+✓ allowed · — not allowed · ⚑ judgment call (default shown). Staff = office.
+
+| # | Permission | Crew | Staff | Admin |
+|---|---|:--:|:--:|:--:|
+| **A. Read / visibility** ||||
+| 1 | View quote / job status | ✓ | ✓ | ✓ |
+| 2 | View today's schedule / next install | ✓ | ✓ | ✓ |
+| 3 | View inventory / on-hand / low-stock | ✓ | ✓ | ✓ |
+| 4 | View customer contact info (for a job) | ✓ | ✓ | ✓ |
+| 5 | View full pipeline board / "what's stuck" | ⚑ — | ✓ | ✓ |
+| 6 | View financials / reporting | — | ✓ | ✓ |
+| **B. Field capture** ||||
+| 7 | Submit install completion (photos) | ✓ | ✓ | ✓ |
+| 8 | Log material actually used | ✓ | ✓ | ✓ |
+| 9 | Move a **job** fulfillment stage | ✓ | ✓ | ✓ |
+| 10 | Capture a new lead from the field | ✓ | ✓ | ✓ |
+| **C. CRM / sales** ||||
+| 11 | Create / update a customer contact | — | ✓ | ✓ |
+| 12 | Move the GHL **sales** pipeline | — | ✓ | ✓ |
+| 13 | Send a quote to a customer | — | ✓ | ✓ |
+| 14 | Nudge / remind customers | — | ✓ | ✓ |
+| **D. Quote / money** ||||
+| 15 | Request a quote change / amend (price) | — | ✓ | ✓ |
+| 16 | Request a color change | — | ✓ | ✓ |
+| 17 | Apply a price override / discount | — | ⚑ ✓ | ✓ |
+| 18 | Staff-approve / staff-decline for a customer | — | ⚑ ✓ | ✓ |
+| 19 | Convert quote → job / trigger booking | — | ✓ | ✓ |
+| **E. Settings / configuration — admin-only** ||||
+| 20 | Business settings (pricing rules, packages, colors) | — | — | ✓ |
+| 21 | Scheduling / availability windows | — | — | ✓ |
+| 22 | Notification / digest preferences | — | — | ✓ |
+| 23 | Integration config (API keys, kill-switch flags) | — | — | ✓ |
+| **F. Bot administration — owner-only** ||||
+| 24 | Add / remove people on the allowlist | — | — | ✓ |
+| 25 | Assign / change a person's role | — | — | ✓ |
+| 26 | Enable / disable the whole bot | — | — | ✓ |
+
+**Universal (not per-role):** the confirm-yes gate + audit log apply to every
+sensitive write regardless of role. **Open judgment calls:** rows 5, 17, 18.
 
 ## The ops tools (maps to Naldo's list)
 
