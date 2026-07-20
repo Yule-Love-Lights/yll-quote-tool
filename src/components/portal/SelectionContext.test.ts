@@ -4,7 +4,14 @@ import {
   nextSelectedItemIds,
   nextPackageSelectedItemIds,
   frozenMutatorGroups,
+  resolveInitialColorState,
 } from './SelectionContext';
+import {
+  DEFAULT_COLOR_SCHEME_ID,
+  CUSTOM_SCHEME_ID,
+  DEFAULT_COLOR_SCHEMES,
+  DEFAULT_BUILDABLE_COLOR_IDS,
+} from '@/lib/design/colorSchemes';
 import { sumSelectedItems } from './format';
 import { priceSelection, effectiveCharges, orderMinimumStatus } from '@/lib/portal/derivePackages';
 import type { PortalCharges, PortalPackage } from './types';
@@ -313,5 +320,48 @@ describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
       fees: false,
       appearance: false,
     });
+  });
+});
+
+// #163 — the colour the portal OPENS on. A booked order with a frozen colour
+// (approved with one, or staff applied a colour-change request) must open ON
+// that colour; everything else keeps the S9 "as designed" default.
+describe('resolveInitialColorState (#163 frozen-colour seed)', () => {
+  const SCHEMES = DEFAULT_COLOR_SCHEMES;
+  const BUILDABLE = DEFAULT_BUILDABLE_COLOR_IDS;
+
+  it('no frozen colour (pre-approval / older snapshot) → the S9 default', () => {
+    expect(resolveInitialColorState(undefined, undefined, SCHEMES, BUILDABLE)).toEqual({
+      schemeId: DEFAULT_COLOR_SCHEME_ID,
+      pattern: [],
+    });
+  });
+
+  it('a known frozen scheme opens the portal ON it (the staff-applied colour survives reopen)', () => {
+    expect(resolveInitialColorState('multicolor', undefined, SCHEMES, BUILDABLE)).toEqual({
+      schemeId: 'multicolor',
+      pattern: [],
+    });
+  });
+
+  it('a scheme deleted from Settings since freezing falls back to the default (never seeds a dead id)', () => {
+    expect(resolveInitialColorState('retired-scheme', undefined, SCHEMES, BUILDABLE)).toEqual({
+      schemeId: DEFAULT_COLOR_SCHEME_ID,
+      pattern: [],
+    });
+  });
+
+  it('a frozen custom pattern opens on custom with the sanitized pattern', () => {
+    const pattern = BUILDABLE.slice(0, 2);
+    expect(resolveInitialColorState(CUSTOM_SCHEME_ID, pattern, SCHEMES, BUILDABLE)).toEqual({
+      schemeId: CUSTOM_SCHEME_ID,
+      pattern,
+    });
+  });
+
+  it('a frozen custom whose colours are no longer buildable collapses to the default', () => {
+    expect(
+      resolveInitialColorState(CUSTOM_SCHEME_ID, ['not-a-color'], SCHEMES, BUILDABLE),
+    ).toEqual({ schemeId: DEFAULT_COLOR_SCHEME_ID, pattern: [] });
   });
 });
