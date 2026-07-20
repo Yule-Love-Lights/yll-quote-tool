@@ -88,9 +88,14 @@ describe('runStatusTool', () => {
     expect(byJobNum).not.toContain('#101 Maria');
   });
 
-  it('excludes legacy rebook drafts from name searches', async () => {
+  it('excludes legacy rebook DRAFTS from name searches, but finds a SENT legacy quote', async () => {
     listQuotes.mockResolvedValue([quote({ legacy_rebook: true })]);
     expect(await runStatusTool('alvarez')).toBe('No quote or job matching "alvarez".');
+
+    listQuotes.mockResolvedValue([
+      quote({ legacy_rebook: true, quote_sent_at: '2026-07-15T00:00:00Z' }),
+    ]);
+    expect(await runStatusTool('alvarez')).toContain('#101 Maria Alvarez — Sent, not viewed');
   });
 
   it('tags test rows and caps long hit lists', async () => {

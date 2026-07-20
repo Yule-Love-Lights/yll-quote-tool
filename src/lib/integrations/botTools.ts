@@ -61,9 +61,13 @@ export async function runStatusTool(query: string): Promise<string> {
   const numeric = /^\d+$/.test(q) ? Number(q) : null;
   const needle = q.toLowerCase();
 
-  // Legacy rebook drafts excluded on purpose: 130+ pre-send legacy quotes
-  // (#155) carry real customer names and would flood any name search.
-  const quotes = (await listQuotes()).filter((r) => !r.legacy_rebook);
+  // Legacy rebook DRAFTS excluded on purpose: 130+ not-yet-sent legacy quotes
+  // (#155) carry real customer names and would flood any name search. Once a
+  // legacy quote is actually sent (the send wave), it's a live quote staff
+  // legitimately ask about — only the unsent backlog stays invisible here.
+  const quotes = (await listQuotes()).filter(
+    (r) => !(r.legacy_rebook && deriveStatus(r) === 'draft'),
+  );
   const quoteHits = quotes.filter((r) =>
     numeric != null
       ? r.quote_number === numeric

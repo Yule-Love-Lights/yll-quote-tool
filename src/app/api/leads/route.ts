@@ -346,11 +346,19 @@ export async function POST(req: NextRequest) {
   // Phase 1 text-ops ping (2026-07-19 plan): instant staff Telegram heads-up
   // for a real lead. notifyTelegram is best-effort by contract (fail-open,
   // no-op while the bot is dormant) — it must never affect the lead path.
-  // Test leads stay silent.
+  // Raced against a 2s cap because this is the one notifyTelegram call on a
+  // CUSTOMER-facing request: its fetch has no timeout of its own, and a hung
+  // Telegram API must not hang a homeowner's form submit. Test leads stay
+  // silent.
   if (!isTest) {
-    await notifyTelegram(
-      newLeadMessage({ name, service, phone, address, baseUrl: appBaseUrl() }),
-    );
+    let pingTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      notifyTelegram(newLeadMessage({ name, service, phone, address, baseUrl: appBaseUrl() })),
+      new Promise<void>((resolve) => {
+        pingTimer = setTimeout(resolve, 2000);
+      }),
+    ]);
+    clearTimeout(pingTimer);
   }
 
   // GHL sync — best effort. The row is already saved (source of truth); any
