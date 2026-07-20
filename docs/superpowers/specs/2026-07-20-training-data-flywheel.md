@@ -183,6 +183,28 @@ existing training doc.
 4. Do camera-roll exports preserve EXIF GPS? (Google Photos/iCloud exports usually do; WhatsApp
    re-shares don't. Determines how much address matching is automatic.)
 
+## Appendix — P1 source folders (inventoried 2026-07-20, same day as this spec)
+
+Naldo shared 5 Drive folders (owner info@yulelovelights.com); full listing in
+`data/2026-07-20-training-archive-inventory.csv` (695 files):
+
+| # | Folder | Files | Named by customer? |
+|---|---|---|---|
+| 1 | Homes without Logo v2 (`1UGNu5rXy1jTRNJtxJYaZoyovRDK3tOOS`) | 192 | mostly; ~71 camera-named strays |
+| 2 | Homes with Logo (`1-1im8H-vzE5ZGZhLkGSrjHzcrAtzuC7E`) | 87 | yes (watermarked dupes) |
+| 3 | Homes without Logo (`1-3h0eizZGGnLn5sT47ptHyq9aHjtiN1C`) | 72 | yes; 2 strays |
+| 4 | Homes Without Logo — older (`1n3EdwfDENWKdvpQLqEJa5O2PRKGuVShi`) | 190 | **no — all numbered img##.png** |
+| 5 | 2025 Installs (`1OVHgD5DBLBpZTH26--fYfqSQVJNtU4Ia`) | 154 | yes, some with addresses |
+
+263 files lacked customer names; 31 were auto-resolved as exact byte-size twins of named
+files (`data/2026-07-20-photo-automatch.csv`; size match = candidate, verify pixels at ingest);
+232 need human naming (`data/2026-07-20-photo-naming-checklist.md`, sent to Naldo 2026-07-20).
+Notes for the P1 build: folder-4 files are PNG screenshots (no EXIF GPS → name/address must come
+from the human pass); folders 1/3/5 HEIC/JPG originals likely carry EXIF GPS; folder 2 is
+watermarked duplicates (dedupe against folder 1/3 by size/pixel, don't double-ingest). This
+sandbox's network policy blocks raw Drive downloads (gateway 403) — the pipeline must run
+server-side in the app with proper Drive API credentials, not in a CCR shell.
+
 ## Risks
 
 - **OCR misreads of handwritten counts** → review queue catches; low-confidence flagged.
