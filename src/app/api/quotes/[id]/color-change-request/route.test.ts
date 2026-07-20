@@ -34,18 +34,32 @@ const req = (body: unknown) =>
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null) {
+function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: Row[] = [{ id: ID }]) {
   const updates: Row[] = [];
+  let table = '';
+  let updating = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
-    from: () => b,
+    from: (t: string) => {
+      table = t;
+      return b;
+    },
     select: () => b,
     update: (payload: Row) => {
+      updating = true;
       updates.push(payload);
       return b;
     },
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    maybeSingle: async () => ({ data: fresh, error: null }),
+    // Models the CAS write: a quotes UPDATE resolves to the rows that matched the
+    // .eq('approval_snapshot', ...) filter — [] simulates a lost concurrency race.
+    then: (resolve: (v: unknown) => void) => {
+      const data = updating && table === 'quotes' ? quoteUpdateRows : null;
+      updating = false;
+      resolve({ data, error: null });
+    },
   });
   return { client: b, updates };
 }
@@ -56,9 +70,12 @@ function bookedQuote(overrides: Row = {}) {
     customer_name: 'Test Person',
     customer_email: 'test@example.com',
     customer_phone: '+16315551212',
-    highlevel_contact_id: 'hl-1',
     service_type: 'holiday',
+    highlevel_contact_id: 'hl-1',
     customer_approved_at: '2026-01-01T00:00:00Z',
+    deposit_paid_at: '2026-01-02T00:00:00Z',
+    quote_sent_at: '2025-12-01T00:00:00Z',
+    status: 'booked',
     total: 2000,
     approval_snapshot: { customerSelection: { packageId: 'C', selectedItemIds: ['x'] } },
     ...overrides,
@@ -126,5 +143,26 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
     expect(res.status).toBe(200);
     expect(updates).toHaveLength(1); // the request was still recorded
+  });
+
+  // ── the #163 CAS-race + terminal fixes ─────────────────────────────────────
+  it('409s (concurrent-edit) when the CAS write matches no rows — never clobbers a racing amend', async () => {
+    const q = bookedQuote();
+    const { client } = makeSb(q, q, []); // [] = the CAS lost the race to a concurrent write
+    sbRef.current = client;
+    const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+    const body = await res.json();
+    expect(res.status).toBe(409);
+    expect(body.code).toBe('concurrent-edit');
+    // inbox is NOT pinged when the request did not persist
+    expect(ingestTouchMock).not.toHaveBeenCalled();
+  });
+
+  it('409s (not-editable) on a terminal order — a cancelled order takes no colour requests', async () => {
+    sbRef.current = makeSb(bookedQuote({ status: 'cancelled' })).client;
+    const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+    const body = await res.json();
+    expect(res.status).toBe(409);
+    expect(body.code).toBe('not-editable');
   });
 });

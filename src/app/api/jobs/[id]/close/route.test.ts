@@ -256,6 +256,28 @@ describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () =>
     expect(res.status).toBe(200);
   });
 
+  it('STILL blocks when a cosmetic $0 entry is appended AFTER a pending price increase (settlement-gate parity)', async () => {
+    // A +$500 amend (consent pending) then a cosmetic zero-delta entry — a #163
+    // colour apply or a #162 free-item add. Using latestConsentAmendment, close
+    // must see PAST the cosmetic entry to the real increase and refuse to settle,
+    // matching mark-paid + charge-balance. (latestAmendment would read the cosmetic
+    // entry and wrongly settle the un-consented order.)
+    sbRef.current = makeQuoteSb({
+      approval_snapshot: {
+        amendments: [
+          { delta: 500, new_total: 6000 },
+          { delta: 0, new_total: 6000 },
+        ],
+      },
+      status: 'booked',
+    });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('reconsent-required');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
   it('does NOT block a quote with no amendments at all', async () => {
     sbRef.current = makeQuoteSb({ approval_snapshot: { amendments: [] }, status: 'booked' });
     const res = await POST(req(), ctx());

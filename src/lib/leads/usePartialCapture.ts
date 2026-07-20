@@ -24,6 +24,43 @@ export type PartialCaptureFields = {
   notes?: string;
 };
 
+export type PartialCaptureConfig = { source: string; formVariant: string; service?: string };
+
+// Pure helpers extracted from the hook so the load-bearing decisions (a lone
+// name isn't a lead; the de-dup key that stops one navigation double-posting)
+// are unit-testable without rendering — the house convention is pure-logic tests.
+
+/** The POST body, or null when there's no usable contact handle yet. */
+export function buildPartialPayload(
+  fields: PartialCaptureFields,
+  cfg: PartialCaptureConfig,
+  captureId: string | null,
+  landingUrl?: string,
+): Record<string, unknown> | null {
+  const email = (fields.email ?? '').trim();
+  const phone = (fields.phone ?? '').trim();
+  const hasEmail = EMAIL_RE.test(email);
+  const hasPhone = (phone.match(/\d/g) ?? []).length >= PHONE_MIN_DIGITS;
+  if (!hasEmail && !hasPhone) return null; // a lone name (or junk) isn't a lead
+  return {
+    captureId: captureId ?? undefined,
+    name: (fields.name ?? '').trim() || undefined,
+    email: hasEmail ? email : undefined,
+    phone: phone || undefined,
+    address: (fields.address ?? '').trim() || undefined,
+    notes: (fields.notes ?? '').trim() || undefined,
+    service: cfg.service,
+    formVariant: cfg.formVariant,
+    source: cfg.source,
+    landingUrl,
+  };
+}
+
+/** De-dup key: the contact-data fields only, so an unchanged repeat is skipped. */
+export function partialCaptureKey(payload: Record<string, unknown>): string {
+  return [payload.name, payload.email, payload.phone, payload.address, payload.notes].join('|');
+}
+
 export function usePartialCapture(opts: {
   enabled: boolean;
   source: string;
@@ -49,32 +86,15 @@ export function usePartialCapture(opts: {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function buildPayload(): Record<string, unknown> | null {
-    const f = fieldsRef.current;
-    const email = (f.email ?? '').trim();
-    const phone = (f.phone ?? '').trim();
-    const hasEmail = EMAIL_RE.test(email);
-    const hasPhone = (phone.match(/\d/g) ?? []).length >= PHONE_MIN_DIGITS;
-    if (!hasEmail && !hasPhone) return null; // a lone name isn't a lead yet
-    const cfg = cfgRef.current;
-    return {
-      captureId: captureIdRef.current ?? undefined,
-      name: (f.name ?? '').trim() || undefined,
-      email: hasEmail ? email : undefined,
-      phone: phone || undefined,
-      address: (f.address ?? '').trim() || undefined,
-      notes: (f.notes ?? '').trim() || undefined,
-      service: cfg.service,
-      formVariant: cfg.formVariant,
-      source: cfg.source,
-      landingUrl: typeof location !== 'undefined' ? location.href.slice(0, 1000) : undefined,
-    };
+    const landingUrl = typeof location !== 'undefined' ? location.href.slice(0, 1000) : undefined;
+    return buildPartialPayload(fieldsRef.current, cfgRef.current, captureIdRef.current, landingUrl);
   }
 
   function capture(useBeacon: boolean) {
     if (!enabledRef.current) return;
     const payload = buildPayload();
     if (!payload) return;
-    const key = [payload.name, payload.email, payload.phone, payload.address, payload.notes].join('|');
+    const key = partialCaptureKey(payload);
     // Skip an unchanged repeat — applies to the page-leave beacon too, so a
     // single navigation firing BOTH visibilitychange:hidden and pagehide can't
     // write the same partial twice. A beacon with genuinely new data still has
