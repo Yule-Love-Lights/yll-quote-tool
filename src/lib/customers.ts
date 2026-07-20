@@ -123,13 +123,22 @@ function safeOrValue(v: string): boolean {
   return SAFE_OR_VALUE_RE.test(v) && !v.includes(',') && !v.includes('(') && !v.includes(')');
 }
 
-// Phone → digits only (drops formatting: spaces, dashes, parens, +). Null when
-// there are no digits.
+// Phone → the NATIONAL number (drops formatting AND the NANP country code).
+// Null when there are no digits.
+//
+// GHL stores US numbers in E.164 ('+16315550100', 11 digits) while every form
+// stores 10; a plain digit-strip kept the leading 1, so the same person hashed
+// to two different match_keys (phone:16315550100 vs phone:6315550100) and got
+// TWO customer rows, losing rebook/property history (the same bug class fixed in
+// leadService's household guard, S42). Strip ONLY the 11-digit leading-1 NANP
+// code — a blind last-10 slice would merge unrelated international numbers onto
+// a US one. Anything else is left intact so it simply fails to match.
 export function normalizePhone(v: string | null | undefined): string | null {
   const t = norm(v);
   if (!t) return null;
   const digits = t.replace(/\D/g, '');
-  return digits.length ? digits : null;
+  if (!digits.length) return null;
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
 }
 
 // Address → dedup key: lowercased, punctuation (.,#) to spaces, whitespace

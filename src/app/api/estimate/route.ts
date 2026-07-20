@@ -36,6 +36,7 @@ import {
 } from '@/lib/selfServe/estimateRange';
 import { recordSelfServeEstimate } from '@/lib/selfServe/telemetry';
 import { persistSelfServeDesign } from '@/lib/selfServe/design';
+import { consumeAnalyzerBudget } from '@/lib/selfServe/budget';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -116,8 +117,23 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // A geocode that can't resolve the address (bad/typo'd) — ask the customer
     // to check it. (A transient Google error lands here too; a retry recovers.)
-    console.error('[api/estimate] geocode (service-area gate) failed:', err);
+    console.error('[api/estimate] geocode (service-area gate) failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ measured: false, reason: 'address_not_found' }, { status: 200 });
+  }
+
+  // ── 0.5 Spend guard — aggregate DAILY cap on the paid analyzer ────────────
+  // The per-IP rate limit above bounds ONE attacker's rate; this bounds the
+  // TOTAL daily bill across all IPs (the public-endpoint abuse the pre-launch
+  // review flagged). Consumed HERE — after the free geocode/precision/area gates
+  // pass, before the paid imagery + analyzer — so only genuinely-billable
+  // requests count against it. Over the cap → route to follow-up lead capture
+  // (the visitor still becomes a lead; we just don't spend). Fails OPEN on a DB
+  // error, since the per-IP limit still applies and a blip must not kill the
+  // feature. Inert until the migration is applied (RPC missing → fail open).
+  const budget = await consumeAnalyzerBudget();
+  if (!budget.allowed) {
+    console.warn(`[api/estimate] daily analyzer budget reached (${budget.count}/${budget.cap}) — routing to follow-up`);
+    return NextResponse.json({ measured: false, reason: 'at_capacity' }, { status: 200 });
   }
 
   // ── 1. Imagery (geocode + Street View + satellite) ────────────────────────
@@ -133,7 +149,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof NoStreetViewError) {
       return NextResponse.json({ measured: false, reason: 'no_streetview' }, { status: 200 });
     }
-    console.error('[api/estimate] imagery fetch failed:', err);
+    console.error('[api/estimate] imagery fetch failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ error: 'Could not load imagery for this address' }, { status: 502 });
   }
 
@@ -169,7 +185,7 @@ export async function POST(req: NextRequest) {
     const shownTotal = Math.max(priced.total, BUSINESS_RULES.minimumQuoteAmount);
     ({ low, high } = computeEstimateRange(shownTotal));
   } catch (err) {
-    console.error('[api/estimate] pricing failed:', err);
+    console.error('[api/estimate] pricing failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
   }
 
@@ -191,7 +207,7 @@ export async function POST(req: NextRequest) {
     // never blocks the price.
     if (quoteId) await recordSelfServeEstimate(quoteId, { low, high, total: priced.total, confidence: result!.confidence });
   } catch (err) {
-    console.error('[api/estimate] draft save failed (returning price anyway):', err);
+    console.error('[api/estimate] draft save failed (returning price anyway):', err instanceof Error ? err.message : 'error');
   }
 
   // ── 6. Persist the MEASUREMENT behind the number — AFTER the response ─────

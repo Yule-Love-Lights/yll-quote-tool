@@ -110,8 +110,11 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // Customer self-serve estimate (ledger self-serve, Phase A) — the public
   // "type your address, get an instant range" front door. The page + its two
   // APIs self-gate on the SELF_SERVE_ESTIMATE_ENABLED flag (404 when off) and
-  // are honeypot + rate-limited in the routes themselves.
-  if (path === '/estimate' || path.startsWith('/estimate/')) return true;
+  // are honeypot + rate-limited in the routes themselves. EXACT match only — the
+  // one page is `/estimate` (the embed uses a ?embed=1 QUERY, not a sub-path), so
+  // a future `/estimate/<something>` must be allowlisted deliberately, never
+  // shipped public by a prefix (defense-in-depth, review 2026-07-20).
+  if (path === '/estimate') return true;
 
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
