@@ -8,14 +8,27 @@ function daysBetween(later: string, earlier: string): number {
   return (new Date(later).getTime() - new Date(earlier).getTime()) / MS_PER_DAY;
 }
 
+/** Phone → national digits for grouping. GHL stores E.164 ('+16315550100'),
+ *  forms store 10 digits; strip only the 11-digit NANP leading 1 so the two
+ *  group as one person (not a blind last-10, which would merge unrelated
+ *  international numbers). Null when there are no digits, so it falls through to
+ *  name rather than keying on junk. Mirrors normalizePhone in lib/customers.ts. */
+function nationalDigits(v: string): string | null {
+  const digits = v.replace(/\D/g, '');
+  if (!digits.length) return null;
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+}
+
 /** Stable customer key: HL contact id wins; otherwise email, phone, then name.
- *  Shared with the Customers aggregation (lib/dashboard/customers.ts). */
+ *  Shared with the Customers aggregation (lib/dashboard/customers.ts). Phone is
+ *  normalized so the same person in E.164 and 10-digit form counts once (S42);
+ *  it's a grouping key only, never displayed. */
 export function customerKey(q: DashboardQuote): string {
-  return q.highlevel_contact_id
-    ?? q.customer_email
-    ?? q.customer_phone
-    ?? q.customer_name
-    ?? `__unknown_${q.id}`;
+  if (q.highlevel_contact_id) return q.highlevel_contact_id;
+  if (q.customer_email) return q.customer_email;
+  const phone = q.customer_phone ? nationalDigits(q.customer_phone) : null;
+  if (phone) return phone;
+  return q.customer_name ?? `__unknown_${q.id}`;
 }
 
 /**
