@@ -32,3 +32,34 @@ export function isServedArea(county: string | undefined | null, state: string | 
   const withSuffix = c.endsWith(' county') ? c : `${c} county`;
   return SERVED_COUNTIES.includes(withSuffix);
 }
+
+// Google's precision levels that mean "we located an actual building". ROOFTOP
+// is an exact structure; RANGE_INTERPOLATED is a point interpolated between two
+// known house numbers on the street — close enough to image the right house.
+// GEOMETRIC_CENTER (street/polygon midpoint) and APPROXIMATE (town/ZIP centroid)
+// are NOT.
+const PRECISE_LOCATION_TYPES = ['ROOFTOP', 'RANGE_INTERPOLATED'];
+
+/**
+ * True when a geocode actually resolved to a specific HOME, not a town/ZIP
+ * centroid.
+ *
+ * Found by the first live smoke (2026-07-20): an unresolvable street ("6 Birds
+ * Rose, Amityville NY") does NOT error — Google silently returns the TOWN
+ * centroid with location_type 'APPROXIMATE', partial_match true, types
+ * ['locality','political'] and no street_number, but WITH a valid county
+ * ("Suffolk County"). That sailed through isServedArea, so we imaged the middle
+ * of Amityville, measured whatever building sat there, and showed the customer a
+ * confident price for a house we never located. Quoting an unlocated building is
+ * a money bug, so the estimator now requires a precise hit and otherwise asks the
+ * customer to check their address.
+ */
+export function isPreciseAddress(geo: {
+  locationType?: string;
+  partialMatch?: boolean;
+  hasStreetAddress?: boolean;
+}): boolean {
+  if (geo.partialMatch === true) return false;
+  if (!geo.hasStreetAddress) return false;
+  return PRECISE_LOCATION_TYPES.includes((geo.locationType ?? '').trim().toUpperCase());
+}
