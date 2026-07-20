@@ -35,6 +35,7 @@ import {
   computeEstimateRange,
 } from '@/lib/selfServe/estimateRange';
 import { recordSelfServeEstimate } from '@/lib/selfServe/telemetry';
+import { persistSelfServeDesign } from '@/lib/selfServe/design';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -191,6 +192,23 @@ export async function POST(req: NextRequest) {
     if (quoteId) await recordSelfServeEstimate(quoteId, { low, high, total: priced.total, confidence: result!.confidence });
   } catch (err) {
     console.error('[api/estimate] draft save failed (returning price anyway):', err);
+  }
+
+  // ── 6. Persist the MEASUREMENT behind the number ──────────────────────────
+  // Attach the same design a staff quote gets: the Street View photo with the
+  // analyzer's traced roofline seeded onto it, plus the satellite image, its
+  // feet-per-pixel scale, and the satellite polylines. Without this the quote
+  // stores footage with no visual evidence — nobody (owner or verifying staff)
+  // can check WHERE the number came from, which defeats the Phase A
+  // staff-confirms-every-quote premise. Best-effort: the price is already saved,
+  // so a storage failure costs the drawing, never the estimate.
+  if (quoteId) {
+    await persistSelfServeDesign(quoteId, {
+      result: result!,
+      streetView,
+      satellite,
+      satelliteFeetPerPixel,
+    });
   }
 
   return NextResponse.json(
