@@ -19,7 +19,7 @@
 // binding number: it saves an Anonymous draft (staff confirm every self-serve
 // quote before the customer can pay) and returns a RANGE.
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { isSelfServeEstimateEnabled } from '@/lib/selfServe/estimateFlag';
 import { isClaudeConfigured } from '@/lib/claude';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -194,20 +194,32 @@ export async function POST(req: NextRequest) {
     console.error('[api/estimate] draft save failed (returning price anyway):', err);
   }
 
-  // ── 6. Persist the MEASUREMENT behind the number ──────────────────────────
+  // ── 6. Persist the MEASUREMENT behind the number — AFTER the response ─────
   // Attach the same design a staff quote gets: the Street View photo with the
   // analyzer's traced roofline seeded onto it, plus the satellite image, its
   // feet-per-pixel scale, and the satellite polylines. Without this the quote
   // stores footage with no visual evidence — nobody (owner or verifying staff)
   // can check WHERE the number came from, which defeats the Phase A
-  // staff-confirms-every-quote premise. Best-effort: the price is already saved,
-  // so a storage failure costs the drawing, never the estimate.
+  // staff-confirms-every-quote premise.
+  //
+  // Deliberately scheduled with after() rather than awaited inline. This handler
+  // has already spent ~20-40s on the analyzer against a 60s maxDuration, and
+  // this step adds two sharp() passes + two storage uploads. Awaiting it would
+  // put the CUSTOMER's response behind that work, so a slow run could time out
+  // the whole request and lose them a price that was already computed and saved.
+  // after() flushes the response first and does the drawing in the background:
+  // worst case the quote keeps its price and loses only the picture.
   if (quoteId) {
-    await persistSelfServeDesign(quoteId, {
-      result: result!,
-      streetView,
-      satellite,
-      satelliteFeetPerPixel,
+    const persistArgs = { result: result!, streetView, satellite, satelliteFeetPerPixel };
+    const idForDesign = quoteId;
+    after(async () => {
+      // persistSelfServeDesign is itself non-throwing; the extra catch guards the
+      // after() task so a rejection can't surface as an unhandled rejection.
+      try {
+        await persistSelfServeDesign(idForDesign, persistArgs);
+      } catch (err) {
+        console.error('[api/estimate] design persist (after) failed:', err instanceof Error ? err.message : 'error');
+      }
     });
   }
 
