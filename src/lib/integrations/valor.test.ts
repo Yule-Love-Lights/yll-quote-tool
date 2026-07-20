@@ -44,6 +44,31 @@ describe('parseWebhookEvent — order ref extraction', () => {
     expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00', amount: '135000' } })).amountUsd).toBe(1350);
     expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00' } })).amountUsd).toBeNull();
   });
+
+  // #161: Valor's Webhook User Guide documents the TRANSACTION event's card
+  // token as `vtToken` — a name the pick-list never included (the #159
+  // invoice_no class). The webhook route already persists event.vaultToken →
+  // quotes.valor_vault_token, so catching the documented name may be the whole
+  // card-on-file capture story.
+  it('picks the vault token from the DOCUMENTED shape data.vtToken', () => {
+    const ev = parseWebhookEvent(
+      JSON.stringify({
+        event: 'TRANSACTION',
+        data: { txn_id: 'T', response_code: '00', vtToken: 'A1C7CA96D0D3C6276A37324F3477DFD2588D9384' },
+      }),
+    );
+    expect(ev.vaultToken).toBe('A1C7CA96D0D3C6276A37324F3477DFD2588D9384');
+  });
+
+  it('still honors the legacy vault_token / token names (no regression)', () => {
+    expect(
+      parseWebhookEvent(JSON.stringify({ data: { response_code: '00', vault_token: 'legacy1' } })).vaultToken,
+    ).toBe('legacy1');
+    expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00', token: 'legacy2' } })).vaultToken).toBe(
+      'legacy2',
+    );
+    expect(parseWebhookEvent(JSON.stringify({ data: { response_code: '00' } })).vaultToken).toBeNull();
+  });
 });
 
 // #161: the deposit hosted-page call charges EXACTLY the deposit (no surcharge)

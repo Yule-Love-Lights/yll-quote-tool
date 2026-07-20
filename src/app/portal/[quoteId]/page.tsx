@@ -334,6 +334,11 @@ export default async function PortalPage({
         // (appearance-only; items/fees stay locked). The change never persists —
         // the picker's "Request colour change" button notifies staff instead.
         colorPreviewWhenLocked={isBooked}
+        // #163 — an approved/booked order opens ON its frozen colour (approved
+        // choice or a staff-applied colour change) instead of "as designed";
+        // undefined pre-approval, so the S9 default is untouched.
+        initialColorSchemeId={quote.approval?.colorSchemeId}
+        initialCustomPattern={quote.approval?.customPattern}
         legacyRebook={quote.legacyRebook === true}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={

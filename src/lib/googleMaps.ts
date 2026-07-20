@@ -50,6 +50,18 @@ export type GeocodeResult = {
   // when Google omits that component (rare for a resolvable street address).
   county?: string;
   state?: string;
+  // Precision signals. When Google can't resolve a street address it silently
+  // falls back to a TOWN/ZIP centroid (location_type 'APPROXIMATE',
+  // partial_match true, types ['locality','political'], no street_number) —
+  // which still carries a valid county. The self-serve estimator must not quote
+  // that: it would measure whatever building sits at the centroid and hand the
+  // customer a confident price for a house we never located. Additive/optional.
+  /** Google's `geometry.location_type`: ROOFTOP | RANGE_INTERPOLATED | GEOMETRIC_CENTER | APPROXIMATE. */
+  locationType?: string;
+  /** Google's `partial_match` — true when the result is a fuzzy match for the query. */
+  partialMatch?: boolean;
+  /** True when the result carries BOTH street_number and route (a real street address, not a centroid). */
+  hasStreetAddress?: boolean;
 };
 
 // Pull one address component's long_name by its Google `type`. Exported for
@@ -80,6 +92,11 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult> {
     formattedAddress: top.formatted_address,
     county: addressComponent(top.address_components, 'administrative_area_level_2'),
     state: addressComponent(top.address_components, 'administrative_area_level_1'),
+    locationType: top.geometry?.location_type,
+    partialMatch: top.partial_match === true,
+    hasStreetAddress:
+      addressComponent(top.address_components, 'street_number') != null &&
+      addressComponent(top.address_components, 'route') != null,
   };
 }
 
