@@ -26,7 +26,7 @@ import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import { runAnalyzeWithFewShot } from '@/lib/analyzeWithFewShot';
 import { isGoogleMapsConfigured, getCachedAddressImagery, geocodeAddress, NoStreetViewError } from '@/lib/googleMaps';
-import { isServedArea } from '@/lib/selfServe/serviceArea';
+import { isServedArea, isPreciseAddress } from '@/lib/selfServe/serviceArea';
 import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote } from '@/lib/quotes';
 import {
@@ -98,10 +98,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
   }
 
-  // ── 0. Service-area gate — geocode FIRST and stop out-of-area homes BEFORE
-  // the expensive imagery + analyzer ever run (Nassau + Suffolk only). ────────
+  // ── 0. Geocode gate — resolve the address FIRST and stop both unlocatable and
+  // out-of-area homes BEFORE the expensive imagery + analyzer ever run. ───────
   try {
     const placed = await geocodeAddress(address);
+    // Precision check runs BEFORE the area check: an unresolvable street makes
+    // Google return the TOWN centroid, which still carries a valid county and
+    // would sail through isServedArea — then we'd image the middle of the town
+    // and quote a house we never located (found in the first live smoke).
+    if (!isPreciseAddress(placed)) {
+      return NextResponse.json({ measured: false, reason: 'address_not_found' }, { status: 200 });
+    }
     if (!isServedArea(placed.county, placed.state)) {
       return NextResponse.json({ served: false, reason: 'out_of_area' }, { status: 200 });
     }

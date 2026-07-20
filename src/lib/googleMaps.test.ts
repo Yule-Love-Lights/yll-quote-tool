@@ -151,7 +151,51 @@ describe('geocodeAddress', () => {
       )) as typeof fetch;
 
     const result = await geocodeAddress('1 Main St');
-    expect(result).toEqual({ lat: 40.7, lng: -73.9, formattedAddress: '1 Main St' });
+    // A bare result (no address_components / location_type) resolves its core
+    // fields and reports NO precision: not a partial match, but no street
+    // address either — so the self-serve estimator's isPreciseAddress rejects it
+    // rather than quoting a home it never located.
+    expect(result).toEqual({
+      lat: 40.7,
+      lng: -73.9,
+      formattedAddress: '1 Main St',
+      county: undefined,
+      state: undefined,
+      locationType: undefined,
+      partialMatch: false,
+      hasStreetAddress: false,
+    });
+  });
+
+  it('carries precision + county signals through from a full geocode result', async () => {
+    global.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            status: 'OK',
+            results: [
+              {
+                geometry: { location: { lat: 40.68, lng: -73.41 }, location_type: 'ROOFTOP' },
+                formatted_address: '6 Elm St, Massapequa, NY 11758, USA',
+                address_components: [
+                  { long_name: '6', types: ['street_number'] },
+                  { long_name: 'Elm St', types: ['route'] },
+                  { long_name: 'Nassau County', types: ['administrative_area_level_2', 'political'] },
+                  { long_name: 'New York', types: ['administrative_area_level_1', 'political'] },
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )) as typeof fetch;
+
+    const result = await geocodeAddress('6 Elm St, Massapequa, NY');
+    expect(result.county).toBe('Nassau County');
+    expect(result.state).toBe('New York');
+    expect(result.locationType).toBe('ROOFTOP');
+    expect(result.partialMatch).toBe(false);
+    expect(result.hasStreetAddress).toBe(true);
   });
 
   it('throws when the HTTP response is not ok', async () => {
