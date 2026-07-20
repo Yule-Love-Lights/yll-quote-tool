@@ -20,12 +20,15 @@ function nationalDigits(v: string): string | null {
 }
 
 /** Stable customer key: HL contact id wins; otherwise email, phone, then name.
- *  Shared with the Customers aggregation (lib/dashboard/customers.ts). Phone is
- *  normalized so the same person in E.164 and 10-digit form counts once (S42);
- *  it's a grouping key only, never displayed. */
+ *  Shared with the Customers aggregation (lib/dashboard/customers.ts). Email is
+ *  lowercased + trimmed and phone is normalized to its national number, so the
+ *  same person counts once regardless of email case or phone format (matching
+ *  customerMatchKey in lib/customers.ts). It's a grouping key only, never
+ *  displayed. */
 export function customerKey(q: DashboardQuote): string {
   if (q.highlevel_contact_id) return q.highlevel_contact_id;
-  if (q.customer_email) return q.customer_email;
+  const email = q.customer_email?.trim();
+  if (email) return email.toLowerCase();
   const phone = q.customer_phone ? nationalDigits(q.customer_phone) : null;
   if (phone) return phone;
   return q.customer_name ?? `__unknown_${q.id}`;

@@ -48,6 +48,18 @@ describe('customerKey — identity grouping', () => {
     // a phone with no digits falls through to name, same as before
     expect(customerKey(makeQuote({ customer_name: 'Jo', customer_email: null, customer_phone: 'n/a' }))).toBe('Jo');
   });
+
+  // Email is normalized the same way customerMatchKey (lib/customers.ts) does —
+  // trimmed + lowercased — so 'A@B.com', 'a@b.com', and ' a@b.com ' are ONE
+  // customer, not three. Left raw it split the same way phone used to.
+  it('normalizes email case + whitespace so one person groups once', () => {
+    const a = customerKey(makeQuote({ customer_email: 'A@B.com' }));
+    const b = customerKey(makeQuote({ customer_email: 'a@b.com' }));
+    const c = customerKey(makeQuote({ customer_email: '  a@b.com  ' }));
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(b).toBe('a@b.com');
+  });
 });
 
 describe('computeKpis — empty', () => {
