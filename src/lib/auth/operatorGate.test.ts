@@ -149,6 +149,27 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
   });
 
+  // Regression (production, S42): the partial endpoint shipped in #584 without
+  // an allowlist entry, so the default-deny gate 401'd every real visitor's
+  // abandoned-form capture. It looked fine in testing only because an operator's
+  // own session sailed through the gate.
+  it('allows POST + OPTIONS /api/leads/partial (abandoned-form capture, cross-origin) but keeps other methods operator-only (#leads)', () => {
+    const p = '/api/leads/partial';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'OPTIONS')).toBe(true); // route defines an OPTIONS handler for CORS
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('does NOT open any other /api/leads sub-path (the carve-out stays exact)', () => {
+    expect(isPublicPath('/api/leads/nonexistent', 'POST')).toBe(false);
+    expect(isPublicPath('/api/leads/partial/deeper', 'POST')).toBe(false);
+    // sibling operator/admin surfaces stay gated
+    expect(isPublicPath('/api/admin/leads', 'POST')).toBe(false);
+  });
+
   it('treats the self-serve estimate page as public (ledger self-serve, Phase A)', () => {
     for (const p of ['/estimate', '/estimate/', '/estimate/anything']) {
       expect(isPublicPath(p), p).toBe(true);
