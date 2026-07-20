@@ -12,7 +12,7 @@
 // ever active for a new, non-test quote.
 
 import type { FormCustomer } from './quoteForm';
-import type { ServiceType } from './serviceType';
+import { type ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 
 const KEY = 'yll_quote_draft_v1';
 
@@ -34,6 +34,19 @@ function hasWindow(): boolean {
 
 export function customerIsEmpty(c: FormCustomer): boolean {
   return !c.name.trim() && !c.phone.trim() && !c.email.trim() && !c.address.trim();
+}
+
+// Whether the QuoteBuilder draft (autosave + restore) is active for the current
+// quote. Only a brand-new, non-test quote that hasn't been saved yet qualifies:
+// a reopened/edit quote, a test quote, or one already persisted (savedQuoteId
+// set) is never touched — the saved row is the store of record there. Extracted
+// so this reopen-safety decision is unit-testable without rendering QuoteBuilder.
+export function draftAutosaveActive(opts: {
+  editMode: boolean;
+  isTest: boolean;
+  savedQuoteId: string | null;
+}): boolean {
+  return !opts.editMode && !opts.isTest && !opts.savedQuoteId;
 }
 
 export function loadQuoteDraft(): QuoteDraft | null {
@@ -58,7 +71,7 @@ export function loadQuoteDraft(): QuoteDraft | null {
     };
     // A draft with nothing in the customer block is worthless — treat as absent.
     if (customerIsEmpty(customer)) return null;
-    return { customer, serviceType: (parsed.serviceType as ServiceType) ?? 'holiday', savedAt };
+    return { customer, serviceType: (parsed.serviceType as ServiceType) ?? DEFAULT_SERVICE_TYPE, savedAt };
   } catch {
     return null;
   }

@@ -32,7 +32,7 @@ import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { getInvoiceByJob, markInvoicePaidManually } from '@/lib/invoices';
 import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
-import { latestAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
@@ -96,7 +96,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .select('approval_snapshot, status')
         .eq('id', invoice.quote_id)
         .maybeSingle<QuoteReconsentRow>();
-      const latest = latestAmendment(quoteRow?.approval_snapshot?.amendments);
+      // Use latestConsentAmendment (not latestAmendment) so a later COSMETIC
+      // zero-delta entry — e.g. a #163 colour apply or a #162 free-item add —
+      // can't mask a pending price-increase re-consent and let close settle it.
+      // Matches the mark-paid + charge-balance settlement gates.
+      const latest = latestConsentAmendment(quoteRow?.approval_snapshot?.amendments);
       if (blocksSettlement(latest)) {
         console.warn(
           `[api/jobs/:id/close] blocked settlement for job ${id} — reconsent required ` +
