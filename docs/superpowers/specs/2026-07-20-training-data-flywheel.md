@@ -202,8 +202,17 @@ files (`data/2026-07-20-photo-automatch.csv`; size match = candidate, verify pix
 Notes for the P1 build: folder-4 files are PNG screenshots (no EXIF GPS → name/address must come
 from the human pass); folders 1/3/5 HEIC/JPG originals likely carry EXIF GPS; folder 2 is
 watermarked duplicates (dedupe against folder 1/3 by size/pixel, don't double-ingest). This
-sandbox's network policy blocks raw Drive downloads (gateway 403) — the pipeline must run
-server-side in the app with proper Drive API credentials, not in a CCR shell.
+sandbox's network policy blocks raw Drive downloads (gateway 403), and the Drive connector
+returns empty content for images and has no rename/delete ops (copy/create only) — so the
+pipeline must run server-side in the app with proper Drive API credentials, not in a CCR shell.
+
+Two P1 requirements locked by Naldo's follow-ups (2026-07-20): (1) **same-house multi-angle
+clustering is a pipeline step** — pixel-level near-dup + same-house grouping runs BEFORE the
+review queue so a house is confirmed once, not once per angle (the interim human checklist only
+collapses provable byte-size duplicates and supports `img13-16 = Name` range replies);
+(2) **names flow back into Drive** — the connector can't rename in place, so confirmed names are
+written as copies into a canonical "YLL Training Archive — Named" Drive folder (originals
+untouched), which becomes the pipeline's preferred source.
 
 ## Risks
 

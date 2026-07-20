@@ -1,9 +1,13 @@
-# Photo naming checklist — 232 unnamed install photos
+# Photo naming checklist v2 — grouped, with range replies
 
-Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Main St)` — an address in parentheses helps but isn't required. Or just rename the files directly in Drive; I'll pick either up. Skip any photo that isn't a customer install (shop, test, etc.) by replying `img## = skip`.
+**How to reply (any batch size):**
+- One photo: `img13 = John Smith` (add the address if you know it: `img13 = John Smith (12 Main St)`)
+- **A run of angles of the SAME house: `img13-16 = John Smith`** — I apply the name to every photo in the range, so you never type a name twice. The numbered photos are in shooting order, so a house's angles are almost always consecutive numbers.
+- Not a customer install (shop/test/etc.): `img17 = skip`
+- Lines already joined with `+` below are provably the same image saved twice — one name covers them.
 
 
-## Folder: [Homes Without Logo (older, numbered)](https://drive.google.com/drive/folders/1n3EdwfDENWKdvpQLqEJa5O2PRKGuVShi) — 190 photos
+## Folder: [Homes Without Logo (older, numbered)](https://drive.google.com/drive/folders/1n3EdwfDENWKdvpQLqEJa5O2PRKGuVShi) — 190 photos in 183 lines
 
 - [ ] [img13.png](https://drive.google.com/file/d/1BeXQI__oGuTN327fJCDFcsyoNH_O5FGa/view) = 
 - [ ] [img14.png](https://drive.google.com/file/d/1G3WNfiTZurnvbVQBaTVHNtthitOxUcPp/view) = 
@@ -78,7 +82,7 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img83.png](https://drive.google.com/file/d/1g-pKEViW2kB0XwLPQJwSoa1yqukYoIWj/view) = 
 - [ ] [img84.png](https://drive.google.com/file/d/1vCg48-Gnke04TGJ_fffIAeK8yUm2lfWl/view) = 
 - [ ] [img85.png](https://drive.google.com/file/d/1Z4GeYPrE-NdCSC5wdF34S_sw5_l84BYU/view) = 
-- [ ] [img86.png](https://drive.google.com/file/d/1jEO0IT2Rbt7NyRlK5iQGE7p5V0x3Hin_/view) = 
+- [ ] [img86.png](https://drive.google.com/file/d/1jEO0IT2Rbt7NyRlK5iQGE7p5V0x3Hin_/view) + [img173.png](https://drive.google.com/file/d/187AXAM-m6awJmnr0Fsud3t_Vxr6RS-s7/view) *(same image ×2)* = 
 - [ ] [img87.png](https://drive.google.com/file/d/1mDKCk8e2T1S8nA5sIjhwJiHq87de_4R3/view) = 
 - [ ] [img88.png](https://drive.google.com/file/d/1W4OwizzCtR7JVAmdvXq1ROdSny7QKjoC/view) = 
 - [ ] [img89.png](https://drive.google.com/file/d/1elbvh3PB0W3STxYimM2tWuFLpcN3wv0R/view) = 
@@ -124,25 +128,21 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img130.png](https://drive.google.com/file/d/1iK2-mej7pKrcea1lUucxzipXRNa0iT7a/view) = 
 - [ ] [img131.png](https://drive.google.com/file/d/1PNV8iPPNFlaybhuN3iMRRKjiYL76P7qW/view) = 
 - [ ] [img132.png](https://drive.google.com/file/d/1bwvsEJ7G4tHSuFFSRQEJHV3ZHEUDsD6L/view) = 
-- [ ] [img133.png](https://drive.google.com/file/d/1njEIbD8sme8kegtBgCQJupFZ3s8SniSB/view) = 
-- [ ] [img134.png](https://drive.google.com/file/d/1mA1GHR6cpNATLMix3Nd5BDhZfz_E_Y9W/view) = 
-- [ ] [img135.png](https://drive.google.com/file/d/1MhOMaxFLqlyk8MTxlg5srI7UvOCIjOcX/view) = 
-- [ ] [img136.png](https://drive.google.com/file/d/1vBEPoZR3eDqvmfB5SnPBXFKl725lAGPr/view) = 
-- [ ] [img137.png](https://drive.google.com/file/d/1n7WJ9ye649j_t0NFmfIa1G_8m9bmJ58u/view) = 
+- [ ] [img133.png](https://drive.google.com/file/d/1njEIbD8sme8kegtBgCQJupFZ3s8SniSB/view) + [img192.png](https://drive.google.com/file/d/1G1dhtod5NQUHCcoaLv91quMTWRypjUFq/view) *(same image ×2)* = 
+- [ ] [img134.png](https://drive.google.com/file/d/1mA1GHR6cpNATLMix3Nd5BDhZfz_E_Y9W/view) + [img160.png](https://drive.google.com/file/d/1JB-erwHDcRzwIYjj5OEbEx6lXWGv4mvf/view) *(same image ×2)* = 
+- [ ] [img135.png](https://drive.google.com/file/d/1MhOMaxFLqlyk8MTxlg5srI7UvOCIjOcX/view) + [img140.png](https://drive.google.com/file/d/19fGlc_UbZW3tdDwvLGnCrUKCsSc5FtdJ/view) *(same image ×2)* = 
+- [ ] [img136.png](https://drive.google.com/file/d/1vBEPoZR3eDqvmfB5SnPBXFKl725lAGPr/view) + [img143.png](https://drive.google.com/file/d/1lfH3ctXvmIQbTqLDch3xX1dVECA2NP6M/view) *(same image ×2)* = 
+- [ ] [img137.png](https://drive.google.com/file/d/1n7WJ9ye649j_t0NFmfIa1G_8m9bmJ58u/view) + [img141.png](https://drive.google.com/file/d/1B9ZOluJcUwiu63NOC02lMGrPwNppgn1-/view) *(same image ×2)* = 
 - [ ] [img138.png](https://drive.google.com/file/d/1wmpv4AjE0FQYIfdsshqodpAK4Ext8Jc8/view) = 
 - [ ] [img139.png](https://drive.google.com/file/d/14LXywh5RxAy-1koxvCmKkbUAZuAv8S0m/view) = 
-- [ ] [img140.png](https://drive.google.com/file/d/19fGlc_UbZW3tdDwvLGnCrUKCsSc5FtdJ/view) = 
-- [ ] [img141.png](https://drive.google.com/file/d/1B9ZOluJcUwiu63NOC02lMGrPwNppgn1-/view) = 
 - [ ] [img142.png](https://drive.google.com/file/d/1LJQFDMAOGK-XymcC-eW5f5jYQDGt9Z_x/view) = 
-- [ ] [img143.png](https://drive.google.com/file/d/1lfH3ctXvmIQbTqLDch3xX1dVECA2NP6M/view) = 
 - [ ] [img144.png](https://drive.google.com/file/d/1mMNQZa4812RUvgpMq-Is8hI826URD9u1/view) = 
 - [ ] [img145.png](https://drive.google.com/file/d/1GMo6bbShl7bjjj4R1Va5F_mRc5eilPo1/view) = 
 - [ ] [img146.png](https://drive.google.com/file/d/1N485HN16H8_Z3c04Emleau3MDyOX6BFX/view) = 
 - [ ] [img147.png](https://drive.google.com/file/d/1UN_1KSeugXSuH98ZQQwNn-WbBBtfFI1R/view) = 
 - [ ] [img148.png](https://drive.google.com/file/d/1RVLbzxETqWcCP1dI4i6WuQOZkatgl1Bt/view) = 
 - [ ] [img149.png](https://drive.google.com/file/d/1Hio3L9TKVzGLjNn3gLdsM_sdFOjexvNx/view) = 
-- [ ] [img150.png](https://drive.google.com/file/d/1Q83WrNgvSsx01ohWInkeTkHGViSFXFUB/view) = 
-- [ ] [img151.png](https://drive.google.com/file/d/1DY63TbcBQkA6KOwCiaIW80Xtuwzuvi3R/view) = 
+- [ ] [img150.png](https://drive.google.com/file/d/1Q83WrNgvSsx01ohWInkeTkHGViSFXFUB/view) + [img151.png](https://drive.google.com/file/d/1DY63TbcBQkA6KOwCiaIW80Xtuwzuvi3R/view) *(same image ×2)* = 
 - [ ] [img152.png](https://drive.google.com/file/d/1vMTCtil57nF38-rlU5fSzvK6l3fUdp2q/view) = 
 - [ ] [img153.png](https://drive.google.com/file/d/1CTjRCs3rVFNU7RTfd42qJTZg-bYWFqfQ/view) = 
 - [ ] [img154.png](https://drive.google.com/file/d/1Ol8XytzGDzljE5-ZQsawXNc436atbkmL/view) = 
@@ -151,7 +151,6 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img157.png](https://drive.google.com/file/d/1V6rZ-1jGLWPeaU5IUExBXkFOPzHsllWc/view) = 
 - [ ] [img158.png](https://drive.google.com/file/d/1AEQ6RsrjL7iSkAYz1OJGx4k0LSD9S70A/view) = 
 - [ ] [img159.png](https://drive.google.com/file/d/1VGebas1qPrkvsl32AA1Z7UwBtECWtU_3/view) = 
-- [ ] [img160.png](https://drive.google.com/file/d/1JB-erwHDcRzwIYjj5OEbEx6lXWGv4mvf/view) = 
 - [ ] [img161.png](https://drive.google.com/file/d/1tSY5wHTOuMvW-wJcWrEh9o6WRJ0hkrnS/view) = 
 - [ ] [img162.png](https://drive.google.com/file/d/13bu4HiJC8bTl61830wxRyxLp2U1Yi_cW/view) = 
 - [ ] [img163.png](https://drive.google.com/file/d/1ATb8-3ooZEcAjFa_JEMafh-qWp4ednD0/view) = 
@@ -164,7 +163,6 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img170.png](https://drive.google.com/file/d/1Hz49OJ0Wj2wNIwASlBjeDFgwg4MRWK7F/view) = 
 - [ ] [img171.png](https://drive.google.com/file/d/1GvRPPoGbA_1IK0fgJ6L0vs2v9ViI3Joe/view) = 
 - [ ] [img172.png](https://drive.google.com/file/d/13mgyGxjr_E_N0Dap03tzqvjpLO3MOEij/view) = 
-- [ ] [img173.png](https://drive.google.com/file/d/187AXAM-m6awJmnr0Fsud3t_Vxr6RS-s7/view) = 
 - [ ] [img174.png](https://drive.google.com/file/d/1FOQ1BJlbiD0ZML-wU9Zu66c3fj7crhC9/view) = 
 - [ ] [img175.png](https://drive.google.com/file/d/1VRSNi5qU-xQgCSlPN8SC-Q61jZiR1E-6/view) = 
 - [ ] [img176.png](https://drive.google.com/file/d/1UeM95L1mn0TBQ-sehQq1fd0feRWFuVwD/view) = 
@@ -182,7 +180,6 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img188.png](https://drive.google.com/file/d/1TRxWEMaOgoyCWDZeMnA2g50EKPgj52ZO/view) = 
 - [ ] [img189.png](https://drive.google.com/file/d/1jeDV5QS2xohq8brgY0-HdxO7J5iZtAUj/view) = 
 - [ ] [img190.png](https://drive.google.com/file/d/1o8VQbo2E7K9bFyynsB9gmg9hbWvl4-Sc/view) = 
-- [ ] [img192.png](https://drive.google.com/file/d/1G1dhtod5NQUHCcoaLv91quMTWRypjUFq/view) = 
 - [ ] [img193.png](https://drive.google.com/file/d/1aL58PlN6i5pblb1GseslH76GUn4dvabw/view) = 
 - [ ] [img194.png](https://drive.google.com/file/d/1SsFWqEUbn2WE_L3DTukN8M1a-MXye8of/view) = 
 - [ ] [img195.png](https://drive.google.com/file/d/1cuCn5bHsyjHcI-lY9dH8YiFvD7LefOiW/view) = 
@@ -196,7 +193,7 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [img203.png](https://drive.google.com/file/d/10XU5DCN7vaLuYWlcthESfgevkXLPMZUp/view) = 
 - [ ] [img204.png](https://drive.google.com/file/d/1gJuFKRTbkfPUXUAjJBdTgZgIOiG7PdnF/view) = 
 
-## Folder: [Homes without Logo v2](https://drive.google.com/drive/folders/1UGNu5rXy1jTRNJtxJYaZoyovRDK3tOOS) — 40 photos
+## Folder: [Homes without Logo v2](https://drive.google.com/drive/folders/1UGNu5rXy1jTRNJtxJYaZoyovRDK3tOOS) — 40 photos in 40 lines
 
 - [ ] [IMG_0541.HEIC](https://drive.google.com/file/d/1x-D_1tENEZSG4DoZY8aLqVRWrg3g1nff/view) = 
 - [ ] [IMG_0585.HEIC](https://drive.google.com/file/d/1SRjMvduixZ2JiIXi9TrWqORqAn4FLyKT/view) = 
@@ -239,7 +236,7 @@ Reply in chat with lines like `img13 = John Smith` / `IMG_0738 = Jane Doe (12 Ma
 - [ ] [DJI_20241130_204437_327.jpg](https://drive.google.com/file/d/19ARh_j2D8dad1C-2IcznH0WrZZOOPeg9/view) = 
 - [ ] [DJI_20241130_210819_998.jpg](https://drive.google.com/file/d/1ZMn1ZYwBu7tBZ129jILCTHdYSACDBUcR/view) = 
 
-## Folder: [Homes without Logo](https://drive.google.com/drive/folders/1-3h0eizZGGnLn5sT47ptHyq9aHjtiN1C) — 2 photos
+## Folder: [Homes without Logo](https://drive.google.com/drive/folders/1-3h0eizZGGnLn5sT47ptHyq9aHjtiN1C) — 2 photos in 2 lines
 
 - [ ] [IMG_8125.HEIC](https://drive.google.com/file/d/1ReZiu7dE3vmuXefwk5bLZ-yCx_pIDzYC/view) = 
 - [ ] [DJI_20241119_225640_809_video.MP4](https://drive.google.com/file/d/1PW62CWqQ7K5whP1pNLSUnGShMimp_qKl/view) = 
