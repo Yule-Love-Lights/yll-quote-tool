@@ -19,7 +19,7 @@ const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD',
 
 const MEASURING_LINES = ['Locating your home…', 'Tracing your roofline…', 'Pricing your lights…'];
 
-export function EstimateFlow() {
+export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) {
   const [step, setStep] = useState<Step>('address');
   const [address, setAddress] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +41,28 @@ export function EstimateFlow() {
   const [submitting, setSubmitting] = useState(false);
   const company = useRef(''); // honeypot (never rendered visibly for real users)
   const mountedAt = useRef(0);
+  const rootRef = useRef<HTMLElement>(null);
+
+  // Embedded in an <iframe>, an iframe has a FIXED height — content taller than
+  // it gets an inner scrollbar (ugly), shorter leaves dead space. Post our real
+  // content height to the parent page on every size change so its resize script
+  // can match the frame to us. Harmless off-embed (no parent listens); we only
+  // wire it when embedded. targetOrigin is our marketing site, not '*'.
+  useEffect(() => {
+    if (!embedded || typeof window === 'undefined' || window.parent === window) return;
+    const el = rootRef.current;
+    if (!el) return;
+    const post = () => {
+      const height = Math.ceil(el.getBoundingClientRect().height);
+      for (const origin of ['https://yulelovelights.com', 'https://www.yulelovelights.com']) {
+        window.parent.postMessage({ type: 'yll-estimate-height', height }, origin);
+      }
+    };
+    post();
+    const ro = new ResizeObserver(post);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [embedded]);
   useEffect(() => {
     // Stamp mount time in an effect (Date.now() is impure — not allowed during render).
     mountedAt.current = Date.now();
@@ -165,13 +187,24 @@ export function EstimateFlow() {
   }, [name, email, phone, consent, quoteId, formattedAddress, address, rangeLabel]);
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-amber-50 to-white text-slate-900">
-      <div className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-12 sm:py-20">
-        <header className="text-center">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">Yule Love Lights</p>
-          <h1 className="mt-2 text-balance text-3xl font-bold sm:text-4xl">Your holiday lighting price, in seconds</h1>
-          <p className="mt-3 text-slate-600">Type your address. We measure your roof from above and show you a real range. No photos, no waiting.</p>
-        </header>
+    <main
+      ref={rootRef}
+      className={
+        embedded
+          ? 'bg-transparent text-slate-900'
+          : 'min-h-screen bg-gradient-to-b from-amber-50 to-white text-slate-900'
+      }
+    >
+      <div className={`mx-auto flex max-w-xl flex-col gap-6 px-5 ${embedded ? 'py-6' : 'py-12 sm:py-20'}`}>
+        {/* Standalone page carries its own hero; embedded, the WordPress page
+            supplies the heading, so we drop it to avoid a double title. */}
+        {!embedded && (
+          <header className="text-center">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">Yule Love Lights</p>
+            <h1 className="mt-2 text-balance text-3xl font-bold sm:text-4xl">Your holiday lighting price, in seconds</h1>
+            <p className="mt-3 text-slate-600">Type your address. We measure your roof from above and show you a real range. No photos, no waiting.</p>
+          </header>
+        )}
 
         {/* Honeypot — off-screen, real users never see or fill it */}
         <input
