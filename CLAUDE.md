@@ -18,6 +18,7 @@
 ## Running scorecard (cumulative — skim before starting work)
 
 **Keep doing (these worked):**
+- **[S44] A shipped + deployed capture/integration feature isn't working until you verify the actual live ARTIFACT it hooks into — not just that the code deployed.** Partial-lead capture went green, merged, deploy-verified READY — and captured nothing, because the site's visible quote forms are GoHighLevel-hosted iframes (cross-origin → never hit our endpoint), not our embed. The `website_leads` row is written FIRST, so **zero partial rows in the DB was the definitive proof the endpoint was never reached** — diagnose from ground-truth data (Supabase), not deploy status. Corollary: this cloud env's egress **blocks the customer's own domain** (`yulelovelights.com` → proxy 403), so the live site was un-curlable/un-drivable from here — the DB was the only verification lever; say so loudly instead of implying a live check happened.
 - **[S31] Third-party UI writes need a POSITIVE persistence check, not a click** -- PostHog insight saves are real only when the URL flips off /insights/new; Elementor code-UPDATEs silently revert (create a new entry). Verify the artifact, then move on.
 - Branch off **FRESH `origin/master`**, never the worktree's stale base — first confirm the spec/plan commits are actually present (mine weren't until I rebased).
 - Re-ground the exact lines before planning, **then independently verify the recon** — a fast read-agent missed a real data leak and cited a stale file; my own grep caught both.
@@ -63,6 +64,12 @@
 
 ## Sessions (newest first)
 
+### S44 (Naldo) -- 2026-07-19/20 -- Partial/abandoned-form lead capture across all our quote forms → SHIPPED + LIVE (#584 feature + #595 hardening) -- master `f33d2dd`, gates tsc0/eslint0/vitest 3645
+**One user request → build → 2× 3-agent review → 2 PRs merged + deploy-verified.** No-drip design: an abandoned form → `website_leads` `partial` row (consent false) + a GHL contact tagged `partial-lead` ONLY (never `new lead`/opportunity → no SMS drip); a later consented submit enrols normally. Covers the website `lead-form.js` embed (all variants), `/refer/[code]`, and the QuoteBuilder (local draft only). 4-layer consent guard; no HIGH/MED in either review.
+- **Did right:** surfaced the TCPA/consent line BEFORE building (asked scope + no-drip handling, didn't silently pick); found the real rate-limit interaction myself (partials inflating the strict route's 5/hr cap → false-429) and fixed it; two independent 3-agent adversarial passes, then folded every LOW/MED into #595 (honeypot→spam recovery, config trace, conditional upsert, draft nits, extracted+tested pure helpers); never-stale merge protocol both merges; diagnosed the "no tag" from the DB (zero partial rows) instead of guessing.
+- **Friction / lesson:** the whole feature captures nothing on the LIVE site because the visible forms are **GHL-hosted iframes**, not our embed — "code live ≠ feature working" (see the [S44] scorecard bullet). Env egress blocked the customer domain, so no live browser/curl was possible — verified via Supabase `website_leads`. Supabase MCP flapped repeatedly.
+- **NEXT (Naldo, outside repo):** swap the live homepage + /get-a-quote forms from the GHL iframes to `<div data-yll-lead-form="full">`; eyeball GHL (no workflow on the `partial-lead` tag / `(partial)` source); then verify a live partial. A browser-driven self-verify needs an env whose network policy allows the site.
+
 ### S40 (Naldo) -- 2026-07-16/17 -- Legacy rebooking #155 END-TO-END: 114 drafts live ($184k), portal "Last Year's Design" variant, GHL Neighbors routing + Bid Sent stage, inbox exclusion, YLL Neighbor badge, 114/114 contacts matched -- PRs #556/#558/#559/#560/#561 all merged
 **One conversation, pilot to send-ready.** Chrome-drove Drive for 1.5GB photos (30MB chat cap), pilot x2 (Naldo's review reshaped: clean photos / one bundled item / no analyzer), 114 real drafts (invoice-net + live tax, Naldo's tax call), then the full send-side: Sonnet builders + seat adversarial review x3 correction rounds, E2E send proof on a real quote to Naldo's own contact, read-only match report -> 114/114 GHL links, Neighbors card values set.
 - **Did right:** dry-run/read-only preview before EVERY paid or prod write; money guards re-derived per rebuild; E2E caught that is_test SIMULATES GHL (used a real self-quote instead); builder correction loop (not seat rework) 3x, incl. the builder's own honesty flag (keyboard bypass) and its grep-reconcile finding the attach route my recon missed; named-consent gate held on every prod write (classifier agreed each time).
@@ -70,11 +77,4 @@
 - **NEXT:** Naldo's Neighbor drip workflows in GHL -> the send wave (per-quote Send or batch script). Backlog: 56 no-photo customers (Homes-2024 HEIC staged), 6 off-roster payers, 7 held rows.
 - **POST-CLOSE (same conversation, 2026-07-17/18):** YLL Neighbor toggle #572 live (first use: David Alfaro #1191 incl. GHL card fixes); #154 Wisetack INTERIM LIVE + flag ON (#578/#579: portal section + prequal CTAs, holiday/permanent/bistro, $1,500 job floor, live-verified); Wisetack API request drafted for Naldo to send; 13 done ledger rows archived.
 
-### S31 (Naldo) -- 2026-07-10/11 -- PostHog analytics full arc: v1+W1 LIVE both properties (#479/#480) - W2 #481 + W4 #482 awaiting Jason - surveys + split dashboards -- master `af5b9b3`->`6dfa4c3`
-**One conversation (across a PC restart): account -> instrument -> verify -> iterate in waves.** Sonnet built all 3 code waves from seat-recon briefs; seat adversarial review caught a REAL v1 bug pre-merge (React child-effects-before-parent dropped portal_opened; fixed w/ lazy init + regression test). Every deploy SHA-verified; every event class live-proven on prod (incl. masked-replay eyeball + cross-site person stitching); WP snippets live-verified with no fake lead.
-- **Did right:** prompt-first waves w/ 2-question rounds; explicit-model on every spawn (Fable seat, Sonnet builders); classifier-blocked prod DB write handled by ASKING (seed OK'd, then scripted); decline-409 correctly withheld quote_declined (intent gate worked); memory file kept current all session.
-- **Friction:** PostHog UI save/dialog flakiness (save real only on URL flip; dashboard-side picker reliable); Elementor code-UPDATE silently reverts (new entry works); Chrome window minimized = 0x0 viewport = silent no-op saves; event-name ingestion lag ~15 min.
-- **NEXT:** Jason reviews #481/#482 -> merge-gos -> fresh-seed prod verify of W2/W4 events.
-
-
-*(S26 and older: `docs/context/assistant_journal_archive.md`.)*
+*(S31 and older: `docs/context/assistant_journal_archive.md`.)*
