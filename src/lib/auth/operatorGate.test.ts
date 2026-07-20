@@ -149,6 +149,56 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
   });
 
+  // Regression (production, S42): the partial endpoint shipped in #584 without
+  // an allowlist entry, so the default-deny gate 401'd every real visitor's
+  // abandoned-form capture. It looked fine in testing only because an operator's
+  // own session sailed through the gate.
+  it('allows POST + OPTIONS /api/leads/partial (abandoned-form capture, cross-origin) but keeps other methods operator-only (#leads)', () => {
+    const p = '/api/leads/partial';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'OPTIONS')).toBe(true); // route defines an OPTIONS handler for CORS
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('does NOT open any other /api/leads sub-path (the carve-out stays exact)', () => {
+    expect(isPublicPath('/api/leads/nonexistent', 'POST')).toBe(false);
+    expect(isPublicPath('/api/leads/partial/deeper', 'POST')).toBe(false);
+    // sibling operator/admin surfaces stay gated
+    expect(isPublicPath('/api/admin/leads', 'POST')).toBe(false);
+  });
+
+  // Both shipped public by their route authors, neither has an operator gate of
+  // its own, and both were missed here — so a real customer got 401 while any
+  // logged-in operator saw them work. Found by the derived publicSurface guard.
+  it('allows GET /api/quotes/<id>/pdf (customer quote/invoice/receipt downloads) but no other method', () => {
+    const p = '/api/quotes/11111111-2222-4333-8444-555555555555/pdf';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // href link, method defaults to GET
+    expect(isPublicPath(p, 'POST')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'GET')).toBe(true);
+  });
+
+  it('allows POST /api/quotes/<id>/color-change-request (#163 booked colour change) but no other method', () => {
+    const p = '/api/quotes/11111111-2222-4333-8444-555555555555/color-change-request';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // default GET is NOT allowlisted here
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true);
+  });
+
+  it('the method-scoped quote carve-outs do not leak to other sub-paths or depths', () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    expect(isPublicPath(`/api/quotes/${id}/pdf/raw`, 'GET')).toBe(false);
+    expect(isPublicPath(`/api/quotes/${id}/send`, 'POST')).toBe(false); // operator action
+    expect(isPublicPath(`/api/quotes/${id}/color-change-request/approve`, 'POST')).toBe(false);
+    expect(isPublicPath('/api/pdf', 'GET')).toBe(false);
+  });
+
   it('treats the self-serve estimate page as public (ledger self-serve, Phase A)', () => {
     for (const p of ['/estimate', '/estimate/', '/estimate/anything']) {
       expect(isPublicPath(p), p).toBe(true);

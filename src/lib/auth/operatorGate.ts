@@ -33,6 +33,22 @@ const PUBLIC_QUOTE_SUBROUTES = new Set([
   'simulate-deposit', // TEST quotes only — route re-checks is_test (#81 W6-008)
 ]);
 
+// Customer quote sub-routes that are METHOD-SCOPED, unlike the method-blind set
+// above. Same capability-token model (the quote UUID is the credential), but
+// each opens only the verb the portal actually uses. Both were shipped as
+// public by their route authors — neither has an operator gate of its own, so
+// this list is the ONLY thing in front of them — and both were missed here,
+// which 401'd real customers while working fine for any logged-in operator.
+const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
+  // The three document links on the approved portal page (quote / invoice /
+  // receipt). Its route header notes it has no separate operator gate so the
+  // SAME link serves customer and staff.
+  pdf: 'GET',
+  // The portal colour picker's request against a BOOKED order (#163) — per its
+  // route header, the only path to change a booked order's colours.
+  'color-change-request': 'POST',
+};
+
 // Exact public API paths (webhooks + crons + the login surface).
 const PUBLIC_API_EXACT = new Set([
   '/api/login',
@@ -103,6 +119,7 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // Customer quote sub-routes: /api/quotes/<id>/(approve|pay|view|decline|request-changes|interested|simulate-deposit).
   const m = /^\/api\/quotes\/[^/]+\/([^/]+)$/.exec(path);
   if (m && PUBLIC_QUOTE_SUBROUTES.has(m[1]!)) return true;
+  if (m && PUBLIC_QUOTE_SUBROUTES_BY_METHOD[m[1]!] === method.toUpperCase()) return true;
 
   // Bare /api/quotes/<id> GET is the public capability-token portal read; DELETE
   // on the same path is operator-only and must NOT be allowlisted (#81 W6-005).
@@ -143,7 +160,20 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // preflight for the cross-origin JSON POST from yulelovelights.com (the
   // referrals carve-out above never needed this — its form is same-origin).
   // All other methods on this path stay operator-gated.
-  if (path === '/api/leads') {
+  // /api/leads/partial is the abandoned-form sibling (#leads partial-save): the
+  // same embed fires it on contact-field blur and on page-leave, from the same
+  // cross-origin WordPress page, and it self-gates the same way (honeypot +
+  // per-IP call/insert caps + a required contact handle). Shipping it without
+  // this entry default-denied every real visitor's partial with a 401 —
+  // invisible in testing because an operator's own session passes the gate (S42).
+  // NOTE the preflight rationale above is /api/leads-specific: that form POSTs
+  // application/json, which forces an OPTIONS preflight. The partial capture
+  // posts text/plain (fetch AND sendBeacon), a CORS-SIMPLE request that is never
+  // preflighted, so OPTIONS is not load-bearing here. It is allowed anyway, to
+  // stay consistent with its sibling and to avoid a mystery 401 if the payload
+  // ever moves to application/json — the handler only echoes CORS headers and
+  // touches neither the database nor GHL.
+  if (path === '/api/leads' || path === '/api/leads/partial') {
     const m = method.toUpperCase();
     if (m === 'POST' || m === 'OPTIONS') return true;
   }
