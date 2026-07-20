@@ -116,7 +116,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // A geocode that can't resolve the address (bad/typo'd) — ask the customer
     // to check it. (A transient Google error lands here too; a retry recovers.)
-    console.error('[api/estimate] geocode (service-area gate) failed:', err);
+    console.error('[api/estimate] geocode (service-area gate) failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ measured: false, reason: 'address_not_found' }, { status: 200 });
   }
 
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof NoStreetViewError) {
       return NextResponse.json({ measured: false, reason: 'no_streetview' }, { status: 200 });
     }
-    console.error('[api/estimate] imagery fetch failed:', err);
+    console.error('[api/estimate] imagery fetch failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ error: 'Could not load imagery for this address' }, { status: 502 });
   }
 
@@ -169,7 +169,7 @@ export async function POST(req: NextRequest) {
     const shownTotal = Math.max(priced.total, BUSINESS_RULES.minimumQuoteAmount);
     ({ low, high } = computeEstimateRange(shownTotal));
   } catch (err) {
-    console.error('[api/estimate] pricing failed:', err);
+    console.error('[api/estimate] pricing failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });
   }
 
@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
     // never blocks the price.
     if (quoteId) await recordSelfServeEstimate(quoteId, { low, high, total: priced.total, confidence: result!.confidence });
   } catch (err) {
-    console.error('[api/estimate] draft save failed (returning price anyway):', err);
+    console.error('[api/estimate] draft save failed (returning price anyway):', err instanceof Error ? err.message : 'error');
   }
 
   // ── 6. Persist the MEASUREMENT behind the number — AFTER the response ─────
