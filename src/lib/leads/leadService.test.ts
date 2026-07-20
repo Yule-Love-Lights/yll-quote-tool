@@ -83,6 +83,7 @@ import {
   buildLeadNoteBody,
   buildHouseholdNoteBody,
   existingNameDiffers,
+  normalizePhoneForCompare,
   type LeadInput,
 } from './leadService';
 
@@ -459,6 +460,32 @@ describe('syncLeadToGhl — a failure AFTER the contact exists is caught, not th
     expect(result.status).toBe('error');
     expect(result.ghlContactId).toBe('contact-1');
     expect(result.syncError).toContain('tags API down');
+  });
+});
+
+describe('normalizePhoneForCompare — household-phone compare helper', () => {
+  // The production bug (S42): GHL stores E.164, the form collects 10 digits,
+  // and the old digit-strip compare made them unequal — so a phone-only
+  // household was never detected and the upsert renamed the real contact.
+  it('matches an E.164 stored number against a 10-digit submitted one', () => {
+    expect(normalizePhoneForCompare('+16315550100')).toBe(normalizePhoneForCompare('6315550100'));
+  });
+
+  it('ignores punctuation and spacing', () => {
+    expect(normalizePhoneForCompare('(631) 555-0100')).toBe('6315550100');
+    expect(normalizePhoneForCompare('631.555.0100')).toBe('6315550100');
+    expect(normalizePhoneForCompare('+1 631 555 0100')).toBe('6315550100');
+  });
+
+  it('still distinguishes genuinely different numbers', () => {
+    expect(normalizePhoneForCompare('+16315550100')).not.toBe(normalizePhoneForCompare('6315559999'));
+  });
+
+  it('returns empty for missing/garbage input (callers gate on truthiness)', () => {
+    expect(normalizePhoneForCompare(null)).toBe('');
+    expect(normalizePhoneForCompare(undefined)).toBe('');
+    expect(normalizePhoneForCompare('   ')).toBe('');
+    expect(normalizePhoneForCompare('abc')).toBe('');
   });
 });
 

@@ -127,8 +127,16 @@ function normalizeEmailForCompare(email: string | undefined | null): string {
   return (email ?? '').trim().toLowerCase();
 }
 
-function normalizePhoneForCompare(phone: string | undefined | null): string {
-  return (phone ?? '').replace(/\D/g, '');
+// Compare on the NATIONAL number, not the raw digit string. HighLevel stores
+// US numbers in E.164 ('+16315550100' -> 11 digits, leading country code)
+// while the website form collects 10 digits, so a plain digit-strip compare
+// NEVER matches a phone-only household. The guard below then sees no existing
+// contact and lets the upsert send name fields — and GHL, whose own matching
+// DOES normalize the country code, happily overwrites the real contact's
+// name. Shared with partialLead.ts so both sync paths agree.
+export function normalizePhoneForCompare(phone: string | undefined | null): string {
+  const digits = (phone ?? '').replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
 /**
