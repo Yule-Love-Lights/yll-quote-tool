@@ -108,11 +108,19 @@ role**. The confirm-yes gate applies to sensitive writes **regardless** of role.
 | Role | Who | May do |
 |---|---|---|
 | **crew** | field installers | read schedule / status / inventory; **submit install completion** (photos + material used); move a **job** stage (on-site → installed); capture a **field lead** |
-| **office** | office team | everything crew can + **capture/update contacts**, **move the GHL sales pipeline**, **send / nudge** quotes, reporting |
-| **admin** | Naldo, Jason | everything + **quote / color / price changes** (money) and settings |
+| **office** | office team | everything crew can + **capture/update contacts**, **move the GHL sales pipeline**, **send / nudge** quotes, reporting, **+ quote / color / price changes (money) + settings** |
+| **admin** | Naldo, Jason | same as office, **plus the one reserved power:** managing the bot itself — the allowlist + who holds which role |
 
 Keep it simple: a `staffId → role` map + a `minRole` on each tool. No per-tool ACL
 sprawl. A crew member texting a money command gets a polite "not permitted", logged.
+
+> **Updated by Naldo (2026-07-19):** the office team gets full write access —
+> including **quote / color / price changes and settings**. That means **office and
+> admin are functionally identical except one thing: only owners (Naldo/Jason)
+> manage the bot's roster** (who's on the allowlist and their role). If you want
+> office to manage the roster too, this collapses cleanly to **two tiers — crew and
+> staff**. Note the safety model is unchanged: the **confirm-yes gate + audit log**
+> are what make broad write access safe, and they apply regardless of role.
 
 ## The ops tools (maps to Naldo's list)
 
@@ -128,8 +136,8 @@ R = read, W = write. Sensitive writes (money/CRM/stock) always confirm-yes.
 | `captureContact` | create/update a GHL contact | W | office | reuses `highlevel.ts` |
 | `movePipeline` | advance a GHL opportunity to a stage | W | office | reuses pipeline map |
 | `sendOrNudge` | send a quote / nudge viewers who didn't approve | W | office | reuses send routes |
-| `requestColorChange` | log a color-change against a quote/design | W | admin | Jason area |
-| `requestQuoteChange` | open an amend/change-request on a quote | W | admin | Jason area, **money** |
+| `requestColorChange` | log a color-change against a quote/design | W | office | Jason area |
+| `requestQuoteChange` | open an amend/change-request on a quote | W | office | Jason area, **money** |
 
 Outbound (bot → staff), reusing `notifyTelegram`:
 - deposit paid / new booking · new lead · quote viewed-not-approved nudge · changes
@@ -191,15 +199,15 @@ the confirm gate is the safety net, this is the first line.
   input layer + the `material_actuals` write. Role: crew+.
 - **Phase 3 — office writes.** `captureContact`, `movePipeline`, `sendOrNudge`.
   CRM-touching → confirm-gated + audit log. Role: office+.
-- **Phase 4 — admin/money writes.** `requestQuoteChange`, `requestColorChange` via
-  Jason's amend/color routes. Role: admin. **Coordinate with Jason first.**
+- **Phase 4 — money writes.** `requestQuoteChange`, `requestColorChange` via
+  Jason's amend/color routes. Role: office+. **Coordinate with Jason first.**
 
 Each phase ships behind the existing dormant flags; never a big-bang cutover.
 
 ## Guardrails (non-negotiable)
 
 - **Allowlist fail-closed** + **role tiers** — unknown sender ignored; crew can't
-  run office/admin tools.
+  run office tools; only owners manage the roster.
 - **Every sensitive write confirms first** — a misread text is harmless until "yes".
 - **Money/CRM/stock writes audit-log** (who, what tool, what changed).
 - **Interpreter output validated** against the tool schema; low confidence → ask a
