@@ -33,6 +33,17 @@ import {
 } from '@/lib/design/colorSchemes';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import {
+  sendSms,
+  sendEmail,
+  isHighLevelConfigured,
+  HighLevelError,
+} from '@/lib/integrations/highlevel';
+import {
+  COLOR_CHANGE_APPLIED_EMAIL_SUBJECT,
+  colorChangeAppliedSmsBody,
+  colorChangeAppliedEmailHtml,
+} from '@/lib/integrations/quoteMessages';
 
 export const runtime = 'nodejs';
 
@@ -63,6 +74,11 @@ type QuoteRow = {
   total: number | null;
   result: QuoteResult | null;
   service_type: string | null;
+  // #163 notify-on-apply (owner decision): who to text/email once the colour is
+  // applied. is_test suppresses the send (the #93 Test-Quote convention).
+  customer_name: string | null;
+  highlevel_contact_id: string | null;
+  is_test: boolean;
   approval_snapshot: {
     customerSelection?: CustomerSelection;
     pendingColorRequest?: PendingColorRequest;
@@ -108,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, total, result, service_type, approval_snapshot',
+      'id, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, total, result, service_type, customer_name, highlevel_contact_id, is_test, approval_snapshot',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -262,7 +278,48 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   await resolveInboxRequest(sb, id, by, `Applied colour change: ${label}`);
 
-  return NextResponse.json({ ok: true, action: 'apply', label });
+  // Notify the customer their colour change is locked in (owner decision:
+  // apply notifies; dismiss stays silent — staff calls them). Best-effort,
+  // never fails the request; suppressed for a Test Quote (#93), same
+  // convention as every other customer-facing send.
+  let smsSent = false;
+  let emailSent = false;
+  if (!quote.is_test && isHighLevelConfigured() && quote.highlevel_contact_id) {
+    const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+    try {
+      await sendSms({
+        contactId: quote.highlevel_contact_id,
+        message: colorChangeAppliedSmsBody(label),
+        fromNumber,
+      });
+      smsSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/apply-color-request] customer SMS failed:', hlErrorMessage(err));
+    }
+    try {
+      await sendEmail({
+        contactId: quote.highlevel_contact_id,
+        subject: COLOR_CHANGE_APPLIED_EMAIL_SUBJECT,
+        html: colorChangeAppliedEmailHtml(firstName, label),
+        emailFrom,
+      });
+      emailSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/apply-color-request] customer email failed:', hlErrorMessage(err));
+    }
+  }
+
+  return NextResponse.json({ ok: true, action: 'apply', label, smsSent, emailSent });
+}
+
+function hlErrorMessage(err: unknown): string {
+  return err instanceof HighLevelError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : 'Unknown HighLevel error';
 }
 
 /** Best-effort: mark the Slice-A inbox notification (quotetool / <id>:color-request)

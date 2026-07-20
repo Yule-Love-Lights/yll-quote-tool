@@ -525,6 +525,29 @@ describe('quoteRowToPortalQuote — frozen warranty on PortalApproval (#88 P6b-2
     });
   });
 
+  // #163 — the frozen colour (approved with, or staff-applied via a colour
+  // change) flows through to PortalApproval so the booked portal opens on it.
+  it('passes the frozen colorSchemeId + customPattern through to approval', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({
+        approvedAt: '2026-07-04T00:00:00Z',
+        customerSelection: { packageId: 'A', colorSchemeId: 'multicolor', customPattern: [] },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.colorSchemeId).toBe('multicolor');
+    expect(portal.approval?.customPattern).toEqual([]);
+  });
+
+  it('omits the colour fields for an older snapshot that predates the colour freeze', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.colorSchemeId).toBeUndefined();
+    expect(portal.approval?.customPattern).toBeUndefined();
+  });
+
   it('falls back to null for an OLD approved snapshot with no permanentWarranty (must not crash)', () => {
     const portal = quoteRowToPortalQuote({
       row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),

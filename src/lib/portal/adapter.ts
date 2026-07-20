@@ -478,6 +478,12 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
         : 'none',
     rushSelected: sel?.rushSelected === true,
     takedownSelected: sel?.takedownSelected === true,
+    // #163 — the frozen colour (approved with, or staff-applied via a colour
+    // change request); the booked portal opens its picker/render on it.
+    ...(typeof sel?.colorSchemeId === 'string' ? { colorSchemeId: sel.colorSchemeId } : {}),
+    ...(Array.isArray(sel?.customPattern)
+      ? { customPattern: sel.customPattern.filter((x): x is string => typeof x === 'string') }
+      : {}),
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
     ...(() => {
       return isAmendmentConsentPending(amendment)

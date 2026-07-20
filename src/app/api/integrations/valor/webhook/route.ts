@@ -64,6 +64,28 @@ import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
 
+// Payload KEY NAMES for diagnostics — names only, NEVER values, so no card /
+// PII data can leak into logs (the #159/#566 convention). Top-level + one
+// nested level, capped at 60 keys each.
+function safePayloadKeyNames(rawBody: string): string[] {
+  const keyDump: string[] = [];
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const k of Object.keys(parsed as Record<string, unknown>).slice(0, 60)) {
+        keyDump.push(k);
+        const v = (parsed as Record<string, unknown>)[k];
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const k2 of Object.keys(v as Record<string, unknown>).slice(0, 60)) keyDump.push(`${k}.${k2}`);
+        }
+      }
+    }
+  } catch {
+    /* non-JSON body */
+  }
+  return keyDump;
+}
+
 function hlErrorMessage(err: unknown): string {
   return err instanceof HighLevelError
     ? err.message
@@ -258,10 +280,24 @@ export async function POST(req: NextRequest) {
       approved: event.approved,
       hasTxnId: !!event.txnId,
       hasOrderRef: !!event.orderRef,
+      // #161 — whether this webhook carried a card token the parser recognizes
+      // (vtToken et al). The next real deposit answers "does the hosted-page
+      // sale echo a chargeable token?" without any Valor support round-trip.
+      hasVaultToken: !!event.vaultToken,
     })}`,
   );
   if (!ok) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  }
+
+  // #161 DIAGNOSTIC — an APPROVED signed txn with NO recognized card token:
+  // dump the payload's KEY NAMES (names only, never values — the #159/#566
+  // convention) so if Valor sends the token under yet another name than the
+  // pick-list covers, the next real deposit reveals it in the Vercel logs.
+  if (event.approved && !event.vaultToken) {
+    console.log(
+      `[valor/webhook] APPROVED txn carries NO recognized vault token — payload keys: [${safePayloadKeyNames(rawBody).join(', ')}]`,
+    );
   }
 
   // Valor sends a webhook for EVERY transaction on this EPI — including normal
@@ -283,23 +319,8 @@ export async function POST(req: NextRequest) {
     // the probe branch's safe key-name logging) so the NEXT deposit reveals the
     // field, which then gets added to the pick-list (or we stamp Valor's `uid`
     // at /pay and match on it). Behavior is otherwise unchanged — still a 200 ack.
-    const keyDump: string[] = [];
-    try {
-      const parsed = JSON.parse(rawBody);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        for (const k of Object.keys(parsed as Record<string, unknown>).slice(0, 60)) {
-          keyDump.push(k);
-          const v = (parsed as Record<string, unknown>)[k];
-          if (v && typeof v === 'object' && !Array.isArray(v)) {
-            for (const k2 of Object.keys(v as Record<string, unknown>).slice(0, 60)) keyDump.push(`${k}.${k2}`);
-          }
-        }
-      }
-    } catch {
-      /* non-JSON body */
-    }
     console.log(
-      `[valor/webhook] APPROVED txn IGNORED (no recognized order ref) — payload keys: [${keyDump.join(', ')}]`,
+      `[valor/webhook] APPROVED txn IGNORED (no recognized order ref) — payload keys: [${safePayloadKeyNames(rawBody).join(', ')}]`,
     );
     return NextResponse.json({ ok: true, ignored: 'no-order-ref' });
   }

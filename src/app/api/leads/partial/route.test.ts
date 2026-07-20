@@ -41,6 +41,11 @@ function makeSb(
 ) {
   const inserted: Array<Record<string, unknown>> = [];
   const updated: Array<Record<string, unknown>> = [];
+  // Every filter applied, as [column, value] pairs. Recorded (not discarded)
+  // because the update path's `sync_status='partial'` filter is a SECURITY
+  // control — it is what stops a leaked captureId mutating a real synced lead —
+  // and a mock that swallows its arguments asserts nothing about it.
+  const filters: Array<[string, unknown]> = [];
   let mode: 'insert' | 'update' | 'count' | null = null;
 
   const builder: Record<string, unknown> = {};
@@ -60,7 +65,14 @@ function makeSb(
       updated.push(payload);
       return builder;
     },
-    eq: () => builder,
+    eq: (col: string, val: unknown) => {
+      filters.push([col, val]);
+      return builder;
+    },
+    in: (col: string, vals: unknown) => {
+      filters.push([col, vals]);
+      return builder;
+    },
     gte: () => builder,
     single: async () => ({ data: opts.insertData ?? { id: 'partial-new' }, error: opts.insertError ?? null }),
     maybeSingle: async () => ({ data: opts.updateData ?? null, error: opts.updateError ?? null }),
@@ -70,7 +82,7 @@ function makeSb(
       mode = null;
     },
   });
-  return { client: builder, inserted, updated };
+  return { client: builder, inserted, updated, filters };
 }
 
 function makeReq(
@@ -157,7 +169,7 @@ describe('POST /api/leads/partial', () => {
   });
 
   it('updates the existing row when captureId matches a partial row (no insert)', async () => {
-    const { client, inserted, updated } = makeSb({ updateData: { id: 'cap-1' } });
+    const { client, inserted, updated, filters } = makeSb({ updateData: { id: 'cap-1' } });
     sbRef.current = client;
     const res = await POST(
       makeReq({ captureId: 'cap-1', name: 'Jane', email: 'jane@example.com', phone: '5551234567' }),
@@ -167,6 +179,37 @@ describe('POST /api/leads/partial', () => {
     expect(inserted).toHaveLength(0);
     // first update = the row upsert; a later update = the GHL write-back
     expect(updated[0]!.sync_status).toBe('partial');
+    // Both filters must be applied. The sync_status one is the security control:
+    // without it a leaked/guessed captureId could mutate a real synced lead.
+    // Asserted explicitly because deleting it would otherwise pass every test.
+    expect(filters).toContainEqual(['id', 'cap-1']);
+    expect(filters).toContainEqual(['sync_status', 'partial']);
+  });
+
+  it('caps CALLS per IP, so the captureId update path cannot bypass the limit', async () => {
+    // The insert cap counts ROWS and an UPDATE creates none, so it can never see
+    // this path. Left uncapped, the id handed back in the response was a
+    // permanent ticket: re-post it as captureId forever, and every call drove a
+    // fresh GHL contact upsert against a shared per-location quota.
+    const ip = '198.51.100.77';
+    const skipped: Array<string | undefined> = [];
+    for (let i = 0; i < 125; i++) {
+      const { client } = makeSb({ updateData: { id: 'cap-1' } });
+      sbRef.current = client;
+      const res = await POST(
+        makeReq({ captureId: 'cap-1', email: `a${i}@example.com`, phone: '5551234567' }, { ip }),
+      );
+      skipped.push((await res.json()).skipped);
+    }
+    expect(skipped[0]).toBeUndefined(); // a real fill still goes through
+    expect(skipped[124]).toBe('rate-limited'); // the loop does not
+  });
+
+  it('counts spam rows toward the insert cap (the honeypot is not a cheaper way in)', async () => {
+    const { client, filters } = makeSb({ count: 0 });
+    sbRef.current = client;
+    await POST(makeReq({ email: 'jane@example.com', phone: '5551234567' }, { ip: '198.51.100.78' }));
+    expect(filters).toContainEqual(['sync_status', ['partial', 'spam']]);
   });
 
   it('falls through to insert when captureId does not match a partial row', async () => {

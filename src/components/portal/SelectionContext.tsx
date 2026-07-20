@@ -34,6 +34,7 @@ import {
   resolveSchemeColorIds,
   CUSTOM_SCHEME_ID,
   sanitizeCustomPattern,
+  isKnownColorSchemeId,
   DEFAULT_COLOR_SCHEMES,
   DEFAULT_BUILDABLE_COLOR_IDS,
   type ColorScheme,
@@ -281,6 +282,29 @@ export function useSelectionOptional(): SelectionContextValue | null {
   return useContext(SelectionContext);
 }
 
+// #163 — resolve the colour state the portal should OPEN on. Pure so the seed
+// logic is unit-testable: a frozen scheme that still exists opens the picker on
+// it (custom only with a valid sanitized pattern); anything else — no frozen
+// colour, a scheme since deleted in Settings, or a custom pick whose colours
+// are no longer buildable — falls back to the "as designed" default (S9).
+export function resolveInitialColorState(
+  initialColorSchemeId: string | undefined,
+  initialCustomPattern: string[] | undefined,
+  schemes: ColorScheme[],
+  buildableColorIds: string[],
+): { schemeId: string; pattern: string[] } {
+  if (!initialColorSchemeId || !isKnownColorSchemeId(initialColorSchemeId, schemes)) {
+    return { schemeId: DEFAULT_COLOR_SCHEME_ID, pattern: [] };
+  }
+  if (initialColorSchemeId === CUSTOM_SCHEME_ID) {
+    const clean = sanitizeCustomPattern(initialCustomPattern ?? [], buildableColorIds);
+    return clean.length > 0
+      ? { schemeId: CUSTOM_SCHEME_ID, pattern: clean }
+      : { schemeId: DEFAULT_COLOR_SCHEME_ID, pattern: [] };
+  }
+  return { schemeId: initialColorSchemeId, pattern: [] };
+}
+
 export type SelectionProviderProps = {
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
@@ -311,6 +335,14 @@ export type SelectionProviderProps = {
   // never persists (a separate "Request colour change" action notifies staff).
   // Only unfreezes the appearance group — items/fees stay locked. Default false.
   colorPreviewWhenLocked?: boolean;
+  // #163 — the FROZEN light colour on the order (approval_snapshot.
+  // customerSelection: the colour approved with, or a staff-applied colour
+  // change). When present + still a known scheme, the picker AND the live
+  // render OPEN on it, so a booked customer reopening the portal sees the
+  // colour they actually ordered. Absent (pre-approval, or older snapshots)
+  // keeps the S9 default: open on "as designed".
+  initialColorSchemeId?: string;
+  initialCustomPattern?: string[];
   // #155 — true for a quote migrated from last year's Jobber data (a legacy
   // rebook). Passed straight through onto the context value (see
   // SelectionContextValue.legacyRebook) so LightColorPicker/WhatsIncluded can
@@ -349,6 +381,8 @@ export function SelectionProvider({
   initialSelectedItemIds,
   locked = false,
   colorPreviewWhenLocked = false,
+  initialColorSchemeId,
+  initialCustomPattern,
   legacyRebook = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
@@ -419,17 +453,25 @@ export function SelectionProvider({
     setRushSelected(false); // early-install and rush are mutually exclusive (#40)
   }, []);
 
-  // Light color/pattern (#10). Always starts at "as designed" (render the colors
-  // the operator drew); the customer can switch on the portal and the live design
-  // recolors. The resolved override array is stable per scheme (from the
-  // COLOR_SCHEMES constant), so passing it to DesignCanvas only re-renders the
-  // draw layer when it changes.
-  const [colorSchemeId, setColorScheme] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
+  // Light color/pattern (#10). Pre-approval this starts at "as designed"
+  // (render the colors the operator drew; S9 confirmed default). #163: once an
+  // order carries a FROZEN colour (approved with one, or staff applied a
+  // colour-change request), the portal opens ON that colour instead — the
+  // customer should see what they actually ordered. The customer can still
+  // switch for a live preview either way.
+  const initialColor = useMemo(
+    () =>
+      resolveInitialColorState(initialColorSchemeId, initialCustomPattern, schemes, buildableColorIds),
+    // Initial seed only — recomputing on prop change would clobber live edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [colorSchemeId, setColorScheme] = useState<string>(initialColor.schemeId);
   // #88 P6b-4 — the permanent animation effect, chosen separately from the color.
   // Opens on Chase (a booked portal re-opens on the default, same as colorSchemeId —
   // the frozen effect lives in the approval snapshot, not re-displayed here).
   const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(DEFAULT_PERMANENT_EFFECT);
-  const [customPattern, setCustomPattern] = useState<string[]>([]);
+  const [customPattern, setCustomPattern] = useState<string[]>(initialColor.pattern);
   // Custom pattern (#49) drives the override when its scheme is active; otherwise
   // resolve the preset. Sanitize the custom list so an invalid/empty pattern can
   // never reach the renderer (empty → null = "as designed", no recolor).
