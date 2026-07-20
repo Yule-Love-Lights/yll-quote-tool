@@ -108,10 +108,24 @@ describe('POST /api/leads/partial', () => {
     expect(sync.syncPartialLeadToGhl).not.toHaveBeenCalled();
   });
 
-  it('honeypot: answers 200 and touches nothing', async () => {
+  it('honeypot (with a real contact handle): saves a spam row for recovery, never GHL', async () => {
     const { client, inserted } = makeSb();
     sbRef.current = client;
-    const res = await POST(makeReq({ email: 'bot@example.com', phone: '5551234567', company: 'Acme' }));
+    const res = await POST(makeReq({ email: 'maybe-real@example.com', phone: '5551234567', company: 'Acme' }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+    // saved (not silently dropped) so a password-manager false positive is recoverable
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]!.sync_status).toBe('spam');
+    expect(inserted[0]!.sync_error).toBe('honeypot');
+    expect(inserted[0]!.email).toBe('maybe-real@example.com');
+    expect(sync.syncPartialLeadToGhl).not.toHaveBeenCalled();
+  });
+
+  it('honeypot with no usable contact: 200, nothing saved (pure bot junk)', async () => {
+    const { client, inserted } = makeSb();
+    sbRef.current = client;
+    const res = await POST(makeReq({ name: 'x', company: 'Acme' }));
     expect(res.status).toBe(200);
     expect(inserted).toHaveLength(0);
     expect(sync.syncPartialLeadToGhl).not.toHaveBeenCalled();
@@ -174,13 +188,15 @@ describe('POST /api/leads/partial', () => {
     expect(sync.syncPartialLeadToGhl).not.toHaveBeenCalled();
   });
 
-  it('does not call GHL when HighLevel is not configured (still 200 with id)', async () => {
+  it('does not call GHL when HighLevel is not configured, but records why on the row', async () => {
     sync.isHighLevelConfigured.mockReturnValue(false);
-    const { client } = makeSb({ insertData: { id: 'row-2' } });
+    const { client, updated } = makeSb({ insertData: { id: 'row-2' } });
     sbRef.current = client;
     const res = await POST(makeReq({ email: 'jane@example.com', phone: '5551234567' }));
     expect((await res.json()).id).toBe('row-2');
     expect(sync.syncPartialLeadToGhl).not.toHaveBeenCalled();
+    // the row isn't left silently untagged with no explanation
+    expect(updated.some((u) => u.sync_error === 'HighLevel not configured')).toBe(true);
   });
 
   it('never surfaces a GHL failure — the row is saved and it still answers 200', async () => {

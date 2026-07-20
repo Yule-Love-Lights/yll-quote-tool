@@ -24,6 +24,7 @@ import {
   getColorScheme,
 } from '@/lib/design/colorSchemes';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
 
@@ -39,6 +40,9 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   service_type: string | null;
   customer_approved_at: string | null;
+  deposit_paid_at: string | null;
+  quote_sent_at: string | null;
+  status: QuoteStatus | null;
   total: number | null;
   approval_snapshot: { customerSelection?: unknown; [key: string]: unknown } | null;
 };
@@ -75,7 +79,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_email, customer_phone, highlevel_contact_id, service_type, customer_approved_at, total, approval_snapshot',
+      'id, customer_name, customer_email, customer_phone, highlevel_contact_id, service_type, customer_approved_at, deposit_paid_at, quote_sent_at, status, total, approval_snapshot',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -86,6 +90,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!quote.customer_approved_at || !quote.approval_snapshot?.customerSelection) {
     return NextResponse.json(
       { error: 'This order is not booked yet', code: 'not-booked' },
+      { status: 409 },
+    );
+  }
+  // A dead order (cancelled/declined/lost) can't take colour-change requests —
+  // mirror the sibling routes (amend / free-items / apply) that reject terminal.
+  const lifecycle = deriveStatus({
+    quote_sent_at: quote.quote_sent_at,
+    customer_approved_at: quote.customer_approved_at,
+    deposit_paid_at: quote.deposit_paid_at,
+    status: quote.status,
+  });
+  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
+    return NextResponse.json(
+      { error: `This order is ${lifecycle}`, code: 'not-editable' },
       { status: 409 },
     );
   }
@@ -119,11 +137,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     label,
     requestedAt: new Date().toISOString(),
   };
-  const newSnapshot = { ...quote.approval_snapshot, pendingColorRequest };
-  const { error: upErr } = await sb.from('quotes').update({ approval_snapshot: newSnapshot }).eq('id', id);
+  // Compare-and-swap on the FULL snapshot (mirrors amend/route.ts): re-fetch the
+  // current snapshot immediately before the write and only write if it hasn't
+  // changed since. A blind write here would clobber a concurrent staff amend —
+  // erasing its trail entry and silently reverting the agreed total (F-014).
+  const { data: freshRow } = await sb
+    .from('quotes')
+    .select('approval_snapshot')
+    .eq('id', id)
+    .maybeSingle<{ approval_snapshot: QuoteRow['approval_snapshot'] }>();
+  const priorSnapshot = freshRow?.approval_snapshot ?? quote.approval_snapshot;
+  const newSnapshot = { ...priorSnapshot, pendingColorRequest };
+  const { data: updatedRows, error: upErr } = await sb
+    .from('quotes')
+    .update({ approval_snapshot: newSnapshot })
+    .eq('id', id)
+    // Serialize jsonb explicitly — PostgREST string-interpolates filter values.
+    .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+    .select('id');
   if (upErr) {
     console.error('[api/quotes/:id/color-change-request] save failed:', upErr);
     return NextResponse.json({ error: 'Could not record your request' }, { status: 500 });
+  }
+  if (!updatedRows || updatedRows.length === 0) {
+    return NextResponse.json(
+      { error: 'The order was just updated — please try again.', code: 'concurrent-edit' },
+      { status: 409 },
+    );
   }
 
   // Notify staff via the unified inbox (best-effort — the request is already

@@ -27,13 +27,15 @@ import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
 import { ReferralMetricsCard } from '@/components/dashboard/ReferralMetricsCard';
+import { loadSelfServeMetrics } from '@/lib/dashboard/selfServeMetrics';
+import { SelfServeMetricsCard } from '@/components/dashboard/SelfServeMetricsCard';
 
 // Always render fresh — the dashboard reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const now = new Date();
-  const [quotesResult, jobs, invoices, metricsRes, openRes, reopen, referralMetrics, repLabels] = await Promise.all([
+  const [quotesResult, jobs, invoices, metricsRes, openRes, reopen, referralMetrics, repLabels, selfServeMetrics] = await Promise.all([
     listQuotesForDashboardResult(500),
     listJobsForWorkflowBoard(),
     listInvoicesForWorkflowBoard(),
@@ -42,6 +44,7 @@ export default async function DashboardPage() {
     getReopenCounts(now),
     loadReferralMetrics(),
     getOperatorLabels(),
+    loadSelfServeMetrics(),
   ]);
 
   // AUDIT FIX (WT-38/WT-46, dashboard-insights-error-visibility): the old
@@ -109,6 +112,9 @@ export default async function DashboardPage() {
         <ServiceSections holiday={holiday} permanent={permanent} event={event} bistro={bistro} />
         <div className="mb-8">
           <ReferralMetricsCard data={referralMetrics} />
+        </div>
+        <div className="mb-8">
+          <SelfServeMetricsCard data={selfServeMetrics} />
         </div>
         {analytics && <ResponseAnalytics data={analytics} />}
       </div>

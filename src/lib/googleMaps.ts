@@ -43,7 +43,38 @@ export type GeocodeResult = {
   lat: number;
   lng: number;
   formattedAddress: string;
+  // County (administrative_area_level_2, e.g. "Nassau County") and state
+  // (administrative_area_level_1 long name, e.g. "New York"), parsed from the
+  // geocode's address components. Additive/optional: existing callers ignore
+  // them; the self-serve service-area gate reads them. Either may be undefined
+  // when Google omits that component (rare for a resolvable street address).
+  county?: string;
+  state?: string;
+  // Precision signals. When Google can't resolve a street address it silently
+  // falls back to a TOWN/ZIP centroid (location_type 'APPROXIMATE',
+  // partial_match true, types ['locality','political'], no street_number) —
+  // which still carries a valid county. The self-serve estimator must not quote
+  // that: it would measure whatever building sits at the centroid and hand the
+  // customer a confident price for a house we never located. Additive/optional.
+  /** Google's `geometry.location_type`: ROOFTOP | RANGE_INTERPOLATED | GEOMETRIC_CENTER | APPROXIMATE. */
+  locationType?: string;
+  /** Google's `partial_match` — true when the result is a fuzzy match for the query. */
+  partialMatch?: boolean;
+  /** True when the result carries BOTH street_number and route (a real street address, not a centroid). */
+  hasStreetAddress?: boolean;
 };
+
+// Pull one address component's long_name by its Google `type`. Exported for
+// testing the parse without a live geocode call.
+export function addressComponent(
+  components: Array<{ long_name?: string; types?: string[] }> | undefined,
+  type: string,
+): string | undefined {
+  if (!Array.isArray(components)) return undefined;
+  const hit = components.find((c) => Array.isArray(c.types) && c.types.includes(type));
+  const name = hit?.long_name?.trim();
+  return name || undefined;
+}
 
 export async function geocodeAddress(address: string): Promise<GeocodeResult> {
   const key = getKey();
@@ -59,6 +90,13 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult> {
     lat: top.geometry.location.lat,
     lng: top.geometry.location.lng,
     formattedAddress: top.formatted_address,
+    county: addressComponent(top.address_components, 'administrative_area_level_2'),
+    state: addressComponent(top.address_components, 'administrative_area_level_1'),
+    locationType: top.geometry?.location_type,
+    partialMatch: top.partial_match === true,
+    hasStreetAddress:
+      addressComponent(top.address_components, 'street_number') != null &&
+      addressComponent(top.address_components, 'route') != null,
   };
 }
 

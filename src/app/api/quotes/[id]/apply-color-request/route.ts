@@ -29,9 +29,21 @@ import {
   DEFAULT_COLOR_SCHEME_ID,
   isKnownColorSchemeId,
   sanitizeCustomPattern,
+  getColorScheme,
 } from '@/lib/design/colorSchemes';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import {
+  sendSms,
+  sendEmail,
+  isHighLevelConfigured,
+  HighLevelError,
+} from '@/lib/integrations/highlevel';
+import {
+  COLOR_CHANGE_APPLIED_EMAIL_SUBJECT,
+  colorChangeAppliedSmsBody,
+  colorChangeAppliedEmailHtml,
+} from '@/lib/integrations/quoteMessages';
 
 export const runtime = 'nodejs';
 
@@ -62,6 +74,11 @@ type QuoteRow = {
   total: number | null;
   result: QuoteResult | null;
   service_type: string | null;
+  // #163 notify-on-apply (owner decision): who to text/email once the colour is
+  // applied. is_test suppresses the send (the #93 Test-Quote convention).
+  customer_name: string | null;
+  highlevel_contact_id: string | null;
+  is_test: boolean;
   approval_snapshot: {
     customerSelection?: CustomerSelection;
     pendingColorRequest?: PendingColorRequest;
@@ -107,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, total, result, service_type, approval_snapshot',
+      'id, status, customer_approved_at, deposit_paid_at, deposit_amount_usd, total, result, service_type, customer_name, highlevel_contact_id, is_test, approval_snapshot',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -126,7 +143,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'No pending colour request', code: 'nothing-pending' }, { status: 409 });
   }
 
-  // Reject a terminal order (mirrors the amend / free-items gates).
+  const op = await getOperator();
+  const by = op?.name ? `staff:${op.name}` : op?.email ? `staff:${op.email}` : 'staff';
+
+  // ── DISMISS ────────────────────────────────────────────────────────────────
+  // Allowed even on a terminal order (clearing a stranded marker is safe). CAS on
+  // the full snapshot so a concurrent amend is never clobbered.
+  if (action === 'dismiss') {
+    const { data: freshRow } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', id)
+      .maybeSingle<{ approval_snapshot: typeof snap | null }>();
+    const priorSnapshot = freshRow?.approval_snapshot ?? snap;
+    if (!priorSnapshot.pendingColorRequest) {
+      return NextResponse.json({ error: 'No pending colour request', code: 'nothing-pending' }, { status: 409 });
+    }
+    const { pendingColorRequest: _dropped, ...restSnap } = priorSnapshot;
+    void _dropped;
+    const { data: updatedRows, error: upErr } = await sb
+      .from('quotes')
+      .update({ approval_snapshot: restSnap })
+      .eq('id', id)
+      .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+      .select('id');
+    if (upErr) {
+      console.error('[api/quotes/:id/apply-color-request] dismiss save failed:', upErr);
+      return NextResponse.json({ error: 'Could not dismiss the request' }, { status: 500 });
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      return NextResponse.json({ error: 'The order was just updated — please retry.', code: 'concurrent-edit' }, { status: 409 });
+    }
+    await resolveInboxRequest(sb, id, by, `Dismissed colour change: ${reason}`);
+    return NextResponse.json({ ok: true, action: 'dismiss' });
+  }
+
+  // APPLY only past here — reject a terminal order (re-freezing a colour onto a
+  // cancelled/declined/lost order is wrong; the dismiss above stays allowed).
   const lifecycle = deriveStatus({
     quote_sent_at: null,
     customer_approved_at: quote.customer_approved_at,
@@ -135,22 +188,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   });
   if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
     return NextResponse.json({ error: `Cannot act on a ${lifecycle} order`, code: 'not-editable' }, { status: 409 });
-  }
-
-  const op = await getOperator();
-  const by = op?.name ? `staff:${op.name}` : op?.email ? `staff:${op.email}` : 'staff';
-
-  // ── DISMISS ────────────────────────────────────────────────────────────────
-  if (action === 'dismiss') {
-    const { pendingColorRequest: _dropped, ...restSnap } = snap;
-    void _dropped;
-    const { error: upErr } = await sb.from('quotes').update({ approval_snapshot: restSnap }).eq('id', id);
-    if (upErr) {
-      console.error('[api/quotes/:id/apply-color-request] dismiss save failed:', upErr);
-      return NextResponse.json({ error: 'Could not dismiss the request' }, { status: 500 });
-    }
-    await resolveInboxRequest(sb, id, by, `Dismissed colour change: ${reason}`);
-    return NextResponse.json({ ok: true, action: 'dismiss' });
   }
 
   // ── APPLY ──────────────────────────────────────────────────────────────────
@@ -174,7 +211,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ? DEFAULT_COLOR_SCHEME_ID
       : requestedSchemeId;
   const colorIds = resolveColorChoice(colorSchemeId, customPattern, activeSchemes);
-  const label = typeof pending.label === 'string' && pending.label ? pending.label : colorSchemeId;
+  // Label the ACTUALLY-frozen colour, not the stale request-time label — after a
+  // re-validation degrade the audit trail must not claim a colour we didn't apply.
+  const label =
+    colorSchemeId === CUSTOM_SCHEME_ID || customPattern.length > 0
+      ? `Custom pattern (${customPattern.length} colour${customPattern.length === 1 ? '' : 's'})`
+      : getColorScheme(colorSchemeId).label;
 
   // Zero-delta amendment: colour is $0, so the agreed total is unchanged. The
   // entry rides the audit trail; requiresReconsent / blocksSettlement stay false.
@@ -200,45 +242,84 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Blocked: this change would move the total', code: 'total-drift' }, { status: 500 });
   }
 
-  // Concurrency guard on the auditable trail (mirrors the amend / free-items routes).
+  // Persist. Build the new snapshot from the SAME snapshot we derived the colour
+  // from (`snap`) and CAS on `snap` itself, mirroring amend/route.ts. The colour we
+  // freeze comes from snap.pendingColorRequest, so the CAS MUST be on snap: then ANY
+  // concurrent change — a staff amend appending to the trail, OR the customer
+  // re-submitting a different colour after our read — trips a 409 (staff retry),
+  // instead of us freezing a STALE colour or clobbering the amend. Re-freeze the
+  // colour into customerSelection, drop pendingColorRequest, append the zero-delta entry.
   const priorAmendments = Array.isArray(snap.amendments) ? snap.amendments : [];
-  const { data: fresh } = await sb
-    .from('quotes')
-    .select('approval_snapshot')
-    .eq('id', id)
-    .maybeSingle<{ approval_snapshot: { amendments?: AmendmentTrailEntry[]; customerSelection?: CustomerSelection; pendingColorRequest?: PendingColorRequest } | null }>();
-  const freshSnap = fresh?.approval_snapshot ?? snap;
-  const freshAmendments = Array.isArray(freshSnap.amendments) ? freshSnap.amendments : [];
-  if (freshAmendments.length !== priorAmendments.length) {
-    return NextResponse.json({ error: 'The order changed while you were applying — please retry.', code: 'concurrent-edit' }, { status: 409 });
-  }
-  // Idempotency: the request was applied/dismissed out from under us.
-  if (!freshSnap.pendingColorRequest) {
-    return NextResponse.json({ error: 'No pending colour request', code: 'nothing-pending' }, { status: 409 });
-  }
-
-  // Persist: re-freeze the colour into customerSelection, drop pendingColorRequest,
-  // append the trail entry. Total / deposit / balance are untouched.
-  const { pendingColorRequest: _drop, ...restFreshSnap } = freshSnap;
+  const { pendingColorRequest: _drop, ...restSnap } = snap;
   void _drop;
   const newSnapshot = {
-    ...restFreshSnap,
+    ...restSnap,
     customerSelection: {
-      ...(freshSnap.customerSelection ?? customerSelection),
+      ...customerSelection,
       colorSchemeId,
       customPattern,
       colorIds,
     },
-    amendments: [...freshAmendments, amendment],
+    amendments: [...priorAmendments, amendment],
   };
-  const { error: upErr } = await sb.from('quotes').update({ approval_snapshot: newSnapshot }).eq('id', id);
+  const { data: updatedRows, error: upErr } = await sb
+    .from('quotes')
+    .update({ approval_snapshot: newSnapshot })
+    .eq('id', id)
+    // Serialize jsonb explicitly — PostgREST string-interpolates filter values.
+    .eq('approval_snapshot', JSON.stringify(snap))
+    .select('id');
   if (upErr) {
     console.error('[api/quotes/:id/apply-color-request] apply save failed:', upErr);
     return NextResponse.json({ error: 'Could not apply the colour change' }, { status: 500 });
   }
+  if (!updatedRows || updatedRows.length === 0) {
+    return NextResponse.json({ error: 'The order changed while you were applying — please retry.', code: 'concurrent-edit' }, { status: 409 });
+  }
   await resolveInboxRequest(sb, id, by, `Applied colour change: ${label}`);
 
-  return NextResponse.json({ ok: true, action: 'apply', label });
+  // Notify the customer their colour change is locked in (owner decision:
+  // apply notifies; dismiss stays silent — staff calls them). Best-effort,
+  // never fails the request; suppressed for a Test Quote (#93), same
+  // convention as every other customer-facing send.
+  let smsSent = false;
+  let emailSent = false;
+  if (!quote.is_test && isHighLevelConfigured() && quote.highlevel_contact_id) {
+    const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+    const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
+    const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
+    try {
+      await sendSms({
+        contactId: quote.highlevel_contact_id,
+        message: colorChangeAppliedSmsBody(label),
+        fromNumber,
+      });
+      smsSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/apply-color-request] customer SMS failed:', hlErrorMessage(err));
+    }
+    try {
+      await sendEmail({
+        contactId: quote.highlevel_contact_id,
+        subject: COLOR_CHANGE_APPLIED_EMAIL_SUBJECT,
+        html: colorChangeAppliedEmailHtml(firstName, label),
+        emailFrom,
+      });
+      emailSent = true;
+    } catch (err) {
+      console.warn('[api/quotes/:id/apply-color-request] customer email failed:', hlErrorMessage(err));
+    }
+  }
+
+  return NextResponse.json({ ok: true, action: 'apply', label, smsSent, emailSent });
+}
+
+function hlErrorMessage(err: unknown): string {
+  return err instanceof HighLevelError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : 'Unknown HighLevel error';
 }
 
 /** Best-effort: mark the Slice-A inbox notification (quotetool / <id>:color-request)

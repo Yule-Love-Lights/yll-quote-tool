@@ -139,11 +139,13 @@ export async function POST(req: NextRequest) {
     return jsonResponse(origin, { ok: true, skipped: 'bad-body' }, 200);
   }
 
-  // Honeypot: a real (invisible) field a scripted bot fills. Answer OK, save
-  // nothing, touch nothing — indistinguishable to the bot.
-  if (typeof body.company === 'string' && body.company.trim().length > 0) {
-    return jsonResponse(origin, { ok: true }, 200);
-  }
+  // Honeypot: a hidden field only a bot (or an over-eager password manager)
+  // fills. Unlike the main route's early-return-and-drop, we DON'T discard it
+  // on the floor here — a partial fires on blur mid-fill, so an autofill false
+  // positive is more likely, and silently dropping it would lose the very lead
+  // this feature exists to keep. Handled AFTER the row is built (below): saved
+  // as a 'spam' row for a forensic/recovery trace, and never synced to GHL.
+  const isHoneypot = typeof body.company === 'string' && body.company.trim().length > 0;
 
   const name = str(body.name, MAX_LEN.name);
   const email = str(body.email, MAX_LEN.email);
@@ -190,6 +192,18 @@ export async function POST(req: NextRequest) {
     is_test: isTest,
     sync_status: 'partial',
   };
+
+  // Honeypot hit that still carried a usable contact handle (we already
+  // returned above when there was none): save it as 'spam' so a real
+  // password-manager false positive stays recoverable in /admin/leads, and
+  // never touch GHL. Answers exactly like a success — indistinguishable to a bot.
+  if (isHoneypot) {
+    const { error: spamErr } = await sb
+      .from('website_leads')
+      .insert({ ...row, sync_status: 'spam', sync_error: 'honeypot' });
+    if (spamErr) console.error('[api/leads/partial] spam-row insert failed:', spamErr.message);
+    return jsonResponse(origin, { ok: true }, 200);
+  }
 
   let rowId: string | null = null;
 
@@ -272,6 +286,14 @@ export async function POST(req: NextRequest) {
         .eq('id', rowId);
       if (updErr) console.error('[api/leads/partial] sync_error write-back failed:', updErr.message);
     }
+  } else {
+    // Record WHY the row has no GHL contact/tag, so a missing-config state is
+    // visible in /admin/leads instead of an unexplained untagged partial row.
+    const { error: updErr } = await sb
+      .from('website_leads')
+      .update({ sync_error: 'HighLevel not configured' })
+      .eq('id', rowId);
+    if (updErr) console.error('[api/leads/partial] config-skip write-back failed:', updErr.message);
   }
 
   return jsonResponse(origin, { ok: true, id: rowId }, 200);
