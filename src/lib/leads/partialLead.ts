@@ -55,7 +55,12 @@ async function findExistingContact(input: PartialLeadInput): Promise<CrmContact 
   try {
     let results: CrmContact[] = [];
     if (email) results = await searchContacts(email);
-    if (results.length === 0 && phone) results = await searchContacts(phone);
+    // Search on DIGITS, not the raw field — see findHouseholdMatch in
+    // leadService.ts. A partial fires mid-fill, so a half-formatted phone like
+    // '(631) 555-' is especially likely here.
+    if (results.length === 0 && phone) {
+      results = await searchContacts(normalizePhoneForCompare(phone));
+    }
     const wantEmail = normalizeEmailForCompare(email);
     const wantPhone = normalizePhoneForCompare(phone);
     return (

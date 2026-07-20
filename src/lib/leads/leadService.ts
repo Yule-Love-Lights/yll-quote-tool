@@ -132,11 +132,23 @@ function normalizeEmailForCompare(email: string | undefined | null): string {
 // while the website form collects 10 digits, so a plain digit-strip compare
 // NEVER matches a phone-only household. The guard below then sees no existing
 // contact and lets the upsert send name fields — and GHL, whose own matching
-// DOES normalize the country code, happily overwrites the real contact's
-// name. Shared with partialLead.ts so both sync paths agree.
+// DOES normalize the country code, happily overwrites the real contact's name.
+//
+// Strips ONLY the NANP country code (11 digits starting with 1), never a blind
+// last-10. A blind trailing slice would collapse any longer international
+// number onto a US one — '+52 631 555 0100' (Mexico) and Long Island
+// '631-555-0100' would become the same household, which is the same
+// identity-clobbering failure in the opposite direction. Anything that is not
+// NANP-shaped is left intact so it simply fails to match, matching the
+// "better an unmatched contact than a wrong merge" policy in
+// src/lib/dashboard/inbox/normalize.ts.
+//
+// Shared with partialLead.ts so both sync paths agree. NOTE this is a
+// comparison key, not a canonical format — src/lib/dashboard/inbox/normalize.ts
+// (E.164) and src/lib/customers.ts (raw digits) are separate contracts.
 export function normalizePhoneForCompare(phone: string | undefined | null): string {
   const digits = (phone ?? '').replace(/\D/g, '');
-  return digits.length > 10 ? digits.slice(-10) : digits;
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
 }
 
 /**
@@ -174,7 +186,12 @@ async function findHouseholdMatch(lead: LeadInput): Promise<CrmContact | null> {
   try {
     let results = await searchContacts(lead.email);
     if (results.length === 0) {
-      results = await searchContacts(lead.phone);
+      // Search on DIGITS, not the raw field. GHL's contact search is a text
+      // query, so '(631) 555-0100' does not find a contact stored as
+      // '+16315550100' — normalizing the comparison below is useless if the
+      // query never returns the candidate to compare. Verified against live GHL:
+      // a bare 10-digit query does match an E.164-stored contact.
+      results = await searchContacts(normalizePhoneForCompare(lead.phone));
     }
     const wantEmail = normalizeEmailForCompare(lead.email);
     const wantPhone = normalizePhoneForCompare(lead.phone);
