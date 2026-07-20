@@ -148,4 +148,19 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p)).toBe(false); // method defaults to GET, which is NOT allowlisted here
     expect(isPublicPath(`${p}/`, 'POST')).toBe(true); // tolerates a single trailing slash
   });
+
+  it('treats the self-serve estimate page as public (ledger self-serve, Phase A)', () => {
+    for (const p of ['/estimate', '/estimate/', '/estimate/anything']) {
+      expect(isPublicPath(p), p).toBe(true);
+    }
+  });
+
+  it('allows POST /api/estimate + /api/estimate/contact but keeps other methods operator-only (self-serve Phase A)', () => {
+    for (const p of ['/api/estimate', '/api/estimate/contact']) {
+      expect(isPublicPath(p, 'POST'), p).toBe(true);
+      expect(isPublicPath(p, 'GET'), p).toBe(false);
+      expect(isPublicPath(p), p).toBe(false); // method defaults to GET, which is NOT allowlisted here
+      expect(isPublicPath(`${p}/`, 'POST'), p).toBe(true); // tolerates a single trailing slash
+    }
+  });
 });

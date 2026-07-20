@@ -91,6 +91,12 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // code in the URL (a bad/unknown code just 404s inside the page itself).
   if (path === '/refer' || path.startsWith('/refer/')) return true;
 
+  // Customer self-serve estimate (ledger self-serve, Phase A) — the public
+  // "type your address, get an instant range" front door. The page + its two
+  // APIs self-gate on the SELF_SERVE_ESTIMATE_ENABLED flag (404 when off) and
+  // are honeypot + rate-limited in the routes themselves.
+  if (path === '/estimate' || path.startsWith('/estimate/')) return true;
+
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
@@ -117,6 +123,17 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // itself. POST only; other methods on this exact path stay operator-gated
   // (mirrors the offered-colors GET-only carve-out, S26).
   if (method.toUpperCase() === 'POST' && path === '/api/referrals/submit') {
+    return true;
+  }
+
+  // Self-serve estimate APIs (ledger self-serve, Phase A) — the public front
+  // door's measure/price + contact-capture endpoints. POST only (each is
+  // flag-gated + honeypot + rate-limited in the route); other methods stay
+  // operator-gated. Same shape as the referrals carve-out above.
+  if (
+    method.toUpperCase() === 'POST' &&
+    (path === '/api/estimate' || path === '/api/estimate/contact')
+  ) {
     return true;
   }
 
