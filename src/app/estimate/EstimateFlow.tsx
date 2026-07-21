@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EstimateVisual } from './EstimateVisual';
+import { SampleHomes } from './SampleHomes';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
@@ -259,6 +260,11 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
             <p className="mt-1 text-sm text-slate-500">Reading the satellite view of {address}</p>
           </section>
         )}
+
+        {/* Sample homes — shown on the address screen and kept up while we look
+            up the customer's house (S48). Renders nothing until the 5 images are
+            dropped in public/estimate-samples/ (see SampleHomes.tsx). */}
+        {(step === 'address' || step === 'measuring') && <SampleHomes />}
 
         {step === 'result' && range && (
           <section className="flex flex-col gap-5">
