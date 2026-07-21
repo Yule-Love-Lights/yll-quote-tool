@@ -43,6 +43,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { HighLevelError } from '@/lib/integrations/highlevel';
 import { asLeadService, syncLeadToGhl, LEAD_SERVICES, type LeadService } from '@/lib/leads/leadService';
+import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { newLeadMessage } from '@/lib/integrations/telegramMessages';
 
 export const runtime = 'nodejs';
 
@@ -339,6 +341,24 @@ export async function POST(req: NextRequest) {
   if (insertErr || !inserted) {
     console.error('[api/leads] insert failed:', insertErr?.message);
     return jsonResponse(origin, { error: 'Failed to save lead' }, 500);
+  }
+
+  // Phase 1 text-ops ping (2026-07-19 plan): instant staff Telegram heads-up
+  // for a real lead. notifyTelegram is best-effort by contract (fail-open,
+  // no-op while the bot is dormant) — it must never affect the lead path.
+  // Raced against a 2s cap because this is the one notifyTelegram call on a
+  // CUSTOMER-facing request: its fetch has no timeout of its own, and a hung
+  // Telegram API must not hang a homeowner's form submit. Test leads stay
+  // silent.
+  if (!isTest) {
+    let pingTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      notifyTelegram(newLeadMessage({ name, service, phone, address, baseUrl: appBaseUrl() })),
+      new Promise<void>((resolve) => {
+        pingTimer = setTimeout(resolve, 2000);
+      }),
+    ]);
+    clearTimeout(pingTimer);
   }
 
   // GHL sync — best effort. The row is already saved (source of truth); any
