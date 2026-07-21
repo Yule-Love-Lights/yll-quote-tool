@@ -132,7 +132,7 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | 2 | View today's schedule / next install | ✓ | ✓ | ✓ |
 | 3 | View inventory / on-hand / low-stock | ✓ | ✓ | ✓ |
 | 4 | View customer contact info (for a job) | ✓ | ✓ | ✓ |
-| 5 | View full pipeline board / "what's stuck" | ⚑ — | ✓ | ✓ |
+| 5 | View full pipeline board / "what's stuck" | — | ✓ | ✓ |
 | 6 | View financials / reporting | — | ✓ | ✓ |
 | **B. Field capture** ||||
 | 7 | Submit install completion (photos) | ✓ | ✓ | ✓ |
@@ -147,8 +147,8 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | **D. Quote / money** ||||
 | 15 | Request a quote change / amend (price) | — | ✓ | ✓ |
 | 16 | Request a color change | — | ✓ | ✓ |
-| 17 | Apply a price override / discount | — | ⚑ ✓ | ✓ |
-| 18 | Staff-approve / staff-decline for a customer | — | ⚑ ✓ | ✓ |
+| 17 | Apply a price override / discount | — | ✓ | ✓ |
+| 18 | Staff-approve / staff-decline for a customer | — | — | ✓ |
 | 19 | Convert quote → job / trigger booking | — | ✓ | ✓ |
 | **E. Settings / configuration — admin-only** ||||
 | 20 | Business settings (pricing rules, packages, colors) | — | — | ✓ |
@@ -161,7 +161,11 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | 26 | Enable / disable the whole bot | — | — | ✓ |
 
 **Universal (not per-role):** the confirm-yes gate + audit log apply to every
-sensitive write regardless of role. **Open judgment calls:** rows 5, 17, 18.
+sensitive write regardless of role. **Rows 5, 17, 18 resolved (Naldo, 2026-07-20):**
+row 5 crew = no (pipeline board stays staff+); row 17 staff may apply price
+overrides / discounts (confirm gate + audit as always); row 18 staff-approve /
+staff-decline via the bot is ADMIN-only at launch (in-product staff powers
+unchanged; widen later if it proves safe).
 
 ## The ops tools (maps to Naldo's list)
 
