@@ -13,16 +13,24 @@ import { EstimateFlow } from './EstimateFlow';
 // The flag is a runtime server env read — never statically pre-render this page.
 export const dynamic = 'force-dynamic';
 
-export const metadata: Metadata = {
-  title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
-  description:
-    'Type your address and see a real holiday lighting price for your home in seconds. No photos, no waiting.',
-  // Indexable: /estimate is a standalone landing page we want to rank (S48,
-  // Naldo's call). The ?embed=1 variant is only ever loaded inside the
-  // yulelovelights.com iframe — Google never sees it as a standalone link — so a
-  // per-variant noindex isn't needed to keep the frame source out of the index.
-  robots: { index: true, follow: true },
-};
+export async function generateMetadata({
+  searchParams,
+}: {
+  searchParams: Promise<{ embed?: string }>;
+}): Promise<Metadata> {
+  const { embed } = await searchParams;
+  return {
+    title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
+    description:
+      'Type your address and see a real holiday lighting price for your home in seconds. No photos, no waiting.',
+    // Standalone /estimate is a rankable landing page (S48, Naldo's call). The
+    // ?embed=1 variant is chrome-less and only ever lives inside the
+    // yulelovelights.com iframe, so keep it OUT of the index — otherwise Googlebot
+    // (which renders pages and can discover iframe src URLs) could rank the bare
+    // embedded variant as a thin duplicate of the standalone page.
+    robots: embed === '1' ? { index: false, follow: false } : { index: true, follow: true },
+  };
+}
 
 export default async function EstimatePage({
   searchParams,

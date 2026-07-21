@@ -49,13 +49,23 @@ export async function GET(req: NextRequest) {
     console.error('[api/estimate/design] lookup failed:', err instanceof Error ? err.message : 'error');
     return null;
   });
-  if (!design) {
-    // Not persisted yet (the after() task hasn't finished) or best-effort failed.
+
+  // Readiness is CONTENT, not existence. createDesign (designs.ts, W2-030) INSERTs
+  // the row with an EMPTY scene, then uploads the photo, then seeds the roofline —
+  // three SEPARATE commits. A poll landing mid-sequence sees a row whose scene is
+  // still {items:[]}; returning ready:true then would latch the client onto a
+  // blank canvas forever (its scene object is truthy even when empty). So only
+  // report ready once the photo AND the seeded roofline are both present; until
+  // then keep the client polling (or, if the seed truly failed, poll out to no
+  // visual — never a blank one).
+  const scene = design?.scene;
+  const seeded = !!design?.photoUrl && Array.isArray(scene?.items) && scene.items.length > 0;
+  if (!design || !seeded) {
     return NextResponse.json({ ready: false }, { status: 200 });
   }
 
   return NextResponse.json(
-    { ready: true, scene: design.scene, photoUrl: design.photoUrl, photoW: design.photoW, photoH: design.photoH },
+    { ready: true, scene, photoUrl: design.photoUrl, photoW: design.photoW, photoH: design.photoH },
     { status: 200 },
   );
 }

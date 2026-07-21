@@ -262,16 +262,17 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
 
         {step === 'result' && range && (
           <section className="flex flex-col gap-5">
-            {/* Slice 3: show the measured roofline (the same live design the
-                portal hero renders) once its background render lands. Renders
-                nothing if the quote didn't save or the design never persists. */}
-            {quoteId && <EstimateVisual quoteId={quoteId} />}
             <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
               <p className="text-sm text-slate-500">Estimated holiday lighting for</p>
               <p className="text-sm font-medium text-slate-700">{formattedAddress}</p>
               <p className="mt-4 text-4xl font-bold text-amber-700">{usd.format(range.low)} – {usd.format(range.high)}</p>
               <p className="mt-3 text-sm text-slate-500">A real range from your measured roofline. We confirm the exact number before anything is due.</p>
             </div>
+            {/* Slice 3: the measured roofline (same live design the portal hero
+                renders), placed BELOW the price so the number lands first — the
+                visual fades in without gating the result. Renders nothing if the
+                quote didn't save or the design never persists. */}
+            {quoteId && <EstimateVisual quoteId={quoteId} />}
             <ContactCard
               heading="Save your quote"
               blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book."

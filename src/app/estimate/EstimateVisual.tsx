@@ -22,7 +22,8 @@ const DesignCanvas = dynamic(() => import('@/components/design/DesignCanvas'), {
 type DesignData = { scene: Scene; photoUrl: string | null; photoW: number | null; photoH: number | null };
 
 const POLL_INTERVAL_MS = 2000;
-const MAX_ATTEMPTS = 8; // ~16s — the design is drawn in a background after() task
+const MAX_ATTEMPTS = 12; // ~24s — the design is drawn in a background after() task
+                         // that runs after a 20-40s analyzer, so give it room.
 
 export function EstimateVisual({ quoteId }: { quoteId: string }) {
   const [design, setDesign] = useState<DesignData | null>(null);
@@ -90,7 +91,7 @@ export function EstimateVisual({ quoteId }: { quoteId: string }) {
       </div>
       {design && (
         <p className="px-4 py-2 text-center text-xs text-slate-300">
-          Your roofline, measured from above — this is where your lights go.
+          Here&apos;s our first pass at your roofline — we&apos;ll confirm the exact layout with you.
         </p>
       )}
     </div>
