@@ -17,7 +17,11 @@ export const metadata: Metadata = {
   title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
   description:
     'Type your address and see a real holiday lighting price for your home in seconds. No photos, no waiting.',
-  robots: { index: false, follow: false },
+  // Indexable: /estimate is a standalone landing page we want to rank (S48,
+  // Naldo's call). The ?embed=1 variant is only ever loaded inside the
+  // yulelovelights.com iframe — Google never sees it as a standalone link — so a
+  // per-variant noindex isn't needed to keep the frame source out of the index.
+  robots: { index: true, follow: true },
 };
 
 export default async function EstimatePage({

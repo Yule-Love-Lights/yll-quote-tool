@@ -12,6 +12,7 @@
 // point vs the competitors' contact-wall-first flows.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { EstimateVisual } from './EstimateVisual';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
@@ -261,6 +262,10 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
 
         {step === 'result' && range && (
           <section className="flex flex-col gap-5">
+            {/* Slice 3: show the measured roofline (the same live design the
+                portal hero renders) once its background render lands. Renders
+                nothing if the quote didn't save or the design never persists. */}
+            {quoteId && <EstimateVisual quoteId={quoteId} />}
             <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
               <p className="text-sm text-slate-500">Estimated holiday lighting for</p>
               <p className="text-sm font-medium text-slate-700">{formattedAddress}</p>

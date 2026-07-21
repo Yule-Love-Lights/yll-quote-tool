@@ -157,6 +157,14 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
     return true;
   }
 
+  // GET /api/estimate/design — the self-serve result screen polls this for the
+  // measured-roofline visual (ledger self-serve, Slice 3). It's flag-gated +
+  // rate-limited in the route and returns the same { scene, photoUrl } the portal
+  // hero already exposes by UUID. GET only; other methods stay operator-gated.
+  if (method.toUpperCase() === 'GET' && path === '/api/estimate/design') {
+    return true;
+  }
+
   // /api/leads is the WordPress site's public lead-capture endpoint (#leads) —
   // honeypot + rate-limited + strictly validated in the route itself. POST is
   // the submission; OPTIONS must also pass because the browser sends a CORS
