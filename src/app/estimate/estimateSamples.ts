@@ -6,9 +6,12 @@
 // draws its lights from, in the mockup's 960x640 overlay space.
 //
 // PLACEHOLDER ASSETS: the photos are the mockup's free-license stock houses; swap
-// them for real Yule Love Lights homes (see the README in that folder). The drawn
-// light geometry is tuned to THESE photos — when real homes come in, either supply
-// real before/after photo pairs (preferred, per Naldo) or re-trace the geometry.
+// them for real Yule Love Lights homes (see the README in that folder). The roofline
+// geometry is tuned to THESE photos — when real homes come in, either supply real
+// designs (rendered the same way) or re-trace the geometry.
+
+import { seedSceneFromAnalysis, sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import type { Scene } from '@/lib/design/sceneTypes';
 
 /** Overlay coordinate space (matches the mockup + the traced geometry below). */
 export const VW = 960;
@@ -88,37 +91,36 @@ export const SAMPLE_STYLES: SampleStyle[] = [
   },
 ];
 
-export type Bulb = { x: number; y: number; color: string };
+// The sample photos are normalized to exactly 960x640 (see public/estimate-samples),
+// so the overlay geometry above maps 1:1 into the design's photo space.
+export const SAMPLE_PHOTO_W = VW;
+export const SAMPLE_PHOTO_H = VH;
+// Evening dim so the strands read as glowing lights against the daytime photo.
+const SAMPLE_BRIGHTNESS = 18;
 
 /**
- * Place bulbs along each roofline run at ~16px spacing, cycling the scheme's
- * colors — the same walk the mockup used to draw the strand. Pure so the overlay
- * can render deterministic JSX (no dangerouslySetInnerHTML).
+ * Build a REAL design Scene for a sample style, so the before/after "with lights"
+ * side renders through the same DesignCanvas engine as the customer's own house
+ * and the portal — not a hand-drawn overlay. Seeds roofline strands from the
+ * style's runs via the exact path staff use (seedSceneFromAnalysis), then sets an
+ * evening brightness so the bulbs glow.
  */
-export function bulbPositions(runs: Run[], scheme: SchemeKey): Bulb[] {
-  const colors = SCHEMES[scheme] ?? SCHEMES.warm;
-  const out: Bulb[] = [];
-  let idx = 0;
-  for (const [x1, y1, x2, y2] of runs) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const n = Math.max(1, Math.floor(len / 16));
-    for (let i = 0; i <= n; i++) {
-      out.push({ x: x1 + (dx * i) / n, y: y1 + (dy * i) / n, color: colors[idx % colors.length] });
-      idx++;
-    }
-  }
-  return out;
+export function buildSampleScene(style: SampleStyle): Scene {
+  const seed = sanitizeAnalysisSeed({
+    lines: { santas: style.runs.map((r) => [[r[0] / VW, r[1] / VH], [r[2] / VW, r[3] / VH]]) },
+    calibration: { santasFootage: style.ft },
+  });
+  const seeded = seedSceneFromAnalysis({ yardsticks: [], items: [], brightness: SAMPLE_BRIGHTNESS }, seed, SAMPLE_PHOTO_W, SAMPLE_PHOTO_H);
+  return { ...seeded, brightness: SAMPLE_BRIGHTNESS };
 }
 
-/** A garland's three sag points (quarter/half/three-quarter along the quad). */
-export function garlandDots(g: Garland): { x: number; y: number }[] {
-  return [0.25, 0.5, 0.75].map((t) => {
-    const mt = 1 - t;
-    return {
-      x: mt * mt * g[0] + 2 * mt * t * g[2] + t * t * g[4],
-      y: mt * mt * g[1] + 2 * mt * t * g[3] + t * t * g[5],
-    };
-  });
-}
+/**
+ * Map each swatch to real palette color ids (DesignCanvas colorOverride), so the
+ * customer previews the actual products we'd install. Ids come from DEFAULT_COLORS.
+ */
+export const SCHEME_COLOR_IDS: Record<SchemeKey, string[]> = {
+  warm: ['warm-white'],
+  cool: ['cool-white'],
+  multi: ['red', 'green', 'warm-white', 'blue'],
+  redwhite: ['red', 'warm-white'],
+};
