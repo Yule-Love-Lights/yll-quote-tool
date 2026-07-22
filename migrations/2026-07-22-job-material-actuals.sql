@@ -25,6 +25,12 @@ create table if not exists public.job_material_actuals (
   job_id      uuid not null references public.jobs(id) on delete cascade,
   sku         text not null,
   qty         integer not null default 0 check (qty >= 0),
+  -- The estimate this submission was compared against when the true-up ran.
+  -- Stored per row because prepareJobMaterials does not persist what it
+  -- deducted, so the baseline is otherwise unreconstructable later: without it,
+  -- "why did on-hand move by that much" cannot be answered once the design has
+  -- changed again.
+  estimated_qty integer not null default 0 check (estimated_qty >= 0),
   -- What the crew typed, kept verbatim for dispute/debug ("2 boxes C9").
   raw_text    text,
   -- Telegram chat id (or 'staff:<label>') that submitted it — the audit trail.

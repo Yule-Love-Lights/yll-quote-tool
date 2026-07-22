@@ -21,7 +21,11 @@ export type PendingAction = {
   summary: string;
 };
 
-const DEFAULT_TTL_SECONDS = 10 * 60;
+// Field work sets this, not office work: a crew member stages a report, then
+// climbs down, moves the truck, and talks to the homeowner before looking at
+// their phone again. Ten minutes expired real confirmations; 45 is long enough
+// to survive that without leaving a stale write pending all day.
+const DEFAULT_TTL_SECONDS = 45 * 60;
 
 // Deliberately tight lists. Anything else is treated as neither a yes nor a no,
 // so the bot re-asks instead of guessing — the whole point of the gate is that
@@ -40,14 +44,24 @@ export function isNegative(text: string): boolean {
   return NEGATIVE.has(normalize(text));
 }
 
+export type StageResult = {
+  id: string;
+  /** A previous un-confirmed action was closed to make room for this one. */
+  supersededSummary: string | null;
+};
+
 /**
- * Stage an action awaiting confirmation, returning its id (null when Supabase
- * isn't configured or the insert fails — the caller must then NOT tell the user
- * the action is pending).
+ * Stage an action awaiting confirmation (null when Supabase isn't configured or
+ * the insert fails — the caller must then NOT tell the user it is pending).
  *
  * Supersedes this sender's other open actions first: staging B while A is still
  * pending must not leave A alive, or a later "yes" would fire whichever row a
  * query happened to return. One sender has at most one pending action.
+ *
+ * The superseded summary comes back so the caller can SAY it happened. Silently
+ * dropping the earlier report is how a crew member loses work: they text two
+ * finished jobs in a row, confirm the second, and never learn the first was
+ * discarded.
  */
 export async function stagePendingAction(opts: {
   chatId: string;
@@ -56,11 +70,11 @@ export async function stagePendingAction(opts: {
   args: Record<string, unknown>;
   summary: string;
   ttlSeconds?: number;
-}): Promise<string | null> {
+}): Promise<StageResult | null> {
   const db = getSupabaseServiceClient();
   if (!db) return null;
 
-  await supersedeOpenActions(opts.chatId, opts.userId);
+  const previous = await peekPendingAction(opts.chatId, opts.userId);
 
   const expiresAt = new Date(Date.now() + (opts.ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000).toISOString();
   const { data, error } = await db
@@ -80,19 +94,102 @@ export async function stagePendingAction(opts: {
     console.error('[botConfirm] failed to stage pending action:', error);
     return null;
   }
-  return (data as { id: string }).id;
+
+  // Supersede AFTER the insert succeeds, never before: closing the old action
+  // first meant a failed insert left the sender with nothing pending, so their
+  // next "yes" (meant for the earlier report) found nothing and the work had to
+  // be retyped with no explanation. Excluding the row just created keeps the
+  // one-pending-action-per-sender invariant intact.
+  const newId = (data as { id: string }).id;
+  await supersedeOpenActions(opts.chatId, opts.userId, newId);
+
+  return { id: newId, supersededSummary: previous?.summary ?? null };
 }
 
-/** Close this sender's open actions without running them. */
-export async function supersedeOpenActions(chatId: string, userId: string): Promise<void> {
+/**
+ * Read this sender's open action WITHOUT consuming it. Used to answer "is
+ * something still waiting?" — for a reply that is neither a clear yes nor a
+ * clear no, and to decide whether a bare "yes" in a group chat is meant for us.
+ */
+export async function peekPendingAction(
+  chatId: string,
+  userId: string,
+): Promise<PendingAction | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('bot_pending_actions')
+    .select('id, tool, args, summary')
+    .eq('chat_id', chatId)
+    .eq('user_id', userId)
+    .is('consumed_at', null)
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const row = data as { id: string; tool: string; args: Record<string, unknown> | null; summary: string };
+  return { id: row.id, tool: row.tool, args: row.args ?? {}, summary: row.summary };
+}
+
+/**
+ * Add photo file ids to this sender's pending action.
+ *
+ * Telegram delivers an album as SEPARATE updates and puts the caption on only
+ * one of them, so the later photos arrive with no text and would otherwise be
+ * dropped while the reply still said "Saved 1 photo" — silent lost work.
+ * Returns the pending action it appended to, or null if nothing was pending.
+ */
+export async function appendPhotosToPendingAction(
+  chatId: string,
+  userId: string,
+  fileIds: string[],
+): Promise<PendingAction | null> {
+  const db = getSupabaseServiceClient();
+  if (!db || !fileIds.length) return null;
+
+  const pending = await peekPendingAction(chatId, userId);
+  if (!pending) return null;
+
+  const existing = Array.isArray(pending.args.photoFileIds)
+    ? (pending.args.photoFileIds as string[])
+    : [];
+  const merged = [...new Set([...existing, ...fileIds])];
+  const args = { ...pending.args, photoFileIds: merged };
+
+  // Guarded on still-unconsumed: if the sender confirmed in the meantime, the
+  // action already ran and quietly mutating its args would be a lie.
+  const { data } = await db
+    .from('bot_pending_actions')
+    .update({ args })
+    .eq('id', pending.id)
+    .is('consumed_at', null)
+    .select('id')
+    .maybeSingle();
+  if (!data) return null;
+
+  return { ...pending, args };
+}
+
+/**
+ * Close this sender's open actions without running them.
+ * `exceptId` keeps a freshly staged row alive (see stagePendingAction).
+ */
+export async function supersedeOpenActions(
+  chatId: string,
+  userId: string,
+  exceptId?: string,
+): Promise<void> {
   const db = getSupabaseServiceClient();
   if (!db) return;
-  const { error } = await db
+  let q = db
     .from('bot_pending_actions')
     .update({ consumed_at: new Date().toISOString() })
     .eq('chat_id', chatId)
     .eq('user_id', userId)
     .is('consumed_at', null);
+  if (exceptId) q = q.neq('id', exceptId);
+  const { error } = await q;
   if (error) console.error('[botConfirm] failed to supersede open actions:', error);
 }
 

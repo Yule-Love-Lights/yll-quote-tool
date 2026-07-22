@@ -22,6 +22,8 @@ import {
   stagePendingAction,
   consumePendingAction,
   supersedeOpenActions,
+  peekPendingAction,
+  appendPhotosToPendingAction,
   isAffirmative,
   isNegative,
 } from './botConfirm';
@@ -65,20 +67,31 @@ const MAX_SKU_HINTS = 120;
  * should stay silent (a group message that wasn't addressed to it).
  */
 export async function handleBotMessage(msg: BotIncomingMessage): Promise<string | null> {
-  if (
-    !isAddressedToBot({
-      chatType: msg.chatType,
-      text: msg.text,
-      isReplyToBot: msg.isReplyToBot,
-    })
-  ) {
-    return null;
-  }
+  const addressed = isAddressedToBot({
+    chatType: msg.chatType,
+    text: msg.text,
+    isReplyToBot: msg.isReplyToBot,
+  });
 
   const role = roleForSenderInAllowedChat(msg.userId);
   let text = cleanTelegramCommand(msg.text);
 
+  if (!addressed) {
+    // One exception to the group gate, and it is the important one: a bare
+    // "yes" typed into a group is the natural way to confirm, but it is not a
+    // reply-to-bot or a mention, so the gate would silently drop it and the
+    // crew would think their report went through. A plain yes/no from someone
+    // who has an action pending is unambiguous — nobody else's stray "yes"
+    // resolves to anything, because they have nothing staged. Photos get the
+    // same treatment so an album's untitled follow-ups still land.
+    const bare = isAffirmative(text) || isNegative(text);
+    const hasPhotos = !!msg.photoFileIds?.length;
+    if (!bare && !hasPhotos) return null;
+    if (!(await peekPendingAction(msg.chatId, msg.userId))) return null;
+  }
+
   // A voice note carries the instruction when there's no caption to read.
+  let heard: string | null = null;
   if (!text && msg.voiceFileId) {
     const spoken = await transcribeVoice(msg.voiceFileId);
     if (!spoken) {
@@ -86,8 +99,13 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
         ? "Couldn't make out that voice note — try typing it."
         : 'Voice notes are not set up yet — type it instead.';
     }
+    // Echoed back with the reply: wind, gloves and a ladder make mishearing "two
+    // boxes" as "ten boxes" entirely possible, and a summary of codes and counts
+    // gives the crew no way to catch it. Showing the words does.
+    heard = spoken;
     text = spoken;
   }
+  const withHeard = (reply: string) => (heard ? `Heard: "${heard}"\n${reply}` : reply);
 
   // ── the confirm-yes gate ──────────────────────────────────────────────────
   if (isNegative(text)) {
@@ -103,10 +121,29 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   }
 
   if (!text) {
-    return msg.photoFileIds?.length
-      ? 'Got the photo. Send it with the job, like "job 142 done, 2 boxes C9".'
-      : NOT_UNDERSTOOD;
+    if (!msg.photoFileIds?.length) return NOT_UNDERSTOOD;
+    // Telegram splits an album into separate updates and puts the caption on
+    // only one, so these arrive captionless. Attaching them to the pending
+    // action stops the rest of the album from vanishing while the final reply
+    // still cheerfully reports "Saved 1 photo".
+    const attached = await appendPhotosToPendingAction(
+      msg.chatId,
+      msg.userId,
+      msg.photoFileIds,
+    );
+    if (attached) {
+      const count = Array.isArray(attached.args.photoFileIds)
+        ? (attached.args.photoFileIds as string[]).length
+        : 1;
+      return `Got it — ${count} photo${count === 1 ? '' : 's'} ready for that job. Reply yes to confirm, or send more.`;
+    }
+    return 'Got the photo. Send it with the job, like "job 142 done, 2 boxes C9".';
   }
+
+  // A reply that is neither a clear yes nor a clear no ("yes but 3 boxes") must
+  // not silently strand the pending action: say it is still waiting, and what
+  // it says, rather than dropping through to a bare "didn't understand".
+  const stillPending = await peekPendingAction(msg.chatId, msg.userId);
 
   // ── keyword commands: deterministic, never touch the LLM ───────────────────
   const cmd = parseWhatsAppCommand(text);

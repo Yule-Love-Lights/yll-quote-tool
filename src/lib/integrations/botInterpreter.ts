@@ -29,7 +29,12 @@ export type BotWriteTool = (typeof BOT_WRITE_TOOLS)[number];
 
 export type BotTool = BotReadTool | BotWriteTool;
 
-export type BotMaterialLine = { sku: string; qty: number };
+// What the crew SAID, not a SKU. The catalog has ~877 rows, far too many to
+// hand a cheap classifier, and a wrong-but-real SKU silently corrupts stock
+// with nothing to catch it. So the model only captures the phrase and the
+// count; resolveMaterialLines turns that into a real SKU deterministically,
+// searching the job's own bill of materials first and refusing when unsure.
+export type BotMaterialLine = { item: string; qty: number };
 
 export type BotInterpretation = {
   tool: BotTool;
@@ -61,7 +66,7 @@ const INTERPRETER_MODEL = 'claude-haiku-4-5-20251001';
 // anything past this is a malformed reply, not a real install.
 const MAX_MATERIAL_LINES = 20;
 
-function systemPrompt(allowWrites: boolean, skuHints: string[]): string {
+function systemPrompt(allowWrites: boolean): string {
   const lines = [
     'You route one staff text message for a residential holiday-lighting company',
     '(Yule Love Lights) to ONE ops tool. Staff ask about quotes, jobs, installs,',
@@ -78,17 +83,12 @@ function systemPrompt(allowWrites: boolean, skuHints: string[]): string {
     lines.push(
       '- completeInstall: a crew member reporting an install is FINISHED and what',
       '  material it took. Put the job number in jobNumber and each material line in',
-      '  materials as {sku, qty}. Anything else they said goes in note.',
-      '  Example: "job 142 done, used 2 boxes of C9 and 30 clips" →',
-      '  completeInstall with jobNumber 142 and materials for C9 and the clip SKU.',
-    );
-    if (skuHints.length) {
-      lines.push(
-        'Use ONLY these exact SKU codes in materials (match what they describe to the',
-        `closest one; omit a line you cannot match): ${skuHints.join(', ')}`,
-      );
-    }
-    lines.push(
+      '  materials as {item, qty}, where item is the product AS THEY DESCRIBED IT,',
+      '  copied plainly, and qty is how many. Do NOT invent product codes and do not',
+      '  convert units: "2 boxes of C9 warm white" is {item: "C9 warm white", qty: 2}.',
+      '  Anything else they said goes in note.',
+      '  Example: "job 142 done, used 2 boxes of C9 and 30 clips" → completeInstall,',
+      '  jobNumber 142, materials [{item: "C9", qty: 2}, {item: "clips", qty: 30}].',
       'For any OTHER change (moving a job stage, setting stock, editing or sending a',
       'quote, prices, contacts) answer help with confidence 0 — those are not',
       'available here.',
@@ -125,10 +125,10 @@ function routeTool(allowWrites: boolean) {
       items: {
         type: 'object',
         properties: {
-          sku: { type: 'string' },
+          item: { type: 'string', description: 'the product as the sender described it' },
           qty: { type: 'number' },
         },
-        required: ['sku', 'qty'],
+        required: ['item', 'qty'],
       },
     };
     properties.note = { type: 'string', description: 'anything else the sender said' };
@@ -141,17 +141,17 @@ function routeTool(allowWrites: boolean) {
   };
 }
 
-/** Keep only well-formed {sku, qty} pairs; a malformed line is dropped, not guessed. */
+/** Keep only well-formed {item, qty} pairs; a malformed line is dropped, not guessed. */
 function parseMaterials(raw: unknown): BotMaterialLine[] {
   if (!Array.isArray(raw)) return [];
   const out: BotMaterialLine[] = [];
   for (const entry of raw.slice(0, MAX_MATERIAL_LINES)) {
     if (!entry || typeof entry !== 'object') continue;
-    const { sku, qty } = entry as { sku?: unknown; qty?: unknown };
-    if (typeof sku !== 'string' || !sku.trim()) continue;
+    const { item, qty } = entry as { item?: unknown; qty?: unknown };
+    if (typeof item !== 'string' || !item.trim()) continue;
     const n = typeof qty === 'number' ? qty : Number(qty);
     if (!Number.isFinite(n) || n < 0) continue;
-    out.push({ sku: sku.trim(), qty: Math.floor(n) });
+    out.push({ item: item.trim(), qty: Math.floor(n) });
   }
   return out;
 }
