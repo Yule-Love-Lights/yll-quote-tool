@@ -1,34 +1,44 @@
 'use client';
 
-// Customer self-serve estimate — interactive flow (ledger self-serve, Phase A).
+// Customer self-serve estimate — interactive flow (ledger self-serve, S48 redesign).
 //
-// Steps: address → measuring → (result | followup) → done.
-//   result   — we measured the roof and priced it: show a RANGE (never a binding
-//              number in Phase A) + a "save my quote" contact form.
-//   followup — no Street View / low confidence / no footage: no price, capture
-//              contact so staff can finish a custom quote and reach out.
-// Contact info is saved progressively (on field blur) so an abandoned form still
-// leaves the team a lead. The price is shown BEFORE the contact form — the whole
-// point vs the competitors' contact-wall-first flows.
+// The dark "cinematic" front door ported from the approved mockup. Same REAL
+// pipeline as before (address → /api/estimate → range + measured-roofline visual →
+// progressive contact capture); this slice re-skins it and adds the landing's
+// sample-home style picker + before/after hero (kept up through the measuring step
+// so there's something to play with while we look up the customer's house).
+//
+// Steps: address → measuring → (result | followup | outofarea) → done.
 
+import './estimate-dark.css';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EstimateVisual } from './EstimateVisual';
-import { SampleHomes } from './SampleHomes';
+import { BeforeAfter } from './BeforeAfter';
+import { SAMPLE_STYLES, SCHEMES, type SampleStyle, type SchemeKey } from './estimateSamples';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+const MEASURING_LINES = ['Fetching your home…', 'Tracing the lines your lights will follow…', 'Pricing it…'];
 
-const MEASURING_LINES = ['Locating your home…', 'Tracing your roofline…', 'Pricing your lights…'];
+const SWATCHES: { key: SchemeKey; label: string; dots: string[] }[] = [
+  { key: 'warm', label: 'Warm White', dots: SCHEMES.warm },
+  { key: 'cool', label: 'Cool White', dots: SCHEMES.cool },
+  { key: 'multi', label: 'Multicolor', dots: SCHEMES.multi },
+  { key: 'redwhite', label: 'Red & White', dots: SCHEMES.redwhite },
+];
+
+const STEP_INDEX: Record<Step, number> = { address: 0, measuring: 1, result: 2, followup: 2, outofarea: 2, done: 2 };
 
 export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) {
   const [step, setStep] = useState<Step>('address');
   const [address, setAddress] = useState('');
   const [error, setError] = useState<string | null>(null);
-  // Set once an address fails to resolve precisely — reveals the "leave your
-  // info instead" escape hatch so an un-geocodable home still becomes a lead
-  // rather than a bounce.
   const [canFallback, setCanFallback] = useState(false);
+
+  // Sample-home "play with it" state (landing + measuring).
+  const [sampleStyle, setSampleStyle] = useState<SampleStyle>(SAMPLE_STYLES[0]);
+  const [scheme, setScheme] = useState<SchemeKey>('warm');
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -41,15 +51,11 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [phone, setPhone] = useState('');
   const [consent, setConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const company = useRef(''); // honeypot (never rendered visibly for real users)
+  const company = useRef(''); // honeypot
   const mountedAt = useRef(0);
   const rootRef = useRef<HTMLElement>(null);
 
-  // Embedded in an <iframe>, an iframe has a FIXED height — content taller than
-  // it gets an inner scrollbar (ugly), shorter leaves dead space. Post our real
-  // content height to the parent page on every size change so its resize script
-  // can match the frame to us. Harmless off-embed (no parent listens); we only
-  // wire it when embedded. targetOrigin is our marketing site, not '*'.
+  // Embedded height handshake (unchanged): post our content height to the parent.
   useEffect(() => {
     if (!embedded || typeof window === 'undefined' || window.parent === window) return;
     const el = rootRef.current;
@@ -66,16 +72,13 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     return () => ro.disconnect();
   }, [embedded]);
   useEffect(() => {
-    // Stamp mount time in an effect (Date.now() is impure — not allowed during render).
     mountedAt.current = Date.now();
   }, []);
 
-  // Rotate the measuring status lines (reset happens in measure(), not here — a
-  // setState in an effect body triggers cascading renders).
   const [measureLine, setMeasureLine] = useState(0);
   useEffect(() => {
     if (step !== 'measuring') return;
-    const t = setInterval(() => setMeasureLine((i) => (i + 1) % MEASURING_LINES.length), 1400);
+    const t = setInterval(() => setMeasureLine((i) => (i + 1) % MEASURING_LINES.length), 1600);
     return () => clearInterval(t);
   }, [step]);
 
@@ -113,25 +116,15 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         setFormattedAddress(data.formattedAddress ?? addr);
         setStep('result');
       } else if (data.served === false) {
-        // Outside Nassau/Suffolk — no price, offer to leave info for expansion.
         setStep('outofarea');
       } else if (data.reason === 'address_not_found') {
-        // The precision gate refused a town/ZIP centroid (or Google couldn't
-        // resolve the street at all). Let them fix a typo — but ALSO offer the
-        // manual-quote escape hatch, because some real homes (rural routes, new
-        // construction) never geocode to a rooftop and would otherwise dead-end
-        // here with no lead captured at all.
         setError("We couldn't find that address. Please check it and try again.");
         setCanFallback(true);
         setStep('address');
       } else if (data.reason === 'unavailable') {
-        // Honeypot / too-fast guard fired. A real (fast-autofill) visitor lands
-        // here too, so send them back to retry rather than dead-ending them in
-        // the "we'll reach out" capture with no price.
         setError('One moment — please try that again.');
         setStep('address');
       } else {
-        // no_streetview / low_confidence / no_footage / analyzer_unavailable
         setStep('followup');
       }
     } catch {
@@ -140,7 +133,6 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     }
   }, [address]);
 
-  // Progressive save on blur — an abandoned form still leaves a lead.
   const savePartial = useCallback(() => {
     const hasEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
     const hasPhone = (phone.match(/\d/g)?.length ?? 0) >= 7;
@@ -164,16 +156,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
       const res = await fetch('/api/estimate/contact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteId,
-          name: name.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          address: formattedAddress ?? address,
-          consent: true,
-          rangeLabel,
-          company: company.current,
-        }),
+        body: JSON.stringify({ quoteId, name: name.trim(), email: email.trim(), phone: phone.trim(), address: formattedAddress ?? address, consent: true, rangeLabel, company: company.current }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -188,138 +171,134 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     }
   }, [name, email, phone, consent, quoteId, formattedAddress, address, rangeLabel]);
 
-  return (
-    <main
-      ref={rootRef}
-      className={
-        embedded
-          ? 'bg-transparent text-slate-900'
-          : 'min-h-screen bg-gradient-to-b from-amber-50 to-white text-slate-900'
-      }
-    >
-      <div className={`mx-auto flex max-w-xl flex-col gap-6 px-5 ${embedded ? 'py-6' : 'py-12 sm:py-20'}`}>
-        {/* Standalone page carries its own hero; embedded, the WordPress page
-            supplies the heading, so we drop it to avoid a double title. */}
-        {!embedded && (
-          <header className="text-center">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">Yule Love Lights</p>
-            <h1 className="mt-2 text-balance text-3xl font-bold sm:text-4xl">Your holiday lighting price, in seconds</h1>
-            <p className="mt-3 text-slate-600">Type your address. We measure your roof from above and show you a real range. No photos, no waiting.</p>
-          </header>
-        )}
+  const contactProps = { name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact };
+  const showSamples = step === 'address' || step === 'measuring';
 
-        {/* Honeypot — off-screen, real users never see or fill it */}
+  return (
+    <main ref={rootRef} className="est-dark">
+      <div className={`est-shell ${embedded ? '' : ''}`} style={embedded ? { paddingTop: 12 } : undefined}>
+        <div className="est-stepper" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className={STEP_INDEX[step] >= i ? 'on' : ''} />
+          ))}
+        </div>
+
+        {/* Honeypot — offscreen, real users never fill it. */}
         <input
-          type="text"
-          tabIndex={-1}
-          autoComplete="off"
-          aria-hidden="true"
-          className="absolute left-[-9999px] h-0 w-0 opacity-0"
+          type="text" tabIndex={-1} autoComplete="off" aria-hidden
+          style={{ position: 'absolute', left: -9999, height: 0, width: 0, opacity: 0 }}
           onChange={(e) => (company.current = e.target.value)}
         />
 
         {step === 'address' && (
-          <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-            <label htmlFor="addr" className="block text-sm font-medium text-slate-700">Home address</label>
+          <section className="est-screen">
+            {!embedded && <p className="est-eyebrow">Yule Love Lights</p>}
+            <h1 className="est-h1 est-display">See your house lit.<br />Get your price tonight.</h1>
+            <p className="est-sub">Type your address. We measure your roof from above and price it on the spot — no visit needed to see your number.</p>
+          </section>
+        )}
+
+        {/* Sample-home style picker + before/after — kept up on the address AND
+            measuring screens so there's something to play with during the wait. */}
+        {showSamples && (
+          <section className="est-screen">
+            <p className="est-pick-cap">Pick the house style closest to yours</p>
+            <div className="est-housepick">
+              {SAMPLE_STYLES.map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  className={`est-housechip ${s.key === sampleStyle.key ? 'on' : ''}`}
+                  onClick={() => setSampleStyle(s)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <BeforeAfter style={sampleStyle} scheme={scheme} />
+            <div className="est-swatches" style={{ marginTop: 12 }}>
+              {SWATCHES.map((sw) => (
+                <button
+                  key={sw.key}
+                  type="button"
+                  className={`est-swatch ${sw.key === scheme ? 'on' : ''}`}
+                  onClick={() => setScheme(sw.key)}
+                >
+                  <span className="dots">{sw.dots.map((c, i) => <i key={i} style={{ background: c }} />)}</span>
+                  {sw.label}
+                </button>
+              ))}
+            </div>
+            <p className="est-hero-hint">Drag to compare · sample styles, swap for your real home once you get your quote</p>
+          </section>
+        )}
+
+        {step === 'address' && (
+          <section className="est-screen">
+            <label className="est-flabel" htmlFor="addr">Your home address</label>
             <input
-              id="addr"
-              type="text"
-              value={address}
+              id="addr" type="text" className="est-field" value={address}
               onChange={(e) => setAddress(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && measure()}
-              placeholder="123 Main St, Your Town, NY"
+              placeholder="123 Candy Cane Ln, Huntington NY"
               autoComplete="street-address"
-              className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-base outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
             />
-            {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-            <button
-              onClick={measure}
-              className="mt-4 w-full rounded-lg bg-amber-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-amber-700"
-            >
-              See my instant estimate
-            </button>
-            <p className="mt-3 text-center text-xs text-slate-500">Free. No obligation. Takes about 15 seconds.</p>
+            {error && <p className="est-error">{error}</p>}
+            <button className="est-btn" onClick={measure}>Get my instant quote</button>
+            <p className="est-hero-hint" style={{ margin: '10px 0 0' }}>Free. No obligation. Takes about 15 seconds.</p>
             {canFallback && (
-              <div className="mt-4 border-t border-slate-200 pt-4 text-center">
-                <p className="text-sm text-slate-600">Still not finding your home?</p>
-                <button
-                  onClick={() => { setError(null); setStep('followup'); }}
-                  className="mt-2 text-sm font-semibold text-amber-700 underline underline-offset-2 hover:text-amber-800"
-                >
-                  Leave your info and we&apos;ll quote it by hand
-                </button>
-              </div>
+              <button className="est-backlink" onClick={() => { setError(null); setStep('followup'); }}>
+                Still not finding your home? Leave your info and we&apos;ll quote it by hand
+              </button>
             )}
           </section>
         )}
 
         {step === 'measuring' && (
-          <section className="rounded-2xl bg-white p-10 text-center shadow-sm ring-1 ring-slate-200">
-            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-amber-200 border-t-amber-600" />
-            <p className="mt-5 text-lg font-medium text-slate-700">{MEASURING_LINES[measureLine]}</p>
-            <p className="mt-1 text-sm text-slate-500">Reading the satellite view of {address}</p>
+          <section className="est-screen" style={{ textAlign: 'center', marginTop: 18 }}>
+            <div className="est-spinner" />
+            <p className="est-scan-status">{MEASURING_LINES[measureLine]}</p>
+            <p className="est-price-note">Reading the satellite view of {address}</p>
           </section>
         )}
 
-        {/* Sample homes — shown on the address screen and kept up while we look
-            up the customer's house (S48). Renders nothing until the 5 images are
-            dropped in public/estimate-samples/ (see SampleHomes.tsx). */}
-        {(step === 'address' || step === 'measuring') && <SampleHomes />}
-
         {step === 'result' && range && (
-          <section className="flex flex-col gap-5">
-            <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
-              <p className="text-sm text-slate-500">Estimated holiday lighting for</p>
-              <p className="text-sm font-medium text-slate-700">{formattedAddress}</p>
-              <p className="mt-4 text-4xl font-bold text-amber-700">{usd.format(range.low)} – {usd.format(range.high)}</p>
-              <p className="mt-3 text-sm text-slate-500">A real range from your measured roofline. We confirm the exact number before anything is due.</p>
+          <section className="est-screen" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="est-price-card">
+              <p className="est-price-note">Estimated holiday lighting for</p>
+              <p className="est-price-note" style={{ color: 'var(--est-cream-2)' }}>{formattedAddress}</p>
+              <div className="est-price-band">{usd.format(range.low)} – {usd.format(range.high)}</div>
+              <p className="est-price-note">A real range from your measured roofline.</p>
+              <span className="est-verify-tag">Our team confirms your final number before anything is due</span>
             </div>
-            {/* Slice 3: the measured roofline (same live design the portal hero
-                renders), placed BELOW the price so the number lands first — the
-                visual fades in without gating the result. Renders nothing if the
-                quote didn't save or the design never persists. */}
             {quoteId && <EstimateVisual quoteId={quoteId} />}
-            <ContactCard
-              heading="Save your quote"
-              blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book."
-              cta="Save my quote"
-              {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
-            />
+            <ContactCard heading="Save your quote" blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book." cta="Save my quote" {...contactProps} />
           </section>
         )}
 
         {step === 'followup' && (
-          <ContactCard
-            heading="Let's finish your custom quote"
-            blurb="Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day."
-            cta="Get my custom quote"
-            {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
-          />
+          <ContactCard heading="Let's finish your custom quote" blurb="Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day." cta="Get my custom quote" {...contactProps} />
         )}
 
         {step === 'outofarea' && (
-          <section className="flex flex-col gap-5">
-            <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
-              <p className="text-lg font-medium text-slate-800">We&apos;re not in your area just yet</p>
-              <p className="mt-2 text-sm text-slate-600">We currently install across Nassau and Suffolk County. Leave your info and we&apos;ll reach out if we expand near you.</p>
+          <section className="est-screen" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="est-price-card">
+              <p className="est-price-band" style={{ fontSize: 20 }}>We&apos;re not in your area just yet</p>
+              <p className="est-price-note">We currently install across Nassau and Suffolk County. Leave your info and we&apos;ll reach out if we expand near you.</p>
             </div>
-            <ContactCard
-              heading="Get on the list"
-              blurb="We'll let you know as soon as we're installing in your area."
-              cta="Keep me posted"
-              {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
-            />
+            <ContactCard heading="Get on the list" blurb="We'll let you know as soon as we're installing in your area." cta="Keep me posted" {...contactProps} />
           </section>
         )}
 
         {step === 'done' && (
-          <section className="rounded-2xl bg-white p-10 text-center shadow-sm ring-1 ring-slate-200">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-2xl">✓</div>
-            <h2 className="mt-4 text-2xl font-bold">You&apos;re all set</h2>
-            <p className="mt-2 text-slate-600">
-              {rangeLabel ? `We saved your ${rangeLabel} estimate. ` : ''}
-              Our team will confirm your details and reach out shortly.
-            </p>
+          <section className="est-screen" style={{ textAlign: 'center' }}>
+            <div className="est-price-card">
+              <div className="est-price-band" style={{ fontSize: 22 }}>You&apos;re all set ✓</div>
+              <p className="est-price-note">
+                {rangeLabel ? `We saved your ${rangeLabel} estimate. ` : ''}
+                Our team will confirm your details and reach out shortly.
+              </p>
+            </div>
           </section>
         )}
       </div>
@@ -328,53 +307,32 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
 }
 
 type ContactCardProps = {
-  heading: string;
-  blurb: string;
-  cta: string;
+  heading: string; blurb: string; cta: string;
   name: string; setName: (v: string) => void;
   email: string; setEmail: (v: string) => void;
   phone: string; setPhone: (v: string) => void;
   consent: boolean; setConsent: (v: boolean) => void;
-  error: string | null;
-  submitting: boolean;
-  savePartial: () => void;
-  submitContact: () => void;
+  error: string | null; submitting: boolean;
+  savePartial: () => void; submitContact: () => void;
 };
 
 function ContactCard(p: ContactCardProps) {
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-      <h2 className="text-lg font-semibold text-slate-800">{p.heading}</h2>
-      <p className="mt-1 text-sm text-slate-600">{p.blurb}</p>
-      <div className="mt-4 flex flex-col gap-3">
-        <input
-          type="text" value={p.name} onChange={(e) => p.setName(e.target.value)}
-          placeholder="Full name" autoComplete="name" aria-label="Full name"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <input
-          type="email" value={p.email} onChange={(e) => p.setEmail(e.target.value)} onBlur={p.savePartial}
-          placeholder="Email" autoComplete="email" aria-label="Email"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <input
-          type="tel" value={p.phone} onChange={(e) => p.setPhone(e.target.value)} onBlur={p.savePartial}
-          placeholder="Phone" autoComplete="tel" aria-label="Phone"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <label className="flex items-start gap-2 text-sm text-slate-600">
-          <input type="checkbox" checked={p.consent} onChange={(e) => p.setConsent(e.target.checked)} className="mt-1" />
-          <span>It&apos;s okay to text or email me about my quote.</span>
-        </label>
-        {p.error && <p className="text-sm text-red-600">{p.error}</p>}
-        <button
-          onClick={p.submitContact}
-          disabled={p.submitting}
-          className="w-full rounded-lg bg-amber-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
-        >
-          {p.submitting ? 'Sending…' : p.cta}
-        </button>
-      </div>
+    <section className="est-price-card" style={{ textAlign: 'left' }}>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{p.heading}</h2>
+      <p className="est-price-note" style={{ margin: '6px 0 0' }}>{p.blurb}</p>
+      <label className="est-flabel" htmlFor="cname">Full name</label>
+      <input id="cname" type="text" className="est-field" value={p.name} onChange={(e) => p.setName(e.target.value)} placeholder="Full name" autoComplete="name" />
+      <label className="est-flabel" htmlFor="cemail">Email</label>
+      <input id="cemail" type="email" className="est-field" value={p.email} onChange={(e) => p.setEmail(e.target.value)} onBlur={p.savePartial} placeholder="you@example.com" autoComplete="email" />
+      <label className="est-flabel" htmlFor="cphone">Phone</label>
+      <input id="cphone" type="tel" className="est-field" value={p.phone} onChange={(e) => p.setPhone(e.target.value)} onBlur={p.savePartial} placeholder="(516) 555-0100" autoComplete="tel" />
+      <label className="est-checkline">
+        <input type="checkbox" checked={p.consent} onChange={(e) => p.setConsent(e.target.checked)} />
+        <span>It&apos;s okay to text or email me about my quote.</span>
+      </label>
+      {p.error && <p className="est-error" style={{ textAlign: 'left' }}>{p.error}</p>}
+      <button className="est-btn" onClick={p.submitContact} disabled={p.submitting}>{p.submitting ? 'Sending…' : p.cta}</button>
     </section>
   );
 }

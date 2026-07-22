@@ -1,24 +1,27 @@
-# Self-serve estimate — sample homes
+# Self-serve estimate — sample home style photos
 
-Drop the **5 Long Island style sample homes** here as:
+These are the daytime photos behind the **house-style picker + before/after hero**
+on the `/estimate` landing screen (see `src/app/estimate/BeforeAfter.tsx` and
+`estimateSamples.ts`). One per Long Island style:
 
 ```
-home-1.jpg
-home-2.jpg
-home-3.jpg
-home-4.jpg
-home-5.jpg
+home-colonial.jpg   home-cape.jpg     home-ranch.jpg
+home-hiranch.jpg    home-split.jpg    home-victorian.jpg
 ```
 
-These render in the "Homes we've lit up on Long Island" carousel on the
-`/estimate` **address screen** (and stay up while the customer's own house is
-looked up). See `src/app/estimate/SampleHomes.tsx`.
+## ⚠️ These are PLACEHOLDER stock photos
 
-Notes:
-- Any of the 5 that isn't present just drops out of the carousel — the gallery
-  renders nothing at all until at least one loads, so there's no broken-image
-  placeholder before the assets land. Add all 5 (or fewer) and they appear
-  automatically; no code change needed.
-- Use finished (lit) photos, roughly **4:3** landscape, web-optimized (they're
-  served as-is from `public/`). To change the filenames or count, edit the
-  `SAMPLE_HOMES` list in `SampleHomes.tsx`.
+They came from the approved mockup (free-license stock houses). **Swap them for
+real Yule Love Lights homes** — authentic homes read as trust/social proof where
+stock doesn't. Two ways to do the "with lights" side:
+
+1. **Real before/after photo pairs (preferred).** A daytime "before" and a real
+   lit "after" per style. This needs a small change to `BeforeAfter.tsx` to
+   crossfade two photos instead of drawing the overlay — say the word and I'll
+   switch it.
+2. **Keep the drawn-lights overlay.** The lights are drawn from hand-placed
+   geometry in `estimateSamples.ts` tuned to THESE photos, so a new photo needs
+   its roofline/wreath/garland points re-traced to line up.
+
+Keep them roughly **3:2 landscape**, web-optimized (served as-is from `public/`).
+To change the styles/count, edit `SAMPLE_STYLES` in `estimateSamples.ts`.

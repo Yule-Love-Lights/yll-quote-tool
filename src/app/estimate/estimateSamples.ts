@@ -1,0 +1,124 @@
+// Customer self-serve estimate — sample-home design data (ledger self-serve, S48).
+//
+// Ported from the "Self-Serve Front Door: Phase A" mockup Naldo approved. Each
+// Long Island house style carries a stock daytime photo (public/estimate-samples/)
+// and the hand-placed roofline / wreath / garland geometry the before/after hero
+// draws its lights from, in the mockup's 960x640 overlay space.
+//
+// PLACEHOLDER ASSETS: the photos are the mockup's free-license stock houses; swap
+// them for real Yule Love Lights homes (see the README in that folder). The drawn
+// light geometry is tuned to THESE photos — when real homes come in, either supply
+// real before/after photo pairs (preferred, per Naldo) or re-trace the geometry.
+
+/** Overlay coordinate space (matches the mockup + the traced geometry below). */
+export const VW = 960;
+export const VH = 640;
+
+/** Light color schemes the swatches switch between (mockup parity). */
+export const SCHEMES: Record<string, string[]> = {
+  warm: ['#F5CC7A'],
+  cool: ['#E8F1FA'],
+  multi: ['#E0524D', '#58B368', '#F5CC7A', '#5B8DD9'],
+  redwhite: ['#E0524D', '#F4ECD8'],
+};
+
+export type SchemeKey = keyof typeof SCHEMES;
+
+/** A roofline run: [x1, y1, x2, y2] in overlay space. */
+export type Run = [number, number, number, number];
+/** A wreath: [cx, cy, r]. */
+export type Wreath = [number, number, number];
+/** A garland quad-bezier: [x1, y1, cx, cy, x2, y2]. */
+export type Garland = [number, number, number, number, number, number];
+
+export type SampleStyle = {
+  key: string;
+  label: string;
+  photo: string;
+  ft: number;
+  corners: number;
+  extras: number;
+  runs: Run[];
+  wreaths: Wreath[];
+  garlands: Garland[];
+};
+
+export const SAMPLE_STYLES: SampleStyle[] = [
+  {
+    key: 'colonial', label: 'Colonial', photo: '/estimate-samples/home-colonial.jpg',
+    ft: 146, corners: 7, extras: 3,
+    runs: [[213, 218, 370, 115], [370, 115, 522, 222], [522, 222, 660, 272], [508, 266, 646, 266], [498, 352, 676, 350]],
+    wreaths: [[525, 412, 12], [370, 175, 13]],
+    garlands: [[498, 352, 587, 366, 676, 350], [504, 382, 525, 372, 546, 382], [263, 372, 368, 384, 473, 372]],
+  },
+  {
+    key: 'cape', label: 'Cape Cod', photo: '/estimate-samples/home-cape.jpg',
+    ft: 104, corners: 6, extras: 3,
+    runs: [[75, 303, 322, 305], [585, 308, 878, 315], [75, 303, 337, 150], [620, 150, 878, 315], [338, 163, 470, 102], [470, 102, 608, 163], [408, 332, 475, 292], [475, 292, 542, 332]],
+    wreaths: [[475, 385, 13], [472, 205, 12]],
+    garlands: [[408, 332, 475, 348, 542, 332], [450, 358, 475, 348, 500, 358]],
+  },
+  {
+    key: 'ranch', label: 'Ranch', photo: '/estimate-samples/home-ranch.jpg',
+    ft: 138, corners: 7, extras: 2,
+    runs: [[160, 258, 695, 248], [185, 258, 297, 207], [297, 207, 408, 255], [386, 297, 428, 250], [428, 250, 470, 297], [700, 247, 840, 235], [840, 235, 898, 290]],
+    wreaths: [[428, 352, 13], [297, 240, 13]],
+    garlands: [[750, 268, 793, 283, 836, 268], [400, 300, 428, 290, 456, 300]],
+  },
+  {
+    key: 'hiranch', label: 'High Ranch', photo: '/estimate-samples/home-hiranch.jpg',
+    ft: 132, corners: 6, extras: 3,
+    runs: [[155, 137, 760, 148], [335, 118, 285, 262], [335, 118, 390, 250]],
+    wreaths: [[335, 298, 13], [660, 205, 11]],
+    garlands: [[420, 335, 490, 348, 560, 335], [585, 335, 657, 348, 730, 335]],
+  },
+  {
+    key: 'split', label: 'Split-Level', photo: '/estimate-samples/home-split.jpg',
+    ft: 158, corners: 7, extras: 3,
+    runs: [[118, 200, 420, 198], [422, 262, 715, 275], [715, 275, 868, 290]],
+    wreaths: [[468, 345, 12], [250, 250, 12]],
+    garlands: [[430, 318, 495, 332, 560, 318], [725, 305, 795, 318, 865, 305]],
+  },
+  {
+    key: 'victorian', label: 'Victorian', photo: '/estimate-samples/home-victorian.jpg',
+    ft: 168, corners: 10, extras: 4,
+    runs: [[548, 32, 491, 162], [548, 32, 612, 158], [410, 128, 328, 212], [410, 128, 468, 205], [300, 298, 660, 300]],
+    wreaths: [[548, 232, 13], [410, 250, 11]],
+    garlands: [[200, 432, 315, 444, 430, 432], [430, 432, 545, 444, 660, 432]],
+  },
+];
+
+export type Bulb = { x: number; y: number; color: string };
+
+/**
+ * Place bulbs along each roofline run at ~16px spacing, cycling the scheme's
+ * colors — the same walk the mockup used to draw the strand. Pure so the overlay
+ * can render deterministic JSX (no dangerouslySetInnerHTML).
+ */
+export function bulbPositions(runs: Run[], scheme: SchemeKey): Bulb[] {
+  const colors = SCHEMES[scheme] ?? SCHEMES.warm;
+  const out: Bulb[] = [];
+  let idx = 0;
+  for (const [x1, y1, x2, y2] of runs) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const n = Math.max(1, Math.floor(len / 16));
+    for (let i = 0; i <= n; i++) {
+      out.push({ x: x1 + (dx * i) / n, y: y1 + (dy * i) / n, color: colors[idx % colors.length] });
+      idx++;
+    }
+  }
+  return out;
+}
+
+/** A garland's three sag points (quarter/half/three-quarter along the quad). */
+export function garlandDots(g: Garland): { x: number; y: number }[] {
+  return [0.25, 0.5, 0.75].map((t) => {
+    const mt = 1 - t;
+    return {
+      x: mt * mt * g[0] + 2 * mt * t * g[2] + t * t * g[4],
+      y: mt * mt * g[1] + 2 * mt * t * g[3] + t * t * g[5],
+    };
+  });
+}
