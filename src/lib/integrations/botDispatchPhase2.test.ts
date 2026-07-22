@@ -21,12 +21,25 @@ const mocks = vi.hoisted(() => ({
       tool: string;
       args: Record<string, unknown>;
       summary: string;
-    }): Promise<string | null> => 'pending-1',
+    }): Promise<{ id: string; supersededSummary: string | null } | null> => ({
+      id: 'pending-1',
+      supersededSummary: null,
+    }),
   ),
   consumePendingAction: vi.fn(async (): Promise<unknown> => null),
+  peekPendingAction: vi.fn(async (): Promise<unknown> => null),
+  appendPhotosToPendingAction: vi.fn(async (): Promise<unknown> => null),
   supersedeOpenActions: vi.fn(async () => undefined),
   logBotAction: vi.fn(async () => undefined),
-  listCatalog: vi.fn(async () => [{ sku: 'C9-WARM' }, { sku: 'CLIP-ALL' }]),
+  isInterpreterConfigured: vi.fn(() => true),
+  listCatalog: vi.fn(async () => [
+    { sku: 'C9-WARM', name: 'C9 Warm White' },
+    { sku: 'CLIP-ALL', name: 'C9 Flex Clip White' },
+  ]),
+  getJobWorkOrder: vi.fn(async (): Promise<unknown> => ({
+    job: {},
+    materials: { materials: [{ sku: 'C9-WARM', name: 'C9 Warm White' }] },
+  })),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => [
     { id: 'job-uuid', jobNumber: 142, customerName: 'Alvarez', designId: 'design-1' },
   ]),
@@ -37,7 +50,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./botInterpreter', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./botInterpreter')>();
-  return { ...actual, interpretBotText: mocks.interpretBotText };
+  return {
+    ...actual,
+    interpretBotText: mocks.interpretBotText,
+    isInterpreterConfigured: mocks.isInterpreterConfigured,
+  };
 });
 vi.mock('./botTools', () => ({
   runStatusTool: mocks.runStatusTool,
@@ -54,12 +71,17 @@ vi.mock('./botConfirm', async (importOriginal) => {
     ...actual,
     stagePendingAction: mocks.stagePendingAction,
     consumePendingAction: mocks.consumePendingAction,
+    peekPendingAction: mocks.peekPendingAction,
+    appendPhotosToPendingAction: mocks.appendPhotosToPendingAction,
     supersedeOpenActions: mocks.supersedeOpenActions,
   };
 });
 vi.mock('./botAudit', () => ({ logBotAction: mocks.logBotAction }));
 vi.mock('@/lib/inventory/catalog', () => ({ listCatalog: mocks.listCatalog }));
-vi.mock('@/lib/inventory/jobs', () => ({ listFulfillmentCards: mocks.listFulfillmentCards }));
+vi.mock('@/lib/inventory/jobs', () => ({
+  listFulfillmentCards: mocks.listFulfillmentCards,
+  getJobWorkOrder: mocks.getJobWorkOrder,
+}));
 vi.mock('./telegramMedia', () => ({ downloadTelegramFile: mocks.downloadTelegramFile }));
 vi.mock('./transcribe', () => ({
   transcribeAudio: mocks.transcribeAudio,
@@ -92,8 +114,17 @@ beforeEach(() => {
   }
   process.env.TELEGRAM_CREW_USERS = CREW;
   process.env.TELEGRAM_BOT_USERNAME = 'yll_ops_bot';
-  mocks.stagePendingAction.mockResolvedValue('pending-1');
+  // clearAllMocks resets recorded CALLS but keeps implementations, so every
+  // mockResolvedValue set inside a test would leak into the next one.
+  mocks.stagePendingAction.mockResolvedValue({ id: 'pending-1', supersededSummary: null });
   mocks.consumePendingAction.mockResolvedValue(null);
+  mocks.peekPendingAction.mockResolvedValue(null);
+  mocks.appendPhotosToPendingAction.mockResolvedValue(null);
+  mocks.isInterpreterConfigured.mockReturnValue(true);
+  mocks.isTranscriptionConfigured.mockReturnValue(false);
+  mocks.listFulfillmentCards.mockResolvedValue([
+    { id: 'job-uuid', jobNumber: 142, customerName: 'Alvarez', designId: 'design-1' },
+  ]);
 });
 
 afterEach(() => {
@@ -135,7 +166,7 @@ describe('write safety — nothing executes without a yes', () => {
   beforeEach(() => {
     mocks.interpretBotText.mockResolvedValue({
       tool: 'completeInstall',
-      args: { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      args: { jobNumber: 142, materials: [{ item: 'C9 warm white', qty: 2 }] },
       confidence: 0.9,
     });
   });
@@ -189,7 +220,7 @@ describe('write safety — nothing executes without a yes', () => {
   it('asks for the job number rather than guessing one', async () => {
     mocks.interpretBotText.mockResolvedValue({
       tool: 'completeInstall',
-      args: { materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      args: { materials: [{ item: 'C9 warm white', qty: 2 }] },
       confidence: 0.9,
     });
     const reply = await handleBotMessage({ ...base, text: 'all done, used 2 boxes' });
@@ -197,11 +228,112 @@ describe('write safety — nothing executes without a yes', () => {
     expect(mocks.stagePendingAction).not.toHaveBeenCalled();
   });
 
-  it('refuses an unknown job before staging anything', async () => {
+  it('refuses an unknown job before staging anything, and says how to find it', async () => {
     mocks.listFulfillmentCards.mockResolvedValue([]);
     const reply = await handleBotMessage({ ...base, text: 'job 142 done' });
-    expect(reply).toBe('No active job #142.');
+    expect(reply).toContain('No active job #142');
+    // A bare refusal makes the crew retype everything on the phone that just
+    // produced the typo, so the reply has to point somewhere.
+    expect(reply).toContain('status');
     expect(mocks.stagePendingAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('group chat confirmations (the room Naldo actually wants)', () => {
+  it('accepts a bare typed "yes" from someone who has an action pending', async () => {
+    mocks.peekPendingAction.mockResolvedValue({ id: 'p1', tool: 'completeInstall', args: {}, summary: 's' });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [] },
+      summary: 's',
+    });
+    // Not a mention and not a reply-to-bot: the plain text a person actually
+    // types. Silence here would let the crew believe the job was recorded.
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: 'yes' });
+    expect(reply).toBe('INSTALL-RECORDED');
+  });
+
+  it('still ignores a bare "yes" from someone with nothing pending', async () => {
+    mocks.peekPendingAction.mockResolvedValue(null);
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: 'yes' });
+    expect(reply).toBeNull();
+    expect(mocks.consumePendingAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('not losing crew work', () => {
+  it('tells the crew when a new report cancels an unconfirmed earlier one', async () => {
+    mocks.interpretBotText.mockResolvedValue({
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [] },
+      confidence: 0.9,
+    });
+    mocks.stagePendingAction.mockResolvedValue({
+      id: 'pending-2',
+      supersededSummary: 'Close out job #99 (Chen): log 1× Mini Lights White',
+    });
+    const reply = await handleBotMessage({ ...base, text: 'job 142 done' });
+    expect(reply).toContain('#99');
+    expect(reply).toContain("wasn't confirmed");
+  });
+
+  it('attaches a captionless album photo to the pending report instead of dropping it', async () => {
+    mocks.appendPhotosToPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: { photoFileIds: ['a', 'b', 'c'] },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, text: '', photoFileIds: ['c'] });
+    expect(mocks.appendPhotosToPendingAction).toHaveBeenCalledWith(base.chatId, base.userId, ['c']);
+    expect(reply).toContain('3 photos');
+  });
+
+  it('reminds the sender what is still waiting when the reply is not a plain yes', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: {},
+      summary: 'Close out job #142 (Alvarez): log 2× C9 Warm White',
+    });
+    mocks.interpretBotText.mockResolvedValue(null);
+    const reply = await handleBotMessage({ ...base, text: 'yes but 3 boxes' });
+    expect(reply).toContain('Still waiting on');
+    expect(reply).toContain('#142');
+  });
+});
+
+describe('material resolution', () => {
+  it('confirms with the product NAME, never the bare catalog code', async () => {
+    mocks.interpretBotText.mockResolvedValue({
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [{ item: 'C9 warm white', qty: 2 }] },
+      confidence: 0.9,
+    });
+    const reply = await handleBotMessage({ ...base, text: 'job 142 done, 2 boxes C9 warm white' });
+    expect(reply).toContain('C9 Warm White');
+    expect(reply).not.toContain('C9-WARM');
+  });
+
+  it('surfaces a phrase it could not match rather than silently dropping it', async () => {
+    mocks.interpretBotText.mockResolvedValue({
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [{ item: 'those blue things', qty: 4 }] },
+      confidence: 0.9,
+    });
+    const reply = await handleBotMessage({ ...base, text: 'job 142 done, 4 of those blue things' });
+    expect(reply).toContain("couldn't match");
+    expect(reply).toContain('those blue things');
+  });
+});
+
+describe('configuration gaps are diagnosable', () => {
+  it('says plain-English requests are off rather than "didn\'t understand"', async () => {
+    mocks.isInterpreterConfigured.mockReturnValue(false);
+    const reply = await handleBotMessage({ ...base, text: 'job 142 done, 2 boxes C9' });
+    expect(reply).toContain('exact commands');
+    expect(mocks.interpretBotText).not.toHaveBeenCalled();
   });
 });
 

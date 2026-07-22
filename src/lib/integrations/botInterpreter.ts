@@ -53,6 +53,16 @@ export function isWriteTool(tool: string): tool is BotWriteTool {
   return (BOT_WRITE_TOOLS as readonly string[]).includes(tool);
 }
 
+/**
+ * Whether plain-English interpretation is available at all. Worth checking
+ * separately from a failed interpretation: completeInstall has no keyword form,
+ * so a missing API key silently disables field capture entirely and the crew
+ * would only ever see "didn't understand that".
+ */
+export function isInterpreterConfigured(): boolean {
+  return getClaudeClient() !== null;
+}
+
 // Below this the interpretation is discarded — a clarifying "didn't understand"
 // beats acting on a guess, even for reads. For writes the confirm-yes gate is
 // the real safety net; this is the first line.
@@ -162,12 +172,12 @@ function parseMaterials(raw: unknown): BotMaterialLine[] {
  * malformed/out-of-enum response, or confidence below the bar.
  *
  * `allowWrites` must only be set by a caller that enforces role + confirmation
- * on the result. `skuHints` gives the model the real catalog codes so a crew
- * member's "2 boxes of C9" maps to an actual SKU instead of an invented one.
+ * on the result. Material lines come back as the crew's own words, not SKUs:
+ * resolveMaterialLines turns them into catalog entries deterministically.
  */
 export async function interpretBotText(
   text: string,
-  opts: { allowWrites?: boolean; skuHints?: string[] } = {},
+  opts: { allowWrites?: boolean } = {},
 ): Promise<BotInterpretation | null> {
   const allowWrites = opts.allowWrites === true;
   const allowed: readonly string[] = allowWrites
@@ -180,7 +190,7 @@ export async function interpretBotText(
     const res = await client.messages.create({
       model: INTERPRETER_MODEL,
       max_tokens: 500,
-      system: systemPrompt(allowWrites, opts.skuHints ?? []),
+      system: systemPrompt(allowWrites),
       messages: [{ role: 'user', content: text.slice(0, 1000) }],
       tools: [routeTool(allowWrites)],
       tool_choice: { type: 'tool', name: 'route' },

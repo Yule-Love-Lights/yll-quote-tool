@@ -25,7 +25,13 @@ import { downloadTelegramFile } from './telegramMedia';
 
 export type CompleteInstallArgs = {
   jobNumber: number;
-  materials: MaterialActualLine[];
+  /**
+   * Already RESOLVED to real catalog entries by the dispatcher (see
+   * materialResolve.ts). The name travels with the sku because the confirm line
+   * is the crew's only chance to catch a wrong match, and nobody on a ladder
+   * recognises "20009-SPK".
+   */
+  materials: { sku: string; name: string; qty: number }[];
   note?: string | null;
   photoFileIds?: string[];
 };
@@ -45,7 +51,8 @@ export function summarizeCompleteInstall(
   const parts = [`Close out job #${args.jobNumber}${who}:`];
 
   if (args.materials.length) {
-    parts.push(`log ${args.materials.map((m) => `${m.qty}× ${m.sku}`).join(', ')}`);
+    // Names, not codes: this line is the human check on the model's match.
+    parts.push(`log ${args.materials.map((m) => `${m.qty}× ${m.name || m.sku}`).join(', ')}`);
   } else {
     parts.push('log no material');
   }
@@ -92,19 +99,26 @@ export async function runCompleteInstall(
   } else if (result.alreadyDone) {
     out.push(`Job #${args.jobNumber} already had its materials recorded — stock not touched again.`);
   } else {
+    const nameBySku = new Map(args.materials.map((m) => [m.sku, m.name || m.sku]));
+    const label = (sku: string) => nameBySku.get(sku) ?? sku;
+
     out.push(`Job #${args.jobNumber}: logged ${plural(lines.length, 'material line')}.`);
-    if (result.trueUps.length) {
+    if (result.baselineUnavailable) {
+      // Recorded but not applied. Say it plainly: a crew member who is told
+      // nothing would assume the shelf count moved.
+      out.push("Stock NOT adjusted — I couldn't read what this job was prepped against. Tell the office.");
+    } else if (result.trueUps.length) {
       out.push(
         'Stock adjusted: ' +
           result.trueUps
-            .map((t) => `${t.sku} ${t.delta > 0 ? '+' : ''}${t.delta}`)
+            .map((t) => `${label(t.sku)} ${t.delta > 0 ? '+' : ''}${t.delta}`)
             .join(', '),
       );
     } else {
       out.push('Stock matched the estimate — no adjustment.');
     }
     if (result.skipped.length) {
-      out.push(`Not stocked, recorded only: ${result.skipped.join(', ')}`);
+      out.push(`Not stocked, recorded only: ${result.skipped.map(label).join(', ')}`);
     }
   }
 

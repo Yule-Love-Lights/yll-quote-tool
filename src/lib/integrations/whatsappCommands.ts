@@ -86,4 +86,11 @@ export const WHATSAPP_HELP = [
   '• set <sku> <qty> — set on-hand',
   '• low — low-stock items',
   'Or just ask: "status on the Alvarez quote" · "what installs are today?"',
+  '',
+  // The field-capture flow was invisible here: a crew member texting "help" to
+  // work out how to report a finished job never learned it existed.
+  'Finished an install? Say it however you like:',
+  '  "job 142 done, used 2 boxes C9 and 30 clips"',
+  'Send photos with it, or record a voice note instead of typing.',
+  'You get a summary back first — nothing is saved until you reply yes.',
 ].join('\n');

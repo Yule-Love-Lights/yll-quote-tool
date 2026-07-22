@@ -42,8 +42,8 @@ describe('summarizeCompleteInstall', () => {
       {
         jobNumber: 142,
         materials: [
-          { sku: 'C9-WARM', qty: 2 },
-          { sku: 'CLIP-ALL', qty: 30 },
+          { sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 },
+          { sku: 'CLIP-ALL', name: 'C9 Flex Clip White', qty: 30 },
         ],
         photoFileIds: ['a', 'b'],
       },
@@ -51,8 +51,10 @@ describe('summarizeCompleteInstall', () => {
     );
     expect(summary).toContain('#142');
     expect(summary).toContain('Alvarez');
-    expect(summary).toContain('2× C9-WARM');
-    expect(summary).toContain('30× CLIP-ALL');
+    // Names, not codes: nobody on a ladder recognises '20009-SPK'.
+    expect(summary).toContain('2× C9 Warm White');
+    expect(summary).not.toContain('C9-WARM');
+    expect(summary).toContain('30× C9 Flex Clip White');
     expect(summary).toContain('2 photos');
     expect(summary).toContain('reply yes');
   });
@@ -78,11 +80,11 @@ describe('runCompleteInstall', () => {
 
   it('reports the stock adjustment it made', async () => {
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }] },
       'user-1',
     );
     expect(reply).toContain('logged 1 material line');
-    expect(reply).toContain('C9-WARM +1');
+    expect(reply).toContain('C9 Warm White +1');
   });
 
   it('says stock matched when there is nothing to true up', async () => {
@@ -93,7 +95,7 @@ describe('runCompleteInstall', () => {
       skipped: [],
     });
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }] },
       'user-1',
     );
     expect(reply).toContain('no adjustment');
@@ -107,16 +109,16 @@ describe('runCompleteInstall', () => {
       skipped: ['ODD-SKU'],
     });
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'ODD-SKU', qty: 1 }] },
+      { jobNumber: 142, materials: [{ sku: 'ODD-SKU', name: 'Odd Thing', qty: 1 }] },
       'user-1',
     );
-    expect(reply).toContain('ODD-SKU');
+    expect(reply).toContain('Odd Thing');
   });
 
   it('tells the crew stock was NOT touched again on a repeat submission', async () => {
     mocks.recordMaterialActuals.mockResolvedValue({ ok: true, alreadyDone: true });
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }] },
       'user-1',
     );
     expect(reply).toContain('already had its materials recorded');
@@ -126,7 +128,7 @@ describe('runCompleteInstall', () => {
   it('asks for a retry instead of implying success when the write failed', async () => {
     mocks.recordMaterialActuals.mockResolvedValue(null);
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }] },
       'user-1',
     );
     expect(reply).toContain("Couldn't record materials");
@@ -152,7 +154,7 @@ describe('runCompleteInstall', () => {
   it('saves photos even when the material claim was already used', async () => {
     mocks.recordMaterialActuals.mockResolvedValue({ ok: true, alreadyDone: true });
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 1 }], photoFileIds: ['file-a'] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 1 }], photoFileIds: ['file-a'] },
       'user-1',
     );
     expect(mocks.addDesignExtraPhoto).toHaveBeenCalledOnce();
@@ -172,7 +174,7 @@ describe('runCompleteInstall', () => {
   it('keeps the material result when a photo fails to download', async () => {
     mocks.downloadTelegramFile.mockResolvedValue(null);
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }], photoFileIds: ['file-a'] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }], photoFileIds: ['file-a'] },
       'user-1',
     );
     expect(reply).toContain('logged 1 material line');
@@ -182,7 +184,7 @@ describe('runCompleteInstall', () => {
   it('keeps the material result when attaching a photo throws', async () => {
     mocks.addDesignExtraPhoto.mockRejectedValue(new Error('storage down'));
     const reply = await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', qty: 2 }], photoFileIds: ['file-a'] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 2 }], photoFileIds: ['file-a'] },
       'user-1',
     );
     expect(reply).toContain('logged 1 material line');

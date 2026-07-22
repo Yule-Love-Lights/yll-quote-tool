@@ -67,6 +67,11 @@ function makeDb(rows: Row[] = [], opts: { failInsert?: boolean } = {}) {
           filters.push((r) => String(r[col]) === String(val));
           return builder;
         },
+        // supersedeOpenActions excludes the row it just staged.
+        neq: (col: string, val: unknown) => {
+          filters.push((r) => String(r[col]) !== String(val));
+          return builder;
+        },
         is: (col: string, val: unknown) => {
           filters.push((r) => (val === null ? r[col] === null || r[col] === undefined : r[col] === val));
           return builder;

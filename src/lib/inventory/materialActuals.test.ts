@@ -267,7 +267,7 @@ describe('recordMaterialActuals', () => {
     const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 4 }], 'staff:jason');
     expect(res).toEqual({ ok: true, alreadyDone: false, trueUps: [], skipped: [] });
     expect(insertedRows).toEqual([
-      { job_id: JOB_ID, sku: 'SKU-A', qty: 4, raw_text: null, recorded_by: 'staff:jason' },
+      { job_id: JOB_ID, sku: 'SKU-A', qty: 4, estimated_qty: 0, raw_text: null, recorded_by: 'staff:jason' },
     ]);
     expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
   });

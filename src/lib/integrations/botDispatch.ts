@@ -14,7 +14,7 @@
 import { parseWhatsAppCommand, type WhatsAppCommand } from './whatsappCommands';
 import { runWhatsAppCommand } from './whatsapp';
 import { cleanTelegramCommand } from './telegram';
-import { interpretBotText, isWriteTool } from './botInterpreter';
+import { interpretBotText, isWriteTool, isInterpreterConfigured } from './botInterpreter';
 import { runStatusTool, runScheduleTool } from './botTools';
 import { isAddressedToBot } from './botGroupGate';
 import { roleForSenderInAllowedChat, mayRunTool, type BotRole } from './botRoles';
@@ -34,7 +34,8 @@ import {
   type CompleteInstallArgs,
 } from './botWriteTools';
 import { listCatalog } from '@/lib/inventory/catalog';
-import { listFulfillmentCards } from '@/lib/inventory/jobs';
+import { listFulfillmentCards, getJobWorkOrder } from '@/lib/inventory/jobs';
+import { resolveMaterialLines } from '@/lib/inventory/materialResolve';
 import { downloadTelegramFile } from './telegramMedia';
 import { transcribeAudio, isTranscriptionConfigured } from './transcribe';
 
@@ -58,9 +59,6 @@ const NOTHING_PENDING = 'Nothing is waiting for a yes.';
 // until "yes".
 const CONFIRM_REQUIRED_KEYWORDS = new Set(['prep', 'set']);
 
-// Sending the model the real catalog codes is what turns "2 boxes of C9" into a
-// SKU that exists. Capped so a large catalog can't blow up the prompt.
-const MAX_SKU_HINTS = 120;
 
 /**
  * Handle one inbound message. Returns the reply text, or null when the bot
@@ -161,37 +159,75 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   }
 
   // ── LLM interpretation (writes allowed, but only as a PROPOSAL) ────────────
-  const interp = await interpretBotText(text, {
-    allowWrites: true,
-    skuHints: await skuHints(),
-  });
-  if (!interp) return NOT_UNDERSTOOD;
+  if (!isInterpreterConfigured()) {
+    // Distinct from "didn't understand": completeInstall has no keyword form, so
+    // a missing API key silently kills the whole point of field capture. Saying
+    // which one it is turns an invisible config gap into a diagnosable one.
+    return withHeard(
+      pendingNote(stillPending) ??
+        "I can only handle the exact commands right now (text \"help\"). Plain-English requests are off — tell the office.",
+    );
+  }
+
+  const interp = await interpretBotText(text, { allowWrites: true });
+  if (!interp) return withHeard(pendingNote(stillPending) ?? NOT_UNDERSTOOD);
 
   if (!mayRunTool(role, interp.tool)) return denied(msg, role, interp.tool);
 
   if (isWriteTool(interp.tool)) {
     if (interp.tool === 'completeInstall') {
       const jobNumber = interp.args.jobNumber;
-      if (!jobNumber) return 'Which job number? Try "job 142 done, 2 boxes C9".';
+      if (!jobNumber) return withHeard('Which job number? Try "job 142 done, 2 boxes C9".');
+
+      const card = (await listFulfillmentCards()).find((c) => c.jobNumber === jobNumber);
+      if (!card) {
+        // Don't just refuse: the crew already typed everything, and retyping it
+        // on the same phone that produced the typo is the worst possible ask.
+        return withHeard(
+          `No active job #${jobNumber} — check the number, or try "status <customer name>" to look it up. Resend once you have it.`,
+        );
+      }
+
+      // The crew's words become real SKUs HERE, deterministically, searching
+      // this job's own bill of materials before the 877-row catalog. A phrase
+      // that matches nothing (or several things) is reported, never guessed:
+      // a wrong-but-real SKU would move two stock numbers with nothing to catch it.
+      const wo = await getJobWorkOrder(card.id);
+      const jobMaterials = (wo?.materials.materials ?? []).map((m) => ({
+        sku: m.sku,
+        name: m.name,
+      }));
+      const resolution = resolveMaterialLines(
+        interp.args.materials ?? [],
+        jobMaterials,
+        await catalogEntries(),
+      );
 
       const args: CompleteInstallArgs = {
         jobNumber,
-        materials: interp.args.materials ?? [],
+        materials: resolution.resolved.map((r) => ({ sku: r.sku, name: r.name, qty: r.qty })),
         note: interp.args.note ?? null,
         photoFileIds: msg.photoFileIds ?? [],
       };
-      const card = (await listFulfillmentCards()).find((c) => c.jobNumber === jobNumber);
-      if (!card) return `No active job #${jobNumber}.`;
 
-      return stage(
+      const summary = summarizeCompleteInstall(args, card.customerName);
+      const staged = await stage(
         msg,
         role,
         interp.tool,
         args as unknown as Record<string, unknown>,
-        summarizeCompleteInstall(args, card.customerName),
+        summary,
       );
+
+      if (!resolution.unresolved.length) return withHeard(staged);
+      // Surfaced alongside the confirm rather than silently dropped, so the crew
+      // can add the missing line before or after confirming.
+      const missing = resolution.unresolved
+        .map((u) => `${u.qty}× "${u.item}"${u.reason === 'ambiguous' ? ' (matches several)' : ''}`)
+        .join(', ');
+      return withHeard(`${staged}\nI couldn't match: ${missing}. Reply with the exact product name for those.`);
     }
-    return NOT_UNDERSTOOD;
+    return withHeard(NOT_UNDERSTOOD);
   }
 
   switch (interp.tool) {
@@ -258,7 +294,7 @@ async function stage(
   args: Record<string, unknown>,
   summary: string,
 ): Promise<string> {
-  const id = await stagePendingAction({
+  const staged = await stagePendingAction({
     chatId: msg.chatId,
     userId: msg.userId,
     tool,
@@ -267,8 +303,14 @@ async function stage(
   });
   // Never claim something is pending when it wasn't stored — a "yes" would then
   // find nothing and the crew would think the work was recorded.
-  if (!id) return 'Couldn\'t set that up right now — try again in a minute.';
+  if (!staged) return 'Couldn\'t set that up right now — try again in a minute.';
   await logBotAction({ chatId: msg.chatId, userId: msg.userId, role, tool, args, outcome: 'staged', detail: summary });
+
+  // Only one action can be pending per sender, so a crew member reporting two
+  // finished jobs back to back loses the first unless we say so.
+  if (staged.supersededSummary) {
+    return `Heads up: your previous report wasn't confirmed, so it's cancelled — ${staged.supersededSummary}\n\n${summary}`;
+  }
   return summary;
 }
 
@@ -285,10 +327,21 @@ async function transcribeVoice(fileId: string): Promise<string | null> {
   return transcribeAudio(file.buffer, 'voice.ogg');
 }
 
-async function skuHints(): Promise<string[]> {
+async function catalogEntries(): Promise<{ sku: string; name: string }[]> {
   try {
-    return (await listCatalog()).slice(0, MAX_SKU_HINTS).map((c) => c.sku);
+    return (await listCatalog()).map((c) => ({ sku: c.sku, name: c.name ?? '' }));
   } catch {
     return [];
   }
+}
+
+/**
+ * Tells a pending sender their action is STILL waiting, instead of dropping
+ * them onto a bare "didn't understand". A reply like "yes but 3 boxes" is
+ * neither a yes nor a no, and silently stranding it is how a crew member walks
+ * away believing they corrected something.
+ */
+function pendingNote(pending: { summary: string } | null): string | null {
+  if (!pending) return null;
+  return `I didn't read that as a plain yes. Still waiting on: ${pending.summary}\nReply "yes" to confirm, "no" to cancel, or resend the whole line with the right numbers.`;
 }
