@@ -29,6 +29,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/login',
       '/api/health', // uptime monitor probe — booleans only, no PII/secrets (#81 W6-001)
       '/api/integrations/valor/webhook',
+      '/api/integrations/valor/redirect-capture', // #161 diagnostic probe — Valor's redirect_url S2S callback (values never logged, see route header)
       '/api/integrations/homeworks/signed',
       '/api/integrations/whatsapp/webhook', // Twilio webhook (signature-verified in the route, #82)
       '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified, #82)
@@ -44,6 +45,13 @@ describe('isPublicPath — customer-facing allowlist', () => {
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
+  });
+
+  it('allows GET + POST /api/integrations/valor/redirect-capture (#161 diagnostic probe — redirect_url S2S callback, values never logged)', () => {
+    const p = '/api/integrations/valor/redirect-capture';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
   });
 
   it('keeps the admin leads surface operator-only — only the cron is public (#leads)', () => {

@@ -103,6 +103,9 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
   const base = (
     process.env.VALOR_PAGESALE_BASE_URL || (isDemo ? PAGESALE_STAGING_BASE : PAGESALE_PROD_BASE)
   ).replace(/\/+$/, '');
+  // #161 (2026-07-22): armed only when set — see the comment above
+  // `shipping_country` below for the full context on why this exists.
+  const redirectCaptureUrl = process.env.VALOR_REDIRECT_CAPTURE_URL?.trim() || null;
 
   const body: Record<string, unknown> = {
     appid: appId,
@@ -127,11 +130,23 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     // Card-on-file needs a different path (the correct hosted-page param per
     // Valor support, or the separate valor-vault REST profile API) — see #161
     // in the ledger + docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md §1.
+    // ▶ 2026-07-22 (Valor support, Fadil Cox): "Set the redirect_url key value
+    // to your webhook endpoint. This will allow for a server to server call
+    // upon payment completion that does contain the payment token." — i.e. the
+    // hosted page vaults/echoes the token via a redirect_url S2S callback, NOT
+    // via save_card. We don't yet know that channel's payload shape, whether
+    // it's signed, or whether the customer's own BROWSER also follows
+    // redirect_url (vs success_url) — if it does, a customer could land on our
+    // API endpoint mid-checkout. So this is PROBED, not shipped live: only when
+    // VALOR_REDIRECT_CAPTURE_URL is set does redirect_url point at our diagnostic
+    // route (src/app/api/integrations/valor/redirect-capture/route.ts, key
+    // NAMES only ever logged, nothing stored) instead of success_url. See #161
+    // in the ledger.
     shipping_country: 'US',
     customer_name: input.customerName?.trim() || 'Customer',
     success_url: input.successUrl,
     failure_url: input.failureUrl,
-    redirect_url: input.successUrl,
+    redirect_url: redirectCaptureUrl || input.successUrl,
     notification_status: '0',
     ...(input.customerEmail ? { email: input.customerEmail } : {}),
   };
