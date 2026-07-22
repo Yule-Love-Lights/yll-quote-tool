@@ -104,8 +104,17 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     process.env.VALOR_PAGESALE_BASE_URL || (isDemo ? PAGESALE_STAGING_BASE : PAGESALE_PROD_BASE)
   ).replace(/\/+$/, '');
   // #161 (2026-07-22): armed only when set — see the comment above
-  // `shipping_country` below for the full context on why this exists.
-  const redirectCaptureUrl = process.env.VALOR_REDIRECT_CAPTURE_URL?.trim() || null;
+  // `shipping_country` below for the full context on why this exists. When a
+  // capture URL is set we ALSO read VALOR_REDIRECT_CAPTURE_SECRET and, if set,
+  // append it as a `s` query param — this channel is UNSIGNED (confirmed live,
+  // see below), so the secret embedded in the URL we hand Valor is how we
+  // self-authenticate the callback. The secret itself is NEVER logged.
+  const redirectCaptureUrlBase = process.env.VALOR_REDIRECT_CAPTURE_URL?.trim() || null;
+  const redirectCaptureSecret = process.env.VALOR_REDIRECT_CAPTURE_SECRET?.trim() || null;
+  const redirectCaptureUrl =
+    redirectCaptureUrlBase && redirectCaptureSecret
+      ? `${redirectCaptureUrlBase}${redirectCaptureUrlBase.includes('?') ? '&' : '?'}s=${encodeURIComponent(redirectCaptureSecret)}`
+      : redirectCaptureUrlBase;
 
   const body: Record<string, unknown> = {
     appid: appId,
@@ -134,14 +143,21 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     // to your webhook endpoint. This will allow for a server to server call
     // upon payment completion that does contain the payment token." — i.e. the
     // hosted page vaults/echoes the token via a redirect_url S2S callback, NOT
-    // via save_card. We don't yet know that channel's payload shape, whether
-    // it's signed, or whether the customer's own BROWSER also follows
-    // redirect_url (vs success_url) — if it does, a customer could land on our
-    // API endpoint mid-checkout. So this is PROBED, not shipped live: only when
-    // VALOR_REDIRECT_CAPTURE_URL is set does redirect_url point at our diagnostic
-    // route (src/app/api/integrations/valor/redirect-capture/route.ts, key
-    // NAMES only ever logged, nothing stored) instead of success_url. See #161
-    // in the ledger.
+    // via save_card.
+    // ▶ CONFIRMED LIVE 2026-07-22: Valor's hosted page makes an UNSIGNED
+    // server-to-server JSON POST to whatever redirect_url we send, with FLAT
+    // payload keys — `token`, `invoicenumber` (echoes our order ref), `txnid`,
+    // `uid`, `approval_code` are present. There is no signature header on this
+    // channel (unlike the confirmation webhook), so redirect-capture
+    // self-authenticates it via a secret embedded in the URL (see
+    // VALOR_REDIRECT_CAPTURE_SECRET above) rather than trusting the call
+    // outright. We still don't know whether the customer's own BROWSER also
+    // follows redirect_url (vs success_url) — if it does, a customer could land
+    // on our API endpoint mid-checkout, which is why the route still answers
+    // every human leg with a 302, never a raw JSON/error response. Only when
+    // VALOR_REDIRECT_CAPTURE_URL is set does redirect_url point at our capture
+    // route (src/app/api/integrations/valor/redirect-capture/route.ts) instead
+    // of success_url. See #161 in the ledger.
     shipping_country: 'US',
     customer_name: input.customerName?.trim() || 'Customer',
     success_url: input.successUrl,
