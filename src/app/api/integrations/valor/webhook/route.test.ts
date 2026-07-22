@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createHmac } from 'crypto';
 import type { NextRequest } from 'next/server';
+import type { RegisterCardInVaultResult } from '@/lib/integrations/valorVault';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
 const {
@@ -25,6 +26,8 @@ const {
   getJobWorkOrder,
   accrueOnBooking,
   ensureReferralCode,
+  registerCardInVault,
+  vaultEnabled,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
@@ -61,6 +64,14 @@ const {
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   // Referral program (#41 PR 2): stamp-at-booking — mocked the same way.
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  // #161 "both vaults" decision: the vault-registration orchestrator + its
+  // flag gate. Default OFF (mirrors the real flag being operator-armed) and a
+  // default happy-path return, so every PRE-EXISTING test in this file is
+  // unaffected unless a test explicitly flips `vaultEnabled.value = true`.
+  registerCardInVault: vi.fn(
+    async (): Promise<RegisterCardInVaultResult> => ({ ok: true, vaultCustomerId: 'vc-1', paymentId: 'pp-1' }),
+  ),
+  vaultEnabled: { value: false },
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -97,6 +108,11 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 vi.mock('@/lib/referrals', () => ({
   accrueOnBooking,
   ensureReferralCode,
+}));
+
+vi.mock('@/lib/integrations/valorVault', () => ({
+  registerCardInVault,
+  isVaultRegisterEnabled: () => vaultEnabled.value,
 }));
 
 import { POST, GET } from './route';
@@ -184,11 +200,13 @@ const QUOTE = {
   valor_txn_id: null,
   approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 1350 } },
   customer_id: null,
+  valor_vault_customer_id: null,
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
   hl.configured.value = true;
+  vaultEnabled.value = false;
   process.env.VALOR_WEBHOOK_SECRET = SECRET;
   process.env.HIGHLEVEL_STAGE_QUOTE_APPROVED = 'stage-approved';
   process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
@@ -953,5 +971,105 @@ describe('Valor webhook — balance pay-link (#83)', () => {
       expect(res.status).toBe(200);
       expect(json.alreadyPaid).toBe(true);
     });
+  });
+});
+
+// #161 "both vaults" decision (2026-07-22): in ADDITION to the raw payment
+// token already saved via the redirect_url capture route, Jason wants each
+// card ALSO registered into Valor's OWN Vault product. registerCardInVault
+// itself is unit-tested in valorVault.test.ts — these lock in the WIRING: the
+// gate (flag + null column + a txn id), the fields passed through, the
+// fill-null persistence, and that a vault hiccup (reason or a thrown error)
+// never affects the booking response.
+describe('Valor webhook — vault registration (#161 "both vaults" decision)', () => {
+  it('flag OFF (default) → registerCardInVault is never called; booking proceeds normally', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(registerCardInVault).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + null column + a txn id → registers with the quote\'s fields and persists the id (fill-null)', async () => {
+    vaultEnabled.value = true;
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD)); // txn_id: 'TXN-123'
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(registerCardInVault).toHaveBeenCalledWith({
+      customerName: 'Jordan Smith',
+      email: 'jordan@example.com',
+      phone: '+15551234567',
+      txnId: 'TXN-123',
+    });
+    // The default mock resolves { ok:true, vaultCustomerId: 'vc-1' } — persisted
+    // as a SEPARATE update from the booking stamp, fill-null on the vault column.
+    const vaultUpdate = updatePayloads.find((p) => 'valor_vault_customer_id' in p);
+    expect(vaultUpdate).toEqual({ valor_vault_customer_id: 'vc-1' });
+  });
+
+  it('the column is already set → registerCardInVault is never called (register-once guard)', async () => {
+    vaultEnabled.value = true;
+    const { client } = makeSb({ ...QUOTE, valor_vault_customer_id: 'vc-existing' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(registerCardInVault).not.toHaveBeenCalled();
+  });
+
+  it('the event carries no txn id → registerCardInVault is never called', async () => {
+    vaultEnabled.value = true;
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const noTxn: Record<string, unknown> = { ...APPROVED_PAYLOAD };
+    delete noTxn.txn_id;
+    const res = await POST(signedReq(noTxn));
+
+    expect(res.status).toBe(200);
+    expect(registerCardInVault).not.toHaveBeenCalled();
+  });
+
+  it('registerCardInVault resolves ok:false → booking still 200 and "vault register failed" is logged', async () => {
+    vaultEnabled.value = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerCardInVault.mockResolvedValueOnce({ ok: false, reason: 'addcustomer failed: 500' });
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
+    // No vault-column write when registration failed.
+    expect(updatePayloads.some((p) => 'valor_vault_customer_id' in p)).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('registerCardInVault THROWS (belt-and-suspenders) → booking still 200', async () => {
+    vaultEnabled.value = true;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    registerCardInVault.mockRejectedValueOnce(new Error('unexpected crash'));
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
+    err.mockRestore();
   });
 });

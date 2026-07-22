@@ -34,6 +34,7 @@ import {
   isValorConfigured,
   type ValorWebhookEvent,
 } from '@/lib/integrations/valor';
+import { registerCardInVault, isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 import {
   sendSms,
   sendEmail,
@@ -185,6 +186,10 @@ type QuoteRow = {
   // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
   // this booking can stamp their referral code too (see below).
   customer_id: string | null;
+  // #161 "both vaults" decision: set once this quote's card has been registered
+  // into Valor's OWN Vault product (separate from valor_vault_token, the raw
+  // payment token). Read back so the hook below only registers once (fill-null).
+  valor_vault_customer_id: string | null;
 };
 
 // GET — a reachability/liveness check (some webhook verifiers probe with GET).
@@ -340,7 +345,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id, valor_vault_customer_id',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -500,6 +505,54 @@ export async function POST(req: NextRequest) {
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] referral code stamp failed:', err);
+  }
+
+  // Vault registration (#161 "both vaults" decision, 2026-07-22): in ADDITION to
+  // the raw payment token already saved via the redirect_url capture route
+  // (quotes.valor_vault_token), Jason wants each card ALSO registered into
+  // Valor's OWN Vault product — it shows on their dashboard, is chargeable from
+  // their Virtual Terminal, and survives independent of our tool. Placed here,
+  // alongside the other independent post-claim side effects (referral accrual,
+  // referral code stamp), because it too needs nothing from job creation below
+  // and must run exactly once per booking (guarded by the fill-null update).
+  // Best-effort + fail-open: a vault hiccup must NEVER affect the booking
+  // response Valor is waiting on. Fires for is_test quotes too — deliberate,
+  // the armed $1 probe test rides a test-ish quote, and the flag itself
+  // (isVaultRegisterEnabled) is operator-armed, so there's no separate is_test
+  // gate here.
+  try {
+    if (isVaultRegisterEnabled() && !quote.valor_vault_customer_id && event.txnId) {
+      const vaultResult = await registerCardInVault({
+        customerName: quote.customer_name,
+        email: quote.customer_email,
+        phone: quote.customer_phone,
+        txnId: event.txnId,
+      });
+      if (vaultResult.ok) {
+        const { error: vaultUpdateErr } = await sb
+          .from('quotes')
+          .update({ valor_vault_customer_id: vaultResult.vaultCustomerId })
+          .eq('id', quote.id)
+          .is('valor_vault_customer_id', null);
+        if (vaultUpdateErr) {
+          console.warn(`[valor/webhook] vault register failed: ${vaultUpdateErr.message}`);
+        } else {
+          console.log(
+            `[valor/webhook] vault registered: customer ${vaultResult.vaultCustomerId} for quote ${quote.id}`,
+          );
+        }
+      } else {
+        console.warn(`[valor/webhook] vault register failed: ${vaultResult.reason}`);
+      }
+    }
+  } catch (err) {
+    // Second belt — registerCardInVault itself never throws (always resolves
+    // {ok:false, reason} on failure), but this guards the WHOLE block
+    // (including the DB update) so an unforeseen throw here can never affect
+    // the booking response.
+    console.error(
+      `[valor/webhook] vault register failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    );
   }
 
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────
