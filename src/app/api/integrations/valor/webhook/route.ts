@@ -439,7 +439,14 @@ export async function POST(req: NextRequest) {
       // webhook is the source of truth for "booked", so it sets the status too.
       status: 'booked',
       valor_txn_id: event.txnId,
-      valor_vault_token: event.vaultToken,
+      // #161: only write the vault token when this webhook actually carried one.
+      // The signed TRANSACTION webhook is TOKENLESS (confirmed live 2026-07-22);
+      // the token arrives ~a minute EARLIER via the redirect_url capture route,
+      // which persists it to this same column — an unconditional
+      // `valor_vault_token: event.vaultToken` here wrote the parser's explicit
+      // null over that just-saved token when the booking stamp landed (observed
+      // live: capture logged "token persisted", webhook booked, column NULL).
+      ...(event.vaultToken ? { valor_vault_token: event.vaultToken } : {}),
       valor_approval_code: event.approvalCode,
       valor_receipt_url: event.receiptUrl,
       valor_payment_raw: event.raw,

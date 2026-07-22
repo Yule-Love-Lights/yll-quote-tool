@@ -196,6 +196,28 @@ beforeEach(() => {
 });
 
 describe('Valor webhook — happy path', () => {
+  // #161 regression: the signed TRANSACTION webhook is TOKENLESS (confirmed
+  // live 2026-07-22) while the redirect_url capture route persists the real
+  // token to quotes.valor_vault_token ~a minute EARLIER. An unconditional
+  // `valor_vault_token: event.vaultToken` in the booking stamp wrote the
+  // parser's explicit null over that just-saved token. The stamp must OMIT the
+  // column entirely when the webhook carried no token.
+  it('does NOT touch valor_vault_token when the webhook carries no token', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const tokenless: Record<string, unknown> = { ...APPROVED_PAYLOAD };
+    delete tokenless.vault_token;
+    const res = await POST(signedReq(tokenless));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0].deposit_paid_at).toBeTruthy();
+    expect(Object.keys(updatePayloads[0])).not.toContain('valor_vault_token');
+  });
+
   it('books the quote, stamps payment, and fires receipt + CRM move', async () => {
     const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
