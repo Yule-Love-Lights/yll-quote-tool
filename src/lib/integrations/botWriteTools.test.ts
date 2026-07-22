@@ -143,6 +143,9 @@ describe('runCompleteInstall', () => {
       Buffer.from('img').toString('base64'),
       'image/jpeg',
       'Install photo — job #142',
+      // Marks it INTERNAL so portalPhotos() keeps it out of the homeowner's
+      // gallery — the portal renders every extra photo it is handed.
+      'crew',
     );
   });
 

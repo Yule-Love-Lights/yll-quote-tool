@@ -136,7 +136,16 @@ async function attachPhotos(
         failed += 1;
         continue;
       }
-      await addDesignExtraPhoto(designId, file.buffer.toString('base64'), file.contentType, title);
+      // source 'crew' keeps this OUT of the homeowner's portal gallery — the
+      // portal renders every extra photo it is given (see portalPhotos), and a
+      // ladder shot is for the office, not the customer.
+      await addDesignExtraPhoto(
+        designId,
+        file.buffer.toString('base64'),
+        file.contentType,
+        title,
+        'crew',
+      );
       saved += 1;
     } catch (err) {
       // One bad photo must not lose the material actuals that came with it.

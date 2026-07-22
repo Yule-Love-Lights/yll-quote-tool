@@ -46,6 +46,15 @@ export function portalPhotos(design: PortalDesign): PortalGalleryPhoto[] {
   return [
     { id: null, url: design.photoUrl, w: design.photoW, h: design.photoH, title: 'Photo 1' },
     ...(design.extraPhotos ?? [])
+      // Crew field photos (the text-ops bot's install capture) are INTERNAL: a
+      // ladder, a half-finished install, or a crew member's face must never
+      // appear in the homeowner's gallery. This list renders EVERY entry it
+      // returns, whether or not a scene item references the photo, so the
+      // filter has to live here. One shared read path ⇒ all three portal
+      // consumers (InteractiveHero, PhotoGallery, DesignReprise) are covered at
+      // once; staff surfaces read design.extraPhotos directly and still see
+      // them, which is the point of capturing them.
+      .filter((p) => p.source !== 'crew')
       .filter((p) => p.url)
       .map((p) => ({
         id: p.id,
