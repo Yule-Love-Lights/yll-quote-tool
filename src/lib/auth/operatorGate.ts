@@ -65,6 +65,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58 escalation engine)
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
+  '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, morning ops digest) — like the other crons it carries no operator session, so it must be allowlisted to reach its own CRON_SECRET check, else the perimeter 401s it before the digest can send
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
   // request carries no operator session, so it must be allowlisted here to reach
