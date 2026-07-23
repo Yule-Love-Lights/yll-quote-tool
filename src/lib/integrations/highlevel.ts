@@ -205,30 +205,74 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   return json.opportunity;
 }
 
+// ─── Duplicate-opportunity detection (#172) ────────────────────────────────
+// GHL location settings can forbid a second opportunity per contact — POST
+// /opportunities/ then 400s for ANY contact that already has a card
+// (open/won/lost/abandoned all count), with a structured body:
+//   { code: 'OPPORTUNITY_NO_DUPLICATE', meta: { existingId } }
+// Parses that out defensively (the body may not be JSON at all, or may lack
+// a usable existingId) so a caller can resurrect the existing card instead of
+// failing outright. Returns null for anything that isn't a recognizable
+// duplicate error.
+function parseDuplicateOpportunityError(err: unknown): string | null {
+  if (!(err instanceof HighLevelError) || !err.body) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { code?: string; meta?: { existingId?: string } };
+    if (parsed.code === 'OPPORTUNITY_NO_DUPLICATE' && parsed.meta?.existingId) {
+      return parsed.meta.existingId;
+    }
+  } catch {
+    // body wasn't JSON — not a recognizable duplicate error
+  }
+  return null;
+}
+
 // ─── Find OR create opportunity ────────────────────────────────────────────
 // Convenience wrapper for the save-quote flow. Given a contact, returns
-// their existing pipeline card (typical case — customer was in the pipeline
-// before opening the quote tool) or creates a new one at "Make Quote" stage
-// as a fallback (edge case — contact exists but no opportunity yet).
+// their existing OPEN pipeline card (typical case — customer was in the
+// pipeline before opening the quote tool), or creates a new one at the
+// fallback stage (edge case — contact exists but no open opportunity yet).
+//
+// #172: findOpportunityForContact only reuses an OPEN card, so a contact
+// whose only card is won/lost/abandoned falls through to createOpportunity —
+// which then 400s (OPPORTUNITY_NO_DUPLICATE) because GHL's location setting
+// forbids a second card per contact. Jason-approved: RESURRECT that card
+// instead of failing — reopen it (status: 'open'), move it to the intended
+// pipeline/stage, and overwrite its name + monetary value. The business is
+// actively re-engaging abandoned/past customers, so reviving a dead card on
+// a fresh quote is the intended behavior, not a silent accident.
 export async function findOrCreateOpportunityForContact(input: {
   contactId: string;
   pipelineId: string;
   fallbackStageId: string;   // HIGHLEVEL_STAGE_QUOTE_CREATED — the ENTRY stage (e.g. Open), never Make Quote
-  fallbackName: string;       // used only if we create
+  fallbackName: string;       // used if we create OR resurrect
   monetaryValue?: number;
   source?: string;            // used only if we create; falls through to createOpportunity's own default ('ai-quote-tool') when omitted
-}): Promise<{ opportunity: HighLevelOpportunity; created: boolean }> {
+}): Promise<{ opportunity: HighLevelOpportunity; created: boolean; resurrected?: boolean }> {
   const existing = await findOpportunityForContact(input.contactId, input.pipelineId);
   if (existing) return { opportunity: existing, created: false };
-  const fresh = await createOpportunity({
-    contactId: input.contactId,
-    pipelineId: input.pipelineId,
-    pipelineStageId: input.fallbackStageId,
-    name: input.fallbackName,
-    monetaryValue: input.monetaryValue,
-    source: input.source,
-  });
-  return { opportunity: fresh, created: true };
+  try {
+    const fresh = await createOpportunity({
+      contactId: input.contactId,
+      pipelineId: input.pipelineId,
+      pipelineStageId: input.fallbackStageId,
+      name: input.fallbackName,
+      monetaryValue: input.monetaryValue,
+      source: input.source,
+    });
+    return { opportunity: fresh, created: true };
+  } catch (err) {
+    const existingId = parseDuplicateOpportunityError(err);
+    if (!existingId) throw err;
+    const opportunity = await updateOpportunity(existingId, {
+      status: 'open',
+      pipelineId: input.pipelineId,
+      pipelineStageId: input.fallbackStageId,
+      name: input.fallbackName,
+      monetaryValue: input.monetaryValue,
+    });
+    return { opportunity, created: false, resurrected: true };
+  }
 }
 
 // ─── Opportunity stage advance ────────────────────────────────────────────
@@ -256,10 +300,15 @@ export async function updateOpportunityStage(
 // one call. Only the provided fields are sent — undefined fields are left
 // untouched (so we never blank out an existing value). We intentionally do NOT
 // touch `source` here: on an existing card it records where the lead came from.
+// #172: pipelineId + status are additive, used only by the duplicate-card
+// resurrect path (findOrCreateOpportunityForContact) to move a won/lost/
+// abandoned card into the intended pipeline and reopen it.
 export type UpdateOpportunityFields = {
   pipelineStageId?: string;
+  pipelineId?: string;
   name?: string;
   monetaryValue?: number;
+  status?: 'open';
 };
 
 export async function updateOpportunity(
@@ -268,8 +317,10 @@ export async function updateOpportunity(
 ): Promise<HighLevelOpportunity> {
   const body: Record<string, unknown> = {};
   if (fields.pipelineStageId !== undefined) body.pipelineStageId = fields.pipelineStageId;
+  if (fields.pipelineId !== undefined) body.pipelineId = fields.pipelineId;
   if (fields.name !== undefined) body.name = fields.name;
   if (fields.monetaryValue !== undefined) body.monetaryValue = fields.monetaryValue;
+  if (fields.status !== undefined) body.status = fields.status;
   const json = await ghlFetch<{ opportunity: HighLevelOpportunity }>(
     `/opportunities/${encodeURIComponent(opportunityId)}`,
     {

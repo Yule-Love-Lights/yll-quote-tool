@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   findOpportunityForContact,
+  findOrCreateOpportunityForContact,
   searchContacts,
   upsertContact,
   upsertContactCustomField,
@@ -88,6 +89,174 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
     it('returns null when there are no opportunities at all', async () => {
       mockFetchOnce({ opportunities: [] });
       expect(await findOpportunityForContact('c1', 'p1')).toBeNull();
+    });
+  });
+
+  // #172: GHL location settings can forbid a second opportunity per contact —
+  // POST /opportunities/ 400s with a structured OPPORTUNITY_NO_DUPLICATE error
+  // (meta.existingId) whenever the contact already has ANY card, including a
+  // won/lost/abandoned one that findOpportunityForContact deliberately ignores.
+  // Jason-approved: resurrect that card (reopen + restage + rename/revalue)
+  // instead of failing the attach/send.
+  describe('findOrCreateOpportunityForContact — duplicate-card resurrect (#172)', () => {
+    // Routes a single fetch mock by method + path so a test can script the
+    // search → create(400 dup) → update(resurrect) sequence in one place.
+    function mockFetchRouted(
+      handler: (url: string, init: RequestInit | undefined) => { status: number; json: unknown },
+    ) {
+      const fn = vi.fn(async (url: string, init?: RequestInit) => {
+        const { status, json } = handler(url, init);
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => json,
+          text: async () => JSON.stringify(json),
+        };
+      });
+      vi.stubGlobal('fetch', fn);
+      return fn;
+    }
+
+    const DUP_ERROR_BODY = {
+      statusCode: 400,
+      message: 'Can not create duplicate opportunity for the contact.',
+      code: 'OPPORTUNITY_NO_DUPLICATE',
+      meta: { existingId: 'opp_abandoned' },
+      error: 'Bad Request',
+      traceId: 'trace-1',
+    };
+
+    it('resurrects the existing card on OPPORTUNITY_NO_DUPLICATE: PUT status open + intended pipeline/stage/name/value', async () => {
+      const fetchMock = mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          // Only a closed card exists — findOpportunityForContact ignores it.
+          return {
+            status: 200,
+            json: { opportunities: [{ id: 'opp_abandoned', contactId: 'c1', pipelineId: 'p1', status: 'abandoned' }] },
+          };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return { status: 400, json: DUP_ERROR_BODY };
+        }
+        if (method === 'PUT' && url.includes('/opportunities/opp_abandoned')) {
+          return {
+            status: 200,
+            json: {
+              opportunity: {
+                id: 'opp_abandoned',
+                contactId: 'c1',
+                pipelineId: 'p1',
+                pipelineStageId: 'stage_open',
+                status: 'open',
+                name: 'Diana Lopez-Smith',
+                monetaryValue: 5000,
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      const result = await findOrCreateOpportunityForContact({
+        contactId: 'c1',
+        pipelineId: 'p1',
+        fallbackStageId: 'stage_open',
+        fallbackName: 'Diana Lopez-Smith',
+        monetaryValue: 5000,
+      });
+
+      expect(result.created).toBe(false);
+      expect(result.resurrected).toBe(true);
+      expect(result.opportunity.id).toBe('opp_abandoned');
+      expect(result.opportunity.status).toBe('open');
+
+      const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT');
+      expect(putCall).toBeTruthy();
+      const [putUrl, putInit] = putCall!;
+      expect(String(putUrl)).toContain('/opportunities/opp_abandoned');
+      expect(JSON.parse((putInit as RequestInit).body as string)).toEqual({
+        status: 'open',
+        pipelineId: 'p1',
+        pipelineStageId: 'stage_open',
+        name: 'Diana Lopez-Smith',
+        monetaryValue: 5000,
+      });
+    });
+
+    it('rethrows the original error when the duplicate body is missing meta.existingId', async () => {
+      mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { status: 200, json: { opportunities: [] } };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return {
+            status: 400,
+            json: {
+              statusCode: 400,
+              code: 'OPPORTUNITY_NO_DUPLICATE',
+              message: 'Can not create duplicate opportunity for the contact.',
+              meta: {},
+            },
+          };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      await expect(
+        findOrCreateOpportunityForContact({
+          contactId: 'c1',
+          pipelineId: 'p1',
+          fallbackStageId: 'stage_open',
+          fallbackName: 'Diana Lopez-Smith',
+        }),
+      ).rejects.toThrow(/duplicate opportunity/i);
+    });
+
+    it('rethrows the original error when the 400 body is not JSON at all', async () => {
+      const fn = vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { ok: true, status: 200, json: async () => ({ opportunities: [] }), text: async () => '{"opportunities":[]}' };
+        }
+        return { ok: false, status: 400, json: async () => { throw new Error('not json'); }, text: async () => 'Bad Request (not JSON)' };
+      });
+      vi.stubGlobal('fetch', fn);
+
+      await expect(
+        findOrCreateOpportunityForContact({
+          contactId: 'c1',
+          pipelineId: 'p1',
+          fallbackStageId: 'stage_open',
+          fallbackName: 'Diana Lopez-Smith',
+        }),
+      ).rejects.toThrow(/Bad Request/i);
+    });
+
+    it('rethrows a non-duplicate 400 unchanged (no resurrect attempted)', async () => {
+      const fetchMock = mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { status: 200, json: { opportunities: [] } };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return { status: 400, json: { statusCode: 400, message: 'Some other validation error', error: 'Bad Request' } };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      await expect(
+        findOrCreateOpportunityForContact({
+          contactId: 'c1',
+          pipelineId: 'p1',
+          fallbackStageId: 'stage_open',
+          fallbackName: 'Diana Lopez-Smith',
+        }),
+      ).rejects.toThrow(/Some other validation error/i);
+
+      // Only the search + failed create — no PUT attempted.
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false);
     });
   });
 
