@@ -39,6 +39,16 @@ const charge = args.includes('--charge');
 const staging = args.includes('--staging');
 const qi = args.indexOf('--quote');
 const quoteId = qi >= 0 ? args[qi + 1] : null;
+// Fadil (2026-07-22, round 2): E98/V3 "EPI host processor info not found" =
+// the surchargeIndicator value mapping to a MISSING profile — an EPI has a
+// cash-discount profile and a traditional profile, and YLL's EPI is on cash
+// discount. Pass --si 1 or --si 0 to set surchargeIndicator explicitly; try
+// one, and if E98 repeats, swap to the other.
+const si = args.indexOf('--si');
+const surchargeIndicator = si >= 0 ? Number(args[si + 1]) : null;
+if (surchargeIndicator !== null && surchargeIndicator !== 0 && surchargeIndicator !== 1) {
+  throw new Error('--si must be 0 or 1');
+}
 
 const BASE = staging
   ? 'https://securelink-staging.valorpaytech.com'
@@ -64,6 +74,7 @@ async function main() {
   console.log(`token:  present, ${quote.valor_vault_token.length} chars (value not shown)`);
   console.log(`target: ${BASE}/?saleToken`);
   console.log(`amount: $1.00 (dollars-2dp, the pagesale convention; a cents misread = $0.01, never more)`);
+  console.log(`si:     surchargeIndicator ${surchargeIndicator === null ? 'OMITTED (pass --si 0 or --si 1)' : surchargeIndicator}`);
 
   if (!charge) {
     console.log('\nDRY-RUN — nothing charged. Re-run with --charge to fire the ONE $1.00 test charge (void it in the Valor portal after).');
@@ -86,6 +97,10 @@ async function main() {
         amount: 1.0,
         surcharge: 0,
         ignore_surcharge_calc: 1,
+        // E98/V3 fix (Fadil round 2): the indicator must match a profile that
+        // EXISTS on the EPI (cash-discount vs traditional) — omitted/default
+        // pointed at the missing one. Only sent when --si is passed.
+        ...(surchargeIndicator !== null ? { surchargeIndicator } : {}),
         token: quote.valor_vault_token,
         // First live run returned 400 D12 "SHIPPING COUNTRY MANDATORY" without
         // this — same required field the ?pagesale deposit body sends.

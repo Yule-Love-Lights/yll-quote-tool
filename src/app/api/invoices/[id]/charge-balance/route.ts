@@ -5,18 +5,35 @@
 // present (ledger #83). This is the manual (staff-clicks-when-ready) counterpart
 // to the customer pay-link; it is NOT auto-on-complete.
 //
-// GATED: the real charge lives in chargeBalanceOnFile, which is a STUB behind
-// VALOR_AUTO_CHARGE_ENABLED (returns 'not-enabled' until Valor's server-initiated
-// card-on-file capability is confirmed + wired — see
-// docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md). Until then this route never
-// moves money: it validates + returns a non-ok reason, and the operator UI hides
-// the button (the flag is echoed by GET /api/invoices/[id]).
+// GATED: the real charge lives in chargeBalanceOnFile (src/lib/integrations/
+// valorBalance.ts), which is wired to Valor's Tokenized Sale API but still
+// behind VALOR_AUTO_CHARGE_ENABLED (returns 'not-enabled' until the flag is
+// flipped — see docs/jobber-flow/VALOR-AUTOCHARGE-FOR-JASON.md). Until then
+// this route never moves money: it validates + returns a non-ok reason, and
+// the operator UI hides the button (the flag is echoed by GET /api/invoices/[id]).
 //
-// ⚠️ IDEMPOTENCY (for Jason when wiring the real charge): a double-click could fire
-// two charges before the first settles. The settle here is atomic (.neq
-// status,'paid'), but the CHARGE is not — add a Valor duplicate_transaction_check
-// (invoicenumber = bal_<quoteId>) or a pre-claim guard when the real POST /?saleToken
-// call lands. The UI disables the button mid-request as a first-line mitigation.
+// ⚠️ IDEMPOTENCY: a double-click / two open tabs could fire two charges before
+// either settles. The post-charge SETTLE is atomic (markInvoicePaidManually's
+// .neq status,'paid'/'cancelled'), but the Valor CHARGE itself is not — Valor
+// has no duplicate_transaction_check wired here — so BEFORE calling
+// chargeBalanceOnFile we atomically pre-claim the charge slot by writing a
+// `pending:<ISO timestamp>` sentinel into invoices.valor_balance_txn_id via a
+// conditional UPDATE (0 rows updated = lost the race). Branches on the current
+// value read from getInvoice:
+//   - null                        → claim via `.is('valor_balance_txn_id', null)`;
+//                                    0 rows → 409 'charge-in-flight'.
+//   - 'pending:<fresh, <15m old>' → 409 'charge-in-flight' (another request holds it).
+//   - 'pending:<stale, >=15m old>'→ a crashed/never-cleared prior attempt; CAS-reclaim
+//                                    via `.eq('valor_balance_txn_id', <exact stale value>)`;
+//                                    0 rows (lost a race to reclaim) → 409 'charge-in-flight'.
+//   - anything else (a real txn id) → 409 'already-charged' (reconcile in Valor).
+// On a non-ok chargeBalanceOnFile result the claim is released back to null via
+// a CAS on our exact sentinel (never clobbers a concurrent real txn id) — EXCEPT
+// on an ambiguous TIMEOUT, where the sentinel is deliberately LEFT (a charge may
+// have landed at Valor; the 15-min stale window is the release valve, and the
+// response text says to reconcile). On success, the existing post-settle write
+// below overwrites valor_balance_txn_id unconditionally by id (safe — we hold
+// the claim), so the sentinel never survives a successful charge.
 //
 // Amount = the invoice balance ONLY (not an arbitrary operator amount). To change
 // the amount, amend the order (which re-prices the balance) — partial/arbitrary
@@ -37,6 +54,9 @@
 // is separate, later work.
 //
 // Response: { ok, charged, invoice } | { ok:false, reason, error }
+//   reason additionally includes (this idempotency pre-claim):
+//     'charge-in-flight' — a charge is already being attempted (409); retry later.
+//     'already-charged'  — a real txn id is already on file (409); reconcile in Valor.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
@@ -51,6 +71,22 @@ import type { QuoteStatus } from '@/lib/quoteStatus';
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ─── Charge idempotency pre-claim (see the header's ⚠️ IDEMPOTENCY note) ────
+const PENDING_PREFIX = 'pending:';
+const PENDING_STALE_MS = 15 * 60 * 1000; // 15 min — the release valve for a crashed/never-cleared claim
+
+function isPendingSentinel(v: string): boolean {
+  return v.startsWith(PENDING_PREFIX);
+}
+
+// Age (ms) of a `pending:<ISO timestamp>` sentinel. null when the embedded
+// timestamp doesn't parse — treated as stale (safer to allow a reclaim than to
+// wedge the invoice behind an unparseable marker forever).
+function pendingAgeMs(v: string): number | null {
+  const t = Date.parse(v.slice(PENDING_PREFIX.length));
+  return Number.isFinite(t) ? Date.now() - t : null;
+}
 
 type QuoteCardRow = {
   valor_vault_token: string | null;
@@ -159,6 +195,65 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // plan.method === 'auto_charge' — charge the saved card for the exact balance.
+
+  // ⚠️ IDEMPOTENCY pre-claim (see the header note): atomically claim the charge
+  // slot BEFORE calling Valor, so a double-click / two open tabs can't both fire
+  // a real charge. invoice.valor_balance_txn_id was already loaded by getInvoice
+  // above (INVOICE_SELECT includes it) — no extra read needed.
+  const existingTxnId = invoice.valor_balance_txn_id;
+  const pendingSentinel = `${PENDING_PREFIX}${new Date().toISOString()}`;
+  const chargeInFlight = () =>
+    NextResponse.json(
+      { ok: false, reason: 'charge-in-flight', error: 'A charge is already in progress' },
+      { status: 409 },
+    );
+
+  if (existingTxnId == null) {
+    // Nothing on file yet — claim only if it's STILL null (CAS against null).
+    const { data: claimed, error: claimErr } = await sb
+      .from('invoices')
+      .update({ valor_balance_txn_id: pendingSentinel })
+      .eq('id', id)
+      .is('valor_balance_txn_id', null)
+      .select('id');
+    if (claimErr) {
+      console.error('[api/invoices/:id/charge-balance] claim write failed:', claimErr);
+      return NextResponse.json(
+        { ok: false, reason: 'error', error: 'Failed to claim the charge slot — try again' },
+        { status: 500 },
+      );
+    }
+    if (!claimed || claimed.length === 0) return chargeInFlight(); // lost the race
+  } else if (isPendingSentinel(existingTxnId)) {
+    const ageMs = pendingAgeMs(existingTxnId);
+    const isStale = ageMs == null || ageMs > PENDING_STALE_MS;
+    if (!isStale) return chargeInFlight(); // another request holds a fresh claim
+
+    // Stale — a crashed/never-cleared prior attempt. Reclaim via a CAS against
+    // the EXACT stale value, so a fresh concurrent claim (or the original
+    // request finishing late) can't be clobbered.
+    const { data: reclaimed, error: reclaimErr } = await sb
+      .from('invoices')
+      .update({ valor_balance_txn_id: pendingSentinel })
+      .eq('id', id)
+      .eq('valor_balance_txn_id', existingTxnId)
+      .select('id');
+    if (reclaimErr) {
+      console.error('[api/invoices/:id/charge-balance] stale-claim reclaim failed:', reclaimErr);
+      return NextResponse.json(
+        { ok: false, reason: 'error', error: 'Failed to claim the charge slot — try again' },
+        { status: 500 },
+      );
+    }
+    if (!reclaimed || reclaimed.length === 0) return chargeInFlight(); // lost the reclaim race
+  } else {
+    // A real Valor txn id is already recorded — this balance was already charged.
+    return NextResponse.json(
+      { ok: false, reason: 'already-charged', error: 'A balance charge was already recorded — reconcile in Valor' },
+      { status: 409 },
+    );
+  }
+
   const result = await chargeBalanceOnFile({
     vaultToken: quote.valor_vault_token,
     amountUsd: invoice.balance,
@@ -168,11 +263,39 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   });
 
   if (!result.ok) {
-    // No state change — the invoice stays awaiting_payment for a retry or the
-    // pay-link. Map the seam reason to a status the UI can act on.
+    // Ambiguous outcome on a TIMEOUT — the charge may have landed at Valor even
+    // though we never saw the response. Do NOT release the claim in that case
+    // (a released claim would let a retry double-charge); the 15-min stale
+    // window is the release valve, and the response text says to reconcile.
+    const isAmbiguousTimeout = result.reason === 'error' && result.message?.toLowerCase().includes('timed out');
+    if (!isAmbiguousTimeout) {
+      // Release the claim so the operator can retry — CAS against our EXACT
+      // sentinel so this can never clobber a concurrent real txn id.
+      try {
+        const { error: releaseErr } = await sb
+          .from('invoices')
+          .update({ valor_balance_txn_id: null })
+          .eq('id', id)
+          .eq('valor_balance_txn_id', pendingSentinel);
+        if (releaseErr) {
+          console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', releaseErr);
+        }
+      } catch (err) {
+        console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', err);
+      }
+    }
+
+    // No state change (balance-wise) — the invoice stays awaiting_payment for a
+    // retry or the pay-link. Map the seam reason to a status the UI can act on.
     const status = result.reason === 'not-enabled' ? 503 : result.reason === 'no-card' ? 409 : 402;
     return NextResponse.json(
-      { ok: false, reason: result.reason, error: result.message ?? 'The card charge did not go through' },
+      {
+        ok: false,
+        reason: result.reason,
+        error: isAmbiguousTimeout
+          ? `${result.message} — the charge slot was left pending; reconcile in Valor before retrying.`
+          : (result.message ?? 'The card charge did not go through'),
+      },
       { status },
     );
   }
@@ -212,6 +335,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // Record the Valor txn/receipt on the invoice (best-effort — the money is in).
+  // This is also what retires the pending-claim sentinel from above: it writes
+  // unconditionally by id (safe — we hold the claim, and nothing else settles
+  // this invoice), and writes result.txnId AS-IS — including null, on the rare
+  // chance Valor approved without echoing a txn id — so the sentinel can never
+  // survive a successful charge (a null write still overwrites 'pending:...').
   try {
     await sb
       .from('invoices')
