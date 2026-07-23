@@ -15,8 +15,13 @@ import type { SampleDesign } from '@/lib/designs';
 // Client-only (Konva) — same dynamic import the result-screen visual uses.
 const DesignCanvas = dynamic(() => import('@/components/design/DesignCanvas'), { ssr: false });
 
+// Evening brightness — dims the whole render to a darker dusk look so the lights
+// read (Naldo's "2nd try"). This is the uniform dim, NOT the top sky gradient.
+const SAMPLE_BRIGHTNESS = 20;
+
 export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; colorOverride: string[] | null }) {
   const [split, setSplit] = useState(50);
+  const litScene = { ...design.scene, brightness: SAMPLE_BRIGHTNESS };
 
   return (
     <div className="est-framebox est-install">
@@ -28,7 +33,7 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
           <div className="absolute inset-0">
             <DesignCanvas
               key={design.photoUrl}
-              scene={design.scene}
+              scene={litScene}
               photoUrl={design.photoUrl}
               photoW={design.photoW}
               photoH={design.photoH}
