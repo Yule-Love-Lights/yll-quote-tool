@@ -394,6 +394,43 @@ describe('voice input', () => {
     const reply = await handleBotMessage({ ...base, text: '', voiceFileId: 'v1' });
     expect(reply).toContain("Couldn't make out");
   });
+
+  it('confirms a hands-free VOICE "yes" replied to the bot in a GROUP', async () => {
+    // The whole point of voice on a ladder: a reply-to-bot voice note carries no
+    // text but must still transcribe and confirm, not get dropped by the gate.
+    mocks.isTranscriptionConfigured.mockReturnValue(true);
+    mocks.downloadTelegramFile.mockResolvedValue({ buffer: Buffer.from('x'), contentType: 'audio/ogg' });
+    mocks.transcribeAudio.mockResolvedValue('yes');
+    mocks.peekPendingAction.mockResolvedValue({ id: 'p1', tool: 'completeInstall', args: {}, summary: 's' });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [] },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({
+      ...base,
+      chatType: 'group',
+      text: '',
+      isReplyToBot: true,
+      voiceFileId: 'v1',
+    });
+    expect(reply).toBe('INSTALL-RECORDED');
+  });
+});
+
+describe('a photo sent WITH a "yes" caption', () => {
+  it('is folded into the pending action before the confirm runs', async () => {
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [] },
+      summary: 's',
+    });
+    await handleBotMessage({ ...base, text: 'yes', photoFileIds: ['file-z'] });
+    expect(mocks.appendPhotosToPendingAction).toHaveBeenCalledWith(base.chatId, base.userId, ['file-z']);
+    expect(mocks.runCompleteInstall).toHaveBeenCalledOnce();
+  });
 });
 
 describe('fallbacks', () => {

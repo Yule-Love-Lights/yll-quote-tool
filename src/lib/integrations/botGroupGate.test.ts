@@ -72,6 +72,12 @@ describe('isAddressedToBot — group chat', () => {
     expect(isAddressedToBot({ chatType: 'group', text: 'yes', isReplyToBot: true })).toBe(true);
   });
 
+  it('accepts a reply to the bot even with EMPTY text (a voice-note or photo "yes")', () => {
+    // Checked before the empty-text guard — a hands-free voice reply carries no
+    // text but is unambiguously addressed to the bot.
+    expect(isAddressedToBot({ chatType: 'group', text: '', isReplyToBot: true })).toBe(true);
+  });
+
   it('never matches a mention when no username is configured', () => {
     expect(isAddressedToBot({ chatType: 'group', text: '@anything jobs' })).toBe(false);
   });

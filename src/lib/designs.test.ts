@@ -521,8 +521,23 @@ describe('extra street photos (#13)', () => {
     sbRef.current = populated.client;
     const withExtras = await getDesignWithPhoto(ID);
     expect(withExtras?.extraPhotos).toEqual([
-      { id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' },
+      { id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side', source: null },
     ]);
+  });
+
+  it('preserves source: crew through the loader so portalPhotos can filter install photos', async () => {
+    // The customer-safety guarantee lives in portalPhotos() filtering p.source
+    // !== 'crew' — which is dead if the loader drops source. This is the
+    // end-to-end coverage that the isolated portalPhotos test can't give.
+    const populated = makeExtrasSb({
+      extra_photos: [
+        { id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' },
+        { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 5, h: 5, title: 'Install photo — job #142', source: 'crew' },
+      ],
+    });
+    sbRef.current = populated.client;
+    const d = await getDesignWithPhoto(ID);
+    expect(d?.extraPhotos.map((p) => p.source)).toEqual([null, 'crew']);
   });
 });
 
@@ -600,7 +615,7 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satelliteH: 400,
       satelliteFeetPerPixel: 0.35,
       satelliteLines: { santas: [], gingerbread: [], c9: [] },
-      extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
+      extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side', source: null }],
       photoTitle: 'Front',
     });
   });

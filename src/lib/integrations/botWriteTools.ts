@@ -67,10 +67,13 @@ export function summarizeCompleteInstall(
 /**
  * Record one install completion. Returns the plain-text reply for the crew.
  *
- * Photos are attached BEFORE the material claim on purpose: the actuals write
- * is idempotent (it claims the job once), so if it were first, a follow-up
- * message carrying more photos would short-circuit on "already recorded" and
- * silently drop them.
+ * Photos are attached AFTER the material record, and only when the record either
+ * won the idempotency claim or there was no material to record. Attaching first
+ * (the original ordering) duplicated every photo on a retry: a transient
+ * material-write failure told the crew "try again", but the photos were already
+ * on the design, so the retry re-attached them. Gating on the claim means a
+ * retry (which hits alreadyDone) skips the photos it already saved, while a
+ * genuine first success saves them exactly once.
  */
 export async function runCompleteInstall(
   args: CompleteInstallArgs,
@@ -79,8 +82,6 @@ export async function runCompleteInstall(
   const card = (await listFulfillmentCards()).find((c) => c.jobNumber === args.jobNumber);
   if (!card) return `No active job #${args.jobNumber}.`;
 
-  const photoResult = await attachPhotos(card.designId, args.jobNumber, args.photoFileIds ?? []);
-
   const lines: MaterialActualLine[] = args.materials.map((m) => ({
     sku: m.sku,
     qty: m.qty,
@@ -88,6 +89,15 @@ export async function runCompleteInstall(
   }));
 
   const result = lines.length ? await recordMaterialActuals(card.id, lines, recordedBy) : null;
+
+  // Attach the photos on the run that actually recorded (or when there's no
+  // material at all — a photos-only report has no claim to gate on). A failed
+  // record (null) or an already-recorded retry (alreadyDone) skips them, so the
+  // same shots never land twice.
+  const shouldAttachPhotos = lines.length === 0 || (!!result && !result.alreadyDone);
+  const photoResult = shouldAttachPhotos
+    ? await attachPhotos(card.designId, args.jobNumber, args.photoFileIds ?? [])
+    : { saved: 0, failed: 0, noDesign: false };
 
   const out: string[] = [];
   if (!lines.length) {

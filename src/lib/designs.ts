@@ -143,8 +143,18 @@ export type DesignWithPhoto = {
   satelliteFeetPerPixel: number | null;
   satelliteLines: DesignSatelliteLines | null;
   // Extra street photos (#13), each with a freshly-signed URL. Empty array for
-  // designs without extras (incl. every pre-migration design).
-  extraPhotos: { id: string; url: string | null; w: number; h: number; title: string | null }[];
+  // designs without extras (incl. every pre-migration design). `source: 'crew'`
+  // marks an INTERNAL field photo (the text-ops bot's install capture) that
+  // portalPhotos() must filter from the customer gallery — it MUST survive this
+  // read or the filter runs against undefined and shows crew photos to homeowners.
+  extraPhotos: {
+    id: string;
+    url: string | null;
+    w: number;
+    h: number;
+    title: string | null;
+    source?: 'crew' | null;
+  }[];
   // Staff title for the base photo (#13) — null renders as "Photo 1".
   photoTitle: string | null;
 };
@@ -351,6 +361,10 @@ async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPho
       w: p.w,
       h: p.h,
       title: p.title ?? null,
+      // Carry the internal-photo marker through: portalPhotos() filters on it to
+      // keep crew install photos out of the customer gallery. Dropping it here
+      // (the original bug) left every source undefined and the filter dead.
+      source: p.source ?? null,
     })),
     photoTitle: row.photo_title ?? null,
   };

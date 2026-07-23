@@ -9,7 +9,7 @@
 
 import { getSupabaseServiceClient } from '../supabase';
 import { getJobWorkOrder } from './jobs';
-import { listOnHand, adjustOnHandAtomic, toQty } from './onHand';
+import { adjustOnHandAtomic, toQty } from './onHand';
 
 export type MaterialActualLine = { sku: string; qty: number; rawText?: string | null };
 export type MaterialTrueUp = { sku: string; estimated: number; actual: number; delta: number };
@@ -167,13 +167,26 @@ export async function recordMaterialActuals(
     // our read above and this write, we get zero rows back — which means the
     // estimate WAS deducted after all, so we keep the estimate baseline instead
     // of treating the job as never-prepped.
-    const { data: tookPrepClaim } = await db
+    const { data: tookPrepClaim, error: prepClaimErr } = await db
       .from('jobs')
       .update({ stock_decremented_at: new Date().toISOString() })
       .eq('id', jobId)
       .is('stock_decremented_at', null)
       .select('id')
       .maybeSingle();
+
+    // A LOST RACE (zero rows, no error) means prep deducted in between, so we
+    // keep the estimate baseline. An ERRORED write also returns zero rows but
+    // means the OPPOSITE — stock_decremented_at is still null, so a later Prep
+    // will deduct the estimate. Treating an error as a lost race would leave the
+    // true-up moving stock in the wrong direction (phantom returns). Can't tell
+    // the true state, so record the actuals and DON'T move stock (same safe path
+    // as an untrustworthy baseline below).
+    if (prepClaimErr) {
+      console.error('recordMaterialActuals: prep-claim takeover failed:', prepClaimErr);
+      await insertActualRows(db, jobId, lines, recordedBy, new Map());
+      return { ok: true, alreadyDone: false, trueUps: [], skipped: [], baselineUnavailable: true };
+    }
     if (tookPrepClaim) estimated = [];
     else preppedBaseline = true;
   }
@@ -203,13 +216,27 @@ export async function recordMaterialActuals(
     new Map(estimated.map((e) => [e.sku, toQty(e.qty)])),
   );
 
-  const allTrueUps = computeMaterialTrueUps(estimated, lines);
+  // Only true up the skus the crew ACTUALLY reported. An estimated sku the crew
+  // didn't mention is left as prep deducted it (delta 0) — NOT returned to the
+  // shelf. The actuals are a free-text subset (crew rarely re-list every wire /
+  // stake / connector), so treating an un-mentioned estimated sku as "fully
+  // unused" would credit its whole install quantity back on every normal
+  // close-out, systematically over-stating on-hand. A reported sku that isn't in
+  // the estimate (an extra they grabbed) is still handled — it's in `lines`, so
+  // computeMaterialTrueUps deducts it.
+  const reportedSkus = new Set(lines.map((l) => l.sku));
+  const estimatedForReported = estimated.filter((e) => reportedSkus.has(e.sku));
+  const allTrueUps = computeMaterialTrueUps(estimatedForReported, lines);
 
-  // Only adjust TRACKED skus (present in inventory_on_hand) — a sku nobody
-  // stocks gets no row created (mirrors computeStockDeductions' onHand !== null
-  // gate in jobs.ts).
-  const onHand = await listOnHand();
-  const tracked = new Set(onHand.map((r) => r.sku));
+  // Which skus we can adjust: the ones inventory_on_hand tracks. Read from the
+  // work order's OWN pre-claim snapshot (buildMaterialsView already set onHand
+  // per row) rather than a second listOnHand() after the claim — that redundant
+  // read could transiently fail to [] and silently drop every true-up for a job
+  // whose claim is already burned. A reported extra sku not in the BOM has no
+  // snapshot here, so it's treated as untracked (recorded, not adjusted) — safe.
+  const tracked = new Set(
+    wo.materials.materials.filter((m) => m.onHand !== null).map((m) => m.sku),
+  );
   const trueUps: MaterialTrueUp[] = [];
   const skipped: string[] = [];
   for (const t of allTrueUps) {
