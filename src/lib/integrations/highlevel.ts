@@ -214,7 +214,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
 // a usable existingId) so a caller can resurrect the existing card instead of
 // failing outright. Returns null for anything that isn't a recognizable
 // duplicate error.
-function parseDuplicateOpportunityError(err: unknown): string | null {
+export function parseDuplicateOpportunityError(err: unknown): string | null {
   if (!(err instanceof HighLevelError) || !err.body) return null;
   try {
     const parsed = JSON.parse(err.body) as { code?: string; meta?: { existingId?: string } };
