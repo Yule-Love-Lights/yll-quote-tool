@@ -11,7 +11,7 @@
 // designs (rendered the same way) or re-trace the geometry.
 
 import { seedSceneFromAnalysis, sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
-import type { Scene } from '@/lib/design/sceneTypes';
+import type { Scene, Yardstick } from '@/lib/design/sceneTypes';
 
 /** Overlay coordinate space (matches the mockup + the traced geometry below). */
 export const VW = 960;
@@ -97,13 +97,36 @@ export const SAMPLE_PHOTO_W = VW;
 export const SAMPLE_PHOTO_H = VH;
 // Evening dim so the strands read as glowing lights against the daytime photo.
 const SAMPLE_BRIGHTNESS = 18;
+// Pixels-per-foot for the sample render. Bulb SIZE and SPACING both scale with
+// px/ft; deriving it from the fabricated footage came out ~5 px/ft (bulbs tiny +
+// crammed). Fix it to a normal design density — the app's own default for a photo
+// this size is ~14 (makeDefaultYardstick's 0.15·W over 10 ft); we run a touch
+// denser so the strand reads clearly at the small embedded width.
+const SAMPLE_YARDSTICK_PPF = 26;
+
+/** A fixed-scale yardstick so every sample renders at a consistent, sensible bulb
+ *  size regardless of how long its traced runs happen to be. */
+function sampleYardstick(): Yardstick {
+  const width = SAMPLE_PHOTO_W * 0.15; // mirrors makeDefaultYardstick's placement
+  return {
+    id: 'est-sample-yardstick',
+    realFeet: width / SAMPLE_YARDSTICK_PPF,
+    x: SAMPLE_PHOTO_W * 0.04,
+    y: SAMPLE_PHOTO_H * 0.74,
+    width,
+    height: width * 0.45,
+    axis: 'width',
+  };
+}
 
 /**
  * Build a REAL design Scene for a sample style, so the before/after "with lights"
  * side renders through the same DesignCanvas engine as the customer's own house
  * and the portal — not a hand-drawn overlay. Seeds roofline strands from the
- * style's runs via the exact path staff use (seedSceneFromAnalysis), then sets an
- * evening brightness so the bulbs glow.
+ * style's runs via the exact path staff use (seedSceneFromAnalysis), overrides the
+ * footage-derived yardstick with a fixed sensible scale (so bulbs aren't tiny), and
+ * dims to evening so the bulbs glow. Strands fall back to the first yardstick, so
+ * replacing the array re-scales them.
  */
 export function buildSampleScene(style: SampleStyle): Scene {
   const seed = sanitizeAnalysisSeed({
@@ -111,7 +134,7 @@ export function buildSampleScene(style: SampleStyle): Scene {
     calibration: { santasFootage: style.ft },
   });
   const seeded = seedSceneFromAnalysis({ yardsticks: [], items: [], brightness: SAMPLE_BRIGHTNESS }, seed, SAMPLE_PHOTO_W, SAMPLE_PHOTO_H);
-  return { ...seeded, brightness: SAMPLE_BRIGHTNESS };
+  return { ...seeded, yardsticks: [sampleYardstick()], brightness: SAMPLE_BRIGHTNESS };
 }
 
 /**

@@ -15,6 +15,19 @@ describe('buildSampleScene', () => {
     }
   });
 
+  it('fixes the render scale so bulbs are a normal size, not tiny (px/ft regression)', () => {
+    // Bulb size + spacing both scale with the yardstick's px/ft. The fabricated
+    // footage produced ~5 px/ft (bulbs tiny + crammed); the override must give a
+    // normal density. One yardstick, px/ft = width/realFeet well above the broken 5.
+    for (const style of SAMPLE_STYLES) {
+      const ys = buildSampleScene(style).yardsticks;
+      expect(ys.length, style.key).toBe(1);
+      const ppf = ys[0].width / ys[0].realFeet;
+      expect(ppf, style.key).toBeGreaterThan(20);
+      expect(ppf, style.key).toBeLessThan(45); // and not "comically large" (>50)
+    }
+  });
+
   it('exposes a real palette color id for every swatch scheme', () => {
     for (const ids of Object.values(SCHEME_COLOR_IDS)) {
       expect(ids.length).toBeGreaterThan(0);
