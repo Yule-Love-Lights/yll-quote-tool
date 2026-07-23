@@ -399,37 +399,64 @@ export type SampleDesign = {
 };
 
 /**
- * Recent REAL completed-job designs to feature on the public self-serve estimate
- * landing (ledger self-serve, S48). Booked (deposit paid) or approved, non-test
- * quotes that have a base photo + a drawn scene — the ACTUAL designs staff traced,
- * so they render (via DesignCanvas) exactly like the portal, not a fabricated
- * overlay on a stock photo. Best-effort: returns [] on any failure. The payload is
- * the house render only (no name/address/PII); the same render is already public on
- * that quote's own portal by UUID.
+ * Recent REAL designed jobs to feature on the public self-serve estimate landing
+ * (ledger self-serve, S48). Any non-test, non-dead quote that has a base photo + a
+ * drawn scene — the ACTUAL designs staff traced, so they render (via DesignCanvas)
+ * exactly like the portal, not a fabricated overlay on a stock photo. Best-effort:
+ * returns [] on any failure. The payload is the house render only (no name/address/
+ * PII); the same render is already public on that quote's own portal by UUID.
+ *
+ * Two plain queries rather than a PostgREST foreign-key embed: the designs/quotes
+ * schema is RLS-disabled and may not declare the FK the embed needs, which would
+ * error the whole call. And we DON'T require "booked" — most booked quotes are
+ * legacy Jobber imports with no design, so that intersection is ~empty; "designed +
+ * real + not dead" is the right pool for showing our work.
  */
 export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
   const sb = getSb();
   if (!sb) return [];
-  const { data, error } = await sb
+  // 1) Recent designs that actually have a base photo (a decent-sized pool).
+  const { data: designRows, error: dErr } = await sb
     .from('designs')
-    .select(`${DESIGN_WITH_PHOTO_COLUMNS}, quotes!inner(deposit_paid_at, customer_approved_at, is_test)`)
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
     .not('photo_path', 'is', null)
+    .not('quote_id', 'is', null)
     .order('updated_at', { ascending: false })
-    .limit(limit * 4);
-  if (error) {
-    console.error('Supabase listSampleDesigns error:', error);
+    .limit(limit * 8);
+  if (dErr) {
+    console.error('Supabase listSampleDesigns designs error:', dErr);
     return [];
   }
-  type Row = DesignWithPhotoRow & { quotes: { deposit_paid_at: string | null; customer_approved_at: string | null; is_test: boolean | null } };
-  const rows = (data ?? []) as unknown as Row[];
-  // A real, committed job: booked or approved, never a test quote.
-  const committed = rows.filter((r) => (r.quotes?.deposit_paid_at || r.quotes?.customer_approved_at) && !r.quotes?.is_test);
-  const withPhoto = await Promise.all(committed.map((r) => toDesignWithPhoto(r)));
+  const rows = (designRows ?? []) as unknown as DesignWithPhotoRow[];
+  if (rows.length === 0) return [];
+
+  // 2) The quotes those designs belong to — to drop test + dead (declined/lost/
+  //    cancelled) quotes without an FK embed.
+  const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter((v): v is string => !!v)));
+  const { data: quoteRows, error: qErr } = await sb
+    .from('quotes')
+    .select('id, is_test, status')
+    .in('id', quoteIds);
+  if (qErr) {
+    console.error('Supabase listSampleDesigns quotes error:', qErr);
+    return [];
+  }
+  const DEAD = new Set(['declined', 'lost', 'cancelled']);
+  const showable = new Set<string>();
+  for (const q of (quoteRows ?? []) as Array<{ id: string; is_test: boolean | null; status: string | null }>) {
+    if (!q.is_test && !(q.status && DEAD.has(q.status))) showable.add(q.id);
+  }
+
+  // 3) Keep good designs (photo + a non-empty scene) of real, live quotes — recent
+  //    first. Check the scene before signing so we only sign the ones we'll show.
   const usable: SampleDesign[] = [];
-  for (const d of withPhoto) {
-    if (d.photoUrl && Array.isArray(d.scene?.items) && d.scene.items.length > 0) {
-      usable.push({ quoteId: d.quoteId, scene: d.scene, photoUrl: d.photoUrl, photoW: d.photoW, photoH: d.photoH });
-    }
+  for (const r of rows) {
+    if (!r.quote_id || !showable.has(r.quote_id)) continue;
+    const scene = (r.scene ?? EMPTY_SCENE) as DesignScene;
+    if (!Array.isArray(scene.items) || scene.items.length === 0) continue;
+    const d = await toDesignWithPhoto(r);
+    if (!d.photoUrl) continue;
+    usable.push({ quoteId: d.quoteId, scene: d.scene, photoUrl: d.photoUrl, photoW: d.photoW, photoH: d.photoH });
     if (usable.length >= limit) break;
   }
   return usable;
