@@ -226,4 +226,12 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p, 'DELETE')).toBe(false);
     expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
   });
+
+  it('allows GET /api/estimate/samples (featured real-job gallery) but keeps other methods operator-only (self-serve S48)', () => {
+    const p = '/api/estimate/samples';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
+    expect(isPublicPath(p, 'POST')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
+  });
 });

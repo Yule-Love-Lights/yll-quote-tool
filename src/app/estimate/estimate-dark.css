@@ -78,6 +78,11 @@
 }
 .est-hero-hint { text-align: center; color: var(--est-cream-muted); font-size: 12px; margin: 6px 0 22px; }
 
+/* Gallery dots (browse the featured real homes) */
+.est-dots { display: flex; gap: 8px; justify-content: center; margin: 12px 0 0; }
+.est-dot { width: 8px; height: 8px; border-radius: 999px; border: none; padding: 0; background: var(--est-border-hi); cursor: pointer; transition: all .3s; }
+.est-dot.on { width: 22px; background: var(--est-gold); box-shadow: var(--est-glow-sm); }
+
 /* House style picker */
 .est-housepick { display: flex; gap: 8px; justify-content: center; margin: 0 0 14px; flex-wrap: wrap; }
 .est-housechip {

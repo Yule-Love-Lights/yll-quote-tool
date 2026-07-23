@@ -165,6 +165,13 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
     return true;
   }
 
+  // GET /api/estimate/samples — the landing's featured real-job gallery (S48).
+  // Flag-gated + rate-limited; returns house renders only (no PII), the same shape
+  // the portal exposes. GET only; other methods stay operator-gated.
+  if (method.toUpperCase() === 'GET' && path === '/api/estimate/samples') {
+    return true;
+  }
+
   // /api/leads is the WordPress site's public lead-capture endpoint (#leads) —
   // honeypot + rate-limited + strictly validated in the route itself. POST is
   // the submission; OPTIONS must also pass because the browser sends a CORS

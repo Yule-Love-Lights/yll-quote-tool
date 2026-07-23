@@ -14,7 +14,8 @@ import './estimate-dark.css';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EstimateVisual } from './EstimateVisual';
 import { BeforeAfter } from './BeforeAfter';
-import { SAMPLE_STYLES, SCHEMES, type SampleStyle, type SchemeKey } from './estimateSamples';
+import { SCHEMES, type SchemeKey } from './estimateSamples';
+import type { SampleDesign } from '@/lib/designs';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
@@ -36,9 +37,10 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [error, setError] = useState<string | null>(null);
   const [canFallback, setCanFallback] = useState(false);
 
-  // Sample-home "play with it" state (landing + measuring).
-  const [sampleStyle, setSampleStyle] = useState<SampleStyle>(SAMPLE_STYLES[0]);
+  // Featured real-job gallery + "play with it" state (landing + measuring).
   const [scheme, setScheme] = useState<SchemeKey>('warm');
+  const [samples, setSamples] = useState<SampleDesign[]>([]);
+  const [sampleIdx, setSampleIdx] = useState(0);
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -73,6 +75,17 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   }, [embedded]);
   useEffect(() => {
     mountedAt.current = Date.now();
+  }, []);
+
+  // Featured real completed-job designs for the gallery. Best-effort: no samples →
+  // the gallery is simply omitted, never blocks the estimator.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/estimate/samples')
+      .then((r) => (r.ok ? r.json() : { samples: [] }))
+      .then((d) => { if (alive && Array.isArray(d.samples)) setSamples(d.samples); })
+      .catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   const [measureLine, setMeasureLine] = useState(0);
@@ -198,24 +211,26 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
           </section>
         )}
 
-        {/* Sample-home style picker + before/after — kept up on the address AND
-            measuring screens so there's something to play with during the wait. */}
-        {showSamples && (
+        {/* Featured real completed-job designs + before/after — kept up on the
+            address AND measuring screens so there's something to look at during the
+            wait. Omitted entirely until the gallery loads. */}
+        {showSamples && samples.length > 0 && (
           <section className="est-screen">
-            <p className="est-pick-cap">Pick the house style closest to yours</p>
-            <div className="est-housepick">
-              {SAMPLE_STYLES.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  className={`est-housechip ${s.key === sampleStyle.key ? 'on' : ''}`}
-                  onClick={() => setSampleStyle(s)}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-            <BeforeAfter style={sampleStyle} scheme={scheme} />
+            <p className="est-pick-cap">Homes we&apos;ve lit up on Long Island — drag to compare</p>
+            <BeforeAfter design={samples[Math.min(sampleIdx, samples.length - 1)]} scheme={scheme} />
+            {samples.length > 1 && (
+              <div className="est-dots">
+                {samples.map((s, i) => (
+                  <button
+                    key={s.quoteId ?? i}
+                    type="button"
+                    aria-label={`Show home ${i + 1}`}
+                    onClick={() => setSampleIdx(i)}
+                    className={`est-dot ${i === Math.min(sampleIdx, samples.length - 1) ? 'on' : ''}`}
+                  />
+                ))}
+              </div>
+            )}
             <div className="est-swatches" style={{ marginTop: 12 }}>
               {SWATCHES.map((sw) => (
                 <button
@@ -229,7 +244,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
                 </button>
               ))}
             </div>
-            <p className="est-hero-hint">Drag to compare · sample styles, swap for your real home once you get your quote</p>
+            <p className="est-hero-hint">Real Yule Love Lights installs · tap a color to see your options</p>
           </section>
         )}
 

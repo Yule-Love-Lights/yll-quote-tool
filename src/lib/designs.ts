@@ -390,6 +390,51 @@ export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto
   return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
+export type SampleDesign = {
+  quoteId: string | null;
+  scene: DesignScene;
+  photoUrl: string;
+  photoW: number | null;
+  photoH: number | null;
+};
+
+/**
+ * Recent REAL completed-job designs to feature on the public self-serve estimate
+ * landing (ledger self-serve, S48). Booked (deposit paid) or approved, non-test
+ * quotes that have a base photo + a drawn scene — the ACTUAL designs staff traced,
+ * so they render (via DesignCanvas) exactly like the portal, not a fabricated
+ * overlay on a stock photo. Best-effort: returns [] on any failure. The payload is
+ * the house render only (no name/address/PII); the same render is already public on
+ * that quote's own portal by UUID.
+ */
+export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  const { data, error } = await sb
+    .from('designs')
+    .select(`${DESIGN_WITH_PHOTO_COLUMNS}, quotes!inner(deposit_paid_at, customer_approved_at, is_test)`)
+    .not('photo_path', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(limit * 4);
+  if (error) {
+    console.error('Supabase listSampleDesigns error:', error);
+    return [];
+  }
+  type Row = DesignWithPhotoRow & { quotes: { deposit_paid_at: string | null; customer_approved_at: string | null; is_test: boolean | null } };
+  const rows = (data ?? []) as unknown as Row[];
+  // A real, committed job: booked or approved, never a test quote.
+  const committed = rows.filter((r) => (r.quotes?.deposit_paid_at || r.quotes?.customer_approved_at) && !r.quotes?.is_test);
+  const withPhoto = await Promise.all(committed.map((r) => toDesignWithPhoto(r)));
+  const usable: SampleDesign[] = [];
+  for (const d of withPhoto) {
+    if (d.photoUrl && Array.isArray(d.scene?.items) && d.scene.items.length > 0) {
+      usable.push({ quoteId: d.quoteId, scene: d.scene, photoUrl: d.photoUrl, photoW: d.photoW, photoH: d.photoH });
+    }
+    if (usable.length >= limit) break;
+  }
+  return usable;
+}
+
 // Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
 export async function updateDesignScene(id: string, scene: DesignScene): Promise<boolean> {
   const sb = getSb();
