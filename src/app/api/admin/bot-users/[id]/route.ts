@@ -33,6 +33,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  // `JSON.parse('null')` succeeds, so a literal null body slips past the catch.
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
   const hasRole = body.role !== undefined;
   const hasName = typeof body.displayName === 'string';
@@ -47,13 +51,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Name must be 80 characters or fewer.' }, { status: 400 });
   }
 
-  // Upsert overwrites the whole row, so read the current one and pass through
-  // whichever field this PATCH didn't touch (a role-only change must not wipe
-  // the name, and vice versa). Absent from the roster ⇒ 404.
-  const current = await getBotUser(id);
-  if (!current) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
   try {
+    // Upsert overwrites the whole row, so read the current one and pass through
+    // whichever field this PATCH didn't touch (a role-only change must not wipe
+    // the name, and vice versa). Inside the try so a read throw is a clean 500,
+    // not an uncaught one (the sibling admin/users route wraps for the same reason).
+    const current = await getBotUser(id);
+    if (!current) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
     const user = await upsertBotUser({
       telegramUserId: id,
       role: hasRole ? (body.role as BotRole) : current.role,

@@ -46,6 +46,11 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  // `JSON.parse('null')` succeeds, so a literal null body slips past the catch and
+  // would throw on the first property read below. Reject non-objects up front.
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
   const telegramUserId = typeof body.telegramUserId === 'string' ? body.telegramUserId.trim() : '';
   const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : null;

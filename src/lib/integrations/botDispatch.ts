@@ -72,7 +72,6 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     isReplyToBot: msg.isReplyToBot,
   });
 
-  const role = await resolveSenderRole(msg.userId);
   let text = cleanTelegramCommand(msg.text);
 
   if (!addressed) {
@@ -88,6 +87,11 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     if (!bare && !hasPhotos) return null;
     if (!(await peekPendingAction(msg.chatId, msg.userId))) return null;
   }
+
+  // Resolve the sender's role AFTER the addressed gate: it reads the roster from
+  // the DB, and a busy staff group's ordinary chatter (dropped above) shouldn't
+  // cost a read per message. Everything past here needs it.
+  const role = await resolveSenderRole(msg.userId);
 
   // A voice note carries the instruction when there's no caption to read.
   let heard: string | null = null;
@@ -137,6 +141,14 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
       return `Got it — ${count} photo${count === 1 ? '' : 's'} ready for that job. Reply yes to confirm, or send more.`;
     }
     return 'Got the photo. Send it with the job, like "job 142 done, 2 boxes C9".';
+  }
+
+  // "id" / "whoami" — self-serve the sender's Telegram user id so onboarding
+  // isn't "have an owner grep the logs". Anyone the bot already answers (they're
+  // in an allowed chat) can read their own id and hand it to an admin to be
+  // added on the Bot team page. No role needed — it only ever reveals your own id.
+  if (/^(id|whoami|myid|my id)$/.test(text.toLowerCase())) {
+    return `Your Telegram id: ${msg.userId}\nSend this to Naldo or Jason to get added to the bot.`;
   }
 
   // A reply that is neither a clear yes nor a clear no ("yes but 3 boxes") must

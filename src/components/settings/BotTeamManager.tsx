@@ -19,16 +19,20 @@ type BotUser = {
   updatedAt: string | null;
 };
 
-const ROLE_LABEL: Record<BotRole, string> = {
-  crew: 'Crew',
-  staff: 'Staff',
-  admin: 'Admin',
-};
+const ROLE_LABEL: Record<BotRole, string> = { crew: 'Crew', staff: 'Staff', admin: 'Admin' };
 const ROLE_HINT: Record<BotRole, string> = {
   crew: 'Reads + report finished installs',
   staff: 'Crew + CRM, quotes, and money changes',
   admin: 'Everything, incl. settings + bot team',
 };
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 export function BotTeamManager() {
   const [users, setUsers] = useState<BotUser[]>([]);
@@ -65,6 +69,26 @@ export function BotTeamManager() {
 
   const addUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    const id = telegramUserId.trim();
+
+    // Guard against the demotion trap: the POST is an upsert, so re-adding an
+    // existing id would silently overwrite their role (e.g. Add-form defaulting
+    // to crew would demote a staffer). Send them to the row dropdown instead.
+    const existing = users.find((u) => u.telegramUserId === id);
+    if (existing) {
+      setNotice(null);
+      setError(
+        `${existing.displayName ?? id} is already on the roster as ${ROLE_LABEL[existing.role].toLowerCase()}. Change their role in the table below.`,
+      );
+      return;
+    }
+
+    // Promoting straight to admin from a form is the riskiest action here; make
+    // it deliberate (mirrors the row-dropdown guard below).
+    if (role === 'admin' && !window.confirm('Add this person as an ADMIN? They get full settings access and bot administration, not just field/CRM tools.')) {
+      return;
+    }
+
     setAdding(true);
     setError(null);
     setNotice(null);
@@ -72,14 +96,14 @@ export function BotTeamManager() {
       const res = await fetch('/api/admin/bot-users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telegramUserId: telegramUserId.trim(), displayName: displayName.trim(), role }),
+        body: JSON.stringify({ telegramUserId: id, displayName: displayName.trim(), role }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? 'Failed to add to the roster');
       setTelegramUserId('');
       setDisplayName('');
       setRole('crew');
-      setNotice(`Added ${data.user?.displayName ?? data.user?.telegramUserId ?? 'person'}.`);
+      setNotice(`Added ${data.user?.displayName ?? data.user?.telegramUserId ?? 'person'} as ${ROLE_LABEL[role].toLowerCase()}.`);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add to the roster');
@@ -114,6 +138,13 @@ export function BotTeamManager() {
 
   const changeRole = (u: BotUser, next: BotRole) => {
     if (next === u.role) return;
+    // Confirm promotions TO admin only — crew↔staff moves are low-stakes.
+    if (
+      next === 'admin' &&
+      !window.confirm(`Make ${who(u)} an admin? They'll get full settings access and bot administration, not just field/CRM tools.`)
+    ) {
+      return;
+    }
     act(u.telegramUserId, 'PATCH', { role: next }).then((ok) => {
       if (ok) setNotice(`${who(u)} is now ${ROLE_LABEL[next].toLowerCase()}.`);
     });
@@ -155,7 +186,7 @@ export function BotTeamManager() {
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
-              placeholder="Mike (crew)"
+              placeholder="Mike"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -169,12 +200,16 @@ export function BotTeamManager() {
               <option value="staff">Staff</option>
               <option value="admin">Admin</option>
             </select>
+            {/* Static, not a hover title — visible on touch, and on the form an
+                admin is most likely to be unsure what a tier means. */}
+            <span className="text-xs text-gray-500">{ROLE_HINT[role]}</span>
           </label>
         </div>
         <p className="text-xs text-gray-500 leading-relaxed">
-          The Telegram user id is a number, not a @username. To find someone&rsquo;s id: have
-          them message the bot once, then ask Naldo &mdash; it shows in the bot&rsquo;s logs.
-          They also need to be in an allowed chat before the bot will answer them.
+          The Telegram user id is a number, not a @username, and only the exact number the bot
+          sees works (a phone number won&rsquo;t). Easiest way to get it: add the person to your
+          crew Telegram group, have them send <span className="font-mono">/id</span> to the bot,
+          and it replies with their number.
         </p>
         <div>
           <button
@@ -194,69 +229,86 @@ export function BotTeamManager() {
       </div>
 
       {/* Roster */}
-      <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-200">
-              <th className="px-4 py-2.5 font-medium">Name</th>
-              <th className="px-4 py-2.5 font-medium">Telegram id</th>
-              <th className="px-4 py-2.5 font-medium">Role</th>
-              <th className="px-4 py-2.5 font-medium text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={4} className="px-4 py-6 text-gray-400">
-                  Loading…
-                </td>
+      <section>
+        <h2 className="text-[15px] font-semibold text-gray-900 mb-3">Bot team roster</h2>
+        <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-200">
+                <th className="px-4 py-2.5 font-medium">Name</th>
+                <th className="px-4 py-2.5 font-medium">Telegram id</th>
+                <th className="px-4 py-2.5 font-medium">Role</th>
+                <th className="px-4 py-2.5 font-medium">Added</th>
+                <th className="px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
-            ) : users.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="px-4 py-6 text-gray-400">
-                  No one added yet. The two owners already have admin access from config.
-                </td>
-              </tr>
-            ) : (
-              users.map((u) => {
-                const busy = busyId === u.telegramUserId;
-                return (
-                  <tr key={u.telegramUserId} className="border-t border-gray-100">
-                    <td className="px-4 py-2.5 text-gray-900">
-                      {u.displayName ?? <span className="text-gray-400">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{u.telegramUserId}</td>
-                    <td className="px-4 py-2.5">
-                      <select
-                        value={u.role}
-                        disabled={busy}
-                        onChange={(e) => changeRole(u, e.target.value as BotRole)}
-                        title={ROLE_HINT[u.role]}
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs bg-white disabled:opacity-50"
-                      >
-                        <option value="crew">Crew</option>
-                        <option value="staff">Staff</option>
-                        <option value="admin">Admin</option>
-                      </select>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex justify-end">
-                        <button
-                          onClick={() => remove(u)}
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-gray-400">
+                    Loading…
+                  </td>
+                </tr>
+              ) : users.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-gray-400">
+                    No one added yet.
+                  </td>
+                </tr>
+              ) : (
+                users.map((u) => {
+                  const busy = busyId === u.telegramUserId;
+                  return (
+                    <tr key={u.telegramUserId} className="border-t border-gray-100">
+                      <td className="px-4 py-2.5 text-gray-900">
+                        {u.displayName ?? <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{u.telegramUserId}</td>
+                      <td className="px-4 py-2.5">
+                        <select
+                          value={u.role}
                           disabled={busy}
-                          className="rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                          onChange={(e) => changeRole(u, e.target.value as BotRole)}
+                          title={ROLE_HINT[u.role]}
+                          className="rounded-md border border-gray-300 px-2 py-1 text-xs bg-white disabled:opacity-50"
                         >
-                          Remove
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                          <option value="crew">Crew</option>
+                          <option value="staff">Staff</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-500 text-xs">
+                        {fmtDate(u.createdAt)}
+                        {u.addedBy ? <span className="text-gray-400"> · {u.addedBy}</span> : null}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex justify-end">
+                          <button
+                            onClick={() => remove(u)}
+                            disabled={busy}
+                            className="rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        {/* Persistent, not empty-state-only: the owners are admins via server
+            config and never appear as rows, so say so no matter the row count. */}
+        <p className="mt-3 text-xs text-gray-500 leading-relaxed">
+          Naldo and Jason aren&rsquo;t listed here — they&rsquo;re admins by default from server
+          config and can&rsquo;t be removed or downgraded from this page, so you can&rsquo;t lock
+          the bot&rsquo;s administration out. Adding someone here sets their role; they still need
+          to be in a Telegram chat the bot is allowed in before it answers them (that chat list is
+          managed separately by Naldo or Jason).
+        </p>
+      </section>
     </div>
   );
 }

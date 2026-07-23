@@ -6,7 +6,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   roleForUser,
-  roleForSenderInAllowedChat,
   hasRole,
   mayRunTool,
   isKnownTool,
@@ -70,14 +69,24 @@ describe('roleForUser', () => {
   });
 });
 
-describe('roleForSenderInAllowedChat', () => {
-  it('falls back to crew — never staff or admin — for an unassigned sender', () => {
-    expect(roleForSenderInAllowedChat('999')).toBe('crew');
+
+describe('higherRole (how the DB roster and env floor combine)', () => {
+  it('returns the higher-ranked of the two', async () => {
+    const { higherRole } = await import('./botRoles');
+    expect(higherRole('crew', 'admin')).toBe('admin');
+    expect(higherRole('admin', 'crew')).toBe('admin');
+    expect(higherRole('staff', 'crew')).toBe('staff');
   });
 
-  it('still honors an explicit higher tier', () => {
-    process.env.TELEGRAM_ADMIN_USERS = '111';
-    expect(roleForSenderInAllowedChat('111')).toBe('admin');
+  it('returns whichever is present when the other is null', async () => {
+    const { higherRole } = await import('./botRoles');
+    expect(higherRole('staff', null)).toBe('staff');
+    expect(higherRole(null, 'admin')).toBe('admin');
+  });
+
+  it('returns null only when both are null', async () => {
+    const { higherRole } = await import('./botRoles');
+    expect(higherRole(null, null)).toBeNull();
   });
 });
 

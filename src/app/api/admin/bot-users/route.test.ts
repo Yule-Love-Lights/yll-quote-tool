@@ -63,6 +63,12 @@ describe('POST /api/admin/bot-users', () => {
     expect(upsertBotUser).not.toHaveBeenCalled();
   });
 
+  it('rejects a literal null body with a clean 400, not a 500', async () => {
+    const res = await POST(makeReq(null));
+    expect(res.status).toBe(400);
+    expect(upsertBotUser).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-numeric Telegram id', async () => {
     const res = await POST(makeReq({ telegramUserId: '@mike', role: 'crew' }));
     expect(res.status).toBe(400);

@@ -55,6 +55,12 @@ describe('PATCH /api/admin/bot-users/[id]', () => {
     expect(res.status).toBe(404);
   });
 
+  it('400s a literal null body instead of throwing a 500', async () => {
+    const res = await PATCH(makeReq(null), ctx('111'));
+    expect(res.status).toBe(400);
+    expect(upsertBotUser).not.toHaveBeenCalled();
+  });
+
   it('400s an empty patch', async () => {
     const res = await PATCH(makeReq({}), ctx('111'));
     expect(res.status).toBe(400);
