@@ -157,9 +157,10 @@ export async function runWhatsAppCommand(cmd: WhatsAppCommand): Promise<string> 
 
 /**
  * Run one interpreted READ tool (Phase 1 of the 2026-07-19 text-ops plan).
- * The interpreter's enum can only produce these six read tools — see
- * botInterpreter.ts for the safety model; writes still require the exact
- * keyword commands above.
+ * This path calls interpretBotText WITHOUT allowWrites, so the interpretation
+ * can only be one of the six read tools — but the shared type now also covers
+ * the Phase-2 write tools (which are gated in botDispatch, not here), so an
+ * unexpected tool falls through to the safe reply rather than executing.
  */
 async function runInterpreted(interp: BotInterpretation, raw: string): Promise<string> {
   switch (interp.tool) {
@@ -179,6 +180,8 @@ async function runInterpreted(interp: BotInterpretation, raw: string): Promise<s
       return runWhatsAppCommand({ kind: 'jobs' });
     case 'help':
       return runWhatsAppCommand({ kind: 'help' });
+    default:
+      return NOT_UNDERSTOOD;
   }
 }
 

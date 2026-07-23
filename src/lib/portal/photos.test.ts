@@ -33,6 +33,37 @@ describe('portalPhotos (#110 W4-019)', () => {
     ]);
   });
 
+  // Text-ops bot Phase 2: crew install photos land in the SAME extra_photos
+  // array as the operator's design photos, and this list is rendered wholesale
+  // by the portal hero, the "Every angle, lit up" gallery, and DesignReprise.
+  // A ladder shot, a half-finished install, or a crew member's face must never
+  // reach the homeowner — hence the source filter.
+  it('never shows a crew field photo to the customer', () => {
+    const d = design({
+      extraPhotos: [
+        { id: 'a', url: 'https://example.com/a.jpg', w: 100, h: 50, title: 'Backyard' },
+        {
+          id: 'crew-1',
+          url: 'https://example.com/ladder.jpg',
+          w: 100,
+          h: 50,
+          title: 'Install photo — job #142',
+          source: 'crew',
+        },
+      ],
+    });
+    const out = portalPhotos(d);
+    expect(out.map((p) => p.id)).toEqual([null, 'a']);
+    expect(JSON.stringify(out)).not.toContain('job #142');
+  });
+
+  it('still shows extras with no source (every photo written before the bot)', () => {
+    const d = design({
+      extraPhotos: [{ id: 'a', url: 'https://example.com/a.jpg', w: 100, h: 50, title: null }],
+    });
+    expect(portalPhotos(d)).toHaveLength(2);
+  });
+
   // W4-022: a url-less extra must not shift the numbering of the extras after
   // it — the label is computed from the CANONICAL (unfiltered) index, matching
   // the staff-facing photoLabels.extraPhotoLabels, then url-less ones drop out.

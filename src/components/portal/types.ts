@@ -229,7 +229,17 @@ export type PortalDesign = {
   // Extra street photos (#13 multi-image): more angles of the same house, each
   // with its own drawn items (scene items reference them via photoId). Absent/
   // empty = single-photo design → every multi-photo surface hides.
-  extraPhotos?: { id: string; url: string | null; w: number; h: number; title: string | null }[];
+  // `source: 'crew'` marks an INTERNAL field photo (the text-ops bot's install
+  // capture) that portalPhotos() filters out — the homeowner must never see a
+  // ladder shot in their own gallery. Absent = an operator's design photo, shown.
+  extraPhotos?: {
+    id: string;
+    url: string | null;
+    w: number;
+    h: number;
+    title: string | null;
+    source?: 'crew' | null;
+  }[];
 };
 
 export type PortalQuote = {

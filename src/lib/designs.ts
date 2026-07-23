@@ -89,6 +89,14 @@ export type DesignExtraPhoto = {
   w: number;
   h: number;
   title?: string | null;
+  // Who put this photo here. Absent (the default, and every row written before
+  // 2026-07-22) means an operator added it as part of the design, so it stays
+  // customer-visible. 'crew' marks an INTERNAL field photo — the text-ops bot's
+  // install capture — which the customer portal must never render: a ladder,
+  // a half-finished install, or a crew member's face has no business appearing
+  // in the homeowner's gallery. Filtered in portalPhotos(); staff surfaces read
+  // design.extraPhotos directly and still see it, which is the point.
+  source?: 'crew' | null;
 };
 
 export type DesignRow = {
@@ -868,11 +876,16 @@ async function updateExtraPhotosAtomic(
 // Decode + store one extra photo and append it to the design's extra_photos.
 // Returns the stored entry (id is a fresh UUID — it's what scene items'
 // `photoId` will reference).
+//
+// `source: 'crew'` marks an internal field photo that the customer portal must
+// not render (see DesignExtraPhoto.source). Omitting it keeps the operator
+// default: part of the design, shown to the customer.
 export async function addDesignExtraPhoto(
   id: string,
   base64: string,
   contentType: string,
   title?: string | null,
+  source?: 'crew' | null,
 ): Promise<DesignExtraPhoto> {
   const sb = getSb();
   if (!sb) throw new Error('Supabase service role not configured');
@@ -896,7 +909,14 @@ export async function addDesignExtraPhoto(
   });
   if (upErr) throw new Error(`addDesignExtraPhoto: ${upErr.message}`);
 
-  const entry: DesignExtraPhoto = { id: photoId, path, w: width, h: height, title: title?.trim() || null };
+  const entry: DesignExtraPhoto = {
+    id: photoId,
+    path,
+    w: width,
+    h: height,
+    title: title?.trim() || null,
+    ...(source === 'crew' ? { source: 'crew' as const } : {}),
+  };
   // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic.
   await updateExtraPhotosAtomic(sb, id, (current) => [...current, entry]);
 

@@ -195,8 +195,28 @@ Crew, from the field: *"job 142 done"* + photos + *"used 2 boxes C9, 30 clips"*
 (typed or **voice note**). The bot:
 1. interpreter extracts job#, material lines, and attaches the photos;
 2. replies a **confirm** ("Close job #142, log 2×C9 + 30 clips, save 3 photos? yes");
-3. on "yes": attaches photos (reuse uploads), **records material actuals**,
-   advances the job stage to installed/complete.
+3. on "yes": attaches photos (reuse uploads), **records material actuals**.
+
+> **⚠️ Scope correction found during the Phase 2 build (2026-07-22) — step 3 does
+> NOT advance the job status.** This plan assumed marking a job installed was a
+> stage move. It is not: `POST /api/jobs/[id]/complete` advances the job to
+> `requires_invoicing`, **creates the invoice**, moves the GHL pipeline card, and
+> can settle the invoice and close the job. That is a money path in Jason's area,
+> and it must not fire from a crew member's text off a ladder. The bot therefore
+> captures what the field knows (photos + material actually used) and the office
+> completes the job in the admin UI as before. Revisit only with Jason, as Phase 4
+> work.
+>
+> **Photo target:** `jobs` has no photo storage — `designs.extra_photos` is the
+> only store — so install photos attach to the job's LINKED DESIGN, titled
+> "Install photo — job #N". Reachable from the job, and it feeds the design
+> history the #155 rebooking wave already wants.
+>
+> **Stock true-up (Naldo, 2026-07-22):** recording actuals also ADJUSTS on-hand by
+> the difference against the estimate deducted at prep. If prep never ran, the
+> baseline is zero and the full actual comes off. Test jobs never touch real
+> stock; untracked SKUs are recorded but not adjusted; the whole thing is claimed
+> once via `jobs.materials_actualized_at`, so a repeated "done" can't double-apply.
 
 **Honest build note:** photos and the stage move **reuse existing infra**.
 Recording *actuals* is **new** — today `prepareJobMaterials` deducts only the
