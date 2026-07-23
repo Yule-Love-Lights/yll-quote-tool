@@ -94,6 +94,28 @@ describe('HighLevel attach — write-back success', () => {
   });
 });
 
+// #172: the builder's Clear button is a real undo — detach clears the local
+// link (both GHL columns) without touching GHL, and never runs find-or-create.
+describe('HighLevel attach — detach (#172)', () => {
+  it('detach:true clears the link and returns detached:true without any GHL call', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.detached).toBe(true);
+    expect(hl.findOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('detach surfaces a DB failure as 500 (the link may still exist)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, { message: 'db down' });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    expect(res.status).toBe(500);
+  });
+});
+
 describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', () => {
   it('a holiday quote still honors the legacy env vars (pipeline + entry stage)', async () => {
     sbRef.current = makeSb(HOLIDAY_QUOTE, null);

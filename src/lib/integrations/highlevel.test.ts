@@ -136,6 +136,13 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
             json: { opportunities: [{ id: 'opp_abandoned', contactId: 'c1', pipelineId: 'p1', status: 'abandoned' }] },
           };
         }
+        if (method === 'GET' && url.includes('/opportunities/opp_abandoned')) {
+          // Read-before-write guard: the resurrect inspects the card first.
+          return {
+            status: 200,
+            json: { opportunity: { id: 'opp_abandoned', contactId: 'c1', pipelineId: 'p1', status: 'abandoned' } },
+          };
+        }
         if (method === 'POST' && url.includes('/opportunities/')) {
           return { status: 400, json: DUP_ERROR_BODY };
         }
@@ -182,6 +189,138 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
         name: 'Diana Lopez-Smith',
         monetaryValue: 5000,
       });
+    });
+
+    it('REFUSES to resurrect an OPEN card (cross-pipeline active deal) — throws, no PUT', async () => {
+      const fetchMock = mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { status: 200, json: { opportunities: [] } };
+        }
+        if (method === 'GET' && url.includes('/opportunities/opp_active')) {
+          // The existing card is a LIVE deal in another pipeline.
+          return {
+            status: 200,
+            json: { opportunity: { id: 'opp_active', contactId: 'c1', pipelineId: 'p_other', status: 'open' } },
+          };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return {
+            status: 400,
+            json: { ...DUP_ERROR_BODY, meta: { existingId: 'opp_active' } },
+          };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      await expect(
+        findOrCreateOpportunityForContact({
+          contactId: 'c1',
+          pipelineId: 'p1',
+          fallbackStageId: 'stage_open',
+          fallbackName: 'Diana Lopez-Smith',
+        }),
+      ).rejects.toThrow(/ACTIVE opportunity/i);
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false);
+    });
+
+    it('a WON card resurrects like any other non-open card (repeat-customer rebook)', async () => {
+      mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { status: 200, json: { opportunities: [] } };
+        }
+        if (method === 'GET' && url.includes('/opportunities/opp_won')) {
+          return {
+            status: 200,
+            json: { opportunity: { id: 'opp_won', contactId: 'c1', pipelineId: 'p1', status: 'won' } },
+          };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return { status: 400, json: { ...DUP_ERROR_BODY, meta: { existingId: 'opp_won' } } };
+        }
+        if (method === 'PUT' && url.includes('/opportunities/opp_won')) {
+          return {
+            status: 200,
+            json: { opportunity: { id: 'opp_won', contactId: 'c1', pipelineId: 'p1', pipelineStageId: 'stage_open', status: 'open' } },
+          };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      const result = await findOrCreateOpportunityForContact({
+        contactId: 'c1',
+        pipelineId: 'p1',
+        fallbackStageId: 'stage_open',
+        fallbackName: 'Diana Lopez-Smith',
+      });
+      expect(result.resurrected).toBe(true);
+      expect(result.opportunity.id).toBe('opp_won');
+    });
+
+    it('resets monetaryValue to 0 on resurrect when the caller has no value (no stale dollars)', async () => {
+      const fetchMock = mockFetchRouted((url, init) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { status: 200, json: { opportunities: [] } };
+        }
+        if (method === 'GET' && url.includes('/opportunities/opp_abandoned')) {
+          return {
+            status: 200,
+            json: { opportunity: { id: 'opp_abandoned', contactId: 'c1', pipelineId: 'p1', status: 'abandoned', monetaryValue: 5400 } },
+          };
+        }
+        if (method === 'POST' && url.includes('/opportunities/')) {
+          return { status: 400, json: DUP_ERROR_BODY };
+        }
+        if (method === 'PUT' && url.includes('/opportunities/opp_abandoned')) {
+          return { status: 200, json: { opportunity: { id: 'opp_abandoned', status: 'open' } } };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+
+      await findOrCreateOpportunityForContact({
+        contactId: 'c1',
+        pipelineId: 'p1',
+        fallbackStageId: 'stage_open',
+        fallbackName: 'Diana Lopez-Smith',
+        // no monetaryValue
+      });
+      const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT')!;
+      expect(JSON.parse((putCall[1] as RequestInit).body as string).monetaryValue).toBe(0);
+    });
+
+    it('parses a TRUNCATED duplicate body (ghlFetch 2000-char cap) via the regex fallback', async () => {
+      // Invalid JSON (closing braces cut off) but the discriminating fields survive.
+      const truncated = '{"statusCode":400,"message":"Can not create duplicate opportunity for the contact.","code":"OPPORTUNITY_NO_DUPLICATE","meta":{"existingId":"opp_cut"';
+      const fn = vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && url.includes('/opportunities/search')) {
+          return { ok: true, status: 200, json: async () => ({ opportunities: [] }), text: async () => '{"opportunities":[]}' };
+        }
+        if (method === 'GET' && url.includes('/opportunities/opp_cut')) {
+          const json = { opportunity: { id: 'opp_cut', contactId: 'c1', pipelineId: 'p1', status: 'abandoned' } };
+          return { ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json) };
+        }
+        if (method === 'POST') {
+          return { ok: false, status: 400, json: async () => { throw new Error('not json'); }, text: async () => truncated };
+        }
+        if (method === 'PUT' && url.includes('/opportunities/opp_cut')) {
+          const json = { opportunity: { id: 'opp_cut', status: 'open' } };
+          return { ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json) };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+      });
+      vi.stubGlobal('fetch', fn);
+
+      const result = await findOrCreateOpportunityForContact({
+        contactId: 'c1',
+        pipelineId: 'p1',
+        fallbackStageId: 'stage_open',
+        fallbackName: 'Diana Lopez-Smith',
+      });
+      expect(result.resurrected).toBe(true);
+      expect(result.opportunity.id).toBe('opp_cut');
     });
 
     it('rethrows the original error when the duplicate body is missing meta.existingId', async () => {

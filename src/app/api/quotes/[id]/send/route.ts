@@ -38,7 +38,7 @@ import {
   createOpportunity,
   updateOpportunity,
   findOpportunityForContact,
-  parseDuplicateOpportunityError,
+  resurrectDuplicateOpportunity,
   upsertContactCustomField,
   sendSms,
   sendEmail,
@@ -415,19 +415,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
                 opportunityId = created.id;
                 opportunityCreated = true;
               } catch (createErr) {
-                // #172: contact already has a (non-open) card and GHL forbids a
-                // second one. Reopen it, pull it into this pipeline at Bid Sent,
-                // and overwrite title/value (Jason-approved re-engagement flow).
-                const existingId = parseDuplicateOpportunityError(createErr);
-                if (!existingId) throw createErr;
-                await updateOpportunity(existingId, {
-                  status: 'open',
+                // #172: contact already has a card and GHL forbids a second one.
+                // Shared resurrect (one implementation with the attach path):
+                // inspects the card first — refuses to touch an OPEN one — then
+                // reopens it at Bid Sent with our title/value.
+                const revived = await resurrectDuplicateOpportunity(createErr, {
                   pipelineId: stages.pipelineId,
                   pipelineStageId: stages.sent,
                   name: cardName,
                   monetaryValue,
                 });
-                opportunityId = existingId;
+                if (!revived) throw createErr;
+                opportunityId = revived.id;
               }
             }
             stageUpdated = true;

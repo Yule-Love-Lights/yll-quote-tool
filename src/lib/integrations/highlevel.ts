@@ -221,10 +221,68 @@ export function parseDuplicateOpportunityError(err: unknown): string | null {
     if (parsed.code === 'OPPORTUNITY_NO_DUPLICATE' && parsed.meta?.existingId) {
       return parsed.meta.existingId;
     }
+    return null;
   } catch {
-    // body wasn't JSON — not a recognizable duplicate error
+    // Body wasn't parseable JSON — ghlFetch truncates bodies to 2000 chars, so
+    // a padded-out duplicate error could arrive with its closing braces cut
+    // off. Fall back to a field-level scan before giving up.
+    if (err.body.includes('"OPPORTUNITY_NO_DUPLICATE"')) {
+      const m = err.body.match(/"existingId"\s*:\s*"([^"]+)"/);
+      if (m) return m[1];
+    }
   }
   return null;
+}
+
+// ─── Opportunity fetch (by id) ─────────────────────────────────────────────
+// Read one card. Used by the resurrect path to inspect the existing card's
+// real status/pipeline before overwriting it (#172 review HIGH — never
+// blind-write a card we haven't looked at).
+export async function getOpportunity(opportunityId: string): Promise<HighLevelOpportunity> {
+  const json = await ghlFetch<{ opportunity: HighLevelOpportunity }>(
+    `/opportunities/${encodeURIComponent(opportunityId)}`,
+  );
+  return json.opportunity;
+}
+
+// ─── Duplicate-card resurrect (#172) ───────────────────────────────────────
+// Shared recovery for a createOpportunity that 400'd OPPORTUNITY_NO_DUPLICATE
+// (used by findOrCreateOpportunityForContact AND the send route's inline
+// create — one implementation so guards can't drift). Returns null when the
+// error isn't a recognizable duplicate (caller rethrows the original).
+//
+// Guard (review HIGH, 3× corroborated): fetch the existing card FIRST. An
+// OPEN card here can only mean an active deal outside the pipeline we
+// searched (or a race) — never hijack it; throw a descriptive error instead.
+// A non-open card (abandoned/lost/won) is deliberately resurrected: status
+// open, moved to the intended pipeline/stage, name overwritten, and
+// monetaryValue reset to the new deal's value (or 0 — last year's figure on
+// this year's card misreports the pipeline). Every resurrect logs the card's
+// prior status/pipeline so a surprising board change is traceable.
+export async function resurrectDuplicateOpportunity(
+  err: unknown,
+  input: { pipelineId: string; pipelineStageId: string; name: string; monetaryValue?: number },
+): Promise<HighLevelOpportunity | null> {
+  const existingId = parseDuplicateOpportunityError(err);
+  if (!existingId) return null;
+  const existing = await getOpportunity(existingId);
+  if (existing.status === 'open') {
+    throw new HighLevelError(
+      `Contact already has an ACTIVE opportunity ${existingId} (status open, pipeline ${existing.pipelineId}) outside the target pipeline — refusing to move a live deal. Resolve the card in HighLevel, then retry.`,
+      409,
+    );
+  }
+  console.warn(
+    '[highlevel] resurrecting opportunity (#172):',
+    { opportunityId: existingId, priorStatus: existing.status, priorPipelineId: existing.pipelineId, targetPipelineId: input.pipelineId },
+  );
+  return updateOpportunity(existingId, {
+    status: 'open',
+    pipelineId: input.pipelineId,
+    pipelineStageId: input.pipelineStageId,
+    name: input.name,
+    monetaryValue: input.monetaryValue ?? 0,
+  });
 }
 
 // ─── Find OR create opportunity ────────────────────────────────────────────
@@ -262,15 +320,13 @@ export async function findOrCreateOpportunityForContact(input: {
     });
     return { opportunity: fresh, created: true };
   } catch (err) {
-    const existingId = parseDuplicateOpportunityError(err);
-    if (!existingId) throw err;
-    const opportunity = await updateOpportunity(existingId, {
-      status: 'open',
+    const opportunity = await resurrectDuplicateOpportunity(err, {
       pipelineId: input.pipelineId,
       pipelineStageId: input.fallbackStageId,
       name: input.fallbackName,
       monetaryValue: input.monetaryValue,
     });
+    if (!opportunity) throw err;
     return { opportunity, created: false, resurrected: true };
   }
 }

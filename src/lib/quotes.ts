@@ -465,6 +465,9 @@ export type QuoteRaw = {
   // Legacy rebook (#155): quote migrated from last year's Jobber data — the
   // admin detail page shows a badge + (once approved) the chosen light color.
   legacy_rebook: boolean;
+  // #172: whether a HighLevel contact is already linked — the builder needs it
+  // on reopen so it stops showing "a contact is required" on a linked quote.
+  highlevel_contact_id: string | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -474,7 +477,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id',
     )
     .eq('id', id)
     .maybeSingle();

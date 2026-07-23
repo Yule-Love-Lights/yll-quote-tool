@@ -15,7 +15,7 @@ const { sbRef, hl } = vi.hoisted(() => ({
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
-    parseDuplicateOpportunityError: vi.fn((_err: unknown) => null as string | null),
+    resurrectDuplicateOpportunity: vi.fn(async (_err: unknown, _input: unknown) => null as { id: string } | null),
     upsertContactCustomField: vi.fn(async () => undefined),
     sendSms: vi.fn(async () => undefined),
     sendEmail: vi.fn(async () => undefined),
@@ -36,7 +36,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   createOpportunity: hl.createOpportunity,
   findOpportunityForContact: hl.findOpportunityForContact,
-  parseDuplicateOpportunityError: hl.parseDuplicateOpportunityError,
+  resurrectDuplicateOpportunity: hl.resurrectDuplicateOpportunity,
   upsertContactCustomField: hl.upsertContactCustomField,
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
@@ -701,15 +701,15 @@ describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipelin
     sbRef.current = client;
     hl.findOpportunityForContact.mockResolvedValueOnce(null);
     hl.createOpportunity.mockRejectedValueOnce(new Error('OPPORTUNITY_NO_DUPLICATE'));
-    hl.parseDuplicateOpportunityError.mockReturnValueOnce('opp_abandoned');
+    hl.resurrectDuplicateOpportunity.mockResolvedValueOnce({ id: 'opp_abandoned' });
 
     const res = await POST(makeReq(), { params });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.ghlSynced).toBe(true);
-    expect(hl.updateOpportunity).toHaveBeenCalledWith(
-      'opp_abandoned',
-      expect.objectContaining({ status: 'open', pipelineStageId: 'stage_bid_sent' }),
+    expect(hl.resurrectDuplicateOpportunity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pipelineStageId: 'stage_bid_sent' }),
     );
   });
 
@@ -718,13 +718,13 @@ describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipelin
     sbRef.current = client;
     hl.findOpportunityForContact.mockResolvedValueOnce(null);
     hl.createOpportunity.mockRejectedValueOnce(new Error('GHL 500'));
-    hl.parseDuplicateOpportunityError.mockReturnValueOnce(null);
+    hl.resurrectDuplicateOpportunity.mockResolvedValueOnce(null);
 
     const res = await POST(makeReq(), { params });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.ghlSynced).toBe(false);
-    // Only the resurrect would PUT here (no card was linked) — it must not run.
+    // No card was linked and the helper declined — nothing may be PUT.
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });
