@@ -11,18 +11,12 @@
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import type { SampleDesign } from '@/lib/designs';
-import { LogoWatermark } from '@/components/portal/LogoWatermark';
 
 // Client-only (Konva) — same dynamic import the result-screen visual uses.
 const DesignCanvas = dynamic(() => import('@/components/design/DesignCanvas'), { ssr: false });
 
-// Evening brightness for the sample render — darker so the lights read at night.
-const SAMPLE_BRIGHTNESS = 20;
-
 export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; colorOverride: string[] | null }) {
   const [split, setSplit] = useState(50);
-  // Dim the real design to evening (its authored brightness is for daytime review).
-  const litScene = { ...design.scene, brightness: SAMPLE_BRIGHTNESS };
 
   return (
     <div className="est-framebox est-install">
@@ -30,11 +24,12 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
         {/* Crop the bottom (Street View "Google" footer) by scaling both layers
             identically from the top, so the design stays aligned. */}
         <div className="est-crop">
-          {/* AFTER (bottom): real design, lit, with a dark evening sky. */}
+          {/* AFTER (bottom): the real design, as the portal renders it — the dark
+              sky is a top-only gradient (est-sky), NOT a whole-image dim. */}
           <div className="absolute inset-0">
             <DesignCanvas
               key={design.photoUrl}
-              scene={litScene}
+              scene={design.scene}
               photoUrl={design.photoUrl}
               photoW={design.photoW}
               photoH={design.photoH}
@@ -48,7 +43,16 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
             <img src={design.photoUrl} alt="Home before lights" className="absolute inset-0 h-full w-full object-cover" />
           </div>
         </div>
-        <LogoWatermark />
+        {/* YLL brand mark — bottom-left (Naldo). */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/yule-site-logo-2.png"
+          alt=""
+          aria-hidden
+          draggable={false}
+          className="pointer-events-none select-none absolute z-20 bottom-[3%] left-[3%] h-auto w-[26%] min-w-[84px] max-w-[200px]"
+          style={{ opacity: 0.55, filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.6))' }}
+        />
         <span className="est-ba-label est-ba-label-l">Before</span>
         <span className="est-ba-label est-ba-label-r">With lights</span>
         <div className="est-ba-handle" style={{ left: `${split}%` }} />
