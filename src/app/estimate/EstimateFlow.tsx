@@ -14,20 +14,25 @@ import './estimate-dark.css';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EstimateVisual } from './EstimateVisual';
 import { BeforeAfter } from './BeforeAfter';
-import { SCHEMES, type SchemeKey } from './estimateSamples';
 import type { SampleDesign } from '@/lib/designs';
+import { DEFAULT_COLOR_SCHEMES, DEFAULT_COLOR_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { COLOR_MAP } from '@/components/design/editor-core/colors';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-const MEASURING_LINES = ['Fetching your home…', 'Tracing the lines your lights will follow…', 'Pricing it…'];
-
-const SWATCHES: { key: SchemeKey; label: string; dots: string[] }[] = [
-  { key: 'warm', label: 'Warm White', dots: SCHEMES.warm },
-  { key: 'cool', label: 'Cool White', dots: SCHEMES.cool },
-  { key: 'multi', label: 'Multicolor', dots: SCHEMES.multi },
-  { key: 'redwhite', label: 'Red & White', dots: SCHEMES.redwhite },
+// Holiday-flavored so the wait is fun (Naldo).
+const MEASURING_LINES = [
+  'Untangling the lights…',
+  'Waking up the elves…',
+  'Measuring your roof from space…',
+  'Testing every bulb (twice)…',
+  "Consulting Santa's blueprints…",
+  'Warming up the ladder…',
 ];
+// As-designed swatch shows a rainbow dot ("staff's pick"); solids/patterns show
+// their real palette colors.
+const AS_DESIGNED_DOT = 'conic-gradient(#F5CC7A,#E0524D,#58B368,#5B8DD9,#F5CC7A)';
 
 const STEP_INDEX: Record<Step, number> = { address: 0, measuring: 1, result: 2, followup: 2, outofarea: 2, done: 2 };
 
@@ -38,9 +43,10 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [canFallback, setCanFallback] = useState(false);
 
   // Featured real-job gallery + "play with it" state (landing + measuring).
-  const [scheme, setScheme] = useState<SchemeKey>('warm');
+  const [schemeId, setSchemeId] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
   const [samples, setSamples] = useState<SampleDesign[]>([]);
   const [sampleIdx, setSampleIdx] = useState(0);
+  const activeScheme = DEFAULT_COLOR_SCHEMES.find((s) => s.id === schemeId) ?? DEFAULT_COLOR_SCHEMES[0];
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -217,7 +223,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         {showSamples && samples.length > 0 && (
           <section className="est-screen">
             <p className="est-pick-cap">Homes we&apos;ve lit up on Long Island — drag to compare</p>
-            <BeforeAfter design={samples[Math.min(sampleIdx, samples.length - 1)]} scheme={scheme} />
+            <BeforeAfter design={samples[Math.min(sampleIdx, samples.length - 1)]} colorOverride={activeScheme.colorIds} />
             {samples.length > 1 && (
               <div className="est-dots">
                 {samples.map((s, i) => (
@@ -232,15 +238,19 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
               </div>
             )}
             <div className="est-swatches" style={{ marginTop: 12 }}>
-              {SWATCHES.map((sw) => (
+              {DEFAULT_COLOR_SCHEMES.map((s) => (
                 <button
-                  key={sw.key}
+                  key={s.id}
                   type="button"
-                  className={`est-swatch ${sw.key === scheme ? 'on' : ''}`}
-                  onClick={() => setScheme(sw.key)}
+                  className={`est-swatch ${s.id === schemeId ? 'on' : ''}`}
+                  onClick={() => setSchemeId(s.id)}
                 >
-                  <span className="dots">{sw.dots.map((c, i) => <i key={i} style={{ background: c }} />)}</span>
-                  {sw.label}
+                  <span className="dots">
+                    {s.colorIds
+                      ? s.colorIds.slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)
+                      : <i style={{ background: AS_DESIGNED_DOT }} />}
+                  </span>
+                  {s.label}
                 </button>
               ))}
             </div>
