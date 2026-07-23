@@ -54,19 +54,74 @@ const req = (body: unknown = undefined, query = '') =>
   }) as unknown as NextRequest;
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
-function makeSb(quote: Record<string, unknown> | null) {
-  const b: Record<string, unknown> = {};
-  Object.assign(b, {
-    from: () => b,
-    select: () => b,
-    update: () => b,
-    eq: () => b,
+type InvoiceUpdateCall = {
+  patch: Record<string, unknown>;
+  eqs: [string, unknown][];
+  isCalls: [string, unknown][];
+};
+type InvoiceUpdateResult = { data?: unknown; error?: unknown };
+
+// A per-table-aware mock: 'quotes' keeps the original select().eq().single()
+// chain; 'invoices' supports update(patch).eq(...).is(...).select(...) in any
+// order/count, records every call (for asserting the idempotency claim/release
+// CAS shape), and resolves to a QUEUED result per call (default: a successful
+// 1-row update) so existing tests that never touch the queue keep working.
+function makeSb(quote: Record<string, unknown> | null, invoiceResponses: InvoiceUpdateResult[] = []) {
+  const invoiceCalls: InvoiceUpdateCall[] = [];
+  let invoiceCallIdx = 0;
+
+  const quotesChain: Record<string, unknown> = {};
+  Object.assign(quotesChain, {
+    select: () => quotesChain,
+    eq: () => quotesChain,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
   });
+
+  function makeInvoiceChain(patch: Record<string, unknown>) {
+    const call: InvoiceUpdateCall = { patch, eqs: [], isCalls: [] };
+    invoiceCalls.push(call);
+    const idx = invoiceCallIdx++;
+    const resolveResult = (): InvoiceUpdateResult => invoiceResponses[idx] ?? { data: [{ id: 'inv-row' }], error: null };
+    const chain: Record<string, unknown> = {};
+    Object.assign(chain, {
+      eq: (col: string, val: unknown) => {
+        call.eqs.push([col, val]);
+        return chain;
+      },
+      is: (col: string, val: unknown) => {
+        call.isCalls.push([col, val]);
+        return chain;
+      },
+      select: () => Promise.resolve(resolveResult()),
+      then: (onFulfilled: (v: InvoiceUpdateResult) => unknown, onRejected?: (e: unknown) => unknown) =>
+        Promise.resolve(resolveResult()).then(onFulfilled, onRejected),
+    });
+    return chain;
+  }
+
+  const invoicesTable = { update: (patch: Record<string, unknown>) => makeInvoiceChain(patch) };
+  const b = {
+    from: (table: string) => (table === 'quotes' ? quotesChain : invoicesTable),
+    _invoiceCalls: invoiceCalls,
+  };
   return b;
 }
 
-const INVOICE = { id: ID, quote_id: QID, job_id: 'job-1', status: 'awaiting_payment', balance: 2500, credit_note: 0 };
+// Typed accessor for the recorded invoices-table update calls (claim/reclaim/
+// release/final-record), used to assert the idempotency CAS shape.
+function invoiceCallsOf(sb: unknown): InvoiceUpdateCall[] {
+  return (sb as { _invoiceCalls: InvoiceUpdateCall[] })._invoiceCalls;
+}
+
+const INVOICE = {
+  id: ID,
+  quote_id: QID,
+  job_id: 'job-1',
+  status: 'awaiting_payment',
+  balance: 2500,
+  credit_note: 0,
+  valor_balance_txn_id: null as string | null,
+};
 const QUOTE = {
   valor_vault_token: 'vault-token-abc',
   customer_name: 'Alice',
@@ -173,13 +228,24 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(markPaidMock).not.toHaveBeenCalled();
   });
 
-  it('402s and does NOT settle when the charge is declined', async () => {
+  it('402s and does NOT settle when the charge is declined; the pending claim is released via a CAS', async () => {
     chargeMock.mockResolvedValueOnce({ ok: false, reason: 'declined', message: 'Card declined' });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
     expect(json.reason).toBe('declined');
     expect(markPaidMock).not.toHaveBeenCalled();
+
+    // idempotency: claim (call 0), then release-on-decline (call 1) — a CAS
+    // against the EXACT sentinel written by the claim, so it can never clobber
+    // a concurrent real txn id.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(2);
+    const claimSentinel = calls[0].patch.valor_balance_txn_id;
+    expect(claimSentinel).toMatch(/^pending:/);
+    expect(calls[0].isCalls).toContainEqual(['valor_balance_txn_id', null]);
+    expect(calls[1].patch.valor_balance_txn_id).toBeNull();
+    expect(calls[1].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
   });
 
   it('500s (settle-failed) but signals the charge went through when the settle throws', async () => {
@@ -278,5 +344,83 @@ describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/invoices/[id]/charge-balance — charge idempotency pre-claim', () => {
+  it('fresh null valor_balance_txn_id → claims a pending sentinel (CAS on null) then charges', async () => {
+    // default fixture already has valor_balance_txn_id: null
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+
+    const calls = invoiceCallsOf(sbRef.current);
+    // call 0 = the claim; call 1 = the post-settle txn-record write.
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
+    expect(calls[0].isCalls).toContainEqual(['valor_balance_txn_id', null]);
+  });
+
+  it('loses the claim race (0 rows updated on a null claim) → 409 charge-in-flight, no charge attempted', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: null });
+    sbRef.current = makeSb(QUOTE, [{ data: [], error: null }]); // claim update matches 0 rows — lost the race
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charge-in-flight');
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('a FRESH pending claim (< 15 min old) held by a concurrent request → 409 charge-in-flight, no charge attempted', async () => {
+    const fresh = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min ago
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: `pending:${fresh}` });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charge-in-flight');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Short-circuits before ever writing — no invoices-table update attempted.
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('a STALE pending claim (> 15 min old) is reclaimed via a CAS on the exact stale value, then the charge proceeds', async () => {
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 min ago
+    const staleValue = `pending:${stale}`;
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: staleValue });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
+    expect(calls[0].eqs).toContainEqual(['valor_balance_txn_id', staleValue]);
+  });
+
+  it('a real Valor txn id already on file → 409 already-charged, no charge attempted, no write', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: 'TXN-REAL-42' });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('already-charged');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('an AMBIGUOUS timeout LEAVES the pending sentinel (no release call) and the response says to reconcile', async () => {
+    chargeMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'error',
+      message: 'Valor balance charge timed out — check Valor before retrying (do not auto-retry)',
+    });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('error');
+    expect(json.error.toLowerCase()).toContain('reconcile');
+    expect(markPaidMock).not.toHaveBeenCalled();
+
+    // Only the initial claim wrote to invoices — no release/CAS-clear call.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
   });
 });
