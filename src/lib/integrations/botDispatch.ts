@@ -17,7 +17,8 @@ import { cleanTelegramCommand } from './telegram';
 import { interpretBotText, isWriteTool, isInterpreterConfigured } from './botInterpreter';
 import { runStatusTool, runScheduleTool } from './botTools';
 import { isAddressedToBot } from './botGroupGate';
-import { roleForSenderInAllowedChat, mayRunTool, type BotRole } from './botRoles';
+import { mayRunTool, type BotRole } from './botRoles';
+import { resolveSenderRole } from './botUsers';
 import {
   stagePendingAction,
   consumePendingAction,
@@ -71,7 +72,7 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     isReplyToBot: msg.isReplyToBot,
   });
 
-  const role = roleForSenderInAllowedChat(msg.userId);
+  const role = await resolveSenderRole(msg.userId);
   let text = cleanTelegramCommand(msg.text);
 
   if (!addressed) {

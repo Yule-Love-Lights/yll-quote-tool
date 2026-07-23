@@ -87,6 +87,12 @@ vi.mock('./transcribe', () => ({
   transcribeAudio: mocks.transcribeAudio,
   isTranscriptionConfigured: mocks.isTranscriptionConfigured,
 }));
+// No service client here, so resolveSenderRole's roleFromDb returns null and role
+// resolution falls to the env floor — exactly what these role-gate tests exercise.
+vi.mock('@/lib/supabase', () => ({
+  getSupabaseServiceClient: () => null,
+  isSupabaseServiceConfigured: () => false,
+}));
 
 import { handleBotMessage } from './botDispatch';
 

@@ -9,6 +9,8 @@ const ITEMS = [
   { label: 'Customer Portal', href: '/settings/customer-portal', key: 'customer-portal' as const },
   // Operator accounts (admin-only; the page itself gates on the admin role).
   { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },
+  // Text-ops bot roster — crew/staff/admin by Telegram id (admin-only; #168).
+  { label: 'Bot team', href: '/settings/bot-team', key: 'bot-team' as const },
   // Test-quote tools + saved-quotes dev actions (#93).
   { label: 'Quotes', href: '/settings/quotes', key: 'quotes' as const },
   // Per-account editor keyboard shortcuts (#98).
@@ -20,7 +22,15 @@ const ITEMS = [
 export function SettingsSubNav({
   active,
 }: {
-  active: 'settings' | 'training' | 'customer-portal' | 'accounts' | 'quotes' | 'hotkeys' | 'highlevel';
+  active:
+    | 'settings'
+    | 'training'
+    | 'customer-portal'
+    | 'accounts'
+    | 'bot-team'
+    | 'quotes'
+    | 'hotkeys'
+    | 'highlevel';
 }) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>

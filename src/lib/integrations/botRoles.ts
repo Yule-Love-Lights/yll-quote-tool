@@ -67,6 +67,20 @@ export function hasRole(actual: BotRole, minimum: BotRole): boolean {
   return ROLE_RANK[actual] >= ROLE_RANK[minimum];
 }
 
+/**
+ * The higher-ranked of two roles (either may be null), or null when both are.
+ *
+ * This is how the DB roster and the env floor combine (see botUsers
+ * resolveSenderRole): taking the HIGHER means a bad or missing DB edit can never
+ * demote a bootstrap admin below their env role, so the owners can't lock
+ * themselves out of the bot by editing the roster.
+ */
+export function higherRole(a: BotRole | null, b: BotRole | null): BotRole | null {
+  if (!a) return b;
+  if (!b) return a;
+  return ROLE_RANK[a] >= ROLE_RANK[b] ? a : b;
+}
+
 // The minimum role per bot tool. Mirrors the permission matrix locked with
 // Naldo (2026-07-19/20) in docs/superpowers/plans/2026-07-19-text-ops-bot-and-
 // yll-ops-tool-layer.md — matrix rows in brackets. Anything not listed here is
