@@ -7,7 +7,8 @@
  * Usage:
  *   npx tsx scripts/match-legacy-contacts.ts                 # DRY-RUN (default) — reports only
  *   npx tsx scripts/match-legacy-contacts.ts --manifest scripts/legacy-migration-data/manifest-batch2.csv
- *   npx tsx scripts/match-legacy-contacts.ts --live         # (guarded — refuses until wired)
+ *   npx tsx scripts/match-legacy-contacts.ts --live         # ⚠️ LIVE PROD WRITES: fills NULL
+ *       highlevel_contact_id on each MATCH row (fill-null-only, idempotent — but real).
  *
  * READ-ONLY by default: it only calls GHL contact SEARCH (GET /contacts/) and
  * prints a match/ambiguous/none breakdown. It NEVER creates a contact (we never
