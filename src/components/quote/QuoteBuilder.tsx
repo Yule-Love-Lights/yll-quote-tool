@@ -2193,6 +2193,18 @@ export default function QuoteBuilder({
     // different contact and doesn't apply anymore.
     setAttachStatus('idle');
     setAttachError(null);
+    // #172: if the quote is already saved, attach NOW. Picking alone only
+    // turned the chip green — the DB link (highlevel_contact_id) waited for
+    // the next Calculate, so pick → Send 400'd "no contact linked" while the
+    // UI claimed the contact was linked. Same lastAttachKey guard as the
+    // save flow so the next Calculate doesn't double-attach.
+    if (savedQuoteId) {
+      const attachKey = `${savedQuoteId}:${c.id}`;
+      if (lastAttachKey.current !== attachKey) {
+        lastAttachKey.current = attachKey;
+        void attachQuoteToHighLevel(savedQuoteId, c.id, hlAddress);
+      }
+    }
   };
 
   const clearHighLevelContact = () => {
@@ -2201,21 +2213,29 @@ export default function QuoteBuilder({
     setAttachError(null);
   };
 
-  // Attach this quote's existing HL opportunity. Called async after save;
-  // failures don't block the quote from displaying.
-  const attachQuoteToHighLevel = async (quoteId: string, contactId: string) => {
+  // Attach this quote's existing HL opportunity. Called async after save, on
+  // an autocomplete pick when the quote is already saved (#172), and as the
+  // pre-send guard. Returns true only when the GHL card exists AND the local
+  // quote row was linked — the route's linked:false (card fine, DB write
+  // failed) still leaves the send gate closed, so it counts as failure here.
+  // addressHint: pick-time caller passes the picked contact's address because
+  // the form state hasn't flushed yet in that tick.
+  const attachQuoteToHighLevel = async (
+    quoteId: string,
+    contactId: string,
+    addressHint?: string,
+  ): Promise<boolean> => {
     setAttachStatus('attaching');
     setAttachError(null);
     try {
+      const address = (addressHint || form.customer.address).trim();
       const res = await fetch('/api/integrations/highlevel/attach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quoteId,
           contactId,
-          opportunityName: form.customer.address.trim()
-            ? `Holiday Lights — ${form.customer.address.trim()}`
-            : undefined,
+          opportunityName: address ? `Holiday Lights — ${address}` : undefined,
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
@@ -2223,10 +2243,15 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      if (data.linked === false) {
+        throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
+      }
       setAttachStatus('attached');
+      return true;
     } catch (err) {
       setAttachStatus('error');
       setAttachError(err instanceof Error ? err.message : 'Attach failed');
+      return false;
     }
   };
 
@@ -2253,6 +2278,19 @@ export default function QuoteBuilder({
     if (hasNoPricedItems) {
       setSendBlockedMsg('Add at least one priced line item and click Calculate before sending.');
       return;
+    }
+    // #172 pre-send guard: the picked contact may not be attached yet (a
+    // pick-time attach can fail; an older flow picked without re-Calculating).
+    // A real send hard-requires quotes.highlevel_contact_id, so attach first
+    // and stop if it fails — the send route would 400 no-contact anyway.
+    // Test quotes skip: the send route exempts them from the contact gate.
+    if (!isTest && highlevelContact?.id && attachStatus !== 'attached') {
+      lastAttachKey.current = `${savedQuoteId}:${highlevelContact.id}`;
+      const linked = await attachQuoteToHighLevel(savedQuoteId, highlevelContact.id);
+      if (!linked) {
+        setSendBlockedMsg('HighLevel link failed — see the link status above, fix it, then send again.');
+        return;
+      }
     }
     setSendStatus('sending');
     setSendError(null);
@@ -4736,7 +4774,7 @@ export default function QuoteBuilder({
                   <span className="text-green-700">✓ Linked to {highlevelContact.fullName || 'HighLevel contact'}&rsquo;s pipeline card</span>
                 )}
                 {attachStatus === 'error' && (
-                  <span className="text-red-600">HighLevel link failed: {attachError}. Sending will still copy the URL but won&rsquo;t move the pipeline stage.</span>
+                  <span className="text-red-600">HighLevel link failed: {attachError}. A real quote can&rsquo;t send unlinked — re-pick the contact or Calculate to retry, then send again.</span>
                 )}
                 {attachStatus === 'skipped' && (
                   <span className="text-amber-700">{attachError}</span>
