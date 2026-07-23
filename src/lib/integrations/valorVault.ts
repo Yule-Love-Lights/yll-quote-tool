@@ -121,18 +121,15 @@ async function vaultFetch(
   }
 }
 
-// Split a quote's customer_name on the LAST space: everything before → first
-// name (so a middle name stays with the first name), the final token → last
-// name. No space (or no name at all) → the whole name is the first name, with
-// a 'Customer' fallback when there's nothing to split at all.
-function splitCustomerName(name: string | null | undefined): { firstName: string; lastName: string } {
-  const trimmed = name?.trim();
-  if (!trimmed) return { firstName: 'Customer', lastName: '' };
-  const idx = trimmed.lastIndexOf(' ');
-  if (idx === -1) return { firstName: trimmed, lastName: '' };
-  const firstName = trimmed.slice(0, idx).trim();
-  const lastName = trimmed.slice(idx + 1).trim();
-  return { firstName: firstName || 'Customer', lastName };
+// The live prod schema (probe 2026-07-23) accepts EXACTLY ONE property:
+// `customer_name`. The first guess (first_name/last_name + email + phone,
+// mirroring what the Vault dashboard DISPLAYS) came back
+//   400 "data must have required property 'customer_name'"
+//     + "data must NOT have additional properties" ×4 (one per extra field)
+// — additionalProperties:false, so nothing else may be sent. 'Customer' is the
+// fallback when the quote has no name at all.
+function vaultCustomerName(name: string | null | undefined): string {
+  return name?.trim() || 'Customer';
 }
 
 function pickString(v: unknown): string | null {
@@ -167,13 +164,12 @@ export type AddVaultCustomerInput = {
 export type AddVaultCustomerResult = { vaultCustomerId: string; raw: unknown };
 
 // POST {base}/api/valor-vault/addcustomer
+// NOTE: input.email/phone are deliberately NOT sent — the prod schema rejects
+// them (additionalProperties:false, probe 2026-07-23). The type keeps them so
+// callers don't churn if Valor ever opens the schema up.
 export async function addVaultCustomer(input: AddVaultCustomerInput): Promise<AddVaultCustomerResult> {
-  const { firstName, lastName } = splitCustomerName(input.customerName);
   const body: Record<string, unknown> = {
-    first_name: firstName,
-    last_name: lastName,
-    ...(input.email ? { email: input.email } : {}),
-    ...(input.phone ? { phone: input.phone } : {}),
+    customer_name: vaultCustomerName(input.customerName),
   };
   const json = await vaultFetch('/api/valor-vault/addcustomer', { method: 'POST', body });
   const vaultCustomerId = pickField(json, ['vault_customer_id', 'vault_id', 'customer_id', 'id']);

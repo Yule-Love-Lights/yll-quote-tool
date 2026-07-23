@@ -109,7 +109,10 @@ describe('addVaultCustomer — defensive id extraction', () => {
     expect(result.vaultCustomerId).toBe(expectedId);
   });
 
-  it('splits the customer name on the LAST space (middle name stays with first_name)', async () => {
+  // Live prod schema (probe 2026-07-23): addcustomer accepts EXACTLY ONE
+  // property, `customer_name` — additionalProperties:false rejected the
+  // first-guess first_name/last_name/email/phone body with 400.
+  it('sends ONLY customer_name — email/phone deliberately omitted (prod schema is additionalProperties:false)', async () => {
     let captured: Record<string, unknown> = {};
     vi.stubGlobal(
       'fetch',
@@ -119,24 +122,7 @@ describe('addVaultCustomer — defensive id extraction', () => {
       }),
     );
     await addVaultCustomer({ customerName: 'Jordan Van Smith', email: 'j@example.com', phone: '5551234567' });
-    expect(captured.first_name).toBe('Jordan Van');
-    expect(captured.last_name).toBe('Smith');
-    expect(captured.email).toBe('j@example.com');
-    expect(captured.phone).toBe('5551234567');
-  });
-
-  it('uses the whole (single-word) name as first_name with no last_name', async () => {
-    let captured: Record<string, unknown> = {};
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: unknown, init: { body: string }) => {
-        captured = JSON.parse(init.body);
-        return jsonResponse(200, { vault_customer_id: 'vc-1' });
-      }),
-    );
-    await addVaultCustomer({ customerName: 'Cher', email: null, phone: null });
-    expect(captured.first_name).toBe('Cher');
-    expect(captured.last_name).toBe('');
+    expect(captured).toEqual({ customer_name: 'Jordan Van Smith' });
   });
 
   it("falls back to 'Customer' when there is no name at all", async () => {
@@ -149,8 +135,7 @@ describe('addVaultCustomer — defensive id extraction', () => {
       }),
     );
     await addVaultCustomer({ customerName: null, email: null, phone: null });
-    expect(captured.first_name).toBe('Customer');
-    expect(captured.last_name).toBe('');
+    expect(captured).toEqual({ customer_name: 'Customer' });
     expect(captured.email).toBeUndefined();
     expect(captured.phone).toBeUndefined();
   });
