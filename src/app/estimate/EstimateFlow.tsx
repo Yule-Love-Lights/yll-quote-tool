@@ -30,9 +30,9 @@ const MEASURING_LINES = [
   "Consulting Santa's blueprints…",
   'Warming up the ladder…',
 ];
-// As-designed swatch shows a rainbow dot ("staff's pick"); solids/patterns show
-// their real palette colors.
-const AS_DESIGNED_DOT = 'conic-gradient(#F5CC7A,#E0524D,#58B368,#5B8DD9,#F5CC7A)';
+// The customer-facing color options — the real quote-tool schemes minus "Staff's
+// pick" (the as-designed no-override), which Naldo pulled from the picker.
+const COLOR_SCHEMES = DEFAULT_COLOR_SCHEMES.filter((s) => s.id !== DEFAULT_COLOR_SCHEME_ID);
 
 const STEP_INDEX: Record<Step, number> = { address: 0, measuring: 1, result: 2, followup: 2, outofarea: 2, done: 2 };
 
@@ -43,10 +43,10 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [canFallback, setCanFallback] = useState(false);
 
   // Featured real-job gallery + "play with it" state (landing + measuring).
-  const [schemeId, setSchemeId] = useState<string>(DEFAULT_COLOR_SCHEME_ID);
+  const [schemeId, setSchemeId] = useState<string>(COLOR_SCHEMES[0].id);
   const [samples, setSamples] = useState<SampleDesign[]>([]);
   const [sampleIdx, setSampleIdx] = useState(0);
-  const activeScheme = DEFAULT_COLOR_SCHEMES.find((s) => s.id === schemeId) ?? DEFAULT_COLOR_SCHEMES[0];
+  const activeScheme = COLOR_SCHEMES.find((s) => s.id === schemeId) ?? COLOR_SCHEMES[0];
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -238,7 +238,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
               </div>
             )}
             <div className="est-swatches" style={{ marginTop: 12 }}>
-              {DEFAULT_COLOR_SCHEMES.map((s) => (
+              {COLOR_SCHEMES.map((s) => (
                 <button
                   key={s.id}
                   type="button"
@@ -246,9 +246,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
                   onClick={() => setSchemeId(s.id)}
                 >
                   <span className="dots">
-                    {s.colorIds
-                      ? s.colorIds.slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)
-                      : <i style={{ background: AS_DESIGNED_DOT }} />}
+                    {(s.colorIds ?? []).slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)}
                   </span>
                   {s.label}
                 </button>

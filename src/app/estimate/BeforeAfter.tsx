@@ -24,8 +24,7 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
         {/* Crop the bottom (Street View "Google" footer) by scaling both layers
             identically from the top, so the design stays aligned. */}
         <div className="est-crop">
-          {/* AFTER (bottom): the real design, as the portal renders it — the dark
-              sky is a top-only gradient (est-sky), NOT a whole-image dim. */}
+          {/* AFTER (bottom): the real design, exactly as the portal renders it. */}
           <div className="absolute inset-0">
             <DesignCanvas
               key={design.photoUrl}
@@ -35,7 +34,6 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
               photoH={design.photoH}
               colorOverride={colorOverride}
             />
-            <div className="est-sky" aria-hidden />
           </div>
           {/* BEFORE (top): plain photo, clipped to the left of the handle. */}
           <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}>
@@ -43,14 +41,14 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
             <img src={design.photoUrl} alt="Home before lights" className="absolute inset-0 h-full w-full object-cover" />
           </div>
         </div>
-        {/* YLL brand mark — bottom-left (Naldo). */}
+        {/* YLL brand mark — bottom-right (Naldo). */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/yule-site-logo-2.png"
           alt=""
           aria-hidden
           draggable={false}
-          className="pointer-events-none select-none absolute z-20 bottom-[3%] left-[3%] h-auto w-[26%] min-w-[84px] max-w-[200px]"
+          className="pointer-events-none select-none absolute z-20 bottom-[3%] right-[3%] h-auto w-[26%] min-w-[84px] max-w-[200px]"
           style={{ opacity: 0.55, filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.6))' }}
         />
         <span className="est-ba-label est-ba-label-l">Before</span>
