@@ -47,6 +47,9 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [samples, setSamples] = useState<SampleDesign[]>([]);
   const [sampleIdx, setSampleIdx] = useState(0);
   const activeScheme = COLOR_SCHEMES.find((s) => s.id === schemeId) ?? COLOR_SCHEMES[0];
+  // The customer recoloring their OWN measured house on the result screen.
+  const [resultSchemeId, setResultSchemeId] = useState<string>(COLOR_SCHEMES[0].id);
+  const resultScheme = COLOR_SCHEMES.find((s) => s.id === resultSchemeId) ?? COLOR_SCHEMES[0];
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -237,21 +240,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
                 ))}
               </div>
             )}
-            <div className="est-swatches" style={{ marginTop: 12 }}>
-              {COLOR_SCHEMES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`est-swatch ${s.id === schemeId ? 'on' : ''}`}
-                  onClick={() => setSchemeId(s.id)}
-                >
-                  <span className="dots">
-                    {(s.colorIds ?? []).slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)}
-                  </span>
-                  {s.label}
-                </button>
-              ))}
-            </div>
+            <ColorSwatches value={schemeId} onChange={setSchemeId} />
             <p className="est-hero-hint">Real Yule Love Lights installs · tap a color to see your options</p>
           </section>
         )}
@@ -294,7 +283,13 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
               <p className="est-price-note">A real range from your measured roofline.</p>
               <span className="est-verify-tag">Our team confirms your final number before anything is due</span>
             </div>
-            {quoteId && <EstimateVisual quoteId={quoteId} />}
+            {quoteId && (
+              <div>
+                <EstimateVisual quoteId={quoteId} colorOverride={resultScheme.colorIds} />
+                <p className="est-pick-cap" style={{ marginTop: 12 }}>See your home in your colors</p>
+                <ColorSwatches value={resultSchemeId} onChange={setResultSchemeId} />
+              </div>
+            )}
             <ContactCard heading="Save your quote" blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book." cta="Save my quote" {...contactProps} />
           </section>
         )}
@@ -326,6 +321,29 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         )}
       </div>
     </main>
+  );
+}
+
+// The quote-tool color options, reused by the sample gallery and the customer's own
+// result. Each swatch previews its real palette colors and drives DesignCanvas's
+// colorOverride.
+function ColorSwatches({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  return (
+    <div className="est-swatches" style={{ marginTop: 12 }}>
+      {COLOR_SCHEMES.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={`est-swatch ${s.id === value ? 'on' : ''}`}
+          onClick={() => onChange(s.id)}
+        >
+          <span className="dots">
+            {(s.colorIds ?? []).slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)}
+          </span>
+          {s.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
