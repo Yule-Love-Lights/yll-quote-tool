@@ -349,6 +349,22 @@ describe('extra street photos (#13)', () => {
     expect(stored[0].id).toBe(entry.id);
   });
 
+  it('addDesignExtraPhoto dedupes by telegramFileId — a repeat file id never appends twice', async () => {
+    // The bot's retry / redelivery safety net: the same Telegram file is a no-op.
+    const { client, state } = makeExtrasSb({ extra_photos: null });
+    sbRef.current = client;
+    const tiny = Buffer.from('img').toString('base64');
+
+    const first = await addDesignExtraPhoto(ID, tiny, 'image/jpeg', 'Install', 'crew', 'tg-file-1');
+    const second = await addDesignExtraPhoto(ID, tiny, 'image/jpeg', 'Install', 'crew', 'tg-file-1');
+
+    const stored = state.row.extra_photos as DesignExtraPhoto[];
+    expect(stored).toHaveLength(1);
+    expect(second.id).toBe(first.id); // returns the existing entry, not a new append
+    expect(stored[0].telegramFileId).toBe('tg-file-1');
+    expect(stored[0].source).toBe('crew');
+  });
+
   it('removeDesignExtraPhoto removes the object, the entry, and the photo\'s scene items', async () => {
     const { client, state } = makeExtrasSb({
       extra_photos: [

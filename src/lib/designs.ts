@@ -97,6 +97,10 @@ export type DesignExtraPhoto = {
   // in the homeowner's gallery. Filtered in portalPhotos(); staff surfaces read
   // design.extraPhotos directly and still see it, which is the point.
   source?: 'crew' | null;
+  // The Telegram file id this photo came from (bot install capture only). Lets
+  // addDesignExtraPhoto dedupe by source file so a retry or a redelivered
+  // webhook can't append the same shot twice. Absent on operator uploads.
+  telegramFileId?: string | null;
 };
 
 export type DesignRow = {
@@ -900,6 +904,7 @@ export async function addDesignExtraPhoto(
   contentType: string,
   title?: string | null,
   source?: 'crew' | null,
+  telegramFileId?: string | null,
 ): Promise<DesignExtraPhoto> {
   const sb = getSb();
   if (!sb) throw new Error('Supabase service role not configured');
@@ -930,10 +935,28 @@ export async function addDesignExtraPhoto(
     h: height,
     title: title?.trim() || null,
     ...(source === 'crew' ? { source: 'crew' as const } : {}),
+    ...(telegramFileId ? { telegramFileId } : {}),
   };
-  // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic.
-  await updateExtraPhotosAtomic(sb, id, (current) => [...current, entry]);
+  // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic. Dedupe
+  // by Telegram file id INSIDE the atomic updater so a retry or a redelivered
+  // webhook can't append the same install shot twice, even under a race.
+  let deduped: DesignExtraPhoto | null = null;
+  await updateExtraPhotosAtomic(sb, id, (current) => {
+    if (telegramFileId) {
+      const existing = current.find((p) => p.telegramFileId === telegramFileId);
+      if (existing) {
+        deduped = existing;
+        return current;
+      }
+    }
+    return [...current, entry];
+  });
 
+  if (deduped) {
+    // Clean up the orphan object we just uploaded before discovering the dup.
+    await sb.storage.from(BUCKET).remove([path]).catch(() => {});
+    return deduped;
+  }
   return entry;
 }
 

@@ -9,7 +9,7 @@
 
 import { getSupabaseServiceClient } from '../supabase';
 import { getJobWorkOrder } from './jobs';
-import { adjustOnHandAtomic, toQty } from './onHand';
+import { listOnHand, adjustOnHandAtomic, toQty } from './onHand';
 
 export type MaterialActualLine = { sku: string; qty: number; rawText?: string | null };
 export type MaterialTrueUp = { sku: string; estimated: number; actual: number; delta: number };
@@ -228,19 +228,27 @@ export async function recordMaterialActuals(
   const estimatedForReported = estimated.filter((e) => reportedSkus.has(e.sku));
   const allTrueUps = computeMaterialTrueUps(estimatedForReported, lines);
 
-  // Which skus we can adjust: the ones inventory_on_hand tracks. Read from the
-  // work order's OWN pre-claim snapshot (buildMaterialsView already set onHand
-  // per row) rather than a second listOnHand() after the claim — that redundant
-  // read could transiently fail to [] and silently drop every true-up for a job
-  // whose claim is already burned. A reported extra sku not in the BOM has no
-  // snapshot here, so it's treated as untracked (recorded, not adjusted) — safe.
-  const tracked = new Set(
-    wo.materials.materials.filter((m) => m.onHand !== null).map((m) => m.sku),
-  );
+  // Which skus we can adjust: the ones inventory_on_hand tracks. A BOM sku
+  // carries its onHand on the work order's pre-claim snapshot (buildMaterialsView
+  // set it), so the common case needs no extra read — avoiding the redundant
+  // post-claim listOnHand() whose transient failure would drop every true-up for
+  // an already-burned job. But a reported EXTRA sku the crew grabbed that isn't
+  // in this job's BOM (materialResolve's catalog-tier fallback — a routine,
+  // designed path) has no snapshot here, and it may well be stocked. Look those
+  // up with ONE scoped listOnHand, and only when there actually are extras,
+  // rather than silently marking a real stocked item untracked.
+  const bomOnHand = new Map(wo.materials.materials.map((m) => [m.sku, m.onHand]));
+  const extras = allTrueUps.filter((t) => !bomOnHand.has(t.sku));
+  const extraTracked = extras.length
+    ? new Set((await listOnHand()).map((r) => r.sku))
+    : new Set<string>();
+  const isTracked = (sku: string): boolean =>
+    bomOnHand.has(sku) ? bomOnHand.get(sku) !== null : extraTracked.has(sku);
+
   const trueUps: MaterialTrueUp[] = [];
   const skipped: string[] = [];
   for (const t of allTrueUps) {
-    if (tracked.has(t.sku)) trueUps.push(t);
+    if (isTracked(t.sku)) trueUps.push(t);
     else skipped.push(t.sku);
   }
 

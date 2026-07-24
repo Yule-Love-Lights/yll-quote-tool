@@ -297,6 +297,28 @@ describe('recordMaterialActuals', () => {
     expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-A', 4);
   });
 
+  it('adjusts a reported EXTRA sku not in the BOM but tracked in inventory_on_hand', async () => {
+    // materialResolve's catalog-tier fallback: the crew grabbed clips that aren't
+    // in this job's projected BOM. It's a real stocked sku, so its deduction must
+    // still apply — the BOM-snapshot tracked set alone would wrongly skip it.
+    getJobWorkOrderMock.mockResolvedValue(makeWo({ materials: [{ sku: 'SKU-A', qty: 10 }] }));
+    listOnHandMock.mockResolvedValue([{ sku: 'SKU-EXTRA' }]);
+    const res = await recordMaterialActuals(
+      JOB_ID,
+      [{ sku: 'SKU-A', qty: 10 }, { sku: 'SKU-EXTRA', qty: 3 }],
+      'staff:jason',
+    );
+    // SKU-A: 10 vs 10 = delta 0 (omitted). SKU-EXTRA: actual-only, full deduction.
+    expect(res).toMatchObject({ ok: true, alreadyDone: false, skipped: [] });
+    expect((res as { trueUps: unknown[] }).trueUps).toContainEqual({
+      sku: 'SKU-EXTRA',
+      estimated: 0,
+      actual: 3,
+      delta: -3,
+    });
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-EXTRA', -3);
+  });
+
   it('does NOT return an un-reported estimated sku to the shelf (partial actuals)', async () => {
     // Prepped job: BOM = SKU-A 10, SKU-B 5. Crew reports only SKU-A. SKU-B must
     // stay as prep deducted it — NOT credited back — or every partial report

@@ -135,7 +135,7 @@ describe('runCompleteInstall', () => {
     expect(reply).toContain('try again');
   });
 
-  it('attaches photos to the linked design, titled with the job number', async () => {
+  it('attaches photos to the linked design, tagged crew, with the fileId dedupe key', async () => {
     await runCompleteInstall(
       { jobNumber: 142, materials: [], photoFileIds: ['file-a'] },
       'user-1',
@@ -148,29 +148,37 @@ describe('runCompleteInstall', () => {
       // Marks it INTERNAL so portalPhotos() keeps it out of the homeowner's
       // gallery — the portal renders every extra photo it is handed.
       'crew',
+      // The Telegram fileId is the dedupe key: addDesignExtraPhoto no-ops on a
+      // repeat, so a retry / redelivery can't append the same shot twice.
+      'file-a',
     );
   });
 
-  it('does NOT re-attach photos when the material claim was already used (retry dedup)', async () => {
-    // A retry hits alreadyDone; the photos were saved on the first (winning) run,
-    // so re-attaching them here would duplicate the same shots on the design.
+  it('still attaches a follow-up photo when materials were already recorded (no claim gating)', async () => {
+    // A genuine follow-up (new photo on an already-recorded job) must NOT be
+    // dropped — dedup by fileId at the design layer, not by the material claim.
     mocks.recordMaterialActuals.mockResolvedValue({ ok: true, alreadyDone: true });
     await runCompleteInstall(
-      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 1 }], photoFileIds: ['file-a'] },
+      { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 1 }], photoFileIds: ['file-new'] },
       'user-1',
     );
-    expect(mocks.addDesignExtraPhoto).not.toHaveBeenCalled();
+    expect(mocks.addDesignExtraPhoto).toHaveBeenCalledWith(
+      'design-1',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      'crew',
+      'file-new',
+    );
   });
 
-  it('does NOT attach photos when the material record fails (crew will retry)', async () => {
-    // Null = transient failure, no claim taken. Attaching now then re-attaching on
-    // the successful retry is exactly the duplicate this ordering prevents.
+  it('still attaches photos even when the material record failed (dedup makes it safe to retry)', async () => {
     mocks.recordMaterialActuals.mockResolvedValue(null);
     await runCompleteInstall(
       { jobNumber: 142, materials: [{ sku: 'C9-WARM', name: 'C9 Warm White', qty: 1 }], photoFileIds: ['file-a'] },
       'user-1',
     );
-    expect(mocks.addDesignExtraPhoto).not.toHaveBeenCalled();
+    expect(mocks.addDesignExtraPhoto).toHaveBeenCalledOnce();
   });
 
   it('attaches photos on a photos-only report (no material to gate on)', async () => {
