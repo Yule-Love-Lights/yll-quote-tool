@@ -15,6 +15,7 @@ const { sbRef, hl } = vi.hoisted(() => ({
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
+    resurrectDuplicateOpportunity: vi.fn(async (_err: unknown, _input: unknown) => null as { id: string } | null),
     upsertContactCustomField: vi.fn(async () => undefined),
     sendSms: vi.fn(async () => undefined),
     sendEmail: vi.fn(async () => undefined),
@@ -35,6 +36,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   createOpportunity: hl.createOpportunity,
   findOpportunityForContact: hl.findOpportunityForContact,
+  resurrectDuplicateOpportunity: hl.resurrectDuplicateOpportunity,
   upsertContactCustomField: hl.upsertContactCustomField,
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
@@ -688,6 +690,42 @@ describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipelin
         pipelineStageId: '4e507d3d-a939-44c3-a448-250a4b0ed353',
       }),
     );
+  });
+
+  // #172: GHL locations that forbid a second opportunity per contact 400 the
+  // create when the contact's only card is won/lost/abandoned (the find above
+  // skips non-open cards). The send route must resurrect that card at Bid
+  // Sent instead of failing the stage sync.
+  it('#172: a duplicate-card create resurrects the existing card at Bid Sent', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, highlevel_opportunity_id: null });
+    sbRef.current = client;
+    hl.findOpportunityForContact.mockResolvedValueOnce(null);
+    hl.createOpportunity.mockRejectedValueOnce(new Error('OPPORTUNITY_NO_DUPLICATE'));
+    hl.resurrectDuplicateOpportunity.mockResolvedValueOnce({ id: 'opp_abandoned' });
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ghlSynced).toBe(true);
+    expect(hl.resurrectDuplicateOpportunity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pipelineStageId: 'stage_bid_sent' }),
+    );
+  });
+
+  it('#172: a non-duplicate create failure still fails the stage sync (no resurrect)', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, highlevel_opportunity_id: null });
+    sbRef.current = client;
+    hl.findOpportunityForContact.mockResolvedValueOnce(null);
+    hl.createOpportunity.mockRejectedValueOnce(new Error('GHL 500'));
+    hl.resurrectDuplicateOpportunity.mockResolvedValueOnce(null);
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ghlSynced).toBe(false);
+    // No card was linked and the helper declined — nothing may be PUT.
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 });
 
