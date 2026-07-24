@@ -85,6 +85,7 @@ export const WHATSAPP_HELP = [
   '• stock <sku> — on-hand for a SKU',
   '• set <sku> <qty> — set on-hand',
   '• low — low-stock items',
+  '• id — show your Telegram id (send it to Naldo/Jason to get added)',
   'Or just ask: "status on the Alvarez quote" · "what installs are today?"',
   '',
   // The field-capture flow was invisible here: a crew member texting "help" to

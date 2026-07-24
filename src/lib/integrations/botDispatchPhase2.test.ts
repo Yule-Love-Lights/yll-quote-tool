@@ -87,6 +87,12 @@ vi.mock('./transcribe', () => ({
   transcribeAudio: mocks.transcribeAudio,
   isTranscriptionConfigured: mocks.isTranscriptionConfigured,
 }));
+// No service client here, so resolveSenderRole's roleFromDb returns null and role
+// resolution falls to the env floor — exactly what these role-gate tests exercise.
+vi.mock('@/lib/supabase', () => ({
+  getSupabaseServiceClient: () => null,
+  isSupabaseServiceConfigured: () => false,
+}));
 
 import { handleBotMessage } from './botDispatch';
 
@@ -325,6 +331,21 @@ describe('material resolution', () => {
     const reply = await handleBotMessage({ ...base, text: 'job 142 done, 4 of those blue things' });
     expect(reply).toContain("couldn't match");
     expect(reply).toContain('those blue things');
+  });
+});
+
+describe('self-serve id', () => {
+  it('replies with the sender\'s own Telegram id, no role needed', async () => {
+    const reply = await handleBotMessage({ ...base, text: 'id' });
+    expect(reply).toContain(CREW);
+    expect(reply).toContain('added to the bot');
+    expect(mocks.interpretBotText).not.toHaveBeenCalled();
+  });
+
+  it('accepts /id in a group and never runs a tool', async () => {
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: '/id' });
+    expect(reply).toContain(CREW);
+    expect(mocks.runWhatsAppCommand).not.toHaveBeenCalled();
   });
 });
 

@@ -49,22 +49,28 @@ export function roleForUser(userId: string | number | null | undefined): BotRole
   return null;
 }
 
-/**
- * The effective role for a sender whose CHAT already passed the allowlist.
- *
- * Least-privilege fallback: the room was explicitly allowlisted, so the sender
- * is trusted enough to read and to capture field work, but an unassigned person
- * never inherits money or settings powers. This keeps a brand-new crew member
- * working the moment they're added to the group, without a silent privilege
- * grant if someone forgets to list them.
- */
-export function roleForSenderInAllowedChat(userId: string | number | null | undefined): BotRole {
-  return roleForUser(userId) ?? 'crew';
-}
+// The effective role for a sender whose CHAT already passed the allowlist is now
+// resolveSenderRole in botUsers.ts (it combines this env lookup with the DB
+// roster). The least-privilege 'crew' default for an unassigned-but-allowlisted
+// sender lives there.
 
 /** True when `actual` satisfies the `minimum` tier. */
 export function hasRole(actual: BotRole, minimum: BotRole): boolean {
   return ROLE_RANK[actual] >= ROLE_RANK[minimum];
+}
+
+/**
+ * The higher-ranked of two roles (either may be null), or null when both are.
+ *
+ * This is how the DB roster and the env floor combine (see botUsers
+ * resolveSenderRole): taking the HIGHER means a bad or missing DB edit can never
+ * demote a bootstrap admin below their env role, so the owners can't lock
+ * themselves out of the bot by editing the roster.
+ */
+export function higherRole(a: BotRole | null, b: BotRole | null): BotRole | null {
+  if (!a) return b;
+  if (!b) return a;
+  return ROLE_RANK[a] >= ROLE_RANK[b] ? a : b;
 }
 
 // The minimum role per bot tool. Mirrors the permission matrix locked with
