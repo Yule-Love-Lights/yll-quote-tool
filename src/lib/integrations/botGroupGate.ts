@@ -30,12 +30,15 @@ export function isPrivateChat(chatType: string | null | undefined): boolean {
 export function isAddressedToBot(check: AddressCheck): boolean {
   if (isPrivateChat(check.chatType)) return true;
 
+  // A reply to the bot is the natural way to answer its confirm prompt, and it
+  // is unambiguous even when the reply is a bare "yes". Checked BEFORE the
+  // empty-text guard: a voice-note or photo reply carries no text, and dropping
+  // it on the empty-text check would silently swallow a hands-free "yes" in a
+  // group (the crew's whole reason for voice notes on a ladder).
+  if (check.isReplyToBot) return true;
+
   const text = (check.text ?? '').trim();
   if (!text) return false;
-
-  // A reply to the bot is the natural way to answer its confirm prompt, and it
-  // is unambiguous even when the reply is a bare "yes".
-  if (check.isReplyToBot) return true;
 
   // Slash commands reach the bot even with privacy mode left ON, so they must
   // keep working regardless of configuration.
