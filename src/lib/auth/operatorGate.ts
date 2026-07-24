@@ -152,7 +152,7 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // operator-gated. Same shape as the referrals carve-out above.
   if (
     method.toUpperCase() === 'POST' &&
-    (path === '/api/estimate' || path === '/api/estimate/contact')
+    (path === '/api/estimate' || path === '/api/estimate/contact' || path === '/api/estimate/upload')
   ) {
     return true;
   }

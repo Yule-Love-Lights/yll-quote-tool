@@ -11,7 +11,7 @@
 // Steps: address → measuring → (result | followup | outofarea) → done.
 
 import './estimate-dark.css';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { EstimateVisual } from './EstimateVisual';
 import { BeforeAfter } from './BeforeAfter';
 import type { SampleDesign } from '@/lib/designs';
@@ -62,6 +62,8 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [phone, setPhone] = useState('');
   const [consent, setConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState(false);
   const company = useRef(''); // honeypot
   const mountedAt = useRef(0);
   const rootRef = useRef<HTMLElement>(null);
@@ -153,6 +155,45 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
       setError('We could not reach the estimator. Please try again.');
       setStep('address');
     }
+  }, [address]);
+
+  // Upload-your-own-photo: an uploaded photo can't auto-measure, so it creates a
+  // draft with the photo attached and routes to the hand-designed follow-up.
+  const onUploadPhoto = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the same file be re-picked after an error
+    if (!file) return;
+    if (!/^image\//.test(file.type)) return setError('Please choose an image file.');
+    if (file.size > 10 * 1024 * 1024) return setError('That image is too large (max 10MB).');
+    setError(null);
+    setUploading(true);
+    try {
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(new Error('read failed'));
+        r.readAsDataURL(file);
+      });
+      const photoBase64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const photoMediaType = dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/jpeg';
+      const res = await fetch('/api/estimate/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoBase64, photoMediaType, address: address.trim() || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.quoteId) {
+        setError(data?.error || 'Upload failed. Please try again.');
+        setUploading(false);
+        return;
+      }
+      setQuoteId(data.quoteId);
+      setUploaded(true);
+      setStep('followup');
+    } catch {
+      setError('Upload failed. Please try again.');
+    }
+    setUploading(false);
   }, [address]);
 
   const savePartial = useCallback(() => {
@@ -258,6 +299,14 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
             {error && <p className="est-error">{error}</p>}
             <button className="est-btn" onClick={measure}>Get my instant quote</button>
             <p className="est-hero-hint" style={{ margin: '10px 0 0' }}>Free. No obligation. Takes about 15 seconds.</p>
+            <div className="est-upload">
+              <span>or</span>
+              <label className={`est-upload-btn ${uploading ? 'is-busy' : ''}`}>
+                {uploading ? 'Uploading…' : '📷 Upload a photo of your home'}
+                <input type="file" accept="image/*" disabled={uploading} onChange={onUploadPhoto} style={{ display: 'none' }} />
+              </label>
+              <p className="est-hero-hint" style={{ margin: '8px 0 0' }}>We&apos;ll design your lights from your photo by hand.</p>
+            </div>
             {canFallback && (
               <button className="est-backlink" onClick={() => { setError(null); setStep('followup'); }}>
                 Still not finding your home? Leave your info and we&apos;ll quote it by hand
@@ -315,7 +364,14 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         )}
 
         {step === 'followup' && (
-          <ContactCard heading="Let's finish your custom quote" blurb="Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day." cta="Get my custom quote" {...contactProps} />
+          <ContactCard
+            heading={uploaded ? 'Got your photo!' : "Let's finish your custom quote"}
+            blurb={uploaded
+              ? "Thanks — leave your info and we'll design your lights from your photo and reach out within one business day with your custom quote."
+              : "Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day."}
+            cta="Get my custom quote"
+            {...contactProps}
+          />
         )}
 
         {step === 'outofarea' && (
