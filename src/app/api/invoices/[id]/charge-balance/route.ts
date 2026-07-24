@@ -61,12 +61,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoice } from '@/lib/invoices';
+import { getInvoice, appendRetiredTxn } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { duplicatePaymentEmailSubject, duplicatePaymentEmailHtml } from '@/lib/integrations/quoteMessages';
 import { planBalanceCollection } from '@/lib/balanceCollection';
-import { chargeBalanceOnFile, isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
+import { chargeBalanceOnFile, isAutoChargeEnabled, CHARGE_SLOT_STALE_MS } from '@/lib/integrations/valorBalance';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
@@ -76,7 +76,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 // ─── Charge idempotency pre-claim (see the header's ⚠️ IDEMPOTENCY note) ────
 const PENDING_PREFIX = 'pending:';
-const PENDING_STALE_MS = 15 * 60 * 1000; // 15 min — the release valve for a crashed/never-cleared claim
+// Single source with the UI's describeChargeSlot (#640 review LOW — the two
+// constants must never drift or the "frees itself after 15 minutes" banner lies).
+const PENDING_STALE_MS = CHARGE_SLOT_STALE_MS;
 
 // #170(c): hard ceiling on a single card-on-file charge. Biggest real YLL jobs
 // run low five figures; anything above this is a data bug, not a balance.
@@ -304,15 +306,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const isAmbiguousTimeout = result.reason === 'error' && result.message?.toLowerCase().includes('timed out');
     if (!isAmbiguousTimeout) {
       // Release the claim so the operator can retry — CAS against our EXACT
-      // sentinel so this can never clobber a concurrent real txn id.
+      // sentinel so this can never clobber a concurrent real txn id. A 0-row
+      // release is CORRECT (something real overwrote the sentinel) but logged
+      // for symmetry with the success-path record write (#640 review LOW).
       try {
-        const { error: releaseErr } = await sb
+        const { data: released, error: releaseErr } = await sb
           .from('invoices')
           .update({ valor_balance_txn_id: null })
           .eq('id', id)
-          .eq('valor_balance_txn_id', pendingSentinel);
+          .eq('valor_balance_txn_id', pendingSentinel)
+          .select('id');
         if (releaseErr) {
           console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', releaseErr);
+        } else if (!released || released.length === 0) {
+          console.warn(
+            `[api/invoices/:id/charge-balance] pending-claim release skipped for invoice ${id} — sentinel was already overwritten`,
+          );
         }
       } catch (err) {
         console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', err);
@@ -384,34 +393,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (!settledRows || settledRows.length === 0) {
-    // #170(a) DOUBLE CHARGE: the pay-link webhook settled this invoice while our
-    // charge was in flight — two real charges exist at Valor. Preserve the
-    // webhook's txn as the settled one (do NOT touch valor_balance_txn_id);
-    // stash OUR orphan txn in the retirement log; alert staff to void it.
+    // #170(a): the settle claimed 0 rows — the invoice moved while our charge
+    // was in flight. Re-read ONCE and diagnose (#640 review HIGH: a job-cancel
+    // racing the charge is NOT a double charge — a single real charge landed on
+    // a now-cancelled invoice and needs a REFUND, not a void-the-duplicate hunt).
+    const fresh = await getInvoice(id);
+    const cancelledRace = fresh?.status === 'cancelled';
+    // The settled txn on file (the webhook's) — for the alert email. Never a
+    // sentinel: the webhook overwrote ours when it settled; on the cancel race
+    // the slot may still hold OUR sentinel, which is not a txn — mask it.
+    const settledTxnOnFile =
+      fresh?.valor_balance_txn_id && !isPendingSentinel(fresh.valor_balance_txn_id)
+        ? fresh.valor_balance_txn_id
+        : null;
     console.error(
-      `[api/invoices/:id/charge-balance] DOUBLE CHARGE for invoice ${id}: pay-link settled during our charge — VOID our txn ${result.txnId} in Valor`,
+      cancelledRace
+        ? `[api/invoices/:id/charge-balance] charge landed on a CANCELLED invoice ${id} — REFUND txn ${result.txnId} in Valor`
+        : `[api/invoices/:id/charge-balance] DOUBLE CHARGE for invoice ${id}: pay-link settled during our charge — VOID our txn ${result.txnId} in Valor`,
     );
-    try {
-      const fresh = await getInvoice(id);
-      const log = Array.isArray(fresh?.valor_txn_log) ? fresh!.valor_txn_log : [];
-      await sb
-        .from('invoices')
-        .update({
-          valor_txn_log: [
-            ...log,
-            {
-              txnId: result.txnId ?? 'unknown',
-              receiptUrl: result.receiptUrl ?? null,
-              settledAt: null,
-              retiredAt: paidAt,
-              reason: 'double-charge-operator-leg — VOID in Valor',
-            },
-          ],
-        })
-        .eq('id', id);
-    } catch (err) {
-      console.error('[api/invoices/:id/charge-balance] double-charge txn-log stash failed:', err);
-    }
+    // Stash our orphan txn in the retirement log — CAS'd append (#640 review
+    // MED: a plain read-modify-write could lose a concurrent amend rotation).
+    await appendRetiredTxn(id, {
+      txnId: result.txnId ?? 'unknown',
+      receiptUrl: result.receiptUrl ?? null,
+      settledAt: null,
+      retiredAt: paidAt,
+      reason: cancelledRace
+        ? 'charged-while-cancelled — REFUND in Valor'
+        : 'double-charge-operator-leg — VOID in Valor',
+    });
     try {
       const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
       if (isHighLevelConfigured() && internalContactId) {
@@ -422,22 +432,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             customerName: quote.customer_name,
             amountUsd: invoice.balance,
             newTxnId: result.txnId ?? 'unknown',
-            existingTxnId: null,
+            existingTxnId: settledTxnOnFile,
             adminUrl: `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/admin/invoices/${id}`,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });
       }
     } catch (err) {
-      console.error('[api/invoices/:id/charge-balance] double-charge alert email failed:', err);
+      console.error('[api/invoices/:id/charge-balance] settle-conflict alert email failed:', err);
     }
     return NextResponse.json(
-      {
-        ok: false,
-        reason: 'double-charge',
-        error: `The customer paid the pay-link while this charge was in flight — the card was charged TWICE. VOID transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor now.`,
-        txnId: result.txnId,
-      },
+      cancelledRace
+        ? {
+            ok: false,
+            reason: 'charged-cancelled',
+            error: `This invoice was CANCELLED while the charge was in flight — the card WAS charged. REFUND transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor now.`,
+            txnId: result.txnId,
+          }
+        : {
+            ok: false,
+            reason: 'double-charge',
+            error: `The customer paid the pay-link while this charge was in flight — the card was charged TWICE. VOID transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor now.`,
+            txnId: result.txnId,
+          },
       { status: 409 },
     );
   }

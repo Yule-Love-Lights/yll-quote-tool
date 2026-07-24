@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
@@ -36,11 +36,19 @@ export default function InvoiceDetailPage() {
   const [copied, setCopied] = useState(false);
   const [sendingLink, setSendingLink] = useState(false);
   const [charging, setCharging] = useState(false);
-  const [balanceMsg, setBalanceMsg] = useState<string | null>(null);
-  // #170(d): a blocked charge that offers an explicit escalation — 'reconsent'
-  // (price increase awaiting customer re-approval) renders a "charge anyway"
-  // override button instead of a dead-end error.
-  const [reconsentBlocked, setReconsentBlocked] = useState(false);
+  // #170(d): every balance-action outcome carries a tone — 'critical' (a real
+  // charge needs a VOID/REFUND in Valor NOW) renders as a loud red box, never
+  // the same tiny gray line as "Link copied ✓" (#640 review HIGH).
+  const [balanceMsg, setBalanceMsg] = useState<{ text: string; tone: 'info' | 'error' | 'critical' } | null>(null);
+  // #170(d): a re-consent 409 offers its override on the ACTION that was
+  // blocked — 'charge' or 'mark-paid' (#640 review HIGH: the mark-paid leg was
+  // a dead end for cash customers with a pending price increase).
+  const [reconsentBlocked, setReconsentBlocked] = useState<'charge' | 'mark-paid' | null>(null);
+  // #640 review HIGH: overrides must ACCUMULATE — a granted cash-preference
+  // override survives into the re-consent retry (the two server gates run in
+  // sequence; per-call flags ping-ponged forever). Reconsent is deliberately
+  // NEVER persisted (a future amendment must re-block).
+  const grantedPrefOverrideRef = useRef(false);
   const [savingPref, setSavingPref] = useState(false);
   const [markingPaid, setMarkingPaid] = useState(false);
 
@@ -128,13 +136,16 @@ export default function InvoiceDetailPage() {
       // operator doesn't think a silently-failed channel was delivered.
       setBalanceMsg(
         body.messageError
-          ? `Partly sent — text ${body.smsSent ? 'ok' : 'failed'}, email ${body.emailSent ? 'ok' : 'failed'}: ${body.messageError}`
+          ? {
+              text: `Partly sent — text ${body.smsSent ? 'ok' : 'failed'}, email ${body.emailSent ? 'ok' : 'failed'}: ${body.messageError}`,
+              tone: 'error',
+            }
           : body.smsSent || body.emailSent
-            ? 'Balance link sent to the customer ✓'
-            : 'Sent (no channel delivered)',
+            ? { text: 'Balance link sent to the customer ✓', tone: 'info' }
+            : { text: 'Sent (no channel delivered)', tone: 'error' },
       );
     } catch (err) {
-      setBalanceMsg(err instanceof Error ? err.message : 'Could not send the balance link');
+      setBalanceMsg({ text: err instanceof Error ? err.message : 'Could not send the balance link', tone: 'error' });
     } finally {
       setSendingLink(false);
     }
@@ -149,16 +160,17 @@ export default function InvoiceDetailPage() {
     const invoice = data?.invoice;
     if (!invoice) return;
     if (!window.confirm(`Charge the saved card ${money(invoice.balance)} for the remaining balance?`)) return;
+    if (opts?.overridePreference) grantedPrefOverrideRef.current = true;
     setCharging(true);
     setBalanceMsg(null);
-    setReconsentBlocked(false);
+    setReconsentBlocked(null);
     try {
       const res = await fetch(`/api/invoices/${invoice.id}/charge-balance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           overrideReconsent: opts?.overrideReconsent === true,
-          overridePreference: opts?.overridePreference === true,
+          overridePreference: grantedPrefOverrideRef.current,
         }),
       });
       if (res.status === 401) {
@@ -167,14 +179,19 @@ export default function InvoiceDetailPage() {
       }
       const body = await res.json();
       if (!res.ok || !body.ok) {
-        if (body.reason === 'reconsent-required') setReconsentBlocked(true);
-        throw new Error(body.error ?? 'The charge did not go through');
+        if (body.reason === 'reconsent-required') setReconsentBlocked('charge');
+        setBalanceMsg({
+          text: body.error ?? 'The charge did not go through',
+          tone: body.reason === 'double-charge' || body.reason === 'charged-cancelled' ? 'critical' : 'error',
+        });
+        await load(); // refresh chargeState — the attempt may have left/cleared the claim
+        return;
       }
-      setBalanceMsg('Balance charged to the saved card ✓');
+      setBalanceMsg({ text: 'Balance charged to the saved card ✓', tone: 'info' });
       await load();
     } catch (err) {
-      setBalanceMsg(err instanceof Error ? err.message : 'The charge did not go through');
-      await load(); // refresh chargeState — a failed/blocked attempt may have left/cleared the claim
+      setBalanceMsg({ text: err instanceof Error ? err.message : 'The charge did not go through', tone: 'error' });
+      await load();
     } finally {
       setCharging(false);
     }
@@ -184,6 +201,8 @@ export default function InvoiceDetailPage() {
   const setPreference = async (value: string) => {
     const invoice = data?.invoice;
     if (!invoice) return;
+    // A changed preference invalidates any previously-granted charge override.
+    grantedPrefOverrideRef.current = false;
     setSavingPref(true);
     try {
       const res = await fetch(`/api/invoices/${invoice.id}`, {
@@ -203,24 +222,35 @@ export default function InvoiceDetailPage() {
   // #170(d): record a balance collected OUTSIDE Valor (cash/check) — the
   // companion to the cash preference. Uses the existing mark-paid route (which
   // enforces the same re-consent settlement gate).
-  const markPaidOutside = async () => {
+  const markPaidOutside = async (opts?: { overrideReconsent?: boolean }) => {
     const invoice = data?.invoice;
     if (!invoice) return;
     if (!window.confirm(`Mark ${money(invoice.balance)} as collected outside Valor (cash/check)? This settles the invoice.`)) return;
     setMarkingPaid(true);
     setBalanceMsg(null);
+    setReconsentBlocked(null);
     try {
-      const res = await fetch(`/api/invoices/${invoice.id}/mark-paid`, { method: 'POST' });
+      const res = await fetch(`/api/invoices/${invoice.id}/mark-paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overrideReconsent: opts?.overrideReconsent === true }),
+      });
       if (res.status === 401) {
         window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
         return;
       }
       const body = await res.json();
-      if (!res.ok || body.ok === false) throw new Error(body.error ?? 'Could not mark paid');
-      setBalanceMsg('Marked paid (collected outside Valor) ✓');
+      if (!res.ok || body.ok === false) {
+        // #640 review HIGH: the mark-paid leg hits the same re-consent gate —
+        // offer the same override instead of a dead-end gray sentence.
+        if (body.code === 'reconsent-required') setReconsentBlocked('mark-paid');
+        setBalanceMsg({ text: body.error ?? 'Could not mark paid', tone: 'error' });
+        return;
+      }
+      setBalanceMsg({ text: 'Marked paid (collected outside Valor) ✓', tone: 'info' });
       await load();
     } catch (err) {
-      setBalanceMsg(err instanceof Error ? err.message : 'Could not mark paid');
+      setBalanceMsg({ text: err instanceof Error ? err.message : 'Could not mark paid', tone: 'error' });
     } finally {
       setMarkingPaid(false);
     }
@@ -422,7 +452,10 @@ export default function InvoiceDetailPage() {
                       id="payment-preference"
                       value={inv.payment_preference ?? ''}
                       onChange={e => void setPreference(e.target.value)}
-                      disabled={savingPref}
+                      // Locked while a charge is in flight (#640 review MED): flipping
+                      // to cash mid-charge cannot cancel the already-launched charge,
+                      // so don't let the screen imply it can.
+                      disabled={savingPref || charging}
                       className="text-xs border border-gray-300 rounded-md px-2 py-1 text-gray-700 disabled:opacity-60"
                     >
                       <option value="">— not set —</option>
@@ -472,7 +505,7 @@ export default function InvoiceDetailPage() {
                     {inv.payment_preference === 'cash_check' && (
                       <button
                         type="button"
-                        onClick={markPaidOutside}
+                        onClick={() => void markPaidOutside()}
                         disabled={markingPaid}
                         className="text-sm font-semibold px-3 py-1.5 rounded-md border border-gray-400 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                       >
@@ -503,25 +536,28 @@ export default function InvoiceDetailPage() {
                     </p>
                   )}
 
-                  {/* #170(d): the WT-18 re-consent block now offers its override in the UI. */}
+                  {/* #170(d): the WT-18 re-consent block offers its override on the
+                      ACTION that was blocked — charge or mark-paid (#640 review HIGH). */}
                   {reconsentBlocked && (
                     <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                      A price increase is awaiting the customer&rsquo;s re-approval, so the charge was blocked.{' '}
+                      A price increase is awaiting the customer&rsquo;s re-approval, so{' '}
+                      {reconsentBlocked === 'charge' ? 'the charge' : 'settling'} was blocked.{' '}
                       <button
                         type="button"
-                        disabled={charging}
+                        disabled={charging || markingPaid}
                         onClick={() => {
-                          if (
-                            window.confirm(
-                              'Charge the card WITHOUT the customer re-approving the price increase? Only do this if they agreed another way (phone/text).',
-                            )
-                          ) {
-                            void chargeBalance({ overrideReconsent: true });
-                          }
+                          const ok = window.confirm(
+                            reconsentBlocked === 'charge'
+                              ? 'Charge the card WITHOUT the customer re-approving the price increase? Only do this if they agreed another way (phone/text).'
+                              : 'Settle this invoice WITHOUT the customer re-approving the price increase? Only do this if they agreed another way (phone/text).',
+                          );
+                          if (!ok) return;
+                          if (reconsentBlocked === 'charge') void chargeBalance({ overrideReconsent: true });
+                          else void markPaidOutside({ overrideReconsent: true });
                         }}
                         className="underline font-medium disabled:opacity-60"
                       >
-                        Charge anyway (override)
+                        {reconsentBlocked === 'charge' ? 'Charge anyway (override)' : 'Mark paid anyway (override)'}
                       </button>
                     </div>
                   )}
@@ -529,7 +565,50 @@ export default function InvoiceDetailPage() {
                   <p className="text-xs text-gray-400 mt-1.5">
                     The customer pays their remaining balance on Valor&rsquo;s secure page.
                   </p>
-                  {balanceMsg && <p className="text-xs text-gray-600 mt-1.5">{balanceMsg}</p>}
+                  {/* Tone-aware outcome line (#640 review HIGH): a VOID/REFUND-now
+                      instruction must never render like "Link copied ✓". */}
+                  {balanceMsg && balanceMsg.tone === 'critical' && (
+                    <div
+                      role="alert"
+                      className="mt-2 rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm font-semibold text-red-800"
+                    >
+                      ⚠️ {balanceMsg.text}
+                    </div>
+                  )}
+                  {balanceMsg && balanceMsg.tone === 'error' && (
+                    <p className="text-xs text-red-600 mt-1.5">{balanceMsg.text}</p>
+                  )}
+                  {balanceMsg && balanceMsg.tone === 'info' && (
+                    <p className="text-xs text-gray-600 mt-1.5">{balanceMsg.text}</p>
+                  )}
+                </div>
+              )}
+
+              {/* #170(b)/(a) — retired charge records (#640 review LOW: the audit
+                  trail must be owner-visible on the invoice, not email-only).
+                  Shows amend-rotation retirements and double-charge/refund
+                  stashes; renders whenever the log has entries, paid or not. */}
+              {Array.isArray(inv.valor_txn_log) && inv.valor_txn_log.length > 0 && (
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+                    Retired charge records
+                  </p>
+                  <ul className="space-y-1">
+                    {inv.valor_txn_log.map((t, i) => (
+                      <li key={i} className="text-xs text-gray-600">
+                        <span className="font-mono">{t.txnId}</span> — {t.reason}
+                        {t.retiredAt ? ` (${fmtDate(t.retiredAt)})` : ''}
+                        {t.receiptUrl ? (
+                          <>
+                            {' · '}
+                            <a className="underline" href={t.receiptUrl} target="_blank" rel="noreferrer">
+                              receipt
+                            </a>
+                          </>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </div>

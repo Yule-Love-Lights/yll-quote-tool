@@ -632,6 +632,56 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
 }
 
 /**
+ * #170(b)/(a): append a retired charge record to invoices.valor_txn_log with a
+ * compare-and-swap on the log's prior value (+2 retries), so the two writers —
+ * the amend-reopen rotation and the charge-balance double-charge stash — can
+ * never lose each other's entry to a read-modify-write race (#640 review MED).
+ * opts.clearLive additionally retires the LIVE slot (valor_balance_txn_id /
+ * valor_receipt_url → null), CAS'd on the exact txn id being retired so a
+ * concurrent writer can't be clobbered. Returns false (with a loud log) when
+ * the CAS never lands — the entry still exists at Valor + in the alert email.
+ */
+export async function appendRetiredTxn(
+  id: string,
+  entry: RetiredTxnEntry,
+  opts?: { clearLive?: { expectTxnId: string } },
+): Promise<boolean> {
+  const db = sb();
+  if (!db) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await getInvoice(id);
+    if (!current) return false;
+    if (opts?.clearLive && current.valor_balance_txn_id !== opts.clearLive.expectTxnId) {
+      // The live slot moved under us — retiring it now would clobber a newer
+      // record. Log-append only would double-record later; bail loudly.
+      console.error(
+        `appendRetiredTxn: live txn changed for invoice ${id} (expected ${opts.clearLive.expectTxnId}, saw ${current.valor_balance_txn_id}) — rotation skipped:`,
+        entry,
+      );
+      return false;
+    }
+    const log = Array.isArray(current.valor_txn_log) ? current.valor_txn_log : null;
+    let q = db
+      .from('invoices')
+      .update({
+        valor_txn_log: [...(log ?? []), entry],
+        ...(opts?.clearLive ? { valor_balance_txn_id: null, valor_receipt_url: null } : {}),
+      })
+      .eq('id', id);
+    q = log === null ? q.is('valor_txn_log', null) : q.eq('valor_txn_log', JSON.stringify(log));
+    if (opts?.clearLive) q = q.eq('valor_balance_txn_id', opts.clearLive.expectTxnId);
+    const { data, error } = await q.select('id');
+    if (error) {
+      console.error('appendRetiredTxn error:', error);
+      return false;
+    }
+    if (data && (data as unknown[]).length > 0) return true;
+  }
+  console.error(`appendRetiredTxn: lost the CAS 3× for invoice ${id} — entry NOT recorded:`, entry);
+  return false;
+}
+
+/**
  * #170(d): record how this customer settles the balance. Pass null to unset.
  * Display/gating metadata only — never touches money fields or status.
  */

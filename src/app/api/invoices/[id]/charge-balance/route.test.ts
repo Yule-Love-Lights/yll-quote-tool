@@ -14,6 +14,7 @@ const {
   chargeMock,
   isAutoChargeEnabledMock,
   sendEmailMock,
+  appendRetiredTxnMock,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
@@ -23,6 +24,7 @@ const {
   chargeMock: vi.fn(async (): Promise<unknown> => ({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} })),
   isAutoChargeEnabledMock: vi.fn(() => true),
   sendEmailMock: vi.fn(async (): Promise<unknown> => undefined),
+  appendRetiredTxnMock: vi.fn(async (): Promise<boolean> => true),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -30,11 +32,12 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock }));
+vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock }));
 vi.mock('@/lib/jobs', () => ({ getJob: getJobMock, setJobStatus: setJobStatusMock }));
 vi.mock('@/lib/integrations/valorBalance', () => ({
   chargeBalanceOnFile: chargeMock,
   isAutoChargeEnabled: isAutoChargeEnabledMock,
+  CHARGE_SLOT_STALE_MS: 15 * 60 * 1000,
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({
   sendEmail: sendEmailMock,
@@ -301,6 +304,10 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
 
   // ─── #170(a): the cross-path double-charge race ───────────────────────────
   it('409s (double-charge) when the pay-link webhook settled DURING our charge: keeps their txn, logs ours, alerts', async () => {
+    // The 0-rows re-read sees the webhook's settled state (paid + their txn).
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE }) // route-top read
+      .mockResolvedValueOnce({ ...INVOICE, status: 'paid', valor_balance_txn_id: 'TXN-WEBHOOK-1' });
     sbRef.current = makeSb(QUOTE, [
       { data: [{ id: ID }], error: null }, // claim ok
       { data: [], error: null }, // settle claims 0 rows — the webhook settled first
@@ -313,16 +320,44 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(json.error).toContain('VOID');
 
     const calls = invoiceCallsOf(sbRef.current);
-    // claim, settle(0 rows), then the txn-log stash — and NO write anywhere
-    // that puts OUR txn id into valor_balance_txn_id (the webhook's record wins).
-    expect(calls).toHaveLength(3);
-    expect(Array.isArray(calls[2].patch.valor_txn_log)).toBe(true);
-    const logged = (calls[2].patch.valor_txn_log as Record<string, unknown>[])[0];
-    expect(logged).toMatchObject({ txnId: 'txn-9' });
+    // claim + settle(0 rows) only — the stash goes through the CAS'd
+    // appendRetiredTxn, and NO write anywhere puts OUR txn id into
+    // valor_balance_txn_id (the webhook's record wins).
+    expect(calls).toHaveLength(2);
     for (const c of calls.slice(1)) {
       expect(c.patch.valor_balance_txn_id).toBeUndefined();
     }
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('VOID') }),
+    );
+    // The alert email carries BOTH txn ids (#640 review MED: existingTxnId was
+    // hardcoded null — staff need the webhook's id to reconcile in Valor).
     expect(sendEmailMock).toHaveBeenCalled();
+    expect(setJobStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("409s (charged-cancelled) when the invoice was CANCELLED during the charge — refund guidance, not 'double charge'", async () => {
+    // #640 review HIGH: a job-cancel racing the in-flight charge also claims
+    // 0 rows on settle — but no duplicate payment exists; a single real charge
+    // landed on a cancelled invoice and needs a REFUND.
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE }) // route-top read
+      .mockResolvedValueOnce({ ...INVOICE, status: 'cancelled' });
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: [], error: null }, // settle claims 0 rows — cancelled, not paid
+    ]);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charged-cancelled');
+    expect(json.error).toContain('REFUND');
+    expect(json.error).not.toContain('TWICE');
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('REFUND') }),
+    );
     expect(setJobStatusMock).not.toHaveBeenCalled();
   });
 
