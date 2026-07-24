@@ -269,21 +269,23 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // #138 (Jason S24): the customer card shows just the product name + price —
       // the engine's " – 41ft (easy)" footage/difficulty suffix is operator
       // detail (the builder breakdown renders result.lineItems directly, so it
-      // keeps the full label). Matched by kind+prefix so pre-#104 results with
-      // no stable id normalize too; Gingerbread is also kind 'ridge' but never
-      // starts with "Winter Wonderland". Same portal-only pattern as the S23
-      // permanent label strip above.
-      if (kind === 'ridge' && /^Winter Wonderland/i.test(item.label)) {
+      // keeps the full label). Matched by kind + the ENGINE'S EXACT label shape
+      // ("Winter Wonderland – <n>ft (<rate>)") so pre-#104 results with no
+      // stable id normalize too — a bare prefix match ate staff-typed CUSTOM
+      // items that happened to start with "Winter Wonderland" (S30 live bug:
+      // "Winter Wonderland Display Package · …" rendered as just "Winter
+      // Wonderland" on the portal). Same only-if-the-pattern-matched guard as
+      // the mini-light strip below.
+      if (kind === 'ridge' && /^Winter Wonderland – [\d,]+\s*ft\s*\(/i.test(item.label)) {
         item.label = 'Winter Wonderland';
         item.detail = '';
       }
       // Stake Lighting (Jason, portal-label-detail-strip): the customer card
       // shows just "Stake Lighting" — the engine's " – Nft (rate)" footage/
       // difficulty suffix (pricingEngine.ts calculateStakeLighting ~525) is
-      // operator detail. Same portal-only pattern as the #138 WW strip above;
-      // 'stake-lighting' is its own independent kind (lineItemKind.ts), so
-      // this can never touch a Winter Wonderland/roofline/custom row.
-      if (kind === 'stake-lighting' && /^Stake Lighting/i.test(item.label)) {
+      // operator detail. Same engine-shape match as the #138 WW strip above so
+      // a custom item named "Stake Lighting …" can never be truncated.
+      if (kind === 'stake-lighting' && /^Stake Lighting – [\d,]+\s*ft\s*\(/i.test(item.label)) {
         item.label = 'Stake Lighting';
         item.detail = '';
       }

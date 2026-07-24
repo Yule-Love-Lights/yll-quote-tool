@@ -182,6 +182,30 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     expect(ww.price).toBe(41 * 8); // easy $8/ft — the price itself is untouched
   });
 
+  // S30 live bug: a staff-typed CUSTOM item starting with "Winter Wonderland"
+  // was truncated to just "Winter Wonderland" on the portal (the #138 strip
+  // matched by bare prefix). The strip now requires the ENGINE's exact label
+  // shape, so freeform custom names survive whole.
+  it('S30: a CUSTOM item starting with "Winter Wonderland" keeps its full label', () => {
+    const customLabel = "Winter Wonderland Display Package · Trees · 5 Point Star 36'H Sparkle RGB";
+    const result = calculateQuote(
+      emptyInputs({ customLineItems: [{ label: customLabel, amount: 2435.99, quantity: 1 }] }),
+    );
+    const portal = portalFrom(result)!;
+    const custom = portal.lineItems.find((li) => li.price === 2435.99)!;
+    expect(custom.label).toBe(customLabel);
+  });
+
+  it('S30: a CUSTOM item starting with "Stake Lighting" keeps its full label', () => {
+    const customLabel = 'Stake Lighting Premium Pathway Bundle';
+    const result = calculateQuote(
+      emptyInputs({ customLineItems: [{ label: customLabel, amount: 500, quantity: 1 }] }),
+    );
+    const portal = portalFrom(result)!;
+    const custom = portal.lineItems.find((li) => li.price === 500)!;
+    expect(custom.label).toBe(customLabel);
+  });
+
   it('is undefined for legacy rows priced before Phase 1 (no rooflineOptions field)', () => {
     const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
     const legacy = { ...result, rooflineOptions: undefined } as unknown as QuoteResult;

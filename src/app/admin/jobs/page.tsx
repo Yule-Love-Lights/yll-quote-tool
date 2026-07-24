@@ -148,8 +148,11 @@ export default function JobsAdminPage() {
                 {visible.map((j) => (
                   <tr key={j.id} className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(j.createdAt)}</td>
-                    <td className="px-3 py-2 text-xs font-mono text-gray-500 whitespace-nowrap" title={`Job ID: ${j.id}`}>
-                      {j.jobNumber != null ? `#${j.jobNumber}` : j.id.slice(0, 8)}
+                    <td className="px-3 py-2 text-xs font-mono whitespace-nowrap" title={`Job ID: ${j.id}`}>
+                      {/* S30 UX ask: the job # is a direct link to the job detail. */}
+                      <Link href={`/admin/jobs/${j.id}`} className="text-blue-600 hover:underline">
+                        {j.jobNumber != null ? `#${j.jobNumber}` : j.id.slice(0, 8)}
+                      </Link>
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">
