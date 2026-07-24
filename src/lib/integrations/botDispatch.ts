@@ -84,7 +84,11 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     // same treatment so an album's untitled follow-ups still land.
     const bare = isAffirmative(text) || isNegative(text);
     const hasPhotos = !!msg.photoFileIds?.length;
-    if (!bare && !hasPhotos) return null;
+    // A voice note carries no text, so a hands-free "yes" voiced into a group
+    // must get the same pending-action bypass photos and typed yeses get, or it
+    // is silently dropped (it's transcribed further down once addressed).
+    const hasVoice = !!msg.voiceFileId;
+    if (!bare && !hasPhotos && !hasVoice) return null;
     if (!(await peekPendingAction(msg.chatId, msg.userId))) return null;
   }
 
@@ -118,6 +122,12 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   }
 
   if (isAffirmative(text)) {
+    // A photo sent WITH the "yes" (as its caption) would otherwise be discarded:
+    // control reaches here before the captionless-photo branch below. Fold it
+    // into the pending action first so the confirmed run saves it too.
+    if (msg.photoFileIds?.length) {
+      await appendPhotosToPendingAction(msg.chatId, msg.userId, msg.photoFileIds);
+    }
     const pending = await consumePendingAction(msg.chatId, msg.userId);
     if (!pending) return NOTHING_PENDING;
     return executeConfirmed(pending.tool, pending.args, role, msg);

@@ -32,7 +32,7 @@ const JOB_ID = 'j1';
 function makeWo(overrides: {
   isTest?: boolean;
   stockDecrementedAt?: string | null;
-  materials?: { sku: string; qty: number }[];
+  materials?: { sku: string; qty: number; onHand?: number | null }[];
 } = {}) {
   const {
     isTest = false,
@@ -57,11 +57,13 @@ function makeWo(overrides: {
       isTest,
     },
     materials: {
+      // onHand is the tracked/untracked signal recordMaterialActuals reads from
+      // the work order (null == untracked); default 50 == tracked.
       materials: materials.map((m) => ({
         sku: m.sku,
         name: m.sku,
         qty: m.qty,
-        onHand: 50,
+        onHand: 'onHand' in m ? (m.onHand ?? null) : 50,
         short: false,
         locked: false,
       })),
@@ -81,11 +83,12 @@ function makeWo(overrides: {
 function makeDb(opts: {
   claimWins?: boolean;
   prepClaimWins?: boolean;
+  prepClaimError?: { message: string } | null;
   onClaim?: () => void;
   onInsert?: (rows: unknown[]) => void;
   insertError?: { message: string } | null;
 } = {}) {
-  const { claimWins = true, prepClaimWins = true, onClaim, onInsert, insertError = null } = opts;
+  const { claimWins = true, prepClaimWins = true, prepClaimError = null, onClaim, onInsert, insertError = null } = opts;
   let jobsUpdates = 0;
   return {
     from(table: string) {
@@ -93,6 +96,7 @@ function makeDb(opts: {
         return {
           update() {
             jobsUpdates += 1;
+            const isPrepClaim = jobsUpdates === 2;
             const wins = jobsUpdates === 1 ? claimWins : prepClaimWins;
             onClaim?.();
             return {
@@ -100,7 +104,11 @@ function makeDb(opts: {
                 is: () => ({
                   select: () => ({
                     maybeSingle: async () =>
-                      wins ? { data: { id: JOB_ID }, error: null } : { data: null, error: null },
+                      isPrepClaim && prepClaimError
+                        ? { data: null, error: prepClaimError }
+                        : wins
+                          ? { data: { id: JOB_ID }, error: null }
+                          : { data: null, error: null },
                   }),
                 }),
               }),
@@ -241,14 +249,12 @@ describe('recordMaterialActuals', () => {
     currentDb = makeDb({ prepClaimWins: false });
     const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 4 }], 'staff:jason');
     // Prep slipped in and deducted the estimated 10, so the true-up is the
-    // DIFFERENCE (+6 back), not another full -4 deduction.
+    // DIFFERENCE (+6 back) — for the REPORTED sku only. SKU-B was not reported,
+    // so it stays as prep deducted it (no phantom +5 return).
     expect(res).toEqual({
       ok: true,
       alreadyDone: false,
-      trueUps: [
-        { sku: 'SKU-A', estimated: 10, actual: 4, delta: 6 },
-        { sku: 'SKU-B', estimated: 5, actual: 0, delta: 5 },
-      ],
+      trueUps: [{ sku: 'SKU-A', estimated: 10, actual: 4, delta: 6 }],
       skipped: [],
     });
   });
@@ -272,10 +278,9 @@ describe('recordMaterialActuals', () => {
     expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
   });
 
-  it('an untracked sku (not in inventory_on_hand) is skipped, never adjusted', async () => {
-    listOnHandMock.mockResolvedValue([{ sku: 'SKU-A' }]); // SKU-B not tracked
+  it('an untracked sku (onHand null on the work order) is skipped, never adjusted', async () => {
     getJobWorkOrderMock.mockResolvedValue(
-      makeWo({ materials: [{ sku: 'SKU-A', qty: 10 }, { sku: 'SKU-B', qty: 5 }] }),
+      makeWo({ materials: [{ sku: 'SKU-A', qty: 10 }, { sku: 'SKU-B', qty: 5, onHand: null }] }),
     );
     const res = await recordMaterialActuals(
       JOB_ID,
@@ -290,6 +295,53 @@ describe('recordMaterialActuals', () => {
     });
     expect(adjustOnHandAtomicMock).toHaveBeenCalledTimes(1);
     expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-A', 4);
+  });
+
+  it('adjusts a reported EXTRA sku not in the BOM but tracked in inventory_on_hand', async () => {
+    // materialResolve's catalog-tier fallback: the crew grabbed clips that aren't
+    // in this job's projected BOM. It's a real stocked sku, so its deduction must
+    // still apply — the BOM-snapshot tracked set alone would wrongly skip it.
+    getJobWorkOrderMock.mockResolvedValue(makeWo({ materials: [{ sku: 'SKU-A', qty: 10 }] }));
+    listOnHandMock.mockResolvedValue([{ sku: 'SKU-EXTRA' }]);
+    const res = await recordMaterialActuals(
+      JOB_ID,
+      [{ sku: 'SKU-A', qty: 10 }, { sku: 'SKU-EXTRA', qty: 3 }],
+      'staff:jason',
+    );
+    // SKU-A: 10 vs 10 = delta 0 (omitted). SKU-EXTRA: actual-only, full deduction.
+    expect(res).toMatchObject({ ok: true, alreadyDone: false, skipped: [] });
+    expect((res as { trueUps: unknown[] }).trueUps).toContainEqual({
+      sku: 'SKU-EXTRA',
+      estimated: 0,
+      actual: 3,
+      delta: -3,
+    });
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-EXTRA', -3);
+  });
+
+  it('does NOT return an un-reported estimated sku to the shelf (partial actuals)', async () => {
+    // Prepped job: BOM = SKU-A 10, SKU-B 5. Crew reports only SKU-A. SKU-B must
+    // stay as prep deducted it — NOT credited back — or every partial report
+    // inflates on-hand for everything the crew didn't re-list.
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({ materials: [{ sku: 'SKU-A', qty: 10 }, { sku: 'SKU-B', qty: 5 }] }),
+    );
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 10 }], 'staff:jason');
+    expect(res).toEqual({ ok: true, alreadyDone: false, trueUps: [], skipped: [] });
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+  });
+
+  it('records the actuals but does NOT move stock when the prep-claim takeover errors', async () => {
+    getJobWorkOrderMock.mockResolvedValue(makeWo({ stockDecrementedAt: null }));
+    let insertedRows: unknown[] = [];
+    // Unprepped job; the SECOND jobs update (the stock_decremented_at takeover)
+    // returns an error. We can't tell if prep won or the write failed, so stock
+    // must be left alone rather than trued up in the wrong direction.
+    currentDb = makeDb({ prepClaimError: { message: 'network' }, onInsert: (rows) => { insertedRows = rows; } });
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 4 }], 'staff:jason');
+    expect(res).toEqual({ ok: true, alreadyDone: false, trueUps: [], skipped: [], baselineUnavailable: true });
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    expect(insertedRows.length).toBe(1); // actuals still recorded
   });
 
   it('one failing adjustOnHandAtomic does not stop the other tracked skus from being applied', async () => {

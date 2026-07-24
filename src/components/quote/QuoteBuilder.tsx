@@ -278,6 +278,11 @@ export type QuoteBuilderInitial = {
   // by" picker state (only set in the session that originally picked it) is
   // gone by then.
   isReferee?: boolean;
+  // #172: whether the saved row already carries a HighLevel contact link —
+  // the autocomplete chip can't be hydrated (we don't refetch the contact),
+  // but the builder must stop showing the misleading "a contact is required"
+  // warning on a quote that IS linked (it invited wrong re-picks on live jobs).
+  highlevelContactId?: string | null;
   // PS-G2: the id of the job created when this quote was booked, if any —
   // lets the booked banner link straight to that job's "Amend order" section
   // (src/app/admin/jobs/[id]/page.tsx), which is the only place a re-price
@@ -410,6 +415,21 @@ export default function QuoteBuilder({
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
+  // #172 concurrency guards (review findings). attachSeqRef: staleness token —
+  // pick/clear bump it, and an attach run only writes attachStatus/attachError
+  // if its captured token is still current (a slow response from a superseded
+  // pick can't corrupt the chip). attachPromiseRef: every attach/detach chains
+  // onto this, serializing the DB writes so rapid pick-A-then-B can't finish
+  // B-then-A and leave the row linked to the stale contact. sendInFlightRef:
+  // synchronous double-click guard for Send (state-based guards race — two
+  // clicks in one tick both read stale state; the ref flips before any await).
+  const attachSeqRef = useRef(0);
+  const attachPromiseRef = useRef<Promise<boolean> | null>(null);
+  const sendInFlightRef = useRef(false);
+  // #172: the saved row already carries a HighLevel link (hydrated on edit,
+  // maintained on attach/detach). Kills the false "contact required" warning
+  // on reopened linked quotes — the chip itself stays pick-session-only.
+  const [dbLinked, setDbLinked] = useState<boolean>(!!initialQuote?.highlevelContactId);
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
   // Save the customer block to localStorage as staff type, so a brand-new
@@ -2190,32 +2210,96 @@ export default function QuoteBuilder({
       },
     }));
     // Reset attach status — the previous attach (if any) was against a
-    // different contact and doesn't apply anymore.
+    // different contact and doesn't apply anymore. Bump the staleness token so
+    // an in-flight attach for the OLD contact can't write the chip state.
+    attachSeqRef.current++;
     setAttachStatus('idle');
     setAttachError(null);
+    // #172: if the quote is already saved, attach NOW. Picking alone only
+    // turned the chip green — the DB link (highlevel_contact_id) waited for
+    // the next Calculate, so pick → Send 400'd "no contact linked" while the
+    // UI claimed the contact was linked. Same lastAttachKey guard as the
+    // save flow so the next Calculate doesn't double-attach; queueAttach
+    // serializes behind any in-flight attach/detach so the LAST pick wins
+    // the DB row.
+    if (savedQuoteId) {
+      const attachKey = `${savedQuoteId}:${c.id}`;
+      if (lastAttachKey.current !== attachKey) {
+        lastAttachKey.current = attachKey;
+        void queueAttach(savedQuoteId, c.id, hlAddress);
+      }
+    }
   };
 
   const clearHighLevelContact = () => {
+    attachSeqRef.current++;
     setHighLevelContact(null);
     setAttachStatus('idle');
     setAttachError(null);
+    lastAttachKey.current = null;
+    // #172 (staff-lens HIGH): Clear must be a REAL undo. The pick-time attach
+    // may already have written the DB link (or still be in flight — chaining
+    // on attachPromiseRef serializes us after it), and a link the UI no longer
+    // shows would make Send message the wrong person. Best-effort detach; the
+    // pre-send guard re-links whatever is actually picked at send time.
+    if (savedQuoteId) {
+      setDbLinked(false);
+      attachPromiseRef.current = (attachPromiseRef.current ?? Promise.resolve(false)).then(async () => {
+        try {
+          await fetch('/api/integrations/highlevel/attach', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quoteId: savedQuoteId, detach: true }),
+          });
+        } catch {
+          // Best-effort — a failed detach leaves the old link in place, which
+          // the visible "linked from a previous session" note then reflects.
+        }
+        return false;
+      });
+    }
   };
 
-  // Attach this quote's existing HL opportunity. Called async after save;
-  // failures don't block the quote from displaying.
-  const attachQuoteToHighLevel = async (quoteId: string, contactId: string) => {
-    setAttachStatus('attaching');
-    setAttachError(null);
+  // #172: all attach/detach traffic runs through this chain — one at a time,
+  // in click order — so concurrent picks/sends can't interleave DB writes.
+  const queueAttach = (quoteId: string, contactId: string, addressHint?: string): Promise<boolean> => {
+    const run = (attachPromiseRef.current ?? Promise.resolve(false)).then(() =>
+      attachQuoteToHighLevel(quoteId, contactId, addressHint),
+    );
+    attachPromiseRef.current = run;
+    return run;
+  };
+
+  // Attach this quote's existing HL opportunity. Called async after save, on
+  // an autocomplete pick when the quote is already saved (#172), and as the
+  // pre-send guard. Returns true only when the GHL card exists AND the local
+  // quote row was linked — the route's linked:false (card fine, DB write
+  // failed) still leaves the send gate closed, so it counts as failure here.
+  // addressHint: pick-time caller passes the picked contact's address because
+  // the form state hasn't flushed yet in that tick.
+  const attachQuoteToHighLevel = async (
+    quoteId: string,
+    contactId: string,
+    addressHint?: string,
+  ): Promise<boolean> => {
+    // Staleness token: if a later pick/clear bumps the seq while we're in
+    // flight, our result still returns to OUR caller, but we stop writing the
+    // shared chip state (it belongs to the newer selection now).
+    const seq = attachSeqRef.current;
+    const fresh = () => seq === attachSeqRef.current;
+    if (fresh()) {
+      setAttachStatus('attaching');
+      setAttachError(null);
+    }
     try {
+      const address = (addressHint || form.customer.address).trim();
       const res = await fetch('/api/integrations/highlevel/attach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quoteId,
           contactId,
-          opportunityName: form.customer.address.trim()
-            ? `Holiday Lights — ${form.customer.address.trim()}`
-            : undefined,
+          opportunityName: address ? `Holiday Lights — ${address}` : undefined,
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
@@ -2223,10 +2307,18 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
-      setAttachStatus('attached');
+      if (data.linked === false) {
+        throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
+      }
+      setDbLinked(true);
+      if (fresh()) setAttachStatus('attached');
+      return true;
     } catch (err) {
-      setAttachStatus('error');
-      setAttachError(err instanceof Error ? err.message : 'Attach failed');
+      if (fresh()) {
+        setAttachStatus('error');
+        setAttachError(err instanceof Error ? err.message : 'Attach failed');
+      }
+      return false;
     }
   };
 
@@ -2243,6 +2335,19 @@ export default function QuoteBuilder({
   // "Bid Sent". The admin still manually shares the URL (email/SMS/
   // messaging app) — we don't auto-send yet. Phase 2 could add that.
   const handleSendToCustomer = async () => {
+    // #172 (review HIGH): synchronous double-click guard. The pre-send attach
+    // below awaits a network round trip, and React state guards race — two
+    // clicks in one tick both read stale state. The ref flips before any await.
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    try {
+      await doSendToCustomer();
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+
+  const doSendToCustomer = async () => {
     if (!savedQuoteId) return;
     // Referral program redemption (#41 adversarial-review HIGH fix): a
     // referral-credit change (Apply or Remove) that hasn't been confirmed
@@ -2261,6 +2366,30 @@ export default function QuoteBuilder({
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
     setCopiedUrl(false);
+
+    // #172 pre-send guard: the picked contact may not be attached yet (a
+    // pick-time attach can fail, or still be in flight). A real send
+    // hard-requires quotes.highlevel_contact_id, so settle the link first and
+    // stop if it fails — the send route would 400 no-contact anyway. If the
+    // pick-time attach for THIS pair is in flight, await it instead of firing
+    // a duplicate; retry once through the serialized queue on failure.
+    // Test quotes skip: the send route exempts them from the contact gate.
+    if (!isTest && highlevelContact?.id && attachStatus !== 'attached') {
+      const attachKey = `${savedQuoteId}:${highlevelContact.id}`;
+      let linked = false;
+      if (lastAttachKey.current === attachKey && attachPromiseRef.current) {
+        linked = await attachPromiseRef.current;
+      }
+      if (!linked) {
+        lastAttachKey.current = attachKey;
+        linked = await queueAttach(savedQuoteId, highlevelContact.id);
+      }
+      if (!linked) {
+        setSendStatus('idle');
+        setSendBlockedMsg('HighLevel link failed — see the link status above, fix it, then send again.');
+        return;
+      }
+    }
 
     // #92 — re-check fulfillability against the FRESHEST design at Send time: the
     // breakdown-driven gate can be stale if the operator edited the canvas after
@@ -2424,8 +2553,14 @@ export default function QuoteBuilder({
     setLoading(true);
     setError(null);
     setResult(null);
-    setAttachStatus('idle');
-    setAttachError(null);
+    // #172: keep a genuinely-attached chip through a recalculation — the
+    // save-flow's lastAttachKey guard skips re-attaching the same pair, so
+    // resetting here would blank a link that is still real (review LOW).
+    const attachKeyNow = savedQuoteId && highlevelContact?.id ? `${savedQuoteId}:${highlevelContact.id}` : null;
+    if (!(attachStatus === 'attached' && attachKeyNow && lastAttachKey.current === attachKeyNow)) {
+      setAttachStatus('idle');
+      setAttachError(null);
+    }
     setSendStatus('idle');
     setSendError(null);
     setCopiedUrl(false);
@@ -2884,10 +3019,19 @@ export default function QuoteBuilder({
                 front instead of letting the operator fill in manual fields and
                 only discover the block when Send 400s. Test quotes are exempt
                 (the send route skips this check for them), so hide it there. */}
-            {!isTest && !highlevelContact && (
+            {!isTest && !highlevelContact && !dbLinked && (
               <p className="text-xs text-amber-600 mb-3">
                 A HighLevel contact is required before this quote can be sent. Pick one above, or fill in the
                 fields below and link a contact before sending.
+              </p>
+            )}
+            {/* #172: a reopened quote can be linked in the DB while the chip
+                (session-only) is empty — say so instead of showing the amber
+                "required" warning, which invited wrong re-picks on live jobs. */}
+            {!isTest && !highlevelContact && dbLinked && (
+              <p className="text-xs text-gray-500 mb-3">
+                Linked to a HighLevel contact from a previous session. Pick a contact above only if you need to
+                change the link.
               </p>
             )}
             {/* Draft autosave (quote-forms-partial-save): restored the customer
@@ -4736,7 +4880,7 @@ export default function QuoteBuilder({
                   <span className="text-green-700">✓ Linked to {highlevelContact.fullName || 'HighLevel contact'}&rsquo;s pipeline card</span>
                 )}
                 {attachStatus === 'error' && (
-                  <span className="text-red-600">HighLevel link failed: {attachError}. Sending will still copy the URL but won&rsquo;t move the pipeline stage.</span>
+                  <span className="text-red-600">HighLevel link failed: {attachError}. A real quote can&rsquo;t send unlinked — re-pick the contact or Calculate to retry, then send again.</span>
                 )}
                 {attachStatus === 'skipped' && (
                   <span className="text-amber-700">{attachError}</span>

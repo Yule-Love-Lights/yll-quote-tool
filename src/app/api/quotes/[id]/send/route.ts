@@ -38,6 +38,7 @@ import {
   createOpportunity,
   updateOpportunity,
   findOpportunityForContact,
+  resurrectDuplicateOpportunity,
   upsertContactCustomField,
   sendSms,
   sendEmail,
@@ -387,9 +388,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           }
         }
       }
-      // 2. No usable linked card → reuse the contact's existing card if they have
-      //    one (GHL allows only one open card per contact per pipeline), else
-      //    create a fresh card. Either path ends at Bid Sent with our title/value.
+      // 2. No usable linked card → reuse the contact's existing OPEN card if they
+      //    have one, else create a fresh card — and if GHL rejects the create as a
+      //    duplicate (#172: the location forbids a 2nd card per contact, and the
+      //    find above skips won/lost/abandoned cards), RESURRECT the existing card
+      //    instead. Either path ends at Bid Sent with our title/value.
       if (!stageUpdated && !stageError) {
         if (!quote.highlevel_contact_id) {
           stageError = 'No HighLevel contact linked to this quote';
@@ -400,16 +403,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
               await updateOpportunity(existing.id, { pipelineStageId: stages.sent, name: cardName, monetaryValue });
               opportunityId = existing.id;
             } else {
-              const created = await createOpportunity({
-                contactId: quote.highlevel_contact_id,
-                pipelineId: stages.pipelineId,
-                pipelineStageId: stages.sent,
-                name: cardName,
-                monetaryValue,
-                source: 'Quote Tool',
-              });
-              opportunityId = created.id;
-              opportunityCreated = true;
+              try {
+                const created = await createOpportunity({
+                  contactId: quote.highlevel_contact_id,
+                  pipelineId: stages.pipelineId,
+                  pipelineStageId: stages.sent,
+                  name: cardName,
+                  monetaryValue,
+                  source: 'Quote Tool',
+                });
+                opportunityId = created.id;
+                opportunityCreated = true;
+              } catch (createErr) {
+                // #172: contact already has a card and GHL forbids a second one.
+                // Shared resurrect (one implementation with the attach path):
+                // inspects the card first — refuses to touch an OPEN one — then
+                // reopens it at Bid Sent with our title/value.
+                const revived = await resurrectDuplicateOpportunity(createErr, {
+                  pipelineId: stages.pipelineId,
+                  pipelineStageId: stages.sent,
+                  name: cardName,
+                  monetaryValue,
+                });
+                if (!revived) throw createErr;
+                opportunityId = revived.id;
+              }
             }
             stageUpdated = true;
             // Persist the resolved card id so future send/approve calls find it.

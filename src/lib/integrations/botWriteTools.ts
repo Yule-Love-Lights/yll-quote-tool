@@ -67,10 +67,10 @@ export function summarizeCompleteInstall(
 /**
  * Record one install completion. Returns the plain-text reply for the crew.
  *
- * Photos are attached BEFORE the material claim on purpose: the actuals write
- * is idempotent (it claims the job once), so if it were first, a follow-up
- * message carrying more photos would short-circuit on "already recorded" and
- * silently drop them.
+ * Photos are deduped by Telegram file id at the design layer, so a retry re-sends
+ * the same shots harmlessly and a genuine follow-up (new material line + a new
+ * photo on an already-recorded job) still attaches — attach is NOT gated on the
+ * material claim, which would drop that follow-up photo silently.
  */
 export async function runCompleteInstall(
   args: CompleteInstallArgs,
@@ -79,8 +79,6 @@ export async function runCompleteInstall(
   const card = (await listFulfillmentCards()).find((c) => c.jobNumber === args.jobNumber);
   if (!card) return `No active job #${args.jobNumber}.`;
 
-  const photoResult = await attachPhotos(card.designId, args.jobNumber, args.photoFileIds ?? []);
-
   const lines: MaterialActualLine[] = args.materials.map((m) => ({
     sku: m.sku,
     qty: m.qty,
@@ -88,6 +86,11 @@ export async function runCompleteInstall(
   }));
 
   const result = lines.length ? await recordMaterialActuals(card.id, lines, recordedBy) : null;
+
+  // Always attach — dedup lives at the design layer (addDesignExtraPhoto keys on
+  // the Telegram file id), so a retry with the same shots is a no-op and a
+  // follow-up photo on an already-recorded job still lands.
+  const photoResult = await attachPhotos(card.designId, args.jobNumber, args.photoFileIds ?? []);
 
   const out: string[] = [];
   if (!lines.length) {
@@ -152,13 +155,16 @@ async function attachPhotos(
       }
       // source 'crew' keeps this OUT of the homeowner's portal gallery — the
       // portal renders every extra photo it is given (see portalPhotos), and a
-      // ladder shot is for the office, not the customer.
+      // ladder shot is for the office, not the customer. The fileId is the
+      // dedupe key: a retry or redelivered webhook re-sends the same file id and
+      // addDesignExtraPhoto no-ops instead of appending a duplicate.
       await addDesignExtraPhoto(
         designId,
         file.buffer.toString('base64'),
         file.contentType,
         title,
         'crew',
+        fileId,
       );
       saved += 1;
     } catch (err) {
