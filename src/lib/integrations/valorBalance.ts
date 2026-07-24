@@ -43,6 +43,30 @@ export function isAutoChargeEnabled(): boolean {
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
+// ─── Charge-slot state (#170d) ─────────────────────────────────────────────
+// invoices.valor_balance_txn_id triples as the charge-idempotency slot:
+// null (no charge), 'pending:<iso>' (an operator charge is in flight — or
+// crashed and left its claim; stale after 15 min), or a real Valor txn id.
+// Describe it for the operator UI so an in-flight/stuck attempt is VISIBLE
+// instead of a mystery "charge in progress" 409.
+export const CHARGE_SLOT_STALE_MS = 15 * 60 * 1000;
+
+export type ChargeSlotState =
+  | { kind: 'none' }
+  | { kind: 'in-flight'; sinceIso: string; stale: boolean }
+  | { kind: 'charged'; txnId: string };
+
+export function describeChargeSlot(value: string | null | undefined): ChargeSlotState {
+  if (!value) return { kind: 'none' };
+  if (value.startsWith('pending:')) {
+    const sinceIso = value.slice('pending:'.length);
+    const t = Date.parse(sinceIso);
+    const stale = !Number.isFinite(t) || Date.now() - t > CHARGE_SLOT_STALE_MS;
+    return { kind: 'in-flight', sinceIso, stale };
+  }
+  return { kind: 'charged', txnId: value };
+}
+
 // Same base-resolution createHostedPageSale uses (valor.ts) — mirrored rather
 // than imported since valor.ts doesn't export its constants. `?saleToken` is a
 // DIFFERENT query surface than `?pagesale=` but lives on the same host + the

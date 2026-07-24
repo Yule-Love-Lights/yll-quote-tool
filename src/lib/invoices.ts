@@ -47,15 +47,33 @@ export type InvoiceRow = {
   status: InvoiceStatus;
   valor_balance_txn_id: string | null;
   valor_receipt_url: string | null;
+  // #170(b): charge records retired when an amend reopened a PAID invoice —
+  // the live txn slot clears for the new charge cycle, the old txn stays here
+  // for Valor reconciliation. Entries: { txnId, receiptUrl, settledAt, retiredAt, reason }.
+  valor_txn_log: RetiredTxnEntry[] | null;
+  // #170(d): how this customer settles the balance. 'cash_check' replaces the
+  // one-click card charge with an explicit override (never charge a card the
+  // customer said they'd settle in cash). null = unset (no gating).
+  payment_preference: PaymentPreference | null;
   created_at: string;
   paid_at: string | null;
   updated_at: string;
 };
 
+export type PaymentPreference = 'card_on_file' | 'cash_check';
+
+export type RetiredTxnEntry = {
+  txnId: string;
+  receiptUrl: string | null;
+  settledAt: string | null;
+  retiredAt: string;
+  reason: string;
+};
+
 const INVOICE_SELECT =
   'id, invoice_number, job_id, quote_id, customer_id, subtotal, discount, tax, total, ' +
   'deposit_applied, balance, credit_note, tax_overridden, status, valor_balance_txn_id, ' +
-  'valor_receipt_url, created_at, paid_at, updated_at';
+  'valor_receipt_url, valor_txn_log, payment_preference, created_at, paid_at, updated_at';
 
 // ─── Pure totals math ───────────────────────────────────────────────────────
 
@@ -611,6 +629,79 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
   }
   if (!data || (Array.isArray(data) && data.length === 0)) return await getInvoice(id); // raced
   return (Array.isArray(data) ? data[0] : data) as unknown as InvoiceRow;
+}
+
+/**
+ * #170(b)/(a): append a retired charge record to invoices.valor_txn_log with a
+ * compare-and-swap on the log's prior value (+2 retries), so the two writers —
+ * the amend-reopen rotation and the charge-balance double-charge stash — can
+ * never lose each other's entry to a read-modify-write race (#640 review MED).
+ * opts.clearLive additionally retires the LIVE slot (valor_balance_txn_id /
+ * valor_receipt_url → null), CAS'd on the exact txn id being retired so a
+ * concurrent writer can't be clobbered. Returns false (with a loud log) when
+ * the CAS never lands — the entry still exists at Valor + in the alert email.
+ */
+export async function appendRetiredTxn(
+  id: string,
+  entry: RetiredTxnEntry,
+  opts?: { clearLive?: { expectTxnId: string } },
+): Promise<boolean> {
+  const db = sb();
+  if (!db) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await getInvoice(id);
+    if (!current) return false;
+    if (opts?.clearLive && current.valor_balance_txn_id !== opts.clearLive.expectTxnId) {
+      // The live slot moved under us — retiring it now would clobber a newer
+      // record. Log-append only would double-record later; bail loudly.
+      console.error(
+        `appendRetiredTxn: live txn changed for invoice ${id} (expected ${opts.clearLive.expectTxnId}, saw ${current.valor_balance_txn_id}) — rotation skipped:`,
+        entry,
+      );
+      return false;
+    }
+    const log = Array.isArray(current.valor_txn_log) ? current.valor_txn_log : null;
+    let q = db
+      .from('invoices')
+      .update({
+        valor_txn_log: [...(log ?? []), entry],
+        ...(opts?.clearLive ? { valor_balance_txn_id: null, valor_receipt_url: null } : {}),
+      })
+      .eq('id', id);
+    q = log === null ? q.is('valor_txn_log', null) : q.eq('valor_txn_log', JSON.stringify(log));
+    if (opts?.clearLive) q = q.eq('valor_balance_txn_id', opts.clearLive.expectTxnId);
+    const { data, error } = await q.select('id');
+    if (error) {
+      console.error('appendRetiredTxn error:', error);
+      return false;
+    }
+    if (data && (data as unknown[]).length > 0) return true;
+  }
+  console.error(`appendRetiredTxn: lost the CAS 3× for invoice ${id} — entry NOT recorded:`, entry);
+  return false;
+}
+
+/**
+ * #170(d): record how this customer settles the balance. Pass null to unset.
+ * Display/gating metadata only — never touches money fields or status.
+ */
+export async function setInvoicePaymentPreference(
+  id: string,
+  preference: PaymentPreference | null,
+): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('invoices')
+    .update({ payment_preference: preference })
+    .eq('id', id)
+    .select(INVOICE_SELECT)
+    .maybeSingle();
+  if (error) {
+    console.error('setInvoicePaymentPreference error:', error);
+    return null;
+  }
+  return (data as unknown as InvoiceRow | null) ?? null;
 }
 
 /**

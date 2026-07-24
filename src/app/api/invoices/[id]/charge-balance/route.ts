@@ -61,10 +61,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
+import { getInvoice, appendRetiredTxn } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
+import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { duplicatePaymentEmailSubject, duplicatePaymentEmailHtml } from '@/lib/integrations/quoteMessages';
 import { planBalanceCollection } from '@/lib/balanceCollection';
-import { chargeBalanceOnFile, isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
+import { chargeBalanceOnFile, isAutoChargeEnabled, CHARGE_SLOT_STALE_MS } from '@/lib/integrations/valorBalance';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
@@ -74,7 +76,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 // ─── Charge idempotency pre-claim (see the header's ⚠️ IDEMPOTENCY note) ────
 const PENDING_PREFIX = 'pending:';
-const PENDING_STALE_MS = 15 * 60 * 1000; // 15 min — the release valve for a crashed/never-cleared claim
+// Single source with the UI's describeChargeSlot (#640 review LOW — the two
+// constants must never drift or the "frees itself after 15 minutes" banner lies).
+const PENDING_STALE_MS = CHARGE_SLOT_STALE_MS;
+
+// #170(c): hard ceiling on a single card-on-file charge. Biggest real YLL jobs
+// run low five figures; anything above this is a data bug, not a balance.
+const MAX_AUTO_CHARGE_USD = 25_000;
 
 function isPendingSentinel(v: string): boolean {
   return v.startsWith(PENDING_PREFIX);
@@ -108,14 +116,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
 
-  let body: { overrideReconsent?: unknown } = {};
+  let body: { overrideReconsent?: unknown; overridePreference?: unknown } = {};
   try {
-    body = (await req.json()) as { overrideReconsent?: unknown };
+    body = (await req.json()) as { overrideReconsent?: unknown; overridePreference?: unknown };
   } catch {
     body = {};
   }
   const override =
     body.overrideReconsent === true || req.nextUrl.searchParams.get('override') === 'true';
+  const overridePreference = body.overridePreference === true;
 
   // Gate: no auto-charge capability confirmed → don't attempt anything.
   if (!isAutoChargeEnabled()) {
@@ -141,6 +150,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!invoice.quote_id) {
     return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Invoice has no linked quote' }, { status: 409 });
+  }
+
+  // #170(d): the customer said they'd settle in cash/check — never one-click
+  // charge their card. The UI mirrors this (button replaced by an explicit
+  // "charge anyway" override); the server enforces it so no other caller can skip it.
+  if (invoice.payment_preference === 'cash_check' && !overridePreference) {
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: 'cash-preference',
+        error: 'This customer pays by cash/check — record the payment with Mark paid, or pass the explicit override to charge the card anyway.',
+      },
+      { status: 409 },
+    );
+  }
+
+  // #170(c): absolute ceiling. No YLL balance legitimately approaches this; a
+  // corrupted balance (bad amend math, a bad import) must not reach the card.
+  if (invoice.balance > MAX_AUTO_CHARGE_USD) {
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: 'over-cap',
+        error: `Balance $${invoice.balance} exceeds the $${MAX_AUTO_CHARGE_USD} auto-charge ceiling — collect via pay-link or reconcile the invoice.`,
+      },
+      { status: 409 },
+    );
   }
 
   // The saved card + customer live on the quote (+ the WT-18 amendment trail).
@@ -270,15 +306,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const isAmbiguousTimeout = result.reason === 'error' && result.message?.toLowerCase().includes('timed out');
     if (!isAmbiguousTimeout) {
       // Release the claim so the operator can retry — CAS against our EXACT
-      // sentinel so this can never clobber a concurrent real txn id.
+      // sentinel so this can never clobber a concurrent real txn id. A 0-row
+      // release is CORRECT (something real overwrote the sentinel) but logged
+      // for symmetry with the success-path record write (#640 review LOW).
       try {
-        const { error: releaseErr } = await sb
+        const { data: released, error: releaseErr } = await sb
           .from('invoices')
           .update({ valor_balance_txn_id: null })
           .eq('id', id)
-          .eq('valor_balance_txn_id', pendingSentinel);
+          .eq('valor_balance_txn_id', pendingSentinel)
+          .select('id');
         if (releaseErr) {
           console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', releaseErr);
+        } else if (!released || released.length === 0) {
+          console.warn(
+            `[api/invoices/:id/charge-balance] pending-claim release skipped for invoice ${id} — sentinel was already overwritten`,
+          );
         }
       } catch (err) {
         console.warn('[api/invoices/:id/charge-balance] pending-claim release failed:', err);
@@ -300,59 +343,149 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Short-capture guard (mirrors the balance webhook, webhook/route.ts): a partial
-  // authorization captures LESS than the balance. The invoice must NOT settle as
-  // paid-in-full, or we'd silently under-bill. Refuse to settle when the captured
-  // amount is missing or short; leave the invoice awaiting_payment + a loud log.
-  if (result.chargedUsd == null || result.chargedUsd + 0.01 < invoice.balance) {
+  // #170(c) capture-amount guard (tightens the old ≥ check): the captured amount
+  // must EQUAL the requested balance to the cent. Short = a partial auth (the old
+  // case: settling would silently under-bill). Over = an amount-parse bug (the
+  // #165 cents-vs-dollars class — a 100× misparse sails through a ≥ check). Either
+  // way the invoice must NOT settle; leave it awaiting_payment + a loud log.
+  if (result.chargedUsd == null || Math.abs(result.chargedUsd - invoice.balance) > 0.01) {
     console.error(
-      `[api/invoices/:id/charge-balance] partial/unknown capture for invoice ${id}: charged=${result.chargedUsd} expected>=${invoice.balance} txn=${result.txnId}`,
+      `[api/invoices/:id/charge-balance] capture/balance mismatch for invoice ${id}: charged=${result.chargedUsd} expected=${invoice.balance} txn=${result.txnId}`,
     );
     return NextResponse.json(
       {
         ok: false,
-        reason: 'partial-capture',
-        error: 'Card was approved for less than the balance — the invoice was NOT settled. Reconcile in Valor.',
+        reason: 'amount-mismatch',
+        error: `Card captured $${result.chargedUsd ?? '?'} but the balance is $${invoice.balance} — the invoice was NOT settled. Reconcile in Valor.`,
         txnId: result.txnId,
       },
       { status: 402 },
     );
   }
 
-  // Charged the full balance. Settle the invoice atomically (mirrors the webhook):
-  // markInvoicePaidManually claims .neq('status','paid') so a retry can't double-settle.
-  let paid;
+  // Charged the full balance. Settle via an ATOMIC CLAIM on a settle-able status
+  // (#170(a) — mirrors the webhook's B6 form, replacing markInvoicePaidManually):
+  // 0 rows updated means someone ELSE settled while our Valor charge was in
+  // flight — and the only other settler is the customer's pay-link webhook, so
+  // the card was charged TWICE. The old code treated that as a friendly
+  // idempotent no-op and then overwrote the webhook's txn id; now it's a loud
+  // double-charge branch instead.
+  const paidAt = new Date().toISOString();
+  let settledRows: { id: string; job_id: string | null }[] | null = null;
   try {
-    paid = await markInvoicePaidManually(id);
+    const { data, error } = await sb
+      .from('invoices')
+      .update({ status: 'paid', balance: 0, paid_at: paidAt })
+      .eq('id', id)
+      .in('status', ['draft', 'awaiting_payment'])
+      .select('id, job_id');
+    if (error) throw error;
+    settledRows = data;
   } catch (err) {
     console.error('[api/invoices/:id/charge-balance] settle after charge failed:', err);
     // The charge SUCCEEDED but we couldn't flip the invoice — surface loudly so
-    // staff reconcile in Valor (do NOT report a clean success).
+    // staff reconcile in Valor (do NOT report a clean success). The pending
+    // sentinel is deliberately left; the 15-min valve frees it.
     return NextResponse.json(
       { ok: false, reason: 'settle-failed', error: 'Card charged but the invoice could not be updated — reconcile in Valor', txnId: result.txnId },
       { status: 500 },
     );
   }
 
-  // Record the Valor txn/receipt on the invoice (best-effort — the money is in).
-  // This is also what retires the pending-claim sentinel from above: it writes
-  // unconditionally by id (safe — we hold the claim, and nothing else settles
-  // this invoice), and writes result.txnId AS-IS — including null, on the rare
-  // chance Valor approved without echoing a txn id — so the sentinel can never
-  // survive a successful charge (a null write still overwrites 'pending:...').
+  if (!settledRows || settledRows.length === 0) {
+    // #170(a): the settle claimed 0 rows — the invoice moved while our charge
+    // was in flight. Re-read ONCE and diagnose (#640 review HIGH: a job-cancel
+    // racing the charge is NOT a double charge — a single real charge landed on
+    // a now-cancelled invoice and needs a REFUND, not a void-the-duplicate hunt).
+    const fresh = await getInvoice(id);
+    const cancelledRace = fresh?.status === 'cancelled';
+    // The settled txn on file (the webhook's) — for the alert email. Never a
+    // sentinel: the webhook overwrote ours when it settled; on the cancel race
+    // the slot may still hold OUR sentinel, which is not a txn — mask it.
+    const settledTxnOnFile =
+      fresh?.valor_balance_txn_id && !isPendingSentinel(fresh.valor_balance_txn_id)
+        ? fresh.valor_balance_txn_id
+        : null;
+    console.error(
+      cancelledRace
+        ? `[api/invoices/:id/charge-balance] charge landed on a CANCELLED invoice ${id} — REFUND txn ${result.txnId} in Valor`
+        : `[api/invoices/:id/charge-balance] DOUBLE CHARGE for invoice ${id}: pay-link settled during our charge — VOID our txn ${result.txnId} in Valor`,
+    );
+    // Stash our orphan txn in the retirement log — CAS'd append (#640 review
+    // MED: a plain read-modify-write could lose a concurrent amend rotation).
+    await appendRetiredTxn(id, {
+      txnId: result.txnId ?? 'unknown',
+      receiptUrl: result.receiptUrl ?? null,
+      settledAt: null,
+      retiredAt: paidAt,
+      reason: cancelledRace
+        ? 'charged-while-cancelled — REFUND in Valor'
+        : 'double-charge-operator-leg — VOID in Valor',
+    });
+    try {
+      const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+      if (isHighLevelConfigured() && internalContactId) {
+        await sendEmail({
+          contactId: internalContactId,
+          subject: duplicatePaymentEmailSubject(quote.customer_name),
+          html: duplicatePaymentEmailHtml({
+            customerName: quote.customer_name,
+            amountUsd: invoice.balance,
+            newTxnId: result.txnId ?? 'unknown',
+            existingTxnId: settledTxnOnFile,
+            adminUrl: `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/admin/invoices/${id}`,
+          }),
+          emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+        });
+      }
+    } catch (err) {
+      console.error('[api/invoices/:id/charge-balance] settle-conflict alert email failed:', err);
+    }
+    return NextResponse.json(
+      cancelledRace
+        ? {
+            ok: false,
+            reason: 'charged-cancelled',
+            error: `This invoice was CANCELLED while the charge was in flight — the card WAS charged. REFUND transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor now.`,
+            txnId: result.txnId,
+          }
+        : {
+            ok: false,
+            reason: 'double-charge',
+            error: `The customer paid the pay-link while this charge was in flight — the card was charged TWICE. VOID transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor now.`,
+            txnId: result.txnId,
+          },
+      { status: 409 },
+    );
+  }
+
+  // Record the Valor txn/receipt on the invoice. CAS on our exact pending
+  // sentinel (#170(a) — was an unconditional write that could erase a
+  // concurrent webhook's txn id): we settled, so the sentinel should still be
+  // ours; if something else overwrote it, keep THAT record and just log.
   try {
-    await sb
+    const { data: recorded, error: recordErr } = await sb
       .from('invoices')
       .update({ valor_balance_txn_id: result.txnId, valor_receipt_url: result.receiptUrl })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('valor_balance_txn_id', pendingSentinel)
+      .select('id');
+    if (recordErr) {
+      console.warn('[api/invoices/:id/charge-balance] txn record failed:', recordErr);
+    } else if (!recorded || recorded.length === 0) {
+      console.error(
+        `[api/invoices/:id/charge-balance] txn record skipped for invoice ${id} — sentinel was overwritten (txn ${result.txnId}); reconcile in Valor`,
+      );
+    }
   } catch (err) {
     console.warn('[api/invoices/:id/charge-balance] txn record failed:', err);
   }
 
   // Close the linked job (requires_invoicing → done), best-effort.
   try {
-    if (paid?.job_id) {
-      const job = await getJob(paid.job_id);
+    const jobId = settledRows[0]?.job_id;
+    if (jobId) {
+      const job = await getJob(jobId);
       if (job && job.status === 'requires_invoicing') {
         await setJobStatus(job.id, 'done');
       }
@@ -364,8 +497,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({
     ok: true,
     charged: true,
-    invoice: paid
-      ? { id: paid.id, status: paid.status, balance: paid.balance }
-      : { id, status: 'paid', balance: 0 },
+    invoice: { id, status: 'paid', balance: 0 },
   });
 }

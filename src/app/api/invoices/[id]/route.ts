@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoiceDetail, setInvoiceTaxOverride } from '@/lib/invoices';
-import { isAutoChargeEnabled } from '@/lib/integrations/valorBalance';
+import { getInvoiceDetail, setInvoiceTaxOverride, setInvoicePaymentPreference } from '@/lib/invoices';
+import { isAutoChargeEnabled, describeChargeSlot } from '@/lib/integrations/valorBalance';
 
 export const runtime = 'nodejs';
 
@@ -26,12 +26,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   // Echo the auto-charge flag so the operator UI only renders the "Charge saved
   // card" button when the capability is actually enabled (else it stays hidden —
-  // the pay-link is the balance method until Valor is confirmed).
-  return NextResponse.json({ ...detail, autoChargeEnabled: isAutoChargeEnabled() });
+  // the pay-link is the balance method until Valor is confirmed). chargeState
+  // (#170d) makes an in-flight/stuck charge claim visible to staff.
+  return NextResponse.json({
+    ...detail,
+    autoChargeEnabled: isAutoChargeEnabled(),
+    chargeState: describeChargeSlot(detail.invoice.valor_balance_txn_id),
+  });
 }
 
-// PATCH — operator toggles the manual tax-override (SPEC §4.3). Body:
-// { taxOverridden: boolean }. Re-prices the invoice + reconciles its status.
+// PATCH — operator settings on the invoice. Body carries exactly one of:
+//   { taxOverridden: boolean } — toggle the manual tax-override (SPEC §4.3);
+//     re-prices the invoice + reconciles its status.
+//   { paymentPreference: 'card_on_file' | 'cash_check' | null } — #170(d):
+//     how this customer settles the balance (metadata; gates the charge button).
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -42,14 +50,28 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!UUID_RE.test(id)) {
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
-  let body: { taxOverridden?: unknown };
+  let body: { taxOverridden?: unknown; paymentPreference?: unknown };
   try {
-    body = (await req.json()) as { taxOverridden?: unknown };
+    body = (await req.json()) as { taxOverridden?: unknown; paymentPreference?: unknown };
   } catch {
     body = {};
   }
+  if ('paymentPreference' in body) {
+    const pref = body.paymentPreference;
+    if (pref !== null && pref !== 'card_on_file' && pref !== 'cash_check') {
+      return NextResponse.json(
+        { error: "paymentPreference must be 'card_on_file', 'cash_check', or null" },
+        { status: 400 },
+      );
+    }
+    const invoice = await setInvoicePaymentPreference(id, pref);
+    if (!invoice) {
+      return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, invoice });
+  }
   if (typeof body.taxOverridden !== 'boolean') {
-    return NextResponse.json({ error: 'taxOverridden (boolean) is required' }, { status: 400 });
+    return NextResponse.json({ error: 'taxOverridden (boolean) or paymentPreference is required' }, { status: 400 });
   }
   let invoice;
   try {

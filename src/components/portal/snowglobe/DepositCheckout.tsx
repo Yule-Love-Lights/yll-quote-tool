@@ -216,6 +216,15 @@ export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType 
             ? '🧪 Test mode — this records a simulated deposit. No card is charged.'
             : '🔒 Secured by Valor PayTech. Your card details are entered on Valor’s secure page — they never touch our servers.'}
         </p>
+        {/* #170(e) card-on-file consent: shown on every real deposit checkout.
+            The token capture + Vault registration happen automatically on
+            payment (#161), so the authorization language rides the same step. */}
+        {!isTest && (
+          <p className="mt-2 text-[11px] text-[#A89F87] text-center">
+            By paying this deposit you authorize Yule Love Lights to securely save this card and
+            charge your remaining balance to it once your installation is complete.
+          </p>
+        )}
       </div>
     </div>
   );
