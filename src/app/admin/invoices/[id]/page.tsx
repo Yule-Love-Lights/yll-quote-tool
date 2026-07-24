@@ -7,7 +7,8 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { reconcileInvoice } from '@/lib/invoices';
-import type { InvoiceDetail } from '@/lib/invoices';
+import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
+import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
 
 // Operator BILLING detail for one invoice (ledger #83): the money breakdown
 // (total, deposit applied → balance), status, the linked job, and the customer.
@@ -26,7 +27,9 @@ export default function InvoiceDetailPage() {
   const id = params?.id;
   // The GET route echoes `autoChargeEnabled` alongside the InvoiceDetail so the
   // "Charge saved card" button only appears when the Valor capability is on.
-  const [data, setData] = useState<(InvoiceDetail & { autoChargeEnabled?: boolean }) | null>(null);
+  const [data, setData] = useState<
+    (InvoiceDetail & { autoChargeEnabled?: boolean; chargeState?: ChargeSlotState }) | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,6 +37,12 @@ export default function InvoiceDetailPage() {
   const [sendingLink, setSendingLink] = useState(false);
   const [charging, setCharging] = useState(false);
   const [balanceMsg, setBalanceMsg] = useState<string | null>(null);
+  // #170(d): a blocked charge that offers an explicit escalation — 'reconsent'
+  // (price increase awaiting customer re-approval) renders a "charge anyway"
+  // override button instead of a dead-end error.
+  const [reconsentBlocked, setReconsentBlocked] = useState(false);
+  const [savingPref, setSavingPref] = useState(false);
+  const [markingPaid, setMarkingPaid] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -133,26 +142,87 @@ export default function InvoiceDetailPage() {
 
   // Operator-triggered charge of the saved card for the exact balance. Gated —
   // only rendered when data.autoChargeEnabled. Confirms before charging.
-  const chargeBalance = async () => {
+  // opts (#170d): overrideReconsent re-runs past the WT-18 settlement gate after
+  // the operator explicitly accepts it; overridePreference charges despite a
+  // cash/check preference (its own harder confirm at the call site).
+  const chargeBalance = async (opts?: { overrideReconsent?: boolean; overridePreference?: boolean }) => {
     const invoice = data?.invoice;
     if (!invoice) return;
     if (!window.confirm(`Charge the saved card ${money(invoice.balance)} for the remaining balance?`)) return;
     setCharging(true);
     setBalanceMsg(null);
+    setReconsentBlocked(false);
     try {
-      const res = await fetch(`/api/invoices/${invoice.id}/charge-balance`, { method: 'POST' });
+      const res = await fetch(`/api/invoices/${invoice.id}/charge-balance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          overrideReconsent: opts?.overrideReconsent === true,
+          overridePreference: opts?.overridePreference === true,
+        }),
+      });
       if (res.status === 401) {
         window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
         return;
       }
       const body = await res.json();
-      if (!res.ok || !body.ok) throw new Error(body.error ?? 'The charge did not go through');
+      if (!res.ok || !body.ok) {
+        if (body.reason === 'reconsent-required') setReconsentBlocked(true);
+        throw new Error(body.error ?? 'The charge did not go through');
+      }
       setBalanceMsg('Balance charged to the saved card ✓');
       await load();
     } catch (err) {
       setBalanceMsg(err instanceof Error ? err.message : 'The charge did not go through');
+      await load(); // refresh chargeState — a failed/blocked attempt may have left/cleared the claim
     } finally {
       setCharging(false);
+    }
+  };
+
+  // #170(d): set how this customer settles the balance (gates the charge button).
+  const setPreference = async (value: string) => {
+    const invoice = data?.invoice;
+    if (!invoice) return;
+    setSavingPref(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentPreference: (value || null) as PaymentPreference | null }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the payment preference');
+    } finally {
+      setSavingPref(false);
+    }
+  };
+
+  // #170(d): record a balance collected OUTSIDE Valor (cash/check) — the
+  // companion to the cash preference. Uses the existing mark-paid route (which
+  // enforces the same re-consent settlement gate).
+  const markPaidOutside = async () => {
+    const invoice = data?.invoice;
+    if (!invoice) return;
+    if (!window.confirm(`Mark ${money(invoice.balance)} as collected outside Valor (cash/check)? This settles the invoice.`)) return;
+    setMarkingPaid(true);
+    setBalanceMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/mark-paid`, { method: 'POST' });
+      if (res.status === 401) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const body = await res.json();
+      if (!res.ok || body.ok === false) throw new Error(body.error ?? 'Could not mark paid');
+      setBalanceMsg('Marked paid (collected outside Valor) ✓');
+      await load();
+    } catch (err) {
+      setBalanceMsg(err instanceof Error ? err.message : 'Could not mark paid');
+    } finally {
+      setMarkingPaid(false);
     }
   };
 
@@ -342,6 +412,34 @@ export default function InvoiceDetailPage() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
                     Collect the balance
                   </p>
+
+                  {/* #170(d): payment preference — gates the one-click card charge. */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <label htmlFor="payment-preference" className="text-xs text-gray-500">
+                      Payment preference
+                    </label>
+                    <select
+                      id="payment-preference"
+                      value={inv.payment_preference ?? ''}
+                      onChange={e => void setPreference(e.target.value)}
+                      disabled={savingPref}
+                      className="text-xs border border-gray-300 rounded-md px-2 py-1 text-gray-700 disabled:opacity-60"
+                    >
+                      <option value="">— not set —</option>
+                      <option value="card_on_file">Card on file</option>
+                      <option value="cash_check">Cash / check</option>
+                    </select>
+                  </div>
+
+                  {/* #170(d): an in-flight/stuck charge claim is visible, not a mystery 409. */}
+                  {data?.chargeState?.kind === 'in-flight' && (
+                    <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                      {data.chargeState.stale
+                        ? `A card charge attempt from ${fmtDate(data.chargeState.sinceIso)} never finished — it looks stuck. Check Valor for the charge before retrying (the slot frees itself after 15 minutes).`
+                        : `A card charge is in flight (started ${fmtDate(data.chargeState.sinceIso)}). Wait for it to finish — don't retry yet.`}
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
@@ -358,18 +456,76 @@ export default function InvoiceDetailPage() {
                     >
                       {copied ? 'Link copied ✓' : 'Copy link'}
                     </button>
-                    {/* Gated: only shows when Valor card-on-file auto-charge is enabled. */}
-                    {data?.autoChargeEnabled && (
+                    {/* Gated: only when Valor card-on-file auto-charge is enabled AND the
+                        customer hasn't said cash/check (#170d — the cash path gets an
+                        explicit override instead of a one-click charge). */}
+                    {data?.autoChargeEnabled && inv.payment_preference !== 'cash_check' && (
                       <button
                         type="button"
-                        onClick={chargeBalance}
+                        onClick={() => void chargeBalance()}
                         disabled={charging}
                         className="text-sm font-semibold px-3 py-1.5 rounded-md border border-[#1f6f43] text-[#1f6f43] hover:bg-[#f0f7f2] disabled:opacity-60"
                       >
                         {charging ? 'Charging…' : `Charge saved card (${money(inv.balance)})`}
                       </button>
                     )}
+                    {inv.payment_preference === 'cash_check' && (
+                      <button
+                        type="button"
+                        onClick={markPaidOutside}
+                        disabled={markingPaid}
+                        className="text-sm font-semibold px-3 py-1.5 rounded-md border border-gray-400 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        {markingPaid ? 'Saving…' : 'Mark paid (cash/check collected)'}
+                      </button>
+                    )}
                   </div>
+
+                  {data?.autoChargeEnabled && inv.payment_preference === 'cash_check' && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      Customer pays by cash/check — the card charge is off.{' '}
+                      <button
+                        type="button"
+                        disabled={charging}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              'This customer is marked cash/check. Charge their saved card anyway?',
+                            )
+                          ) {
+                            void chargeBalance({ overridePreference: true });
+                          }
+                        }}
+                        className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
+                      >
+                        Charge the card anyway
+                      </button>
+                    </p>
+                  )}
+
+                  {/* #170(d): the WT-18 re-consent block now offers its override in the UI. */}
+                  {reconsentBlocked && (
+                    <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                      A price increase is awaiting the customer&rsquo;s re-approval, so the charge was blocked.{' '}
+                      <button
+                        type="button"
+                        disabled={charging}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              'Charge the card WITHOUT the customer re-approving the price increase? Only do this if they agreed another way (phone/text).',
+                            )
+                          ) {
+                            void chargeBalance({ overrideReconsent: true });
+                          }
+                        }}
+                        className="underline font-medium disabled:opacity-60"
+                      >
+                        Charge anyway (override)
+                      </button>
+                    </div>
+                  )}
+
                   <p className="text-xs text-gray-400 mt-1.5">
                     The customer pays their remaining balance on Valor&rsquo;s secure page.
                   </p>
