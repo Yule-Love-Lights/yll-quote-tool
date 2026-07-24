@@ -47,15 +47,33 @@ export type InvoiceRow = {
   status: InvoiceStatus;
   valor_balance_txn_id: string | null;
   valor_receipt_url: string | null;
+  // #170(b): charge records retired when an amend reopened a PAID invoice —
+  // the live txn slot clears for the new charge cycle, the old txn stays here
+  // for Valor reconciliation. Entries: { txnId, receiptUrl, settledAt, retiredAt, reason }.
+  valor_txn_log: RetiredTxnEntry[] | null;
+  // #170(d): how this customer settles the balance. 'cash_check' replaces the
+  // one-click card charge with an explicit override (never charge a card the
+  // customer said they'd settle in cash). null = unset (no gating).
+  payment_preference: PaymentPreference | null;
   created_at: string;
   paid_at: string | null;
   updated_at: string;
 };
 
+export type PaymentPreference = 'card_on_file' | 'cash_check';
+
+export type RetiredTxnEntry = {
+  txnId: string;
+  receiptUrl: string | null;
+  settledAt: string | null;
+  retiredAt: string;
+  reason: string;
+};
+
 const INVOICE_SELECT =
   'id, invoice_number, job_id, quote_id, customer_id, subtotal, discount, tax, total, ' +
   'deposit_applied, balance, credit_note, tax_overridden, status, valor_balance_txn_id, ' +
-  'valor_receipt_url, created_at, paid_at, updated_at';
+  'valor_receipt_url, valor_txn_log, payment_preference, created_at, paid_at, updated_at';
 
 // ─── Pure totals math ───────────────────────────────────────────────────────
 
@@ -611,6 +629,29 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
   }
   if (!data || (Array.isArray(data) && data.length === 0)) return await getInvoice(id); // raced
   return (Array.isArray(data) ? data[0] : data) as unknown as InvoiceRow;
+}
+
+/**
+ * #170(d): record how this customer settles the balance. Pass null to unset.
+ * Display/gating metadata only — never touches money fields or status.
+ */
+export async function setInvoicePaymentPreference(
+  id: string,
+  preference: PaymentPreference | null,
+): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('invoices')
+    .update({ payment_preference: preference })
+    .eq('id', id)
+    .select(INVOICE_SELECT)
+    .maybeSingle();
+  if (error) {
+    console.error('setInvoicePaymentPreference error:', error);
+    return null;
+  }
+  return (data as unknown as InvoiceRow | null) ?? null;
 }
 
 /**
