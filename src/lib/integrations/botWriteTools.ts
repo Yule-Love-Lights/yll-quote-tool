@@ -67,11 +67,6 @@ export function summarizeCompleteInstall(
 /**
  * Record one install completion. Returns the plain-text reply for the crew.
  *
- * Photos are attached AFTER the material record, and only when the record either
- * won the idempotency claim or there was no material to record. Attaching first
- * (the original ordering) duplicated every photo on a retry: a transient
- * material-write failure told the crew "try again", but the photos were already
- * on the design, so the retry re-attached them. Gating on the claim means a
  * Photos are deduped by Telegram file id at the design layer, so a retry re-sends
  * the same shots harmlessly and a genuine follow-up (new material line + a new
  * photo on an already-recorded job) still attaches — attach is NOT gated on the
