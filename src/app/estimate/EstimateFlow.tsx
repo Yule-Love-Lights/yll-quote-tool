@@ -215,7 +215,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         {step === 'address' && (
           <section className="est-screen">
             {!embedded && <p className="est-eyebrow">Yule Love Lights</p>}
-            <h1 className="est-h1 est-display">See your house lit.<br />Get your price tonight.</h1>
+            <h1 className="est-h1 est-display">Let&apos;s make your life bright</h1>
             <p className="est-sub">Type your address. We measure your roof from above and price it on the spot — no visit needed to see your number.</p>
           </section>
         )}
@@ -266,6 +266,26 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
           </section>
         )}
 
+        {step === 'address' && (
+          <section className="est-screen" style={{ marginTop: 6 }}>
+            <p className="est-section-title">How it works</p>
+            <ol className="est-steps">
+              <li>
+                <span className="est-step-n">1</span>
+                <div><b>Enter your address</b><p>We pull your home from the street and satellite — no photos needed.</p></div>
+              </li>
+              <li>
+                <span className="est-step-n">2</span>
+                <div><b>We measure &amp; price it</b><p>Our tool traces your roofline and shows you a real range on the spot.</p></div>
+              </li>
+              <li>
+                <span className="est-step-n">3</span>
+                <div><b>We confirm &amp; light it up</b><p>Our team reviews your quote, then makes your home shine.</p></div>
+              </li>
+            </ol>
+          </section>
+        )}
+
         {step === 'measuring' && (
           <section className="est-screen" style={{ textAlign: 'center', marginTop: 18 }}>
             <div className="est-spinner" />
@@ -286,7 +306,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
             {quoteId && (
               <div>
                 <EstimateVisual quoteId={quoteId} colorOverride={resultScheme.colorIds} />
-                <p className="est-pick-cap" style={{ marginTop: 12 }}>See your home in your colors</p>
+                <p className="est-section-title" style={{ marginTop: 16 }}>See your home in your colors</p>
                 <ColorSwatches value={resultSchemeId} onChange={setResultSchemeId} />
               </div>
             )}

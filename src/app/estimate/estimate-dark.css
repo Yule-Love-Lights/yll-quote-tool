@@ -103,6 +103,23 @@
 .est-housechip.on { border-color: var(--est-gold); color: var(--est-cream); box-shadow: var(--est-glow-sm); }
 .est-pick-cap { text-align: center; color: var(--est-cream-muted); font-size: 12px; margin: 0 0 10px; }
 
+/* Gold section heading (Naldo) */
+.est-section-title {
+  text-align: center; color: var(--est-gold-bright); font-weight: 700; font-size: 15px;
+  letter-spacing: 0.02em; margin: 4px 0 0; text-shadow: var(--est-glow-sm);
+}
+
+/* How-it-works steps */
+.est-steps { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.est-steps li { display: flex; gap: 12px; align-items: flex-start; }
+.est-step-n {
+  flex: none; width: 28px; height: 28px; border-radius: 999px;
+  background: var(--est-gold); color: #241A06; font-weight: 800; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; box-shadow: var(--est-glow-sm);
+}
+.est-steps b { font-size: 14px; color: var(--est-cream); }
+.est-steps p { margin: 2px 0 0; font-size: 13px; color: var(--est-cream-dim); }
+
 .est-field {
   width: 100%; background: var(--est-bg-raised);
   border: 1px solid var(--est-border-hi); border-radius: 10px;
