@@ -9,20 +9,20 @@ const {
   sbRef,
   requireOperatorMock,
   getInvoiceMock,
-  markPaidMock,
   getJobMock,
   setJobStatusMock,
   chargeMock,
   isAutoChargeEnabledMock,
+  sendEmailMock,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   getInvoiceMock: vi.fn(async (): Promise<unknown> => null),
-  markPaidMock: vi.fn(async (): Promise<unknown> => ({ id: 'inv-1', status: 'paid', balance: 0, job_id: 'job-1' })),
   getJobMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'requires_invoicing' })),
   setJobStatusMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'done' })),
   chargeMock: vi.fn(async (): Promise<unknown> => ({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} })),
   isAutoChargeEnabledMock: vi.fn(() => true),
+  sendEmailMock: vi.fn(async (): Promise<unknown> => undefined),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -30,11 +30,19 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, markInvoicePaidManually: markPaidMock }));
+vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock }));
 vi.mock('@/lib/jobs', () => ({ getJob: getJobMock, setJobStatus: setJobStatusMock }));
 vi.mock('@/lib/integrations/valorBalance', () => ({
   chargeBalanceOnFile: chargeMock,
   isAutoChargeEnabled: isAutoChargeEnabledMock,
+}));
+vi.mock('@/lib/integrations/highlevel', () => ({
+  sendEmail: sendEmailMock,
+  isHighLevelConfigured: () => true,
+}));
+vi.mock('@/lib/integrations/quoteMessages', () => ({
+  duplicatePaymentEmailSubject: () => 'dup',
+  duplicatePaymentEmailHtml: () => '<p>dup</p>',
 }));
 
 import { POST } from './route';
@@ -58,6 +66,7 @@ type InvoiceUpdateCall = {
   patch: Record<string, unknown>;
   eqs: [string, unknown][];
   isCalls: [string, unknown][];
+  ins: [string, unknown][];
 };
 type InvoiceUpdateResult = { data?: unknown; error?: unknown };
 
@@ -78,7 +87,7 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
   });
 
   function makeInvoiceChain(patch: Record<string, unknown>) {
-    const call: InvoiceUpdateCall = { patch, eqs: [], isCalls: [] };
+    const call: InvoiceUpdateCall = { patch, eqs: [], isCalls: [], ins: [] };
     invoiceCalls.push(call);
     const idx = invoiceCallIdx++;
     const resolveResult = (): InvoiceUpdateResult => invoiceResponses[idx] ?? { data: [{ id: 'inv-row' }], error: null };
@@ -90,6 +99,10 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
       },
       is: (col: string, val: unknown) => {
         call.isCalls.push([col, val]);
+        return chain;
+      },
+      in: (col: string, val: unknown) => {
+        call.ins.push([col, val]);
         return chain;
       },
       select: () => Promise.resolve(resolveResult()),
@@ -134,13 +147,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
   isAutoChargeEnabledMock.mockReturnValue(true);
+  process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1'; // the #170(a) double-charge alert recipient
+  process.env.PORTAL_BASE_URL = 'https://portal.test'; // the mock req has no nextUrl.origin
   getInvoiceMock.mockResolvedValue({ ...INVOICE });
-  markPaidMock.mockResolvedValue({ id: ID, status: 'paid', balance: 0, job_id: 'job-1' });
   getJobMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
   setJobStatusMock.mockResolvedValue({ id: 'job-1', status: 'done' });
   chargeMock.mockResolvedValue({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
   sbRef.current = makeSb(QUOTE);
 });
+
+// The settle write (#170a) selects the settled row — hand it a job_id so the
+// job-close leg runs. Index 1 in the response queue = the settle call
+// (0 = claim, 1 = settle, 2 = txn record).
+const SETTLE_OK = [
+  { data: [{ id: ID }], error: null },
+  { data: [{ id: ID, job_id: 'job-1' }], error: null },
+];
 
 describe('POST /api/invoices/[id]/charge-balance', () => {
   it('returns the operator gate response when denied', async () => {
@@ -198,7 +220,8 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(chargeMock).not.toHaveBeenCalled();
   });
 
-  it('charges the EXACT balance, settles the invoice, and closes the job on success', async () => {
+  it('charges the EXACT balance, settles via an atomic status claim, and closes the job on success', async () => {
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);
@@ -206,26 +229,43 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(chargeMock).toHaveBeenCalledWith(
       expect.objectContaining({ vaultToken: 'vault-token-abc', amountUsd: 2500, orderRef: `bal_${QID}` }),
     );
-    expect(markPaidMock).toHaveBeenCalledWith(ID);
+    // #170(a): calls = claim, settle (atomic on a settle-able status), txn record (CAS on the sentinel).
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].patch).toMatchObject({ status: 'paid', balance: 0 });
+    expect(calls[1].ins).toContainEqual(['status', ['draft', 'awaiting_payment']]);
+    const claimSentinel = calls[0].patch.valor_balance_txn_id;
+    expect(calls[2].patch.valor_balance_txn_id).toBe('txn-9');
+    expect(calls[2].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
     expect(setJobStatusMock).toHaveBeenCalledWith('job-1', 'done');
   });
 
-  it('402s (partial-capture) and does NOT settle when the card captured less than the balance', async () => {
+  it('402s (amount-mismatch) and does NOT settle when the card captured less than the balance', async () => {
     chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 300, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
-    expect(json.reason).toBe('partial-capture');
-    expect(markPaidMock).not.toHaveBeenCalled();
+    expect(json.reason).toBe('amount-mismatch');
+    // Claim only — no settle write ever ran.
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
   });
 
-  it('402s (partial-capture) and does NOT settle when the seam reports no captured amount', async () => {
+  it('402s (amount-mismatch) and does NOT settle when the seam reports no captured amount', async () => {
     chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: null, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
-    expect(json.reason).toBe('partial-capture');
-    expect(markPaidMock).not.toHaveBeenCalled();
+    expect(json.reason).toBe('amount-mismatch');
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
+  });
+
+  it('402s (amount-mismatch) when the capture is 100× the balance (#165 cents-parse class) — never settles', async () => {
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 250000, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('amount-mismatch');
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
   });
 
   it('402s and does NOT settle when the charge is declined; the pending claim is released via a CAS', async () => {
@@ -234,7 +274,6 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     const json = await res.json();
     expect(res.status).toBe(402);
     expect(json.reason).toBe('declined');
-    expect(markPaidMock).not.toHaveBeenCalled();
 
     // idempotency: claim (call 0), then release-on-decline (call 1) — a CAS
     // against the EXACT sentinel written by the claim, so it can never clobber
@@ -248,13 +287,73 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(calls[1].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
   });
 
-  it('500s (settle-failed) but signals the charge went through when the settle throws', async () => {
-    markPaidMock.mockRejectedValueOnce(new Error('db down'));
+  it('500s (settle-failed) but signals the charge went through when the settle write errors', async () => {
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: null, error: { message: 'db down' } }, // settle write fails
+    ]);
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(500);
     expect(json.reason).toBe('settle-failed');
     expect(json.txnId).toBe('txn-9');
+  });
+
+  // ─── #170(a): the cross-path double-charge race ───────────────────────────
+  it('409s (double-charge) when the pay-link webhook settled DURING our charge: keeps their txn, logs ours, alerts', async () => {
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: [], error: null }, // settle claims 0 rows — the webhook settled first
+    ]);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('double-charge');
+    expect(json.txnId).toBe('txn-9');
+    expect(json.error).toContain('VOID');
+
+    const calls = invoiceCallsOf(sbRef.current);
+    // claim, settle(0 rows), then the txn-log stash — and NO write anywhere
+    // that puts OUR txn id into valor_balance_txn_id (the webhook's record wins).
+    expect(calls).toHaveLength(3);
+    expect(Array.isArray(calls[2].patch.valor_txn_log)).toBe(true);
+    const logged = (calls[2].patch.valor_txn_log as Record<string, unknown>[])[0];
+    expect(logged).toMatchObject({ txnId: 'txn-9' });
+    for (const c of calls.slice(1)) {
+      expect(c.patch.valor_balance_txn_id).toBeUndefined();
+    }
+    expect(sendEmailMock).toHaveBeenCalled();
+    expect(setJobStatusMock).not.toHaveBeenCalled();
+  });
+
+  // ─── #170(c): absolute ceiling ────────────────────────────────────────────
+  it('409s (over-cap) without charging when the balance exceeds the auto-charge ceiling', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, balance: 30_000 });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('over-cap');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  // ─── #170(d): cash/check payment preference ───────────────────────────────
+  it('409s (cash-preference) without charging when the customer is marked cash/check', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('cash-preference');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('charges a cash/check customer only with the explicit overridePreference', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
+    const res = await POST(req({ overridePreference: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
   });
 });
 
@@ -416,7 +515,6 @@ describe('POST /api/invoices/[id]/charge-balance — charge idempotency pre-clai
     expect(res.status).toBe(402);
     expect(json.reason).toBe('error');
     expect(json.error.toLowerCase()).toContain('reconcile');
-    expect(markPaidMock).not.toHaveBeenCalled();
 
     // Only the initial claim wrote to invoices — no release/CAS-clear call.
     const calls = invoiceCallsOf(sbRef.current);
