@@ -329,6 +329,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           paidAtPatch.paid_at = null;
         }
 
+        // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire
+        // the settled txn to valor_txn_log and clear the live slot. Without
+        // this, the next card charge 409s 'already-charged' against LAST
+        // cycle's txn id (the misleading dead-end), and a new pay-link payment
+        // would clobber the old record. A pending sentinel can't be on a paid
+        // invoice; guarded anyway so a rotation can never eat a live claim.
+        const txnRotationPatch: Record<string, unknown> = {};
+        if (
+          reconciledStatus === 'awaiting_payment' &&
+          invoiceForSync.status === 'paid' &&
+          invoiceForSync.valor_balance_txn_id &&
+          !invoiceForSync.valor_balance_txn_id.startsWith('pending:')
+        ) {
+          txnRotationPatch.valor_txn_log = [
+            ...(Array.isArray(invoiceForSync.valor_txn_log) ? invoiceForSync.valor_txn_log : []),
+            {
+              txnId: invoiceForSync.valor_balance_txn_id,
+              receiptUrl: invoiceForSync.valor_receipt_url,
+              settledAt: invoiceForSync.paid_at,
+              retiredAt: new Date().toISOString(),
+              reason: 'amend-reopen',
+            },
+          ];
+          txnRotationPatch.valor_balance_txn_id = null;
+          txnRotationPatch.valor_receipt_url = null;
+        }
+
         const { error: invErr } = await sb
           .from('invoices')
           .update({
@@ -341,6 +368,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             credit_note: totals.credit_note,
             status: reconciledStatus,
             ...paidAtPatch,
+            ...txnRotationPatch,
           })
           .eq('id', invoiceForSync.id);
         if (invErr) {

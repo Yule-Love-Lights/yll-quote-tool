@@ -992,6 +992,20 @@ async function handleBalancePayment(
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
   }
 
+  // #170(a): the pre-claim read carried an operator charge-in-flight sentinel
+  // (`pending:<iso>` in valor_balance_txn_id) — the operator's card-on-file
+  // charge may land at Valor moments from now, making this a DOUBLE charge.
+  // Their leg detects the settled invoice and refuses to double-record, but the
+  // second Valor charge is real either way: alert proactively (same email as
+  // the duplicate path; existingTxnId shows the pending marker so staff can see
+  // the operator leg was mid-flight).
+  if (invoice.valor_balance_txn_id?.startsWith('pending:')) {
+    console.error(
+      `[api/integrations/valor/webhook] balance settled while an operator charge was IN FLIGHT for invoice ${invoice.id} (quote ${quoteId}) — likely double charge; check Valor`,
+    );
+    await flagPossibleDuplicateBalancePayment(sb, quote, invoice, event, baseUrl);
+  }
+
   // Close the job once the balance is collected (best-effort — payment is recorded).
   if (job && job.status === 'requires_invoicing') {
     try {

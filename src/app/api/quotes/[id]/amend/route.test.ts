@@ -539,4 +539,52 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(invUpdate.status).toBe('awaiting_payment');
     expect(invUpdate.paid_at).toBeNull();
   });
+
+  // #170(b): reopening a PAID invoice retires the settled Valor txn to
+  // valor_txn_log and clears the live slot, so the NEW balance is chargeable
+  // (no misleading 'already-charged' 409) and the old record survives.
+  it('rotates the settled Valor txn into valor_txn_log when an amend-up reopens a paid invoice', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+      valor_balance_txn_id: 'TXN-OLD-7', valor_receipt_url: 'https://valor/receipt/7', valor_txn_log: null,
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(invUpdate.valor_balance_txn_id).toBeNull();
+    expect(invUpdate.valor_receipt_url).toBeNull();
+    expect(invUpdate.valor_txn_log).toEqual([
+      expect.objectContaining({
+        txnId: 'TXN-OLD-7',
+        receiptUrl: 'https://valor/receipt/7',
+        settledAt: '2026-06-15T10:00:00Z',
+        reason: 'amend-reopen',
+      }),
+    ]);
+  });
+
+  it('does NOT touch the txn slot when the reopened invoice never had a real txn id', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // Paid outside Valor (cash) — no txn to rotate.
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+      valor_balance_txn_id: null, valor_receipt_url: null, valor_txn_log: null,
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(invUpdate).not.toHaveProperty('valor_txn_log');
+    expect(invUpdate).not.toHaveProperty('valor_balance_txn_id');
+  });
 });

@@ -755,6 +755,36 @@ describe('Valor webhook — balance pay-link (#83)', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled(); // never the booking path
   });
 
+  it('#170(a): settling over a FRESH operator charge-in-flight sentinel still settles but ALERTS (likely double charge)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      { id: 'quote-1', customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: 'inv-1' }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({
+      id: 'inv-1',
+      status: 'awaiting_payment',
+      balance: 1350,
+      // The operator's charge-balance leg claimed the slot moments ago — its
+      // Valor charge may land too, so this settle is a likely double charge.
+      valor_balance_txn_id: `pending:${new Date().toISOString()}`,
+    });
+
+    const res = await POST(signedReq(BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // The customer's money is real — the settle itself proceeds…
+    expect(json).toMatchObject({ balance: true, paid: true });
+    expect(updatePayloads[0]).toMatchObject({ status: 'paid', balance: 0 });
+    // …but staff get the proactive duplicate alert instead of silence.
+    expect(hl.sendEmail).toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('IN FLIGHT'));
+    err.mockRestore();
+  });
+
   it('does NOT settle on an underpayment (paid amount < balance), but WT-15 stamps a durable shortfall marker', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { client, updatePayloads } = makeSb(
