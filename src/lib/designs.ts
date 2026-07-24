@@ -435,7 +435,7 @@ export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
   const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter((v): v is string => !!v)));
   const { data: quoteRows, error: qErr } = await sb
     .from('quotes')
-    .select('id, is_test, status')
+    .select('id, is_test, status, service_type')
     .in('id', quoteIds);
   if (qErr) {
     console.error('Supabase listSampleDesigns quotes error:', qErr);
@@ -443,8 +443,11 @@ export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
   }
   const DEAD = new Set(['declined', 'lost', 'cancelled']);
   const showable = new Set<string>();
-  for (const q of (quoteRows ?? []) as Array<{ id: string; is_test: boolean | null; status: string | null }>) {
-    if (!q.is_test && !(q.status && DEAD.has(q.status))) showable.add(q.id);
+  for (const q of (quoteRows ?? []) as Array<{ id: string; is_test: boolean | null; status: string | null; service_type: string | null }>) {
+    // HOLIDAY (Christmas) only — exclude permanent / event / bistro. A NULL
+    // service_type reads as 'holiday' (the DB default), so include it.
+    const isHoliday = q.service_type === 'holiday' || q.service_type == null;
+    if (!q.is_test && isHoliday && !(q.status && DEAD.has(q.status))) showable.add(q.id);
   }
 
   // 3) Keep good designs (photo + a non-empty scene) of real, live quotes — recent
