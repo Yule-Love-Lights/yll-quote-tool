@@ -678,7 +678,7 @@ export function colorChangeAppliedEmailHtml(firstName: string, label: string): s
   return [
     `<p>Hi ${name},</p>`,
     `<p>Your light colour change to <strong>${safeLabel}</strong> is confirmed! It will be reflected on your install.</p>`,
-    `<p>Questions? Just reply here or text/call us, we're happy to help!</p>`,
+    `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,
   ].join('\n');
 }
