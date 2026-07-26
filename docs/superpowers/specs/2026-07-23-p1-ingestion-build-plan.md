@@ -26,8 +26,11 @@ So P1 is mostly: a **staging table** + a **loader** for the resolved CSV + a **q
 | original_title | text | e.g. `img13.png` |
 | content_hash | text unique | dedup across re-runs |
 | classification | text | `install_night` \| `tree_bush_markup` \| `design_doc` \| `other` (P1 defaults `install_night`; vision-classify is P2 polish) |
-| resolved_address | text | from the manifest |
+| resolved_address | text | from the manifest (raw, as typed — displayed, never grouped on) |
+| resolved_address_key | text generated | normalized twin (mirrors `properties.address_key`); the queue GROUPs by this |
 | resolved_customer_id | uuid → customers | null when address-only / not-in-CRM |
+| resolved_customer_ref | text | the 8-char prefix as recorded; makes a failed link detectable + re-linkable |
+| resolved_name | text | the name the human typed — the cross-check that a link points at the right customer |
 | resolved_ghl_id | text | null |
 | not_in_crm | boolean | true for the `NOT-IN-CRM` rows (e.g. "tal") |
 | satellite_ref | text | storage path once fetched (null until slice 2) |
@@ -80,6 +83,41 @@ RLS: operator-only (staff), matching the other training tables. **Do not** reuse
 2. **Google imagery quota.** Confirm the estimate flow's key can absorb ~80 one-time satellite+Street-View lookups (almost certainly yes).
 3. **Storage of the night photos.** Copy the Drive originals into `training-archive` (self-contained, survives Drive changes) vs. reference Drive by id (lighter, but breaks if a file moves). Recommend: copy downscaled JPGs into the bucket.
 4. **`training_houses` shape fit.** Confirm the archive rows map cleanly onto the existing columns, or whether a light `source`/`is_archive` marker is worth adding so archive-sourced examples are filterable in `/training`.
+
+## Audit follow-ups (from the slice-1 pre-merge review — carry into slices 2/3)
+
+Slice 1 shipped with these knowingly deferred. They are NOT bugs in slice 1; they are the next
+slices' work, written down so they don't get rediscovered late.
+
+1. **`training-archive` storage bucket — deferred to slice 2.** The plan listed bucket creation in
+   slice 1, but nothing writes to it until slice 2 fetches imagery. Slice 2's first migration
+   creates it: `insert into storage.buckets (id, name, public) values ('training-archive',
+   'training-archive', false) on conflict (id) do nothing;` (the designs/custom-uploads precedent).
+2. **`satellite_feet_per_pixel` is not a pass-through to the tracer.** The estimate pipeline's
+   feet-per-pixel and what `/training/new` consumes are not the same unit today, and the satellite
+   image's pixel width has to be recorded alongside it. Slice 3's "pre-fill" needs an explicit
+   conversion step plus new state-seeding code in the tracer — budget for it rather than assuming
+   the value drops straight in.
+3. **The `not_in_crm` rows need their own queue lane.** Two rows (`IMG_0901` "tal", `img203`
+   69 31st street wyandanch) are flagged `not_in_crm`. The slice-3 index must show a "needs
+   identification" section (`resolved_address is null or not_in_crm`), or they sit in `pending`
+   forever, never reaching `ready_to_trace` and never surfacing to a human.
+4. **Three address variants still split into separate queue cards.** `resolved_address_key`
+   normalizes case/punctuation (it correctly merges the 4-photo `6 Birch Road` house), but three
+   pairs are genuinely different strings and need a human call before or during slice 3 — they are
+   probably the same property each:
+   - `230 W 24th StDeer Park, NY 11729.` (missing space) vs `230 W 24th St Deer Park, NY 11729`
+   - `18 Daisy Court Farmingdale` vs `18 Daisy Court, Farmingdale, New York 11735`
+   - `9 high ridge lane` vs `9 high ridge lane oyster bay`
+   Left as typed rather than silently merged: collapsing them is a judgment call about which
+   houses are the same, not a mechanical normalization. Distinct properties after normalization:
+   **80** (77 if all three pairs merge).
+5. **`hl:` / `ghl:` contact refs have no resolver.** All 49 links in this batch are `cid:`. The
+   generator now hard-fails on an unknown ref type instead of silently dropping the link, so a
+   future batch that uses a GHL-only contact stops loudly; wire `resolved_ghl_id` when that lands.
+6. **Cross-check `resolved_address` against `properties.address_key`.** For the 49 customer-linked
+   rows the address was typed independently and never reconciled against that customer's own
+   canonical property record. A slice-3 sanity pass could flag disagreements.
 
 ## What this does NOT change
 
