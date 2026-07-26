@@ -387,11 +387,17 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         {step === 'done' && (
           <section className="est-screen" style={{ textAlign: 'center' }}>
             <div className="est-price-card">
-              <div className="est-price-band" style={{ fontSize: 22 }}>You&apos;re all set ✓</div>
+              <div style={{ fontSize: 40, lineHeight: 1 }}>🎄</div>
+              <div className="est-price-band" style={{ fontSize: 24, marginTop: 6 }}>You&apos;re all set!</div>
               <p className="est-price-note">
                 {rangeLabel ? `We saved your ${rangeLabel} estimate. ` : ''}
-                Our team will confirm your details and reach out shortly.
+                Here&apos;s what happens next:
               </p>
+              <ol className="est-steps" style={{ textAlign: 'left', marginTop: 16 }}>
+                <li><span className="est-step-n">1</span><div><b>We review your design</b><p>Our team double-checks your roofline and home.</p></div></li>
+                <li><span className="est-step-n">2</span><div><b>We confirm your final price</b><p>No surprises — you&apos;ll see the exact number before anything is due.</p></div></li>
+                <li><span className="est-step-n">3</span><div><b>You get a link to book</b><p>Review your design, pick your colors, and lock in your install.</p></div></li>
+              </ol>
             </div>
           </section>
         )}
