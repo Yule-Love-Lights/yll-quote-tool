@@ -117,11 +117,17 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     setError(null);
     setMeasureLine(0);
     setStep('measuring');
+    // Guard against a silent stall (mobile drop, backgrounded tab) — abort just
+    // past the server's 60s maxDuration so we always land back on the address step
+    // with a retry rather than spinning forever.
+    const controller = new AbortController();
+    const stallTimer = setTimeout(() => controller.abort(), 65_000);
     try {
       const res = await fetch('/api/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: addr, company: company.current, elapsedMs: Date.now() - mountedAt.current }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 429) {
@@ -152,8 +158,10 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         setStep('followup');
       }
     } catch {
-      setError('We could not reach the estimator. Please try again.');
+      setError('That took too long — please try again.');
       setStep('address');
+    } finally {
+      clearTimeout(stallTimer);
     }
   }, [address]);
 
@@ -163,7 +171,9 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     const file = e.target.files?.[0];
     e.target.value = ''; // let the same file be re-picked after an error
     if (!file) return;
-    if (!/^image\//.test(file.type)) return setError('Please choose an image file.');
+    // Match the server allowlist so an unsupported format fails fast, before the
+    // encode + upload round-trip (e.g. an iOS HEIC picked via Files).
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return setError('Please choose a JPG, PNG, or WEBP image.');
     if (file.size > 10 * 1024 * 1024) return setError('That image is too large (max 10MB).');
     setError(null);
     setUploading(true);
@@ -303,7 +313,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
               <span>or</span>
               <label className={`est-upload-btn ${uploading ? 'is-busy' : ''}`}>
                 {uploading ? 'Uploading…' : '📷 Upload a photo of your home'}
-                <input type="file" accept="image/*" disabled={uploading} onChange={onUploadPhoto} style={{ display: 'none' }} />
+                <input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={onUploadPhoto} style={{ display: 'none' }} />
               </label>
               <p className="est-hero-hint" style={{ margin: '8px 0 0' }}>We&apos;ll design your lights from your photo by hand.</p>
             </div>
@@ -355,9 +365,16 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
             </div>
             {quoteId && (
               <div>
-                <EstimateVisual quoteId={quoteId} colorOverride={resultScheme.colorIds} />
-                <p className="est-section-title" style={{ marginTop: 16 }}>See your home in your colors</p>
-                <ColorSwatches value={resultSchemeId} onChange={setResultSchemeId} />
+                <EstimateVisual
+                  quoteId={quoteId}
+                  colorOverride={resultScheme.colorIds}
+                  footer={
+                    <>
+                      <p className="est-section-title" style={{ marginTop: 16 }}>See your home in your colors</p>
+                      <ColorSwatches value={resultSchemeId} onChange={setResultSchemeId} />
+                    </>
+                  }
+                />
               </div>
             )}
             <ContactCard heading="Save your quote" blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book." cta="Save my quote" {...contactProps} />

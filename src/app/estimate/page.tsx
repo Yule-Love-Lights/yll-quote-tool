@@ -22,7 +22,7 @@ export async function generateMetadata({
   return {
     title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
     description:
-      'Type your address and see a real holiday lighting price for your home in seconds. No photos, no waiting.',
+      "Type your address and see a real holiday lighting price for your home in seconds — or upload a photo and we'll design it by hand.",
     // Standalone /estimate is a rankable landing page (S48, Naldo's call). The
     // ?embed=1 variant is chrome-less and only ever lives inside the
     // yulelovelights.com iframe, so keep it OUT of the index — otherwise Googlebot

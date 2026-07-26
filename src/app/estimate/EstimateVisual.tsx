@@ -11,7 +11,7 @@
 // enhancement: if the design never persists, this renders nothing and the result
 // screen just shows the range — it never blocks or errors the customer.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import type { Scene } from '@/lib/design/sceneTypes';
 
@@ -23,7 +23,9 @@ const POLL_INTERVAL_MS = 2000;
 const MAX_ATTEMPTS = 12; // ~24s — the design is drawn in a background after() task.
 const DUSK_BRIGHTNESS = 20; // match the gallery's evening look
 
-export function EstimateVisual({ quoteId, colorOverride }: { quoteId: string; colorOverride?: string[] | null }) {
+// `footer` (e.g. the recolor swatches) renders only WHEN a design is present, so it
+// never orphans below an empty box when the render never lands.
+export function EstimateVisual({ quoteId, colorOverride, footer }: { quoteId: string; colorOverride?: string[] | null; footer?: ReactNode }) {
   const [design, setDesign] = useState<DesignData | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
 
@@ -110,6 +112,7 @@ export function EstimateVisual({ quoteId, colorOverride }: { quoteId: string; co
           Here&apos;s our first pass at your roofline — we&apos;ll confirm the exact layout with you.
         </p>
       )}
+      {design && footer}
     </div>
   );
 }

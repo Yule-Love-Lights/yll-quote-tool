@@ -400,7 +400,8 @@ export type SampleDesign = {
 
 /**
  * Recent REAL designed jobs to feature on the public self-serve estimate landing
- * (ledger self-serve, S48). Any non-test, non-dead quote that has a base photo + a
+ * (ledger self-serve, S48). Non-test, HOLIDAY, STAFF-SENT quotes (sent/viewed/
+ * approved/booked/changes_requested — never a raw draft) that have a base photo + a
  * drawn scene — the ACTUAL designs staff traced, so they render (via DesignCanvas)
  * exactly like the portal, not a fabricated overlay on a stock photo. Best-effort:
  * returns [] on any failure. The payload is the house render only (no name/address/
@@ -408,9 +409,9 @@ export type SampleDesign = {
  *
  * Two plain queries rather than a PostgREST foreign-key embed: the designs/quotes
  * schema is RLS-disabled and may not declare the FK the embed needs, which would
- * error the whole call. And we DON'T require "booked" — most booked quotes are
- * legacy Jobber imports with no design, so that intersection is ~empty; "designed +
- * real + not dead" is the right pool for showing our work.
+ * error the whole call. The status floor is a PRIVACY gate, not just quality:
+ * /api/estimate auto-creates a draft for any visitor, so only staff-sent quotes may
+ * be featured publicly (a self-serve draft becomes eligible only once staff send it).
  */
 export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
   const sb = getSb();
@@ -441,13 +442,18 @@ export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
     console.error('Supabase listSampleDesigns quotes error:', qErr);
     return [];
   }
-  const DEAD = new Set(['declined', 'lost', 'cancelled']);
+  // PRIVACY: only quotes STAFF actually sent to a real customer — never a raw
+  // 'draft'. /api/estimate auto-creates a draft + design for ANYONE who types an
+  // address, so a "non-dead" filter would put a random visitor's (or an unsent
+  // internal) home on the public marketing gallery. A self-serve quote qualifies
+  // only once staff review it and send it.
+  const SENT_PLUS = new Set(['sent', 'viewed', 'approved', 'booked', 'changes_requested']);
   const showable = new Set<string>();
   for (const q of (quoteRows ?? []) as Array<{ id: string; is_test: boolean | null; status: string | null; service_type: string | null }>) {
     // HOLIDAY (Christmas) only — exclude permanent / event / bistro. A NULL
     // service_type reads as 'holiday' (the DB default), so include it.
     const isHoliday = q.service_type === 'holiday' || q.service_type == null;
-    if (!q.is_test && isHoliday && !(q.status && DEAD.has(q.status))) showable.add(q.id);
+    if (!q.is_test && isHoliday && q.status != null && SENT_PLUS.has(q.status)) showable.add(q.id);
   }
 
   // 3) Keep good designs (photo + a non-empty scene) of real, live quotes — recent

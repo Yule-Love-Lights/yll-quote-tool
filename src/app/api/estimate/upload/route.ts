@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSelfServeEstimateEnabled } from '@/lib/selfServe/estimateFlag';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { rateLimitResponse } from '@/lib/rateLimit';
+import { consumeAnalyzerBudget } from '@/lib/selfServe/budget';
 import { createUploadQuote } from '@/lib/selfServe/upload';
 
 export const runtime = 'nodejs';
@@ -52,6 +53,15 @@ export async function POST(req: NextRequest) {
   }
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Upload is temporarily unavailable' }, { status: 503 });
+  }
+
+  // Bound TOTAL daily self-serve writes across all IPs (the per-IP limit only
+  // caps one attacker). Shares the estimate's daily budget — an uploaded photo is
+  // an equally-billable public write (a quote + design + storage blob). Fails open
+  // if the counter RPC isn't applied.
+  const budget = await consumeAnalyzerBudget();
+  if (!budget.allowed) {
+    return NextResponse.json({ error: "We're getting a lot of requests right now — please try again in a bit." }, { status: 429 });
   }
 
   const address = typeof body.address === 'string' ? body.address.trim().slice(0, 500) : null;
