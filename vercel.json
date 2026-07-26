@@ -5,6 +5,10 @@
       "schedule": "0 13 * * *"
     },
     {
+      "path": "/api/ops/digest",
+      "schedule": "30 11 * * *"
+    },
+    {
       "path": "/api/inventory/purchase-order/auto-send",
       "schedule": "0 13 */3 * *"
     },

@@ -54,6 +54,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/login',
   '/api/health', // uptime monitor probe — booleans/timestamp only, no PII/secrets (#81 W6-001)
   '/api/integrations/valor/webhook', // Valor deposit webhook (HMAC-verified in the route)
+  '/api/integrations/valor/redirect-capture', // #161 diagnostic probe — Valor's redirect_url S2S callback target (values never logged/stored; see route header). Method-blind like the webhook entry above, so both GET (the possible human-browser leg) and POST (the presumed S2S leg) are covered.
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/integrations/whatsapp/webhook', // Twilio WhatsApp webhook (signature-verified in the route, #82)
   '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified in the route, #82 alt channel)

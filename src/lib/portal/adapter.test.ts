@@ -182,6 +182,30 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     expect(ww.price).toBe(41 * 8); // easy $8/ft — the price itself is untouched
   });
 
+  // S30 live bug: a staff-typed CUSTOM item starting with "Winter Wonderland"
+  // was truncated to just "Winter Wonderland" on the portal (the #138 strip
+  // matched by bare prefix). The strip now requires the ENGINE's exact label
+  // shape, so freeform custom names survive whole.
+  it('S30: a CUSTOM item starting with "Winter Wonderland" keeps its full label', () => {
+    const customLabel = "Winter Wonderland Display Package · Trees · 5 Point Star 36'H Sparkle RGB";
+    const result = calculateQuote(
+      emptyInputs({ customLineItems: [{ label: customLabel, amount: 2435.99, quantity: 1 }] }),
+    );
+    const portal = portalFrom(result)!;
+    const custom = portal.lineItems.find((li) => li.price === 2435.99)!;
+    expect(custom.label).toBe(customLabel);
+  });
+
+  it('S30: a CUSTOM item starting with "Stake Lighting" keeps its full label', () => {
+    const customLabel = 'Stake Lighting Premium Pathway Bundle';
+    const result = calculateQuote(
+      emptyInputs({ customLineItems: [{ label: customLabel, amount: 500, quantity: 1 }] }),
+    );
+    const portal = portalFrom(result)!;
+    const custom = portal.lineItems.find((li) => li.price === 500)!;
+    expect(custom.label).toBe(customLabel);
+  });
+
   it('is undefined for legacy rows priced before Phase 1 (no rooflineOptions field)', () => {
     const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
     const legacy = { ...result, rooflineOptions: undefined } as unknown as QuoteResult;
@@ -275,6 +299,112 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
       itemIds: ['roofline-santas', 'roofline-gingerbread'],
       recommendedItemId: 'roofline-santas',
     });
+  });
+});
+
+// ── Portal-only label detail strip: Stake Lighting + mini lights ───────────
+// (Jason, jason/portal-label-detail-strip) The customer card must show just
+// the product name — the engine's footage/difficulty (stake) or wrap-style/
+// string-count (mini lights) suffix is operator detail. Same portal-only
+// pattern as the #138 Winter Wonderland strip above; the operator builder
+// breakdown renders result.lineItems directly and keeps the full label.
+
+describe('quoteRowToPortalQuote — Stake Lighting + mini-light label detail strip', () => {
+  it('strips the Stake Lighting footage/difficulty suffix — customer sees just the product name', () => {
+    const result = calculateQuote(
+      emptyInputs({ stakeLightingFootage: 30, stakeLightingDifficulty: 'easy' }),
+    );
+    const engineItem = result.lineItems.find((li) => li.id === 'stake-lighting')!;
+    expect(engineItem.label).toBe('Stake Lighting – 30ft (easy)'); // sanity on the format we're stripping
+    const portal = portalFrom(result)!;
+    const stake = portal.lineItems.find((li) => li.kind === 'stake-lighting')!;
+    expect(stake.label).toBe('Stake Lighting');
+    expect(stake.detail).toBe('');
+    expect(stake.id).toBe('stake-lighting-1'); // portal id — untouched
+    expect(stake.stableId).toBe('stake-lighting'); // engine stable id — untouched
+    expect(stake.price).toBe(engineItem.amount); // price itself is untouched
+  });
+
+  it('strips the wrap-style + string-count suffix from a Bush (canopy wrap) label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'bush', wrapStyle: 'canopy', stringCount: 2, id: 'mini-bush-1' }],
+    });
+    const result = calculateQuote(inputs);
+    const engineItem = result.lineItems.find((li) => li.id === 'mini-bush-1')!;
+    expect(engineItem.label).toBe('Bush – canopy wrap, 2 strings');
+    const portal = portalFrom(result, inputs)!;
+    const bush = portal.lineItems.find((li) => li.kind === 'bush')!;
+    expect(bush.label).toBe('Bush');
+    expect(bush.detail).toBe('');
+    expect(bush.id).toBe('bush-1');
+    expect(bush.stableId).toBe('mini-bush-1');
+    expect(bush.price).toBe(engineItem.amount);
+  });
+
+  it('strips the wrap-style + string-count suffix from a Tree (trunk wrap) label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'tree', wrapStyle: 'trunk', stringCount: 4 }],
+    });
+    const result = calculateQuote(inputs);
+    const engineItem = result.lineItems.find((li) => li.label.startsWith('Tree'))!;
+    expect(engineItem.label).toBe('Tree – trunk wrap, 4 strings');
+    const portal = portalFrom(result, inputs)!;
+    const tree = portal.lineItems.find((li) => li.kind === 'tree')!;
+    expect(tree.label).toBe('Tree');
+    expect(tree.detail).toBe('');
+    expect(tree.price).toBe(engineItem.amount);
+  });
+
+  it('strips the no-wrap string-count suffix from a Column label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'column', wrapStyle: 'canopy', stringCount: 3 }],
+    });
+    const result = calculateQuote(inputs);
+    const engineItem = result.lineItems.find((li) => li.label.startsWith('Column'))!;
+    expect(engineItem.label).toBe('Column – 3 strings');
+    const portal = portalFrom(result, inputs)!;
+    const column = portal.lineItems.find((li) => li.kind === 'column')!;
+    expect(column.label).toBe('Column');
+    expect(column.detail).toBe('');
+    expect(column.price).toBe(engineItem.amount);
+  });
+
+  it('strips "Curtain Lights – 3 strings" down to "Curtain Lights"', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'curtain', wrapStyle: 'canopy', stringCount: 3 }],
+    });
+    const result = calculateQuote(inputs);
+    const engineItem = result.lineItems.find((li) => li.label.startsWith('Curtain'))!;
+    expect(engineItem.label).toBe('Curtain Lights – 3 strings');
+    const portal = portalFrom(result, inputs)!;
+    const curtain = portal.lineItems.find((li) => li.kind === 'curtain')!;
+    expect(curtain.label).toBe('Curtain Lights');
+    expect(curtain.detail).toBe('');
+  });
+
+  it('strips the singular "1 string" suffix (Railing, no-wrap kind)', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'railing', wrapStyle: 'trunk', stringCount: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const engineItem = result.lineItems.find((li) => li.label.startsWith('Railing'))!;
+    expect(engineItem.label).toBe('Railing – 1 string');
+    const portal = portalFrom(result, inputs)!;
+    const railing = portal.lineItems.find((li) => li.kind === 'railing')!;
+    expect(railing.label).toBe('Railing');
+    expect(railing.detail).toBe('');
+  });
+
+  it('never touches a CUSTOM line item whose free-text label happens to contain "strings"', () => {
+    const inputs = emptyInputs({
+      customLineItems: [{ label: 'Special garland – 2 strings look', amount: 75, quantity: 1 }],
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const custom = portal.lineItems.find((li) => li.label === 'Special garland – 2 strings look');
+    expect(custom).toBeDefined(); // label untouched — not stripped down to "Special garland"
+    expect(custom!.kind).toBe('garland'); // parseLineItem's own classification, unrelated to this fix
+    expect(custom!.price).toBe(75);
   });
 });
 

@@ -270,6 +270,7 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     expect(res.status).toBe(200);
     expect(body.smsSent).toBe(true);
     expect(body.emailSent).toBe(true);
+    expect(body.notifySkipped).toBe(false); // #169: attempted, not skipped
     expect(sendSmsMock).toHaveBeenCalledOnce();
     expect(sendEmailMock).toHaveBeenCalledOnce();
     const [sms] = (sendSmsMock.mock.calls as unknown as Array<[{ contactId: string; message: string }]>)[0];
@@ -284,7 +285,9 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     );
     sbRef.current = client;
     const res = await POST(req({ action: 'apply' }), ctx());
+    const body = await res.json();
     expect(res.status).toBe(200);
+    expect(body.notifySkipped).toBe(true); // #169: the panel shows "expected", not a failure
     expect(sendSmsMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -303,6 +306,7 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     expect(body.ok).toBe(true);
     expect(body.smsSent).toBe(false);
     expect(body.emailSent).toBe(false);
+    expect(body.notifySkipped).toBe(false); // #169: attempted-and-FAILED → the panel says "call them"
     // the colour was still applied
     const snap = updates.quotes[0].approval_snapshot as { pendingColorRequest?: unknown };
     expect(snap.pendingColorRequest).toBeUndefined();

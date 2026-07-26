@@ -139,8 +139,11 @@ export default function InvoicesAdminPage() {
                 {visible.map((inv) => (
                   <tr key={inv.id} className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{fmtDate(inv.createdAt)}</td>
-                    <td className="px-3 py-2 text-xs font-mono text-gray-500 whitespace-nowrap" title={`Invoice ID: ${inv.id}`}>
-                      {inv.invoiceNumber != null ? `#${inv.invoiceNumber}` : inv.id.slice(0, 8)}
+                    <td className="px-3 py-2 text-xs font-mono whitespace-nowrap" title={`Invoice ID: ${inv.id}`}>
+                      {/* S30 UX ask: the invoice # is a direct link to the invoice detail. */}
+                      <Link href={`/admin/invoices/${inv.id}`} className="text-blue-600 hover:underline">
+                        {inv.invoiceNumber != null ? `#${inv.invoiceNumber}` : inv.id.slice(0, 8)}
+                      </Link>
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">

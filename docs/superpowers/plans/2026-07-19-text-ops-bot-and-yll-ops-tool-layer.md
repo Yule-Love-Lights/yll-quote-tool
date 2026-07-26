@@ -132,7 +132,7 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | 2 | View today's schedule / next install | ✓ | ✓ | ✓ |
 | 3 | View inventory / on-hand / low-stock | ✓ | ✓ | ✓ |
 | 4 | View customer contact info (for a job) | ✓ | ✓ | ✓ |
-| 5 | View full pipeline board / "what's stuck" | ⚑ — | ✓ | ✓ |
+| 5 | View full pipeline board / "what's stuck" | — | ✓ | ✓ |
 | 6 | View financials / reporting | — | ✓ | ✓ |
 | **B. Field capture** ||||
 | 7 | Submit install completion (photos) | ✓ | ✓ | ✓ |
@@ -147,8 +147,8 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | **D. Quote / money** ||||
 | 15 | Request a quote change / amend (price) | — | ✓ | ✓ |
 | 16 | Request a color change | — | ✓ | ✓ |
-| 17 | Apply a price override / discount | — | ⚑ ✓ | ✓ |
-| 18 | Staff-approve / staff-decline for a customer | — | ⚑ ✓ | ✓ |
+| 17 | Apply a price override / discount | — | ✓ | ✓ |
+| 18 | Staff-approve / staff-decline for a customer | — | — | ✓ |
 | 19 | Convert quote → job / trigger booking | — | ✓ | ✓ |
 | **E. Settings / configuration — admin-only** ||||
 | 20 | Business settings (pricing rules, packages, colors) | — | — | ✓ |
@@ -161,7 +161,11 @@ sprawl. A crew member texting a money command gets a polite "not permitted", log
 | 26 | Enable / disable the whole bot | — | — | ✓ |
 
 **Universal (not per-role):** the confirm-yes gate + audit log apply to every
-sensitive write regardless of role. **Open judgment calls:** rows 5, 17, 18.
+sensitive write regardless of role. **Rows 5, 17, 18 resolved (Naldo, 2026-07-20):**
+row 5 crew = no (pipeline board stays staff+); row 17 staff may apply price
+overrides / discounts (confirm gate + audit as always); row 18 staff-approve /
+staff-decline via the bot is ADMIN-only at launch (in-product staff powers
+unchanged; widen later if it proves safe).
 
 ## The ops tools (maps to Naldo's list)
 
@@ -191,8 +195,28 @@ Crew, from the field: *"job 142 done"* + photos + *"used 2 boxes C9, 30 clips"*
 (typed or **voice note**). The bot:
 1. interpreter extracts job#, material lines, and attaches the photos;
 2. replies a **confirm** ("Close job #142, log 2×C9 + 30 clips, save 3 photos? yes");
-3. on "yes": attaches photos (reuse uploads), **records material actuals**,
-   advances the job stage to installed/complete.
+3. on "yes": attaches photos (reuse uploads), **records material actuals**.
+
+> **⚠️ Scope correction found during the Phase 2 build (2026-07-22) — step 3 does
+> NOT advance the job status.** This plan assumed marking a job installed was a
+> stage move. It is not: `POST /api/jobs/[id]/complete` advances the job to
+> `requires_invoicing`, **creates the invoice**, moves the GHL pipeline card, and
+> can settle the invoice and close the job. That is a money path in Jason's area,
+> and it must not fire from a crew member's text off a ladder. The bot therefore
+> captures what the field knows (photos + material actually used) and the office
+> completes the job in the admin UI as before. Revisit only with Jason, as Phase 4
+> work.
+>
+> **Photo target:** `jobs` has no photo storage — `designs.extra_photos` is the
+> only store — so install photos attach to the job's LINKED DESIGN, titled
+> "Install photo — job #N". Reachable from the job, and it feeds the design
+> history the #155 rebooking wave already wants.
+>
+> **Stock true-up (Naldo, 2026-07-22):** recording actuals also ADJUSTS on-hand by
+> the difference against the estimate deducted at prep. If prep never ran, the
+> baseline is zero and the full actual comes off. Test jobs never touch real
+> stock; untracked SKUs are recorded but not adjusted; the whole thing is claimed
+> once via `jobs.materials_actualized_at`, so a repeated "done" can't double-apply.
 
 **Honest build note:** photos and the stage move **reuse existing infra**.
 Recording *actuals* is **new** — today `prepareJobMaterials` deducts only the

@@ -12,6 +12,7 @@ const {
   getOperatorMock,
   getJobByQuoteMock,
   getInvoiceByJobMock,
+  appendRetiredTxnMock,
   sendSmsMock,
   sendEmailMock,
   isHighLevelConfiguredMock,
@@ -21,6 +22,7 @@ const {
   getOperatorMock: vi.fn(async (): Promise<unknown> => null),
   getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
   getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => null),
+  appendRetiredTxnMock: vi.fn(async (): Promise<boolean> => true),
   sendSmsMock: vi.fn(async () => ({})),
   sendEmailMock: vi.fn(async () => ({})),
   isHighLevelConfiguredMock: vi.fn(() => true),
@@ -38,7 +40,7 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
 vi.mock('@/lib/jobs', () => ({ getJobByQuote: getJobByQuoteMock }));
 vi.mock('@/lib/invoices', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/invoices')>();
-  return { ...actual, getInvoiceByJob: getInvoiceByJobMock };
+  return { ...actual, getInvoiceByJob: getInvoiceByJobMock, appendRetiredTxn: appendRetiredTxnMock };
 });
 vi.mock('@/lib/integrations/highlevel', () => ({
   sendSms: sendSmsMock,
@@ -538,5 +540,58 @@ describe('POST /api/quotes/[id]/amend', () => {
     // Amend-up: new balance > 0, old status paid → awaiting_payment, paid_at cleared.
     expect(invUpdate.status).toBe('awaiting_payment');
     expect(invUpdate.paid_at).toBeNull();
+  });
+
+  // #170(b): reopening a PAID invoice retires the settled Valor txn to
+  // valor_txn_log (via the CAS'd appendRetiredTxn — #640 review MED) and
+  // clears the live slot, so the NEW balance is chargeable (no misleading
+  // 'already-charged' 409) and the old record survives.
+  it('rotates the settled Valor txn via appendRetiredTxn when an amend-up reopens a paid invoice', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+      valor_balance_txn_id: 'TXN-OLD-7', valor_receipt_url: 'https://valor/receipt/7', valor_txn_log: null,
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    // The money re-sync itself carries NO rotation fields (it must stay
+    // unconditional; the rotation is a separate CAS'd write).
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(invUpdate).not.toHaveProperty('valor_txn_log');
+    expect(invUpdate).not.toHaveProperty('valor_balance_txn_id');
+
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      'inv-1',
+      expect.objectContaining({
+        txnId: 'TXN-OLD-7',
+        receiptUrl: 'https://valor/receipt/7',
+        settledAt: '2026-06-15T10:00:00Z',
+        reason: 'amend-reopen',
+      }),
+      { clearLive: { expectTxnId: 'TXN-OLD-7' } },
+    );
+  });
+
+  it('does NOT rotate when the reopened invoice never had a real txn id', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    // Paid outside Valor (cash) — no txn to rotate.
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1', balance: 0, status: 'paid', tax_overridden: false, paid_at: '2026-06-15T10:00:00Z',
+      valor_balance_txn_id: null, valor_receipt_url: null, valor_txn_log: null,
+    });
+
+    const res = await POST(req({ reason: 'added a section' }), ctx());
+    expect(res.status).toBe(200);
+
+    const invUpdate = sb.updates.invoices[0];
+    expect(invUpdate.status).toBe('awaiting_payment');
+    expect(appendRetiredTxnMock).not.toHaveBeenCalled();
   });
 });

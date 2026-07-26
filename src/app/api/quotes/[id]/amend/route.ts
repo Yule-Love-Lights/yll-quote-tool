@@ -28,7 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
-import { computeInvoiceTotals, getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { computeInvoiceTotals, getInvoiceByJob, appendRetiredTxn, type InvoicePricingInput } from '@/lib/invoices';
 import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
@@ -347,6 +347,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           // The amendment trail is already recorded; an invoice-sync failure is
           // reconcilable (re-run the amendment / edit the invoice). Surface it.
           console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
+        } else if (
+          // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire
+          // the settled txn to valor_txn_log and clear the live slot, or the
+          // next card charge 409s 'already-charged' against LAST cycle's txn
+          // (the misleading dead-end) and a new payment would clobber the old
+          // record. Runs through the CAS'd appendRetiredTxn AFTER the money
+          // re-sync (#640 review MED: a plain composite read-modify-write could
+          // lose a concurrent double-charge stash entry). The tiny window where
+          // the new balance coexists with the old txn id fails CLOSED — a
+          // charge in that instant 409s 'already-charged'. A pending sentinel
+          // can't be on a paid invoice; guarded anyway so a rotation can never
+          // eat a live claim.
+          reconciledStatus === 'awaiting_payment' &&
+          invoiceForSync.status === 'paid' &&
+          invoiceForSync.valor_balance_txn_id &&
+          !invoiceForSync.valor_balance_txn_id.startsWith('pending:')
+        ) {
+          await appendRetiredTxn(
+            invoiceForSync.id,
+            {
+              txnId: invoiceForSync.valor_balance_txn_id,
+              receiptUrl: invoiceForSync.valor_receipt_url,
+              settledAt: invoiceForSync.paid_at,
+              retiredAt: new Date().toISOString(),
+              reason: 'amend-reopen',
+            },
+            { clearLive: { expectTxnId: invoiceForSync.valor_balance_txn_id } },
+          );
         }
       }
     }

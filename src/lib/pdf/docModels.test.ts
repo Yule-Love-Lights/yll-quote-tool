@@ -267,6 +267,8 @@ function makeInvoiceRow(overrides: Partial<InvoiceRow> = {}): InvoiceRow {
     status: 'awaiting_payment',
     valor_balance_txn_id: null,
     valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
     created_at: '2026-06-10T00:00:00Z',
     paid_at: null,
     updated_at: '2026-06-10T00:00:00Z',

@@ -171,6 +171,28 @@ export const PERMANENT_RECOMMEND_FIELDS: Record<
   'permanent-back': 'backRecommended',
 };
 
+// Jason (portal-label-detail-strip): the mini-light kinds whose engine label
+// carries an operator-only "– [canopy|trunk wrap, ]N string(s)" suffix
+// (pricingEngine.ts calculateMiniLights ~565-580). Each kind is assigned by
+// its OWN exclusive `^`-anchored prefix regex in lineItemKind.ts (TREE_RE/
+// BUSH_RE/COLUMN_RE/RAILING_RE/CURTAIN_RE) — no other product shares these
+// kinds, so scoping the strip by kind can never catch a staff-typed CUSTOM
+// item unless that item's free-text label happens to START with the exact
+// product word (a pre-existing parseLineItem characteristic, not something
+// this strip introduces — same reasoning as the W1-005 roofline-label guard).
+const MINI_LIGHT_KINDS: ReadonlySet<PortalLineItemKind> = new Set([
+  'tree',
+  'bush',
+  'column',
+  'railing',
+  'curtain',
+]);
+// En-dash aware (the engine uses U+2013, not a hyphen). Matches the trailing
+// "– canopy wrap, 4 strings" / "– trunk wrap, 4 strings" / "– 1 string" /
+// "– 3 strings" portion only — a label without this exact suffix shape is
+// left untouched (see the stripped !== item.label guard at the call site).
+const MINI_LIGHT_SUFFIX_RE = /\s*–\s*(?:(?:canopy|trunk)\s+wrap,\s*)?\d+\s+strings?\s*$/i;
+
 function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): PortalLineItem[] {
   // Defensive: old rows or partial saves may have a missing / non-array
   // lineItems field. Treat as empty so the portal still renders (the
@@ -247,13 +269,39 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // #138 (Jason S24): the customer card shows just the product name + price —
       // the engine's " – 41ft (easy)" footage/difficulty suffix is operator
       // detail (the builder breakdown renders result.lineItems directly, so it
-      // keeps the full label). Matched by kind+prefix so pre-#104 results with
-      // no stable id normalize too; Gingerbread is also kind 'ridge' but never
-      // starts with "Winter Wonderland". Same portal-only pattern as the S23
-      // permanent label strip above.
-      if (kind === 'ridge' && /^Winter Wonderland/i.test(item.label)) {
+      // keeps the full label). Matched by kind + the ENGINE'S EXACT label shape
+      // ("Winter Wonderland – <n>ft (<rate>)") so pre-#104 results with no
+      // stable id normalize too — a bare prefix match ate staff-typed CUSTOM
+      // items that happened to start with "Winter Wonderland" (S30 live bug:
+      // "Winter Wonderland Display Package · …" rendered as just "Winter
+      // Wonderland" on the portal). Same only-if-the-pattern-matched guard as
+      // the mini-light strip below.
+      if (kind === 'ridge' && /^Winter Wonderland – [\d,]+\s*ft\s*\(/i.test(item.label)) {
         item.label = 'Winter Wonderland';
         item.detail = '';
+      }
+      // Stake Lighting (Jason, portal-label-detail-strip): the customer card
+      // shows just "Stake Lighting" — the engine's " – Nft (rate)" footage/
+      // difficulty suffix (pricingEngine.ts calculateStakeLighting ~525) is
+      // operator detail. Same engine-shape match as the #138 WW strip above so
+      // a custom item named "Stake Lighting …" can never be truncated.
+      if (kind === 'stake-lighting' && /^Stake Lighting – [\d,]+\s*ft\s*\(/i.test(item.label)) {
+        item.label = 'Stake Lighting';
+        item.detail = '';
+      }
+      // Mini lights — Tree/Bush/Column/Railing/Curtain Lights (Jason,
+      // portal-label-detail-strip): the customer card shows just the surface
+      // name — the engine's wrap-style/string-count suffix is operator detail.
+      // See MINI_LIGHT_KINDS/MINI_LIGHT_SUFFIX_RE above for why this is safe
+      // against staff-typed CUSTOM items. Only strip when the suffix pattern
+      // actually matched (stripped !== item.label) — an unexpected label shape
+      // passes through unchanged instead of silently losing its detail.
+      if (MINI_LIGHT_KINDS.has(kind)) {
+        const stripped = item.label.replace(MINI_LIGHT_SUFFIX_RE, '');
+        if (stripped !== item.label) {
+          item.label = stripped;
+          item.detail = '';
+        }
       }
       // A custom line item flagged `recommended` by staff (#12). Matched by the
       // engine's exact label (custom labels never contain "Gingerbread Ridge",

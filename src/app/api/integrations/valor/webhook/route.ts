@@ -34,6 +34,7 @@ import {
   isValorConfigured,
   type ValorWebhookEvent,
 } from '@/lib/integrations/valor';
+import { registerCardInVault, isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 import {
   sendSms,
   sendEmail,
@@ -185,6 +186,10 @@ type QuoteRow = {
   // Referral program (#41 PR 2): the quote's OWN linked customer (if any), so
   // this booking can stamp their referral code too (see below).
   customer_id: string | null;
+  // #161 "both vaults" decision: set once this quote's card has been registered
+  // into Valor's OWN Vault product (separate from valor_vault_token, the raw
+  // payment token). Read back so the hook below only registers once (fill-null).
+  valor_vault_customer_id: string | null;
 };
 
 // GET — a reachability/liveness check (some webhook verifiers probe with GET).
@@ -340,7 +345,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id',
+      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id, valor_vault_customer_id',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -439,7 +444,14 @@ export async function POST(req: NextRequest) {
       // webhook is the source of truth for "booked", so it sets the status too.
       status: 'booked',
       valor_txn_id: event.txnId,
-      valor_vault_token: event.vaultToken,
+      // #161: only write the vault token when this webhook actually carried one.
+      // The signed TRANSACTION webhook is TOKENLESS (confirmed live 2026-07-22);
+      // the token arrives ~a minute EARLIER via the redirect_url capture route,
+      // which persists it to this same column — an unconditional
+      // `valor_vault_token: event.vaultToken` here wrote the parser's explicit
+      // null over that just-saved token when the booking stamp landed (observed
+      // live: capture logged "token persisted", webhook booked, column NULL).
+      ...(event.vaultToken ? { valor_vault_token: event.vaultToken } : {}),
       valor_approval_code: event.approvalCode,
       valor_receipt_url: event.receiptUrl,
       valor_payment_raw: event.raw,
@@ -493,6 +505,54 @@ export async function POST(req: NextRequest) {
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] referral code stamp failed:', err);
+  }
+
+  // Vault registration (#161 "both vaults" decision, 2026-07-22): in ADDITION to
+  // the raw payment token already saved via the redirect_url capture route
+  // (quotes.valor_vault_token), Jason wants each card ALSO registered into
+  // Valor's OWN Vault product — it shows on their dashboard, is chargeable from
+  // their Virtual Terminal, and survives independent of our tool. Placed here,
+  // alongside the other independent post-claim side effects (referral accrual,
+  // referral code stamp), because it too needs nothing from job creation below
+  // and must run exactly once per booking (guarded by the fill-null update).
+  // Best-effort + fail-open: a vault hiccup must NEVER affect the booking
+  // response Valor is waiting on. Fires for is_test quotes too — deliberate,
+  // the armed $1 probe test rides a test-ish quote, and the flag itself
+  // (isVaultRegisterEnabled) is operator-armed, so there's no separate is_test
+  // gate here.
+  try {
+    if (isVaultRegisterEnabled() && !quote.valor_vault_customer_id && event.txnId) {
+      const vaultResult = await registerCardInVault({
+        customerName: quote.customer_name,
+        email: quote.customer_email,
+        phone: quote.customer_phone,
+        txnId: event.txnId,
+      });
+      if (vaultResult.ok) {
+        const { error: vaultUpdateErr } = await sb
+          .from('quotes')
+          .update({ valor_vault_customer_id: vaultResult.vaultCustomerId })
+          .eq('id', quote.id)
+          .is('valor_vault_customer_id', null);
+        if (vaultUpdateErr) {
+          console.warn(`[valor/webhook] vault register failed: ${vaultUpdateErr.message}`);
+        } else {
+          console.log(
+            `[valor/webhook] vault registered: customer ${vaultResult.vaultCustomerId} for quote ${quote.id}`,
+          );
+        }
+      } else {
+        console.warn(`[valor/webhook] vault register failed: ${vaultResult.reason}`);
+      }
+    }
+  } catch (err) {
+    // Second belt — registerCardInVault itself never throws (always resolves
+    // {ok:false, reason} on failure), but this guards the WHOLE block
+    // (including the DB update) so an unforeseen throw here can never affect
+    // the booking response.
+    console.error(
+      `[valor/webhook] vault register failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    );
   }
 
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────
@@ -930,6 +990,20 @@ async function handleBalancePayment(
     // second approved charge racing in under a different txn id.
     await flagPossibleDuplicateBalancePayment(sb, quote, invoice, event, baseUrl);
     return NextResponse.json({ ok: true, balance: true, alreadyPaid: true });
+  }
+
+  // #170(a): the pre-claim read carried an operator charge-in-flight sentinel
+  // (`pending:<iso>` in valor_balance_txn_id) — the operator's card-on-file
+  // charge may land at Valor moments from now, making this a DOUBLE charge.
+  // Their leg detects the settled invoice and refuses to double-record, but the
+  // second Valor charge is real either way: alert proactively (same email as
+  // the duplicate path; existingTxnId shows the pending marker so staff can see
+  // the operator leg was mid-flight).
+  if (invoice.valor_balance_txn_id?.startsWith('pending:')) {
+    console.error(
+      `[api/integrations/valor/webhook] balance settled while an operator charge was IN FLIGHT for invoice ${invoice.id} (quote ${quoteId}) — likely double charge; check Valor`,
+    );
+    await flagPossibleDuplicateBalancePayment(sb, quote, invoice, event, baseUrl);
   }
 
   // Close the job once the balance is collected (best-effort — payment is recorded).

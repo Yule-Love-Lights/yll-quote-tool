@@ -42,10 +42,22 @@ export type PortalGalleryPhoto = {
 };
 
 export function portalPhotos(design: PortalDesign): PortalGalleryPhoto[] {
-  const labels = extraPhotoLabels(design.extraPhotos);
+  // Crew field photos (the text-ops bot's install capture) are INTERNAL: a
+  // ladder, a half-finished install, or a crew member's face must never appear
+  // in the homeowner's gallery. This list renders EVERY entry it returns,
+  // whether or not a scene item references the photo, so the filter has to live
+  // here. One shared read path ⇒ all three portal consumers (InteractiveHero,
+  // PhotoGallery, DesignReprise) are covered at once; staff surfaces read
+  // design.extraPhotos directly and still see them, which is the point.
+  //
+  // Dropped BEFORE the labels are computed, unlike the url-less filter below:
+  // a crew photo doesn't exist as far as the customer is concerned, so it must
+  // not consume a number and leave them looking at "Photo 1, Photo 2, Photo 5".
+  const customerExtras = (design.extraPhotos ?? []).filter((p) => p.source !== 'crew');
+  const labels = extraPhotoLabels(customerExtras);
   return [
     { id: null, url: design.photoUrl, w: design.photoW, h: design.photoH, title: 'Photo 1' },
-    ...(design.extraPhotos ?? [])
+    ...customerExtras
       .filter((p) => p.url)
       .map((p) => ({
         id: p.id,

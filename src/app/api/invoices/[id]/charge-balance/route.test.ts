@@ -9,20 +9,22 @@ const {
   sbRef,
   requireOperatorMock,
   getInvoiceMock,
-  markPaidMock,
   getJobMock,
   setJobStatusMock,
   chargeMock,
   isAutoChargeEnabledMock,
+  sendEmailMock,
+  appendRetiredTxnMock,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   getInvoiceMock: vi.fn(async (): Promise<unknown> => null),
-  markPaidMock: vi.fn(async (): Promise<unknown> => ({ id: 'inv-1', status: 'paid', balance: 0, job_id: 'job-1' })),
   getJobMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'requires_invoicing' })),
   setJobStatusMock: vi.fn(async (): Promise<unknown> => ({ id: 'job-1', status: 'done' })),
   chargeMock: vi.fn(async (): Promise<unknown> => ({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} })),
   isAutoChargeEnabledMock: vi.fn(() => true),
+  sendEmailMock: vi.fn(async (): Promise<unknown> => undefined),
+  appendRetiredTxnMock: vi.fn(async (): Promise<boolean> => true),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -30,11 +32,20 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, markInvoicePaidManually: markPaidMock }));
+vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock }));
 vi.mock('@/lib/jobs', () => ({ getJob: getJobMock, setJobStatus: setJobStatusMock }));
 vi.mock('@/lib/integrations/valorBalance', () => ({
   chargeBalanceOnFile: chargeMock,
   isAutoChargeEnabled: isAutoChargeEnabledMock,
+  CHARGE_SLOT_STALE_MS: 15 * 60 * 1000,
+}));
+vi.mock('@/lib/integrations/highlevel', () => ({
+  sendEmail: sendEmailMock,
+  isHighLevelConfigured: () => true,
+}));
+vi.mock('@/lib/integrations/quoteMessages', () => ({
+  duplicatePaymentEmailSubject: () => 'dup',
+  duplicatePaymentEmailHtml: () => '<p>dup</p>',
 }));
 
 import { POST } from './route';
@@ -54,19 +65,79 @@ const req = (body: unknown = undefined, query = '') =>
   }) as unknown as NextRequest;
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
-function makeSb(quote: Record<string, unknown> | null) {
-  const b: Record<string, unknown> = {};
-  Object.assign(b, {
-    from: () => b,
-    select: () => b,
-    update: () => b,
-    eq: () => b,
+type InvoiceUpdateCall = {
+  patch: Record<string, unknown>;
+  eqs: [string, unknown][];
+  isCalls: [string, unknown][];
+  ins: [string, unknown][];
+};
+type InvoiceUpdateResult = { data?: unknown; error?: unknown };
+
+// A per-table-aware mock: 'quotes' keeps the original select().eq().single()
+// chain; 'invoices' supports update(patch).eq(...).is(...).select(...) in any
+// order/count, records every call (for asserting the idempotency claim/release
+// CAS shape), and resolves to a QUEUED result per call (default: a successful
+// 1-row update) so existing tests that never touch the queue keep working.
+function makeSb(quote: Record<string, unknown> | null, invoiceResponses: InvoiceUpdateResult[] = []) {
+  const invoiceCalls: InvoiceUpdateCall[] = [];
+  let invoiceCallIdx = 0;
+
+  const quotesChain: Record<string, unknown> = {};
+  Object.assign(quotesChain, {
+    select: () => quotesChain,
+    eq: () => quotesChain,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
   });
+
+  function makeInvoiceChain(patch: Record<string, unknown>) {
+    const call: InvoiceUpdateCall = { patch, eqs: [], isCalls: [], ins: [] };
+    invoiceCalls.push(call);
+    const idx = invoiceCallIdx++;
+    const resolveResult = (): InvoiceUpdateResult => invoiceResponses[idx] ?? { data: [{ id: 'inv-row' }], error: null };
+    const chain: Record<string, unknown> = {};
+    Object.assign(chain, {
+      eq: (col: string, val: unknown) => {
+        call.eqs.push([col, val]);
+        return chain;
+      },
+      is: (col: string, val: unknown) => {
+        call.isCalls.push([col, val]);
+        return chain;
+      },
+      in: (col: string, val: unknown) => {
+        call.ins.push([col, val]);
+        return chain;
+      },
+      select: () => Promise.resolve(resolveResult()),
+      then: (onFulfilled: (v: InvoiceUpdateResult) => unknown, onRejected?: (e: unknown) => unknown) =>
+        Promise.resolve(resolveResult()).then(onFulfilled, onRejected),
+    });
+    return chain;
+  }
+
+  const invoicesTable = { update: (patch: Record<string, unknown>) => makeInvoiceChain(patch) };
+  const b = {
+    from: (table: string) => (table === 'quotes' ? quotesChain : invoicesTable),
+    _invoiceCalls: invoiceCalls,
+  };
   return b;
 }
 
-const INVOICE = { id: ID, quote_id: QID, job_id: 'job-1', status: 'awaiting_payment', balance: 2500, credit_note: 0 };
+// Typed accessor for the recorded invoices-table update calls (claim/reclaim/
+// release/final-record), used to assert the idempotency CAS shape.
+function invoiceCallsOf(sb: unknown): InvoiceUpdateCall[] {
+  return (sb as { _invoiceCalls: InvoiceUpdateCall[] })._invoiceCalls;
+}
+
+const INVOICE = {
+  id: ID,
+  quote_id: QID,
+  job_id: 'job-1',
+  status: 'awaiting_payment',
+  balance: 2500,
+  credit_note: 0,
+  valor_balance_txn_id: null as string | null,
+};
 const QUOTE = {
   valor_vault_token: 'vault-token-abc',
   customer_name: 'Alice',
@@ -79,13 +150,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
   isAutoChargeEnabledMock.mockReturnValue(true);
+  process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1'; // the #170(a) double-charge alert recipient
+  process.env.PORTAL_BASE_URL = 'https://portal.test'; // the mock req has no nextUrl.origin
   getInvoiceMock.mockResolvedValue({ ...INVOICE });
-  markPaidMock.mockResolvedValue({ id: ID, status: 'paid', balance: 0, job_id: 'job-1' });
   getJobMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
   setJobStatusMock.mockResolvedValue({ id: 'job-1', status: 'done' });
   chargeMock.mockResolvedValue({ ok: true, chargedUsd: 2500, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
   sbRef.current = makeSb(QUOTE);
 });
+
+// The settle write (#170a) selects the settled row — hand it a job_id so the
+// job-close leg runs. Index 1 in the response queue = the settle call
+// (0 = claim, 1 = settle, 2 = txn record).
+const SETTLE_OK = [
+  { data: [{ id: ID }], error: null },
+  { data: [{ id: ID, job_id: 'job-1' }], error: null },
+];
 
 describe('POST /api/invoices/[id]/charge-balance', () => {
   it('returns the operator gate response when denied', async () => {
@@ -143,7 +223,8 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(chargeMock).not.toHaveBeenCalled();
   });
 
-  it('charges the EXACT balance, settles the invoice, and closes the job on success', async () => {
+  it('charges the EXACT balance, settles via an atomic status claim, and closes the job on success', async () => {
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);
@@ -151,44 +232,163 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     expect(chargeMock).toHaveBeenCalledWith(
       expect.objectContaining({ vaultToken: 'vault-token-abc', amountUsd: 2500, orderRef: `bal_${QID}` }),
     );
-    expect(markPaidMock).toHaveBeenCalledWith(ID);
+    // #170(a): calls = claim, settle (atomic on a settle-able status), txn record (CAS on the sentinel).
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].patch).toMatchObject({ status: 'paid', balance: 0 });
+    expect(calls[1].ins).toContainEqual(['status', ['draft', 'awaiting_payment']]);
+    const claimSentinel = calls[0].patch.valor_balance_txn_id;
+    expect(calls[2].patch.valor_balance_txn_id).toBe('txn-9');
+    expect(calls[2].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
     expect(setJobStatusMock).toHaveBeenCalledWith('job-1', 'done');
   });
 
-  it('402s (partial-capture) and does NOT settle when the card captured less than the balance', async () => {
+  it('402s (amount-mismatch) and does NOT settle when the card captured less than the balance', async () => {
     chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 300, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
-    expect(json.reason).toBe('partial-capture');
-    expect(markPaidMock).not.toHaveBeenCalled();
+    expect(json.reason).toBe('amount-mismatch');
+    // Claim only — no settle write ever ran.
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
   });
 
-  it('402s (partial-capture) and does NOT settle when the seam reports no captured amount', async () => {
+  it('402s (amount-mismatch) and does NOT settle when the seam reports no captured amount', async () => {
     chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: null, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
-    expect(json.reason).toBe('partial-capture');
-    expect(markPaidMock).not.toHaveBeenCalled();
+    expect(json.reason).toBe('amount-mismatch');
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
   });
 
-  it('402s and does NOT settle when the charge is declined', async () => {
+  it('402s (amount-mismatch) when the capture is 100× the balance (#165 cents-parse class) — never settles', async () => {
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 250000, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('amount-mismatch');
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(1);
+  });
+
+  it('402s and does NOT settle when the charge is declined; the pending claim is released via a CAS', async () => {
     chargeMock.mockResolvedValueOnce({ ok: false, reason: 'declined', message: 'Card declined' });
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(402);
     expect(json.reason).toBe('declined');
-    expect(markPaidMock).not.toHaveBeenCalled();
+
+    // idempotency: claim (call 0), then release-on-decline (call 1) — a CAS
+    // against the EXACT sentinel written by the claim, so it can never clobber
+    // a concurrent real txn id.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(2);
+    const claimSentinel = calls[0].patch.valor_balance_txn_id;
+    expect(claimSentinel).toMatch(/^pending:/);
+    expect(calls[0].isCalls).toContainEqual(['valor_balance_txn_id', null]);
+    expect(calls[1].patch.valor_balance_txn_id).toBeNull();
+    expect(calls[1].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
   });
 
-  it('500s (settle-failed) but signals the charge went through when the settle throws', async () => {
-    markPaidMock.mockRejectedValueOnce(new Error('db down'));
+  it('500s (settle-failed) but signals the charge went through when the settle write errors', async () => {
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: null, error: { message: 'db down' } }, // settle write fails
+    ]);
     const res = await POST(req(), ctx());
     const json = await res.json();
     expect(res.status).toBe(500);
     expect(json.reason).toBe('settle-failed');
     expect(json.txnId).toBe('txn-9');
+  });
+
+  // ─── #170(a): the cross-path double-charge race ───────────────────────────
+  it('409s (double-charge) when the pay-link webhook settled DURING our charge: keeps their txn, logs ours, alerts', async () => {
+    // The 0-rows re-read sees the webhook's settled state (paid + their txn).
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE }) // route-top read
+      .mockResolvedValueOnce({ ...INVOICE, status: 'paid', valor_balance_txn_id: 'TXN-WEBHOOK-1' });
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: [], error: null }, // settle claims 0 rows — the webhook settled first
+    ]);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('double-charge');
+    expect(json.txnId).toBe('txn-9');
+    expect(json.error).toContain('VOID');
+
+    const calls = invoiceCallsOf(sbRef.current);
+    // claim + settle(0 rows) only — the stash goes through the CAS'd
+    // appendRetiredTxn, and NO write anywhere puts OUR txn id into
+    // valor_balance_txn_id (the webhook's record wins).
+    expect(calls).toHaveLength(2);
+    for (const c of calls.slice(1)) {
+      expect(c.patch.valor_balance_txn_id).toBeUndefined();
+    }
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('VOID') }),
+    );
+    // The alert email carries BOTH txn ids (#640 review MED: existingTxnId was
+    // hardcoded null — staff need the webhook's id to reconcile in Valor).
+    expect(sendEmailMock).toHaveBeenCalled();
+    expect(setJobStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("409s (charged-cancelled) when the invoice was CANCELLED during the charge — refund guidance, not 'double charge'", async () => {
+    // #640 review HIGH: a job-cancel racing the in-flight charge also claims
+    // 0 rows on settle — but no duplicate payment exists; a single real charge
+    // landed on a cancelled invoice and needs a REFUND.
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE }) // route-top read
+      .mockResolvedValueOnce({ ...INVOICE, status: 'cancelled' });
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: [], error: null }, // settle claims 0 rows — cancelled, not paid
+    ]);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charged-cancelled');
+    expect(json.error).toContain('REFUND');
+    expect(json.error).not.toContain('TWICE');
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('REFUND') }),
+    );
+    expect(setJobStatusMock).not.toHaveBeenCalled();
+  });
+
+  // ─── #170(c): absolute ceiling ────────────────────────────────────────────
+  it('409s (over-cap) without charging when the balance exceeds the auto-charge ceiling', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, balance: 30_000 });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('over-cap');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  // ─── #170(d): cash/check payment preference ───────────────────────────────
+  it('409s (cash-preference) without charging when the customer is marked cash/check', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('cash-preference');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('charges a cash/check customer only with the explicit overridePreference', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
+    const res = await POST(req({ overridePreference: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
   });
 });
 
@@ -278,5 +478,82 @@ describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/invoices/[id]/charge-balance — charge idempotency pre-claim', () => {
+  it('fresh null valor_balance_txn_id → claims a pending sentinel (CAS on null) then charges', async () => {
+    // default fixture already has valor_balance_txn_id: null
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+
+    const calls = invoiceCallsOf(sbRef.current);
+    // call 0 = the claim; call 1 = the post-settle txn-record write.
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
+    expect(calls[0].isCalls).toContainEqual(['valor_balance_txn_id', null]);
+  });
+
+  it('loses the claim race (0 rows updated on a null claim) → 409 charge-in-flight, no charge attempted', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: null });
+    sbRef.current = makeSb(QUOTE, [{ data: [], error: null }]); // claim update matches 0 rows — lost the race
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charge-in-flight');
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('a FRESH pending claim (< 15 min old) held by a concurrent request → 409 charge-in-flight, no charge attempted', async () => {
+    const fresh = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min ago
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: `pending:${fresh}` });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('charge-in-flight');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Short-circuits before ever writing — no invoices-table update attempted.
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('a STALE pending claim (> 15 min old) is reclaimed via a CAS on the exact stale value, then the charge proceeds', async () => {
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 min ago
+    const staleValue = `pending:${stale}`;
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: staleValue });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
+    expect(calls[0].eqs).toContainEqual(['valor_balance_txn_id', staleValue]);
+  });
+
+  it('a real Valor txn id already on file → 409 already-charged, no charge attempted, no write', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, valor_balance_txn_id: 'TXN-REAL-42' });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('already-charged');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('an AMBIGUOUS timeout LEAVES the pending sentinel (no release call) and the response says to reconcile', async () => {
+    chargeMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'error',
+      message: 'Valor balance charge timed out — check Valor before retrying (do not auto-retry)',
+    });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(402);
+    expect(json.reason).toBe('error');
+    expect(json.error.toLowerCase()).toContain('reconcile');
+
+    // Only the initial claim wrote to invoices — no release/CAS-clear call.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
   });
 });

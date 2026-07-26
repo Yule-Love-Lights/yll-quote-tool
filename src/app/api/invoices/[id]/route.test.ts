@@ -3,15 +3,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { getInvoiceDetail, setInvoiceTaxOverride, requireOperatorMock } = vi.hoisted(() => ({
+const { getInvoiceDetail, setInvoiceTaxOverride, setInvoicePaymentPreference, requireOperatorMock } = vi.hoisted(() => ({
   getInvoiceDetail: vi.fn(),
   setInvoiceTaxOverride: vi.fn(),
+  setInvoicePaymentPreference: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
 }));
 
 vi.mock('@/lib/supabase', () => ({ isSupabaseServiceConfigured: () => true }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoiceDetail, setInvoiceTaxOverride }));
+vi.mock('@/lib/invoices', () => ({ getInvoiceDetail, setInvoiceTaxOverride, setInvoicePaymentPreference }));
 
 import { GET, PATCH } from './route';
 
@@ -94,5 +95,58 @@ describe('PATCH /api/invoices/[id] — tax override', () => {
     expect(res.status).toBe(409);
     expect(json.code).toBe('invoice-paid');
     expect(json.error).toMatch(/paid/i);
+  });
+
+  // ─── #170(d): payment preference ──────────────────────────────────────────
+  it('sets a valid paymentPreference and returns the updated invoice', async () => {
+    setInvoicePaymentPreference.mockResolvedValueOnce({ id: ID, payment_preference: 'cash_check' });
+    const res = await PATCH(patchReq({ paymentPreference: 'cash_check' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.invoice).toMatchObject({ payment_preference: 'cash_check' });
+    expect(setInvoicePaymentPreference).toHaveBeenCalledWith(ID, 'cash_check');
+    expect(setInvoiceTaxOverride).not.toHaveBeenCalled();
+  });
+
+  it('accepts paymentPreference null (unset)', async () => {
+    setInvoicePaymentPreference.mockResolvedValueOnce({ id: ID, payment_preference: null });
+    const res = await PATCH(patchReq({ paymentPreference: null }), ctx());
+    expect(res.status).toBe(200);
+    expect(setInvoicePaymentPreference).toHaveBeenCalledWith(ID, null);
+  });
+
+  it('400s on an invalid paymentPreference value', async () => {
+    const res = await PATCH(patchReq({ paymentPreference: 'venmo' }), ctx());
+    expect(res.status).toBe(400);
+    expect(setInvoicePaymentPreference).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/invoices/[id] — chargeState (#170d)', () => {
+  it('reports an in-flight charge claim from the pending sentinel', async () => {
+    const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    getInvoiceDetail.mockResolvedValueOnce({
+      invoice: { id: ID, status: 'awaiting_payment', valor_balance_txn_id: `pending:${since}` },
+      jobNumber: 1000,
+    });
+    const res = await GET(req, ctx());
+    const json = await res.json();
+    expect(json.chargeState).toMatchObject({ kind: 'in-flight', sinceIso: since, stale: false });
+  });
+
+  it('reports charged for a real txn id and none for null', async () => {
+    getInvoiceDetail.mockResolvedValueOnce({
+      invoice: { id: ID, status: 'paid', valor_balance_txn_id: 'TXN-9' },
+      jobNumber: 1000,
+    });
+    let json = await (await GET(req, ctx())).json();
+    expect(json.chargeState).toEqual({ kind: 'charged', txnId: 'TXN-9' });
+
+    getInvoiceDetail.mockResolvedValueOnce({
+      invoice: { id: ID, status: 'draft', valor_balance_txn_id: null },
+      jobNumber: 1000,
+    });
+    json = await (await GET(req, ctx())).json();
+    expect(json.chargeState).toEqual({ kind: 'none' });
   });
 });
