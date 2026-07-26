@@ -339,6 +339,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
           <section className="est-screen" style={{ textAlign: 'center', marginTop: 18 }}>
             <div className="est-spinner" />
             <p className="est-scan-status">{MEASURING_LINES[measureLine]}</p>
+            <div className="est-scanbar"><span /></div>
             <p className="est-price-note">Reading the satellite view of {address}</p>
           </section>
         )}
@@ -369,7 +370,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
             blurb={uploaded
               ? "Thanks — leave your info and we'll design your lights from your photo and reach out within one business day with your custom quote."
               : "Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day."}
-            cta="Get my custom quote"
+            cta={uploaded ? 'Design my quote' : 'Get my custom quote'}
             {...contactProps}
           />
         )}
@@ -377,10 +378,11 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         {step === 'outofarea' && (
           <section className="est-screen" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div className="est-price-card">
-              <p className="est-price-band" style={{ fontSize: 20 }}>We&apos;re not in your area just yet</p>
-              <p className="est-price-note">We currently install across Nassau and Suffolk County. Leave your info and we&apos;ll reach out if we expand near you.</p>
+              <div style={{ fontSize: 36, lineHeight: 1 }}>📍</div>
+              <p className="est-price-band" style={{ fontSize: 20, marginTop: 6 }}>We&apos;re not in your neighborhood… yet</p>
+              <p className="est-price-note">Right now we install across Nassau and Suffolk County. Leave your info and you&apos;ll be first to know when we light up your area.</p>
             </div>
-            <ContactCard heading="Get on the list" blurb="We'll let you know as soon as we're installing in your area." cta="Keep me posted" {...contactProps} />
+            <ContactCard heading="Get on the list" blurb="We'll let you know the moment we're installing near you." cta="Keep me posted" {...contactProps} />
           </section>
         )}
 
