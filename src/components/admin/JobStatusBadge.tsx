@@ -12,7 +12,11 @@ export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   to_schedule: 'To schedule',
   scheduled: 'Scheduled',
   installed: 'Installed',
-  requires_invoicing: 'Requires invoicing',
+  // S30 (Jason): the invoice auto-creates on complete, so this status really
+  // means "invoiced, balance not collected yet" — label it that way. The
+  // STATUS VALUE stays requires_invoicing (load-bearing: the charge/webhook
+  // legs match on it to auto-close the job).
+  requires_invoicing: 'Awaiting payment',
   done: 'Done',
   cancelled: 'Cancelled',
 };

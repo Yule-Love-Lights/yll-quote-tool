@@ -1,9 +1,13 @@
 // src/app/api/integrations/telegram/webhook/route.ts
-// Telegram Bot API webhook for the inventory bot (#82 Phase 3 alt channel).
+// Telegram Bot API webhook for the staff ops bot (#82 Phase 3 → text-ops plan).
 //   POST — inbound message update from Telegram. Verifies the
 //   X-Telegram-Bot-Api-Secret-Token header → checks the chat-id allowlist →
-//   strips Telegram conventions (/ prefix, @bot mentions) → dispatches to the
-//   shared command parser. Reply sent via sendMessage.
+//   hands the message to the dispatcher, which owns the address/role/confirm
+//   gates. Reply sent via sendMessage.
+//
+// TWO DIFFERENT IDS, on purpose: the allowlist gates the CHAT (which rooms the
+// bot serves) while permissions key off the SENDER (message.from.id), so a
+// staff group chat doesn't hand every member the highest role in the room.
 //
 // Always 200s except on a bad secret (401), so Telegram doesn't retry endlessly.
 // DORMANT until TELEGRAM_BOT_ENABLED='true' AND TELEGRAM_BOT_TOKEN is set.
@@ -16,13 +20,24 @@ import {
   verifyTelegramSecret,
   isAllowedChat,
   sendTelegramMessage,
-  cleanTelegramCommand,
 } from '@/lib/integrations/telegram';
-import { handleWhatsAppText } from '@/lib/integrations/whatsapp';
+import { handleBotMessage } from '@/lib/integrations/botDispatch';
 
 export const runtime = 'nodejs';
 
 const ok = () => NextResponse.json({ ok: true });
+
+type TelegramPhotoSize = { file_id?: string };
+type TelegramMessage = {
+  chat?: { id?: number | string; type?: string };
+  from?: { id?: number | string };
+  text?: string;
+  caption?: string;
+  photo?: TelegramPhotoSize[];
+  voice?: { file_id?: string };
+  audio?: { file_id?: string };
+  reply_to_message?: { from?: { is_bot?: boolean } };
+};
 
 export async function GET() {
   // For ops checks — Telegram itself doesn't GET; just return 200.
@@ -48,29 +63,41 @@ export async function POST(req: NextRequest) {
     return ok();
   }
 
-  // Telegram Update shape we care about: message.chat.id + message.text. Status
-  // updates (edited_message, callback_query, channel_post, etc.) are ignored.
-  const update = body as {
-    message?: { chat?: { id?: number | string }; text?: string };
-  } | null;
-  const msg = update?.message;
+  // Status updates (edited_message, callback_query, channel_post, etc.) are ignored.
+  const msg = (body as { message?: TelegramMessage } | null)?.message;
   const chatId = msg?.chat?.id;
-  const text = msg?.text;
-  if (!msg || typeof text !== 'string' || chatId === undefined) return ok();
+  if (!msg || chatId === undefined) return ok();
 
   if (!isAllowedChat(chatId)) {
     console.warn('[telegram] ignored command from non-allowlisted chat:', chatId);
     return ok();
   }
 
-  const command = cleanTelegramCommand(text);
-  if (!command) return ok();
+  const userId = msg.from?.id;
+  if (userId === undefined) return ok();
+
+  // Telegram sends a photo as an array of sizes, smallest first — the last one
+  // is the highest resolution available.
+  const photoFileIds: string[] = [];
+  if (Array.isArray(msg.photo) && msg.photo.length) {
+    const largest = msg.photo[msg.photo.length - 1]?.file_id;
+    if (largest) photoFileIds.push(largest);
+  }
 
   try {
-    // handleWhatsAppText is the provider-agnostic dispatcher (parse + run);
-    // the name is legacy — both Twilio and Telegram routes call it.
-    const reply = await handleWhatsAppText(command);
-    await sendTelegramMessage(chatId, reply);
+    const reply = await handleBotMessage({
+      chatId: String(chatId),
+      userId: String(userId),
+      chatType: msg.chat?.type ?? 'private',
+      // RAW text (or the photo's caption) — the group gate needs the @mention
+      // intact, so cleaning happens inside the dispatcher.
+      text: msg.text ?? msg.caption ?? '',
+      isReplyToBot: msg.reply_to_message?.from?.is_bot === true,
+      photoFileIds,
+      voiceFileId: msg.voice?.file_id ?? msg.audio?.file_id ?? null,
+    });
+    // null = a group message that wasn't addressed to the bot: stay silent.
+    if (reply) await sendTelegramMessage(chatId, reply);
   } catch (err) {
     console.error('[telegram] command handling failed:', err);
     try {

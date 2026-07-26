@@ -89,6 +89,18 @@ export type DesignExtraPhoto = {
   w: number;
   h: number;
   title?: string | null;
+  // Who put this photo here. Absent (the default, and every row written before
+  // 2026-07-22) means an operator added it as part of the design, so it stays
+  // customer-visible. 'crew' marks an INTERNAL field photo — the text-ops bot's
+  // install capture — which the customer portal must never render: a ladder,
+  // a half-finished install, or a crew member's face has no business appearing
+  // in the homeowner's gallery. Filtered in portalPhotos(); staff surfaces read
+  // design.extraPhotos directly and still see it, which is the point.
+  source?: 'crew' | null;
+  // The Telegram file id this photo came from (bot install capture only). Lets
+  // addDesignExtraPhoto dedupe by source file so a retry or a redelivered
+  // webhook can't append the same shot twice. Absent on operator uploads.
+  telegramFileId?: string | null;
 };
 
 export type DesignRow = {
@@ -135,8 +147,18 @@ export type DesignWithPhoto = {
   satelliteFeetPerPixel: number | null;
   satelliteLines: DesignSatelliteLines | null;
   // Extra street photos (#13), each with a freshly-signed URL. Empty array for
-  // designs without extras (incl. every pre-migration design).
-  extraPhotos: { id: string; url: string | null; w: number; h: number; title: string | null }[];
+  // designs without extras (incl. every pre-migration design). `source: 'crew'`
+  // marks an INTERNAL field photo (the text-ops bot's install capture) that
+  // portalPhotos() must filter from the customer gallery — it MUST survive this
+  // read or the filter runs against undefined and shows crew photos to homeowners.
+  extraPhotos: {
+    id: string;
+    url: string | null;
+    w: number;
+    h: number;
+    title: string | null;
+    source?: 'crew' | null;
+  }[];
   // Staff title for the base photo (#13) — null renders as "Photo 1".
   photoTitle: string | null;
 };
@@ -343,6 +365,10 @@ async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPho
       w: p.w,
       h: p.h,
       title: p.title ?? null,
+      // Carry the internal-photo marker through: portalPhotos() filters on it to
+      // keep crew install photos out of the customer gallery. Dropping it here
+      // (the original bug) left every source undefined and the filter dead.
+      source: p.source ?? null,
     })),
     photoTitle: row.photo_title ?? null,
   };
@@ -868,11 +894,17 @@ async function updateExtraPhotosAtomic(
 // Decode + store one extra photo and append it to the design's extra_photos.
 // Returns the stored entry (id is a fresh UUID — it's what scene items'
 // `photoId` will reference).
+//
+// `source: 'crew'` marks an internal field photo that the customer portal must
+// not render (see DesignExtraPhoto.source). Omitting it keeps the operator
+// default: part of the design, shown to the customer.
 export async function addDesignExtraPhoto(
   id: string,
   base64: string,
   contentType: string,
   title?: string | null,
+  source?: 'crew' | null,
+  telegramFileId?: string | null,
 ): Promise<DesignExtraPhoto> {
   const sb = getSb();
   if (!sb) throw new Error('Supabase service role not configured');
@@ -896,10 +928,35 @@ export async function addDesignExtraPhoto(
   });
   if (upErr) throw new Error(`addDesignExtraPhoto: ${upErr.message}`);
 
-  const entry: DesignExtraPhoto = { id: photoId, path, w: width, h: height, title: title?.trim() || null };
-  // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic.
-  await updateExtraPhotosAtomic(sb, id, (current) => [...current, entry]);
+  const entry: DesignExtraPhoto = {
+    id: photoId,
+    path,
+    w: width,
+    h: height,
+    title: title?.trim() || null,
+    ...(source === 'crew' ? { source: 'crew' as const } : {}),
+    ...(telegramFileId ? { telegramFileId } : {}),
+  };
+  // W2-015: atomic (guarded-retry) append — see updateExtraPhotosAtomic. Dedupe
+  // by Telegram file id INSIDE the atomic updater so a retry or a redelivered
+  // webhook can't append the same install shot twice, even under a race.
+  let deduped: DesignExtraPhoto | null = null;
+  await updateExtraPhotosAtomic(sb, id, (current) => {
+    if (telegramFileId) {
+      const existing = current.find((p) => p.telegramFileId === telegramFileId);
+      if (existing) {
+        deduped = existing;
+        return current;
+      }
+    }
+    return [...current, entry];
+  });
 
+  if (deduped) {
+    // Clean up the orphan object we just uploaded before discovering the dup.
+    await sb.storage.from(BUCKET).remove([path]).catch(() => {});
+    return deduped;
+  }
   return entry;
 }
 

@@ -70,6 +70,7 @@ export async function POST(req: NextRequest) {
     contactId?: string;
     opportunityName?: string;
     monetaryValue?: number;
+    detach?: boolean;
   };
   try {
     body = await req.json();
@@ -79,6 +80,20 @@ export async function POST(req: NextRequest) {
 
   if (!body.quoteId || !UUID_RE.test(body.quoteId)) {
     return NextResponse.json({ error: 'quoteId must be a valid UUID' }, { status: 400 });
+  }
+  // #172: detach — the builder's Clear button must be a real undo (the
+  // pick-time attach may already have linked the row, or still be in flight
+  // behind the client's serialized queue). Clears the LOCAL link only; the
+  // GHL card itself is untouched.
+  if (body.detach === true) {
+    const { error: detachErr } = await getSupabaseServiceClient()!
+      .from('quotes')
+      .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
+      .eq('id', body.quoteId);
+    if (detachErr) {
+      return NextResponse.json({ error: `Detach failed: ${detachErr.message}` }, { status: 500 });
+    }
+    return NextResponse.json({ detached: true });
   }
   if (!body.contactId || typeof body.contactId !== 'string') {
     return NextResponse.json({ error: 'contactId required (HighLevel contact id)' }, { status: 400 });
@@ -124,7 +139,7 @@ export async function POST(req: NextRequest) {
     // no card yet gets one created at their pipeline's entry stage (📭Open /
     // Open / New Lead). The send route intentionally differs: it creates
     // missing cards directly at the `sent` stage, per its own contract.
-    const { opportunity, created } = await findOrCreateOpportunityForContact({
+    const { opportunity, created, resurrected } = await findOrCreateOpportunityForContact({
       contactId: body.contactId,
       pipelineId: stages.pipelineId,
       fallbackStageId: stages.entry,
@@ -156,7 +171,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ opportunityId: opportunity.id, created, linked: !updateErr });
+    return NextResponse.json({
+      opportunityId: opportunity.id,
+      created,
+      // #172: surfaced so a surprising board change (an old card reopened) is
+      // visible in the response, not just the server log.
+      resurrected: resurrected ?? false,
+      linked: !updateErr,
+    });
   } catch (err) {
     console.error('[api/integrations/highlevel/attach] failed:', err);
     if (err instanceof HighLevelError) {

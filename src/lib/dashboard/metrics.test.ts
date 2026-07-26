@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKpis, reached } from './metrics';
+import { computeKpis, reached, customerKey } from './metrics';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
 
@@ -24,6 +24,43 @@ function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
     ...over,
   };
 }
+
+describe('customerKey — identity grouping', () => {
+  // Same E.164-vs-10-digit split fixed on the other identity paths (S42): GHL
+  // stores '+16315550100', forms store '6315550100'. Left raw, one person
+  // counted as two customers — inflating the active-customer KPI and splitting
+  // the Customers list.
+  it('groups an E.164 and a 10-digit phone as ONE customer', () => {
+    const a = customerKey(makeQuote({ customer_name: null, customer_phone: '+16315550100' }));
+    const b = customerKey(makeQuote({ customer_name: null, customer_phone: '(631) 555-0100' }));
+    expect(a).toBe(b);
+  });
+
+  it('does NOT collapse a longer international number onto a US one', () => {
+    const us = customerKey(makeQuote({ customer_name: null, customer_phone: '6315550100' }));
+    const mx = customerKey(makeQuote({ customer_name: null, customer_phone: '+526315550100' }));
+    expect(us).not.toBe(mx);
+  });
+
+  it('keeps the hl > email > phone > name precedence', () => {
+    expect(customerKey(makeQuote({ highlevel_contact_id: 'hl_1', customer_phone: '6315550100' }))).toBe('hl_1');
+    expect(customerKey(makeQuote({ customer_email: 'a@b.com', customer_phone: '6315550100' }))).toBe('a@b.com');
+    // a phone with no digits falls through to name, same as before
+    expect(customerKey(makeQuote({ customer_name: 'Jo', customer_email: null, customer_phone: 'n/a' }))).toBe('Jo');
+  });
+
+  // Email is normalized the same way customerMatchKey (lib/customers.ts) does —
+  // trimmed + lowercased — so 'A@B.com', 'a@b.com', and ' a@b.com ' are ONE
+  // customer, not three. Left raw it split the same way phone used to.
+  it('normalizes email case + whitespace so one person groups once', () => {
+    const a = customerKey(makeQuote({ customer_email: 'A@B.com' }));
+    const b = customerKey(makeQuote({ customer_email: 'a@b.com' }));
+    const c = customerKey(makeQuote({ customer_email: '  a@b.com  ' }));
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(b).toBe('a@b.com');
+  });
+});
 
 describe('computeKpis — empty', () => {
   it('returns all zeros / nulls on an empty list', () => {

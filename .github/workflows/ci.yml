@@ -1,0 +1,65 @@
+# CI gates — the same three checks AGENTS.md requires before any merge
+# (npx tsc --noEmit · npm run lint · npm test), run automatically on every PR
+# to master and on master itself.
+#
+# WHY THIS EXISTS: master auto-deploys to production, and until now nothing
+# forced the gates to run before a merge — Vercel type-checks and lints during
+# `next build` but never runs vitest, so a green local suite protected nothing
+# if a dev forgot to run it. Four customer-facing bugs reached prod this way
+# (the allowlist misses fixed in #605/#614, and the phone-dedup class). This
+# makes the gates a visible status check on the PR.
+#
+# NOTE: this workflow RUNS the checks; it does not BLOCK a merge on them, and
+# on this repo it CAN'T yet. Marking "gates" a required status check needs
+# branch protection (or a ruleset), and GitHub restricts both to Pro/Team on
+# PRIVATE repos — the Yule-Love-Lights org is on the free plan, so both APIs
+# return 403 (verified 2026-07-21). Until the org upgrades, enforcement is the
+# AGENTS.md convention "the CI gates check must be GREEN before any merge",
+# i.e. a human/assistant reads `gh pr checks <n>` and declines a red merge.
+# On upgrade: mark "gates" required for master and this note can go.
+#
+# tsc expectation: locally the only tsc errors are that @playwright/test isn't
+# installed (OneDrive eats node_modules); a clean `npm ci` here installs it, and
+# Vercel's own `next build` type-check already passes on every deploy, so tsc is
+# expected to be clean in CI. If the first run shows e2e-spec type errors, that
+# is a real pre-existing gap for a follow-up, not a regression from a PR.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+# A new push to the same branch cancels an in-flight run for it — no point
+# gating a commit that's already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # `npm ci` installs from the lockfile exactly (incl. @playwright/test), so
+      # the type-check sees a complete tree — unlike the OneDrive-synced local
+      # checkout where modules go missing.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test

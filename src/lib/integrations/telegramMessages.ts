@@ -72,3 +72,19 @@ export function poSentMessage(args: {
   out.push(`Details → ${args.baseUrl}/inventory/orders`);
   return out.join('\n');
 }
+
+// Phase 1 of the 2026-07-19 text-ops plan: instant staff ping when a website
+// lead lands (the /api/leads insert). Same rules as the pings above — plain
+// text, baseUrl passed in, no IO.
+export function newLeadMessage(args: {
+  name: string;
+  service: string;
+  phone: string;
+  address: string | null;
+  baseUrl: string;
+}): string {
+  const lines = [`🟢 New website lead — ${args.name} (${args.service})`, `📞 ${args.phone}`];
+  if (args.address) lines.push(`📍 ${args.address}`);
+  lines.push(`Leads → ${args.baseUrl}/admin/leads`);
+  return lines.join('\n');
+}

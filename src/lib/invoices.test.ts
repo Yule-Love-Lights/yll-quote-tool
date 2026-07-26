@@ -18,6 +18,7 @@ import {
   getInvoiceDetail,
   listInvoicesForAdmin,
   markInvoicePaidManually,
+  appendRetiredTxn,
   reconcileInvoice,
   setInvoiceStatus,
   setInvoiceTaxOverride,
@@ -872,6 +873,8 @@ function makeInvoiceRow(overrides: Partial<InvoiceRow> = {}): InvoiceRow {
     status: 'awaiting_payment',
     valor_balance_txn_id: null,
     valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
     created_at: '2026-01-01T00:00:00Z',
     paid_at: null,
     updated_at: '2026-01-01T00:00:00Z',
@@ -992,5 +995,101 @@ describe('reconcileInvoice — flags', () => {
     );
     expect(r.flags).not.toContain('balance-outstanding');
     expect(r.flags).not.toContain('short-deposit');
+  });
+});
+
+// ─── appendRetiredTxn (#170b + #640 review MED: CAS'd log append) ───────────
+// Bespoke chain fake (the shared in-memory fake doesn't model jsonb-equality
+// filters): records every update's patch + filters and serves queued results.
+describe('appendRetiredTxn', () => {
+  type UpdateRec = { patch: Record<string, unknown>; filters: [string, string, unknown][] };
+  function makeCasSb(
+    invoice: Record<string, unknown>,
+    updateResults: { data?: unknown[]; error?: unknown }[] = [],
+  ) {
+    let idx = 0;
+    const updates: UpdateRec[] = [];
+    const client = {
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: invoice, error: null }) }) }),
+        update: (patch: Record<string, unknown>) => {
+          const rec: UpdateRec = { patch, filters: [] };
+          updates.push(rec);
+          const chain = {
+            eq: (c: string, v: unknown) => {
+              rec.filters.push(['eq', c, v]);
+              return chain;
+            },
+            is: (c: string, v: unknown) => {
+              rec.filters.push(['is', c, v]);
+              return chain;
+            },
+            select: async () => updateResults[idx++] ?? { data: [{ id: 'inv-1' }], error: null },
+          };
+          return chain;
+        },
+      }),
+    };
+    return { client, updates };
+  }
+
+  const ENTRY = {
+    txnId: 'TXN-OLD-7',
+    receiptUrl: 'https://valor/r/7',
+    settledAt: '2026-06-15T10:00:00Z',
+    retiredAt: '2026-07-24T10:00:00Z',
+    reason: 'amend-reopen',
+  };
+
+  it('appends on the first try, CAS-guarded on a NULL prior log', async () => {
+    const { client, updates } = makeCasSb({ id: 'inv-1', valor_txn_log: null, valor_balance_txn_id: 'TXN-OLD-7' });
+    sbRef.current = client;
+    expect(await appendRetiredTxn('inv-1', ENTRY)).toBe(true);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch.valor_txn_log).toEqual([ENTRY]);
+    expect(updates[0].filters).toContainEqual(['is', 'valor_txn_log', null]);
+  });
+
+  it('retries after a lost CAS and succeeds on the second attempt', async () => {
+    const { client, updates } = makeCasSb(
+      { id: 'inv-1', valor_txn_log: [{ txnId: 'PRIOR' }], valor_balance_txn_id: null },
+      [{ data: [] }, { data: [{ id: 'inv-1' }] }],
+    );
+    sbRef.current = client;
+    expect(await appendRetiredTxn('inv-1', ENTRY)).toBe(true);
+    expect(updates).toHaveLength(2);
+    // Each attempt CAS'd on the log value it read.
+    expect(updates[1].filters).toContainEqual(['eq', 'valor_txn_log', JSON.stringify([{ txnId: 'PRIOR' }])]);
+    // The appended array preserves the prior entry (no lost update).
+    expect(updates[1].patch.valor_txn_log).toEqual([{ txnId: 'PRIOR' }, ENTRY]);
+  });
+
+  it('gives up loudly (false) when the CAS never lands', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updates } = makeCasSb({ id: 'inv-1', valor_txn_log: null, valor_balance_txn_id: null }, [
+      { data: [] },
+      { data: [] },
+      { data: [] },
+    ]);
+    sbRef.current = client;
+    expect(await appendRetiredTxn('inv-1', ENTRY)).toBe(false);
+    expect(updates).toHaveLength(3);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('lost the CAS'), expect.anything());
+    err.mockRestore();
+  });
+
+  it('clearLive: retires the live slot CAS-exact and bails when the live txn moved', async () => {
+    const ok = makeCasSb({ id: 'inv-1', valor_txn_log: null, valor_balance_txn_id: 'TXN-OLD-7' });
+    sbRef.current = ok.client;
+    expect(await appendRetiredTxn('inv-1', ENTRY, { clearLive: { expectTxnId: 'TXN-OLD-7' } })).toBe(true);
+    expect(ok.updates[0].patch).toMatchObject({ valor_balance_txn_id: null, valor_receipt_url: null });
+    expect(ok.updates[0].filters).toContainEqual(['eq', 'valor_balance_txn_id', 'TXN-OLD-7']);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const moved = makeCasSb({ id: 'inv-1', valor_txn_log: null, valor_balance_txn_id: 'TXN-NEWER' });
+    sbRef.current = moved.client;
+    expect(await appendRetiredTxn('inv-1', ENTRY, { clearLive: { expectTxnId: 'TXN-OLD-7' } })).toBe(false);
+    expect(moved.updates).toHaveLength(0); // bailed before writing anything
+    err.mockRestore();
   });
 });

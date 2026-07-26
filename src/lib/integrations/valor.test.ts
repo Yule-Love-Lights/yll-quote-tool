@@ -109,3 +109,97 @@ describe('createHostedPageSale — request body', () => {
     expect(capturedBody.save_card).toBeUndefined();
   });
 });
+
+// #161 (2026-07-22, Valor support Fadil Cox): the hosted page's card-on-file
+// answer is a redirect_url S2S callback, not save_card. This is PROBED behind
+// VALOR_REDIRECT_CAPTURE_URL — when set, ONLY redirect_url points at the
+// diagnostic route; success_url (what the customer's browser actually uses to
+// return from checkout) must stay untouched.
+describe('createHostedPageSale — redirect_url capture (#161)', () => {
+  const OLD_ENV = process.env;
+  beforeEach(() => {
+    process.env = { ...OLD_ENV, VALOR_APP_ID: 'app', VALOR_APP_KEY: 'key', VALOR_EPI: 'epi', VALOR_IS_DEMO: 'true' };
+  });
+  afterEach(() => {
+    process.env = OLD_ENV;
+    vi.restoreAllMocks();
+  });
+
+  async function captureBody(): Promise<Record<string, unknown>> {
+    let capturedBody: Record<string, unknown> = {};
+    const fetchMock = vi.fn(async (_url: unknown, init: { body: string }) => {
+      capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ url: 'https://valor/pay/abc', uid: 'u1' }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await createHostedPageSale({
+      amountUsd: 100,
+      orderRef: 'qtest',
+      successUrl: 'https://app/success',
+      failureUrl: 'https://app/fail',
+    });
+    return capturedBody;
+  }
+
+  it('points redirect_url at VALOR_REDIRECT_CAPTURE_URL when set, leaving success_url unchanged', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/api/integrations/valor/redirect-capture');
+    expect(body.success_url).toBe('https://app/success');
+  });
+
+  it('falls back to successUrl for redirect_url when the capture env var is unset (current/original behavior)', async () => {
+    delete process.env.VALOR_REDIRECT_CAPTURE_URL;
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/success');
+    expect(body.success_url).toBe('https://app/success');
+  });
+
+  it('falls back to successUrl when the capture env var is set but blank', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = '   ';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/success');
+  });
+
+  // #161 build-out (2026-07-22): the channel was confirmed live as an UNSIGNED
+  // S2S POST, so we self-authenticate it with a secret embedded in the URL we
+  // hand Valor — Valor echoes redirect_url verbatim, so anything appended here
+  // round-trips back to redirect-capture on the callback.
+  it('appends the secret as an `s` query param when VALOR_REDIRECT_CAPTURE_SECRET is set', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture';
+    process.env.VALOR_REDIRECT_CAPTURE_SECRET = 'sekrit-value';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/api/integrations/valor/redirect-capture?s=sekrit-value');
+    expect(body.success_url).toBe('https://app/success');
+  });
+
+  it('handles a capture URL that already has a query string', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture?foo=bar';
+    process.env.VALOR_REDIRECT_CAPTURE_SECRET = 'sekrit-value';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/api/integrations/valor/redirect-capture?foo=bar&s=sekrit-value');
+  });
+
+  it('leaves the bare capture URL unchanged when the secret env var is unset (current behavior)', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture';
+    delete process.env.VALOR_REDIRECT_CAPTURE_SECRET;
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/api/integrations/valor/redirect-capture');
+  });
+
+  it('leaves the bare capture URL unchanged when the secret env var is set but blank', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture';
+    process.env.VALOR_REDIRECT_CAPTURE_SECRET = '   ';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe('https://app/api/integrations/valor/redirect-capture');
+  });
+
+  it('URL-encodes a secret containing reserved characters', async () => {
+    process.env.VALOR_REDIRECT_CAPTURE_URL = 'https://app/api/integrations/valor/redirect-capture';
+    process.env.VALOR_REDIRECT_CAPTURE_SECRET = 'a&b=c d';
+    const body = await captureBody();
+    expect(body.redirect_url).toBe(
+      `https://app/api/integrations/valor/redirect-capture?s=${encodeURIComponent('a&b=c d')}`,
+    );
+  });
+});

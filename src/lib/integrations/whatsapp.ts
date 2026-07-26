@@ -23,9 +23,13 @@ import {
 import { listOnHand, upsertOnHand, toQty } from '@/lib/inventory/onHand';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { parseWhatsAppCommand, WHATSAPP_HELP, type WhatsAppCommand } from './whatsappCommands';
+import { interpretBotText, type BotInterpretation } from './botInterpreter';
+import { runStatusTool, runScheduleTool } from './botTools';
 
 const TWILIO_API = 'https://api.twilio.com/2010-04-01';
 const MAX_LIST = 30; // cap rows in a reply so a message never balloons
+
+const NOT_UNDERSTOOD = 'Didn\'t understand that. Text "help" for commands.';
 
 export function isWhatsAppBotEnabled(): boolean {
   return process.env.WHATSAPP_BOT_ENABLED === 'true';
@@ -147,11 +151,51 @@ export async function runWhatsAppCommand(cmd: WhatsAppCommand): Promise<string> 
     }
 
     default:
-      return 'Didn\'t understand that. Text "help" for commands.';
+      return NOT_UNDERSTOOD;
   }
 }
 
-/** Convenience for the webhook: parse + run in one call. */
+/**
+ * Run one interpreted READ tool (Phase 1 of the 2026-07-19 text-ops plan).
+ * This path calls interpretBotText WITHOUT allowWrites, so the interpretation
+ * can only be one of the six read tools — but the shared type now also covers
+ * the Phase-2 write tools (which are gated in botDispatch, not here), so an
+ * unexpected tool falls through to the safe reply rather than executing.
+ */
+async function runInterpreted(interp: BotInterpretation, raw: string): Promise<string> {
+  switch (interp.tool) {
+    case 'status':
+      // The model usually extracts the name/number; the raw text still works as
+      // a substring search when it didn't.
+      return runStatusTool(interp.args.query ?? raw);
+    case 'schedule':
+      return runScheduleTool(interp.args.when ?? 'today');
+    case 'stock':
+      return interp.args.sku
+        ? runWhatsAppCommand({ kind: 'stock', sku: interp.args.sku })
+        : NOT_UNDERSTOOD;
+    case 'low':
+      return runWhatsAppCommand({ kind: 'low' });
+    case 'jobs':
+      return runWhatsAppCommand({ kind: 'jobs' });
+    case 'help':
+      return runWhatsAppCommand({ kind: 'help' });
+    default:
+      return NOT_UNDERSTOOD;
+  }
+}
+
+/**
+ * Convenience for the webhooks: parse + run in one call. Keyword commands parse
+ * deterministically and never touch the LLM; only unmatched text falls through
+ * to the interpreter (Phase 1: read tools only), and any interpreter miss lands
+ * on the same "didn't understand" reply the bot always had.
+ */
 export async function handleWhatsAppText(text: string): Promise<string> {
-  return runWhatsAppCommand(parseWhatsAppCommand(text));
+  const cmd = parseWhatsAppCommand(text);
+  if (cmd.kind !== 'unknown') return runWhatsAppCommand(cmd);
+
+  const interp = await interpretBotText(text);
+  if (!interp) return NOT_UNDERSTOOD;
+  return runInterpreted(interp, text);
 }

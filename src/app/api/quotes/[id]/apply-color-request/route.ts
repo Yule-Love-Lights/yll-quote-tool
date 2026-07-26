@@ -3,7 +3,14 @@
 //
 // POST /api/quotes/[id]/apply-color-request
 // Body: { action: 'apply' } | { action: 'dismiss', reason: string }
-// Response: { ok, action, label? } | { error, code? }
+// Response (#169):
+//   apply   → { ok, action: 'apply', label, smsSent, emailSent, notifySkipped }
+//             smsSent/emailSent report the customer notify legs so the panel can
+//             tell staff when a send FAILED (call the customer); notifySkipped is
+//             true when no notify was attempted at all (test quote / HL not
+//             configured / no linked contact) — expected, not a failure.
+//   dismiss → { ok, action: 'dismiss' }   (silent by design — staff calls them)
+//   error   → { error, code? }
 //
 // Slice A recorded approval_snapshot.pendingColorRequest when a booked customer
 // asked for a different light colour. Here staff either APPLY it — re-freezing
@@ -284,13 +291,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // convention as every other customer-facing send.
   let smsSent = false;
   let emailSent = false;
-  if (!quote.is_test && isHighLevelConfigured() && quote.highlevel_contact_id) {
+  // #169: distinguish "no notify attempted" (expected: test quote / HL not
+  // configured / no linked contact) from "attempted and FAILED" — the panel
+  // shows a call-the-customer warning only for the latter.
+  const contactId = quote.highlevel_contact_id;
+  const notifySkipped = quote.is_test || !isHighLevelConfigured() || !contactId;
+  if (!notifySkipped && contactId) {
     const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
     const fromNumber = process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined;
     const emailFrom = process.env.HIGHLEVEL_EMAIL_FROM || undefined;
     try {
       await sendSms({
-        contactId: quote.highlevel_contact_id,
+        contactId,
         message: colorChangeAppliedSmsBody(label),
         fromNumber,
       });
@@ -300,7 +312,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     try {
       await sendEmail({
-        contactId: quote.highlevel_contact_id,
+        contactId,
         subject: COLOR_CHANGE_APPLIED_EMAIL_SUBJECT,
         html: colorChangeAppliedEmailHtml(firstName, label),
         emailFrom,
@@ -311,7 +323,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  return NextResponse.json({ ok: true, action: 'apply', label, smsSent, emailSent });
+  return NextResponse.json({ ok: true, action: 'apply', label, smsSent, emailSent, notifySkipped });
 }
 
 function hlErrorMessage(err: unknown): string {
