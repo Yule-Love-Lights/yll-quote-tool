@@ -249,10 +249,22 @@ export default function JobDetailPage() {
               {data.invoice ? (
                 <>
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-gray-800 font-medium">
+                    {/* S30 wrap review: the balance-collection UI (charge saved card /
+                        pay-link / mark-paid-cash) lives on the invoice detail — link
+                        there instead of dead-ending staff at a read-only summary. */}
+                    <Link
+                      href={`/admin/invoices/${data.invoice.id}`}
+                      className="text-blue-600 font-medium hover:underline"
+                    >
                       {data.invoice.invoice_number != null ? `Invoice #${data.invoice.invoice_number}` : 'Invoice'}
-                    </span>
+                    </Link>
                     <InvoiceStatusBadge status={data.invoice.status} />
+                    <Link
+                      href={`/admin/invoices/${data.invoice.id}`}
+                      className="ml-auto text-xs text-blue-600 hover:underline"
+                    >
+                      Collect / manage →
+                    </Link>
                   </div>
                   <dl className="text-sm text-gray-600 space-y-0.5">
                     <div className="flex justify-between">
