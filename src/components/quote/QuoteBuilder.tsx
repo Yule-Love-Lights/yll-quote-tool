@@ -395,6 +395,11 @@ export default function QuoteBuilder({
   const [referralPersistError, setReferralPersistError] = useState<string | null>(null);
   const [attachStatus, setAttachStatus] = useState<'idle' | 'attaching' | 'attached' | 'skipped' | 'error'>('idle');
   const [attachError, setAttachError] = useState<string | null>(null);
+  // S30 wrap review (customer MED): the attach route reports when linking
+  // RESURRECTED an old won/lost/abandoned GHL card (reopened + moved to the
+  // entry stage) instead of creating/reusing one — staff must see that, since
+  // a reopened card can re-enter stage-triggered GHL automations.
+  const [attachResurrected, setAttachResurrected] = useState(false);
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
   // from a send FAILURE so we never tell the operator to share the link manually.
@@ -2215,6 +2220,7 @@ export default function QuoteBuilder({
     attachSeqRef.current++;
     setAttachStatus('idle');
     setAttachError(null);
+    setAttachResurrected(false);
     // #172: if the quote is already saved, attach NOW. Picking alone only
     // turned the chip green — the DB link (highlevel_contact_id) waited for
     // the next Calculate, so pick → Send 400'd "no contact linked" while the
@@ -2236,6 +2242,7 @@ export default function QuoteBuilder({
     setHighLevelContact(null);
     setAttachStatus('idle');
     setAttachError(null);
+    setAttachResurrected(false);
     lastAttachKey.current = null;
     // #172 (staff-lens HIGH): Clear must be a REAL undo. The pick-time attach
     // may already have written the DB link (or still be in flight — chaining
@@ -2311,7 +2318,10 @@ export default function QuoteBuilder({
         throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
       }
       setDbLinked(true);
-      if (fresh()) setAttachStatus('attached');
+      if (fresh()) {
+        setAttachStatus('attached');
+        setAttachResurrected(data.resurrected === true);
+      }
       return true;
     } catch (err) {
       if (fresh()) {
@@ -2688,7 +2698,10 @@ export default function QuoteBuilder({
       const attachKey = newQuoteId && highlevelContact?.id ? `${newQuoteId}:${highlevelContact.id}` : null;
       if (attachKey && newQuoteId && highlevelContact?.id && lastAttachKey.current !== attachKey) {
         lastAttachKey.current = attachKey;
-        void attachQuoteToHighLevel(newQuoteId, highlevelContact.id);
+        // S30 wrap review MED: route through the serialized queue like every
+        // other attach call site — a direct call could race a rapid re-pick
+        // and leave the DB linked to the stale contact.
+        void queueAttach(newQuoteId, highlevelContact.id);
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
         // operator the HL link won't be made either.
@@ -4877,7 +4890,14 @@ export default function QuoteBuilder({
                   <span className="text-gray-500">Linking to HighLevel opportunity…</span>
                 )}
                 {attachStatus === 'attached' && (
-                  <span className="text-green-700">✓ Linked to {highlevelContact.fullName || 'HighLevel contact'}&rsquo;s pipeline card</span>
+                  <span className="text-green-700">
+                    ✓ Linked to {highlevelContact.fullName || 'HighLevel contact'}&rsquo;s pipeline card
+                    {attachResurrected && (
+                      <span className="text-amber-700">
+                        {' '}— reopened their previous (closed) card at the pipeline&rsquo;s entry stage
+                      </span>
+                    )}
+                  </span>
                 )}
                 {attachStatus === 'error' && (
                   <span className="text-red-600">HighLevel link failed: {attachError}. A real quote can&rsquo;t send unlinked — re-pick the contact or Calculate to retry, then send again.</span>
