@@ -182,7 +182,16 @@ export default function InvoiceDetailPage() {
         if (body.reason === 'reconsent-required') setReconsentBlocked('charge');
         setBalanceMsg({
           text: body.error ?? 'The charge did not go through',
-          tone: body.reason === 'double-charge' || body.reason === 'charged-cancelled' ? 'critical' : 'error',
+          // S30 wrap review HIGH: settle-failed and amount-mismatch are ALSO
+          // "real money moved, bookkeeping didn't" — same reconcile-in-Valor-now
+          // class as double-charge; they get the loud box, not the small line.
+          tone:
+            body.reason === 'double-charge' ||
+            body.reason === 'charged-cancelled' ||
+            body.reason === 'settle-failed' ||
+            body.reason === 'amount-mismatch'
+              ? 'critical'
+              : 'error',
         });
         await load(); // refresh chargeState — the attempt may have left/cleared the claim
         return;
