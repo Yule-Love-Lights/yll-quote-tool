@@ -5,6 +5,13 @@
 > sessions plus the scorecard; the full narrative always lives in
 > `docs/context/session_log_naldo.md` / `session_log.md`.
 
+### S28 (Jason) -- 2026-07-20 -- merge-marathon reconciled; #580 accepted (+#586 cap); #163 finished across a DUPLICATE-BUILD collision (#607 salvage); #161 vtToken trap (#609); #155 batch-2: 19 migrated live (+$28k -> pool $207k) -- close #615 + wrap-delta PR
+
+- MISTAKE: built #606 while the concurrent S42 had ALREADY merged the same feature (#588) -- never checked open/merged PRs for the task number before spawning the builder. Cost a full build; the S37 salvage playbook recovered it. Lesson: grep the PR list for the task # BEFORE building anything.
+- MISTAKE: told Jason the 8 fallback photos carried a "small logo watermark" without opening one -- the wrap review looked and found a full-width ad banner. Lesson: never characterize an asset you have not rendered.
+- MISTAKE: my #580 review missed the jobs/close settlement gate (their #598 caught it); and my gate script read $? after a pipe (tail ate the real exit code). Lessons: enumerate EVERY settlement consumer when a gate changes; never trust $? after a pipe.
+- Did right: four live in-browser E2Es against prod data (consent CAS, colour request/dismiss/apply, batch-2 pilot); batch-2 dedupe vs ALL quotes caught 4 double-contact risks; the vtToken docs-sweep -> one-line fix made Valor support unnecessary; memory surgery via scripts; every own deploy SHA-verified.
+
 ### S40 (Naldo) -- 2026-07-16/17 -- Legacy rebooking #155 END-TO-END: 114 drafts live ($184k), portal "Last Year's Design" variant, GHL Neighbors routing + Bid Sent stage, inbox exclusion, YLL Neighbor badge, 114/114 contacts matched -- PRs #556/#558/#559/#560/#561 all merged
 **One conversation, pilot to send-ready.** Chrome-drove Drive for 1.5GB photos (30MB chat cap), pilot x2 (Naldo's review reshaped: clean photos / one bundled item / no analyzer), 114 real drafts (invoice-net + live tax, Naldo's tax call), then the full send-side: Sonnet builders + seat adversarial review x3 correction rounds, E2E send proof on a real quote to Naldo's own contact, read-only match report -> 114/114 GHL links, Neighbors card values set.
 - **Did right:** dry-run/read-only preview before EVERY paid or prod write; money guards re-derived per rebuild; E2E caught that is_test SIMULATES GHL (used a real self-quote instead); builder correction loop (not seat rework) 3x, incl. the builder's own honesty flag (keyboard bypass) and its grep-reconcile finding the attach route my recon missed; named-consent gate held on every prod write (classifier agreed each time).
