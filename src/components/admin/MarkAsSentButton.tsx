@@ -42,6 +42,7 @@ export function MarkAsSentButton({ quoteId }: { quoteId: string }) {
       type="button"
       onClick={onClick}
       disabled={busy}
+      title="Records that you delivered this quote outside the tool — no message is sent"
       className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50"
     >
       Mark as sent

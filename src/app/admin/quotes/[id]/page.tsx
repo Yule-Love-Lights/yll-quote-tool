@@ -191,7 +191,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               hits the real /send route and sits 'draft' forever. Only shown
               while still markable (draft/unsent); the route itself refuses
               any other status. */}
-          {status === 'draft' && <MarkAsSentButton quoteId={id} />}
+          {status === 'draft' && !quote.view_only && <MarkAsSentButton quoteId={id} />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
