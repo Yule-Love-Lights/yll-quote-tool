@@ -22,6 +22,7 @@ import { track } from '@/lib/analytics/posthog';
 import { categorizeApproveError } from '@/lib/analytics/errorCategory';
 import { FinancingCta } from '../FinancingCta';
 import { financedBalanceUsd, isFinancingEligible } from '@/lib/financing/eligibility';
+import { viewOnlyStaleTabError } from '../friendlyError';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -107,6 +108,15 @@ export function consumeAbandonOnClose(guard: AbandonGuard): boolean {
 // no approval on record.
 export function isAlreadyApprovedCode(code: unknown): boolean {
   return code === 'already-approved';
+}
+
+// View-only portal (#176) — a stale tab: the portal was open before staff
+// flagged this quote view-only, so the in-flight approve POST 409s with this
+// code. Special-cased (mirrors isAlreadyApprovedCode) so the customer sees
+// viewOnlyStaleTabError's copy instead of the generic "please try again",
+// which would wrongly imply retrying could still succeed.
+export function isViewOnlyCode(code: unknown): boolean {
+  return code === 'view-only';
 }
 
 // View-only portal (#176) — the "just browsing" strip copy + tel href, pure
@@ -266,7 +276,10 @@ export function StickyBottomBar({
       <div className="portal-snow-sticky" role="region" aria-label="Browsing only">
         <span className="text-[13px] md:text-[14px] text-[#A89F87]">
           {label}{' '}
-          <a href={telHref} className="text-[#FFD07A] font-semibold hover:underline">
+          <a
+            href={telHref}
+            className="inline-flex min-h-[44px] items-center text-[#FFD07A] font-semibold hover:underline"
+          >
             {phone}
           </a>
         </span>
@@ -335,6 +348,15 @@ export function StickyBottomBar({
           } else {
             router.push(`/portal/${quoteId}/approved`);
           }
+          return;
+        }
+        // View-only portal (#176) — a stale tab: staff flipped this quote to
+        // view-only after the page loaded. This is a dead end (never fixed by
+        // retrying), so show that copy instead of falling through to the
+        // generic "please try again" handling below.
+        if (isViewOnlyCode(body409.code)) {
+          setErrorMsg(viewOnlyStaleTabError());
+          setSubmitting(false);
           return;
         }
         throw new Error(body409.error ?? `Request failed: ${res.status}`);

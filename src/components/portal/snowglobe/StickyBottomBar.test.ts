@@ -16,6 +16,7 @@ import {
   resolveAbandonGuard,
   consumeAbandonOnClose,
   isAlreadyApprovedCode,
+  isViewOnlyCode,
   viewOnlyBrowsingCopy,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
@@ -48,6 +49,21 @@ describe('isAlreadyApprovedCode (PS-D1)', () => {
   it('is false for an unknown/missing code (defensive default)', () => {
     expect(isAlreadyApprovedCode(undefined)).toBe(false);
     expect(isAlreadyApprovedCode('some-other-code')).toBe(false);
+  });
+});
+
+// #176 — a stale tab's Approve 409s with this code once staff flip the quote
+// to view-only after the page loaded. Special-cased so onApprove shows
+// viewOnlyStaleTabError's copy instead of the generic "please try again".
+describe('isViewOnlyCode (#176)', () => {
+  it('is true only for the view-only 409 code', () => {
+    expect(isViewOnlyCode('view-only')).toBe(true);
+  });
+
+  it('is false for already-approved and other codes', () => {
+    expect(isViewOnlyCode('already-approved')).toBe(false);
+    expect(isViewOnlyCode('illegal-transition')).toBe(false);
+    expect(isViewOnlyCode(undefined)).toBe(false);
   });
 });
 

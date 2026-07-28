@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { friendlyPortalError } from '../friendlyError';
+import { friendlyPortalError, viewOnlyStaleTabError } from '../friendlyError';
 import { useModalFocus } from '../useModalFocus';
 import type { ServiceType } from '@/lib/serviceType';
 import { track } from '@/lib/analytics/posthog';
@@ -73,6 +73,17 @@ export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType 
         if (res.status === 409) {
           if (body.code === 'already-paid') {
             router.push(`/portal/${quoteId}/approved`);
+            return;
+          }
+          // View-only portal (#176) — a stale tab: staff flipped this quote to
+          // view-only after the page loaded (or while checkout sat open in
+          // another tab). A dead end that retrying never fixes, so show that
+          // copy instead of falling through to the generic checkout-error copy.
+          if (body.code === 'view-only') {
+            if (!cancelled) {
+              setErrorMsg(viewOnlyStaleTabError());
+              setPhase('error');
+            }
             return;
           }
           throw new Error(body.error || `Could not start payment (${res.status})`);
