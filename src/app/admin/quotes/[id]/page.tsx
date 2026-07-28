@@ -6,6 +6,7 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
+import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
@@ -171,10 +172,19 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
           {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
           {quote.legacy_rebook && <YllNeighborBadge />}
+          {/* View-only portal (#176) — mirrors the Test pill above. */}
+          {quote.view_only && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
+              View-only
+            </span>
+          )}
           {/* Staff-only toggle (detail page only, not the /admin/quotes list) —
               lets staff set/unset the flag for a hand-built quote that missed
               the migration (e.g. #1191). */}
           <LegacyRebookToggle quoteId={id} legacyRebook={quote.legacy_rebook} status={status} />
+          {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
+              (a second quote spun up just for the colour picker). */}
+          <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} />
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
