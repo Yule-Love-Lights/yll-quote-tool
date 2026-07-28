@@ -522,6 +522,7 @@ export default async function PortalPage({
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
           isTest={quote.isTest}
+          viewOnly={quote.viewOnly}
           quoteStatus={quote.quoteStatus}
           serviceType={quote.serviceType}
           // #154 interim — server-threaded Wisetack prequal URL (present only
