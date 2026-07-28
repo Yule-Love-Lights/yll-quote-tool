@@ -267,6 +267,10 @@ export type QuoteBuilderInitial = {
   // Read-only display flag from the saved row — legacy_rebook quotes only exist
   // via that migration, so there's no "new quote" path that sets this.
   legacyRebook?: boolean;
+  // View-only portal (#176): staff-flagged browse-only quote. Read-only display
+  // flag from the saved row — display-only here (the toggle itself lives on the
+  // admin detail page, not the builder); mirrors legacyRebook exactly.
+  viewOnly?: boolean;
   // Referral program redemption (#41 PR 2): the quote's OWN linked customer
   // (quotes.customer_id), so the credit banner can resolve identity WITHOUT a
   // second save (only known once a quote has been saved + reopened — a
@@ -324,6 +328,8 @@ export default function QuoteBuilder({
   const isTest = isTestProp ?? initialQuote?.isTest ?? false;
   // YLL Neighbor (#158) — purely from the saved row, never set for a brand-new quote.
   const legacyRebook = initialQuote?.legacyRebook ?? false;
+  // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
+  const viewOnly = initialQuote?.viewOnly ?? false;
   // BUG-1/BUG-2 (S22): the saved quote's canonical status + display number for
   // the header. deriveStatus prefers a persisted declined/cancelled/etc. over the
   // timestamps a still-"sent"-looking row carries. Only in edit mode; a brand-new
@@ -2975,6 +2981,12 @@ export default function QuoteBuilder({
             )}
             {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
             {legacyRebook && <YllNeighborBadge />}
+            {/* View-only portal (#176) — mirrors the admin detail page's pill. */}
+            {viewOnly && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
+                View-only
+              </span>
+            )}
             {/* Canonical lifecycle pill (BUG-1, S22): a declined/cancelled quote
                 reads correctly instead of the old timestamp-only Approved/Sent. */}
             {savedStatus && (
