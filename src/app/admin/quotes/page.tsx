@@ -303,6 +303,12 @@ export default function QuotesAdminPage() {
                           )}
                           {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
                           {q.legacy_rebook && <YllNeighborBadge />}
+                          {/* View-only portal (#176) — mirrors the detail page's pill. */}
+                          {q.view_only && (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
+                              View-only
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{q.customer_address ?? '—'}</td>
