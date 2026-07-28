@@ -18,6 +18,7 @@ import {
   computeTotalsTail,
   calculateCustomLineItems,
   applyLineOverrides,
+  effectiveDepositRate,
   type QuoteInputs,
   type QuoteResult,
   type LineItem,
@@ -131,5 +132,8 @@ export function calculatePermanentQuote(
     // CLONE (not by-reference) so a future live-app_settings source mutating the
     // rates object in place can never retro-price a stored quote's snapshot.
     permanentRatesSnapshot: { ...rates },
+    // #177: freeze the effective deposit rate this result was priced with
+    // (already applied via computeTotalsTail's `tail` above).
+    depositRate: effectiveDepositRate(inputs.depositPercent),
   };
 }

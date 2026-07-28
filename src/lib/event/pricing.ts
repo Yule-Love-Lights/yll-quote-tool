@@ -15,6 +15,7 @@
 
 import {
   BUSINESS_RULES,
+  effectiveDepositRate,
   type LineItem,
   type MiniLightType,
   type QuoteInputs,
@@ -325,8 +326,9 @@ export function calculateEventQuote(
   const subtotalBeforeDiscount = lineItems.reduce((sum, li) => sum + li.amount, 0);
 
   // Event totals tail — a simplified computeTotalsTail: manual discount + tax +
-  // 50% deposit. NO rush, NO premium takedown, NO early-install (none apply to a
-  // temporary event install). Same rounding as the holiday tail.
+  // deposit (the staff override when set, else 50%). NO rush, NO premium
+  // takedown, NO early-install (none apply to a temporary event install). Same
+  // rounding as the holiday tail.
   let discountAmount = 0;
   if (inputs.discount) {
     const amount =
@@ -340,7 +342,7 @@ export function calculateEventQuote(
   const taxableAmount = subtotalAfterDiscount;
   const taxAmount = moneyTimesRate(taxableAmount, BUSINESS_RULES.taxRate);
   const total = roundMoney(taxableAmount + taxAmount);
-  const depositAmount = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  const depositAmount = moneyTimesRate(total, effectiveDepositRate(inputs.depositPercent));
   const balanceDue = roundMoney(total - depositAmount);
 
   return {
@@ -362,5 +364,7 @@ export function calculateEventQuote(
     // The rate table this result was priced with — frozen for the approve/amend
     // rate-drift guard (mirrors permanentRatesSnapshot). fullYule omitted (holiday).
     eventRatesSnapshot: rates,
+    // #177: freeze the effective deposit rate this result was priced with.
+    depositRate: effectiveDepositRate(inputs.depositPercent),
   };
 }
