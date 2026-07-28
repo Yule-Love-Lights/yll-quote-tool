@@ -109,6 +109,18 @@ export function isAlreadyApprovedCode(code: unknown): boolean {
   return code === 'already-approved';
 }
 
+// View-only portal (#176) — the "just browsing" strip copy + tel href, pure
+// so it's testable without the render infra this file already lacks (see
+// StickyBottomBar.test.ts's header note). Mirrors the tel: normalization used
+// elsewhere in the portal (e.g. PersonalContact.tsx).
+export function viewOnlyBrowsingCopy(phone: string): { label: string; phone: string; telHref: string } {
+  return {
+    label: 'Just browsing — text us your favourite look:',
+    phone,
+    telHref: `tel:${phone.replace(/[^0-9+]/g, '')}`,
+  };
+}
+
 export type StickyBottomBarProps = {
   quoteId: string;
   /** #43 — the customer has approved (the snapshot is frozen). When checkout is
@@ -127,6 +139,12 @@ export type StickyBottomBarProps = {
    *  paid" (→ /simulate-deposit, no Valor) and the deposit flow is available
    *  regardless of whether the real Valor checkout is enabled. */
   isTest?: boolean;
+  /** #176 — a staff-flagged browse-only quote. Overrides every other bar
+   *  state: renders a neutral "just browsing" strip and never mounts the
+   *  approve/pay/decline/request-changes UI (DepositCheckout, SignModal,
+   *  QuoteResponseModal). The server independently 409s the same four
+   *  actions — this is the UI half, never the guard on its own. */
+  viewOnly?: boolean;
   /** Bug fix (audit W4-013) — the quote's live lifecycle status
    *  (deriveStatus), passed down so the "Complete deposit" bar can be
    *  suppressed once staff cancel/decline an approved-but-unpaid quote. The
@@ -152,6 +170,7 @@ export function StickyBottomBar({
   checkoutEnabled = false,
   approvedDepositUsd,
   isTest = false,
+  viewOnly = false,
   quoteStatus,
   serviceType,
   financingPrequalUrl,
@@ -233,6 +252,27 @@ export function StickyBottomBar({
     }
   };
   useEffect(() => cancelHoverIntent, []);
+
+  // #176 — view-only takes precedence over every other bar state (pending
+  // payment / dead approval / booked / the live approve bar below). A
+  // view-only quote can never reach any of those states server-side (the
+  // /approve, /pay, /decline, /request-changes routes all 409 first), but
+  // this checks it directly rather than relying on that invariant, and it
+  // must never mount DepositCheckout/SignModal/QuoteResponseModal.
+  if (viewOnly) {
+    const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+    const { label, telHref } = viewOnlyBrowsingCopy(phone);
+    return (
+      <div className="portal-snow-sticky" role="region" aria-label="Browsing only">
+        <span className="text-[13px] md:text-[14px] text-[#A89F87]">
+          {label}{' '}
+          <a href={telHref} className="text-[#FFD07A] font-semibold hover:underline">
+            {phone}
+          </a>
+        </span>
+      </div>
+    );
+  }
 
   // Real approval: POST the selection to /api/quotes/[id]/approve, which freezes
   // the snapshot. Then, with the checkout flag ON, open the embedded 50% deposit

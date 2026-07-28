@@ -16,6 +16,7 @@ import {
   resolveAbandonGuard,
   consumeAbandonOnClose,
   isAlreadyApprovedCode,
+  viewOnlyBrowsingCopy,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
@@ -47,6 +48,31 @@ describe('isAlreadyApprovedCode (PS-D1)', () => {
   it('is false for an unknown/missing code (defensive default)', () => {
     expect(isAlreadyApprovedCode(undefined)).toBe(false);
     expect(isAlreadyApprovedCode('some-other-code')).toBe(false);
+  });
+});
+
+// #176 — the viewOnly branch renders a neutral "just browsing" strip instead
+// of the approve/pay/decline CTA and never mounts DepositCheckout/SignModal/
+// QuoteResponseModal. No component-render infra exists (see the file header
+// above), so this proves the pure copy builder the viewOnly render path uses:
+// the exact label + a correctly tel:-normalized href, never the Approve CTA
+// copy ("Approve", "Complete deposit", etc.).
+describe('viewOnlyBrowsingCopy (#176)', () => {
+  it('builds the browsing-strip label + a tel: href stripped of formatting', () => {
+    expect(viewOnlyBrowsingCopy('(631) 517-0186')).toEqual({
+      label: 'Just browsing — text us your favourite look:',
+      phone: '(631) 517-0186',
+      telHref: 'tel:6315170186',
+    });
+  });
+
+  it('never returns any approve/pay/decline CTA copy', () => {
+    const { label } = viewOnlyBrowsingCopy('(631) 517-0186');
+    expect(label).not.toMatch(/approve|deposit|decline/i);
+  });
+
+  it('preserves a leading +country code in the tel href', () => {
+    expect(viewOnlyBrowsingCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
   });
 });
 
