@@ -60,8 +60,9 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
 
   // Legacy rebook drafts (#155) are a deliberate separate send wave — counting
   // 130+ of them as "quotes to send" every morning would bury the real number.
-  // Test quotes are simulation data, never operational work.
-  const quotes = (await listQuotes()).filter((q) => !q.is_test && !q.legacy_rebook);
+  // Test quotes are simulation data, never operational work. View-only quotes
+  // (#176) are a browse-only second quote, never a real quote to send/collect.
+  const quotes = (await listQuotes()).filter((q) => !q.is_test && !q.legacy_rebook && !q.view_only);
   // deriveStatus is the canonical lifecycle read: 'draft' = never sent and not
   // terminal; 'approved' = customer said yes, deposit not yet paid.
   const toSend = quotes.filter((q) => deriveStatus(q) === 'draft');
