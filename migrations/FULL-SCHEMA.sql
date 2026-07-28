@@ -670,6 +670,12 @@ create trigger customers_updated_at_trigger
   before update on public.customers
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-07-28 Customer tenure (#178) staff-editable manual override years,
+-- unioned with the auto-derived set (deposit-paid + legacy-rebook years) in
+-- src/lib/customerTenure.ts.
+alter table public.customers
+  add column if not exists manual_years jsonb not null default '[]';
+
 
 -- ---------------------------------------------------------------------
 -- 13. properties  (#83 Phase 5)
