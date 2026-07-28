@@ -799,3 +799,106 @@ describe('listEscalatableItems — .or filter excludes automated but keeps NULL'
     expect(isCall!.args[1]).toBeNull();
   });
 });
+
+// ─── listEscalatableItems — legacy-rebook exclusion wiring (#181 / #157) ────
+//
+// Same #157 exclusion listOpenItems already applies to the /inbox display,
+// extended (#181) to escalation: a YLL Neighbor item must never trip an
+// amber/red alert or land in the EOD digest either. Mirrors the listOpenItems
+// legacy-rebook wiring tests above.
+
+describe('listEscalatableItems — legacy-rebook exclusion wiring (#181)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const row = (id: string, source: string, externalId: string) => ({
+    id,
+    source,
+    external_id: externalId,
+    last_message_at: '2026-07-16T10:00:00Z',
+    notified_levels: [],
+    escalation_level: 0,
+    preview: null,
+    dashboard_contacts: null,
+  });
+
+  it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', 'quote-legacy'),
+      row('i-normal', 'quotetool', 'quote-normal'),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: 'quote-legacy', legacy_rebook: true },
+        { id: 'quote-normal', legacy_rebook: false },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((i) => i.id)).toEqual(['i-normal', 'i-ghl']);
+
+    // Same predicate call shape as listOpenItems: batch-fetch only the
+    // quotetool ids seen on this read.
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall).toBeDefined();
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining(['quote-legacy', 'quote-normal']));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  it('a SENT legacy_rebook quote is excluded here too — broader than the quotetool.ts ingest-time guard (#181), matching #157 display behavior rather than fighting it', async () => {
+    const rows = [row('i-sent-legacy', 'quotetool', 'quote-sent-legacy')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: 'quote-sent-legacy', legacy_rebook: true }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(0);
+  });
+
+  it('skips the quotes lookup entirely when the page has no quotetool items', async () => {
+    const rows = [row('i-ghl', 'ghl', 'ghl-msg-1')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+
+    let fromCalls = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items).toHaveLength(1);
+    expect(fromCalls).toBe(1);
+  });
+});
