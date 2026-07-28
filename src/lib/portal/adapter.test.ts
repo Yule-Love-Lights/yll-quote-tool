@@ -743,6 +743,20 @@ describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / s
     expect(portal.approval?.totalUsd).toBe(3389.06);
     expect(portal.approval?.depositUsd).toBe(1694.53);
   });
+
+  // #177 — the same fallback must read the quote's OWN deposit percent
+  // (inputs.depositPercent), not always assume 50%.
+  it('a per-quote depositPercent override is honored by the fallback derivation', () => {
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', currentTotalUsd: 400 } }),
+        inputs: emptyInputs({ depositPercent: 25 }),
+      },
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.totalUsd).toBe(400);
+    expect(portal.approval?.depositUsd).toBe(100); // 400 * 0.25, not 400 * 0.5
+  });
 });
 
 // ── #134: packages under the approval gate are hidden ───────────────────────

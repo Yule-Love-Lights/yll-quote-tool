@@ -49,7 +49,7 @@ type SelectionContextValue = {
   currentSubtotal: number;
   /** dollars — tax-inclusive total the customer pays */
   currentTotal: number;
-  /** dollars — 50% of currentTotal, due today */
+  /** dollars — this quote's deposit rate (see depositRate) of currentTotal, due today */
   currentDeposit: number;
   /** full breakdown (subtotal · fees · tax · total · deposit) for tie-out display */
   breakdown: SelectionPrice;
@@ -67,6 +67,9 @@ type SelectionContextValue = {
   rushAmount: number;
   /** canonical premium-takedown amount ($) for the toggle label */
   takedownAmount: number;
+  /** #177 — this quote's deposit rate (0-1, e.g. 0.5) for copy that states the
+   *  percent (falls back to BUSINESS_RULES.depositPercentage when unset) */
+  depositRate: number;
   toggleRush: () => void;
   toggleTakedown: () => void;
   /** the customer's early-install timing choice (#40); mutually exclusive with rush */
@@ -616,6 +619,7 @@ export function SelectionProvider({
     takedownSelected,
     rushAmount: charges.rush.amount,
     takedownAmount: charges.takedown.amount,
+    depositRate: charges.depositRate ?? BUSINESS_RULES.depositPercentage,
     // Fee toggles are deliberately NOT gated on legacyRebook — rush/takedown/
     // early-install are live upsells on a legacy rebook (#155 r2).
     toggleRush: frozen.fees ? noop : toggleRush,

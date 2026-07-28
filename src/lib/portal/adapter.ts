@@ -9,7 +9,7 @@
 // If the DB schema or pricing engine output ever changes shape, fix the
 // mapping here, not in components. This is the contract.
 
-import type { CustomLineItem, QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import { effectiveDepositRate, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 import type {
   PackageId,
@@ -505,7 +505,10 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
       ? acceptedAmendment.deposit_applied
       : typeof sel?.currentDepositUsd === 'number'
         ? sel.currentDepositUsd
-        : roundMoney(totalUsd * 0.5); // half the total, rounded to CENTS (was whole dollars — a legacy/staff-approved snapshot could show a deposit ~49¢ off)
+        // #177: this quote's deposit rate (default 50%), rounded to CENTS (was
+        // whole dollars — a legacy/staff-approved snapshot could show a deposit
+        // ~49¢ off).
+        : roundMoney(totalUsd * effectiveDepositRate(row.inputs?.depositPercent));
   return {
     approvedAt: snap?.approvedAt ?? row.customer_approved_at,
     depositPaidAt: row.deposit_paid_at ?? null,
