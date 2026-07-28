@@ -36,7 +36,11 @@ const DASHBOARD_QUOTES_SELECT =
   'customer_id, ' +
   // BUG-2 (S22): the sequential display number (#83) so the customer detail
   // history + activity feed show `#1010` instead of the raw UUID prefix.
-  'quote_number';
+  'quote_number, ' +
+  // #181: YLL Neighbor migrated-rebook flag, additive only — the inbox adapter
+  // (quotetool.ts) reads it to suppress unsent Neighbor drafts as inbox noise.
+  // NOT filtered here: KPIs/insights/etc. deliberately still count these quotes.
+  'legacy_rebook';
 
 /**
  * Fetch quotes for the dashboard, returning a discriminated result so callers

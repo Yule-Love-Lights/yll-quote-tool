@@ -5,13 +5,22 @@
 //   • sent OR approved   → OUTBOUND (we acted → the reducer auto-resolves it).
 // Separately, a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
 // (closed when the quote is approved). Pure — the reconcile glue does the I/O.
+//
+// #181: an unsent legacy_rebook ("YLL Neighbor") draft is a deliberately-parked
+// rebooking-pool quote (migrations/2026-07-16-legacy-rebook.sql), not a real
+// unresponded lead — normalizeQuoteTouch returns null for it (no inbox item,
+// no follow-up). Once it's sent it behaves like any other quote again.
 
 import type { NormalizedTouch } from './types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
 import { FOLLOWUP_REASONS } from './followups';
 
-export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch {
+export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
+  // #181: unsent YLL Neighbor drafts are parked send-wave inventory, not leads
+  // owed a response — suppress before any touch is built. Sent legacy_rebook
+  // quotes fall through to the normal mapping below unchanged.
+  if (q.legacy_rebook && !q.quote_sent_at) return null;
   // Sent OR approved means we've acted on this lead; only an untouched draft is
   // still "owed a quote".
   const answered = !!(q.customer_approved_at || q.quote_sent_at);

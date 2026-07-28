@@ -3,6 +3,14 @@ import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { FOLLOWUP_REASONS } from './followups';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 
+// #181: normalizeQuoteTouch is now nullable (an unsent legacy_rebook draft
+// suppresses to null) — this asserts non-null for tests exercising the
+// unaffected normal-quote paths, so their existing assertions stay unchanged.
+function mustTouch(t: ReturnType<typeof normalizeQuoteTouch>) {
+  if (!t) throw new Error('expected a touch, got null');
+  return t;
+}
+
 function quote(over: Partial<DashboardQuote> = {}): DashboardQuote {
   return {
     id: 'q1',
@@ -24,7 +32,7 @@ function quote(over: Partial<DashboardQuote> = {}): DashboardQuote {
 
 describe('normalizeQuoteTouch', () => {
   it('treats a not-yet-sent draft as an inbound (unresponded) lead, timed from created_at', () => {
-    const t = normalizeQuoteTouch(quote());
+    const t = mustTouch(normalizeQuoteTouch(quote()));
     expect(t.source).toBe('quotetool');
     expect(t.externalId).toBe('q1');
     expect(t.direction).toBe('inbound');
@@ -37,18 +45,18 @@ describe('normalizeQuoteTouch', () => {
   });
 
   it('treats a sent quote as outbound (we acted → auto-resolves downstream)', () => {
-    const t = normalizeQuoteTouch(quote({ quote_sent_at: '2026-06-29T10:00:00Z' }));
+    const t = mustTouch(normalizeQuoteTouch(quote({ quote_sent_at: '2026-06-29T10:00:00Z' })));
     expect(t.direction).toBe('outbound');
     expect(t.lastMessageAt.toISOString()).toBe('2026-06-29T10:00:00.000Z');
   });
 
   it('treats an approved (won) quote as outbound even if never marked sent', () => {
-    const t = normalizeQuoteTouch(quote({ quote_sent_at: null, customer_approved_at: '2026-06-30T00:00:00Z' }));
+    const t = mustTouch(normalizeQuoteTouch(quote({ quote_sent_at: null, customer_approved_at: '2026-06-30T00:00:00Z' })));
     expect(t.direction).toBe('outbound');
   });
 
   it('omits missing contact fields rather than emitting empties', () => {
-    const t = normalizeQuoteTouch(quote({ customer_email: null, customer_phone: null, highlevel_contact_id: null }));
+    const t = mustTouch(normalizeQuoteTouch(quote({ customer_email: null, customer_phone: null, highlevel_contact_id: null })));
     expect(t.identity.emails).toEqual([]);
     expect(t.identity.phones).toEqual([]);
     expect(t.identity.ghlContactId).toBeNull();
@@ -57,15 +65,32 @@ describe('normalizeQuoteTouch', () => {
 
 describe('normalizeQuoteTouch — leadKind + quoteValue', () => {
   it('stamps leadKind lead and the quote dollar value', () => {
-    const touch = normalizeQuoteTouch(quote({ total: 2218.5 }));
+    const touch = mustTouch(normalizeQuoteTouch(quote({ total: 2218.5 })));
     expect(touch.leadKind).toBe('lead');
     expect(touch.quoteValue).toBe(2218.5);
   });
 
   it('stamps quoteValue null when total is null', () => {
-    const touch = normalizeQuoteTouch(quote({ total: null }));
+    const touch = mustTouch(normalizeQuoteTouch(quote({ total: null })));
     expect(touch.leadKind).toBe('lead');
     expect(touch.quoteValue).toBeNull();
+  });
+});
+
+describe('normalizeQuoteTouch — legacy_rebook (#181, YLL Neighbor inbox noise)', () => {
+  it('suppresses an unsent legacy_rebook draft entirely (no inbox item)', () => {
+    expect(normalizeQuoteTouch(quote({ legacy_rebook: true, quote_sent_at: null }))).toBeNull();
+  });
+
+  it('a SENT legacy_rebook quote behaves like any other sent quote (normal outbound item)', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: true, quote_sent_at: '2026-06-29T10:00:00Z' })));
+    expect(t.direction).toBe('outbound');
+    expect(quoteFollowUpDecision(quote({ legacy_rebook: true, quote_sent_at: '2026-06-29T10:00:00Z' })).kind).toBe('create');
+  });
+
+  it('an unsent NON-legacy draft is still a normal inbound lead (unchanged behavior)', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: false })));
+    expect(t.direction).toBe('inbound');
   });
 });
 
