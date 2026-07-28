@@ -21,6 +21,10 @@ export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// A real customer accrues at most a handful of tenure years; cap it so a
+// malformed/abusive body can't push an unbounded array into the update.
+const MAX_MANUAL_YEARS = 50;
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ customerId: string }> },
@@ -48,6 +52,12 @@ export async function POST(
   if (!Array.isArray(manualYears)) {
     return NextResponse.json(
       { error: 'manualYears must be an array', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+  if (manualYears.length > MAX_MANUAL_YEARS) {
+    return NextResponse.json(
+      { error: `manualYears must contain at most ${MAX_MANUAL_YEARS} years`, code: 'invalid-body' },
       { status: 400 },
     );
   }

@@ -123,6 +123,17 @@ describe('POST /api/customers/[customerId]/tenure-years — validation', () => {
     },
   );
 
+  it('400s when manualYears has more than 50 entries', async () => {
+    const { client, updatePayloads } = makeSb({ id: VALID_UUID, manual_years: [] });
+    sbRef.current = client;
+    const tooMany = Array.from({ length: 51 }, (_, i) => 2015 + (i % 11));
+    const res = await POST(makeReq({ manualYears: tooMany }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('invalid-body');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
   it('400s when an element is not an integer (string)', async () => {
     const { client, updatePayloads } = makeSb({ id: VALID_UUID, manual_years: [] });
     sbRef.current = client;

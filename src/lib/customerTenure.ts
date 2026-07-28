@@ -144,19 +144,20 @@ export async function getTenureQuotes(
   const base = () =>
     sb.from('quotes').select('id, deposit_paid_at, legacy_rebook').eq('is_test', false).eq('view_only', false);
 
-  if (customerId) {
-    const { data, error } = await base().eq('customer_id', customerId);
-    if (error) console.error('getTenureQuotes (customer_id) error:', error);
-    for (const row of (data ?? []) as Array<{ id: string; deposit_paid_at: string | null; legacy_rebook: boolean | null }>) {
-      byId.set(row.id, row);
-    }
+  // Both id branches are independent reads (different filter columns) — run
+  // them concurrently rather than sequentially awaiting one before the other.
+  const [byCustomerId, byHlContactId] = await Promise.all([
+    customerId ? base().eq('customer_id', customerId) : Promise.resolve({ data: [], error: null }),
+    hlContactId ? base().eq('highlevel_contact_id', hlContactId) : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (byCustomerId.error) console.error('getTenureQuotes (customer_id) error:', byCustomerId.error);
+  for (const row of (byCustomerId.data ?? []) as Array<{ id: string; deposit_paid_at: string | null; legacy_rebook: boolean | null }>) {
+    byId.set(row.id, row);
   }
-  if (hlContactId) {
-    const { data, error } = await base().eq('highlevel_contact_id', hlContactId);
-    if (error) console.error('getTenureQuotes (highlevel_contact_id) error:', error);
-    for (const row of (data ?? []) as Array<{ id: string; deposit_paid_at: string | null; legacy_rebook: boolean | null }>) {
-      byId.set(row.id, row);
-    }
+  if (byHlContactId.error) console.error('getTenureQuotes (highlevel_contact_id) error:', byHlContactId.error);
+  for (const row of (byHlContactId.data ?? []) as Array<{ id: string; deposit_paid_at: string | null; legacy_rebook: boolean | null }>) {
+    byId.set(row.id, row);
   }
   return Array.from(byId.values());
 }

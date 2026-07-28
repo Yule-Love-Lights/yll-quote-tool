@@ -63,7 +63,10 @@ export function CustomerTenureEditor({
       return;
     }
     setInput('');
-    if (manualYears.includes(year) || derivedSet.has(year)) return; // already counted
+    if (manualYears.includes(year) || derivedSet.has(year)) {
+      setError('That year is already recorded.');
+      return;
+    }
     save([...manualYears, year].sort((a, b) => a - b));
   }
 
