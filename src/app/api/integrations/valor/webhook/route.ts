@@ -61,7 +61,7 @@ import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
-import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
 
@@ -587,6 +587,9 @@ export async function POST(req: NextRequest) {
     quote.result?.total ??
     quote.total ??
     depositUsd * 2;
+  // #177: the quote's ACTUAL deposit percent (integer, for the internal "paid"
+  // alert copy) — read from the frozen result.depositRate, never a hardcoded 50.
+  const depositPercent = Math.round((quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100);
   const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
 
   // Result flags mutated by the parallel tasks below (each writes only its own).
@@ -715,6 +718,7 @@ export async function POST(req: NextRequest) {
           customerName: quote.customer_name,
           depositUsd,
           totalUsd,
+          depositPercent,
           txnId: event.txnId,
           approvalCode: event.approvalCode,
           receiptUrl: event.receiptUrl,

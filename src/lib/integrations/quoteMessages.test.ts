@@ -179,8 +179,8 @@ describe('low-stock alert email (#82)', () => {
 
 describe('approval notifications (pre-Valor deposit flow)', () => {
   describe('approvalSmsBody', () => {
-    it('greets by first name, names the 50% deposit + amount, and gives the phone', () => {
-      const sms = approvalSmsBody('Jordan', 2700, '(631) 517-0186');
+    it('greets by first name, names the deposit percent + amount, and gives the phone', () => {
+      const sms = approvalSmsBody('Jordan', 2700, '(631) 517-0186', 50);
       expect(sms).toContain('Jordan');
       expect(sms).toContain('50% deposit');
       expect(sms).toContain('$2,700'); // whole-dollar, comma-grouped
@@ -190,15 +190,23 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
     });
 
     it('rounds the deposit to whole dollars in customer copy', () => {
-      const sms = approvalSmsBody('Sam', 2700.5, '(631) 517-0186');
+      const sms = approvalSmsBody('Sam', 2700.5, '(631) 517-0186', 50);
       expect(sms).toContain('$2,701');
       expect(sms).not.toContain('.50');
+    });
+
+    // #177 — a staff-set per-quote deposit override renders its OWN percent,
+    // not a hardcoded 50%.
+    it('renders a per-quote deposit percent override', () => {
+      const sms = approvalSmsBody('Jordan', 675, '(631) 517-0186', 25);
+      expect(sms).toContain('25% deposit');
+      expect(sms).not.toContain('50%');
     });
   });
 
   describe('approvalEmailHtml', () => {
     it('includes the name, deposit amount, portal link, and phone', () => {
-      const html = approvalEmailHtml('Jordan', 2700, 'https://quote.yulelovelights.com/portal/abc', '(631) 517-0186');
+      const html = approvalEmailHtml('Jordan', 2700, 'https://quote.yulelovelights.com/portal/abc', '(631) 517-0186', 50);
       expect(html).toContain('Jordan');
       expect(html).toContain('$2,700');
       expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
@@ -207,9 +215,15 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
     });
 
     it('escapes HTML in the first name', () => {
-      const html = approvalEmailHtml('<script>', 100, 'https://x/portal/1', '(631) 517-0186');
+      const html = approvalEmailHtml('<script>', 100, 'https://x/portal/1', '(631) 517-0186', 50);
       expect(html).not.toContain('<script>');
       expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('renders a per-quote deposit percent override', () => {
+      const html = approvalEmailHtml('Jordan', 675, 'https://x/portal/1', '(631) 517-0186', 25);
+      expect(html).toContain('25% deposit');
+      expect(html).not.toContain('50%');
     });
   });
 
@@ -228,6 +242,7 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
         email: 'jordan@example.com',
         totalUsd: 5400,
         depositUsd: 2700,
+        depositPercent: 50,
         packageName: 'Build Your Own',
         installTiming: 'september',
         rushSelected: false,
@@ -258,6 +273,7 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
         email: null,
         totalUsd: 1000,
         depositUsd: 500,
+        depositPercent: 50,
         packageName: 'Package C',
         installTiming: 'none',
         rushSelected: true,
@@ -267,6 +283,29 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
       });
       expect(html).toContain('Unknown'); // customer name fallback
       expect(html).toContain('Standard (Nov–Dec)'); // install timing 'none'
+    });
+
+    // #177 — a staff-set per-quote deposit override renders its OWN percent in
+    // both the action line and the table row label.
+    it('renders a per-quote deposit percent override', () => {
+      const html = internalApprovalEmailHtml({
+        customerName: 'Jordan Smith',
+        address: null,
+        phone: null,
+        email: null,
+        totalUsd: 2700,
+        depositUsd: 675,
+        depositPercent: 25,
+        packageName: 'Package C',
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+        portalUrl: 'https://x/portal/1',
+        adminUrl: 'https://x/quote/1',
+      });
+      expect(html).toContain('collect the 25% deposit');
+      expect(html).toContain('Deposit (25%)');
+      expect(html).not.toContain('50%');
     });
   });
 

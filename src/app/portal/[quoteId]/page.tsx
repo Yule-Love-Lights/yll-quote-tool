@@ -48,6 +48,7 @@ import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import { SectionViewTracker } from '@/components/portal/SectionViewTracker';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import {
   MOCK_QUOTE,
   galleryItemsFor,
@@ -293,6 +294,9 @@ export default async function PortalPage({
     quote.approval,
     { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
   );
+  // #177 — this quote's actual deposit percent (integer, for copy that states
+  // it), derived from the same charges.depositRate the live pricing uses.
+  const depositPercent = Math.round((quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100);
   // SelectionProvider seeds the rush/takedown toggles from these defaultOn flags,
   // so overriding them with the frozen choices restores the customer's approved
   // add-ons (the staff defaults in quote.charges would otherwise contradict the
@@ -314,6 +318,7 @@ export default async function PortalPage({
           quoteId={quoteId}
           approvedAt={quote.approval?.approvedAt}
           depositFlow={checkoutEnabled || !!quote.isTest}
+          depositPercent={depositPercent}
         />
       )}
       {quote.approval?.pendingAmendment && (
@@ -457,7 +462,11 @@ export default async function PortalPage({
 
         {/* 5. What Happens Next — permanent drops takedown for year-round control (#88);
              event/holiday branch their copy inside WhatHappensNext via serviceType (#96) */}
-        {quote.serviceType === 'permanent' ? <WhatHappensNextPermanent /> : <WhatHappensNext serviceType={quote.serviceType} />}
+        {quote.serviceType === 'permanent' ? (
+          <WhatHappensNextPermanent depositPercent={depositPercent} />
+        ) : (
+          <WhatHappensNext serviceType={quote.serviceType} depositPercent={depositPercent} />
+        )}
 
         {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam

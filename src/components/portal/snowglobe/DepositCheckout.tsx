@@ -26,11 +26,13 @@ type Props = {
   isTest?: boolean;
   /** PostHog v1 — included on the approve_error event's properties. */
   serviceType?: ServiceType;
+  /** #177 — this quote's actual deposit percent; defaults to 50 (today's behavior). */
+  depositPercent?: number;
 };
 
 type Phase = 'starting' | 'redirecting' | 'error' | 'unconfigured';
 
-export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType }: Props) {
+export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType, depositPercent = 50 }: Props) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -191,7 +193,7 @@ export function DepositCheckout({ quoteId, onClose, isTest = false, serviceType 
         {phase === 'unconfigured' && (
           <div className="py-4">
             <p className="text-[14px] text-[#F4ECD8]">
-              Online payment isn’t switched on yet. We’ll reach out to collect your 50% deposit
+              Online payment isn’t switched on yet. We’ll reach out to collect your {depositPercent}% deposit
               and lock in your install date — your approval is saved.
             </p>
             <button

@@ -202,6 +202,7 @@ export function StickyBottomBar({
     permanentEffect,
     installTiming,
     breakdown,
+    depositRate,
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -437,6 +438,7 @@ export function StickyBottomBar({
             isTest={isTest}
             serviceType={serviceType}
             onClose={closeDepositCheckout}
+            depositPercent={Math.round(depositRate * 100)}
           />
         )}
         <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
@@ -582,6 +584,7 @@ export function StickyBottomBar({
           isTest={isTest}
           serviceType={serviceType}
           onClose={closeDepositCheckout}
+          depositPercent={Math.round(depositRate * 100)}
         />
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
