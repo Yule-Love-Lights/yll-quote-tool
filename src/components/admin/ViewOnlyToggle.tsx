@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 // Staff-only "Mark as View-Only" control (admin quote DETAIL page only —
 // mirrors LegacyRebookToggle exactly). Flips quotes.view_only (#176) for a
@@ -13,12 +14,21 @@ import { useRouter } from 'next/navigation';
 export function ViewOnlyToggle({
   quoteId,
   viewOnly,
+  status,
 }: {
   quoteId: string;
   viewOnly: boolean;
+  /** The quote's canonical lifecycle status (deriveStatus) — gates the toggle
+   *  itself: a booked (paid) quote can never go view-only (the server 409s
+   *  this with code 'already-booked'), and deriveStatus reads 'approved' only
+   *  while the deposit is still owed, so that's exactly "approved, unpaid". */
+  status: QuoteStatus;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+
+  const bookedLocked = status === 'booked';
+  const approvedUnpaid = status === 'approved';
 
   async function onClick() {
     const turningOn = !viewOnly;
@@ -27,7 +37,13 @@ export function ViewOnlyToggle({
           'Mark this quote as view-only?',
           '',
           '- The customer portal stays fully viewable (scene, colours, prices).',
-          '- Approve, pay, decline, and request-changes are all blocked — the customer can only browse.',
+          '- Approving, paying, sending, and responses are all blocked — the customer can only browse.',
+          ...(approvedUnpaid
+            ? [
+                '',
+                "This quote is approved but not yet paid — the customer's \"Complete deposit\" bar will be replaced by the browsing strip until this is turned off.",
+              ]
+            : []),
         ]
       : [
           'Remove view-only from this quote?',
@@ -58,7 +74,8 @@ export function ViewOnlyToggle({
     <button
       type="button"
       onClick={onClick}
-      disabled={busy}
+      disabled={busy || bookedLocked}
+      title={bookedLocked ? 'Not available on a booked quote' : undefined}
       className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50"
     >
       {viewOnly ? 'Remove view-only' : 'Mark as view-only'}

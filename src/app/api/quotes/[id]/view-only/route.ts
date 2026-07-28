@@ -48,6 +48,41 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const sb = getSupabaseServiceClient()!;
+
+  // Turning ON: refuse a quote that's already booked (paid) — staff would
+  // otherwise silently hide a real paid order's approve/pay UI behind the
+  // browsing strip. Turning OFF is always allowed (it only restores normal
+  // behavior). deposit_paid_at is the authoritative "booked" signal; the
+  // status check catches a hand-set 'booked' row with no timestamp.
+  if (viewOnly) {
+    const { data: existing, error: readErr } = await sb
+      .from('quotes')
+      .select('id, status, customer_approved_at, deposit_paid_at')
+      .eq('id', id)
+      .maybeSingle<{
+        id: string;
+        status: string | null;
+        customer_approved_at: string | null;
+        deposit_paid_at: string | null;
+      }>();
+    if (readErr) {
+      console.error('[api/quotes/:id/view-only] read failed:', readErr);
+      return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
+    }
+    if (!existing) {
+      return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+    }
+    if (existing.deposit_paid_at || existing.status === 'booked') {
+      return NextResponse.json(
+        {
+          error: 'This quote is already booked and paid — it cannot be marked view-only.',
+          code: 'already-booked',
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   const { data, error } = await sb
     .from('quotes')
     .update({ view_only: viewOnly })

@@ -184,7 +184,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           <LegacyRebookToggle quoteId={id} legacyRebook={quote.legacy_rebook} status={status} />
           {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
               (a second quote spun up just for the colour picker). */}
-          <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} />
+          <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} status={status} />
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to

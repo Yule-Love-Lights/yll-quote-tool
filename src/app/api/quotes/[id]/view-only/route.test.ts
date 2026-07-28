@@ -45,15 +45,30 @@ function makeParams(id: string) {
   return { params: Promise.resolve({ id }) };
 }
 
-// Chainable mock for .update(payload).eq('id', id).select(...).maybeSingle().
-// `row` is the row present in the table BEFORE the update (null = no match,
-// mirroring an unknown quote id — the update then matches 0 rows).
-function makeSb(row: { id: string; view_only: boolean } | null) {
+// Chainable mock covering BOTH calls the route can make:
+//   1. (only when turning ON) a plain pre-check read:
+//      .select('id, status, customer_approved_at, deposit_paid_at').eq().maybeSingle()
+//   2. the update: .update(payload).eq('id', id).select(...).maybeSingle()
+// `row` is the row present in the table (null = no match, mirroring an
+// unknown quote id — both the pre-check and the update then match 0 rows).
+// `pendingUpdate` tracks whether an .update() has fired yet so maybeSingle()
+// can tell the pre-check read apart from the post-update select.
+function makeSb(
+  row: {
+    id: string;
+    view_only: boolean;
+    status?: string | null;
+    customer_approved_at?: string | null;
+    deposit_paid_at?: string | null;
+  } | null,
+) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
+  let pendingUpdate = false;
   Object.assign(builder, {
     from: () => builder,
     update: (payload: Record<string, unknown>) => {
+      pendingUpdate = true;
       updatePayloads.push(payload);
       return builder;
     },
@@ -61,8 +76,13 @@ function makeSb(row: { id: string; view_only: boolean } | null) {
     select: () => builder,
     maybeSingle: async () => {
       if (!row) return { data: null, error: null };
-      const merged = { ...row, ...(updatePayloads[0] ?? {}) };
-      return { data: { id: merged.id, view_only: merged.view_only }, error: null };
+      if (pendingUpdate) {
+        pendingUpdate = false;
+        const merged = { ...row, ...updatePayloads[updatePayloads.length - 1] };
+        return { data: { id: merged.id, view_only: merged.view_only }, error: null };
+      }
+      // The pre-check read — returns the full row (status + timestamps).
+      return { data: row, error: null };
     },
   });
   return { client: builder, updatePayloads };
@@ -139,6 +159,80 @@ describe('POST /api/quotes/[id]/view-only — happy path', () => {
 
   it('sets view_only to false', async () => {
     const { client, updatePayloads } = makeSb({ id: VALID_UUID, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: false }), makeParams(VALID_UUID));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, viewOnly: false });
+    expect(updatePayloads[0]).toEqual({ view_only: false });
+  });
+});
+
+// #176 fix-batch — turning view-only ON must not silently hide a booked
+// (paid) order's real approve/pay UI behind the browsing strip. Turning OFF
+// stays unconditional (it only restores normal behavior).
+describe('POST /api/quotes/[id]/view-only — status-awareness (turning ON)', () => {
+  it('409s (already-booked) when the deposit is already paid', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      view_only: false,
+      status: 'approved',
+      deposit_paid_at: '2026-07-01T00:00:00Z',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('already-booked');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  it('409s (already-booked) when status is booked, even with no deposit_paid_at (belt-and-suspenders)', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      view_only: false,
+      status: 'booked',
+      deposit_paid_at: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('already-booked');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  it('allows turning ON an approved-but-unpaid quote', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      view_only: false,
+      status: 'approved',
+      customer_approved_at: '2026-07-01T00:00:00Z',
+      deposit_paid_at: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, viewOnly: true });
+    expect(updatePayloads[0]).toEqual({ view_only: true });
+  });
+
+  it('always allows turning OFF, even on a booked quote', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      view_only: true,
+      status: 'booked',
+      deposit_paid_at: '2026-07-01T00:00:00Z',
+    });
     sbRef.current = client;
 
     const res = await POST(makeReq({ viewOnly: false }), makeParams(VALID_UUID));
