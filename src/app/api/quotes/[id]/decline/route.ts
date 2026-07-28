@@ -87,6 +87,9 @@ type QuoteRow = QuoteStatusRow & {
   // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // declined — see the check right after the fetch below.
+  view_only: boolean;
 };
 
 // Best-effort: move the quote's linked HighLevel opportunity to the Declined
@@ -163,7 +166,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, view_only',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -172,6 +175,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(
       { error: `Quote not found: ${fetchErr?.message ?? 'no row'}` },
       { status: 404 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // declined either — server hard-guard, before the status gate/write below.
+  // The portal UI's matching gate is StickyBottomBar's viewOnly branch
+  // (QuoteResponseModal is never mounted).
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
     );
   }
 

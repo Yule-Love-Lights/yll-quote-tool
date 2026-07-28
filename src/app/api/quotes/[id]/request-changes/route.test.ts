@@ -49,6 +49,7 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     deposit_paid_at: null,
     viewed_at: null,
     status: 'sent',
+    view_only: false,
     ...overrides,
   };
 }
@@ -119,6 +120,18 @@ describe('POST /api/quotes/[id]/request-changes', () => {
 
     const res = await POST(makeReq({ note: 'Different color please' }), { params });
     expect(res.status).toBe(200);
+  });
+
+  // #176 — a staff-flagged browse-only quote can never request changes either.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ view_only: true }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ note: 'Different color please' }), { params });
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads).toHaveLength(0);
   });
 
   it('rejects a missing note → 400', async () => {

@@ -62,6 +62,9 @@ type QuoteRow = QuoteStatusRow & {
   customer_phone: string | null;
   customer_email: string | null;
   highlevel_contact_id: string | null;
+  // View-only portal (#176): a staff-flagged browse-only quote can never
+  // request changes — see the check right after the fetch below.
+  view_only: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -99,7 +102,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, view_only',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -108,6 +111,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(
       { error: `Quote not found: ${fetchErr?.message ?? 'no row'}` },
       { status: 404 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote can never
+  // request changes either — server hard-guard, before the status gate/write
+  // below. The portal UI's matching gate is StickyBottomBar's viewOnly
+  // branch (QuoteResponseModal is never mounted).
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
     );
   }
 
