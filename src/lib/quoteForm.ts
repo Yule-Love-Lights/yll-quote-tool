@@ -69,6 +69,10 @@ export type QuoteFormData = {
   // Staff override (#59): waive the $1,000 portal approval gate for this quote
   // (lets the customer approve a selection under $1,000). Rides the inputs jsonb.
   waiveMinimum: boolean;
+  // Per-quote deposit override (#177): staff-set integer percent (1-100) of the
+  // total, due at approval. 0 = blank/unset (the input's placeholder shows 50);
+  // only sent to the engine when > 0 (see buildQuoteInputs). Rides inputs jsonb.
+  depositPercent: number;
   // Early-install promo (#40) staff pick: 'none' | 'september' (15%) | 'october'
   // (10%). Drives the engine discount + seeds the customer's portal timing.
   installTiming: EarlyInstallTiming;
@@ -139,6 +143,7 @@ export const initialFormData: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 0,
   waiveMinimum: false,
+  depositPercent: 0,
   installTiming: 'none',
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
@@ -241,6 +246,9 @@ export function buildQuoteInputs(
     rushFee: form.rushFee,
     // Only stored when set (#59) — absent in the inputs jsonb means not waived.
     ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
+    // #177: only sent when set (blank/0 = use the BUSINESS_RULES default);
+    // full 1-100-integer enforcement happens server-side (never trust the client).
+    ...(form.depositPercent > 0 ? { depositPercent: form.depositPercent } : {}),
     // Early-install promo (#40) — only sent when staff picked a month.
     ...(form.installTiming !== 'none' ? { installTiming: form.installTiming } : {}),
     // #104: per-quote line-item overrides — only sent when at least one is set,
@@ -357,6 +365,7 @@ export function inputsToFormData(
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
+    depositPercent: i.depositPercent ?? 0,
     installTiming: i.installTiming ?? 'none',
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},

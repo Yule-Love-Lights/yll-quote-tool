@@ -4497,6 +4497,25 @@ export default function QuoteBuilder({
                 </span>
               </label>
             </div>
+
+            {/* Deposit % override (#177) — staff can set a per-quote deposit
+                percent (integer 1-100); blank defaults to 50% (today's behavior).
+                Rides inputs.depositPercent, like waiveMinimum above. */}
+            <div className="mt-5">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="font-medium text-gray-700">Deposit %</span>
+                <input
+                  type="number" min="1" max="100" step="1"
+                  className="border border-gray-300 rounded-md px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  value={form.depositPercent || ''}
+                  placeholder="50"
+                  onChange={e => set('depositPercent', Number(e.target.value))}
+                />
+              </label>
+              <span className="block text-xs text-gray-500 mt-1">
+                Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
+              </span>
+            </div>
           </Section>
           )}
 
@@ -4574,7 +4593,11 @@ export default function QuoteBuilder({
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <div className="bg-green-50 border border-green-200 rounded-md p-3">
-                        <p className="text-xs text-green-700 font-medium uppercase tracking-wide">Deposit Due Now</p>
+                        {/* #177 — the percent reflects result.depositRate (the staff
+                            override when set), never a hardcoded 50%. */}
+                        <p className="text-xs text-green-700 font-medium uppercase tracking-wide">
+                          Deposit Due Now ({Math.round((result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)
+                        </p>
                         <p className="text-xl font-bold text-green-800 tabular-nums mt-0.5">{usd(h.depositAmount)}</p>
                       </div>
                       <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
