@@ -52,7 +52,7 @@ function makeSb(quote: Row | null) {
   return b;
 }
 
-const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false };
+const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false, view_only: false };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -87,6 +87,18 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     const json = await res.json();
     expect(res.status).toBe(400);
     expect(json.code).toBe('test-quote');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #176 — a staff-flagged browse-only quote must never mint a real hosted
+  // page, checked before any invoice lookup or Valor call.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    sbRef.current = makeSb({ ...QUOTE, view_only: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
     expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 

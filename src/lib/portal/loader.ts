@@ -65,7 +65,9 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
           // ensure/read this customer's referral code.
           // #155: added legacy_rebook so the portal can show the legacy-rebook
           // variant (LightColorPicker copy/toggle + WhatsIncluded read-only items).
-          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type, legacy_rebook',
+          // #176: added view_only so the portal can show the browsing-only
+          // sticky bar and skip mounting the approve/pay/decline machinery.
+          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type, legacy_rebook, view_only',
         )
         .eq('id', id)
         .maybeSingle<QuoteRowForPortal>(),

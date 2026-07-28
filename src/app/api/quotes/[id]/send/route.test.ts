@@ -115,6 +115,7 @@ const FRESH_QUOTE = {
   quote_sent_at: null,
   customer_approved_at: null,
   ghl_stage_synced_at: null,
+  view_only: false,
 };
 
 beforeEach(() => {
@@ -809,6 +810,26 @@ describe('POST /api/quotes/[id]/send — quote-link custom field stamp', () => {
 
 
 describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
+  // #176 — a staff-flagged browse-only quote can never be sent: a real send
+  // would reuse/overwrite the contact's open GHL card and re-stamp their
+  // quote-link field with the browse-only portal URL.
+  it('409s (view-only) before any stamp, GHL call, or customer message', async () => {
+    const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(hl.createOpportunity).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
   it('rejects a zero-line-item quote before stamping or contacting HighLevel', async () => {
     const { client, updatePayloads } = makeSb({
       ...FRESH_QUOTE,

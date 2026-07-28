@@ -26,6 +26,9 @@ type QuoteRow = {
   customer_name: string | null;
   customer_email: string | null;
   is_test: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote can never pay
+  // a real balance either — see the check right after the fetch below.
+  view_only: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -51,11 +54,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, customer_name, customer_email, is_test')
+    .select('id, customer_name, customer_email, is_test, view_only')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote must never
+  // reach real Valor — server hard-guard, checked before any invoice/balance
+  // lookup or Valor call. The portal UI's matching gate is StickyBottomBar's
+  // viewOnly branch (the DepositCheckout/pay-balance UI is never mounted).
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
   }
 
   // A test quote never touches real Valor (it has no real balance to collect).

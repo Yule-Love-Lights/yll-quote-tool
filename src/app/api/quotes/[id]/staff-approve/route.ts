@@ -70,6 +70,9 @@ type QuoteRow = {
   is_test: boolean;
   // #88 P6b-2 — needed to freeze the warranty version on a permanent staff approval.
   service_type: string | null;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // staff-approved either — see the check right after the status gate below.
+  view_only: boolean;
 };
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -89,7 +92,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test, service_type',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test, service_type, view_only',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -110,6 +113,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!canTransition(from, 'approved')) {
     return NextResponse.json(
       { error: `Cannot staff-approve from ${from}`, code: 'illegal-transition' },
+      { status: 409 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // approved, verbal/phone included — the server hard-guard, mirroring the
+  // customer /approve route's check.
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
       { status: 409 },
     );
   }

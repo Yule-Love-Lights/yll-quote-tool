@@ -110,6 +110,12 @@ type QuoteRow = {
   // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // sent — see the check right after the fetch below. A real send would
+  // reuse/overwrite the contact's GHL opportunity card and re-stamp their
+  // quote-link field with the browse-only portal URL, so this must run
+  // before any messaging or GHL work, not just before the DB stamp.
+  view_only: boolean;
 };
 
 export function hasDeliverableQuoteResult(
@@ -165,7 +171,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, view_only')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -173,6 +179,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(
       { error: `Quote not found: ${fetchErr?.message ?? 'no row'}` },
       { status: 404 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // sent — checked before ANY of the logic below (idempotency short-circuit,
+  // the quote_sent_at stamp, the GHL stage chain, customer messaging). A send
+  // would reuse/overwrite the contact's real open GHL opportunity card and
+  // re-stamp their quote-link custom field with the browse-only portal URL.
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
     );
   }
 
