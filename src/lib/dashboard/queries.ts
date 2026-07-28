@@ -57,6 +57,9 @@ export async function listQuotesForDashboardResult(limit = 500): Promise<Dashboa
     // serviceMetrics — composes from these rows, so excluding is_test here keeps
     // simulated test data out of every metric in one place.
     .eq('is_test', false)
+    // View-only isolation (#176): a browse-only second quote is never real
+    // operational data — exclude it at the same chokepoint as is_test above.
+    .eq('view_only', false)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {

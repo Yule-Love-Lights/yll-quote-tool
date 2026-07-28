@@ -134,6 +134,7 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     deposit_paid_at: null,
     viewed_at: null,
     quote_sent_at: '2026-06-25T00:00:00Z',
+    view_only: false,
     ...overrides,
   };
 }
@@ -583,6 +584,28 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
     expect(res.status).toBe(200);
     const snap = updatePayloads[0].approval_snapshot as { signature: { name: string } | null };
     expect(snap.signature!.name).toBe('Jo');
+  });
+});
+
+describe('POST /api/quotes/[id]/approve — view-only portal (#176)', () => {
+  it('409s a view-only quote (no write, no booking)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ view_only: true }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
+  });
+
+  it('allows a normal (non-view-only) quote to approve — unaffected', async () => {
+    const { client } = makeSb(baseQuote({ view_only: false }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
   });
 });
 

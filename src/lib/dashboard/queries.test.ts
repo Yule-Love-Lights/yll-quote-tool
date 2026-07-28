@@ -123,6 +123,13 @@ describe('Test Quote isolation (#93)', () => {
     expect(client!.eq).toHaveBeenCalledWith('is_test', false);
   });
 
+  // #176 — the same chokepoint excludes browse-only view-only quotes.
+  it('the dashboard chokepoint also filters view_only = false', async () => {
+    client = makeClient({ data: [], error: null });
+    await listQuotesForDashboardResult(500);
+    expect(client!.eq).toHaveBeenCalledWith('view_only', false);
+  });
+
   it('listJobsForWorkflowBoard drops jobs whose quote is a test quote', async () => {
     client = makeBoardClient(
       [

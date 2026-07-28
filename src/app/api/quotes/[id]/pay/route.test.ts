@@ -94,6 +94,7 @@ const APPROVED_QUOTE = {
   deposit_paid_at: null,
   valor_order_ref: null,
   approval_snapshot: { customerSelection: { currentDepositUsd: 1350 } },
+  view_only: false,
 };
 
 beforeEach(() => {
@@ -227,6 +228,20 @@ describe('POST /api/quotes/[id]/pay', () => {
     expect(res.status).toBe(409);
     expect(json.code).toBe('approve-first');
     expect(valor.createHostedPageSale).not.toHaveBeenCalled();
+  });
+
+  // #176 — a staff-flagged browse-only quote must never mint a real hosted
+  // page, checked before any write or Valor call.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    const { client, updatePayloads } = makeSb({ ...APPROVED_QUOTE, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(valor.createHostedPageSale).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
   });
 
   it('404s when the quote does not exist', async () => {

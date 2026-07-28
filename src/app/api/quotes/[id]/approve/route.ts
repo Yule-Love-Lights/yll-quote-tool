@@ -125,6 +125,9 @@ type QuoteRow = {
   // #88 Permanent Lighting: 'permanent' forces holiday fees off in the server
   // recompute + gates on the frozen rate-snapshot minimum instead of $1,000.
   service_type: string | null;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // approved — see the check right after the status-machine gate below.
+  view_only: boolean;
 };
 
 type ApproveBody = {
@@ -325,7 +328,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type, view_only',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -371,6 +374,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         code: 'illegal-transition',
         currentStatus,
       },
+      { status: 409 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote (usually a
+  // second quote spun up just so the customer can play with the colour
+  // picker) must never be approvable — this is the server hard-guard; the
+  // portal UI's matching gate is StickyBottomBar's viewOnly branch.
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
       { status: 409 },
     );
   }
@@ -621,6 +635,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // `.or('status.not.in.(…),status.is.null')` explicitly admits the NULL-status
   // row while still excluding the terminal states — the same idiom the decline
   // route uses (decline/route.ts) to guard its own NULL-status rows.
+  //
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409, but staff could flip view_only ON between that read and
+  // this write. `.eq('view_only', false)` makes the write itself lose that
+  // race (view_only is NOT NULL, so a plain `.eq` is safe — no W1-014 NULL
+  // trap here).
   const { data: updatedRows, error: snapshotErr } = await sb
     .from('quotes')
     .update({
@@ -632,6 +652,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       status: 'approved',
     })
     .eq('id', id)
+    .eq('view_only', false)
     .is('customer_approved_at', null)
     .or('status.not.in.("declined","cancelled","lost"),status.is.null')
     .select('id');

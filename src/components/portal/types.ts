@@ -309,6 +309,12 @@ export type PortalQuote = {
   // Optional/default false, matching isTest above — every other quote is
   // unaffected.
   legacyRebook?: boolean;
+  // View-only portal (#176): true ⇒ a staff-flagged browse-only quote — the
+  // scene/colours/prices stay fully live, but the sticky bar shows a neutral
+  // "just browsing" strip instead of approve/pay/decline/request-changes, and
+  // the server hard-blocks those same actions. Optional/default false,
+  // matching isTest/legacyRebook above — every other quote is unaffected.
+  viewOnly?: boolean;
   // The quote's service line (#88 Permanent Lighting vertical). Additive/
   // optional — undefined for legacy rows (they behave as 'holiday' throughout).
   serviceType?: import('@/lib/serviceType').ServiceType;

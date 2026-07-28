@@ -32,6 +32,7 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   is_test: false,
   service_type: null,
   legacy_rebook: false,
+  view_only: false,
   ...over,
 });
 
@@ -89,7 +90,7 @@ describe('collectOpsDigest', () => {
     expect(data.installsTomorrow.map((i) => i.jobNumber)).toEqual([143]);
   });
 
-  it('counts draft quotes as to-send and approved-unpaid as deposits pending, excluding test + legacy', async () => {
+  it('counts draft quotes as to-send and approved-unpaid as deposits pending, excluding test + legacy + view-only', async () => {
     listQuotes.mockResolvedValue([
       quote({}),
       quote({ id: 'q2', quote_number: 102, is_test: true }),
@@ -97,9 +98,10 @@ describe('collectOpsDigest', () => {
       quote({ id: 'q4', quote_number: 104, customer_approved_at: '2026-07-10T00:00:00Z' }),
       quote({ id: 'q5', quote_number: 105, customer_approved_at: '2026-07-10T00:00:00Z', deposit_paid_at: '2026-07-11T00:00:00Z' }),
       quote({ id: 'q6', quote_number: 106, status: 'declined' }),
+      quote({ id: 'q7', quote_number: 107, view_only: true }),
     ]);
     const data = await collectOpsDigest();
-    expect(data.quotesToSendCount).toBe(1); // only q1: test/legacy/approved/booked/declined all excluded
+    expect(data.quotesToSendCount).toBe(1); // only q1: test/legacy/approved/booked/declined/view-only all excluded
     expect(data.quotesToSend[0].quoteNumber).toBe(101);
     expect(data.depositsPendingCount).toBe(1); // q4 approved + unpaid; q5 is booked
     expect(data.depositsPending[0].quoteNumber).toBe(104);

@@ -116,6 +116,10 @@ export type QuoteRowForPortal = {
   // Included list. Optional/back-compat — undefined/null reads as false
   // (normal quote, unchanged behavior).
   legacy_rebook?: boolean | null;
+  // View-only portal (#176): a staff-flagged browse-only quote — the sticky
+  // bar shows a neutral "just browsing" strip instead of approve/pay/decline.
+  // Optional/back-compat — undefined/null reads as false (normal quote).
+  view_only?: boolean | null;
 };
 
 function deriveFirstName(fullName: string | null): string {
@@ -805,6 +809,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // drives the Light Color band's rebook copy + the read-only What's
     // Included list. Positive gate; every other quote reads false.
     legacyRebook: row.legacy_rebook === true,
+    // View-only portal (#176): drives the sticky bar's browsing-only strip.
+    // Positive gate; every other quote reads false.
+    viewOnly: row.view_only === true,
     // The quote's service line (#88 Permanent Lighting vertical). Undefined
     // for legacy rows without the column.
     serviceType: row.service_type ?? undefined,

@@ -585,6 +585,27 @@ describe('quoteRowToPortalQuote — legacy_rebook mapping (#155)', () => {
   });
 });
 
+describe('quoteRowToPortalQuote — view_only mapping (#176)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+
+  it('maps view_only: true to viewOnly: true', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), view_only: true };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(true);
+  });
+
+  it('maps view_only: false to viewOnly: false', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), view_only: false };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(false);
+  });
+
+  it('defaults viewOnly to false when the column is absent (legacy/back-compat row)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(false);
+  });
+});
+
 describe('event schedule (#96)', () => {
   const evInputs = emptyInputs({
     santasFootage: 100,

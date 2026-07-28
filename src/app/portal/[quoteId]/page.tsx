@@ -437,6 +437,7 @@ export default async function PortalPage({
         <FinancingSection
           prequalUrl={quote.financing?.prequalUrl}
           serviceType={quote.serviceType}
+          viewOnly={quote.viewOnly}
         />
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
@@ -522,6 +523,7 @@ export default async function PortalPage({
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
           isTest={quote.isTest}
+          viewOnly={quote.viewOnly}
           quoteStatus={quote.quoteStatus}
           serviceType={quote.serviceType}
           // #154 interim — server-threaded Wisetack prequal URL (present only
