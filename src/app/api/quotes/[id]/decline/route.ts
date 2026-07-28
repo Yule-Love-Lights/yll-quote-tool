@@ -206,11 +206,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // timestamps), AND the deposit hasn't been paid (booking is the one race that
   // can flip a still-"sent"/NULL row out from under us). `.select('id')` returns
   // the affected rows; zero rows ⇒ we lost the race ⇒ 409.
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409; `.eq('view_only', false)` re-checks it in the write itself
+  // so a concurrent staff toggle can't be raced past (view_only is NOT NULL,
+  // so a plain `.eq` is safe — no W1-014 NULL trap here).
   const declinableFilter = `status.in.(${CUSTOMER_DECLINABLE_FROM.join(',')}),status.is.null`;
   const { data: updatedRows, error: updErr } = await sb
     .from('quotes')
     .update({ status: 'declined' satisfies QuoteStatus, decline_reason: reason })
     .eq('id', id)
+    .eq('view_only', false)
     .or(declinableFilter)
     .is('deposit_paid_at', null)
     .select('id');

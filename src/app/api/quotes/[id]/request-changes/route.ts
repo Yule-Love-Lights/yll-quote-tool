@@ -137,11 +137,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // the change-requestable set OR a NULL-status legacy row the fast path
   // cleared) AND not yet paid, so a concurrent approval/booking can't be raced
   // past. Zero rows ⇒ we lost ⇒ 409.
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409; `.eq('view_only', false)` re-checks it in the write itself
+  // so a concurrent staff toggle can't be raced past (view_only is NOT NULL,
+  // so a plain `.eq` is safe — no W1-014 NULL trap here).
   const changesFilter = `status.in.(${CHANGES_FROM.join(',')}),status.is.null`;
   const { data: updatedRows, error: updErr } = await sb
     .from('quotes')
     .update({ status: 'changes_requested' satisfies QuoteStatus })
     .eq('id', id)
+    .eq('view_only', false)
     .or(changesFilter)
     .is('deposit_paid_at', null)
     .select('id');

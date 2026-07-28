@@ -157,10 +157,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // ref + intended amount ONLY when the ref is still null AND unpaid; if the row
   // already carries a ref we reuse it untouched (no re-stamp).
   if (!quote.valor_order_ref) {
+    // View-only portal (#176 TOCTOU): the early view_only check above is a
+    // fast-path 409; `.eq('view_only', false)` re-checks it in the write
+    // itself so a concurrent staff toggle can't be raced past (view_only is
+    // NOT NULL, so a plain `.eq` is safe — no W1-014 NULL trap here).
     const { data: claimed, error: stampErr } = await sb
       .from('quotes')
       .update({ valor_order_ref: orderRef, deposit_amount_usd: depositUsd })
       .eq('id', id)
+      .eq('view_only', false)
       .is('valor_order_ref', null)
       .is('deposit_paid_at', null)
       .select('id');
