@@ -119,6 +119,7 @@ const BASE_SENT_QUOTE = {
   result: null,
   approval_snapshot: null,
   is_test: false,
+  view_only: false,
 };
 
 beforeEach(() => {
@@ -323,5 +324,17 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     const snapshot = updatePayloads[0].approval_snapshot as Record<string, unknown>;
     expect(snapshot.staffApproved).toBeTruthy();
     expect(snapshot.permanentWarranty).toBeUndefined();
+  });
+
+  // #176 — a staff-flagged browse-only quote can never be staff-approved either.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads).toHaveLength(0);
   });
 });
