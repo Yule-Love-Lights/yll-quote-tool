@@ -503,6 +503,28 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // #177 fix 3b: the deposit percent is FROZEN into the approval snapshot the
+    // moment a customer approves — a later edit here must not silently drift
+    // what was already signed. Scoped ONLY to depositPercent changing: unlike
+    // the REPRICE_LOCKED_STATUSES block above, an approved-but-not-yet-booked
+    // quote can still be re-priced through this route for every OTHER field
+    // (existing intended behavior — approved isn't in REPRICE_LOCKED_STATUSES).
+    if (isUpdate && existing?.customer_approved_at) {
+      const incomingDepositPercent = typeof q.depositPercent === 'number' ? q.depositPercent : undefined;
+      const storedDepositPercent =
+        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined;
+      if (incomingDepositPercent !== storedDepositPercent) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — the deposit percent is locked and cannot be changed here. Use the amend flow to change it.',
+            code: 'deposit-percent-locked',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     // The service type that drives PRICING: the request's when provided (a
     // deliberate pick/switch), else the STORED row's on an update, else the
     // default. This is the H2 guard — a permanent-inputs body that omits

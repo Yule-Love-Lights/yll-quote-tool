@@ -4497,27 +4497,39 @@ export default function QuoteBuilder({
                 </span>
               </label>
             </div>
-
-            {/* Deposit % override (#177) — staff can set a per-quote deposit
-                percent (integer 1-100); blank defaults to 50% (today's behavior).
-                Rides inputs.depositPercent, like waiveMinimum above. */}
-            <div className="mt-5">
-              <label className="flex items-center gap-2 text-sm">
-                <span className="font-medium text-gray-700">Deposit %</span>
-                <input
-                  type="number" min="1" max="100" step="1"
-                  className="border border-gray-300 rounded-md px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-green-500"
-                  value={form.depositPercent || ''}
-                  placeholder="50"
-                  onChange={e => set('depositPercent', Number(e.target.value))}
-                />
-              </label>
-              <span className="block text-xs text-gray-500 mt-1">
-                Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
-              </span>
-            </div>
           </Section>
           )}
+
+          {/* Deposit % override (#177) — staff can set a per-quote deposit
+              percent (integer 1-100); blank defaults to 50% (today's behavior).
+              Rides inputs.depositPercent, like waiveMinimum above. Reachability
+              fix: ALWAYS rendered (not holiday-only, unlike the rest of Options
+              above) — event/permanent/permanent_bistro pricing all honor
+              depositPercent too (effectiveDepositRate), so every service type
+              needs a way to reach it. Locked post-approval (#177 fix 3a): the
+              server 409s a changed depositPercent on an approved/booked quote,
+              so the input disables here too rather than surfacing a dead-end error. */}
+          <Section title="Deposit %">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="font-medium text-gray-700">Deposit %</span>
+              <input
+                type="number" min="1" max="100" step="1"
+                className="border border-gray-300 rounded-md px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100 disabled:text-gray-400"
+                value={form.depositPercent || ''}
+                placeholder="50"
+                disabled={savedStatus === 'approved' || savedStatus === 'booked'}
+                title={
+                  savedStatus === 'approved' || savedStatus === 'booked'
+                    ? 'Locked after approval — amend handles changes'
+                    : undefined
+                }
+                onChange={e => set('depositPercent', Number(e.target.value))}
+              />
+            </label>
+            <span className="block text-xs text-gray-500 mt-1">
+              Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
+            </span>
+          </Section>
 
           {/* Calculate */}
           <button
