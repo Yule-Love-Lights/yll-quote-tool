@@ -437,6 +437,7 @@ export default async function PortalPage({
         <FinancingSection
           prequalUrl={quote.financing?.prequalUrl}
           serviceType={quote.serviceType}
+          viewOnly={quote.viewOnly}
         />
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);

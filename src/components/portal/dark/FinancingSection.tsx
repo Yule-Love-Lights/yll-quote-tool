@@ -37,13 +37,18 @@ const STEPS: Array<{ title: string; body: string }> = [
 export function FinancingSection({
   prequalUrl,
   serviceType,
+  viewOnly,
 }: {
   /** Server-threaded Wisetack prequal URL (PortalQuote.financing) — undefined = feature off. */
   prequalUrl?: string;
   serviceType?: ServiceType;
+  /** #176 — a staff-flagged browse-only quote can never book, so a "Book like
+   *  normal" pitch + a live Wisetack link have nothing to lead to. */
+  viewOnly?: boolean;
 }) {
   const { currentTotal, currentDeposit } = useSelection();
   const eligible =
+    !viewOnly &&
     prequalUrl != null &&
     isFinancingEligible({
       enabled: true,
