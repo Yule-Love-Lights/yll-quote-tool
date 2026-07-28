@@ -9,18 +9,32 @@
 // #181: an unsent legacy_rebook ("YLL Neighbor") draft is a deliberately-parked
 // rebooking-pool quote (migrations/2026-07-16-legacy-rebook.sql), not a real
 // unresponded lead — normalizeQuoteTouch returns null for it (no inbox item,
-// no follow-up). Once it's sent it behaves like any other quote again.
+// no follow-up). Once it's sent it behaves like any other quote again. Gated
+// on the SAME EXCLUDE_LEGACY_REBOOK_FROM_INBOX flag store.ts's listOpenItems/
+// listEscalatableItems use, so the documented rollback (flip the flag false)
+// is one switch end-to-end — otherwise this ingest-time guard would keep
+// suppressing unsent drafts even after the display-side filter was flipped off.
 
 import type { NormalizedTouch } from './types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
 import { FOLLOWUP_REASONS } from './followups';
+import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX } from './store';
 
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   // #181: unsent YLL Neighbor drafts are parked send-wave inventory, not leads
-  // owed a response — suppress before any touch is built. Sent legacy_rebook
-  // quotes fall through to the normal mapping below unchanged.
-  if (q.legacy_rebook && !q.quote_sent_at) return null;
+  // owed a response — suppress before any touch is built (while the flag is
+  // on). Sent legacy_rebook quotes fall through to the normal mapping below
+  // unchanged, regardless of the flag.
+  //
+  // Reviewed + accepted gap: because this guard means a legacy_rebook draft is
+  // NEVER ingested while unsent, one that's later marked sent always hits the
+  // "sent without ever being seen as a draft" edge (per the file header above)
+  // — no prior inbox item to attach a follow-up to, so no quote_sent_no_reply
+  // follow-up fires for it. The dashboard worklist's own quote_sent_at-age nudge
+  // (src/lib/dashboard/needsAction.ts, independent of inbox state) covers that
+  // gap, so this is accepted rather than fixed here.
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && q.legacy_rebook && !q.quote_sent_at) return null;
   // Sent OR approved means we've acted on this lead; only an untouched draft is
   // still "owed a quote".
   const answered = !!(q.customer_approved_at || q.quote_sent_at);

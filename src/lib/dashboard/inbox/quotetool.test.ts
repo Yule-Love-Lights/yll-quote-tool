@@ -77,6 +77,12 @@ describe('normalizeQuoteTouch — leadKind + quoteValue', () => {
   });
 });
 
+// These exercise the guard under EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true (the
+// current prod value, imported from store.ts). Mirrors store.test.ts's own
+// #157 suite: that suite doesn't flip the flag to false either (it asserts
+// the const's current value and tests the pure exclusion predicate directly
+// instead) — the hardcoded-const coupling makes a true false-path test here
+// no more straightforward than it is there.
 describe('normalizeQuoteTouch — legacy_rebook (#181, YLL Neighbor inbox noise)', () => {
   it('suppresses an unsent legacy_rebook draft entirely (no inbox item)', () => {
     expect(normalizeQuoteTouch(quote({ legacy_rebook: true, quote_sent_at: null }))).toBeNull();

@@ -377,20 +377,24 @@ export type OpenItemsResult =
   | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
   | { ok: false; error: string };
 
-// ─── Legacy-rebook inbox exclusion (#157, escalation coverage added #181) ───
+// ─── Legacy-rebook inbox exclusion (#157, escalation coverage + ingest-time
+// gating added #181) ───
 // "YLL Neighbors": quotes migrated from last year's Jobber data
 // (legacy_rebook = true, migrations/2026-07-16-legacy-rebook.sql). They're real
 // drafts, so runQuoteToolReconcile folds each into an unresponded touch same as
 // any other draft quote — flooding the operator inbox with 100+ items nobody
 // needs to action yet. This hides them from the INBOX SURFACES ONLY (the /inbox
 // open-items list AND escalation — amber/red alert emails + the EOD digest, both
-// read via listEscalatableItems below): every dashboard/stats consumer
-// (metrics.ts, insights.ts, serviceMetrics.ts, referralMetrics.ts, needsAction.ts,
+// read via listEscalatableItems below), AND from ever being ingested as an
+// unsent draft touch in the first place (quotetool.ts's normalizeQuoteTouch
+// imports this same constant): every dashboard/stats consumer (metrics.ts,
+// insights.ts, serviceMetrics.ts, referralMetrics.ts, needsAction.ts,
 // workflowBoard.ts) reads quotes directly and is untouched by this flag — legacy
 // quotes keep counting everywhere except the inbox + escalation surfaces.
 //
 // Flip to false once the dedicated "YLL Neighbors" rebook flow ships (task
-// #157) and these should resurface as normal inbox leads again.
+// #157) and these should resurface as normal inbox leads again — one switch,
+// covers both the display-side filter here and the quotetool.ts ingest guard.
 export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
 
 // A generous ceiling above the caller's `limit` to over-fetch by whenever the
