@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
+import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
@@ -185,6 +186,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
               (a second quote spun up just for the colour picker). */}
           <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} status={status} />
+          {/* Staff-only one-way action (#182) — a quote delivered outside the
+              tool (hand-texted the link, walked through it on a call) never
+              hits the real /send route and sits 'draft' forever. Only shown
+              while still markable (draft/unsent); the route itself refuses
+              any other status. */}
+          {status === 'draft' && <MarkAsSentButton quoteId={id} />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
