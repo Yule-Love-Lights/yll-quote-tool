@@ -117,6 +117,13 @@ export type PortalApproval = {
   packageName: string;       // "Build Your Own", "Santa's Classic", etc.
   totalUsd: number;          // amount the customer saw at approval time
   depositUsd: number;        // amount paid up front
+  // #177 — the FROZEN deposit rate (0-1) this customer approved with (staff
+  // override or BUSINESS_RULES.depositPercentage). Post-approval surfaces read
+  // this instead of the live inputs.depositPercent so a later staff edit can't
+  // retro-change what the customer signed for. Optional/back-compat like the
+  // other frozen-choice fields below — buildApproval always computes a real
+  // number for a live row; a hand-built test/legacy fixture may omit it.
+  depositRate?: number;
   selectedItemCount: number; // for a "X items included" line
   // The FROZEN line-item selection the customer approved (the exact ids), so a
   // booked portal can re-seed SelectionProvider from what they signed instead of

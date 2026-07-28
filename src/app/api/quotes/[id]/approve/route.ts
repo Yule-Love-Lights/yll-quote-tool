@@ -224,6 +224,12 @@ type ApprovalSnapshot = {
     permanentEffect: SceneEffect | null; // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade); null for holiday/event
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
+    // #177: the EFFECTIVE deposit rate (0-1) at approval time — the staff
+    // override when inputs.depositPercent was set, else BUSINESS_RULES.depositPercentage
+    // (50%). Frozen so a later Settings/inputs change can never retro-change what
+    // percent this customer actually approved. Absent on pre-#177 snapshots —
+    // readers fall back to the live rate, then 50%.
+    depositRate: number;
   };
   // Audit fix (g1-route): set when the server could NOT recompute the selection
   // (quote.result was null) and fell back to the client-supplied figures. The
@@ -588,6 +594,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       selectedItemIds: snapshotSelectedItemIds,
       currentTotalUsd: snapshotTotalUsd,
       currentDepositUsd: snapshotDepositUsd,
+      // #177 — freeze the effective rate at THIS approval, from the same
+      // quote fetch used for depositPercent everywhere else in this route.
+      depositRate: effectiveDepositRate(quote.inputs?.depositPercent),
       rushSelected,
       takedownSelected,
       colorSchemeId,

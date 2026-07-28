@@ -759,6 +759,51 @@ describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / s
   });
 });
 
+// #177 fix 2 — buildApproval must expose the FROZEN depositRate (what the
+// customer actually approved with), preferring the snapshot's own depositRate
+// over the live inputs.depositPercent, so a later staff edit can't retro-change
+// what a post-approval surface displays.
+describe('quoteRowToPortalQuote — approval.depositRate (#177 fix 2)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown, inputs: QuoteInputs | null = null): QuoteRowForPortal {
+    return {
+      ...rowWith(result, inputs),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('prefers the FROZEN snapshot depositRate over a DIFFERENT live inputs.depositPercent', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', depositRate: 0.25 } },
+        emptyInputs({ depositPercent: 40 }), // staff changed it AFTER approval — must not win
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.25);
+  });
+
+  it('falls back to the live inputs.depositPercent for a pre-#177 snapshot with no frozen rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }, // no depositRate field
+        emptyInputs({ depositPercent: 30 }),
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.3);
+  });
+
+  it('falls back to 50% when neither the snapshot nor inputs carry a rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.5);
+  });
+});
+
 // ── #134: packages under the approval gate are hidden ───────────────────────
 describe('quoteRowToPortalQuote — hides packages below the approval minimum (#134)', () => {
   // Permanent quote at the default $2,500 gate: front $1,520 · left $1,085 ·

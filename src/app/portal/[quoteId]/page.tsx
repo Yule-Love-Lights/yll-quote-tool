@@ -294,9 +294,15 @@ export default async function PortalPage({
     quote.approval,
     { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
   );
-  // #177 — this quote's actual deposit percent (integer, for copy that states
-  // it), derived from the same charges.depositRate the live pricing uses.
-  const depositPercent = Math.round((quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100);
+  // #177 fix 2 — this quote's actual deposit percent (integer, for copy that
+  // states it). Prefers the FROZEN quote.approval.depositRate (what the
+  // customer approved with — feeds BookedBanner + WhatHappensNext post-booking)
+  // over the live charges.depositRate, which stays the source for a not-yet-
+  // approved quote (quote.approval is undefined then, so this falls through
+  // unchanged). Falls back to 50% for a pre-#177 approval with no frozen rate.
+  const depositPercent = Math.round(
+    (quote.approval?.depositRate ?? quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
   // SelectionProvider seeds the rush/takedown toggles from these defaultOn flags,
   // so overriding them with the frozen choices restores the customer's approved
   // add-ons (the staff defaults in quote.charges would otherwise contradict the
@@ -531,6 +537,7 @@ export default async function PortalPage({
           booked={isBooked}
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
+          approvedDepositRate={quote.approval?.depositRate}
           isTest={quote.isTest}
           viewOnly={quote.viewOnly}
           quoteStatus={quote.quoteStatus}

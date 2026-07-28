@@ -121,9 +121,14 @@ export default async function PortalApprovedPage({
   // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
   const depositPhrase = depositUsd > 0 ? ` (about ${formatUsd(depositUsd)})` : '';
-  // #177 — this quote's actual deposit percent (integer, for copy that states
-  // it), derived from the same charges.depositRate the live pricing used.
-  const depositPercent = Math.round((quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100);
+  // #177 fix 2a — this quote's actual deposit percent (integer, for copy that
+  // states it), from the FROZEN quote.approval.depositRate (what the customer
+  // actually approved), not the live charges.depositRate — a staff edit to
+  // inputs.depositPercent after approval must not retro-change this page's
+  // copy. Falls back to the live rate then 50% for a pre-#177 approval.
+  const depositPercent = Math.round(
+    (quote.approval?.depositRate ?? quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
   // #38 — once the deposit webhook confirms payment this becomes the "you're
   // BOOKED" page (deposit received) instead of the placeholder "we'll reach out
   // to collect it". Drives the headline, intro line, and step 1 below.

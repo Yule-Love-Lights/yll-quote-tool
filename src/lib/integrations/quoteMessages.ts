@@ -421,7 +421,8 @@ export function amendmentEmailHtml(input: {
 
 // ── Balance pay-link (ledger #83) ───────────────────────────────────────────
 // Staff-initiated: after a job is complete, the operator sends the customer a
-// link to pay their remaining 50% balance on Valor's hosted page
+// link to pay their remaining balance (100% minus whatever deposit percent this
+// quote used — #177, not always 50%) on Valor's hosted page
 // (/portal/[quoteId]/pay-balance). Distinct from the deposit send — no stage
 // move, no booking; just a reach-out with the balance amount + the pay link.
 export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
