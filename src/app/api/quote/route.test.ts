@@ -537,6 +537,25 @@ describe('POST /api/quote — validation hardening', () => {
     }
   });
 
+  it('accepts a valid depositPercent override (#177)', async () => {
+    const inputs = validInputs();
+    inputs.depositPercent = 25;
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-integer / out-of-range depositPercent with 400 (#177)', async () => {
+    for (const bad of ['50', -1, 0, 101, 12.5, NaN, Infinity]) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.depositPercent = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
+
   it('accepts a valid lineItemPriceOverrides map (#104)', async () => {
     const inputs = validInputs();
     inputs.lineItemPriceOverrides = { 'spritzer-1': { amount: 0, reason: 'comp' }, 'roofline-santas': { amount: 600 } };

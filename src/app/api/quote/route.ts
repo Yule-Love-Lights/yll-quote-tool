@@ -173,6 +173,18 @@ export async function POST(req: NextRequest) {
       );
     }
   }
+  // #177: optional per-quote deposit percent override. When present, must be
+  // an integer 1-100; a clean 400 beats a silently-defaulted bad value (the
+  // engine's effectiveDepositRate also clamps defensively, for a legacy row).
+  if (q.depositPercent !== undefined) {
+    const v = q.depositPercent;
+    if (!(typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 100)) {
+      return NextResponse.json(
+        { error: 'depositPercent must be an integer between 1 and 100 if provided' },
+        { status: 400 },
+      );
+    }
+  }
   // #104: optional per-quote line-item TOTAL overrides — a map of stableId →
   // { amount, reason? }. Validate at the boundary so a malformed override is a
   // clean 400 rather than an opaque downstream NaN (the engine casts inputs).
