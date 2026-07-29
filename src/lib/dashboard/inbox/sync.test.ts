@@ -20,9 +20,15 @@ vi.mock('@/lib/integrations/gmail', () => ({
 }));
 
 const ingestTouchMock = vi.fn();
+const closeFollowUpMock = vi.fn();
+const sweepOrphanedFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
-  closeFollowUp: vi.fn(),
+  closeFollowUp: (...args: unknown[]) => closeFollowUpMock(...args),
+  // quotetool.ts (unmocked — its pure functions run for real in this file)
+  // imports this flag from './store'; the strict vitest mock throws on any
+  // accessed export the factory doesn't define.
+  EXCLUDE_LEGACY_REBOOK_FROM_INBOX: true,
   ensureFollowUp: vi.fn(),
   getSyncCursor: vi.fn(),
   ingestTouch: (...args: unknown[]) => ingestTouchMock(...args),
@@ -30,6 +36,17 @@ vi.mock('./store', () => ({
   recordSyncRun: vi.fn().mockResolvedValue(undefined),
   setEscalation: vi.fn(),
   setSyncCursor: vi.fn(),
+  sweepOrphanedFollowUps: (...args: unknown[]) => sweepOrphanedFollowUpsMock(...args),
+}));
+
+const listQuotesForDashboardMock = vi.fn();
+vi.mock('@/lib/dashboard/queries', () => ({
+  listQuotesForDashboard: (...args: unknown[]) => listQuotesForDashboardMock(...args),
+}));
+
+const getFollowUpDaysMock = vi.fn();
+vi.mock('./settings', () => ({
+  getFollowUpDays: (...args: unknown[]) => getFollowUpDaysMock(...args),
 }));
 
 vi.mock('./suppression', () => ({
@@ -58,7 +75,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   sendEmail: vi.fn(),
 }));
 
-import { runGmailPoll, runHandledWriteback } from './sync';
+import { runGmailPoll, runHandledWriteback, runQuoteToolReconcile } from './sync';
 import type { HandledTarget } from './store';
 
 function threadRefs(count: number) {
@@ -200,5 +217,64 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
     expect(addContactTagsMock).toHaveBeenCalledWith('contact-1', ['dashboard-handled', expect.any(String)]);
     expect(sync.ghlTags).toBe('ok');
     expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+  });
+});
+
+// #183 BUG 3: runQuoteToolReconcile's main loop only ever visits quotes still
+// returned by listQuotesForDashboard, so a follow-up anchored to a DELETED
+// quote can never be closed there. Verifies the wiring (not just the pure
+// decision, already covered in store.test.ts): the sweep is actually called
+// once per reconcile and its count folds into followUpsClosed.
+describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getFollowUpDaysMock.mockResolvedValue(3);
+    listQuotesForDashboardMock.mockResolvedValue([]);
+  });
+
+  it('calls sweepOrphanedFollowUps once with the quote_sent_no_reply reason and adds its count into followUpsClosed', async () => {
+    sweepOrphanedFollowUpsMock.mockResolvedValue(2);
+
+    const summary = await runQuoteToolReconcile(new Date());
+
+    expect(summary.ok).toBe(true);
+    expect(sweepOrphanedFollowUpsMock).toHaveBeenCalledTimes(1);
+    expect(sweepOrphanedFollowUpsMock).toHaveBeenCalledWith('quote_sent_no_reply');
+    expect(summary.followUpsClosed).toBe(2);
+  });
+
+  it('adds to (not replaces) follow-ups closed by the main per-quote loop', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1',
+        customer_name: 'Jane Doe',
+        customer_email: 'jane@example.com',
+        customer_phone: null,
+        total: 1000,
+        created_at: '2026-06-01T00:00:00Z',
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z', // approved -> main loop closes this one
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue({
+      ok: true,
+      skipped: false,
+      itemId: 'item-1',
+      contactId: 'contact-1',
+      autoResolved: true,
+      reopened: false,
+      ambiguous: false,
+    });
+    closeFollowUpMock.mockResolvedValue(1); // the main loop's own close
+    sweepOrphanedFollowUpsMock.mockResolvedValue(3); // the sweep's separate closes
+
+    const summary = await runQuoteToolReconcile(new Date());
+
+    expect(summary.followUpsClosed).toBe(1 + 3);
   });
 });
