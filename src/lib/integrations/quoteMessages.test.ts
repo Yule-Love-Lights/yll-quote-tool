@@ -17,6 +17,9 @@ import {
   quoteEmailSubject,
   quoteSmsBody,
   quoteEmailHtml,
+  depositDeclineReasonText,
+  internalDepositDeclinedEmailSubject,
+  internalDepositDeclinedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -353,5 +356,121 @@ describe('balance pay-link notifications (#83)', () => {
 
   it('subject is stable copy about the balance', () => {
     expect(BALANCE_LINK_EMAIL_SUBJECT).toMatch(/balance/i);
+  });
+});
+
+describe('declined deposit/balance staff alert (#175)', () => {
+  describe('depositDeclineReasonText', () => {
+    it('translates the common decline codes', () => {
+      expect(depositDeclineReasonText('05')).toMatch(/do not honor/i);
+      expect(depositDeclineReasonText('51')).toMatch(/insufficient funds/i);
+      expect(depositDeclineReasonText('14')).toMatch(/invalid card number/i);
+      expect(depositDeclineReasonText('54')).toMatch(/expired card/i);
+      expect(depositDeclineReasonText('41')).toMatch(/lost card/i);
+      expect(depositDeclineReasonText('43')).toMatch(/stolen card/i);
+    });
+
+    it('falls back to a generic "code N" message for an unrecognized code', () => {
+      expect(depositDeclineReasonText('99')).toBe('code 99 — bank declined');
+    });
+
+    it('handles a missing code', () => {
+      expect(depositDeclineReasonText(null)).toMatch(/no code given/i);
+    });
+  });
+
+  describe('internalDepositDeclinedEmailSubject', () => {
+    it('names the customer, with a fallback', () => {
+      expect(internalDepositDeclinedEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12, amountUsd: 1350 })).toContain(
+        'Jordan Smith',
+      );
+      expect(internalDepositDeclinedEmailSubject({ customerName: null, quoteNumber: null, amountUsd: 1350 })).toContain(
+        'A customer',
+      );
+    });
+
+    it('includes the quote number when present, omits it when absent', () => {
+      expect(
+        internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: 42, amountUsd: 100 }),
+      ).toContain('quote #42');
+      expect(
+        internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: null, amountUsd: 100 }),
+      ).not.toContain('quote #');
+    });
+
+    it('says "deposit" by default and "balance" for the #83 pay-link leg', () => {
+      const deposit = internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: null, amountUsd: 100 });
+      const balance = internalDepositDeclinedEmailSubject({
+        customerName: 'Jordan',
+        quoteNumber: null,
+        amountUsd: 100,
+        kind: 'balance',
+      });
+      expect(deposit).toContain('deposit');
+      expect(balance).toContain('balance');
+    });
+  });
+
+  describe('internalDepositDeclinedEmailHtml', () => {
+    it('carries the customer, amount, decline code + human translation, and both links', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: 'Jordan Smith',
+        quoteNumber: 42,
+        amountUsd: 1350,
+        declineCode: '05',
+        adminUrl: 'https://quote.yulelovelights.com/admin/quotes/abc',
+        portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+      });
+      expect(html).toContain('Jordan Smith');
+      expect(html).toContain('quote #42');
+      expect(html).toContain('$1,350.00');
+      expect(html).toContain('05');
+      expect(html).toMatch(/do not honor/i);
+      expect(html).toContain('No money moved');
+      expect(html).toContain('Complete deposit');
+      expect(html).toContain('href="https://quote.yulelovelights.com/admin/quotes/abc"');
+      expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
+    });
+
+    it('shows "Unknown" and an em-dash for a missing name/code', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: null,
+        quoteNumber: null,
+        amountUsd: 500,
+        declineCode: null,
+        adminUrl: 'https://x/admin/quotes/1',
+        portalUrl: 'https://x/portal/1',
+      });
+      expect(html).toContain('Unknown');
+      expect(html).toContain('—');
+    });
+
+    it('swaps to balance copy + "Open invoice" for kind: balance', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: 'Jordan',
+        quoteNumber: null,
+        amountUsd: 500,
+        declineCode: '51',
+        adminUrl: 'https://x/admin/invoices/1',
+        portalUrl: 'https://x/portal/1',
+        kind: 'balance',
+      });
+      expect(html).toContain('Pay balance');
+      expect(html).not.toContain('Complete deposit');
+      expect(html).toContain('Open invoice');
+    });
+
+    it('escapes HTML in the customer name', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: '<script>',
+        quoteNumber: null,
+        amountUsd: 100,
+        declineCode: '05',
+        adminUrl: 'https://x/admin/quotes/1',
+        portalUrl: 'https://x/portal/1',
+      });
+      expect(html).not.toContain('<script>');
+      expect(html).toContain('&lt;script&gt;');
+    });
   });
 });
