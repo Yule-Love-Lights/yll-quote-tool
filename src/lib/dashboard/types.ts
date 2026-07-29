@@ -42,6 +42,11 @@ export type DashboardQuote = {
    *  detail page adds it via DASHBOARD_QUOTES_SELECT and falls back to the
    *  truncated UUID when absent. */
   quote_number?: number | null;
+  /** YLL Neighbor migrated-rebook flag (#155/#181). Optional: not every surface
+   *  selects it. The quotetool inbox adapter reads it to suppress the parked
+   *  send-wave drafts (legacy_rebook=true, unsent) from the inbox — every other
+   *  dashboard surface still counts these as real pipeline. */
+  legacy_rebook?: boolean | null;
 };
 
 /** The 5 KPIs shown in the header strip. */
