@@ -32,6 +32,11 @@ export type CustomerRow = {
   phone: string | null;
   created_at: string;
   updated_at: string;
+  /** Customer tenure (#178) staff-editable override years — see
+   *  migrations/2026-07-28-customers-manual-years.sql. `unknown` because a raw
+   *  jsonb column could hold old/hand-edited junk; validate before use
+   *  (src/lib/customerTenure.ts's deriveTenureYears does this). */
+  manual_years?: unknown;
 };
 
 export type PropertyRow = {

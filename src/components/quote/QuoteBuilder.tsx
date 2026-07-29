@@ -293,6 +293,11 @@ export type QuoteBuilderInitial = {
   // done here actually gets recorded (reason + balance re-sync + audit trail
   // + customer notice). Null pre-booking or if job auto-create hasn't run yet.
   jobId?: string | null;
+  // Customer tenure (#178): pre-formatted "Nth year — 2023 · 2024 · 2025" chip
+  // text, server-computed (src/lib/customerTenure.ts) from the quote's linked
+  // customer. Null when unlinked or no tenure history yet — chip hidden.
+  // Display-only; the manual-years editor lives on the customer profile page.
+  customerTenureLabel?: string | null;
 };
 
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
@@ -330,6 +335,8 @@ export default function QuoteBuilder({
   const legacyRebook = initialQuote?.legacyRebook ?? false;
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
+  // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
+  const customerTenureLabel = initialQuote?.customerTenureLabel ?? null;
   // BUG-1/BUG-2 (S22): the saved quote's canonical status + display number for
   // the header. deriveStatus prefers a persisted declined/cancelled/etc. over the
   // timestamps a still-"sent"-looking row carries. Only in edit mode; a brand-new
@@ -2985,6 +2992,15 @@ export default function QuoteBuilder({
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
                 View-only
+              </span>
+            )}
+            {/* Customer tenure (#178) — "Nth year — 2023 · 2024 · 2025", display-only. */}
+            {customerTenureLabel && (
+              <span
+                className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700"
+                title="Years with YLL"
+              >
+                {customerTenureLabel}
               </span>
             )}
             {/* Canonical lifecycle pill (BUG-1, S22): a declined/cancelled quote
