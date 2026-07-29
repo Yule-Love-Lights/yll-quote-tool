@@ -20,6 +20,7 @@ import type { DashboardQuote } from '@/lib/dashboard/types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
 import { FOLLOWUP_REASONS } from './followups';
 import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX } from './store';
+import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   // #181: unsent YLL Neighbor drafts are parked send-wave inventory, not leads
@@ -66,11 +67,25 @@ export type QuoteFollowUpDecision =
   | { kind: 'close'; reason: string }
   | { kind: 'none' };
 
+// #183 BUG 2: a quote in one of these terminal/dead states is never coming
+// back, so its "sent, no reply" follow-up must close — otherwise the WT-43
+// ensureFollowUp upsert re-arms a 'done' row back to 'pending' every reconcile
+// forever (the live case: a DECLINED quote whose follow-up kept resurrecting
+// daily, because only customer_approved_at closed it below). Positive-match
+// list (never a negative gate, per AGENTS.md Pitfalls) and deliberately
+// excludes 'changes_requested' — that quote is being revised, not dead, so
+// the nudge should stay live.
+const DEAD_QUOTE_STATUSES: ReadonlySet<QuoteStatus> = new Set(['declined', 'cancelled', 'lost']);
+
 /**
  * Whether a quote should create or close its "sent, no reply" follow-up.
- * approved → close (won); sent-but-unapproved → create; draft → none.
+ * declined/cancelled/lost → close (dead, #183 BUG 2); approved → close (won);
+ * sent-but-unapproved → create; draft → none.
  */
 export function quoteFollowUpDecision(q: DashboardQuote): QuoteFollowUpDecision {
+  if (DEAD_QUOTE_STATUSES.has(deriveStatus(q))) {
+    return { kind: 'close', reason: FOLLOWUP_REASONS.quoteSentNoReply };
+  }
   if (q.customer_approved_at) return { kind: 'close', reason: FOLLOWUP_REASONS.quoteSentNoReply };
   if (q.quote_sent_at) return { kind: 'create', reason: FOLLOWUP_REASONS.quoteSentNoReply, sentAt: toDate(q.quote_sent_at) };
   return { kind: 'none' };
