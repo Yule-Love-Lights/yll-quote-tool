@@ -43,8 +43,9 @@ export function derivePackagesEvent(
   return [
     {
       id: 'D',
-      // #119 — the What's Included heading + hero pill prepend "Your ", so the
-      // name must NOT lead with "Your" (else "Your Your event lighting").
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: 'Event Lighting',
       tagline: "Everything we'll light for your event.",
       total: p.total,

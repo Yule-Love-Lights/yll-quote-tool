@@ -92,7 +92,7 @@ describe('derivePackagesEvent', () => {
     expect(pkgs[0].total).toBeCloseTo(108.75, 2);
   });
 
-  it('names the package without a leading "Your" (#119 — the What\'s Included heading prepends "Your ", so a "Your …" name would render "Your Your event lighting")', () => {
+  it('names the package without a leading "Your" (belt-and-suspenders — #184 removed the heading\'s "Your " prepend entirely, so this is no longer load-bearing)', () => {
     const pkgs = derivePackagesEvent([pli('a', 100)], calculateEventQuote(baseInputs()));
     expect(pkgs[0].name).toBe('Event Lighting');
     expect(pkgs[0].name.toLowerCase().startsWith('your ')).toBe(false);
