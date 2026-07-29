@@ -5,19 +5,12 @@ import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import type { StoredReferenceAsset, ReferenceAssetType } from '@/lib/referenceAssets';
 import { GARLAND_LENGTHS } from '@/lib/design/sceneCorrections';
+import { downscaleForUpload } from '@/lib/clientImage';
 
 const SPRITZER_SIZES = ['16', '24', '32'];
 const WREATH_SIZES = ['24noble', '30noble', '36noble', '48noble', '60noble', '72noble'];
 const WREATH_TIERS = ['bow', 'fullDecor'];
 const GARLAND_TIERS = ['bow', 'fullDecor'];
-
-async function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
-  const buffer = await file.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return { base64: btoa(binary), mediaType: file.type || 'image/jpeg' };
-}
 
 export default function ReferenceLibraryPage() {
   const [items, setItems] = useState<StoredReferenceAsset[]>([]);
@@ -71,7 +64,10 @@ export default function ReferenceLibraryPage() {
     setUploading(true);
     setError(null);
     try {
-      const { base64, mediaType } = await fileToBase64(file);
+      // #186: downscale before base64-encoding — see clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
+      const comma = dataUrl.indexOf(',');
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
       const res = await fetch('/api/references', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
