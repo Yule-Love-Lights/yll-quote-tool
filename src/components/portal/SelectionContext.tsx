@@ -292,6 +292,25 @@ export function frozenMutatorGroups(state: {
   };
 }
 
+// #184 — pin the active package NAME at the SOURCE, so every consumer of
+// SelectionContext's `activeName` agrees automatically: the What's Included
+// heading, the hero package tab (InteractiveHero), the approve payload
+// (buildApprovePayload → the frozen approval snapshot's packageName), the
+// customer PDF (docModels.ts reads approval.packageName), and the staff
+// internal-approval email (built from the same frozen packageName) — all read
+// this ONE value, so a single pin here keeps them from disagreeing. A legacy
+// rebook quote with 2+ items can no longer honestly be called "last year's
+// design" once it's toggleable (#179) — the list diverges from what was
+// actually last year's design the moment staff add a comparison item — so it
+// always reads "Build Your Own" here, regardless of whether the live
+// selection still happens to match the migrated bundle. A 1-item (frozen)
+// Neighbor quote is unaffected (itemCount < 2 leaves `name` untouched).
+// Already-frozen approvals keep whatever name they froze; only a NEW
+// approval (made after this ships) freezes the corrected name.
+export function resolveActiveName(name: string, legacyRebook: boolean, itemCount: number): string {
+  return legacyRebook && itemCount >= 2 ? 'Build Your Own' : name;
+}
+
 export function useSelection(): SelectionContextValue {
   const ctx = useContext(SelectionContext);
   if (!ctx) throw new Error('useSelection must be inside <SelectionProvider>');
@@ -609,16 +628,20 @@ export function SelectionProvider({
   // customer diverges (or there was no recommendation) it reads "Build Your Own".
   const activeName = useMemo(() => {
     const pkg = packagesById.get(packageId);
+    let name: string;
     if (packageId === 'D') {
       const recIds = pkg?.includedItemIds ?? [];
       const matchesRec =
         recIds.length > 0 &&
         recIds.length === selectedItemIds.size &&
         recIds.every((id) => selectedItemIds.has(id));
-      return matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+      name = matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+    } else {
+      name = pkg?.name ?? '';
     }
-    return pkg?.name ?? '';
-  }, [packageId, packagesById, selectedItemIds]);
+    // #184 — see resolveActiveName above.
+    return resolveActiveName(name, legacyRebook, lineItems.length);
+  }, [packageId, packagesById, selectedItemIds, legacyRebook, lineItems.length]);
 
   // #43 — when the quote is approved the portal is read-only: every selection
   // setter is swapped for this no-op so nothing can change, regardless of any

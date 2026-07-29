@@ -5,6 +5,7 @@ import {
   nextPackageSelectedItemIds,
   frozenMutatorGroups,
   resolveInitialColorState,
+  resolveActiveName,
 } from './SelectionContext';
 import {
   DEFAULT_COLOR_SCHEME_ID,
@@ -202,6 +203,31 @@ describe('nextPackageSelectedItemIds — selectPackage tier/custom logic', () =>
     const current = new Set(['bush-1']);
     nextPackageSelectedItemIds(pkgA, current);
     expect(current).toEqual(new Set(['bush-1']));
+  });
+});
+
+// #184 — pin activeName AT THE SOURCE so every consumer (the What's Included
+// heading, the hero package tab, the approve payload → frozen approval
+// snapshot's packageName, the customer PDF, the staff approval email) reads
+// the SAME corrected value instead of each recomputing/duplicating the rule.
+describe('resolveActiveName (#184 — Neighbor multi-item name pinned at the source)', () => {
+  it('a legacy rebook with 2+ items always resolves to "Build Your Own", even while the live selection still matches last year\'s bundle', () => {
+    expect(resolveActiveName("Last Year's Design", true, 2)).toBe('Build Your Own');
+    expect(resolveActiveName("Last Year's Design", true, 3)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook with 2+ items stays "Build Your Own" even when the computed name already says so', () => {
+    expect(resolveActiveName('Build Your Own', true, 2)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook frozen at exactly 1 item keeps the accurate "Last Year\'s Design" (untouched)', () => {
+    expect(resolveActiveName("Last Year's Design", true, 1)).toBe("Last Year's Design");
+  });
+
+  it('a non-legacy quote is unaffected regardless of item count', () => {
+    expect(resolveActiveName('Our Recommendation', false, 1)).toBe('Our Recommendation');
+    expect(resolveActiveName('Classic Glow', false, 5)).toBe('Classic Glow');
+    expect(resolveActiveName('Build Your Own', false, 2)).toBe('Build Your Own');
   });
 });
 
