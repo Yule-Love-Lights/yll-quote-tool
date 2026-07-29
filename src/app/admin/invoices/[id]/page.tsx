@@ -405,10 +405,13 @@ export default function InvoiceDetailPage() {
               </dl>
 
               {(() => {
-                const recon = reconcileInvoice(inv);
+                // #177 fix 4: pass the quote's INTENDED deposit (its own
+                // deposit percent) so short-deposit compares against that,
+                // not a blanket 40%-of-total assumption.
+                const recon = reconcileInvoice(inv, data.intendedDepositUsd);
                 const flagLabels: Record<string, string> = {
                   'overpaid': 'Overpaid — issue a refund in Valor',
-                  'short-deposit': 'Deposit below 40% of total — verify with customer',
+                  'short-deposit': 'Deposit below the intended amount — verify with customer',
                   'balance-outstanding': 'Balance outstanding',
                   'inconsistent': 'Data error: invoice marked paid but balance > 0 — contact support',
                 };

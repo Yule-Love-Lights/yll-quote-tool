@@ -249,6 +249,34 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(snap.customerSelection.installDiscountUsd).toBe(0);
   });
 
+  // #177 fix 2 — the snapshot must freeze the EFFECTIVE deposit rate at
+  // approval time so post-approval surfaces (the approved page, the sticky
+  // bar's pending-payment state, the valor webhook's internal alert) can read
+  // the FROZEN percent instead of a live one that could drift later.
+  it('freezes the effective deposit rate (a staff override) into the snapshot', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ inputs: { depositPercent: 25 } }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { depositRate: number };
+    };
+    expect(snap.customerSelection.depositRate).toBe(0.25);
+  });
+
+  it('freezes the default 50% deposit rate when inputs.depositPercent is absent', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { depositRate: number };
+    };
+    expect(snap.customerSelection.depositRate).toBe(0.5);
+  });
+
   it('drops unknown selectedItemIds the client sends', async () => {
     const { client, updatePayloads } = makeSb(baseQuote());
     sbRef.current = client;

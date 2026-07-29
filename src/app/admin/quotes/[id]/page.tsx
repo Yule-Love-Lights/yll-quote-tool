@@ -10,7 +10,7 @@ import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
-import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -300,7 +300,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dd>{money(quote.total ?? quote.result.total)}</dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt>Deposit</dt>
+                  <dt>
+                    Deposit
+                    {/* #177 fix 5: surface the percent when it's not the 50% default —
+                        cheaply derivable from the same result.depositRate. */}
+                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
+                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
+                    )}
+                  </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
                 <div className="flex justify-between">

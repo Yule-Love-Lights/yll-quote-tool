@@ -743,6 +743,65 @@ describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / s
     expect(portal.approval?.totalUsd).toBe(3389.06);
     expect(portal.approval?.depositUsd).toBe(1694.53);
   });
+
+  // #177 — the same fallback must read the quote's OWN deposit percent
+  // (inputs.depositPercent), not always assume 50%.
+  it('a per-quote depositPercent override is honored by the fallback derivation', () => {
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', currentTotalUsd: 400 } }),
+        inputs: emptyInputs({ depositPercent: 25 }),
+      },
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.totalUsd).toBe(400);
+    expect(portal.approval?.depositUsd).toBe(100); // 400 * 0.25, not 400 * 0.5
+  });
+});
+
+// #177 fix 2 — buildApproval must expose the FROZEN depositRate (what the
+// customer actually approved with), preferring the snapshot's own depositRate
+// over the live inputs.depositPercent, so a later staff edit can't retro-change
+// what a post-approval surface displays.
+describe('quoteRowToPortalQuote — approval.depositRate (#177 fix 2)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown, inputs: QuoteInputs | null = null): QuoteRowForPortal {
+    return {
+      ...rowWith(result, inputs),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('prefers the FROZEN snapshot depositRate over a DIFFERENT live inputs.depositPercent', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', depositRate: 0.25 } },
+        emptyInputs({ depositPercent: 40 }), // staff changed it AFTER approval — must not win
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.25);
+  });
+
+  it('falls back to the live inputs.depositPercent for a pre-#177 snapshot with no frozen rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }, // no depositRate field
+        emptyInputs({ depositPercent: 30 }),
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.3);
+  });
+
+  it('falls back to 50% when neither the snapshot nor inputs carry a rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.5);
+  });
 });
 
 // ── #134: packages under the approval gate are hidden ───────────────────────

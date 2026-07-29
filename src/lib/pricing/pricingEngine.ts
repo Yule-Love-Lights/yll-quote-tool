@@ -278,6 +278,11 @@ export interface QuoteInputs {
   // lib/permanentBistro/pricing.ts) reads bistro runs + poles. Every other
   // vertical ignores it.
   permanentBistro?: PermanentBistroInputFields;
+  // Per-quote deposit override (#177): a staff-set integer percent (1-100) of
+  // the total, due at approval. Optional/additive — absent, non-integer, or
+  // outside [1,100] falls back to BUSINESS_RULES.depositPercentage (50%), so
+  // every existing quote stays byte-identical. See effectiveDepositRate.
+  depositPercent?: number;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -357,6 +362,13 @@ export interface QuoteResult {
   // Permanent Bistro Lighting: the rate table frozen at calc time — the same
   // rate-drift guard as permanent/event. Present only on permanent-bistro quotes.
   permanentBistroRatesSnapshot?: PermanentBistroRates;
+  // #177: the effective deposit rate (0-1) this result was priced with — the
+  // staff override when set, else BUSINESS_RULES.depositPercentage. Frozen at
+  // calc time (mirrors the *RatesSnapshot pattern) so the portal's package/
+  // selection pricing (chargesFromResult) reads the SAME rate the engine
+  // billed, never a live re-derivation. Optional: quotes priced before this
+  // field default to BUSINESS_RULES.depositPercentage when absent.
+  depositRate?: number;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -843,7 +855,20 @@ export function calculateQuote(inputs: QuoteInputs): QuoteResult {
     rooflineChoice,
     rooflineOptions,
     fullYule,
+    // #177: freeze the effective rate this result was priced with.
+    depositRate: effectiveDepositRate(inputs.depositPercent),
   };
+}
+
+// #177: the effective deposit rate (0-1) for a quote — a staff-set integer
+// percent (1-100, inputs.depositPercent) overrides BUSINESS_RULES.depositPercentage.
+// Validated here (not just at the write-path 400) so a malformed/legacy stored
+// value degrades to the default instead of NaN-ing every downstream deposit
+// calculation. Mirrors resolveRate's guard style.
+export function effectiveDepositRate(depositPercent?: number): number {
+  return Number.isInteger(depositPercent) && (depositPercent as number) >= 1 && (depositPercent as number) <= 100
+    ? (depositPercent as number) / 100
+    : BUSINESS_RULES.depositPercentage;
 }
 
 // The subtotal → total tail: manual discount, early-install promo, rush + premium
@@ -900,7 +925,7 @@ export function computeTotalsTail(
   const taxableAmount = subtotalAfterDiscount + rushFeeAmount + takedownAmount;
   const taxAmount = moneyTimesRate(taxableAmount, BUSINESS_RULES.taxRate);
   const total = roundMoney(taxableAmount + taxAmount);
-  const depositAmount = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  const depositAmount = moneyTimesRate(total, effectiveDepositRate(inputs.depositPercent));
   const balanceDue = roundMoney(total - depositAmount);
 
   return {

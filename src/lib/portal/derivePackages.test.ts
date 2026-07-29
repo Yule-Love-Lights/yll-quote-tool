@@ -289,6 +289,13 @@ describe('priceSelection — real price, no $1,000 floor (#18)', () => {
     expect(p.taxable + p.tax).toBeCloseTo(p.total, 2);
     expect(p.deposit).toBeCloseTo(p.total * BUSINESS_RULES.depositPercentage, 2);
   });
+
+  // #177 — a per-quote deposit rate overrides the BUSINESS_RULES default.
+  it('honors a per-quote deposit rate override', () => {
+    const p = priceSelection(2000, { ...PLAIN, depositRate: 0.25 });
+    expect(p.total).toBe(2172.5);
+    expect(p.deposit).toBe(543.13); // 2172.5 * 0.25
+  });
 });
 
 describe('priceSelection — early-install discount (#40)', () => {
@@ -446,6 +453,14 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
     expect(charges.taxRate).toBe(BUSINESS_RULES.taxRate);
   });
 
+  // #177 — the per-quote deposit rate frozen on the result flows through
+  // chargesFromResult, falling back to the BUSINESS_RULES default for a
+  // legacy result priced before this field existed.
+  it('exposes the per-quote deposit rate, defaulting when absent (#177)', () => {
+    expect(chargesFromResult(resultWith({ depositRate: 0.25 })).depositRate).toBe(0.25);
+    expect(chargesFromResult(resultWith({})).depositRate).toBe(BUSINESS_RULES.depositPercentage);
+  });
+
   // Audit fix (g18): on a near-zero taxable base the rounded taxAmount used to
   // back-derive an inflated rate (e.g. 0.01 / 0.10 = 0.10 ≠ 0.0875) that then
   // got applied to every package/selection total. The canonical rate is used
@@ -481,6 +496,7 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
       taxRate: charges.taxRate,
       discountRate: 0,
       discountFlat: 0,
+      depositRate: BUSINESS_RULES.depositPercentage, // #177 — chargesFromResult always resolves a concrete rate
     });
   });
 
@@ -515,6 +531,7 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
       taxRate: charges.taxRate,
       discountRate: 0,
       discountFlat: 0,
+      depositRate: BUSINESS_RULES.depositPercentage, // #177 — chargesFromResult always resolves a concrete rate
     });
   });
 });
@@ -536,6 +553,12 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
   it('passes through a discount rate and a flat discount', () => {
     expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15, discountFlat: 0 });
     expect(effectiveCharges(config, false, false, 0, 100)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 100 });
+  });
+
+  // #177 — the per-quote deposit rate passes through unchanged (not toggle-gated).
+  it('passes through the per-quote deposit rate', () => {
+    const withRate: PortalCharges = { ...config, depositRate: 0.25 };
+    expect(effectiveCharges(withRate, true, false).depositRate).toBe(0.25);
   });
 });
 

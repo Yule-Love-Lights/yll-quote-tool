@@ -158,7 +158,10 @@ export type InvoiceReconciliation = {
   /**
    * Actionable flags for the operator — zero or more of:
    *   'overpaid'            — credit_note > 0; a Valor refund is required.
-   *   'short-deposit'       — deposit > 0 but < 40% of quoted (fat-finger / partial-auth).
+   *   'short-deposit'       — deposit > 0 and short of what was actually INTENDED
+   *                           (fat-finger / partial-auth). #177: per-quote deposit
+   *                           percent means "40% of quoted" is no longer a safe
+   *                           universal proxy for "intended" — see reconcileInvoice.
    *                           Not evaluated on a cancelled invoice (see reconcileInvoice).
    *   'balance-outstanding' — not paid and balance > 0 (informational).
    *                           Not evaluated on a cancelled invoice (see reconcileInvoice).
@@ -171,8 +174,16 @@ export type InvoiceReconciliation = {
  * Derive a money-reconciliation summary from a stored InvoiceRow. PURE — no IO.
  *
  * Flags are additive: any combination can fire simultaneously.
- * The short-deposit threshold is 40% (not 50%) to tolerate minor rounding and
- * round-dollar booking deposits, while still catching clearly low values.
+ *
+ * #177: short-deposit now compares the applied deposit against the quote's
+ * OWN intended deposit (`intendedDepositUsd` — the linked quote's stamped
+ * deposit_amount_usd, the actual amount that was supposed to be charged at
+ * this quote's own deposit percent), not a blanket 50%-assumption threshold.
+ * A tolerance of 80% of intended (not exactly 100%) still absorbs minor
+ * rounding, mirroring the old 40%-of-50% ( = 80%-of-intended) spirit. When
+ * intendedDepositUsd is unavailable (no linked quote, or a legacy quote
+ * predating the deposit_amount_usd column), falls back to the old blanket
+ * "< 40% of quoted" heuristic so a pre-#177 invoice keeps its existing behavior.
  *
  * WT-20 fix: setInvoiceStatus never zeroes the balance when an invoice is
  * cancelled, so a cancelled invoice keeps its original nonzero balance. The
@@ -181,7 +192,7 @@ export type InvoiceReconciliation = {
  * only real action on a cancelled order is a manual refund, which the
  * 'overpaid' flag already covers when a credit_note exists.
  */
-export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
+export function reconcileInvoice(inv: InvoiceRow, intendedDepositUsd?: number | null): InvoiceReconciliation {
   const quoted = inv.total;
   const depositApplied = inv.deposit_applied;
   const balanceDue = inv.balance;
@@ -191,8 +202,15 @@ export function reconcileInvoice(inv: InvoiceRow): InvoiceReconciliation {
 
   const flags: string[] = [];
 
+  const intended = typeof intendedDepositUsd === 'number' ? intendedDepositUsd : null;
+  const shortDeposit =
+    depositApplied > 0 &&
+    (intended != null && intended > 0
+      ? depositApplied < intended * 0.8
+      : depositApplied < 0.4 * quoted);
+
   if (creditNote > 0) flags.push('overpaid');
-  if (!cancelled && depositApplied > 0 && depositApplied < 0.4 * quoted) flags.push('short-deposit');
+  if (!cancelled && shortDeposit) flags.push('short-deposit');
   if (!cancelled && !paid && balanceDue > 0) flags.push('balance-outstanding');
   if (paid && balanceDue > 0) flags.push('inconsistent');
 
@@ -352,6 +370,13 @@ export type InvoiceDetail = {
   isTest: boolean;
   jobNumber: number | null;
   jobStatus: string | null;
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
+  // actually INTENDED to be collected at this quote's own deposit percent.
+  // Fed into reconcileInvoice so 'short-deposit' compares against the real
+  // intended amount instead of a blanket 40%-of-total heuristic. null when
+  // there's no linked quote or the quote predates the column (legacy).
+  // Optional for back-compat with any other hand-built InvoiceDetail fixture.
+  intendedDepositUsd?: number | null;
 };
 
 /**
@@ -371,10 +396,11 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let customerPhone: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let intendedDepositUsd: number | null = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, deposit_amount_usd')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -382,6 +408,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         customer_phone: string | null;
         customer_address: string | null;
         is_test: boolean | null;
+        deposit_amount_usd: number | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -389,6 +416,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       customerPhone = data.customer_phone ?? null;
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
+      intendedDepositUsd = data.deposit_amount_usd ?? null;
     }
   }
 
@@ -406,7 +434,17 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
     }
   }
 
-  return { invoice, customerName, customerEmail, customerPhone, customerAddress, isTest, jobNumber, jobStatus };
+  return {
+    invoice,
+    customerName,
+    customerEmail,
+    customerPhone,
+    customerAddress,
+    isTest,
+    jobNumber,
+    jobStatus,
+    intendedDepositUsd,
+  };
 }
 
 // The minimal shapes createInvoiceFromJob reads.

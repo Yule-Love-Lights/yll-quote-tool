@@ -14,7 +14,7 @@ export type PortalPackage = {
   name: string;
   tagline: string;
   total: number;        // dollars, tax-inclusive final price (rush/takedown + tax; no floor — minimum is a portal gate)
-  deposit: number;      // dollars, 50% of total
+  deposit: number;      // dollars, this quote's deposit rate (default 50%) of total
   recommended?: boolean;
   includedItemIds: string[]; // which line items are bundled in this package
 };
@@ -117,6 +117,13 @@ export type PortalApproval = {
   packageName: string;       // "Build Your Own", "Santa's Classic", etc.
   totalUsd: number;          // amount the customer saw at approval time
   depositUsd: number;        // amount paid up front
+  // #177 — the FROZEN deposit rate (0-1) this customer approved with (staff
+  // override or BUSINESS_RULES.depositPercentage). Post-approval surfaces read
+  // this instead of the live inputs.depositPercent so a later staff edit can't
+  // retro-change what the customer signed for. Optional/back-compat like the
+  // other frozen-choice fields below — buildApproval always computes a real
+  // number for a live row; a hand-built test/legacy fixture may omit it.
+  depositRate?: number;
   selectedItemCount: number; // for a "X items included" line
   // The FROZEN line-item selection the customer approved (the exact ids), so a
   // booked portal can re-seed SelectionProvider from what they signed instead of
@@ -154,6 +161,9 @@ export type SelectionCharges = {
   taxRate: number;   // effective rate for this quote, e.g. 0.08625
   discountRate?: number; // promo/manual-% rate off the subtotal; 0/undefined when none
   discountFlat?: number; // flat $ off the subtotal (manual flat discount); 0/undefined when none
+  // #177: the per-quote deposit rate (e.g. 0.5); undefined falls back to
+  // BUSINESS_RULES.depositPercentage at the priceSelection call site.
+  depositRate?: number;
 };
 
 // Per-quote fee config for the portal. Rush + premium-takedown are
@@ -171,6 +181,10 @@ export type PortalCharges = {
   // flat = dollars off (flat). Both 0 / absent = no manual discount. Mutually
   // exclusive with the early-install promo (one discount per quote).
   manualDiscount?: { rate: number; flat: number };
+  // #177: the per-quote deposit rate (e.g. 0.5), frozen on the pricing result.
+  // Undefined for a legacy result priced before this field existed — consumers
+  // fall back to BUSINESS_RULES.depositPercentage.
+  depositRate?: number;
 };
 
 // Full price breakdown for a selection, so the portal can show a
@@ -185,7 +199,7 @@ export type SelectionPrice = {
   taxable: number;   // subtotal − discount + rushFee + takedown
   tax: number;       // dollars
   total: number;     // tax-inclusive total the customer pays
-  deposit: number;   // 50% of total, due today
+  deposit: number;   // this quote's deposit rate (default 50%) of total, due today
 };
 
 // A saved on-photo light design linked to this quote (design-tool integration

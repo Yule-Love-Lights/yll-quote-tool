@@ -169,6 +169,19 @@ describe('calculateEventQuote — totals math (no rush/takedown/early-install)',
     expect(r.total).toBeCloseTo(761.25, 2);
     expect(r.depositAmount).toBeCloseTo(380.63, 2);
     expect(r.balanceDue).toBeCloseTo(380.62, 2);
+    expect(r.depositRate).toBe(0.5); // default, absent depositPercent
+  });
+
+  // #177 — event honors the same per-quote deposit override as holiday/permanent.
+  it('honors a per-quote depositPercent override (#177)', () => {
+    const r = calculateEventQuote(
+      baseInputs({ santasFootage: 100, santasDifficulty: 'easy', depositPercent: 25 }),
+      R,
+    );
+    expect(r.total).toBeCloseTo(761.25, 2);
+    expect(r.depositAmount).toBeCloseTo(190.31, 2);
+    expect(r.balanceDue).toBeCloseTo(570.94, 2);
+    expect(r.depositRate).toBe(0.25);
   });
 
   it('percentage discount comes off the subtotal before tax', () => {

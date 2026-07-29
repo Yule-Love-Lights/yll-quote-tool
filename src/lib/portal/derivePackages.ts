@@ -101,6 +101,10 @@ export function chargesFromResult(result: QuoteResult): PortalCharges {
       amount: noHolidayFees ? 0 : BUSINESS_RULES.premiumTakedownFee,
       defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
     },
+    // #177: the staff-set per-quote deposit rate frozen on the result, else the
+    // BUSINESS_RULES default — same fallback the engine itself applies, so a
+    // legacy result (priced before this field existed) reads back at 50%.
+    depositRate: result.depositRate ?? BUSINESS_RULES.depositPercentage,
   };
 }
 
@@ -120,6 +124,9 @@ export function effectiveCharges(
     taxRate: charges.taxRate,
     discountRate,
     discountFlat,
+    // #177: pass the per-quote deposit rate through unchanged (not toggle-gated
+    // — every selection on this quote shares the same rate).
+    depositRate: charges.depositRate,
   };
 }
 
@@ -147,7 +154,8 @@ export function priceSelection(
   const taxable = subtotal - discount + charges.rushFee + charges.takedown;
   const tax = moneyTimesRate(taxable, charges.taxRate);
   const total = round2(taxable + tax);
-  const deposit = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  // #177: the quote's own deposit rate when set, else the BUSINESS_RULES default.
+  const deposit = moneyTimesRate(total, charges.depositRate ?? BUSINESS_RULES.depositPercentage);
   return {
     subtotal,
     discount,

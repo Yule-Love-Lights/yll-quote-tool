@@ -145,6 +145,12 @@ export type StickyBottomBarProps = {
   /** #38 — the frozen deposit amount from the approval snapshot (what /pay will
    *  actually charge). Shown in the "complete your deposit" bar so it matches. */
   approvedDepositUsd?: number;
+  /** #177 fix 2b — the frozen deposit RATE (0-1) from the approval snapshot —
+   *  what the customer actually approved with. Passed to DepositCheckout's
+   *  copy instead of the live SelectionContext depositRate, which a staff edit
+   *  to inputs.depositPercent after approval must not retro-change. Mirrors
+   *  approvedDepositUsd above; undefined falls back to the live rate. */
+  approvedDepositRate?: number;
   /** #93 — this is a TEST quote. The deposit step becomes "Simulate deposit
    *  paid" (→ /simulate-deposit, no Valor) and the deposit flow is available
    *  regardless of whether the real Valor checkout is enabled. */
@@ -179,6 +185,7 @@ export function StickyBottomBar({
   booked = false,
   checkoutEnabled = false,
   approvedDepositUsd,
+  approvedDepositRate,
   isTest = false,
   viewOnly = false,
   quoteStatus,
@@ -202,6 +209,7 @@ export function StickyBottomBar({
     permanentEffect,
     installTiming,
     breakdown,
+    depositRate,
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -437,6 +445,7 @@ export function StickyBottomBar({
             isTest={isTest}
             serviceType={serviceType}
             onClose={closeDepositCheckout}
+            depositPercent={Math.round((approvedDepositRate ?? depositRate) * 100)}
           />
         )}
         <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
@@ -582,6 +591,7 @@ export function StickyBottomBar({
           isTest={isTest}
           serviceType={serviceType}
           onClose={closeDepositCheckout}
+          depositPercent={Math.round(depositRate * 100)}
         />
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then
