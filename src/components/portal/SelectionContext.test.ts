@@ -5,6 +5,7 @@ import {
   nextPackageSelectedItemIds,
   frozenMutatorGroups,
   resolveInitialColorState,
+  resolveActiveName,
 } from './SelectionContext';
 import {
   DEFAULT_COLOR_SCHEME_ID,
@@ -132,31 +133,46 @@ describe('nextSelectedItemIds — mutually-exclusive roofline (XOR) + plain togg
     expect(next).toEqual(new Set(['roofline-single', 'roofline-other']));
   });
 
-  // #125 — permanent portal tier selector: with only ONE package on offer
-  // (e.g. a single-surface permanent quote), the last remaining item must
-  // never be uncheckable down to a zero-package state.
-  it('onlyOnePackage=true: unchecking the LAST remaining item is a no-op', () => {
+  // #184 — supersedes #125's package-count signal: the last-item-deselect
+  // refusal now keys on the quote's TOTAL LINE ITEM COUNT, not the derived
+  // package count. Only an actual 1-item quote passes onlyOneItem=true (that
+  // case is already fully frozen by frozenMutatorGroups — #180 — so this is
+  // defense-in-depth, not an active gate). A 2+-item quote ALWAYS passes
+  // onlyOneItem=false now, even when it derives a single bundled package
+  // (Neighbor/event/bistro/single-surface-permanent) — the dev's #184 call is
+  // that those quotes may be deselected all the way to zero.
+  it('onlyOneItem=true (a real 1-item quote): unchecking the LAST remaining item is a no-op', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'permanent-front', new Set(), true);
     expect(next).toBe(prev);
     expect(next).toEqual(new Set(['permanent-front']));
   });
 
-  it('onlyOnePackage=true: unchecking one of SEVERAL selected items still works normally', () => {
+  it('onlyOneItem=true: unchecking one of SEVERAL selected items still works normally (mechanism check)', () => {
     const prev = new Set(['permanent-front', 'custom-0']);
     const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
     expect(next).toEqual(new Set(['permanent-front']));
   });
 
-  it('onlyOnePackage=true: adding an item is unaffected', () => {
+  it('onlyOneItem=true: adding an item is unaffected', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
     expect(next).toEqual(new Set(['permanent-front', 'custom-0']));
   });
 
-  it('onlyOnePackage=false (default/multi-package): unchecking the last item still empties the set', () => {
+  it('onlyOneItem=false (a normal 2+-package holiday quote): unchecking the last item still empties the set', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'permanent-front', new Set());
+    expect(next).toEqual(new Set());
+  });
+
+  it('onlyOneItem=false (a Neighbor 2-item quote, single derived package — #184): unchecking the last item empties the set', () => {
+    // A legacyRebook quote with 2+ items always derives exactly ONE package
+    // (derivePackagesLegacyRebook), but #184's onlyOneItem keys on item count,
+    // not package count — so this quote passes onlyOneItem=false and the
+    // customer can toggle all the way to an empty selection.
+    const prev = new Set(['legacy-item-a']);
+    const next = nextSelectedItemIds(prev, 'legacy-item-a', new Set(), false);
     expect(next).toEqual(new Set());
   });
 });
@@ -187,6 +203,31 @@ describe('nextPackageSelectedItemIds — selectPackage tier/custom logic', () =>
     const current = new Set(['bush-1']);
     nextPackageSelectedItemIds(pkgA, current);
     expect(current).toEqual(new Set(['bush-1']));
+  });
+});
+
+// #184 — pin activeName AT THE SOURCE so every consumer (the What's Included
+// heading, the hero package tab, the approve payload → frozen approval
+// snapshot's packageName, the customer PDF, the staff approval email) reads
+// the SAME corrected value instead of each recomputing/duplicating the rule.
+describe('resolveActiveName (#184 — Neighbor multi-item name pinned at the source)', () => {
+  it('a legacy rebook with 2+ items always resolves to "Build Your Own", even while the live selection still matches last year\'s bundle', () => {
+    expect(resolveActiveName("Last Year's Design", true, 2)).toBe('Build Your Own');
+    expect(resolveActiveName("Last Year's Design", true, 3)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook with 2+ items stays "Build Your Own" even when the computed name already says so', () => {
+    expect(resolveActiveName('Build Your Own', true, 2)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook frozen at exactly 1 item keeps the accurate "Last Year\'s Design" (untouched)', () => {
+    expect(resolveActiveName("Last Year's Design", true, 1)).toBe("Last Year's Design");
+  });
+
+  it('a non-legacy quote is unaffected regardless of item count', () => {
+    expect(resolveActiveName('Our Recommendation', false, 1)).toBe('Our Recommendation');
+    expect(resolveActiveName('Classic Glow', false, 5)).toBe('Classic Glow');
+    expect(resolveActiveName('Build Your Own', false, 2)).toBe('Build Your Own');
   });
 });
 

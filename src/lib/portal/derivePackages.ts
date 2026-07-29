@@ -400,8 +400,9 @@ export function derivePackagesLegacyRebook(
   return [
     {
       id: 'D',
-      // #119 — the What's Included heading + hero pill prepend "Your ", so the
-      // name must NOT lead with "Your" (else "Your Your ...").
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: "Last Year's Design",
       tagline: 'Everything from last year.',
       total,

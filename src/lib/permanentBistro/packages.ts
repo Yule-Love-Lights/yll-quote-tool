@@ -31,9 +31,9 @@ export function derivePackagesPermanentBistro(
   return [
     {
       id: 'D',
-      // If this ever surfaces under a "What's Included" heading that prepends
-      // "Your " (mirrors event's #119 note), the name must NOT itself lead
-      // with "Your".
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: 'Bistro Lighting',
       tagline: "Everything we'll light for your space.",
       total: p.total,
