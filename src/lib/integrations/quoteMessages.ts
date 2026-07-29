@@ -545,6 +545,74 @@ export function internalPaidEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── Card-declined staff alert (#175) ────────────────────────────────────────
+// A signed Valor webhook for a non-approved (declined) deposit or balance
+// charge previously only console.warned — staff discovered a decline a day
+// later on the Valor dashboard while the quote sat approved-but-unpaid with
+// zero explanation. The webhook route fires this (throttled — see
+// claimDeclineNotifySlot there) so the decline surfaces immediately instead.
+
+const DECLINE_CODE_TEXT: Record<string, string> = {
+  '05': "Do not honor — the customer's bank refused; they should call their bank or use another card",
+  '51': 'Insufficient funds',
+  '14': 'Invalid card number',
+  '54': 'Expired card',
+  '41': 'Lost card',
+  '43': 'Stolen card',
+};
+
+// Pure + exported so the code→human mapping is unit-testable on its own,
+// and so the admin quote page (#175 stretch) can render the same text.
+export function depositDeclineReasonText(code: string | null): string {
+  if (!code) return 'Bank declined (no code given)';
+  return DECLINE_CODE_TEXT[code] ?? `code ${code} — bank declined`;
+}
+
+export function internalDepositDeclinedEmailSubject(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  amountUsd: number;
+  // 'balance' for the #83 pay-link leg — defaults to the deposit wording.
+  kind?: 'deposit' | 'balance';
+}): string {
+  const who = input.customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const quoteLabel = input.quoteNumber != null ? ` quote #${input.quoteNumber}` : '';
+  const label = input.kind === 'balance' ? 'balance' : 'deposit';
+  return `❌ Card DECLINED — ${who}${quoteLabel} ${label} (${usdExact(input.amountUsd)})`;
+}
+
+export function internalDepositDeclinedEmailHtml(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  amountUsd: number;
+  declineCode: string | null;
+  adminUrl: string;
+  portalUrl: string;
+  // 'balance' for the #83 pay-link leg — defaults to the deposit wording.
+  kind?: 'deposit' | 'balance';
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const label = input.kind === 'balance' ? 'balance' : 'deposit';
+  const quoteLabel = input.quoteNumber != null ? ` (quote #${input.quoteNumber})` : '';
+  const row = (labelText: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${labelText}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>${quoteLabel}'s card was DECLINED trying to pay their ${label} (${usdExact(
+      input.amountUsd,
+    )}).</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Amount', usdExact(input.amountUsd)),
+    row('Decline code', escapeHtml(input.declineCode || '—')),
+    row('What it means', escapeHtml(depositDeclineReasonText(input.declineCode))),
+    `</table>`,
+    `<p>No money moved. The customer's portal still shows ${
+      label === 'balance' ? 'Pay balance' : 'Complete deposit'
+    } — they can retry the same link.</p>`,
+    `<p><a href="${input.adminUrl}">${label === 'balance' ? 'Open invoice →' : 'Open in quote tool →'}</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
+
 // ─── Possible double-charge alert (#110 W1-006) ──────────────────────────────
 // A second APPROVED Valor deposit txn arrived for a quote that's already marked
 // paid, with a DIFFERENT txn id than the one on file — two live hosted checkout

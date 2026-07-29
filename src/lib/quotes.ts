@@ -439,6 +439,14 @@ export type QuoteRaw = {
   // without a second fetch. Additive — the edit flow ignores them.
   deposit_paid_at: string | null;
   viewed_at: string | null;
+  // #175: a declined deposit/balance card charge, stamped by the Valor
+  // webhook — the admin quote detail page shows a notice while the deposit
+  // is still unpaid. deposit_decline_notified_at isn't rendered on the page
+  // (it's only the webhook's own send-throttle claim column) but is fetched
+  // here alongside its siblings for parity with the DB schema.
+  deposit_declined_at: string | null;
+  deposit_decline_code: string | null;
+  deposit_decline_notified_at: string | null;
   // The stored order total (dollars); may differ from result.total after an
   // amendment. NULL on legacy / uncalculated rows.
   total: number | null;
@@ -484,7 +492,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at',
     )
     .eq('id', id)
     .maybeSingle();

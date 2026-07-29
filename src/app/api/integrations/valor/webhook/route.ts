@@ -51,6 +51,8 @@ import {
   internalPaidEmailHtml,
   duplicatePaymentEmailSubject,
   duplicatePaymentEmailHtml,
+  internalDepositDeclinedEmailSubject,
+  internalDepositDeclinedEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isValorCheckoutEnabled, isValorCheckoutFlagPresent } from '@/lib/integrations/valorCheckout';
@@ -151,8 +153,213 @@ async function flagPossibleDuplicatePayment(
   }
 }
 
+// ─── Card-declined staff alert (#175) ────────────────────────────────────────
+// A signed non-approved (declined) txn previously only console.warned — staff
+// discovered a decline a day later on the Valor dashboard while the quote sat
+// approved-but-unpaid with zero explanation. Stamp the decline (fill-always)
+// + fire a THROTTLED staff alert (at most once/hour per quote) instead. Never
+// touches booking/payment state — the quote stays exactly as unpaid as before.
+
+// Long enough that a customer re-trying their own checkout link a few times
+// in a row doesn't spam staff with one email per attempt; short enough that
+// a genuinely new decline the next day still gets its own alert.
+const DECLINE_NOTIFY_THROTTLE_MS = 60 * 60 * 1000;
+
+// Fill-always — the LATEST decline overwrites the prior one. Informational
+// only (nothing "wins a race" here, unlike the payment claim below), so a
+// plain unconditional UPDATE is enough — no CAS.
+async function stampDepositDeclined(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quoteId: string,
+  responseCode: string | null,
+): Promise<void> {
+  try {
+    await sb!
+      .from('quotes')
+      .update({
+        deposit_declined_at: new Date().toISOString(),
+        deposit_decline_code: responseCode,
+      })
+      .eq('id', quoteId);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] decline stamp failed:', err);
+  }
+}
+
+// Claim the notify slot BEFORE sending the email — mirrors the atomic booking
+// claim above. The `.is.null` OR leg is required, not cosmetic: Postgres's
+// `NOT (NULL < cutoff)` evaluates to NULL (not true), so a bare `.lt()` would
+// silently exclude a quote that's never been notified (the W1-014 NULL trap —
+// see the /approve B2 guard + the atomic booking claim's `.or()` above). Two
+// concurrent webhook deliveries racing this update can't both win — the
+// loser's update matches 0 rows and skips its email.
+async function claimDeclineNotifySlot(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quoteId: string,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - DECLINE_NOTIFY_THROTTLE_MS).toISOString();
+  try {
+    const { data: claimed, error } = await sb!
+      .from('quotes')
+      .update({ deposit_decline_notified_at: new Date().toISOString() })
+      .eq('id', quoteId)
+      .or(`deposit_decline_notified_at.is.null,deposit_decline_notified_at.lt.${cutoff}`)
+      .select('id');
+    if (error) {
+      console.error('[api/integrations/valor/webhook] decline-notify claim failed:', error);
+      return false;
+    }
+    return !!claimed && claimed.length > 0;
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] decline-notify claim failed:', err);
+    return false;
+  }
+}
+
+// Deposit-path decline: stamp + (throttled) staff alert. Best-effort — must
+// never break the 200 ack Valor is waiting on.
+async function handleDepositDeclined(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quote: Pick<
+    QuoteRow,
+    'id' | 'customer_name' | 'quote_number' | 'deposit_amount_usd' | 'result' | 'approval_snapshot'
+  >,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<void> {
+  await stampDepositDeclined(sb, quote.id, event.responseCode);
+
+  const claimed = await claimDeclineNotifySlot(sb, quote.id);
+  if (!claimed) return; // throttled, or lost the race to a concurrent delivery
+
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  if (!isHighLevelConfigured() || !internalContactId) return;
+
+  const amountUsd =
+    quote.deposit_amount_usd ??
+    quote.approval_snapshot?.customerSelection?.currentDepositUsd ??
+    quote.result?.depositAmount ??
+    0;
+
+  try {
+    await sendEmail({
+      contactId: internalContactId,
+      subject: internalDepositDeclinedEmailSubject({
+        customerName: quote.customer_name,
+        quoteNumber: quote.quote_number,
+        amountUsd,
+      }),
+      html: internalDepositDeclinedEmailHtml({
+        customerName: quote.customer_name,
+        quoteNumber: quote.quote_number,
+        amountUsd,
+        declineCode: event.responseCode,
+        adminUrl: `${baseUrl}/admin/quotes/${quote.id}`,
+        portalUrl: `${baseUrl}/portal/${quote.id}`,
+      }),
+      emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+    });
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] decline alert email failed:', err);
+  }
+}
+
+// Balance-path (#83 pay-link) decline: same stamp + throttle, but anchored on
+// the QUOTE row (not the invoice) — the deposit-path decline above already
+// lives there, so one throttle window per quote covers both legs, and a
+// customer only has one "card keeps failing" story to fix regardless of which
+// leg tripped it. The caller only has the quote id, so this fetches the quote
+// itself + (best-effort) the linked invoice, so the alert can link straight
+// to it.
+async function handleBalanceDeclined(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  quoteId: string,
+  event: ValorWebhookEvent,
+  baseUrl: string,
+): Promise<void> {
+  const { data: quote } = await sb!
+    .from('quotes')
+    .select('id, customer_name, is_test, quote_number, deposit_amount_usd, approval_snapshot')
+    .eq('id', quoteId)
+    .maybeSingle<
+      Pick<QuoteRow, 'id' | 'customer_name' | 'is_test' | 'quote_number' | 'deposit_amount_usd' | 'approval_snapshot'>
+    >();
+  if (!quote || quote.is_test) return;
+
+  // #175 review MED: Valor's decline and success webhooks are separate
+  // deliveries with NO ordering guarantee — a late-arriving decline for an
+  // invoice that's ALREADY settled (or cancelled) must not stamp/alert "No
+  // money moved… they can retry the link", which is flat wrong once the
+  // money HAS moved (or the booking is dead, so there's nothing to retry).
+  // The deposit path above is naturally protected — its `deposit_paid_at`
+  // idempotency check runs before it ever reaches the approved/declined
+  // branch — but this function is reached BEFORE handleBalancePayment's own
+  // paid/cancelled checks (~1125-1140 below), so mirror the SAME two
+  // terminal states it treats as settled/dead before touching anything.
+  let invoice: InvoiceRow | null = null;
+  try {
+    const job = await getJobByQuote(quoteId);
+    invoice = job ? await getInvoiceByJob(job.id) : null;
+  } catch (err) {
+    // Ambiguous — we can't tell whether the invoice is already settled.
+    // Fail-open toward the customer's inbox staying quiet rather than staff's:
+    // a missed alert beats a FALSE "no money moved" landing on an invoice
+    // that's actually paid, so warn + skip the email. The stamp is still
+    // safe to write (informational only here — unlike the deposit path,
+    // nothing renders it on the admin quote page).
+    console.error('[api/integrations/valor/webhook] balance decline invoice lookup failed:', err);
+    await stampDepositDeclined(sb, quote.id, event.responseCode);
+    return;
+  }
+  if (invoice?.status === 'paid' || invoice?.status === 'cancelled') {
+    console.warn(
+      `[api/integrations/valor/webhook] ignoring a declined balance txn for ${invoice.status} invoice ${invoice.id} (quote ${quoteId}) — a late-arriving decline delivery, nothing to do`,
+    );
+    return;
+  }
+
+  await stampDepositDeclined(sb, quote.id, event.responseCode);
+
+  const claimed = await claimDeclineNotifySlot(sb, quote.id);
+  if (!claimed) return;
+
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  if (!isHighLevelConfigured() || !internalContactId) return;
+
+  const amountUsd =
+    typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
+  const adminUrl = invoice ? `${baseUrl}/admin/invoices/${invoice.id}` : `${baseUrl}/admin/quotes/${quote.id}`;
+
+  try {
+    await sendEmail({
+      contactId: internalContactId,
+      subject: internalDepositDeclinedEmailSubject({
+        customerName: quote.customer_name,
+        quoteNumber: quote.quote_number,
+        amountUsd,
+        kind: 'balance',
+      }),
+      html: internalDepositDeclinedEmailHtml({
+        customerName: quote.customer_name,
+        quoteNumber: quote.quote_number,
+        amountUsd,
+        declineCode: event.responseCode,
+        adminUrl,
+        portalUrl: `${baseUrl}/portal/${quote.id}`,
+        kind: 'balance',
+      }),
+      emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+    });
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] balance decline alert email failed:', err);
+  }
+}
+
 type QuoteRow = {
   id: string;
+  // #175: shown in the decline staff-alert subject/body so staff can find the
+  // right quote at a glance without opening the link first.
+  quote_number: number | null;
   customer_name: string | null;
   customer_phone: string | null;
   customer_email: string | null;
@@ -348,7 +555,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id, valor_vault_customer_id',
+      'id, quote_number, customer_name, customer_phone, customer_email, total, result, highlevel_contact_id, highlevel_opportunity_id, service_type, deposit_paid_at, deposit_amount_usd, valor_txn_id, status, approval_snapshot, is_test, legacy_rebook, customer_id, valor_vault_customer_id',
     )
     .eq('valor_order_ref', event.orderRef)
     .single<QuoteRow>();
@@ -387,6 +594,10 @@ export async function POST(req: NextRequest) {
     console.warn(
       `[api/integrations/valor/webhook] non-approved txn for quote ${quote.id}: response_code=${event.responseCode}`,
     );
+    // #175: stamp the decline + fire a throttled staff alert — best-effort,
+    // never breaks the 200 ack Valor is waiting on.
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    await handleDepositDeclined(sb, quote, event, baseUrl);
     return NextResponse.json({ ok: true, booked: false, declined: true });
   }
 
@@ -914,14 +1125,18 @@ async function handleBalancePayment(
   event: ValorWebhookEvent,
   baseUrl: string,
 ): Promise<NextResponse> {
+  const sb = getSupabaseServiceClient()!;
+
   if (!event.approved) {
     console.warn(
       `[api/integrations/valor/webhook] non-approved balance txn for quote ${quoteId}: response_code=${event.responseCode}`,
     );
+    // #175: stamp + throttled staff alert (best-effort). Deliberately does
+    // NOT touch the invoice — a decline changes nothing about what's owed.
+    await handleBalanceDeclined(sb, quoteId, event, baseUrl);
     return NextResponse.json({ ok: true, balance: true, declined: true });
   }
 
-  const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
     .select('id, customer_name, is_test, approval_snapshot')
