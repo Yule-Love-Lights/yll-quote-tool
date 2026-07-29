@@ -61,7 +61,7 @@ import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegram } from '@/lib/integrations/telegramNotify';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
-import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
 
@@ -173,7 +173,10 @@ type QuoteRow = {
   // (W1-007).
   status: import('@/lib/quoteStatus').QuoteStatus | null;
   approval_snapshot: {
-    customerSelection?: { currentTotalUsd?: number; currentDepositUsd?: number };
+    // #177 fix 2c: depositRate is the FROZEN rate this customer approved with —
+    // preferred over the live quote.result?.depositRate below (which drifts if
+    // Settings/inputs change between approval and this webhook firing).
+    customerSelection?: { currentTotalUsd?: number; currentDepositUsd?: number; depositRate?: number };
     [key: string]: unknown;
   } | null;
   // Test Quote (ledger #93): a test quote must NEVER fire a real side effect.
@@ -587,6 +590,13 @@ export async function POST(req: NextRequest) {
     quote.result?.total ??
     quote.total ??
     depositUsd * 2;
+  // #177 fix 2c: the quote's ACTUAL deposit percent (integer, for the internal
+  // "paid" alert copy) — prefer the FROZEN approval_snapshot rate (what the
+  // customer actually approved with); fall back to the live result.depositRate
+  // for a pre-#177 approval snapshot, then 50%. Never a hardcoded 50.
+  const depositPercent = Math.round(
+    (quote.approval_snapshot?.customerSelection?.depositRate ?? quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
   const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
 
   // Result flags mutated by the parallel tasks below (each writes only its own).
@@ -715,6 +725,7 @@ export async function POST(req: NextRequest) {
           customerName: quote.customer_name,
           depositUsd,
           totalUsd,
+          depositPercent,
           txnId: event.txnId,
           approvalCode: event.approvalCode,
           receiptUrl: event.receiptUrl,

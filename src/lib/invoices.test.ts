@@ -749,6 +749,29 @@ describe('getInvoiceDetail', () => {
     });
   });
 
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd is threaded through
+  // as intendedDepositUsd, so the admin detail page can pass it to reconcileInvoice.
+  it('surfaces the linked quote\'s deposit_amount_usd as intendedDepositUsd', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 3200, status: 'draft' }],
+      quotes: [{ id: 'q1', customer_name: 'Alice', is_test: false, deposit_amount_usd: 800 }],
+    });
+    sbRef.current = fake.client;
+
+    const d = await getInvoiceDetail('i1');
+    expect(d?.intendedDepositUsd).toBe(800);
+  });
+
+  it('intendedDepositUsd is null when the invoice has no linked quote', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: null, total: 4000, balance: 3200, status: 'draft' }],
+    });
+    sbRef.current = fake.client;
+
+    const d = await getInvoiceDetail('i1');
+    expect(d?.intendedDepositUsd).toBeNull();
+  });
+
   it('returns null when the invoice is missing', async () => {
     const fake = makeFakeSupabase({ invoices: [] });
     sbRef.current = fake.client;
@@ -995,6 +1018,48 @@ describe('reconcileInvoice — flags', () => {
     );
     expect(r.flags).not.toContain('balance-outstanding');
     expect(r.flags).not.toContain('short-deposit');
+  });
+});
+
+// #177 fix 4: short-deposit against the quote's OWN intended deposit, not a
+// blanket 50%-assumption threshold. The old "< 40% of quoted" heuristic
+// false-alarmed any legit sub-40% per-quote deposit percent (a custom 20%
+// deposit fully collected would read as "short" purely because 20% < 40%).
+describe('reconcileInvoice — #177 per-quote deposit percent (intendedDepositUsd)', () => {
+  it('a custom 20% deposit, fully collected, does NOT flag short-deposit', () => {
+    // $800 on a $4000 total = 20% — well under the OLD blanket 40% threshold,
+    // but this quote's OWN intended deposit (20%) was collected in full.
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 800, balance: 3200, credit_note: 0 }),
+      800, // intendedDepositUsd — this quote's stamped 20% deposit
+    );
+    expect(r.flags).not.toContain('short-deposit');
+  });
+
+  it('genuinely short — only HALF the intended deposit applied — DOES flag', () => {
+    // Intended $800 (this quote's own 20% deposit); only $400 (half) actually
+    // applied. Short relative to what THIS quote actually agreed to, not to a
+    // universal 40%/50% assumption.
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 400, balance: 3600, credit_note: 0 }),
+      800,
+    );
+    expect(r.flags).toContain('short-deposit');
+  });
+
+  it('NOT flagged at exactly 80% of intended (tolerance boundary)', () => {
+    const r = reconcileInvoice(
+      makeInvoiceRow({ total: 4000, deposit_applied: 640, balance: 3360, credit_note: 0 }),
+      800, // 640 / 800 = 80.0% exactly — at the tolerance, not under it
+    );
+    expect(r.flags).not.toContain('short-deposit');
+  });
+
+  it('falls back to the old 40%-of-quoted heuristic when intendedDepositUsd is unavailable (legacy)', () => {
+    // No intendedDepositUsd argument — a legacy quote predating deposit_amount_usd.
+    // $500 on $4000 = 12.5%, under the fallback's 40% threshold.
+    const r = reconcileInvoice(makeInvoiceRow({ total: 4000, deposit_applied: 500, balance: 3500, credit_note: 0 }));
+    expect(r.flags).toContain('short-deposit');
   });
 });
 

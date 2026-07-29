@@ -487,6 +487,20 @@ describe('getJobDetail', () => {
     expect(detail?.quoteServiceType).toBe('permanent_bistro');
   });
 
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd, so the jobs detail
+  // page can pass it to reconcileInvoice as the intended deposit.
+  it('carries the linked quote\'s deposit_amount_usd as intendedDepositUsd', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Dana', deposit_amount_usd: 800 } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.intendedDepositUsd).toBe(800);
+  });
+
   it('returns null when the job does not exist', async () => {
     const { client } = makeSb({ jobs: { read: null } });
     sbRef.current = client;

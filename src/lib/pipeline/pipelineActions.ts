@@ -19,6 +19,7 @@ export type PipelineRecord = {
 
 export type PipelineAction =
   | { kind: 'send'; channel: 'email' | 'sms' | 'both'; label: string }
+  | { kind: 'mark-sent'; label: string }
   | { kind: 'mark-approved'; label: string }
   | { kind: 'staff-decline'; label: string }
   | { kind: 'convert-to-job'; label: string }
@@ -49,6 +50,11 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
   switch (r.quoteStatus) {
     case 'draft':
       a.push(...sendActions());
+      // #182 — a quote delivered OUTSIDE the tool (hand-texted the link,
+      // walked through it on a call) never hits the real send route and sits
+      // 'draft' forever. DB-only stamp (quote_sent_at + status='sent'), no
+      // messaging, no GHL. Legal FROM draft per canTransition(_, 'sent').
+      a.push({ kind: 'mark-sent', label: 'Mark as sent (delivered outside the tool)' });
       // A draft can be staff-approved directly — the "deliberate offline/in-person
       // close" path (canTransition('draft','approved') is legal; the staff-approve
       // route accepts it). Surfaced so an offline-closed draft has an approve action.

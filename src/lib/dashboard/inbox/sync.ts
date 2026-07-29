@@ -110,6 +110,10 @@ export type QuoteReconcileSummary = {
  * (closed on approval). Follow-ups anchor on the inbox item, so a quote sent
  * without ever being seen as a draft (rare) gets no inbox follow-up — the home
  * worklist's sent-no-reply remains the backstop for that edge.
+ *
+ * #181: normalizeQuoteTouch returns null for an unsent YLL Neighbor
+ * (legacy_rebook) draft — those are skipped before ingestTouch/follow-up, so
+ * they never create an inbox item or a follow-up.
  */
 export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSummary> {
   try {
@@ -129,7 +133,13 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     let followUpsClosed = 0;
     let errors = 0;
     for (const q of quotes) {
-      const res = await ingestTouch(normalizeQuoteTouch(q), now);
+      // #181: suppressed unsent YLL Neighbor draft — no touch, no follow-up.
+      const touch = normalizeQuoteTouch(q);
+      if (!touch) {
+        skipped++;
+        continue;
+      }
+      const res = await ingestTouch(touch, now);
       if (!res.ok) {
         errors++;
         continue;

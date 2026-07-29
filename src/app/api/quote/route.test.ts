@@ -29,6 +29,9 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
         eventRatesSnapshot?: unknown;
         permanentBistroRatesSnapshot?: unknown;
       } | null;
+      // #177 fix 3b: the stored depositPercent, read back to compare against an
+      // incoming change on an already-approved quote.
+      inputs?: { depositPercent?: number } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -537,6 +540,25 @@ describe('POST /api/quote — validation hardening', () => {
     }
   });
 
+  it('accepts a valid depositPercent override (#177)', async () => {
+    const inputs = validInputs();
+    inputs.depositPercent = 25;
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-integer / out-of-range depositPercent with 400 (#177)', async () => {
+    for (const bad of ['50', -1, 0, 101, 12.5, NaN, Infinity]) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.depositPercent = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
+
   it('accepts a valid lineItemPriceOverrides map (#104)', async () => {
     const inputs = validInputs();
     inputs.lineItemPriceOverrides = { 'spritzer-1': { amount: 0, reason: 'comp' }, 'roofline-santas': { amount: 600 } };
@@ -893,6 +915,71 @@ describe('POST /api/quote — booked-quote re-price gate (W1-003)', () => {
       status: 'approved',
     };
     const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)', () => {
+  // The deposit percent is frozen into the approval snapshot the moment a
+  // customer approves; a later edit here must not silently drift what was
+  // signed. Scoped ONLY to depositPercent — every OTHER field on an
+  // approved-but-not-yet-booked quote still re-prices fine (proven above by
+  // "still re-prices an approved-but-unbooked quote in place").
+  it('rejects a CHANGED depositPercent on an approved-but-unbooked quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 25 },
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 30 }, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('deposit-percent-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ADDING a depositPercent override on an approved quote that had none (implicit 50%)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: {},
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 25 }, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED depositPercent resubmit on an approved quote (routine recalculate)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 25 },
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 25 }, quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows changing depositPercent on a NOT-YET-APPROVED (sent) quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+      inputs: { depositPercent: 25 },
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 40 }, quoteId: REAL_UUID }));
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
   });

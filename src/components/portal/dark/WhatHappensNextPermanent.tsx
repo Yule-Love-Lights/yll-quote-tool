@@ -11,11 +11,14 @@ type Step = {
   tag?: string;
 };
 
-const STEPS: Step[] = [
+// #177: steps are a FUNCTION of the quote's actual deposit percent (default
+// 50) instead of a hardcoded '50%' literal, so a per-quote override renders here too.
+function steps(depositPercent: number): Step[] {
+  return [
   {
     icon: CheckCircle2,
     title: 'Approve your quote',
-    body: 'We reach out to collect your 50% deposit and lock in your install slot.',
+    body: `We reach out to collect your ${depositPercent}% deposit and lock in your install slot.`,
   },
   {
     icon: MessageSquare,
@@ -32,9 +35,16 @@ const STEPS: Step[] = [
     title: 'Control it year-round',
     body: 'It stays up for good. Pick any color, scene, or schedule from the app — no takedown, ever.',
   },
-];
+  ];
+}
 
-export function WhatHappensNextPermanent() {
+export function WhatHappensNextPermanent({
+  // #177: this quote's actual deposit percent — defaults to 50 (today's behavior).
+  depositPercent = 50,
+}: {
+  depositPercent?: number;
+} = {}) {
+  const stepList = steps(depositPercent);
   return (
     <section
       aria-labelledby="portal-dark-next-heading"
@@ -61,7 +71,7 @@ export function WhatHappensNextPermanent() {
           />
 
           <ol className="grid grid-cols-1 md:grid-cols-4 gap-10 md:gap-6 relative">
-            {STEPS.map((step, idx) => (
+            {stepList.map((step, idx) => (
               <li
                 key={step.title}
                 className="flex md:flex-col items-start md:items-center text-left md:text-center gap-4 md:gap-0"

@@ -67,6 +67,19 @@ describe('calculatePermanentQuote', () => {
     expect(r.rooflineOptions).toEqual({ santas: null, gingerbread: null });
     expect(r.minimumApplied).toBe(false);
     expect(r.fullYule).toBeUndefined();
+    expect(r.depositRate).toBe(0.5); // default, absent depositPercent
+  });
+
+  // #177 — permanent inherits the per-quote deposit override for free via the
+  // shared computeTotalsTail; same total ($10,929.38) as the test above.
+  it('honors a per-quote depositPercent override (#177)', () => {
+    const r = calculatePermanentQuote(
+      inputs({ frontFootage: 120, leftFootage: 50, rightFootage: 40, backFootage: 60 }, { depositPercent: 25 }),
+    );
+    expect(r.total).toBe(10929.38);
+    expect(r.depositAmount).toBe(2732.35);
+    expect(r.balanceDue).toBe(8197.03);
+    expect(r.depositRate).toBe(0.25);
   });
 
   it('emits no line for a zero-footage side; NaN/negative footage → 0', () => {

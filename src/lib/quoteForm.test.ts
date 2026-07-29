@@ -40,6 +40,7 @@ const fullForm: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 20,
   waiveMinimum: true, // non-default, to exercise the field
+  depositPercent: 25, // non-default, to exercise the field (#177)
   installTiming: 'none', // manual-discount path; early-install has its own tests
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
@@ -125,6 +126,11 @@ describe('buildQuoteInputs', () => {
   it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
     expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
     expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
+  });
+
+  it('sends depositPercent only when set (> 0); omits it when blank (#177)', () => {
+    expect(buildQuoteInputs({ ...fullForm, depositPercent: 25 }).depositPercent).toBe(25);
+    expect('depositPercent' in buildQuoteInputs({ ...fullForm, depositPercent: 0 })).toBe(false);
   });
 
   it('sends a custom $/ft per item-type and a valid placeholder difficulty (#102)', () => {
@@ -304,6 +310,11 @@ describe('inputsToFormData', () => {
     expect(inputsToFormData({}, { waiveMinimum: true }).waiveMinimum).toBe(true);
     expect(inputsToFormData({}, { waiveMinimum: false }).waiveMinimum).toBe(false);
     expect(inputsToFormData({}, {}).waiveMinimum).toBe(false); // legacy row
+  });
+
+  it('hydrates depositPercent, defaulting to 0 (blank) when absent (#177)', () => {
+    expect(inputsToFormData({}, { depositPercent: 25 }).depositPercent).toBe(25);
+    expect(inputsToFormData({}, {}).depositPercent).toBe(0); // legacy row
   });
 
   it('hydrates installTiming and opens "Apply discount" for an early-install quote (#40)', () => {

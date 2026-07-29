@@ -377,18 +377,24 @@ export type OpenItemsResult =
   | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
   | { ok: false; error: string };
 
-// ─── Legacy-rebook inbox exclusion (#157) ───────────────────────────────────
+// ─── Legacy-rebook inbox exclusion (#157, escalation coverage + ingest-time
+// gating added #181) ───
 // "YLL Neighbors": quotes migrated from last year's Jobber data
 // (legacy_rebook = true, migrations/2026-07-16-legacy-rebook.sql). They're real
 // drafts, so runQuoteToolReconcile folds each into an unresponded touch same as
 // any other draft quote — flooding the operator inbox with 100+ items nobody
-// needs to action yet. This hides them from the INBOX ONLY: every dashboard/
-// stats consumer (metrics.ts, insights.ts, serviceMetrics.ts, referralMetrics.ts,
-// needsAction.ts, workflowBoard.ts) reads quotes directly and is untouched by
-// this flag — legacy quotes keep counting everywhere except the inbox surfaces.
+// needs to action yet. This hides them from the INBOX SURFACES ONLY (the /inbox
+// open-items list AND escalation — amber/red alert emails + the EOD digest, both
+// read via listEscalatableItems below), AND from ever being ingested as an
+// unsent draft touch in the first place (quotetool.ts's normalizeQuoteTouch
+// imports this same constant): every dashboard/stats consumer (metrics.ts,
+// insights.ts, serviceMetrics.ts, referralMetrics.ts, needsAction.ts,
+// workflowBoard.ts) reads quotes directly and is untouched by this flag — legacy
+// quotes keep counting everywhere except the inbox + escalation surfaces.
 //
 // Flip to false once the dedicated "YLL Neighbors" rebook flow ships (task
-// #157) and these should resurface as normal inbox leads again.
+// #157) and these should resurface as normal inbox leads again — one switch,
+// covers both the display-side filter here and the quotetool.ts ingest guard.
 export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
 
 // A generous ceiling above the caller's `limit` to over-fetch by whenever the
@@ -660,7 +666,9 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
+    .select(
+      'id, source, external_id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )',
+    )
     .eq('status', 'unresponded')
     // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
     // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
@@ -669,7 +677,33 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
     .is('followed_up_at', null)
     .or('lead_kind.is.null,lead_kind.neq.automated');
   if (error) return { ok: false, error: error.message };
-  const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
+
+  let rows = (data ?? []) as unknown as Record<string, unknown>[];
+
+  // #181: the same #157 exclusion listOpenItems applies to the /inbox display —
+  // a YLL Neighbor item must never fire an amber/red alert or land in the EOD
+  // digest either, so it stays invisible on every escalation surface, not just
+  // the open-items list. Reuses excludeLegacyRebookItems (the exact #157
+  // predicate, fed the same way: batch-fetch quotes for the quotetool ids on
+  // this read) so the two surfaces can never disagree. NOTE this excludes a
+  // legacy_rebook quote's item regardless of quote_sent_at — broader than the
+  // quotetool.ts ingest-time guard (#181's normalizeQuoteTouch, which only
+  // suppresses UNSENT ones from ever being created) — matching #157's existing
+  // display behavior (all Neighbor items hidden) rather than fighting it.
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
+    const quotetoolIds = [...new Set(rows.filter((r) => r.source === 'quotetool').map((r) => String(r.external_id)))];
+    if (quotetoolIds.length) {
+      const { data: quoteRows } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
+      const legacyQuoteIds = new Set(
+        ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
+          .filter((q) => q.legacy_rebook === true)
+          .map((q) => String(q.id)),
+      );
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+    }
+  }
+
+  const items = (rows as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
       id: String(row.id),

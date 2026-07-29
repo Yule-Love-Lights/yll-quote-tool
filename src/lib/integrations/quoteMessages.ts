@@ -92,8 +92,15 @@ function usdExact(n: number): string {
 
 export const APPROVAL_EMAIL_SUBJECT = "You're approved! Here's what happens next 🎄";
 
-export function approvalSmsBody(firstName: string, depositUsd: number, phone: string): string {
-  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your 50% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
+// #177: depositPercent is the quote's ACTUAL deposit percent (integer, e.g.
+// 50) — the caller derives it from effectiveDepositRate, never a hardcoded 50.
+export function approvalSmsBody(
+  firstName: string,
+  depositUsd: number,
+  phone: string,
+  depositPercent: number,
+): string {
+  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
 }
 
 export function approvalEmailHtml(
@@ -101,12 +108,13 @@ export function approvalEmailHtml(
   depositUsd: number,
   portalUrl: string,
   phone: string,
+  depositPercent: number,
 ): string {
   const name = escapeHtml(firstName);
   return [
     `<p>Hi ${name},</p>`,
     `<p>Thanks for approving your holiday lighting quote! 🎄</p>`,
-    `<p>Here's what happens next: a member of our team will reach out to you shortly to collect your <strong>50% deposit (about ${usd(depositUsd)})</strong> and lock in your install date.</p>`,
+    `<p>Here's what happens next: a member of our team will reach out to you shortly to collect your <strong>${depositPercent}% deposit (about ${usd(depositUsd)})</strong> and lock in your install date.</p>`,
     `<p>There's nothing you need to do right now — we'll contact you to take care of the deposit and confirm your spot on our schedule.</p>`,
     `<p>You can review your quote anytime here:</p>`,
     `<p><a href="${portalUrl}">View my quote →</a></p>`,
@@ -129,6 +137,9 @@ export function internalApprovalEmailHtml(input: {
   email: string | null;
   totalUsd: number;
   depositUsd: number;
+  // #177: the quote's ACTUAL deposit percent (integer, e.g. 50) — the caller
+  // derives it from effectiveDepositRate, never a hardcoded 50.
+  depositPercent: number;
   packageName: string;
   installTiming: 'none' | 'september' | 'october';
   rushSelected: boolean;
@@ -147,7 +158,7 @@ export function internalApprovalEmailHtml(input: {
         : 'Standard (Nov–Dec)';
   return [
     `<p><strong>${name}</strong> just approved their quote and needs a deposit call.</p>`,
-    `<p><strong>Action:</strong> reach out to collect the 50% deposit (${usdExact(input.depositUsd)}) to lock them in on the schedule.</p>`,
+    `<p><strong>Action:</strong> reach out to collect the ${input.depositPercent}% deposit (${usdExact(input.depositUsd)}) to lock them in on the schedule.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;">`,
     row('Customer', name),
     row('Phone', escapeHtml(input.phone || '—')),
@@ -155,7 +166,7 @@ export function internalApprovalEmailHtml(input: {
     row('Address', escapeHtml(input.address || '—')),
     row('Package', escapeHtml(input.packageName)),
     row('Total', usdExact(input.totalUsd)),
-    row('Deposit (50%)', usdExact(input.depositUsd)),
+    row(`Deposit (${input.depositPercent}%)`, usdExact(input.depositUsd)),
     row('Install', installLabel),
     row('Rush install', input.rushSelected ? 'Yes' : 'No'),
     row('Premium takedown', input.takedownSelected ? 'Yes' : 'No'),
@@ -410,7 +421,8 @@ export function amendmentEmailHtml(input: {
 
 // ── Balance pay-link (ledger #83) ───────────────────────────────────────────
 // Staff-initiated: after a job is complete, the operator sends the customer a
-// link to pay their remaining 50% balance on Valor's hosted page
+// link to pay their remaining balance (100% minus whatever deposit percent this
+// quote used — #177, not always 50%) on Valor's hosted page
 // (/portal/[quoteId]/pay-balance). Distinct from the deposit send — no stage
 // move, no booking; just a reach-out with the balance amount + the pay link.
 export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
@@ -502,6 +514,9 @@ export function internalPaidEmailHtml(input: {
   customerName: string | null;
   depositUsd: number;
   totalUsd: number;
+  // #177: the quote's ACTUAL deposit percent (integer, e.g. 50) — the caller
+  // derives it from the frozen result.depositRate, never a hardcoded 50.
+  depositPercent: number;
   txnId: string | null;
   approvalCode: string | null;
   receiptUrl: string | null;
@@ -512,7 +527,7 @@ export function internalPaidEmailHtml(input: {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
   return [
-    `<p><strong>${name}</strong> just paid their 50% deposit online — they're booked.</p>`,
+    `<p><strong>${name}</strong> just paid their ${input.depositPercent}% deposit online — they're booked.</p>`,
     `<p><strong>Note:</strong> their card is saved in the Valor Vault. Charge the remaining balance (${usdExact(
       balance,
     )}) MANUALLY in the Valor portal after install.</p>`,

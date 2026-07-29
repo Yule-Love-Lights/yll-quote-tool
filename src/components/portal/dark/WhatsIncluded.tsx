@@ -229,6 +229,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
     earlyInstallHidden,
     locked,
     legacyRebook,
+    depositRate,
   } = useSelection();
   // #155 — a legacy rebook quote shows the ITEM LIST read-only (the same
   // pointer-events-none treatment as a booked/locked quote), even before the
@@ -473,9 +474,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
         )}
 
         {/* Totals — ties the line items above out to the all-in price:
-         * Subtotal (+ any per-job fees) + tax = Total, with the 50% deposit
-         * due today. No silent $1,000 floor; the minimum is a gate enforced
-         * on the Approve button (status line below). */}
+         * Subtotal (+ any per-job fees) + tax = Total, with the deposit
+         * (this quote's rate, default 50%) due today. No silent $1,000 floor;
+         * the minimum is a gate enforced on the Approve button (status line
+         * below). */}
         <div className="mt-8 md:mt-10 ml-auto w-full max-w-sm rounded-2xl bg-[#18221C] border border-[#243029] p-5 md:p-6">
           <dl className="space-y-2.5 text-[14px] md:text-[15px]">
             <div className="flex justify-between text-[#A89F87]">
@@ -513,7 +515,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
               <dd className="font-display font-semibold tabular-nums text-[#F4ECD8]">{formatUsd(breakdown.total)}</dd>
             </div>
             <div className="flex justify-between text-[13px]">
-              <dt className="text-[#A89F87]">Deposit (50%)</dt>
+              <dt className="text-[#A89F87]">Deposit ({Math.round(depositRate * 100)}%)</dt>
               <dd className="tabular-nums text-[#E8B862]">{formatUsd(breakdown.deposit)}</dd>
             </div>
           </dl>

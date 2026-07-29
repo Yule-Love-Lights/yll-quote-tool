@@ -5,6 +5,7 @@ import { getDesignByQuote } from '@/lib/designs';
 import { isValidQuoteId } from '@/lib/portal/loader';
 import { refereeReferralFor } from '@/lib/referrals';
 import { getJobByQuote } from '@/lib/jobs';
+import { getCustomerTenure, tenureChipLabel } from '@/lib/customerTenure';
 
 // Edit an existing quote (task #31): reopen a saved quote in the builder with
 // its inputs hydrated and its linked design (if any) mounted in the design
@@ -36,6 +37,15 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
   // ONLY on the job page. The builder needs the job id to link there so a
   // re-price here doesn't dead-end (see the booked banner below).
   const job = await getJobByQuote(quote.id);
+
+  // Customer tenure header chip (#178): "Nth year — 2023 · 2024 · 2025",
+  // display-only. Server-computed here (no client fetch) from this quote's
+  // linked customer; null when unlinked or no tenure history yet — the chip
+  // stays hidden (tenureChipLabel returns null on an empty result).
+  const customerTenureLabel =
+    quote.customer_id || quote.highlevel_contact_id
+      ? tenureChipLabel(await getCustomerTenure(quote.customer_id, quote.highlevel_contact_id, new Date()))
+      : null;
 
   return (
     <QuoteBuilder
@@ -73,6 +83,8 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         // #172: suppress the "contact required" warning on an already-linked
         // quote (the chip itself stays session-only — we don't refetch the contact).
         highlevelContactId: quote.highlevel_contact_id,
+        // Customer tenure (#178): pre-formatted so the builder stays a pure renderer.
+        customerTenureLabel,
       }}
     />
   );

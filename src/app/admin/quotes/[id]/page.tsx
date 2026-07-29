@@ -7,10 +7,11 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
+import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
-import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
@@ -185,6 +186,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
               (a second quote spun up just for the colour picker). */}
           <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} status={status} />
+          {/* Staff-only one-way action (#182) — a quote delivered outside the
+              tool (hand-texted the link, walked through it on a call) never
+              hits the real /send route and sits 'draft' forever. Only shown
+              while still markable (draft/unsent); the route itself refuses
+              any other status. */}
+          {status === 'draft' && !quote.view_only && <MarkAsSentButton quoteId={id} />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
@@ -300,7 +307,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dd>{money(quote.total ?? quote.result.total)}</dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt>Deposit</dt>
+                  <dt>
+                    Deposit
+                    {/* #177 fix 5: surface the percent when it's not the 50% default —
+                        cheaply derivable from the same result.depositRate. */}
+                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
+                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
+                    )}
+                  </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
                 <div className="flex justify-between">

@@ -173,6 +173,18 @@ export async function POST(req: NextRequest) {
       );
     }
   }
+  // #177: optional per-quote deposit percent override. When present, must be
+  // an integer 1-100; a clean 400 beats a silently-defaulted bad value (the
+  // engine's effectiveDepositRate also clamps defensively, for a legacy row).
+  if (q.depositPercent !== undefined) {
+    const v = q.depositPercent;
+    if (!(typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 100)) {
+      return NextResponse.json(
+        { error: 'depositPercent must be an integer between 1 and 100 if provided' },
+        { status: 400 },
+      );
+    }
+  }
   // #104: optional per-quote line-item TOTAL overrides — a map of stableId →
   // { amount, reason? }. Validate at the boundary so a malformed override is a
   // clean 400 rather than an opaque downstream NaN (the engine casts inputs).
@@ -485,6 +497,28 @@ export async function POST(req: NextRequest) {
             error:
               'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
             code: 'quote-locked',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    // #177 fix 3b: the deposit percent is FROZEN into the approval snapshot the
+    // moment a customer approves — a later edit here must not silently drift
+    // what was already signed. Scoped ONLY to depositPercent changing: unlike
+    // the REPRICE_LOCKED_STATUSES block above, an approved-but-not-yet-booked
+    // quote can still be re-priced through this route for every OTHER field
+    // (existing intended behavior — approved isn't in REPRICE_LOCKED_STATUSES).
+    if (isUpdate && existing?.customer_approved_at) {
+      const incomingDepositPercent = typeof q.depositPercent === 'number' ? q.depositPercent : undefined;
+      const storedDepositPercent =
+        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined;
+      if (incomingDepositPercent !== storedDepositPercent) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — the deposit percent is locked and cannot be changed here. Use the amend flow to change it.',
+            code: 'deposit-percent-locked',
           },
           { status: 409 },
         );

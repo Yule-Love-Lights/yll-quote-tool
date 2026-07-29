@@ -220,6 +220,20 @@ describe('calculatePermanentBistro — totals math (no rush/takedown/early-insta
     expect(r.total).toBeCloseTo(3262.5, 2);
     expect(r.depositAmount).toBeCloseTo(1631.25, 2);
     expect(r.balanceDue).toBeCloseTo(1631.25, 2);
+    expect(r.depositRate).toBe(0.5); // default, absent depositPercent
+  });
+
+  // #177 — permanent bistro honors the same per-quote deposit override as
+  // holiday/permanent/event.
+  it('honors a per-quote depositPercent override (#177)', () => {
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 100 }] }, depositPercent: 25 }),
+      R,
+    );
+    expect(r.total).toBeCloseTo(3262.5, 2);
+    expect(r.depositAmount).toBeCloseTo(815.63, 2);
+    expect(r.balanceDue).toBeCloseTo(2446.87, 2);
+    expect(r.depositRate).toBe(0.25);
   });
 
   it('percentage discount comes off the subtotal before tax', () => {

@@ -415,6 +415,48 @@ describe('Valor webhook — deposit amount (records actual charged, flags shortf
   });
 });
 
+// #177 fix 2c: the internal "paid" alert must read the FROZEN deposit percent
+// from the approval snapshot (what the customer actually approved with), not
+// the live result.depositRate, which could have drifted since approval.
+describe('Valor webhook — internal alert reads the FROZEN deposit percent (#177 fix 2c)', () => {
+  it('prefers approval_snapshot.customerSelection.depositRate over a different live result.depositRate', async () => {
+    const quote = {
+      ...QUOTE,
+      result: { ...QUOTE.result, depositRate: 0.5 }, // live rate says 50% — must NOT win
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 675, depositRate: 0.25 },
+      },
+    };
+    const { client } = makeSb({ ...quote }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    await POST(signedReq(APPROVED_PAYLOAD));
+
+    // Only internalPaidEmailHtml's copy mentions a deposit percent (the customer
+    // receipt email doesn't), so matching on the html substring uniquely proves
+    // the internal alert froze the right rate without indexing a specific call.
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('paid their 25% deposit') }),
+    );
+  });
+
+  it('falls back to the live result.depositRate for a pre-#177 snapshot with no frozen rate', async () => {
+    const quote = {
+      ...QUOTE,
+      result: { ...QUOTE.result, depositRate: 0.3 },
+      approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 810 } }, // no depositRate field
+    };
+    const { client } = makeSb({ ...quote }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    await POST(signedReq(APPROVED_PAYLOAD));
+
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('paid their 30% deposit') }),
+    );
+  });
+});
+
 describe('Valor webhook — verification probe (Verify and Update)', () => {
   it('GET returns 200 for a reachability check', async () => {
     const res = await GET();

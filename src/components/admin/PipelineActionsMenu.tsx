@@ -44,6 +44,18 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       }
       return res;
     }
+    case 'mark-sent': {
+      // #182: the quote was delivered outside the tool (hand-texted the
+      // portal link, walked through it on a call). DB-only stamp — no
+      // message is sent, no GHL card is touched.
+      if (
+        !window.confirm(
+          'Mark this quote as sent? No message is sent to the customer — this only records that you delivered it yourself.',
+        )
+      )
+        return null;
+      return fetch(`/api/quotes/${q}/mark-sent`, { method: 'POST' });
+    }
     case 'mark-approved':
       return fetch(`/api/quotes/${q}/staff-approve`, { method: 'POST' });
     case 'staff-decline': {

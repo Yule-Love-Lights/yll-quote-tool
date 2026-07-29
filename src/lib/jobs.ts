@@ -175,6 +175,11 @@ export type JobDetail = {
   // comment). null when the job has no linked quote or the column is unset.
   quoteServiceType: string | null;
   invoice: InvoiceRow | null;
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd (the deposit
+  // actually INTENDED at this quote's own deposit percent) — fed into
+  // reconcileInvoice alongside `invoice` so short-deposit compares against
+  // the real intended amount, not a blanket 40%-of-total heuristic.
+  intendedDepositUsd: number | null;
 };
 
 /**
@@ -195,10 +200,11 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let customerAddress: string | null = null;
   let isTest = false;
   let quoteServiceType: string | null = null;
+  let intendedDepositUsd: number | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, service_type')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, service_type, deposit_amount_usd')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -207,6 +213,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         customer_address: string | null;
         is_test: boolean | null;
         service_type: string | null;
+        deposit_amount_usd: number | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -215,11 +222,22 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
       quoteServiceType = data.service_type ?? null;
+      intendedDepositUsd = data.deposit_amount_usd ?? null;
     }
   }
 
   const invoice = await getInvoiceByJob(id);
-  return { job, customerName, customerEmail, customerPhone, customerAddress, isTest, quoteServiceType, invoice };
+  return {
+    job,
+    customerName,
+    customerEmail,
+    customerPhone,
+    customerAddress,
+    isTest,
+    quoteServiceType,
+    invoice,
+    intendedDepositUsd,
+  };
 }
 
 // The minimal quote shape createJobFromQuote needs.

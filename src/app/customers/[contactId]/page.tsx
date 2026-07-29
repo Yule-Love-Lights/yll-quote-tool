@@ -10,7 +10,9 @@ import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFee
 import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
+import { CustomerTenureEditor } from '@/components/dashboard/CustomerTenureEditor';
 import { getPropertiesForCustomer } from '@/lib/customers';
+import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
@@ -119,6 +121,12 @@ export default async function CustomerDetailPage({
     ? (await getPropertiesForCustomer(customerId)).map(p => ({ id: p.id, address: p.address }))
     : [];
 
+  // Customer tenure (#178): auto-derived (deposit-paid + legacy-rebook years)
+  // unioned with staff-entered manual years. Matches by EITHER id kind, same
+  // as the quotes filter above, so a pre-backfill (HL-only) customer still
+  // gets a derived count even with no customerId yet to edit against.
+  const tenure = await getCustomerTenure(customerId, hlContactId, new Date());
+
   return (
     <OperatorShell active="customers">
       <div className="max-w-4xl mx-auto w-full">
@@ -135,6 +143,22 @@ export default async function CustomerDetailPage({
             <p className="text-sm mt-1" style={{ color: 'var(--op-text-dim)' }}>
               {quotes.length} quote{quotes.length === 1 ? '' : 's'} · {fmtMoney(bookedSpend)} booked
             </p>
+            {/* Customer tenure (#178): auto-derived ∪ manual "years with YLL" —
+                informs the returning-customer free-spritzers offer + call tone. */}
+            <p className="text-sm mt-1" style={{ color: 'var(--op-text-dim)' }}>
+              {tenureHeaderLabel(tenure)}
+            </p>
+            {/* The editor needs a persisted customer row to save against —
+                hidden pre-backfill (HL-only customer, no customerId yet). */}
+            {customerId && (
+              <div className="mt-2">
+                <CustomerTenureEditor
+                  customerId={customerId}
+                  derivedYears={tenure.derivedYears}
+                  initialManualYears={tenure.manualYears}
+                />
+              </div>
+            )}
           </div>
           <div className="shrink-0 flex items-center gap-2">
             {/* Rebook last season (Part D): hidden until the backfill populates customer_id. */}
