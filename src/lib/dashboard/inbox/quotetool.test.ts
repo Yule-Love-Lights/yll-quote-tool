@@ -120,3 +120,41 @@ describe('quoteFollowUpDecision', () => {
     expect(quoteFollowUpDecision(quote()).kind).toBe('none');
   });
 });
+
+// #183 BUG 2: a quote in a terminal/dead state must close its "sent, no
+// reply" follow-up, not just re-create it forever. The live case: a DECLINED
+// quote (christina piacquadio) whose follow-up kept resurrecting daily
+// because only customer_approved_at closed it, and WT-43's ensureFollowUp
+// upsert flips a 'done' row back to 'pending' every reconcile.
+describe('quoteFollowUpDecision — dead-quote close (#183 BUG 2)', () => {
+  it('closes a DECLINED sent-but-unapproved quote (the christina scenario: done -> would have re-armed, now stays closed)', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'declined' }));
+    expect(d.kind).toBe('close');
+    if (d.kind === 'close') expect(d.reason).toBe(FOLLOWUP_REASONS.quoteSentNoReply);
+  });
+
+  it('closes a CANCELLED quote', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'cancelled' }));
+    expect(d.kind).toBe('close');
+  });
+
+  it('closes a LOST quote', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'lost' }));
+    expect(d.kind).toBe('close');
+  });
+
+  it('does NOT close a changes_requested quote — it is being revised, not dead, so the nudge stays live', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'changes_requested' }));
+    expect(d.kind).toBe('create');
+  });
+
+  it('a declined quote that was never sent still resolves to close (harmless no-op downstream — closeFollowUp matches zero rows when none exists)', () => {
+    const d = quoteFollowUpDecision(quote({ status: 'declined' }));
+    expect(d.kind).toBe('close');
+  });
+
+  it('still creates for a normal sent+open quote with no persisted status (unchanged)', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z' }));
+    expect(d.kind).toBe('create');
+  });
+});

@@ -23,6 +23,7 @@ import type {
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
+import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
@@ -407,18 +408,36 @@ export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
 const LEGACY_REBOOK_FETCH_BUFFER = 200;
 
 /**
+ * #183 BUG 1: a quotetool item's external_id is USUALLY the bare quote id, but
+ * the color-change-request route (apply-color-request/route.ts) suffixes it
+ * `${quoteId}:color-request` so its notification never collides with the
+ * quote-sent reconcile item. Strip that suffix (if present) to recover the
+ * underlying quote id — used both to build the `.in('id', …)` lookup list
+ * below (a suffixed value there is NOT a valid uuid and Postgres rejects the
+ * WHOLE `.in()` with 22P02, silently poisoning the exclusion for every item on
+ * the page) and by excludeLegacyRebookItems' own match (so a legacy quote's
+ * color-request item is excluded too, not just its bare-id sibling).
+ */
+export function quoteIdPrefix(externalId: string): string {
+  const i = externalId.indexOf(':');
+  return i === -1 ? externalId : externalId.slice(0, i);
+}
+
+/**
  * #157: drop items backed by a legacy_rebook=true ("YLL Neighbor") quote. Only
- * a 'quotetool' item can match — its external_id IS the quote id (see
- * quotetool.ts normalizeQuoteTouch) — so every other source is untouched by
- * construction, even if an id happened to collide. Pure — no I/O — hence
- * unit-testable on its own (store.test.ts).
+ * a 'quotetool' item can match — its external_id is the quote id, optionally
+ * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
+ * other source is untouched by construction, even if an id happened to
+ * collide. Pure — no I/O — hence unit-testable on its own (store.test.ts).
  */
 export function excludeLegacyRebookItems<T extends { source: unknown; external_id: unknown }>(
   items: T[],
   legacyQuoteIds: ReadonlySet<string>,
 ): T[] {
   if (legacyQuoteIds.size === 0) return items;
-  return items.filter((item) => !(item.source === 'quotetool' && legacyQuoteIds.has(String(item.external_id))));
+  return items.filter(
+    (item) => !(item.source === 'quotetool' && legacyQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+  );
 }
 
 export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
@@ -448,18 +467,36 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // #157: batch-fetch the quotetool ids present on THIS page and drop any that
   // are a legacy_rebook quote. Skips the extra query entirely when the page has
   // no quotetool items (the common case for ghl/gmail/homeworks-only pages).
+  // #183 BUG 1: derive+filter through quoteIdPrefix/isUuid — a suffixed
+  // `:color-request` id (or any other malformed value) is NOT a valid uuid, and
+  // Postgres's `.in()` rejects the ENTIRE query (22P02) if even one entry in the
+  // list doesn't parse as one, which used to silently empty legacyQuoteIds for
+  // every item on the page.
   if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
-    const quotetoolIds = [...new Set(rows.filter((r) => r.source === 'quotetool').map((r) => String(r.external_id)))];
+    const quotetoolIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.source === 'quotetool')
+          .map((r) => quoteIdPrefix(String(r.external_id)))
+          .filter(isUuid),
+      ),
+    ];
     if (quotetoolIds.length) {
-      const { data: quoteRows } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      const legacyQuoteIds = new Set(
-        ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-          .filter((q) => q.legacy_rebook === true)
-          .map((q) => String(q.id)),
-      );
-      const before = rows.length;
-      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
-      legacyExcluded = before - rows.length;
+      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
+      if (quoteErr) {
+        // Fail open (unexcluded) but VISIBLY — a silent swallow here is exactly
+        // what let ~129 legacy drafts flood the inbox undetected (#183).
+        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
+      } else {
+        const legacyQuoteIds = new Set(
+          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
+            .filter((q) => q.legacy_rebook === true)
+            .map((q) => String(q.id)),
+        );
+        const before = rows.length;
+        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+        legacyExcluded = before - rows.length;
+      }
     }
   }
 
@@ -690,16 +727,31 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   // quotetool.ts ingest-time guard (#181's normalizeQuoteTouch, which only
   // suppresses UNSENT ones from ever being created) — matching #157's existing
   // display behavior (all Neighbor items hidden) rather than fighting it.
+  // #183 BUG 1: same fix as listOpenItems — derive+filter through
+  // quoteIdPrefix/isUuid so a suffixed `:color-request` id can't poison the
+  // `.in()` lookup (Postgres 22P02 on a malformed uuid), and check the lookup
+  // error instead of silently swallowing it.
   if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
-    const quotetoolIds = [...new Set(rows.filter((r) => r.source === 'quotetool').map((r) => String(r.external_id)))];
+    const quotetoolIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.source === 'quotetool')
+          .map((r) => quoteIdPrefix(String(r.external_id)))
+          .filter(isUuid),
+      ),
+    ];
     if (quotetoolIds.length) {
-      const { data: quoteRows } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      const legacyQuoteIds = new Set(
-        ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-          .filter((q) => q.legacy_rebook === true)
-          .map((q) => String(q.id)),
-      );
-      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
+      if (quoteErr) {
+        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
+      } else {
+        const legacyQuoteIds = new Set(
+          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
+            .filter((q) => q.legacy_rebook === true)
+            .map((q) => String(q.id)),
+        );
+        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+      }
     }
   }
 
@@ -824,6 +876,103 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
     .eq('status', 'pending')
     .select('id');
   return data ? data.length : 0;
+}
+
+// ─── Orphaned follow-up sweep (#183 BUG 3) ──────────────────────────────────
+// runQuoteToolReconcile's main loop (sync.ts) only walks quotes returned by
+// listQuotesForDashboard — a quote row that's been DELETED entirely is never
+// visited there, so a pending quote_sent_no_reply follow-up anchored to it can
+// never be closed by the main loop and sits overdue-pending forever, showing
+// in the "due today" strip every day. This sweep finds and closes those.
+
+/** Pure decision: which of the given inbox-item ids (from pending
+ *  quote_sent_no_reply follow-ups) are orphaned — their underlying quote no
+ *  longer exists. `inboxItems` maps an inbox item id to its external_id (the
+ *  quote id, optionally `:color-request`-suffixed — quoteIdPrefix strips it,
+ *  same derivation as BUG 1); `existingQuoteIds` is the set of quote ids that
+ *  DO still exist. A follow-up whose inbox item can't be resolved at all is
+ *  left alone (not this sweep's job — it has nothing to confirm dead). No
+ *  I/O — unit-testable on its own (store.test.ts). */
+export function findOrphanedFollowUpItems(
+  followUps: readonly { inboxItemId: string | null }[],
+  inboxItems: readonly { id: string; externalId: string }[],
+  existingQuoteIds: ReadonlySet<string>,
+): string[] {
+  const externalIdByItemId = new Map(inboxItems.map((i) => [i.id, i.externalId]));
+  const orphaned = new Set<string>();
+  for (const fu of followUps) {
+    if (!fu.inboxItemId) continue;
+    const externalId = externalIdByItemId.get(fu.inboxItemId);
+    if (externalId == null) continue;
+    if (!existingQuoteIds.has(quoteIdPrefix(externalId))) orphaned.add(fu.inboxItemId);
+  }
+  return [...orphaned];
+}
+
+/**
+ * Close pending follow-ups (of `reason`) whose quotetool inbox item's
+ * underlying quote row no longer exists. One batched query each way (mirrors
+ * the #157/#183-BUG-1 lookup-batching style): follow_ups → inbox_items →
+ * quotes existence → findOrphanedFollowUpItems → closeFollowUp per orphan.
+ * Fails open (closes nothing) on a lookup error rather than guessing. Returns
+ * how many follow-ups were closed.
+ */
+export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+
+  const { data: pending, error: pendingErr } = await sb
+    .from('follow_ups')
+    .select('id, inbox_item_id')
+    .eq('reason', reason)
+    .eq('status', 'pending');
+  if (pendingErr) {
+    console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
+    return 0;
+  }
+  const followUpRows = (pending ?? []) as { id: string; inbox_item_id: string | null }[];
+  const itemIds = [...new Set(followUpRows.map((r) => r.inbox_item_id).filter((id): id is string => !!id))];
+  if (!itemIds.length) return 0;
+
+  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, external_id, source').in('id', itemIds);
+  if (itemsErr) {
+    console.error('[inbox] orphan follow-up sweep: inbox_items lookup failed:', itemsErr.message);
+    return 0;
+  }
+  // Same source==='quotetool' guard as the two exclusion call sites above:
+  // quote_sent_no_reply rows only ever anchor on quotetool items today, but
+  // that's an implicit invariant — enforce it here so a future reason reuse or
+  // hand-inserted row can never mis-derive a quote id from another source's
+  // external_id shape (review hardening, #183).
+  const itemRows = ((items ?? []) as { id: string; external_id: string; source: string }[])
+    .filter((r) => r.source === 'quotetool')
+    .map((r) => ({
+      id: r.id,
+      externalId: r.external_id,
+    }));
+
+  const candidateQuoteIds = [...new Set(itemRows.map((r) => quoteIdPrefix(r.externalId)).filter(isUuid))];
+  let existingQuoteIds = new Set<string>();
+  if (candidateQuoteIds.length) {
+    const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id').in('id', candidateQuoteIds);
+    if (quoteErr) {
+      console.error('[inbox] orphan follow-up sweep: quotes lookup failed:', quoteErr.message);
+      return 0;
+    }
+    existingQuoteIds = new Set(((quoteRows ?? []) as { id: string }[]).map((q) => String(q.id)));
+  }
+
+  const orphanedItemIds = findOrphanedFollowUpItems(
+    followUpRows.map((r) => ({ inboxItemId: r.inbox_item_id })),
+    itemRows,
+    existingQuoteIds,
+  );
+
+  let closed = 0;
+  for (const itemId of orphanedItemIds) {
+    closed += await closeFollowUp(itemId, reason);
+  }
+  return closed;
 }
 
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };

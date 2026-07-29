@@ -5,6 +5,7 @@ import {
   nextPackageSelectedItemIds,
   frozenMutatorGroups,
   resolveInitialColorState,
+  resolveActiveName,
 } from './SelectionContext';
 import {
   DEFAULT_COLOR_SCHEME_ID,
@@ -132,31 +133,46 @@ describe('nextSelectedItemIds — mutually-exclusive roofline (XOR) + plain togg
     expect(next).toEqual(new Set(['roofline-single', 'roofline-other']));
   });
 
-  // #125 — permanent portal tier selector: with only ONE package on offer
-  // (e.g. a single-surface permanent quote), the last remaining item must
-  // never be uncheckable down to a zero-package state.
-  it('onlyOnePackage=true: unchecking the LAST remaining item is a no-op', () => {
+  // #184 — supersedes #125's package-count signal: the last-item-deselect
+  // refusal now keys on the quote's TOTAL LINE ITEM COUNT, not the derived
+  // package count. Only an actual 1-item quote passes onlyOneItem=true (that
+  // case is already fully frozen by frozenMutatorGroups — #180 — so this is
+  // defense-in-depth, not an active gate). A 2+-item quote ALWAYS passes
+  // onlyOneItem=false now, even when it derives a single bundled package
+  // (Neighbor/event/bistro/single-surface-permanent) — the dev's #184 call is
+  // that those quotes may be deselected all the way to zero.
+  it('onlyOneItem=true (a real 1-item quote): unchecking the LAST remaining item is a no-op', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'permanent-front', new Set(), true);
     expect(next).toBe(prev);
     expect(next).toEqual(new Set(['permanent-front']));
   });
 
-  it('onlyOnePackage=true: unchecking one of SEVERAL selected items still works normally', () => {
+  it('onlyOneItem=true: unchecking one of SEVERAL selected items still works normally (mechanism check)', () => {
     const prev = new Set(['permanent-front', 'custom-0']);
     const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
     expect(next).toEqual(new Set(['permanent-front']));
   });
 
-  it('onlyOnePackage=true: adding an item is unaffected', () => {
+  it('onlyOneItem=true: adding an item is unaffected', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'custom-0', new Set(), true);
     expect(next).toEqual(new Set(['permanent-front', 'custom-0']));
   });
 
-  it('onlyOnePackage=false (default/multi-package): unchecking the last item still empties the set', () => {
+  it('onlyOneItem=false (a normal 2+-package holiday quote): unchecking the last item still empties the set', () => {
     const prev = new Set(['permanent-front']);
     const next = nextSelectedItemIds(prev, 'permanent-front', new Set());
+    expect(next).toEqual(new Set());
+  });
+
+  it('onlyOneItem=false (a Neighbor 2-item quote, single derived package — #184): unchecking the last item empties the set', () => {
+    // A legacyRebook quote with 2+ items always derives exactly ONE package
+    // (derivePackagesLegacyRebook), but #184's onlyOneItem keys on item count,
+    // not package count — so this quote passes onlyOneItem=false and the
+    // customer can toggle all the way to an empty selection.
+    const prev = new Set(['legacy-item-a']);
+    const next = nextSelectedItemIds(prev, 'legacy-item-a', new Set(), false);
     expect(next).toEqual(new Set());
   });
 });
@@ -187,6 +203,31 @@ describe('nextPackageSelectedItemIds — selectPackage tier/custom logic', () =>
     const current = new Set(['bush-1']);
     nextPackageSelectedItemIds(pkgA, current);
     expect(current).toEqual(new Set(['bush-1']));
+  });
+});
+
+// #184 — pin activeName AT THE SOURCE so every consumer (the What's Included
+// heading, the hero package tab, the approve payload → frozen approval
+// snapshot's packageName, the customer PDF, the staff approval email) reads
+// the SAME corrected value instead of each recomputing/duplicating the rule.
+describe('resolveActiveName (#184 — Neighbor multi-item name pinned at the source)', () => {
+  it('a legacy rebook with 2+ items always resolves to "Build Your Own", even while the live selection still matches last year\'s bundle', () => {
+    expect(resolveActiveName("Last Year's Design", true, 2)).toBe('Build Your Own');
+    expect(resolveActiveName("Last Year's Design", true, 3)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook with 2+ items stays "Build Your Own" even when the computed name already says so', () => {
+    expect(resolveActiveName('Build Your Own', true, 2)).toBe('Build Your Own');
+  });
+
+  it('a legacy rebook frozen at exactly 1 item keeps the accurate "Last Year\'s Design" (untouched)', () => {
+    expect(resolveActiveName("Last Year's Design", true, 1)).toBe("Last Year's Design");
+  });
+
+  it('a non-legacy quote is unaffected regardless of item count', () => {
+    expect(resolveActiveName('Our Recommendation', false, 1)).toBe('Our Recommendation');
+    expect(resolveActiveName('Classic Glow', false, 5)).toBe('Classic Glow');
+    expect(resolveActiveName('Build Your Own', false, 2)).toBe('Build Your Own');
   });
 });
 
@@ -270,26 +311,50 @@ describe('approve-payload pricing pin (selectedItemIds -> currentTotal/currentDe
 // pattern/effect). The setter ternaries in the provider read frozen.items /
 // frozen.fees / frozen.appearance from it; only the noop-swap wiring itself
 // remains render-only.
-
-describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
-  it('legacyRebook=true (not locked): ONLY the items group (toggleItem/selectPackage) freezes — fees and appearance stay live', () => {
-    expect(frozenMutatorGroups({ locked: false, legacyRebook: true })).toEqual({
-      items: true,
-      fees: false,
-      appearance: false,
-    });
-  });
-
-  it('legacyRebook=false, not locked: nothing freezes (a normal quote is unchanged)', () => {
-    expect(frozenMutatorGroups({ locked: false, legacyRebook: false })).toEqual({
+//
+// #179/#180 UPDATE: `items` now also freezes below an itemCount of 2 — a real
+// incident (staff added a comparison custom line to a legacy rebook quote so a
+// customer could see her price without one item, and BOTH items rendered
+// force-selected) exposed that the old unconditional `legacyRebook === true`
+// freeze never let a 2+-item legacy quote toggle at all. Tests below that
+// predate the item-count param and aren't exercising it pass an arbitrary
+// itemCount >= 2 (any such value is equivalent) so they keep their original,
+// still-correct expectations.
+describe('frozenMutatorGroups (#155 legacy rebook / #43 locked / #179 & #180 item count)', () => {
+  it('legacyRebook=true, 2+ items (not locked): #179 — items become toggleable exactly like a normal quote', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: true, itemCount: 2 })).toEqual({
       items: false,
       fees: false,
       appearance: false,
     });
   });
 
-  it('locked=true freezes ALL THREE groups (the #43 booked read-only rule, unchanged)', () => {
-    expect(frozenMutatorGroups({ locked: true, legacyRebook: false })).toEqual({
+  it('legacyRebook=true, exactly 1 item (not locked): items freeze (fees and appearance stay live)', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: true, itemCount: 1 })).toEqual({
+      items: true,
+      fees: false,
+      appearance: false,
+    });
+  });
+
+  it('legacyRebook=false, exactly 1 item (not locked): #180 — a lone item freezes on ANY quote type', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, itemCount: 1 })).toEqual({
+      items: true,
+      fees: false,
+      appearance: false,
+    });
+  });
+
+  it('legacyRebook=false, 2+ items, not locked: nothing freezes (a normal quote is unchanged)', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, itemCount: 2 })).toEqual({
+      items: false,
+      fees: false,
+      appearance: false,
+    });
+  });
+
+  it('locked=true freezes ALL THREE groups regardless of item count (the #43 booked read-only rule, unchanged)', () => {
+    expect(frozenMutatorGroups({ locked: true, legacyRebook: false, itemCount: 5 })).toEqual({
       items: true,
       fees: true,
       appearance: true,
@@ -297,7 +362,7 @@ describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
   });
 
   it('locked + legacyRebook together: locked wins everywhere (fees and colors frozen too)', () => {
-    expect(frozenMutatorGroups({ locked: true, legacyRebook: true })).toEqual({
+    expect(frozenMutatorGroups({ locked: true, legacyRebook: true, itemCount: 3 })).toEqual({
       items: true,
       fees: true,
       appearance: true,
@@ -307,7 +372,9 @@ describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
   // #163 — a booked customer can recolor the LIVE preview (appearance unfrozen)
   // while items/fees stay locked. The flag NEVER touches items/fees.
   it('locked + colorPreviewWhenLocked: unfreezes appearance ONLY (items/fees stay locked)', () => {
-    expect(frozenMutatorGroups({ locked: true, legacyRebook: false, colorPreviewWhenLocked: true })).toEqual({
+    expect(
+      frozenMutatorGroups({ locked: true, legacyRebook: false, itemCount: 3, colorPreviewWhenLocked: true }),
+    ).toEqual({
       items: true,
       fees: true,
       appearance: false,
@@ -315,11 +382,37 @@ describe('frozenMutatorGroups (#155 legacy rebook / #43 locked)', () => {
   });
 
   it('colorPreviewWhenLocked is a no-op when the order is not locked (already all live)', () => {
-    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, colorPreviewWhenLocked: true })).toEqual({
+    expect(
+      frozenMutatorGroups({ locked: false, legacyRebook: false, itemCount: 3, colorPreviewWhenLocked: true }),
+    ).toEqual({
       items: false,
       fees: false,
       appearance: false,
     });
+  });
+});
+
+// #180 — toggleItem's real refusal to deselect a 1-item quote's only item.
+// SelectionProvider swaps its EXPOSED toggleItem for a plain no-op whenever
+// frozen.items is true (`toggleItem: frozen.items ? noop : toggleItem` —
+// see SelectionContext.tsx), so frozenMutatorGroups is the single source of
+// truth for the refusal; there is deliberately no second itemCount check
+// inside nextSelectedItemIds/toggleItem's own body, because with the freeze
+// already gating it, that call is unreachable in production for a 1-item
+// quote (an untested/unreachable branch is exactly what the house
+// self-review standard flags). Any quote type — legacyRebook true or false.
+describe('toggleItem refusal on a 1-item quote (#180 — via the items freeze)', () => {
+  it('a 1-item, non-legacy quote freezes items (toggleItem becomes the no-op)', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, itemCount: 1 }).items).toBe(true);
+  });
+
+  it('a 1-item legacy rebook quote ALSO freezes items (#179\'s "stays locked-selected")', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: true, itemCount: 1 }).items).toBe(true);
+  });
+
+  it('a 2-item quote of either type does NOT freeze — toggleItem stays live', () => {
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: false, itemCount: 2 }).items).toBe(false);
+    expect(frozenMutatorGroups({ locked: false, legacyRebook: true, itemCount: 2 }).items).toBe(false);
   });
 });
 

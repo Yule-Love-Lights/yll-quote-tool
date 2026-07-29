@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { applyAppSettings } from '@/lib/clientSettings';
+import { downscaleForUpload } from '@/lib/clientImage';
 import { DEFAULT_KEYMAP, resolveAction, normalizeKeymap, type KeyMap } from './editor-core/keymap';
 import { extraPhotoLabels } from '@/lib/design/photoLabels';
 import './design-editor.css';
@@ -34,16 +35,6 @@ const STRIP_HEIGHT = 36; // px — the #13 photo tab strip (rendered only when a
 
 // One tab in the photo strip: the base photo (id null) or an extra.
 type PhotoTab = { id: string | null; title: string };
-
-// Read a File as a data: URL — addDesignExtraPhoto strips the prefix server-side.
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-}
 
 // React shell around the vendored vanilla Konva editor (Option B). On mount it
 // dynamically imports the editor controller — so Konva (which touches the DOM)
@@ -181,11 +172,13 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   const addPhoto = async (file: File) => {
     setPhotoBusy(true);
     try {
-      const dataUrl = await fileToDataUrl(file);
+      // #186: downscale before base64-encoding — a full-res phone photo
+      // inflates ~33% as base64 and 413s Vercel's 4.5MB request-body cap.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
       const res = await fetch(`/api/designs/${designId}/photos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photoBase64: dataUrl, photoMediaType: file.type || 'image/jpeg' }),
+        body: JSON.stringify({ photoBase64: dataUrl, photoMediaType: mediaType }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

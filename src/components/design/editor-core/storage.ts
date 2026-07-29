@@ -20,6 +20,7 @@ import type {
 } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from './colors';
 import { fetchAppSettings } from '@/lib/clientSettings';
+import { downscaleForUpload } from '@/lib/clientImage';
 
 type DesignPatch = Partial<{
   name: string;
@@ -40,15 +41,6 @@ export type EditorApi = {
   createUpload(file: File): Promise<CustomUpload>;
   deleteUpload(id: string): Promise<{ ok: true }>;
 };
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-}
 
 const EMPTY_SCENE: Scene = { yardsticks: [], items: [] };
 
@@ -107,11 +99,12 @@ export function createEditorApi(designId: string): EditorApi {
     },
 
     async uploadPhoto(file) {
-      const base64 = await readFileAsDataUrl(file);
+      // #186: downscale before base64-encoding — see clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
       const res = await fetch(`/api/designs/${designId}/photo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photoBase64: base64, photoMediaType: file.type || 'image/jpeg' }),
+        body: JSON.stringify({ photoBase64: dataUrl, photoMediaType: mediaType }),
       });
       if (!res.ok) throw new Error(`upload photo failed: ${res.status}`);
       const { photoUrl } = await res.json();

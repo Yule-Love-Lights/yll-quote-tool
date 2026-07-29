@@ -16,6 +16,7 @@ import type {
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import type { LineSegment } from '@/lib/photoAnalysis';
+import { downscaleForUpload, totalBase64Bytes, exceedsSubmitBudget, SUBMIT_BYTE_BUDGET } from '@/lib/clientImage';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type MiniLightDetection = {
@@ -64,14 +65,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   );
-}
-
-async function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
-  const arrayBuffer = await file.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(arrayBuffer);
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return { base64: btoa(binary), mediaType: file.type };
 }
 
 const PHOTO_TAG_LABELS: Record<PhotoTag, string> = {
@@ -314,7 +307,12 @@ export default function NewTrainingHousePage() {
         alert(`${file.name} is larger than 10MB — skipping`);
         continue;
       }
-      const { base64, mediaType } = await fileToBase64(file);
+      // #186: downscale before base64-encoding — POST /api/training below sends
+      // every photo's base64 in one JSON body, so multiple full-res photos add
+      // up fast against Vercel's 4.5MB request-body cap. See clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
+      const comma = dataUrl.indexOf(',');
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
       newPhotos.push({ tag, base64, mediaType });
     }
     setPhotos(p => [...p, ...newPhotos]);
@@ -692,6 +690,21 @@ export default function NewTrainingHousePage() {
   const handleSave = async () => {
     if (photos.length === 0) {
       setSaveError('Upload at least one photo before saving.');
+      return;
+    }
+    // #186 review: POST /api/training sends every photo's base64 in ONE JSON
+    // body (saveTrainingHouse does a single atomic insert — there's no
+    // incremental append surface to chunk this into, and the per-photo markup
+    // below is only flattened at this final save, so splitting the photo
+    // upload from the submit wouldn't shrink this request anyway). Precheck
+    // the total instead of letting a normal multi-photo session 413.
+    const photoBytes = photos.map((p) => p.base64);
+    if (exceedsSubmitBudget(photoBytes)) {
+      const totalMb = (totalBase64Bytes(photoBytes) / (1024 * 1024)).toFixed(1);
+      const budgetMb = (SUBMIT_BYTE_BUDGET / (1024 * 1024)).toFixed(0);
+      setSaveError(
+        `These photos total ${totalMb}MB — the server accepts ~${budgetMb}MB per save. Remove a photo or re-add fewer at once.`,
+      );
       return;
     }
     setSaving(true);
