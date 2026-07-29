@@ -1288,4 +1288,68 @@ describe('Valor webhook — declined BALANCE staff alert (#175)', () => {
     expect(updatePayloads).toHaveLength(0);
     expect(hl.sendEmail).not.toHaveBeenCalled();
   });
+
+  // #175 review MED: Valor's decline + success webhooks are separate
+  // deliveries with no ordering guarantee — a decline that arrives AFTER the
+  // invoice already settled (or was cancelled) must not stamp/alert, since
+  // "No money moved… retry the link" would be flat wrong by then.
+  it('an already-PAID balance invoice is not stamped or alerted — the decline arrived after the money already moved', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'done' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0 });
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true }); // ack unchanged
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a CANCELLED balance invoice is also not stamped or alerted — nothing left to retry', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'cancelled' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'cancelled', balance: 1350 });
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true });
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('an invoice lookup failure is ambiguous — warns, skips the email, but still stamps the decline (fail-open toward silence, not a false alert)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockRejectedValueOnce(new Error('supabase timeout'));
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true });
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).toMatchObject({
+      deposit_declined_at: expect.any(String),
+      deposit_decline_code: '05',
+    });
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining('balance decline invoice lookup failed'),
+      expect.anything(),
+    );
+    err.mockRestore();
+  });
 });

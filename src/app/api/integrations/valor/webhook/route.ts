@@ -286,6 +286,38 @@ async function handleBalanceDeclined(
     >();
   if (!quote || quote.is_test) return;
 
+  // #175 review MED: Valor's decline and success webhooks are separate
+  // deliveries with NO ordering guarantee — a late-arriving decline for an
+  // invoice that's ALREADY settled (or cancelled) must not stamp/alert "No
+  // money moved… they can retry the link", which is flat wrong once the
+  // money HAS moved (or the booking is dead, so there's nothing to retry).
+  // The deposit path above is naturally protected — its `deposit_paid_at`
+  // idempotency check runs before it ever reaches the approved/declined
+  // branch — but this function is reached BEFORE handleBalancePayment's own
+  // paid/cancelled checks (~1125-1140 below), so mirror the SAME two
+  // terminal states it treats as settled/dead before touching anything.
+  let invoice: InvoiceRow | null = null;
+  try {
+    const job = await getJobByQuote(quoteId);
+    invoice = job ? await getInvoiceByJob(job.id) : null;
+  } catch (err) {
+    // Ambiguous — we can't tell whether the invoice is already settled.
+    // Fail-open toward the customer's inbox staying quiet rather than staff's:
+    // a missed alert beats a FALSE "no money moved" landing on an invoice
+    // that's actually paid, so warn + skip the email. The stamp is still
+    // safe to write (informational only here — unlike the deposit path,
+    // nothing renders it on the admin quote page).
+    console.error('[api/integrations/valor/webhook] balance decline invoice lookup failed:', err);
+    await stampDepositDeclined(sb, quote.id, event.responseCode);
+    return;
+  }
+  if (invoice?.status === 'paid' || invoice?.status === 'cancelled') {
+    console.warn(
+      `[api/integrations/valor/webhook] ignoring a declined balance txn for ${invoice.status} invoice ${invoice.id} (quote ${quoteId}) — a late-arriving decline delivery, nothing to do`,
+    );
+    return;
+  }
+
   await stampDepositDeclined(sb, quote.id, event.responseCode);
 
   const claimed = await claimDeclineNotifySlot(sb, quote.id);
@@ -296,12 +328,9 @@ async function handleBalanceDeclined(
 
   const amountUsd =
     typeof event.amountUsd === 'number' && Number.isFinite(event.amountUsd) ? event.amountUsd : 0;
+  const adminUrl = invoice ? `${baseUrl}/admin/invoices/${invoice.id}` : `${baseUrl}/admin/quotes/${quote.id}`;
 
   try {
-    const job = await getJobByQuote(quoteId);
-    const invoice = job ? await getInvoiceByJob(job.id) : null;
-    const adminUrl = invoice ? `${baseUrl}/admin/invoices/${invoice.id}` : `${baseUrl}/admin/quotes/${quote.id}`;
-
     await sendEmail({
       contactId: internalContactId,
       subject: internalDepositDeclinedEmailSubject({
