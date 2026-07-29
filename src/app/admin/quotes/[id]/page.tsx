@@ -23,6 +23,7 @@ import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -60,6 +61,19 @@ const fmtDate = (iso: string | null | undefined) =>
   iso
     ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
     : '—';
+
+// #175: "Card declined 2 hours ago" reads better on the decline notice below
+// than an absolute timestamp — a simple minutes/hours/days ladder is plenty
+// for a server-rendered admin page (no live-updating countdown needed).
+function relativeTimeFromNow(iso: string): string {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
 
 // #155 — the light color/pattern a legacy-rebook customer approved with, for
 // the admin detail card. null when the quote hasn't been approved yet (no
@@ -271,6 +285,27 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </div>
           </dl>
         </div>
+
+        {/* #175: a declined deposit charge otherwise only shows up in a
+            webhook log — surface it here so staff notice before the
+            customer's install slot slips. Gated on the deposit still being
+            unpaid: once it clears, this stops rendering even though the
+            stamp itself is left in place (harmless — nothing reads it once
+            paid). A declined BALANCE charge stamps the same columns (#175)
+            but isn't shown here since the deposit is already paid by then —
+            that alert links straight to the invoice instead. */}
+        {quote.deposit_declined_at && !quote.deposit_paid_at && (
+          <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            Card declined {relativeTimeFromNow(quote.deposit_declined_at)}
+            {quote.deposit_decline_code && (
+              <>
+                {' '}
+                (code {quote.deposit_decline_code} — {depositDeclineReasonText(quote.deposit_decline_code)})
+              </>
+            )}
+            {' '}— customer can retry from their portal link.
+          </div>
+        )}
 
         {/* Line items */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
