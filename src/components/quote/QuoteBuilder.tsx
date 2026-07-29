@@ -47,6 +47,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { downscaleForUpload } from '@/lib/clientImage';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -1461,14 +1462,12 @@ export default function QuoteBuilder({
       );
       if (!ok) { input.value = ''; return; }
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
-      input.value = ''; // allow re-picking the same file
-      if (!dataUrl) return;
+    input.value = ''; // allow re-picking the same file
+    void (async () => {
+      // #186: downscale before base64-encoding — see clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
       const comma = dataUrl.indexOf(',');
       const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-      const mediaType = file.type.startsWith('image/') ? file.type : 'image/jpeg';
       setSatellitePreview(dataUrl);
       setSatelliteSantasLines([]);
       setSatelliteGingerbreadLines([]);
@@ -1481,7 +1480,7 @@ export default function QuoteBuilder({
       setSatelliteFeetPerPixel(null); // manual = no known scale
       const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
       // Read the CURRENT design id (L6) — a design may have been created while
-      // this FileReader was decoding. uploadDesignSatellite also clears the
+      // downscaleForUpload was decoding. uploadDesignSatellite also clears the
       // design's stale satellite_lines so a captured example can't overlay old
       // Google lines on the new image (M4).
       const id = designIdRef.current;
@@ -1490,8 +1489,7 @@ export default function QuoteBuilder({
       } else {
         pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
       }
-    };
-    reader.readAsDataURL(file);
+    })();
   };
 
   // Re-fetch Street View at a new heading/pitch/fov — lets the user rotate
@@ -1989,25 +1987,22 @@ export default function QuoteBuilder({
     if (form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro') {
       // Read the base64 from the File itself — photoPreview is a blob: object URL
       // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
-      const base64 = await new Promise<string | null>((resolve) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const s = typeof r.result === 'string' ? r.result : '';
-          const comma = s.indexOf(',');
-          resolve(comma >= 0 ? s.slice(comma + 1) : null);
-        };
-        r.onerror = () => resolve(null);
-        r.readAsDataURL(photoFile);
-      });
-      if (!base64) {
+      // #186: downscale before base64-encoding — see clientImage.ts.
+      let dataUrl: string;
+      let mediaType: string;
+      try {
+        ({ dataUrl, mediaType } = await downscaleForUpload(photoFile));
+      } catch {
         setAnalysisError("Couldn't read that photo. Try selecting it again.");
         return;
       }
+      const comma = dataUrl.indexOf(',');
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
       pendingSeedRef.current = null;
       setAnalysisError(null);
       setAnalysisWarning(null);
       setPhotoBase64(base64);
-      setPhotoMediaType(photoFile.type || 'image/jpeg');
+      setPhotoMediaType(mediaType);
       setFewShotCount(0);
       setViewMode('design');
       setAnalysisNotes(
