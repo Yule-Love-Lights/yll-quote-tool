@@ -193,22 +193,29 @@ export function computeInitialSelection(
 // never both be selected (the single most money-sensitive selection rule — a
 // double roofline would double-count in the subtotal/approve total).
 //
-// `onlyOnePackage` (#125 permanent tier-selector fix): when the portal only
-// offers ONE package (e.g. a single-surface permanent quote — just "Front of
-// Home"), there is no other tier to fall back to, so unchecking the last
-// remaining item would leave the customer at a zero-package/zero-total state
-// with nothing to re-select from. Deselecting the last item is a no-op in
-// that case; with 2+ packages available the normal toggle-to-empty behavior
-// is unchanged.
+// `onlyOneItem` (#184 — supersedes #125's package-count signal): the
+// last-item-deselect refusal used to key on the quote deriving exactly ONE
+// package (e.g. a single-surface permanent quote — just "Front of Home"),
+// which also covered every Neighbor/event/bistro quote since those always
+// derive a single bundled package regardless of how many line items they
+// carry. The dev's #184 call: a quote with 2+ line items may be deselected
+// all the way to zero (e.g. toggling items one at a time to compare) — the
+// portal's approve minimum gate already refuses a $0/below-minimum approval,
+// which is the accepted backstop. So the refusal now keys on the quote's
+// TOTAL LINE ITEM COUNT instead: only a quote with exactly ONE line item ever
+// refuses. That single-item case is already fully frozen by
+// frozenMutatorGroups (#180 — toggleItem itself is swapped for a no-op), so
+// this guard is defense-in-depth for that already-unreachable case, not an
+// active gate on any reachable 2+-item quote.
 export function nextSelectedItemIds(
   prev: Set<string>,
   itemId: string,
   rooflineGroup: Set<string>,
-  onlyOnePackage = false,
+  onlyOneItem = false,
 ): Set<string> {
   const next = new Set(prev);
   if (next.has(itemId)) {
-    if (onlyOnePackage && next.size === 1) return prev;
+    if (onlyOneItem && next.size === 1) return prev;
     next.delete(itemId);
   } else {
     if (rooflineGroup.has(itemId)) {
@@ -516,20 +523,23 @@ export function SelectionProvider({
     [packagesById],
   );
 
-  // #125 — with only one package on offer, there's no other tier to land on,
-  // so the last remaining item can never be unchecked down to zero.
-  const onlyOnePackage = packages.length === 1;
+  // #184 — see nextSelectedItemIds' doc above: keyed on total line item count
+  // (not derived package count) so a 2+-item single-package quote (Neighbor/
+  // event/bistro/single-surface-permanent) can be deselected all the way to
+  // zero; only an actual 1-item quote refuses.
+  const onlyOneItem = lineItems.length === 1;
 
   const toggleItem = useCallback((itemId: string) => {
-    // Single-package quote: unchecking the last remaining item would strand the
-    // customer at a zero-package/$0 selection with no tier to fall back to. Make
-    // it a FULL no-op — no selection change AND no flip to Custom — so the tier
-    // label/highlight stays put on the dead click.
-    if (onlyOnePackage && selectedItemIds.size === 1 && selectedItemIds.has(itemId)) return;
-    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup, onlyOnePackage));
+    // Defense-in-depth only (see nextSelectedItemIds' doc): a 1-item quote is
+    // already fully frozen by frozenMutatorGroups (#180), which swaps this
+    // whole callback for a no-op below, so this branch is unreachable in
+    // production — kept so nextSelectedItemIds' own contract holds if
+    // toggleItem is ever called directly.
+    if (onlyOneItem && selectedItemIds.size === 1 && selectedItemIds.has(itemId)) return;
+    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup, onlyOneItem));
     // Any manual item toggle flips selection to Custom.
     setPackageId('D');
-  }, [rooflineGroup, onlyOnePackage, selectedItemIds]);
+  }, [rooflineGroup, onlyOneItem, selectedItemIds]);
 
   const isItemSelected = useCallback(
     (itemId: string) => selectedItemIds.has(itemId),
