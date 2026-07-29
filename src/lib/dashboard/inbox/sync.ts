@@ -25,6 +25,7 @@ import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThread } from './gmail';
 import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { getFollowUpDays } from './settings';
+import { FOLLOWUP_REASONS } from './followups';
 import {
   closeFollowUp,
   ensureFollowUp,
@@ -34,6 +35,7 @@ import {
   recordSyncRun,
   setEscalation,
   setSyncCursor,
+  sweepOrphanedFollowUps,
 } from './store';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
 import { etDayKey } from './normalize';
@@ -156,6 +158,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
       }
     }
+    // #183 BUG 3: the loop above only ever visits quotes still returned by
+    // listQuotesForDashboard — a follow-up anchored to a DELETED quote row is
+    // never reached there and would sit overdue-pending forever. One sweep per
+    // reconcile closes those.
+    followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
     return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsClosed, errors };
   } catch (err) {
