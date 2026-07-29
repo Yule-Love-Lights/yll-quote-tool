@@ -11,17 +11,20 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const markDone = useCallback(async (id: string) => {
-    setBusyId(id);
-    setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic
+  const markDone = useCallback(async (item: DueFollowUp) => {
+    setBusyId(item.id);
+    setItems((prev) => prev.filter((i) => i.id !== item.id)); // optimistic
     try {
-      await fetch('/api/dashboard/followup', {
+      const res = await fetch('/api/dashboard/followup', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id: item.id }),
       });
+      // Restore the item if the write was rejected, so a failure is visible
+      // rather than silently vanishing (mirrors DuplicatesList's merge()).
+      if (!res.ok) setItems((prev) => [item, ...prev]);
     } catch {
-      // Next page load re-syncs the true state if the write failed.
+      setItems((prev) => [item, ...prev]);
     } finally {
       setBusyId(null);
     }
@@ -47,7 +50,7 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
             <button
               type="button"
               disabled={busyId === f.id}
-              onClick={() => markDone(f.id)}
+              onClick={() => markDone(f)}
               className="px-3 py-1 rounded-md text-sm disabled:opacity-50"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
