@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { computeTargetDimensions, shouldSkipDownscale } from './clientImage';
+import {
+  computeTargetDimensions,
+  shouldSkipDownscale,
+  safeMediaType,
+  totalBase64Bytes,
+  exceedsSubmitBudget,
+  SUBMIT_BYTE_BUDGET,
+} from './clientImage';
 
 describe('computeTargetDimensions (#186)', () => {
   it('leaves an image already within the cap untouched', () => {
@@ -39,5 +46,51 @@ describe('shouldSkipDownscale (#186)', () => {
   });
   it('boundary: a file exactly at the skip threshold is NOT skipped (< is strict)', () => {
     expect(shouldSkipDownscale(2.5 * MB, 1920, 1080, 2560, 2.5 * MB)).toBe(false);
+  });
+});
+
+describe('safeMediaType (#186 review)', () => {
+  it('trusts a real image mediaType', () => {
+    expect(safeMediaType('image/png')).toBe('image/png');
+    expect(safeMediaType('image/heic')).toBe('image/heic');
+  });
+  it('falls back to image/jpeg for a non-image mediaType', () => {
+    // Some Android/Chrome HEIC combos report a non-image type.
+    expect(safeMediaType('application/octet-stream')).toBe('image/jpeg');
+  });
+  it('falls back to image/jpeg for empty/missing mediaType', () => {
+    expect(safeMediaType('')).toBe('image/jpeg');
+    expect(safeMediaType(null)).toBe('image/jpeg');
+    expect(safeMediaType(undefined)).toBe('image/jpeg');
+  });
+});
+
+describe('totalBase64Bytes / exceedsSubmitBudget (#186 review)', () => {
+  const MB = 1024 * 1024;
+  const strOfLength = (n: number) => 'a'.repeat(n);
+
+  it('sums base64 string lengths as the wire-byte estimate', () => {
+    expect(totalBase64Bytes([strOfLength(100), strOfLength(200)])).toBe(300);
+    expect(totalBase64Bytes([])).toBe(0);
+  });
+
+  it('does not flag a batch under budget (realistic ~800KB-per-photo downscaled batch)', () => {
+    const photos = Array.from({ length: 3 }, () => strOfLength(0.8 * MB));
+    expect(exceedsSubmitBudget(photos, 3 * MB)).toBe(false);
+  });
+
+  it('flags a normal 5-photo training session (reviewer-measured ~800KB each -> ~4MB > 3MB budget)', () => {
+    const photos = Array.from({ length: 5 }, () => strOfLength(0.8 * MB));
+    expect(exceedsSubmitBudget(photos, 3 * MB)).toBe(true);
+  });
+
+  it('boundary: exactly at budget is NOT flagged (> is strict)', () => {
+    expect(exceedsSubmitBudget([strOfLength(3 * MB)], 3 * MB)).toBe(false);
+    expect(exceedsSubmitBudget([strOfLength(3 * MB + 1)], 3 * MB)).toBe(true);
+  });
+
+  it('defaults to the exported SUBMIT_BYTE_BUDGET when no budget is passed', () => {
+    expect(exceedsSubmitBudget([strOfLength(SUBMIT_BYTE_BUDGET + 1)])).toBe(true);
+    expect(exceedsSubmitBudget([strOfLength(SUBMIT_BYTE_BUDGET)])).toBe(false);
   });
 });

@@ -51,6 +51,14 @@ function readRawDataUrl(file: File): Promise<string> {
   });
 }
 
+// The raw-upload fallback's mediaType (skip-path + decode-failure path): trust
+// the browser's reported file.type only when it actually looks like an image
+// — some Android/Chrome HEIC combos report a non-image type (or an empty
+// string), which would otherwise get sent to our API as photoMediaType.
+export function safeMediaType(mediaType: string | null | undefined): string {
+  return mediaType && mediaType.startsWith('image/') ? mediaType : 'image/jpeg';
+}
+
 type Decoded = {
   width: number;
   height: number;
@@ -62,7 +70,11 @@ type Decoded = {
 // back to an <img> + object URL for browsers/formats that reject it.
 async function decodeImage(file: File): Promise<Decoded> {
   if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(file);
+    // Pin orientation explicitly: the canvas re-encode below discards EXIF
+    // permanently, so an implicit browser default is too much trust — today's
+    // browsers already default to 'from-image', but that's not guaranteed.
+    // The HTMLImageElement fallback applies EXIF orientation natively.
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
     return {
       width: bitmap.width,
       height: bitmap.height,
@@ -100,7 +112,7 @@ export async function downscaleForUpload(file: File): Promise<{ dataUrl: string;
     const img = await decodeImage(file);
     try {
       if (shouldSkipDownscale(file.size, img.width, img.height)) {
-        return { dataUrl: await readRawDataUrl(file), mediaType: file.type || 'image/jpeg' };
+        return { dataUrl: await readRawDataUrl(file), mediaType: safeMediaType(file.type) };
       }
       const { width, height } = computeTargetDimensions(img.width, img.height);
       const canvas = document.createElement('canvas');
@@ -114,6 +126,25 @@ export async function downscaleForUpload(file: File): Promise<{ dataUrl: string;
       img.cleanup();
     }
   } catch {
-    return { dataUrl: await readRawDataUrl(file), mediaType: file.type || 'image/jpeg' };
+    return { dataUrl: await readRawDataUrl(file), mediaType: safeMediaType(file.type) };
   }
+}
+
+// Multi-photo batch precheck (#186 review): a single site (the training-
+// capture page) submits several photos in ONE JSON body. Even after each
+// photo is downscaled individually, a handful of them can still add up past
+// Vercel's 4.5MB request-body cap — 5 photos at a realistic ~800KB downscaled
+// size are already ~4MB of base64 alone, before the rest of the JSON body.
+// Sum the (already-downscaled) base64 lengths — that's the actual wire size
+// those photos contribute, since base64 is single-byte-per-char ASCII — and
+// compare against a budget safely under the cap so the caller can block the
+// submit with a clear error instead of letting the request 413.
+export const SUBMIT_BYTE_BUDGET = 3 * 1024 * 1024; // ~3MB — leaves headroom for the rest of the body.
+
+export function totalBase64Bytes(base64s: string[]): number {
+  return base64s.reduce((sum, b) => sum + b.length, 0);
+}
+
+export function exceedsSubmitBudget(base64s: string[], budget: number = SUBMIT_BYTE_BUDGET): boolean {
+  return totalBase64Bytes(base64s) > budget;
 }
