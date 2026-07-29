@@ -934,15 +934,22 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   const itemIds = [...new Set(followUpRows.map((r) => r.inbox_item_id).filter((id): id is string => !!id))];
   if (!itemIds.length) return 0;
 
-  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, external_id').in('id', itemIds);
+  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, external_id, source').in('id', itemIds);
   if (itemsErr) {
     console.error('[inbox] orphan follow-up sweep: inbox_items lookup failed:', itemsErr.message);
     return 0;
   }
-  const itemRows = ((items ?? []) as { id: string; external_id: string }[]).map((r) => ({
-    id: r.id,
-    externalId: r.external_id,
-  }));
+  // Same source==='quotetool' guard as the two exclusion call sites above:
+  // quote_sent_no_reply rows only ever anchor on quotetool items today, but
+  // that's an implicit invariant — enforce it here so a future reason reuse or
+  // hand-inserted row can never mis-derive a quote id from another source's
+  // external_id shape (review hardening, #183).
+  const itemRows = ((items ?? []) as { id: string; external_id: string; source: string }[])
+    .filter((r) => r.source === 'quotetool')
+    .map((r) => ({
+      id: r.id,
+      externalId: r.external_id,
+    }));
 
   const candidateQuoteIds = [...new Set(itemRows.map((r) => quoteIdPrefix(r.externalId)).filter(isUuid))];
   let existingQuoteIds = new Set<string>();

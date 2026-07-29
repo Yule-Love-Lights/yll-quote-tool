@@ -1217,8 +1217,8 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     });
     const { builder: itemsBuilder, calls: itemsCalls } = makeBuilder({
       data: [
-        { id: 'item-alive', external_id: ALIVE_ID },
-        { id: 'item-dead', external_id: DEAD_ID },
+        { id: 'item-alive', external_id: ALIVE_ID, source: 'quotetool' },
+        { id: 'item-dead', external_id: DEAD_ID, source: 'quotetool' },
       ],
       error: null,
     });
@@ -1288,5 +1288,98 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  // Review hardening (#183): the other two lookup legs share the same
+  // fail-open contract — a transient error must close NOTHING (the one
+  // catastrophic failure mode here is a flaky read mass-closing live nudges).
+  it('fails open (closes nothing) and logs when the inbox_items lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({
+        data: [{ id: 'fu-dead', inbox_item_id: 'item-dead' }],
+        error: null,
+      });
+      const { builder: itemsBuilder } = makeBuilder({ data: null, error: { message: 'items down' } });
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return pendingBuilder;
+          if (table === 'inbox_items') return itemsBuilder;
+          throw new Error(`unexpected table: ${table}`);
+        },
+      };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: inbox_items lookup failed:',
+        'items down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('fails open (closes nothing) and logs when the quotes lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({
+        data: [{ id: 'fu-dead', inbox_item_id: 'item-dead' }],
+        error: null,
+      });
+      const { builder: itemsBuilder } = makeBuilder({
+        data: [{ id: 'item-dead', external_id: DEAD_ID, source: 'quotetool' }],
+        error: null,
+      });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'quotes down' } });
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return pendingBuilder;
+          if (table === 'inbox_items') return itemsBuilder;
+          if (table === 'quotes') return quotesBuilder;
+          throw new Error(`unexpected table: ${table}`);
+        },
+      };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: quotes lookup failed:',
+        'quotes down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  // Review hardening (#183): a follow-up anchored on a NON-quotetool item is
+  // never treated as an orphan candidate — the sweep can't derive a quote id
+  // from another source's external_id shape.
+  it('ignores follow-ups anchored on non-quotetool inbox items', async () => {
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [{ id: 'fu-ghl', inbox_item_id: 'item-ghl' }],
+      error: null,
+    });
+    const { builder: itemsBuilder } = makeBuilder({
+      data: [{ id: 'item-ghl', external_id: 'conv-123', source: 'ghl' }],
+      error: null,
+    });
+    let quotesQueried = false;
+    const { builder: quotesBuilder } = makeBuilder({ data: [], error: null });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') return pendingBuilder;
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') {
+          quotesQueried = true;
+          return quotesBuilder;
+        }
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+    expect(closed).toBe(0);
+    expect(quotesQueried).toBe(false); // no quotetool candidates → no quotes lookup at all
   });
 });
