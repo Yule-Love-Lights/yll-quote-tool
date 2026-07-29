@@ -27,7 +27,7 @@ export function LegacyRebookToggle({
       ? [
           'Mark this quote as a YLL Neighbor?',
           '',
-          '- The customer portal will show the "Last Year\'s Design" rebook variant (read-only items, rebook copy).',
+          '- The customer portal will show the "Last Year\'s Design" rebook variant (rebook copy; the item list is read-only while the quote has a single bundled line, toggleable with 2+ lines).',
           '- The quote will be hidden from the operator inbox.',
           '- Any GHL sync will route to the Yule Love Lights Neighbors pipeline instead of Christmas Lights.',
         ]

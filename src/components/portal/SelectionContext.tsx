@@ -247,15 +247,30 @@ export function nextPackageSelectedItemIds(
 //                customer's light color/pattern/effect choice (view-side only,
 //                frozen into the approval snapshot at approve time).
 // #43 locked (booked/approved) freezes ALL THREE groups — the whole portal is
-// read-only (byte-equivalent to the pre-#155 all-noop behavior). #155
-// legacyRebook freezes ONLY the items group: a legacy rebook keeps last
-// year's item list fixed, but rush/takedown/early-install stay live (they're
-// real upsells this season) and the customer still picks their light color
-// ("Want to change up your lights this year?"). Positive gate on
-// legacyRebook === true; a normal quote is unaffected.
+// read-only (byte-equivalent to the pre-#155 all-noop behavior).
+//
+// items also freezes below an item COUNT of 2, for two reasons that both land
+// on the same test (#179/#180 — real incidents on YLL Neighbor quotes with a
+// staff-added comparison line):
+//   #179 — a legacy rebook keeps last year's item list fixed ONLY while it's a
+//          single bundled line; at 2+ items it becomes toggleable exactly like
+//          a normal quote (rush/takedown/early-install/color already stayed
+//          live regardless — unaffected by this).
+//   #180 — ANY quote (legacy or not) whose portal shows exactly one line item
+//          can never toggle it off — an empty selection is a dead end, and
+//          combined with a waived $1,000 minimum it could otherwise reach an
+//          "approvable" $0 selection. 2+-item quotes keep today's rules.
+// Both collapse to the same `itemCount < 2` test, so legacyRebook no longer
+// changes the outcome once itemCount is known — it stays a parameter here for
+// the call sites' clarity and so the matrix below documents both rules
+// independently (a normal 1-item quote freezes for #180's reason even though
+// legacyRebook is false).
 export function frozenMutatorGroups(state: {
   locked: boolean;
   legacyRebook: boolean;
+  // #179/#180 — total line items the portal shows (WhatsIncluded's `items`
+  // prop / SelectionProvider's `lineItems` — the same array both read).
+  itemCount: number;
   // #163: a booked customer may still recolor the LIVE preview (appearance
   // unfrozen) while items/fees stay locked. The change is never persisted to the
   // frozen order — a separate "Request colour change" action notifies staff, who
@@ -264,7 +279,7 @@ export function frozenMutatorGroups(state: {
   colorPreviewWhenLocked?: boolean;
 }): { items: boolean; fees: boolean; appearance: boolean } {
   return {
-    items: state.locked || state.legacyRebook === true,
+    items: state.locked || state.itemCount < 2,
     fees: state.locked,
     appearance: state.locked && state.colorPreviewWhenLocked !== true,
   };
@@ -600,10 +615,12 @@ export function SelectionProvider({
   // stray clickable control. (Belt-and-suspenders with the disabled controls.)
   const noop = useCallback(() => {}, []);
 
-  // #155 — which setter groups no-op for this quote (pure, unit-tested seam).
-  // locked freezes all three groups (unchanged #43 behavior); a legacy rebook
-  // freezes only the item/package setters — fees and colors stay interactive.
-  const frozen = frozenMutatorGroups({ locked, legacyRebook, colorPreviewWhenLocked });
+  // #155/#179/#180 — which setter groups no-op for this quote (pure,
+  // unit-tested seam). locked freezes all three groups (unchanged #43
+  // behavior); the item/package setters additionally freeze below 2 line
+  // items (a legacy rebook at exactly 1 item, or ANY quote at exactly 1 item)
+  // — fees and colors stay interactive either way.
+  const frozen = frozenMutatorGroups({ locked, legacyRebook, itemCount: lineItems.length, colorPreviewWhenLocked });
 
   const value: SelectionContextValue = {
     packageId,

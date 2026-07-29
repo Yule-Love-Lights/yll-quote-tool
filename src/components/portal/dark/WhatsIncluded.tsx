@@ -231,16 +231,24 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
     legacyRebook,
     depositRate,
   } = useSelection();
-  // #155 — a legacy rebook quote shows the ITEM LIST read-only (the same
-  // pointer-events-none treatment as a booked/locked quote), even before the
-  // quote is actually approved. The add-on/early-install sections below are
-  // deliberately NOT included (r2): rush/takedown/early-install are live
-  // upsells on a legacy rebook, so they keep their locked-only grey-out.
-  // Derived from the SAME pure seam that no-ops the context setters
-  // (frozenMutatorGroups), so the styling and the behavior can never drift
-  // apart. Positive gate on legacyRebook === true only; a normal quote's
-  // `locked` behavior is completely unchanged.
-  const itemsReadOnly = frozenMutatorGroups({ locked, legacyRebook }).items;
+  // #155/#179/#180 — the item list renders read-only (the same
+  // pointer-events-none treatment as a booked/locked quote) below 2 line
+  // items: a legacy rebook quote at exactly 1 item (#179 — 2+ items are
+  // toggleable exactly like a normal quote, live price/deposit recompute and
+  // all), or ANY quote at exactly 1 item (#180 — a lone item can never be
+  // toggled off, so the customer can't reach an empty/dead-end selection).
+  // The add-on/early-install sections below are deliberately NOT included
+  // (r2): rush/takedown/early-install are live upsells even on a frozen
+  // legacy rebook, so they keep their locked-only grey-out. Derived from the
+  // SAME pure seam that no-ops the context setters (frozenMutatorGroups), so
+  // the styling and the behavior can never drift apart.
+  const itemsReadOnly = frozenMutatorGroups({ locked, legacyRebook, itemCount: items.length }).items;
+  // #179 — once a legacy rebook unfreezes (2+ items), its subtitle must read
+  // like a normal quote's, not "same as last year" — only show the legacy
+  // copy while the items are ACTUALLY frozen for the legacy reason (exactly 1
+  // item). A non-legacy 1-item freeze (#180) gets its own "nothing to toggle"
+  // line so the inert card doesn't read as a dead button (review finding).
+  const legacyItemsReadOnly = legacyRebook === true && itemsReadOnly;
 
   return (
     <section
@@ -258,13 +266,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           >
             {formatIncludedHeading(activeName)}
           </h2>
-          {(locked || legacyRebook === true || items.length > 1) && (
+          {(locked || legacyItemsReadOnly || items.length >= 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
               {locked
                 ? "This is your booked quote — here's everything included, line by line."
-                : legacyRebook === true
+                : legacyItemsReadOnly
                   ? "Here's everything included — same as last year."
-                  : "Toggle anything off to remove it and we'll update your total automatically."}
+                  : items.length === 1
+                    ? "Here's what your quote includes — it's all one package, so there's nothing to toggle."
+                    : "Toggle anything off to remove it and we'll update your total automatically."}
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
