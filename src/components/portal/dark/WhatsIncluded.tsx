@@ -246,8 +246,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // #179 — once a legacy rebook unfreezes (2+ items), its subtitle must read
   // like a normal quote's, not "same as last year" — only show the legacy
   // copy while the items are ACTUALLY frozen for the legacy reason (exactly 1
-  // item). A non-legacy 1-item freeze (#180) shows no subtitle at all, same
-  // as today's normal-quote behavior at 1 item.
+  // item). A non-legacy 1-item freeze (#180) gets its own "nothing to toggle"
+  // line so the inert card doesn't read as a dead button (review finding).
   const legacyItemsReadOnly = legacyRebook === true && itemsReadOnly;
 
   return (
@@ -266,13 +266,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           >
             {formatIncludedHeading(activeName)}
           </h2>
-          {(locked || legacyItemsReadOnly || items.length > 1) && (
+          {(locked || legacyItemsReadOnly || items.length >= 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
               {locked
                 ? "This is your booked quote — here's everything included, line by line."
                 : legacyItemsReadOnly
                   ? "Here's everything included — same as last year."
-                  : "Toggle anything off to remove it and we'll update your total automatically."}
+                  : items.length === 1
+                    ? "Here's what your quote includes — it's all one package, so there's nothing to toggle."
+                    : "Toggle anything off to remove it and we'll update your total automatically."}
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
