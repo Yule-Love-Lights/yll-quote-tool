@@ -166,6 +166,24 @@ const ICONS: Record<PortalLineItemKind, React.ComponentType<{ className?: string
   'permanent-addon': Lightbulb,
 };
 
+// #184 — a legacy rebook's active-package name flips between "Last Year's
+// Design" and "Build Your Own" once it's unfrozen (2+ items, #179): the
+// customer toggles items away from the migrated bundle and back. "Last
+// Year's Design" is WRONG the moment the list has diverged from what was
+// actually last year's design (e.g. staff added a comparison line item), so
+// the What's Included heading name is pinned to "Build Your Own" for any
+// legacyRebook quote with 2+ items — regardless of toggle state. A 1-item
+// (frozen) Neighbor quote keeps its accurate activeName ("Last Year's
+// Design"). Extracted as a pure predicate for unit coverage (this repo has no
+// component-render test infra — see LightColorPicker.test.ts's header note).
+export function resolveIncludedHeadingName(
+  activeName: string,
+  legacyRebook: boolean,
+  itemCount: number,
+): string {
+  return legacyRebook && itemCount >= 2 ? 'Build Your Own' : activeName;
+}
+
 export type WhatsIncludedProps = {
   items: PortalLineItem[];
   // Linked design (#27 Phase 2) + global app settings (#32), passed through so the
@@ -249,6 +267,8 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
   // item). A non-legacy 1-item freeze (#180) gets its own "nothing to toggle"
   // line so the inert card doesn't read as a dead button (review finding).
   const legacyItemsReadOnly = legacyRebook === true && itemsReadOnly;
+  // #184 — see resolveIncludedHeadingName above.
+  const includedHeadingName = resolveIncludedHeadingName(activeName, legacyRebook, items.length);
 
   return (
     <section
@@ -264,7 +284,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             id="portal-dark-included-heading"
             className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
           >
-            {formatIncludedHeading(activeName)}
+            {formatIncludedHeading(includedHeadingName)}
           </h2>
           {(locked || legacyItemsReadOnly || items.length >= 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
