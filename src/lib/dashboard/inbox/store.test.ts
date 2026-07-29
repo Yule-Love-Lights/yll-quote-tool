@@ -218,9 +218,12 @@ import {
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
+  findOrphanedFollowUpItems,
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
+  quoteIdPrefix,
+  sweepOrphanedFollowUps,
 } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
@@ -229,7 +232,7 @@ import {
 function makeBuilder(result: { data: unknown; error: null | { message: string }; count?: number | null }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is']) {
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -286,6 +289,46 @@ describe('excludeLegacyRebookItems (#157 — YLL Neighbors inbox exclusion)', ()
     ];
     const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
     expect(result.map((i) => i.external_id)).toEqual(['quote-normal', 'ghl-msg-1']);
+  });
+
+  // #183 BUG 1: a :color-request-suffixed item belonging to a legacy quote must
+  // ALSO be excluded, not just its bare-id sibling.
+  it('drops a :color-request-suffixed item whose PREFIX is a legacy_rebook quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-legacy:color-request' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toHaveLength(0);
+  });
+
+  it('keeps a :color-request-suffixed item whose prefix is NOT a legacy quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-normal:color-request' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toEqual(items);
+  });
+
+  it('drops both the plain legacy row AND its suffixed sibling from the same batch', () => {
+    const items = [
+      { source: 'quotetool', external_id: 'quote-legacy' },
+      { source: 'quotetool', external_id: 'quote-legacy:color-request' },
+      { source: 'quotetool', external_id: 'quote-normal' },
+    ];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result.map((i) => i.external_id)).toEqual(['quote-normal']);
+  });
+});
+
+describe('quoteIdPrefix (#183 BUG 1)', () => {
+  it('returns the id unchanged when there is no colon suffix', () => {
+    expect(quoteIdPrefix('quote-1')).toBe('quote-1');
+  });
+
+  it('strips a :color-request suffix', () => {
+    expect(quoteIdPrefix('quote-1:color-request')).toBe('quote-1');
+  });
+
+  it('strips a real-uuid-shaped id the same way', () => {
+    expect(quoteIdPrefix('123e4567-e89b-12d3-a456-426614174000:color-request')).toBe(
+      '123e4567-e89b-12d3-a456-426614174000',
+    );
   });
 });
 
@@ -476,10 +519,15 @@ describe('listOpenItems — truncation signal (WT-41)', () => {
 // nav badge via buildInboxSummary, /api/inbox) inherits it automatically since
 // they all read through this one function.
 
-describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
+describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
+
+  // Real uuid-shaped ids (#183 BUG 1's isUuid filter drops anything else from
+  // the .in() lookup, so these fixtures must actually parse as uuids).
+  const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
+  const NORMAL_ID = '22222222-2222-2222-2222-222222222222';
 
   const row = (id: string, source: string, externalId: string) => ({
     id,
@@ -499,15 +547,15 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
 
   it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
     const rows = [
-      row('i-legacy', 'quotetool', 'quote-legacy'),
-      row('i-normal', 'quotetool', 'quote-normal'),
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-normal', 'quotetool', NORMAL_ID),
       row('i-ghl', 'ghl', 'ghl-msg-1'),
     ];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: 'quote-legacy', legacy_rebook: true },
-        { id: 'quote-normal', legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true },
+        { id: NORMAL_ID, legacy_rebook: false },
       ],
       error: null,
     });
@@ -532,7 +580,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
     // ones) — never the ghl item's external_id.
     const inCall = quotesCalls.find((c) => c.method === 'in');
     expect(inCall).toBeDefined();
-    expect(inCall!.args[1]).toEqual(expect.arrayContaining(['quote-legacy', 'quote-normal']));
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
     expect(inCall!.args[1]).toHaveLength(2);
   });
 
@@ -555,6 +603,109 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
     expect(result.items).toHaveLength(1);
     // No contact_id → no returning-proxy call; no quotetool ids → no quotes call.
     expect(fromCalls).toBe(1);
+  });
+
+  // #183 BUG 1: a :color-request-suffixed external_id used to poison the WHOLE
+  // .in() lookup (not a valid uuid → Postgres 22P02 on the entire query),
+  // silently emptying legacyQuoteIds so EVERY legacy row on the page — not
+  // just the suffixed one — rendered on the open-items list.
+  it('a :color-request-suffixed id alongside a plain one: BOTH resolve + exclude correctly, and the .in() call carries only the stripped prefix', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-legacy-color', 'quotetool', `${LEGACY_ID}:color-request`),
+      row('i-normal', 'quotetool', NORMAL_ID),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 4 });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: LEGACY_ID, legacy_rebook: true },
+        { id: NORMAL_ID, legacy_rebook: false },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Both the bare legacy row AND its suffixed sibling are excluded.
+    expect(result.items.map((i) => i.id)).toEqual(['i-normal', 'i-ghl']);
+
+    // The .in() call carries the DE-DUPED, STRIPPED prefix — never the raw
+    // suffixed string (which would have poisoned the whole Postgres query).
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  it('drops a malformed (non-uuid) quotetool external_id from the lookup instead of poisoning the whole query', async () => {
+    const rows = [row('i-bad', 'quotetool', 'not-a-uuid'), row('i-normal', 'quotetool', NORMAL_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: NORMAL_ID, legacy_rebook: false }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Neither row is silently dropped from the RESULT (only the lookup input
+    // is filtered) — the malformed one just can't be confirmed legacy, so it
+    // stays (fail-open for that one row, same spirit as the error path below).
+    expect(result.items.map((i) => i.id)).toEqual(['i-bad', 'i-normal']);
+
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual([NORMAL_ID]);
+  });
+
+  // #183 BUG 1 (c): the lookup error must be visible, and the fail-open must
+  // proceed unexcluded rather than crash or silently no-op.
+  it('logs and proceeds unexcluded when the quotes lookup itself errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const rows = [row('i-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+      const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
+
+      let callCount = 0;
+      sbRef.current = {
+        from: (_table: string) => {
+          callCount += 1;
+          return callCount === 1 ? mainBuilder : quotesBuilder;
+        },
+      };
+
+      const result = await listOpenItems(100);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Fail-open: nothing excluded, both rows still present.
+      expect(result.items.map((i) => i.id)).toEqual(['i-legacy', 'i-ghl']);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] legacy-rebook exclusion lookup failed:',
+        'connection reset',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 
@@ -807,10 +958,15 @@ describe('listEscalatableItems — .or filter excludes automated but keeps NULL'
 // amber/red alert or land in the EOD digest either. Mirrors the listOpenItems
 // legacy-rebook wiring tests above.
 
-describe('listEscalatableItems — legacy-rebook exclusion wiring (#181)', () => {
+describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
+
+  // Real uuid-shaped ids (#183 BUG 1's isUuid filter drops anything else from
+  // the .in() lookup, so these fixtures must actually parse as uuids).
+  const LEGACY_ID = '33333333-3333-3333-3333-333333333333';
+  const NORMAL_ID = '44444444-4444-4444-4444-444444444444';
 
   const row = (id: string, source: string, externalId: string) => ({
     id,
@@ -825,15 +981,15 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181)', () =>
 
   it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
     const rows = [
-      row('i-legacy', 'quotetool', 'quote-legacy'),
-      row('i-normal', 'quotetool', 'quote-normal'),
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-normal', 'quotetool', NORMAL_ID),
       row('i-ghl', 'ghl', 'ghl-msg-1'),
     ];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: 'quote-legacy', legacy_rebook: true },
-        { id: 'quote-normal', legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true },
+        { id: NORMAL_ID, legacy_rebook: false },
       ],
       error: null,
     });
@@ -856,15 +1012,15 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181)', () =>
     // quotetool ids seen on this read.
     const inCall = quotesCalls.find((c) => c.method === 'in');
     expect(inCall).toBeDefined();
-    expect(inCall!.args[1]).toEqual(expect.arrayContaining(['quote-legacy', 'quote-normal']));
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
     expect(inCall!.args[1]).toHaveLength(2);
   });
 
   it('a SENT legacy_rebook quote is excluded here too — broader than the quotetool.ts ingest-time guard (#181), matching #157 display behavior rather than fighting it', async () => {
-    const rows = [row('i-sent-legacy', 'quotetool', 'quote-sent-legacy')];
+    const rows = [row('i-sent-legacy', 'quotetool', LEGACY_ID)];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: 'quote-sent-legacy', legacy_rebook: true }],
+      data: [{ id: LEGACY_ID, legacy_rebook: true }],
       error: null,
     });
 
@@ -900,5 +1056,237 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181)', () =>
 
     expect(result.items).toHaveLength(1);
     expect(fromCalls).toBe(1);
+  });
+
+  // #183 BUG 1: a color-request item belonging to a legacy quote must also be
+  // excluded from escalation (amber/red alerts + the EOD digest), not just the
+  // bare-id sibling — and the poisoned .in() list must not empty the whole
+  // lookup the way the raw suffixed string used to.
+  it('excludes a :color-request-suffixed item whose prefix is a legacy_rebook quote too', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-legacy-color', 'quotetool', `${LEGACY_ID}:color-request`),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((i) => i.id)).toEqual(['i-ghl']);
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual([LEGACY_ID]); // stripped + de-duped, never the raw suffixed string
+  });
+
+  it('logs and proceeds unexcluded when the quotes lookup itself errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const rows = [row('i-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+      const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'timeout' } });
+
+      let callCount = 0;
+      sbRef.current = {
+        from: (_table: string) => {
+          callCount += 1;
+          return callCount === 1 ? mainBuilder : quotesBuilder;
+        },
+      };
+
+      const result = await listEscalatableItems();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.items.map((i) => i.id)).toEqual(['i-legacy', 'i-ghl']);
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[inbox] legacy-rebook exclusion lookup failed:', 'timeout');
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+});
+
+// ─── findOrphanedFollowUpItems (#183 BUG 3, pure) ───────────────────────────
+//
+// runQuoteToolReconcile's main loop only ever visits quotes still returned by
+// listQuotesForDashboard, so a pending quote_sent_no_reply follow-up anchored
+// to a DELETED quote row can never be closed there — it sits overdue-pending
+// forever. This pure predicate is the sweep's decision: given the pending
+// follow-ups (mapped to their inbox item id), the inbox items' external_ids
+// (batch-fetched), and the set of quote ids that DO still exist, which inbox
+// item ids are orphaned (their quote is gone)?
+
+describe('findOrphanedFollowUpItems (#183 BUG 3)', () => {
+  const ALIVE_ID = '55555555-5555-5555-5555-555555555555';
+  const DEAD_ID = '66666666-6666-6666-6666-666666666666';
+
+  it('flags a follow-up whose quote id is absent from existingQuoteIds', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-dead' }],
+      [{ id: 'item-dead', externalId: DEAD_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+
+  it('does not flag a follow-up whose quote id IS present in existingQuoteIds', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-alive' }],
+      [{ id: 'item-alive', externalId: ALIVE_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('resolves a :color-request-suffixed external_id to the same quote id (shares BUG 1s derivation)', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-color' }],
+      [{ id: 'item-color', externalId: `${ALIVE_ID}:color-request` }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual([]); // the underlying quote exists, so NOT orphaned
+  });
+
+  it('skips a follow-up with a null inboxItemId', () => {
+    const result = findOrphanedFollowUpItems([{ inboxItemId: null }], [], new Set());
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up whose inbox item could not be resolved at all (nothing to confirm dead)', () => {
+    const result = findOrphanedFollowUpItems([{ inboxItemId: 'item-unknown' }], [], new Set([ALIVE_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('de-dupes when two follow-ups point at the same orphaned inbox item', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-dead' }, { inboxItemId: 'item-dead' }],
+      [{ id: 'item-dead', externalId: DEAD_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+
+  it('mixed batch: only the orphaned one comes back', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-alive' }, { inboxItemId: 'item-dead' }],
+      [
+        { id: 'item-alive', externalId: ALIVE_ID },
+        { id: 'item-dead', externalId: DEAD_ID },
+      ],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+});
+
+// ─── sweepOrphanedFollowUps — I/O wiring (#183 BUG 3) ───────────────────────
+//
+// Three sequential batched queries (follow_ups -> inbox_items -> quotes), then
+// closeFollowUp per orphan (itself a follow_ups update+select). Dispatches by
+// TABLE NAME since 'follow_ups' is hit twice (the pending select, then each
+// close's update) with different shapes.
+
+describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ALIVE_ID = '77777777-7777-7777-7777-777777777777';
+  const DEAD_ID = '88888888-8888-8888-8888-888888888888';
+  const REASON = 'quote_sent_no_reply';
+
+  it('closes only the follow-up whose quote no longer exists', async () => {
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [
+        { id: 'fu-alive', inbox_item_id: 'item-alive' },
+        { id: 'fu-dead', inbox_item_id: 'item-dead' },
+      ],
+      error: null,
+    });
+    const { builder: itemsBuilder, calls: itemsCalls } = makeBuilder({
+      data: [
+        { id: 'item-alive', external_id: ALIVE_ID },
+        { id: 'item-dead', external_id: DEAD_ID },
+      ],
+      error: null,
+    });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: ALIVE_ID }], // only the alive quote still exists
+      error: null,
+    });
+    const { builder: closeBuilder, calls: closeCalls } = makeBuilder({
+      data: [{ id: 'fu-dead' }], // one row flipped to done
+      error: null,
+    });
+
+    let followUpsCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') {
+          followUpsCallCount += 1;
+          return followUpsCallCount === 1 ? pendingBuilder : closeBuilder;
+        }
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') return quotesBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+
+    expect(closed).toBe(1);
+    // Only the two referenced item ids were looked up.
+    const itemsInCall = itemsCalls.find((c) => c.method === 'in');
+    expect(itemsInCall!.args[1]).toEqual(expect.arrayContaining(['item-alive', 'item-dead']));
+    const quotesInCall = quotesCalls.find((c) => c.method === 'in');
+    expect(quotesInCall!.args[1]).toEqual(expect.arrayContaining([ALIVE_ID, DEAD_ID]));
+    // closeFollowUp was called for the DEAD item only.
+    const closeEqCalls = closeCalls.filter((c) => c.method === 'eq');
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-dead')).toBe(true);
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-alive')).toBe(false);
+  });
+
+  it('returns 0 without querying further when there are no pending follow-ups', async () => {
+    const { builder: pendingBuilder } = makeBuilder({ data: [], error: null });
+    let fromCalls = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return pendingBuilder;
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+    expect(closed).toBe(0);
+    expect(fromCalls).toBe(1); // only the pending-follow_ups query fired
+  });
+
+  it('fails open (closes nothing) and logs when the pending-follow_ups lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({ data: null, error: { message: 'db down' } });
+      sbRef.current = { from: (_table: string) => pendingBuilder };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: pending lookup failed:',
+        'db down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
