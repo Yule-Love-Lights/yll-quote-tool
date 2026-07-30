@@ -114,9 +114,16 @@ async function decodeImage(file: File): Promise<Decoded> {
 // resize path — these are house photos, so alpha transparency isn't a real
 // concern (decided, #186).
 //
-// Falls back to the raw file (unresized, original mediaType) if decoding
-// fails — some browsers can't decode HEIC straight from a File/Blob — so
-// upload still works, just without 413 protection for that rare case.
+// Falls back to the raw file (unresized, original mediaType) if decoding OR
+// the canvas re-encode fails (canvas.toBlob can yield null) — some browsers
+// can't decode HEIC straight from a File/Blob — so upload still works, just
+// without 413 protection for that rare case.
+//
+// mediaType caveat: on the skip/fallback paths the returned `blob` is the
+// ORIGINAL File, so the wire-level multipart Content-Type comes from
+// `blob.type` — which may differ from the sanitized `mediaType` field here.
+// Callers that need the wire truth must read `blob.type`; today's only Blob
+// consumer discards `mediaType` entirely (review note, #186b).
 async function downscaleForUploadCore(file: File): Promise<{ blob: Blob; mediaType: string }> {
   try {
     const img = await decodeImage(file);
