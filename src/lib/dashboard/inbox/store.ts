@@ -522,6 +522,10 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       .from('inbox_items')
       .select('contact_id')
       .in('contact_id', contactIds)
+      // Ordered so the capped subset is DETERMINISTIC — without an order, a
+      // page whose contacts exceed the cap could nondeterministically flip a
+      // contact's "returning" badge between loads (review LOW, #185).
+      .order('contact_id', { ascending: true })
       .limit(5000);
     const tally = new Map<string, number>();
     for (const row of counts ?? []) {

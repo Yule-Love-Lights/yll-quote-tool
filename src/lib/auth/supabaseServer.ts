@@ -169,8 +169,9 @@ export function nameOf(appMetadata: unknown): string | null {
  * nested server component both needing the operator) share ONE GoTrue round-
  * trip instead of firing a fresh client + fetch each time. Scope note: cache()
  * dedupes within one Server Component render (or one Route Handler invocation)
- * — it does NOT and CANNOT span the edge middleware (proxy.ts, a different
- * runtime with its own createMiddlewareSupabase().auth.getUser() call) or a
+ * — it does NOT and CANNOT span the proxy middleware (proxy.ts — Node runtime
+ * in Next 16, but a separate invocation outside the RSC render tree, with its
+ * own createMiddlewareSupabase().auth.getUser() call) or a
  * separate Route Handler's own invocation, so those two auth round-trips stay
  * genuinely separate calls; this only removes DUPLICATE getOperator() calls
  * within a single render/invocation. In the Vitest resolution of 'react' (the
