@@ -6,6 +6,10 @@ import {
   totalBase64Bytes,
   exceedsSubmitBudget,
   SUBMIT_BYTE_BUDGET,
+  exceedsMultipartSizeLimit,
+  oversizeMessage,
+  readUploadErrorMessage,
+  MULTIPART_SIZE_LIMIT_BYTES,
 } from './clientImage';
 
 describe('computeTargetDimensions (#186)', () => {
@@ -92,5 +96,71 @@ describe('totalBase64Bytes / exceedsSubmitBudget (#186 review)', () => {
   it('defaults to the exported SUBMIT_BYTE_BUDGET when no budget is passed', () => {
     expect(exceedsSubmitBudget([strOfLength(SUBMIT_BYTE_BUDGET + 1)])).toBe(true);
     expect(exceedsSubmitBudget([strOfLength(SUBMIT_BYTE_BUDGET)])).toBe(false);
+  });
+});
+
+describe('exceedsMultipartSizeLimit (#186 phase 2)', () => {
+  const MB = 1024 * 1024;
+
+  it('does not flag a file under the limit', () => {
+    expect(exceedsMultipartSizeLimit(1 * MB)).toBe(false);
+  });
+  it('flags a file over the limit', () => {
+    expect(exceedsMultipartSizeLimit(5 * MB)).toBe(true);
+  });
+  it('boundary: exactly at the limit is NOT flagged (> is strict)', () => {
+    expect(exceedsMultipartSizeLimit(4 * MB, 4 * MB)).toBe(false);
+    expect(exceedsMultipartSizeLimit(4 * MB + 1, 4 * MB)).toBe(true);
+  });
+  it('defaults to the exported MULTIPART_SIZE_LIMIT_BYTES when no limit is passed', () => {
+    expect(exceedsMultipartSizeLimit(MULTIPART_SIZE_LIMIT_BYTES + 1)).toBe(true);
+    expect(exceedsMultipartSizeLimit(MULTIPART_SIZE_LIMIT_BYTES)).toBe(false);
+  });
+});
+
+describe('oversizeMessage (#186 phase 2)', () => {
+  const MB = 1024 * 1024;
+
+  it('reports the file size to one decimal and the limit rounded, with the given noun', () => {
+    expect(oversizeMessage(6.2 * MB, 4 * MB, 'graphic')).toBe(
+      'This graphic is 6.2MB — the server accepts about 4MB.',
+    );
+  });
+  it('defaults the noun to "file" and the limit to MULTIPART_SIZE_LIMIT_BYTES', () => {
+    expect(oversizeMessage(5 * MB)).toBe('This file is 5.0MB — the server accepts about 4MB.');
+  });
+});
+
+describe('readUploadErrorMessage (#186 phase 2)', () => {
+  it('maps a 413 to the friendly too-large message, ignoring its plain-text body', () => {
+    // Vercel's raw-body cap rejects an oversized request with plain text
+    // ("Request Entity Too Large"), not JSON — this is the exact body shape
+    // that used to throw a raw SyntaxError when blindly res.json()'d.
+    const res = new Response('Request Entity Too Large', { status: 413 });
+    return expect(readUploadErrorMessage(res)).resolves.toBe(
+      'This photo is too large for the server — try a smaller photo.',
+    );
+  });
+  it('uses a custom too-large message when given one', () => {
+    const res = new Response('Request Entity Too Large', { status: 413 });
+    return expect(
+      readUploadErrorMessage(res, 'Upload failed', 'This graphic is too large for the server — try a smaller graphic.'),
+    ).resolves.toBe('This graphic is too large for the server — try a smaller graphic.');
+  });
+  it('extracts a JSON error field for a non-413 JSON error body', () => {
+    const res = new Response(JSON.stringify({ error: 'Unsupported image format' }), { status: 400 });
+    return expect(readUploadErrorMessage(res)).resolves.toBe('Unsupported image format');
+  });
+  it('falls back to the default message for a non-JSON, non-413 body', () => {
+    const res = new Response('Internal Server Error', { status: 500 });
+    return expect(readUploadErrorMessage(res, 'Analysis failed')).resolves.toBe('Analysis failed');
+  });
+  it('falls back to the default message for an empty body', () => {
+    const res = new Response('', { status: 500 });
+    return expect(readUploadErrorMessage(res, 'Analysis failed')).resolves.toBe('Analysis failed');
+  });
+  it('falls back to the default message when the JSON body has no string error field', () => {
+    const res = new Response(JSON.stringify({ ok: false }), { status: 400 });
+    return expect(readUploadErrorMessage(res, 'Analysis failed')).resolves.toBe('Analysis failed');
   });
 });

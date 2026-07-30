@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { CustomUpload } from '@/lib/design/sceneTypes';
+import { exceedsMultipartSizeLimit, oversizeMessage, readUploadErrorMessage, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 
 export function CustomLibrary() {
   const [uploads, setUploads] = useState<CustomUpload[]>([]);
@@ -34,14 +35,22 @@ export function CustomLibrary() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    // #186 phase 2: precheck client-side rather than let an oversized graphic
+    // 413 at Vercel's raw-body cap — /api/uploads is NOT downscaled (these are
+    // decorative PNGs; JPEG flattening would destroy their transparency).
+    if (exceedsMultipartSizeLimit(file.size)) {
+      setStatus(oversizeMessage(file.size, MULTIPART_SIZE_LIMIT_BYTES, 'graphic'));
+      return;
+    }
     setStatus('Uploading…');
     try {
       const fd = new FormData();
       fd.append('file', file);
       const r = await fetch('/api/uploads', { method: 'POST', body: fd });
       if (!r.ok) {
-        const b = await r.json().catch(() => ({}));
-        throw new Error(b.error ?? `HTTP ${r.status}`);
+        throw new Error(
+          await readUploadErrorMessage(r, `HTTP ${r.status}`, 'This graphic is too large for the server — try a smaller graphic.'),
+        );
       }
       const entry = (await r.json()) as CustomUpload;
       setUploads((u) => [entry, ...u]);
