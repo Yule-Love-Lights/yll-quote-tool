@@ -14,11 +14,67 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { cookies } from 'next/headers';
+import { cache } from 'react';
 
 function env(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY;
   return url && key ? { url, key } : null;
+}
+
+// #185 (inbox slowness): a hard timeout on the auth-gate's GoTrue calls
+// (getUser, and the session-refresh POST auth-js silently fires when the
+// stored token is within its ~90s expiry margin). auth-js has NO built-in
+// timeout on these — a degraded/hanging GoTrue leg blocks the whole request
+// with ZERO errors logged, which was the #185 investigation's root cause.
+// AbortController + a timer mirrors the existing valorBalance.ts / valor.ts
+// TIMEOUT_MS pattern already used for other outbound calls this app doesn't
+// control. On abort, auth-js's own _getUser() catches the resulting
+// AuthRetryableFetchError and returns { data: { user: null }, error } — the
+// SAME shape as an invalid/expired session — so getOperator() and proxy.ts
+// already fail closed on it (return null / redirect-to-login /
+// 401) with no further changes; the console.error below is just so the
+// timeout itself is visible in the server log instead of reading as a plain
+// "no session".
+//
+// SCOPE — read before touching: this wraps ONLY the fetch used by the two
+// ANON-key SSR clients below (createMiddlewareSupabase / createRouteSupabase),
+// i.e. the operator-auth-gate's session checks. It must NEVER wrap the
+// service-role DATA client (getSupabaseServiceClient in src/lib/supabase.ts,
+// a separate module) — that client backs long-running PostgREST reads/writes
+// (a charge-balance call, a webhook write) that must not be aborted by an
+// auth-sized timeout. Note getOperatorLabels()'s auth.admin.listUsers() call
+// (src/lib/dashboard/inbox/store.ts) also rides that SAME service-role client
+// for its Postgres access, so it is intentionally NOT covered by this timeout
+// either — timing it out would need splitting that client, which is out of
+// scope here.
+const DEFAULT_AUTH_FETCH_TIMEOUT_MS = 5000;
+
+function authFetchTimeoutMs(): number {
+  const raw = Number(process.env.AUTH_FETCH_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_AUTH_FETCH_TIMEOUT_MS;
+}
+
+/**
+ * A `fetch` that aborts after `timeoutMs` (env-overridable via
+ * AUTH_FETCH_TIMEOUT_MS, default 5000). Exported for unit testing — see the
+ * SCOPE comment above for where this may and may not be used.
+ */
+export function withAuthFetchTimeout(timeoutMs: number = authFetchTimeoutMs()) {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        console.error(`[auth] GoTrue fetch timed out after ${timeoutMs}ms — failing the auth gate closed`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }
 
 /**
@@ -43,6 +99,7 @@ export function createMiddlewareSupabase(req: NextRequest): {
         cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options));
       },
     },
+    global: { fetch: withAuthFetchTimeout() },
   });
   return { supabase, res };
 }
@@ -69,6 +126,7 @@ export async function createRouteSupabase(): Promise<ReturnType<typeof createSer
         }
       },
     },
+    global: { fetch: withAuthFetchTimeout() },
   });
 }
 
@@ -105,8 +163,22 @@ export function nameOf(appMetadata: unknown): string | null {
  * against Supabase (getUser — a server-side check, not the unverified
  * getSession). Used by route handlers + server components as the per-call gate
  * (defense in depth behind the middleware perimeter).
+ *
+ * #185: wrapped in React's cache() so multiple getOperator()/requireOperator()/
+ * requireAdmin() calls made while rendering the SAME request (e.g. a page and a
+ * nested server component both needing the operator) share ONE GoTrue round-
+ * trip instead of firing a fresh client + fetch each time. Scope note: cache()
+ * dedupes within one Server Component render (or one Route Handler invocation)
+ * — it does NOT and CANNOT span the edge middleware (proxy.ts, a different
+ * runtime with its own createMiddlewareSupabase().auth.getUser() call) or a
+ * separate Route Handler's own invocation, so those two auth round-trips stay
+ * genuinely separate calls; this only removes DUPLICATE getOperator() calls
+ * within a single render/invocation. In the Vitest resolution of 'react' (the
+ * plain, non-"react-server" build) cache() is a pass-through no-op, so this
+ * unit test suite is unaffected either way — the memoization only activates
+ * under Next.js's real RSC/Route-Handler dispatcher.
  */
-export async function getOperator(): Promise<Operator | null> {
+export const getOperator = cache(async (): Promise<Operator | null> => {
   const supabase = await createRouteSupabase();
   if (!supabase) return null;
   const {
@@ -120,7 +192,7 @@ export async function getOperator(): Promise<Operator | null> {
     role: roleOf(user.app_metadata),
     name: nameOf(user.app_metadata),
   };
-}
+});
 
 /**
  * Per-route operator guard — the route-handler counterpart of the middleware
