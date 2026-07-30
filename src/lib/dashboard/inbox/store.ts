@@ -509,10 +509,20 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const contactIds = [...new Set(trimmed.map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
   const returning = new Set<string>();
   if (contactIds.length) {
+    // #185: this was UNBOUNDED — every historical inbox_items row (any status,
+    // any channel, all time) for up to `contactIds.length` (<=100) contacts. It
+    // only needs to know whether each contact has >1 row (a Set-membership
+    // check), so a generous cap is a no-op for realistic per-contact history
+    // and just bounds the pathological case (mirrors the 5000 cap already used
+    // a few lines below in getReopenCounts' distinct() for the same reason —
+    // an unbounded historical read on this table). NOT a per-contact limit —
+    // that would risk truncating one contact's rows before its second one is
+    // seen and silently flipping it back to "not returning".
     const { data: counts } = await sb
       .from('inbox_items')
       .select('contact_id')
-      .in('contact_id', contactIds);
+      .in('contact_id', contactIds)
+      .limit(5000);
     const tally = new Map<string, number>();
     for (const row of counts ?? []) {
       const cid = (row as { contact_id: string }).contact_id;
@@ -1081,12 +1091,22 @@ export async function getReopenCounts(now: Date): Promise<ReopenCounts> {
     const { data } = await q.limit(5000);
     return new Set((data ?? []).map((r) => (r as { inbox_item_id: string }).inbox_item_id)).size;
   };
+  // #185: the 3 windows x 2 actions were 6 STRICTLY SEQUENTIAL round-trips
+  // (one at a time in the for-loop below). Run every window's pair — and every
+  // window against every other — concurrently instead; each distinct() call is
+  // independent (a plain SELECT + client-side count), so there's nothing to
+  // serialize for.
   const out = fresh();
-  for (const k of ['all', '90', '30'] as WindowKey[]) {
-    const days = windowDays[k];
-    const sinceIso = days == null ? null : new Date(now.getTime() - days * 86_400_000).toISOString();
-    out[k] = { handled: await distinct('handled', sinceIso), reopened: await distinct('reopened', sinceIso) };
-  }
+  const keys = ['all', '90', '30'] as WindowKey[];
+  const results = await Promise.all(
+    keys.map(async (k) => {
+      const days = windowDays[k];
+      const sinceIso = days == null ? null : new Date(now.getTime() - days * 86_400_000).toISOString();
+      const [handled, reopened] = await Promise.all([distinct('handled', sinceIso), distinct('reopened', sinceIso)]);
+      return [k, { handled, reopened }] as const;
+    }),
+  );
+  for (const [k, v] of results) out[k] = v;
   return out;
 }
 
@@ -1212,20 +1232,25 @@ function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'):
 export async function listInWorks(limit = 200): Promise<InWorksResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const aw = await sb
-    .from('inbox_items')
-    .select(IN_WORKS_SELECT)
-    .not('followed_up_at', 'is', null)
-    .not('status', 'in', '(completed,dismissed)')
-    .order('followed_up_at', { ascending: true })
-    .limit(limit);
-  const hd = await sb
-    .from('inbox_items')
-    .select(IN_WORKS_SELECT)
-    .eq('status', 'handled')
-    .is('followed_up_at', null)
-    .order('handled_at', { ascending: true })
-    .limit(limit);
+  // #185: the two list fetches are independent (different status/followed_up_at
+  // predicates on the same table) — no reason for the second to wait on the
+  // first's round-trip.
+  const [aw, hd] = await Promise.all([
+    sb
+      .from('inbox_items')
+      .select(IN_WORKS_SELECT)
+      .not('followed_up_at', 'is', null)
+      .not('status', 'in', '(completed,dismissed)')
+      .order('followed_up_at', { ascending: true })
+      .limit(limit),
+    sb
+      .from('inbox_items')
+      .select(IN_WORKS_SELECT)
+      .eq('status', 'handled')
+      .is('followed_up_at', null)
+      .order('handled_at', { ascending: true })
+      .limit(limit),
+  ]);
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
   return {

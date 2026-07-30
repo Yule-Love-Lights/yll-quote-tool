@@ -219,6 +219,8 @@ import {
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
   findOrphanedFollowUpItems,
+  getReopenCounts,
+  listInWorks,
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
@@ -232,7 +234,10 @@ import {
 function makeBuilder(result: { data: unknown; error: null | { message: string }; count?: number | null }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update']) {
+  // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
+  // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
+  // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -445,6 +450,186 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(isCall).toBeDefined();
     expect(isCall!.args[0]).toBe('followed_up_at');
     expect(isCall!.args[1]).toBeNull();
+  });
+
+  // #185: the returning-customer contact-count query was UNBOUNDED (every
+  // historical inbox_items row for the page's contacts, any status/time).
+  // Assert the bound is actually wired, not just documented.
+  it('bounds the returning-customer contact-count query with a limit (#185 — was unbounded)', async () => {
+    const row = {
+      id: 'item-1',
+      source: 'ghl',
+      channel: 'sms',
+      direction: 'inbound',
+      last_message_at: '2026-06-28T15:00:00Z',
+      preview: 'test preview',
+      subject: null,
+      escalation_level: 1,
+      contact_id: 'c-42',
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [row], error: null });
+    const { builder: countBuilder, calls: countCalls } = makeBuilder({ data: [{ contact_id: 'c-42' }], error: null });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : countBuilder;
+      },
+    };
+
+    await listOpenItems(100);
+
+    const limitCall = countCalls.find((c) => c.method === 'limit');
+    expect(limitCall).toBeDefined();
+    expect(limitCall!.args[0]).toBe(5000);
+  });
+});
+
+// ─── getReopenCounts — window pairs run concurrently (#185) ─────────────────
+//
+// Was a strictly-sequential for-loop (3 windows x 2 actions = 6 round-trips,
+// one at a time). Now all 6 distinct() calls fire via nested Promise.all.
+// Call order stays deterministic (keys.map + the array-literal argument order
+// to Promise.all both evaluate left-to-right): for [all, 90, 30], each window
+// is [handled, reopened] — so a call-index-keyed dataset still lets us assert
+// correctness without needing to inspect real concurrency timing.
+
+describe('getReopenCounts — window pairs run concurrently (#185)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('returns Supabase-not-configured zeros for all three windows when unconfigured', async () => {
+    const result = await getReopenCounts(new Date('2026-07-30T00:00:00Z'));
+    expect(result).toEqual({
+      all: { handled: 0, reopened: 0 },
+      '90': { handled: 0, reopened: 0 },
+      '30': { handled: 0, reopened: 0 },
+    });
+  });
+
+  it('assembles correct DISTINCT handled/reopened counts per window from the 6 parallel calls', async () => {
+    // Call order: all-handled, all-reopened, 90-handled, 90-reopened, 30-handled, 30-reopened.
+    const datasets = [
+      [{ inbox_item_id: 'a1' }, { inbox_item_id: 'a2' }], // all: handled -> 2 distinct
+      [{ inbox_item_id: 'b1' }], // all: reopened -> 1 distinct
+      [{ inbox_item_id: 'c1' }, { inbox_item_id: 'c1' }], // 90: handled -> 1 distinct (duplicate id)
+      [], // 90: reopened -> 0
+      [{ inbox_item_id: 'd1' }, { inbox_item_id: 'd2' }, { inbox_item_id: 'd3' }], // 30: handled -> 3
+      [{ inbox_item_id: 'e1' }], // 30: reopened -> 1
+    ];
+    let callIndex = 0;
+    const fromCalls: string[] = [];
+    sbRef.current = {
+      from: (table: string) => {
+        fromCalls.push(table);
+        const idx = callIndex;
+        callIndex += 1;
+        return makeBuilder({ data: datasets[idx] ?? [], error: null }).builder;
+      },
+    };
+
+    const result = await getReopenCounts(new Date('2026-07-30T00:00:00Z'));
+
+    expect(result.all).toEqual({ handled: 2, reopened: 1 });
+    expect(result['90']).toEqual({ handled: 1, reopened: 0 });
+    expect(result['30']).toEqual({ handled: 3, reopened: 1 });
+    expect(callIndex).toBe(6);
+    expect(fromCalls.every((t) => t === 'dashboard_activity')).toBe(true);
+  });
+});
+
+// ─── listInWorks — parallel fetch (#185) ────────────────────────────────────
+//
+// Was two sequential `await`s (awaiting -> handled). Now both fire together
+// via Promise.all; the array-literal argument order keeps [awaiting, handled]
+// deterministic, so a call-index-keyed mock still lets us assert correctness.
+
+describe('listInWorks — parallel fetch (#185)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('maps the awaiting + handled buckets from the two parallel queries', async () => {
+    const awaitingRow = {
+      id: 'i-aw',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'following up',
+      followed_up_at: '2026-07-20T10:00:00Z',
+      handled_at: null,
+      status: 'unresponded',
+      dashboard_contacts: { display_name: 'Awaiting Amy' },
+    };
+    const handledRow = {
+      id: 'i-hd',
+      source: 'gmail',
+      channel: 'email',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      dashboard_contacts: { display_name: 'Handled Hank' },
+    };
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        const data = idx === 0 ? [awaitingRow] : [handledRow];
+        return makeBuilder({ data, error: null }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting).toEqual([
+      { id: 'i-aw', source: 'ghl', channel: 'sms', preview: 'following up', customerName: 'Awaiting Amy', lastActivityAt: '2026-07-20T10:00:00Z' },
+    ]);
+    expect(result.handled).toEqual([
+      { id: 'i-hd', source: 'gmail', channel: 'email', preview: 'handled it', customerName: 'Handled Hank', lastActivityAt: '2026-07-21T09:00:00Z' },
+    ]);
+    expect(callIndex).toBe(2);
+  });
+
+  it('surfaces the AWAITING query error even though both queries were fired', async () => {
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        return idx === 0
+          ? makeBuilder({ data: null, error: { message: 'awaiting query failed' } }).builder
+          : makeBuilder({ data: [], error: null }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result).toEqual({ ok: false, error: 'awaiting query failed' });
+    // Both queries fired (parallel) even though the first one errored.
+    expect(callIndex).toBe(2);
+  });
+
+  it('surfaces the HANDLED query error when only it fails', async () => {
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        return idx === 0
+          ? makeBuilder({ data: [], error: null }).builder
+          : makeBuilder({ data: null, error: { message: 'handled query failed' } }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result).toEqual({ ok: false, error: 'handled query failed' });
   });
 });
 
