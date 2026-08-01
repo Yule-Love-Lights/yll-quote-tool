@@ -20,18 +20,48 @@ import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytic
 // client list then revalidates every ~25s.
 export const dynamic = 'force-dynamic';
 
+// #185: zero-behavior-change timing wrapper — records how long `fn` took under
+// `label` so a slow load is diagnosable straight from the Vercel server log,
+// no repro needed. One summary line per request (below) rather than 8 separate
+// log lines, so it stays greppable ("[inbox-timing]").
+export async function timed<T>(label: string, fn: () => Promise<T>): Promise<{ label: string; ms: number; value: T }> {
+  const start = Date.now();
+  const value = await fn();
+  return { label, ms: Date.now() - start, value };
+}
+
 export default async function InboxPage() {
   const now = new Date();
-  const [openRes, followRes, metricsRes, operator, inWorksRes, days, reopen, repLabels] = await Promise.all([
-    listOpenItems(),
-    listDueFollowUps(now),
-    listItemsForMetrics(),
-    getOperator(),
-    listInWorks(),
-    getFollowUpDays(),
-    getReopenCounts(now),
-    getOperatorLabels(),
-  ]);
+  // Both timing measurements (the outer total + each of the 8 branches) go
+  // through `timed()` rather than a bare Date.now() here — a Server Component's
+  // render body must stay pure per react-hooks/purity (the eslint gate), and
+  // `timed()` is a plain helper so its internal Date.now() calls aren't
+  // "during render" as far as that rule is concerned.
+  const { ms: totalMs, value: results } = await timed('total', () =>
+    Promise.all([
+      timed('listOpenItems', () => listOpenItems()),
+      timed('listDueFollowUps', () => listDueFollowUps(now)),
+      timed('listItemsForMetrics', () => listItemsForMetrics()),
+      timed('getOperator', () => getOperator()),
+      timed('listInWorks', () => listInWorks()),
+      timed('getFollowUpDays', () => getFollowUpDays()),
+      timed('getReopenCounts', () => getReopenCounts(now)),
+      timed('getOperatorLabels', () => getOperatorLabels()),
+    ]),
+  );
+  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR] = results;
+  const openRes = openR.value;
+  const followRes = followR.value;
+  const metricsRes = metricsR.value;
+  const operator = operatorR.value;
+  const inWorksRes = inWorksR.value;
+  const days = daysR.value;
+  const reopen = reopenR.value;
+  const repLabels = repLabelsR.value;
+
+  console.log(
+    `[inbox-timing] total=${totalMs}ms ` + results.map((r) => `${r.label}=${r.ms}ms`).join(' '),
+  );
 
   return (
     <OperatorShell active="inbox">

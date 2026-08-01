@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // #81 auth perimeter — the security-relevant logic of the SSR auth module:
 // roleOf (no self-elevation) + getOperator (session → operator, fail-closed).
@@ -18,7 +18,7 @@ vi.mock('@supabase/ssr', () => ({
   }),
 }));
 
-import { roleOf, nameOf, getOperator, requireOperator, requireAdmin } from './supabaseServer';
+import { roleOf, nameOf, getOperator, requireOperator, requireAdmin, withAuthFetchTimeout } from './supabaseServer';
 
 beforeEach(() => {
   userRef.current = null;
@@ -180,5 +180,124 @@ describe('requireAdmin', () => {
     userRef.current = null;
     const r = await requireAdmin();
     expect('response' in r ? r.response.status : null).toBe(401);
+  });
+});
+
+// ─── withAuthFetchTimeout — #185 auth-gate fetch timeout ────────────────────
+// auth-js has no built-in timeout on its GoTrue calls; this wrapper aborts a
+// hung request after N ms (env-overridable) instead of letting it hang the
+// whole request silently. SCOPE: only the two ANON-key SSR clients above use
+// this — see the SCOPE comment on withAuthFetchTimeout in supabaseServer.ts.
+describe('withAuthFetchTimeout', () => {
+  const realFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    delete process.env.AUTH_FETCH_TIMEOUT_MS;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    global.fetch = realFetch;
+    delete process.env.AUTH_FETCH_TIMEOUT_MS;
+  });
+
+  it('resolves normally (and forwards a signal) when the underlying fetch completes before the timeout', async () => {
+    const response = new Response('ok');
+    const fetchSpy = vi.fn().mockResolvedValue(response);
+    global.fetch = fetchSpy;
+
+    const wrapped = withAuthFetchTimeout(5000);
+    const result = await wrapped('https://x.supabase.co/auth/v1/user');
+
+    expect(result).toBe(response);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, init] = fetchSpy.mock.calls[0] as [unknown, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it('aborts and rejects once the explicit timeout elapses on a hung request, logging why', async () => {
+    global.fetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const wrapped = withAuthFetchTimeout(1000);
+    const pending = wrapped('https://x.supabase.co/auth/v1/user');
+    const assertion = expect(pending).rejects.toThrow('Aborted');
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('timed out after 1000ms'));
+    errorSpy.mockRestore();
+  });
+
+  it('does NOT abort before the timeout elapses', async () => {
+    global.fetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+          setTimeout(() => resolve(new Response('ok')), 900);
+        }),
+    );
+
+    const wrapped = withAuthFetchTimeout(1000);
+    const pending = wrapped('https://x.supabase.co/auth/v1/user');
+    await vi.advanceTimersByTimeAsync(900);
+    await expect(pending).resolves.toBeInstanceOf(Response);
+  });
+
+  it('defaults to 5000ms when AUTH_FETCH_TIMEOUT_MS is unset', async () => {
+    global.fetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const wrapped = withAuthFetchTimeout(); // no explicit arg -> reads env, falls back to 5000
+    const pending = wrapped('https://x.supabase.co/auth/v1/user');
+    const assertion = expect(pending).rejects.toThrow('Aborted');
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+  });
+
+  it('honors AUTH_FETCH_TIMEOUT_MS when set to a valid override', async () => {
+    process.env.AUTH_FETCH_TIMEOUT_MS = '250';
+    global.fetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const wrapped = withAuthFetchTimeout();
+    const pending = wrapped('https://x.supabase.co/auth/v1/user');
+    const assertion = expect(pending).rejects.toThrow('Aborted');
+    await vi.advanceTimersByTimeAsync(250);
+    await assertion;
+  });
+
+  it('falls back to 5000ms when AUTH_FETCH_TIMEOUT_MS is not a valid positive number', async () => {
+    process.env.AUTH_FETCH_TIMEOUT_MS = 'not-a-number';
+    global.fetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const wrapped = withAuthFetchTimeout();
+    const pending = wrapped('https://x.supabase.co/auth/v1/user');
+    const assertion = expect(pending).rejects.toThrow('Aborted');
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
   });
 });
