@@ -20,7 +20,13 @@ import type {
 } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from './colors';
 import { fetchAppSettings } from '@/lib/clientSettings';
-import { downscaleForUpload } from '@/lib/clientImage';
+import {
+  downscaleForUpload,
+  exceedsMultipartSizeLimit,
+  oversizeMessage,
+  readUploadErrorMessage,
+  MULTIPART_SIZE_LIMIT_BYTES,
+} from '@/lib/clientImage';
 
 type DesignPatch = Partial<{
   name: string;
@@ -132,12 +138,20 @@ export function createEditorApi(designId: string): EditorApi {
       return res.json();
     },
     async createUpload(file) {
+      // #186 phase 2: precheck client-side rather than let an oversized
+      // graphic 413 at Vercel's raw-body cap — /api/uploads is NOT downscaled
+      // (these are decorative PNGs; JPEG flattening would destroy their
+      // transparency).
+      if (exceedsMultipartSizeLimit(file.size)) {
+        throw new Error(oversizeMessage(file.size, MULTIPART_SIZE_LIMIT_BYTES, 'graphic'));
+      }
       const fd = new FormData();
       fd.append('file', file);
       const res = await fetch('/api/uploads', { method: 'POST', body: fd });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `upload failed: ${res.status}`);
+        throw new Error(
+          await readUploadErrorMessage(res, `upload failed: ${res.status}`, 'This graphic is too large for the server — try a smaller graphic.'),
+        );
       }
       return res.json();
     },

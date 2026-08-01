@@ -47,7 +47,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
-import { downscaleForUpload } from '@/lib/clientImage';
+import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -1640,8 +1640,8 @@ export default function QuoteBuilder({
       const fd = new FormData();
       fd.append('photo', blob, 'streetview.jpg');
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(await readUploadErrorMessage(res, 'Analysis failed'));
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
       // #88/#117: only holiday + event seed from the holiday analyzer — permanent
       // and permanent bistro design manually, so an analyzer result here (this
       // route carries no serviceType gate of its own) is intentionally discarded
@@ -2017,13 +2017,30 @@ export default function QuoteBuilder({
     setAnalysisWarning(null);
     setAnalysisNotes(null);
 
+    // #186 phase 2: downscale before appending to FormData — this multipart
+    // sender was deliberately deferred in phase 1 (which only wired the
+    // base64-JSON paths) and kept 413ing on Vercel's raw-body cap.
+    let uploadBlob: Blob;
+    try {
+      ({ blob: uploadBlob } = await downscaleForUploadAsBlob(photoFile));
+    } catch {
+      setAnalysisError("Couldn't read that photo. Try selecting it again.");
+      setAnalyzing(false);
+      return;
+    }
+
     const fd = new FormData();
-    fd.append('photo', photoFile);
+    // downscaleForUploadAsBlob returns the original File untouched on the
+    // skip/fallback path (keep its real name) or a re-encoded plain Blob on
+    // the resize path (named to match the re-encoded image/jpeg content —
+    // the route validates via the Blob's own .type, not the filename, but a
+    // mismatched extension is still confusing in logs/downloads).
+    fd.append('photo', uploadBlob, uploadBlob instanceof File ? uploadBlob.name : 'photo.jpg');
 
     try {
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(await readUploadErrorMessage(res, 'Analysis failed'));
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
       // Do NOT clear the satellite here: #97 — handlePhotoSelect no longer wipes
       // the satellite on a street swap, and applyAnalysisResult only (re)sets it
       // when the analysis carried satellite data (it doesn't for analyze-photo).

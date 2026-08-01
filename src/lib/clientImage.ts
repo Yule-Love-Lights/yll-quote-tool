@@ -42,12 +42,20 @@ export function shouldSkipDownscale(
   return fileSizeBytes < skipBelowBytes && Math.max(width, height) <= maxEdge;
 }
 
-function readRawDataUrl(file: File): Promise<string> {
+function readAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Promisified canvas.toBlob — the native way to get re-encoded image bytes
+// as a Blob (no dataURL round-trip needed for the multipart/FormData path).
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('canvas.toBlob failed'))), type, quality);
   });
 }
 
@@ -99,20 +107,32 @@ async function decodeImage(file: File): Promise<Decoded> {
   }
 }
 
-// Downscale a user-picked photo before it's base64-encoded into an upload
-// body. Skips re-encoding for already-small photos. PNGs (screenshots etc.)
-// flatten onto JPEG on the resize path — these are house photos, so alpha
-// transparency isn't a real concern (decided, #186).
+// Shared decode/skip/re-encode core behind both downscaleForUpload (dataUrl,
+// for the base64-JSON upload paths) and downscaleForUploadAsBlob (Blob, for
+// the multipart/FormData upload paths, #186 phase 2). Skips re-encoding for
+// already-small photos. PNGs (screenshots etc.) flatten onto JPEG on the
+// resize path — these are house photos, so alpha transparency isn't a real
+// concern (decided, #186).
 //
-// Falls back to the raw file (unresized, original mediaType) if decoding
-// fails — some browsers can't decode HEIC straight from a File/Blob — so
-// upload still works, just without 413 protection for that rare case.
-export async function downscaleForUpload(file: File): Promise<{ dataUrl: string; mediaType: string }> {
+// Falls back to the raw file (unresized, original mediaType) if decoding OR
+// the canvas re-encode fails (canvas.toBlob can yield null) — some browsers
+// can't decode HEIC straight from a File/Blob — so upload still works, just
+// without 413 protection for that rare case.
+//
+// mediaType caveat: on the skip/fallback paths the returned `blob` is the
+// ORIGINAL File, so the wire-level multipart Content-Type comes from
+// `blob.type` — which may differ from the sanitized `mediaType` field here.
+// Callers that need the wire truth must read `blob.type`; today's only Blob
+// consumer discards `mediaType` entirely (review note, #186b).
+async function downscaleForUploadCore(file: File): Promise<{ blob: Blob; mediaType: string }> {
   try {
     const img = await decodeImage(file);
     try {
       if (shouldSkipDownscale(file.size, img.width, img.height)) {
-        return { dataUrl: await readRawDataUrl(file), mediaType: safeMediaType(file.type) };
+        // No re-encoding needed — return the original File untouched rather
+        // than a decode→re-encode round-trip that would cost quality/CPU for
+        // nothing.
+        return { blob: file, mediaType: safeMediaType(file.type) };
       }
       const { width, height } = computeTargetDimensions(img.width, img.height);
       const canvas = document.createElement('canvas');
@@ -121,13 +141,30 @@ export async function downscaleForUpload(file: File): Promise<{ dataUrl: string;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('2D canvas context unavailable');
       img.draw(ctx, width, height);
-      return { dataUrl: canvas.toDataURL('image/jpeg', JPEG_QUALITY), mediaType: 'image/jpeg' };
+      const blob = await canvasToBlob(canvas, 'image/jpeg', JPEG_QUALITY);
+      return { blob, mediaType: 'image/jpeg' };
     } finally {
       img.cleanup();
     }
   } catch {
-    return { dataUrl: await readRawDataUrl(file), mediaType: safeMediaType(file.type) };
+    return { blob: file, mediaType: safeMediaType(file.type) };
   }
+}
+
+// Downscale a user-picked photo before it's base64-encoded into a JSON
+// upload body. See downscaleForUploadCore above.
+export async function downscaleForUpload(file: File): Promise<{ dataUrl: string; mediaType: string }> {
+  const { blob, mediaType } = await downscaleForUploadCore(file);
+  return { dataUrl: await readAsDataUrl(blob), mediaType };
+}
+
+// Downscale a user-picked photo for a multipart/FormData upload body (#186
+// phase 2 — the analyze-photo/training multipart senders were still
+// appending the raw File, so they kept 413ing on Vercel's ~4.5MB raw-body
+// cap after the JSON paths were fixed in #186 phase 1). Returns a Blob
+// directly — no dataUrl round-trip — so callers just fd.append('photo', blob, name).
+export async function downscaleForUploadAsBlob(file: File): Promise<{ blob: Blob; mediaType: string }> {
+  return downscaleForUploadCore(file);
 }
 
 // Multi-photo batch precheck (#186 review): a single site (the training-
@@ -147,4 +184,51 @@ export function totalBase64Bytes(base64s: string[]): number {
 
 export function exceedsSubmitBudget(base64s: string[], budget: number = SUBMIT_BYTE_BUDGET): boolean {
   return totalBase64Bytes(base64s) > budget;
+}
+
+// ─── Multipart precheck + graceful error handling (#186 phase 2) ──────────
+// Some multipart uploads must NOT be downscaled (/api/uploads' custom
+// graphic library — decorative PNGs need their transparency, so JPEG
+// flattening isn't an option there). Those sites instead get a client-side
+// size precheck: reject an oversized file with a clear message BEFORE the
+// network round-trip, rather than let Vercel's raw-body cap 413 it.
+export const MULTIPART_SIZE_LIMIT_BYTES = 4 * 1024 * 1024; // ~4MB — headroom under Vercel's ~4.5MB raw-body cap.
+
+export function exceedsMultipartSizeLimit(fileSizeBytes: number, limit: number = MULTIPART_SIZE_LIMIT_BYTES): boolean {
+  return fileSizeBytes > limit;
+}
+
+// Staff-facing oversize message, e.g. "This graphic is 6.2MB — the server
+// accepts about 4MB."
+export function oversizeMessage(
+  fileSizeBytes: number,
+  limit: number = MULTIPART_SIZE_LIMIT_BYTES,
+  noun: string = 'file',
+): string {
+  const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1);
+  const limitMb = Math.round(limit / (1024 * 1024));
+  return `This ${noun} is ${sizeMb}MB — the server accepts about ${limitMb}MB.`;
+}
+
+// A response Vercel rejected at the platform layer for being too large comes
+// back with a PLAIN-TEXT "Request Entity Too Large" body, status 413 — NOT
+// JSON. Blindly calling res.json() on that throws a raw SyntaxError
+// ("Unexpected token 'R'... is not valid JSON") which every upload call site
+// caught only generically (err.message), leaking that raw parse error to the
+// user. Read the body as text first; map 413 to a friendly message, and only
+// attempt to parse anything else as JSON.
+export async function readUploadErrorMessage(
+  res: Response,
+  fallback: string = 'Upload failed',
+  tooLargeMessage: string = 'This photo is too large for the server — try a smaller photo.',
+): Promise<string> {
+  if (res.status === 413) return tooLargeMessage;
+  const text = await res.text().catch(() => '');
+  if (!text) return fallback;
+  try {
+    const data = JSON.parse(text) as { error?: unknown };
+    return typeof data?.error === 'string' ? data.error : fallback;
+  } catch {
+    return fallback;
+  }
 }

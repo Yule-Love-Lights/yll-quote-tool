@@ -16,7 +16,7 @@ import type {
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import type { LineSegment } from '@/lib/photoAnalysis';
-import { downscaleForUpload, totalBase64Bytes, exceedsSubmitBudget, SUBMIT_BYTE_BUDGET } from '@/lib/clientImage';
+import { downscaleForUpload, totalBase64Bytes, exceedsSubmitBudget, SUBMIT_BYTE_BUDGET, readUploadErrorMessage } from '@/lib/clientImage';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type MiniLightDetection = {
@@ -551,8 +551,8 @@ export default function NewTrainingHousePage() {
       // is actually installed & lit), not the quoting "suggest placements" pass.
       fd.append('mode', 'completed');
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(await readUploadErrorMessage(res, 'Analysis failed'));
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
       // Fail-safe (analyzer outage): the API returns 200 with result:null + a
       // friendly analysisError rather than an HTTP error — mirrors QuoteBuilder's
       // applyAnalysisResult handling. Without this guard, reading r.santasLines
