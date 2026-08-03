@@ -9,6 +9,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { SERVICE_TYPE_LABELS, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { QuotesListSkeleton } from './QuotesListSkeleton';
 
 // Service-line badge palette (#123) — so an operator can tell holiday vs event
 // vs permanent at a glance. Holiday (the default, the majority) is muted; the
@@ -180,7 +181,11 @@ export default function QuotesAdminPage() {
           </div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same rich skeleton the route's loading.tsx shows (#171b) — was a
+            bare "Loading…" line, which made the route-transition skeleton
+            morph into something sparser before morphing again into the real
+            table once the client-side GET /api/quotes fetch resolved. */}
+        {loading && <QuotesListSkeleton />}
 
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">
