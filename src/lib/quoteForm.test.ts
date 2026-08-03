@@ -4,6 +4,7 @@ import {
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
+  applyPrefill,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -350,6 +351,45 @@ describe('inputsToFormData', () => {
     const real = inputsToFormData({ name: 'Ann O.', address: '4 Oak Ln' }, {});
     expect(real.customer.name).toBe('Ann O.');
     expect(real.customer.address).toBe('4 Oak Ln');
+  });
+});
+
+describe('applyPrefill (#leads Create-quote link)', () => {
+  it('returns base unchanged when no prefill is given', () => {
+    expect(applyPrefill(initialFormData, undefined)).toEqual(initialFormData);
+  });
+
+  it('seeds customer fields and a valid serviceType', () => {
+    const result = applyPrefill(initialFormData, {
+      name: 'Ann O.',
+      email: 'ann@example.com',
+      phone: '555-0100',
+      address: '4 Oak Ln',
+      serviceType: 'permanent',
+    });
+    expect(result.customer).toEqual({
+      name: 'Ann O.',
+      email: 'ann@example.com',
+      phone: '555-0100',
+      address: '4 Oak Ln',
+    });
+    expect(result.serviceType).toBe('permanent');
+  });
+
+  it('ignores an unrecognized serviceType, keeping the base default', () => {
+    const result = applyPrefill(initialFormData, { serviceType: 'not-a-real-type' });
+    expect(result.serviceType).toBe(initialFormData.serviceType);
+  });
+
+  it('ignores blank/whitespace-only fields, keeping the base value', () => {
+    const result = applyPrefill(initialFormData, { name: '   ', email: undefined });
+    expect(result.customer.name).toBe(initialFormData.customer.name);
+    expect(result.customer.email).toBe(initialFormData.customer.email);
+  });
+
+  it('only touches customer + serviceType, leaving every other field alone', () => {
+    const result = applyPrefill(initialFormData, { name: 'Bob' });
+    expect({ ...result, customer: initialFormData.customer }).toEqual(initialFormData);
   });
 });
 
