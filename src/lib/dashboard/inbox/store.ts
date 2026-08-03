@@ -896,17 +896,21 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
 // queries.ts's dashboard chokepoint (`.eq('view_only', false)`) drops a
 // flipped-view-only quote out of the reconcile feed entirely, so
 // runQuoteToolReconcile (sync.ts) never visits it again — a PENDING
-// quote_sent_no_reply follow-up on it would sit due-forever, and any other
-// quotetool inbox noise for the quote (e.g. a pending colour-change request,
-// #163) would never clear either. Close/resolve both up front instead, at the
-// moment staff flips the flag ON.
+// quote_sent_no_reply follow-up on it would sit due-forever. Close it up
+// front instead, at the moment staff flips the flag ON.
 
 /**
- * Close any PENDING "sent, no reply" follow-up + resolve any un-resolved
- * inbox_items for `quoteId`, called right after a view-only toggle-ON write
- * succeeds. Matches BOTH external_id shapes a quotetool item can take (#183
- * BUG 1): the bare quote id (the "quote sent" touch) and
- * `${quoteId}:color-request` (the colour-request notification).
+ * Close the PENDING "sent, no reply" follow-up + resolve the un-resolved
+ * quotetool inbox item for `quoteId` (its bare-uuid external_id — the "quote
+ * sent" touch), called right after a view-only toggle-ON write succeeds.
+ *
+ * Deliberately does NOT touch a `${quoteId}:color-request` item (#187 review
+ * #660 FIX 1): the colour-change-request flow is INTENTIONALLY live on a
+ * view-only portal — color-change-request/route.ts is public and ungated on
+ * view_only, and ColorRequestPanel (admin quote detail) renders on any
+ * pending request regardless of view_only. Completing that item would hide a
+ * still-actionable customer ask under a "Quote marked view-only" note that
+ * falsely implies staff already handled it.
  *
  * Best-effort — never throws (the toggle write already succeeded; this is
  * cleanup, mirroring apply-color-request's resolveInboxRequest). `operatorId`
@@ -920,19 +924,20 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
   try {
     const { data: items, error: itemsErr } = await sb
       .from('inbox_items')
-      .select('id, status')
+      .select('id, status, followed_up_at')
       .eq('source', 'quotetool')
-      .in('external_id', [quoteId, `${quoteId}:color-request`]);
+      .eq('external_id', quoteId);
     if (itemsErr) {
       console.warn('[inbox] view-only cleanup: item lookup failed (non-fatal):', itemsErr.message);
       return;
     }
-    const rows = (items ?? []) as { id: string; status: string }[];
+    const rows = (items ?? []) as { id: string; status: string; followed_up_at: string | null }[];
     if (!rows.length) return;
     const itemIds = rows.map((r) => r.id);
 
-    // Close a pending follow-up regardless of the item's own current status —
-    // the two are independent records.
+    // quote_sent_no_reply follow-ups only ever anchor on this bare-uuid item
+    // (ensureFollowUp is always called with the "quote touch" item's id, never
+    // a color-request notification's), so nothing further to filter here.
     const { error: fuErr } = await sb
       .from('follow_ups')
       .update({ status: 'done' })
@@ -945,8 +950,9 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
 
     // Only resolve items that aren't already resolved — never re-stamp a
     // dismissed/completed item's handled_at/handled_by.
-    const openIds = rows.filter((r) => r.status !== 'completed' && r.status !== 'dismissed').map((r) => r.id);
-    if (!openIds.length) return;
+    const openRows = rows.filter((r) => r.status !== 'completed' && r.status !== 'dismissed');
+    if (!openRows.length) return;
+    const openIds = openRows.map((r) => r.id);
     const now = new Date().toISOString();
     const { error: itemUpdateErr } = await sb
       .from('inbox_items')
@@ -956,12 +962,20 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
       console.warn('[inbox] view-only cleanup: item resolve failed (non-fatal):', itemUpdateErr.message);
       return;
     }
+    // #187 review FIX 4 (#660): carry each item's PRIOR status/follow state
+    // into detail.from, mirroring markItemCompleted's priorStateOf capture —
+    // a later Reverse calls inverseOf('completed', detail.from) (see
+    // lifecycle.ts + this file's applyReverse below), which reads
+    // detail.from.status specifically and falls back to 'handled' when it's
+    // missing or shaped wrong (a bare string has no `.status`). Without this,
+    // Reverse always restored to 'handled' regardless of the item's real
+    // prior bucket.
     await sb.from('dashboard_activity').insert(
-      openIds.map((itemId) => ({
+      openRows.map((r) => ({
         actor: operatorId,
         action: 'completed',
-        inbox_item_id: itemId,
-        detail: { note: 'Quote marked view-only' },
+        inbox_item_id: r.id,
+        detail: { note: 'Quote marked view-only', from: { status: r.status, wasFollowed: !!r.followed_up_at } },
       })),
     );
   } catch (e) {
@@ -969,12 +983,25 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
   }
 }
 
-// ─── Orphaned follow-up sweep (#183 BUG 3) ──────────────────────────────────
+// ─── Orphaned + view-only follow-up sweep (#183 BUG 3, #187 review FIX 2) ───
 // runQuoteToolReconcile's main loop (sync.ts) only walks quotes returned by
 // listQuotesForDashboard — a quote row that's been DELETED entirely is never
 // visited there, so a pending quote_sent_no_reply follow-up anchored to it can
 // never be closed by the main loop and sits overdue-pending forever, showing
 // in the "due today" strip every day. This sweep finds and closes those.
+//
+// #187 review FIX 2 (#660): the SAME class of problem hits a quote that's
+// merely flagged view_only (not deleted). closeQuoteInboxNoise closes the
+// follow-up instantly on the toggle-ON write, but runQuoteToolReconcile
+// snapshots ALL quotes ONCE up front (listQuotesForDashboard(500)) and then
+// loops over that snapshot for seconds — if the toggle lands mid-pass, the
+// loop is still holding the quote's PRE-toggle row, so quoteFollowUpDecision
+// still reads it as sent-but-unapproved and ensureFollowUp's WT-43 upsert
+// flips our just-closed 'done' row straight back to 'pending'. Because the
+// quote is now view_only, it's excluded from every FUTURE reconcile's
+// snapshot too (queries.ts's chokepoint) — nothing else would ever revisit
+// it, so the resurrected follow-up would sit pending forever. This sweep
+// closes those too, self-healing the race within one reconcile pass.
 
 /** Pure decision: which of the given inbox-item ids (from pending
  *  quote_sent_no_reply follow-ups) are orphaned — their underlying quote no
@@ -1000,13 +1027,39 @@ export function findOrphanedFollowUpItems(
   return [...orphaned];
 }
 
+/** Pure decision: which of the given inbox-item ids (from pending
+ *  quote_sent_no_reply follow-ups) anchor a quote that's now flagged
+ *  view_only=true (#187 review FIX 2, #660) — the reconcile-race backstop
+ *  described in the section header above. `viewOnlyQuoteIds` is the set of
+ *  quote ids (among the follow-ups' candidate quotes) that currently have
+ *  view_only=true. Mirrors findOrphanedFollowUpItems's shape exactly (same
+ *  externalId→item map, same quoteIdPrefix derivation), just testing set
+ *  MEMBERSHIP instead of set ABSENCE. No I/O — unit-testable on its own. */
+export function findViewOnlyFollowUpItems(
+  followUps: readonly { inboxItemId: string | null }[],
+  inboxItems: readonly { id: string; externalId: string }[],
+  viewOnlyQuoteIds: ReadonlySet<string>,
+): string[] {
+  const externalIdByItemId = new Map(inboxItems.map((i) => [i.id, i.externalId]));
+  const frozen = new Set<string>();
+  for (const fu of followUps) {
+    if (!fu.inboxItemId) continue;
+    const externalId = externalIdByItemId.get(fu.inboxItemId);
+    if (externalId == null) continue;
+    if (viewOnlyQuoteIds.has(quoteIdPrefix(externalId))) frozen.add(fu.inboxItemId);
+  }
+  return [...frozen];
+}
+
 /**
  * Close pending follow-ups (of `reason`) whose quotetool inbox item's
- * underlying quote row no longer exists. One batched query each way (mirrors
- * the #157/#183-BUG-1 lookup-batching style): follow_ups → inbox_items →
- * quotes existence → findOrphanedFollowUpItems → closeFollowUp per orphan.
- * Fails open (closes nothing) on a lookup error rather than guessing. Returns
- * how many follow-ups were closed.
+ * underlying quote row EITHER no longer exists OR is now flagged
+ * view_only=true (#187 review FIX 2, #660 — the reconcile-race backstop). One
+ * batched query each way (mirrors the #157/#183-BUG-1 lookup-batching style):
+ * follow_ups → inbox_items → quotes existence+view_only →
+ * findOrphanedFollowUpItems + findViewOnlyFollowUpItems → closeFollowUp per
+ * match. Fails open (closes nothing) on a lookup error rather than guessing.
+ * Returns how many follow-ups were closed.
  */
 export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
@@ -1044,23 +1097,28 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
 
   const candidateQuoteIds = [...new Set(itemRows.map((r) => quoteIdPrefix(r.externalId)).filter(isUuid))];
   let existingQuoteIds = new Set<string>();
+  let viewOnlyQuoteIds = new Set<string>();
   if (candidateQuoteIds.length) {
-    const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id').in('id', candidateQuoteIds);
+    const { data: quoteRows, error: quoteErr } = await sb
+      .from('quotes')
+      .select('id, view_only')
+      .in('id', candidateQuoteIds);
     if (quoteErr) {
       console.error('[inbox] orphan follow-up sweep: quotes lookup failed:', quoteErr.message);
       return 0;
     }
-    existingQuoteIds = new Set(((quoteRows ?? []) as { id: string }[]).map((q) => String(q.id)));
+    const rows = (quoteRows ?? []) as { id: string; view_only: boolean | null }[];
+    existingQuoteIds = new Set(rows.map((q) => String(q.id)));
+    viewOnlyQuoteIds = new Set(rows.filter((q) => q.view_only === true).map((q) => String(q.id)));
   }
 
-  const orphanedItemIds = findOrphanedFollowUpItems(
-    followUpRows.map((r) => ({ inboxItemId: r.inbox_item_id })),
-    itemRows,
-    existingQuoteIds,
-  );
+  const followUpKeys = followUpRows.map((r) => ({ inboxItemId: r.inbox_item_id }));
+  const orphanedItemIds = findOrphanedFollowUpItems(followUpKeys, itemRows, existingQuoteIds);
+  const viewOnlyItemIds = findViewOnlyFollowUpItems(followUpKeys, itemRows, viewOnlyQuoteIds);
+  const itemIdsToClose = new Set([...orphanedItemIds, ...viewOnlyItemIds]);
 
   let closed = 0;
-  for (const itemId of orphanedItemIds) {
+  for (const itemId of itemIdsToClose) {
     closed += await closeFollowUp(itemId, reason);
   }
   return closed;
