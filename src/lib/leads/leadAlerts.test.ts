@@ -5,7 +5,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { sendEmail } = vi.hoisted(() => ({
-  sendEmail: vi.fn(async () => ({})),
+  sendEmail: vi.fn<
+    (input: { contactId: string; subject: string; html: string; emailFrom?: string }) => Promise<unknown>
+  >(async () => ({})),
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({ sendEmail }));
