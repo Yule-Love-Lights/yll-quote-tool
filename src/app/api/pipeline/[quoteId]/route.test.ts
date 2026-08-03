@@ -119,4 +119,19 @@ describe('GET /api/pipeline/[quoteId]', () => {
     await GET(req, ctx());
     expect(getInvoiceByJobMock).not.toHaveBeenCalled();
   });
+
+  // #176 — the record must expose view_only so PipelineActionsMenu can
+  // suppress the customer-state-changing offers on a browse-only quote.
+  it('threads viewOnly through from the quote row', async () => {
+    getQuoteRawMock.mockResolvedValueOnce({ ...approvedQuoteRow, view_only: true });
+    const res = await GET(req, ctx());
+    const json = await res.json();
+    expect(json.viewOnly).toBe(true);
+  });
+
+  it('defaults viewOnly to false when the row lacks it', async () => {
+    const res = await GET(req, ctx()); // bookedQuoteRow has no view_only field
+    const json = await res.json();
+    expect(json.viewOnly).toBe(false);
+  });
 });
