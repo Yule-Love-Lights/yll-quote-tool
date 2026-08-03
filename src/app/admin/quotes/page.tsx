@@ -298,7 +298,20 @@ export default function QuotesAdminPage() {
                       </td>
                       <td className="px-3 py-2 text-gray-700">
                         <div className="flex items-center gap-2">
-                          <span>{q.customer_name ?? '—'}</span>
+                          {/* Customer-name link (this task): same routing rule as
+                              src/lib/dashboard/customers.ts customerRouteId —
+                              highlevel_contact_id, else customer_id. A walk-in
+                              with neither stays plain text. */}
+                          {(() => {
+                            const routeId = q.highlevel_contact_id ?? q.customer_id;
+                            return routeId ? (
+                              <Link href={`/customers/${encodeURIComponent(routeId)}`} className="text-blue-600 hover:underline">
+                                {q.customer_name ?? '—'}
+                              </Link>
+                            ) : (
+                              <span>{q.customer_name ?? '—'}</span>
+                            );
+                          })()}
                           {/* Service-line badge (#123) — holiday / permanent / event. */}
                           {(() => {
                             const svc = q.service_type ?? DEFAULT_SERVICE_TYPE;
