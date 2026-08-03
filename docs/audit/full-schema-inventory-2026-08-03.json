@@ -1,0 +1,689 @@
+{
+  "tables": {
+    "app_settings": {
+      "columns": [
+        "key",
+        "value",
+        "updated_at"
+      ],
+      "indexes": [
+        "app_settings_pkey"
+      ]
+    },
+    "bot_audit_log": {
+      "columns": [
+        "id",
+        "chat_id",
+        "user_id",
+        "role",
+        "tool",
+        "args",
+        "outcome",
+        "detail",
+        "created_at"
+      ],
+      "indexes": [
+        "bot_audit_log_created_at_idx",
+        "bot_audit_log_pkey"
+      ]
+    },
+    "bot_pending_actions": {
+      "columns": [
+        "id",
+        "chat_id",
+        "user_id",
+        "tool",
+        "args",
+        "summary",
+        "created_at",
+        "expires_at",
+        "consumed_at"
+      ],
+      "indexes": [
+        "bot_pending_actions_open_idx",
+        "bot_pending_actions_pkey"
+      ]
+    },
+    "bot_users": {
+      "columns": [
+        "telegram_user_id",
+        "display_name",
+        "role",
+        "added_by",
+        "created_at",
+        "updated_at"
+      ],
+      "indexes": [
+        "bot_users_pkey"
+      ]
+    },
+    "custom_uploads": {
+      "columns": [
+        "id",
+        "filename",
+        "path",
+        "created_at"
+      ],
+      "indexes": [
+        "custom_uploads_created_at_idx",
+        "custom_uploads_pkey"
+      ]
+    },
+    "customers": {
+      "columns": [
+        "id",
+        "match_key",
+        "hl_contact_id",
+        "name",
+        "email",
+        "phone",
+        "created_at",
+        "updated_at",
+        "referral_code",
+        "referral_photo_optout",
+        "manual_years"
+      ],
+      "indexes": [
+        "customers_email_idx",
+        "customers_hl_contact_id_idx",
+        "customers_match_key_key",
+        "customers_pkey",
+        "customers_referral_code_key"
+      ]
+    },
+    "dashboard_activity": {
+      "columns": [
+        "id",
+        "actor",
+        "action",
+        "inbox_item_id",
+        "contact_id",
+        "detail",
+        "created_at"
+      ],
+      "indexes": [
+        "dashboard_activity_created_at_idx",
+        "dashboard_activity_inbox_item_idx",
+        "dashboard_activity_operator_actions_idx",
+        "dashboard_activity_pkey"
+      ]
+    },
+    "dashboard_contacts": {
+      "columns": [
+        "id",
+        "display_name",
+        "primary_email",
+        "primary_phone",
+        "emails",
+        "phones",
+        "ghl_contact_id",
+        "quote_customer_id",
+        "assigned_to",
+        "tags",
+        "created_at",
+        "updated_at"
+      ],
+      "indexes": [
+        "dashboard_contacts_assigned_to_idx",
+        "dashboard_contacts_emails_gin",
+        "dashboard_contacts_ghl_contact_id_key",
+        "dashboard_contacts_phones_gin",
+        "dashboard_contacts_pkey",
+        "dashboard_contacts_primary_email_idx"
+      ]
+    },
+    "designs": {
+      "columns": [
+        "id",
+        "quote_id",
+        "photo_path",
+        "photo_w",
+        "photo_h",
+        "scene",
+        "created_at",
+        "updated_at",
+        "seed_analysis",
+        "satellite_path",
+        "satellite_w",
+        "satellite_h",
+        "satellite_feet_per_pixel",
+        "satellite_lines",
+        "created_by",
+        "extra_photos",
+        "photo_title"
+      ],
+      "indexes": [
+        "designs_created_at_idx",
+        "designs_pkey",
+        "designs_quote_id_uniq"
+      ]
+    },
+    "follow_ups": {
+      "columns": [
+        "id",
+        "contact_id",
+        "inbox_item_id",
+        "due_at",
+        "reason",
+        "assigned_to",
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at"
+      ],
+      "indexes": [
+        "follow_ups_contact_id_idx",
+        "follow_ups_pkey",
+        "follow_ups_status_due_at_idx"
+      ]
+    },
+    "inbox_items": {
+      "columns": [
+        "id",
+        "contact_id",
+        "source",
+        "external_id",
+        "source_message_id",
+        "event_type",
+        "direction",
+        "channel",
+        "last_message_at",
+        "preview",
+        "subject",
+        "status",
+        "handled_by",
+        "handled_at",
+        "handled_channel_sync",
+        "escalation_level",
+        "notified_levels",
+        "raw",
+        "followed_up_at",
+        "lead_kind",
+        "quote_value",
+        "created_at",
+        "updated_at",
+        "last_inbound_at",
+        "reply_claimed_at"
+      ],
+      "indexes": [
+        "inbox_items_contact_id_idx",
+        "inbox_items_followed_up_at_idx",
+        "inbox_items_pkey",
+        "inbox_items_status_escalation_idx",
+        "inbox_items_status_last_message_idx",
+        "inbox_items_status_lead_kind_idx"
+      ]
+    },
+    "integration_tokens": {
+      "columns": [
+        "id",
+        "provider",
+        "account_email",
+        "refresh_token_enc",
+        "watch_history_id",
+        "watch_expiration",
+        "created_at",
+        "updated_at"
+      ],
+      "indexes": [
+        "integration_tokens_pkey"
+      ]
+    },
+    "inventory_catalog": {
+      "columns": [
+        "sku",
+        "name",
+        "category",
+        "yll_category",
+        "color",
+        "size",
+        "wholesale_cost",
+        "needs_adapter",
+        "bag_ct",
+        "case_ct",
+        "locked",
+        "updated_at"
+      ],
+      "indexes": [
+        "inventory_catalog_pkey"
+      ]
+    },
+    "inventory_on_hand": {
+      "columns": [
+        "sku",
+        "on_hand_qty",
+        "reorder_point",
+        "storage_location",
+        "updated_at"
+      ],
+      "indexes": [
+        "inventory_on_hand_pkey"
+      ]
+    },
+    "inventory_orders": {
+      "columns": [
+        "id",
+        "created_at",
+        "sent_at",
+        "channel",
+        "status",
+        "received_at",
+        "lines",
+        "received_lines",
+        "job_count"
+      ],
+      "indexes": [
+        "inventory_orders_pkey",
+        "inventory_orders_status_open_idx"
+      ]
+    },
+    "invoices": {
+      "columns": [
+        "id",
+        "invoice_number",
+        "job_id",
+        "quote_id",
+        "customer_id",
+        "subtotal",
+        "discount",
+        "tax",
+        "total",
+        "deposit_applied",
+        "balance",
+        "credit_note",
+        "tax_overridden",
+        "status",
+        "valor_balance_txn_id",
+        "valor_receipt_url",
+        "created_at",
+        "paid_at",
+        "updated_at",
+        "valor_txn_log",
+        "payment_preference"
+      ],
+      "indexes": [
+        "invoices_created_at_idx",
+        "invoices_invoice_number_key",
+        "invoices_job_id_key",
+        "invoices_pkey",
+        "invoices_status_idx"
+      ]
+    },
+    "job_material_actuals": {
+      "columns": [
+        "id",
+        "job_id",
+        "sku",
+        "qty",
+        "estimated_qty",
+        "raw_text",
+        "recorded_by",
+        "created_at"
+      ],
+      "indexes": [
+        "job_material_actuals_job_id_idx",
+        "job_material_actuals_pkey"
+      ]
+    },
+    "jobs": {
+      "columns": [
+        "id",
+        "job_number",
+        "quote_id",
+        "design_id",
+        "customer_id",
+        "property_id",
+        "type",
+        "status",
+        "fulfillment_stage",
+        "line_items",
+        "install_date",
+        "completed_at",
+        "stock_decremented_at",
+        "created_at",
+        "updated_at",
+        "materials_actualized_at"
+      ],
+      "indexes": [
+        "jobs_created_at_idx",
+        "jobs_job_number_key",
+        "jobs_pkey",
+        "jobs_quote_id_key",
+        "jobs_status_idx"
+      ]
+    },
+    "permanent_training_examples": {
+      "columns": [
+        "id",
+        "created_at",
+        "updated_at",
+        "quote_id",
+        "design_id",
+        "source",
+        "excluded",
+        "notes",
+        "address",
+        "street_photo_base64",
+        "street_media_type",
+        "satellite_photo_base64",
+        "satellite_media_type",
+        "satellite_feet_per_pixel",
+        "original_analysis",
+        "final_satellite_lines",
+        "final_street_runs",
+        "final_inputs",
+        "embedding"
+      ],
+      "indexes": [
+        "permanent_training_examples_created_at_idx",
+        "permanent_training_examples_pkey",
+        "permanent_training_examples_quote_source_uniq"
+      ]
+    },
+    "properties": {
+      "columns": [
+        "id",
+        "customer_id",
+        "address",
+        "address_key",
+        "lat",
+        "lng",
+        "created_at",
+        "updated_at"
+      ],
+      "indexes": [
+        "properties_customer_id_idx",
+        "properties_pkey"
+      ]
+    },
+    "quote_view_events": {
+      "columns": [
+        "id",
+        "quote_id",
+        "viewed_at",
+        "kind"
+      ],
+      "indexes": [
+        "quote_view_events_pkey",
+        "quote_view_events_quote_idx"
+      ]
+    },
+    "quotes": {
+      "columns": [
+        "id",
+        "created_at",
+        "customer_name",
+        "customer_address",
+        "customer_phone",
+        "customer_email",
+        "inputs",
+        "result",
+        "total",
+        "highlevel_contact_id",
+        "highlevel_opportunity_id",
+        "homeworks_sent_at",
+        "homeworks_webhook_response",
+        "customer_approved_at",
+        "approval_snapshot",
+        "quote_sent_at",
+        "video_kind",
+        "video_src",
+        "video_poster",
+        "video_title",
+        "video_duration_sec",
+        "homeworks_signed_at",
+        "homeworks_contract_id",
+        "valor_order_ref",
+        "deposit_amount_usd",
+        "deposit_paid_at",
+        "valor_txn_id",
+        "valor_vault_token",
+        "valor_approval_code",
+        "valor_receipt_url",
+        "valor_payment_raw",
+        "service_type",
+        "viewed_at",
+        "last_viewed_at",
+        "view_count",
+        "status",
+        "decline_reason",
+        "quote_number",
+        "ghl_stage_synced_at",
+        "ghl_sync_error",
+        "approval_notify_failed_at",
+        "approval_notify_error",
+        "created_by",
+        "is_test",
+        "legacy_rebook",
+        "valor_vault_customer_id",
+        "view_only",
+        "deposit_declined_at",
+        "deposit_decline_code",
+        "deposit_decline_notified_at",
+        "customer_id",
+        "property_id"
+      ],
+      "indexes": [
+        "quotes_approval_notify_failed_idx",
+        "quotes_awaiting_customer_idx",
+        "quotes_created_at_idx",
+        "quotes_customer_id_idx",
+        "quotes_ghl_stage_unsynced_idx",
+        "quotes_highlevel_contact_id_idx",
+        "quotes_homeworks_pending_idx",
+        "quotes_is_test_idx",
+        "quotes_pkey",
+        "quotes_quote_number_key",
+        "quotes_service_type_idx",
+        "quotes_signed_idx",
+        "quotes_valor_order_ref_idx",
+        "quotes_valor_txn_id_idx",
+        "quotes_viewed_idx"
+      ]
+    },
+    "reference_assets": {
+      "columns": [
+        "id",
+        "created_at",
+        "asset_type",
+        "size",
+        "tier",
+        "base64",
+        "media_type",
+        "caption",
+        "active"
+      ],
+      "indexes": [
+        "reference_assets_asset_type_idx",
+        "reference_assets_created_at_idx",
+        "reference_assets_pkey"
+      ]
+    },
+    "referrals": {
+      "columns": [
+        "id",
+        "referrer_customer_id",
+        "referee_quote_id",
+        "referee_contact_name",
+        "referee_contact_email",
+        "referee_contact_phone",
+        "source",
+        "status",
+        "amount_usd",
+        "booked_at",
+        "created_at",
+        "updated_at",
+        "credited_at",
+        "credited_quote_id",
+        "expires_at"
+      ],
+      "indexes": [
+        "referrals_credited_quote_id_idx",
+        "referrals_pkey",
+        "referrals_referee_quote_id_key",
+        "referrals_referrer_customer_id_idx"
+      ]
+    },
+    "self_serve_analyzer_budget": {
+      "columns": [
+        "day",
+        "count"
+      ],
+      "indexes": [
+        "self_serve_analyzer_budget_pkey"
+      ]
+    },
+    "self_serve_estimates": {
+      "columns": [
+        "id",
+        "created_at",
+        "quote_id",
+        "estimate_low",
+        "estimate_high",
+        "estimate_total",
+        "confidence"
+      ],
+      "indexes": [
+        "self_serve_estimates_created_at_idx",
+        "self_serve_estimates_pkey",
+        "self_serve_estimates_quote_id_idx"
+      ]
+    },
+    "sync_cursors": {
+      "columns": [
+        "source",
+        "cursor",
+        "last_run_at",
+        "last_status",
+        "last_error",
+        "updated_at"
+      ],
+      "indexes": [
+        "sync_cursors_pkey"
+      ]
+    },
+    "training_examples": {
+      "columns": [
+        "id",
+        "created_at",
+        "quote_id",
+        "design_id",
+        "source",
+        "excluded",
+        "notes",
+        "address",
+        "street_photo_base64",
+        "street_media_type",
+        "street_w",
+        "street_h",
+        "satellite_base64",
+        "satellite_media_type",
+        "satellite_w",
+        "satellite_h",
+        "satellite_feet_per_pixel",
+        "satellite_lines",
+        "original_analysis",
+        "final_scene",
+        "final_inputs",
+        "embedding"
+      ],
+      "indexes": [
+        "training_examples_created_at_idx",
+        "training_examples_pkey",
+        "training_examples_quote_source_uniq"
+      ]
+    },
+    "training_houses": {
+      "columns": [
+        "id",
+        "created_at",
+        "address",
+        "year_completed",
+        "house_style",
+        "notes",
+        "photos",
+        "santas_footage",
+        "santas_difficulty",
+        "santas_lines",
+        "gingerbread_footage",
+        "gingerbread_difficulty",
+        "gingerbread_lines",
+        "winter_wonderland_footage",
+        "winter_wonderland_difficulty",
+        "mini_light_detections",
+        "wreath_detections",
+        "spritzer_detections",
+        "spritzers",
+        "wreaths",
+        "garland",
+        "scale_anchor",
+        "didnt_install",
+        "ai_failure_notes",
+        "cost_materials",
+        "cost_labor_hours",
+        "revenue",
+        "garland_detections",
+        "c9_lines",
+        "stake_lighting_footage",
+        "stake_lighting_difficulty",
+        "stake_lines"
+      ],
+      "indexes": [
+        "training_houses_address_idx",
+        "training_houses_created_at_idx",
+        "training_houses_pkey"
+      ]
+    },
+    "website_leads": {
+      "columns": [
+        "id",
+        "created_at",
+        "form_variant",
+        "service",
+        "name",
+        "email",
+        "phone",
+        "address",
+        "notes",
+        "consent",
+        "utm",
+        "landing_url",
+        "ip",
+        "ghl_contact_id",
+        "ghl_opportunity_id",
+        "sync_status",
+        "sync_error",
+        "is_test",
+        "retry_count",
+        "last_retried_at"
+      ],
+      "indexes": [
+        "website_leads_created_at_idx",
+        "website_leads_ip_created_at_idx",
+        "website_leads_pkey",
+        "website_leads_retry_idx"
+      ]
+    }
+  },
+  "sequences": [
+    "invoice_number_seq",
+    "job_number_seq",
+    "quote_number_seq"
+  ],
+  "functions": [
+    "allocate_display_number",
+    "app_settings_set_updated_at",
+    "bot_users_set_updated_at",
+    "bump_self_serve_analyzer_budget",
+    "customers_set_updated_at",
+    "dashboard_set_updated_at",
+    "designs_set_updated_at",
+    "inventory_set_updated_at",
+    "invoices_set_updated_at",
+    "jobs_set_updated_at",
+    "match_permanent_training_examples",
+    "match_training_examples",
+    "permanent_training_examples_set_updated_at",
+    "referrals_set_updated_at"
+  ]
+}
