@@ -3270,6 +3270,22 @@ export default function QuoteBuilder({
                   </a>
                 </p>
               )}
+              {(form.customer.address.trim() !== '' || googleAddress != null) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={
+                      geoLat != null && geoLng != null
+                        ? `https://earth.google.com/web/search/${geoLat},${geoLng}`
+                        : `https://earth.google.com/web/search/${encodeURIComponent(googleAddress ?? form.customer.address.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 font-medium underline hover:text-blue-900"
+                  >
+                    View on Google Earth ↗
+                  </a>
+                </p>
+              )}
               {googleAddress && (
                 <p className="mt-2 text-xs text-blue-800">
                   <span className="font-semibold">Matched:</span> {googleAddress}
