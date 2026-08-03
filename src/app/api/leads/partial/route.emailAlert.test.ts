@@ -105,6 +105,14 @@ describe('POST /api/leads/partial — staff email alert', () => {
     expect(inserted[0]?.sync_status).toBe('spam');
   });
 
+  it('stays silent for an isTest capture (matches the full-lead route gating)', async () => {
+    const res = await POST(
+      makeReq({ name: 'Test Capture', email: 'test@example.com', phone: '5551234567', isTest: true }),
+    );
+    expect(res.status).toBe(200);
+    expect(sendLeadAlertEmail).not.toHaveBeenCalled();
+  });
+
   it('a slow email send does not hang the request past the 2s best-effort cap', async () => {
     vi.useFakeTimers();
     try {

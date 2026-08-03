@@ -336,9 +336,9 @@ export async function POST(req: NextRequest) {
   // (POST /api/leads): a slow GHL email call must not stretch this background
   // beacon's serverless function duration. Same spam gating this route
   // already applies to its own processing — the honeypot branch above already
-  // returned, so this only runs for real (non-honeypot) captures. No isTest
-  // gating (unlike the full-lead route's ping): not requested for this route.
-  {
+  // returned, so this only runs for real (non-honeypot) captures. isTest
+  // captures skip the alert, matching the full-lead route's gating.
+  if (!isTest) {
     let alertTimer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       sendLeadAlertEmail(
