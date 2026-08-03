@@ -16,6 +16,10 @@ import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
+import { listJobsForCustomer } from '@/lib/jobs';
+import { listInvoicesForCustomer } from '@/lib/invoices';
+import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
+import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -112,6 +116,13 @@ export default async function CustomerDetailPage({
   // backfill. If none is populated yet (pre-backfill), the button is hidden.
   const customerId: string | null =
     quotes.find(q => q.customer_id)?.customer_id ?? null;
+
+  // This customer's jobs + invoices (billing side, ledger #83): matched by EITHER
+  // the resolved customer_id OR belonging to one of the quotes already shown
+  // above — the second leg covers legacy rows whose customer_id is still null.
+  const quoteIds = quotes.map(q => q.id);
+  const jobs = await listJobsForCustomer(customerId, quoteIds);
+  const invoices = await listInvoicesForCustomer(customerId, quoteIds);
 
   // Property-aware rebook (WT-53): resolve this customer's properties server-side
   // so RebookButton can scope the clone to a KNOWN building instead of falling
@@ -241,6 +252,89 @@ export default async function CustomerDetailPage({
                       </td>
                     </tr>
                   ))}
+              </tbody>
+            </table>
+            </div>
+          )}
+        </section>
+
+        {/* Jobs (billing side, ledger #83): matched by customer_id OR by belonging
+            to one of the quotes shown above (legacy rows, null customer_id). */}
+        <section
+          className="rounded-lg border mt-6"
+          style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
+        >
+          <h2 className="text-sm font-semibold px-4 pt-4 pb-2" style={{ color: 'var(--op-text)' }}>Jobs</h2>
+          {jobs.length === 0 ? (
+            <div className="p-6 text-sm text-center" style={{ color: 'var(--op-text-dim)' }}>No jobs yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold">Created</th>
+                  <th className="text-left px-3 py-2 font-semibold">Job</th>
+                  <th className="text-left px-3 py-2 font-semibold">Type</th>
+                  <th className="text-left px-3 py-2 font-semibold">Status</th>
+                  <th className="text-left px-3 py-2 font-semibold">Install date</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map(j => (
+                  <tr key={j.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
+                    <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(j.created_at)}</td>
+                    <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Job ID: ${j.id}`}>{j.job_number != null ? `#${j.job_number}` : j.id.slice(0, 8)}</td>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--op-text)' }}>{j.type === 'permanent' ? 'Permanent' : 'One-off'}</td>
+                    <td className="px-3 py-2.5"><JobStatusBadge status={j.status} /></td>
+                    <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{j.install_date ? fmtDate(j.install_date) : '—'}</td>
+                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                      <Link href={`/admin/jobs/${j.id}`} className="text-xs hover:underline" style={{ color: 'var(--op-primary)' }}>Open</Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </div>
+          )}
+        </section>
+
+        {/* Invoices (billing side, ledger #83): same match rule as Jobs above. */}
+        <section
+          className="rounded-lg border mt-6"
+          style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
+        >
+          <h2 className="text-sm font-semibold px-4 pt-4 pb-2" style={{ color: 'var(--op-text)' }}>Invoices</h2>
+          {invoices.length === 0 ? (
+            <div className="p-6 text-sm text-center" style={{ color: 'var(--op-text-dim)' }}>No invoices yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold">Created</th>
+                  <th className="text-left px-3 py-2 font-semibold">Invoice</th>
+                  <th className="text-left px-3 py-2 font-semibold">Status</th>
+                  <th className="text-right px-3 py-2 font-semibold">Total</th>
+                  <th className="text-right px-3 py-2 font-semibold">Balance</th>
+                  <th className="text-left px-3 py-2 font-semibold">Paid date</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map(inv => (
+                  <tr key={inv.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
+                    <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(inv.created_at)}</td>
+                    <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Invoice ID: ${inv.id}`}>{inv.invoice_number != null ? `#${inv.invoice_number}` : inv.id.slice(0, 8)}</td>
+                    <td className="px-3 py-2.5"><InvoiceStatusBadge status={inv.status} /></td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.total)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.balance)}</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{inv.paid_at ? fmtDate(inv.paid_at) : '—'}</td>
+                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                      <Link href={`/admin/invoices/${inv.id}`} className="text-xs hover:underline" style={{ color: 'var(--op-primary)' }}>Open</Link>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
             </div>
