@@ -43,8 +43,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { HighLevelError } from '@/lib/integrations/highlevel';
 import { asLeadService, syncLeadToGhl, LEAD_SERVICES, type LeadService } from '@/lib/leads/leadService';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { newLeadMessage } from '@/lib/integrations/telegramMessages';
+import { sendLeadAlertEmail } from '@/lib/leads/leadAlerts';
 
 export const runtime = 'nodejs';
 
@@ -343,22 +345,38 @@ export async function POST(req: NextRequest) {
     return jsonResponse(origin, { error: 'Failed to save lead' }, 500);
   }
 
-  // Phase 1 text-ops ping (2026-07-19 plan): instant staff Telegram heads-up
-  // for a real lead. notifyTelegram is best-effort by contract (fail-open,
-  // no-op while the bot is dormant) — it must never affect the lead path.
-  // Raced against a 2s cap because this is the one notifyTelegram call on a
-  // CUSTOMER-facing request: its fetch has no timeout of its own, and a hung
-  // Telegram API must not hang a homeowner's form submit. Test leads stay
-  // silent.
+  // Phase 1 text-ops ping (2026-07-19 plan) + staff email alert: instant staff
+  // heads-up for a real lead, via Telegram (routed to the 'leads' audience —
+  // the audience-routing seam, so the Jobs/Inventory chats stop receiving
+  // lead pings) and via email (sendLeadAlertEmail → GHL → sales@ contact).
+  // Both are best-effort by contract (fail-open, no-op while unconfigured) —
+  // neither may affect the lead path. Each is raced against its OWN 2s cap,
+  // run concurrently via Promise.all so a slow GHL email call can't stack its
+  // latency behind a slow Telegram send: these are the only notifyTelegram/
+  // sendEmail calls on a CUSTOMER-facing request, and a hung API must not
+  // hang a homeowner's form submit. Test leads stay silent on both.
   if (!isTest) {
     let pingTimer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      notifyTelegram(newLeadMessage({ name, service, phone, address, baseUrl: appBaseUrl() })),
-      new Promise<void>((resolve) => {
-        pingTimer = setTimeout(resolve, 2000);
-      }),
+    let alertTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.all([
+      Promise.race([
+        notifyTelegramAudience('leads', newLeadMessage({ name, service, phone, address, baseUrl: appBaseUrl() })),
+        new Promise<void>((resolve) => {
+          pingTimer = setTimeout(resolve, 2000);
+        }),
+      ]),
+      Promise.race([
+        sendLeadAlertEmail(
+          { name, email, phone, address, service, formVariant, notes, landingUrl },
+          { partial: false },
+        ),
+        new Promise<void>((resolve) => {
+          alertTimer = setTimeout(resolve, 2000);
+        }),
+      ]),
     ]);
     clearTimeout(pingTimer);
+    clearTimeout(alertTimer);
   }
 
   // GHL sync — best effort. The row is already saved (source of truth); any
