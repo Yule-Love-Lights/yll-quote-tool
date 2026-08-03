@@ -925,6 +925,121 @@ describe('quoteRowToPortalQuote — hides packages below the approval minimum (#
   });
 });
 
+// ── Same-price tier dedupe: hide a LATER preset tier that price-ties an ─────
+// EARLIER still-visible one (operator screenshot: Tier 2 "Full Festive" and
+// Tier 3 "The Full Yule" both $2,185.88 — two identical-looking cards).
+// Scoped to the A/B/C preset ladder only; package D never hidden.
+describe('quoteRowToPortalQuote — hides a later preset tier that price-ties an earlier one', () => {
+  it('B===C hides C, keeps A/B/D', () => {
+    // Santa's alone clears the $1,000 minimum (100ft × $10 medium), so Tier A
+    // is just the roofline with no spritzers/extras added. With no other line
+    // items on the quote, Tier B (Santa's swapped for Gingerbread) and Tier C
+    // (everything, minus Santa's) both collapse to the SAME single item — the
+    // Gingerbread option — so they price-tie exactly.
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = portalFrom(result)!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    const b = portal.packages.find((p) => p.id === 'B')!;
+    // Totals are tax-inclusive (8.75%): A = $1,000 × 1.0875; B = ($1,000 +
+    // ridge/sides 10×$10 = $1,100) × 1.0875.
+    expect(a.total).toBe(1087.5);
+    expect(b.total).toBe(1196.25);
+    expect(a.total).not.toBe(b.total);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'D']); // C hidden
+  });
+
+  it('A===B===C keeps only A (+D)', () => {
+    // Force the Gingerbread option's price to exactly match Santa's (a
+    // same-price roofline swap) so all three preset tiers collapse to one
+    // price — the natural engine can't produce this directly (Gingerbread
+    // always costs strictly more once it exists), so the tie is forced on the
+    // computed result the same way the file's other hand-edited-result tests
+    // do (see the "legacy pre-#104" roofline test above).
+    const base = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const tied: QuoteResult = {
+      ...base,
+      rooflineOptions: {
+        ...base.rooflineOptions,
+        gingerbread: { ...base.rooflineOptions.gingerbread!, amount: base.rooflineOptions.santas!.amount },
+      },
+    };
+    const portal = portalFrom(tied)!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    expect(a.total).toBe(1087.5); // $1,000 × 1.0875 tax-inclusive
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'D']); // B and C both hidden
+  });
+
+  it('all-distinct prices → nothing hidden', () => {
+    // Santa's alone ($1,000) clears the minimum, so the extra custom item is
+    // never pulled into Tier A/B (only into Tier C, "everything") — keeping
+    // all three preset totals distinct.
+    const inputs = emptyInputs({
+      santasFootage: 100, // Tier A: $1,000
+      gingerbreadFootage: 40, // Tier B: $1,000 + 40×$10 = $1,400
+      rooflineChoice: 'santas',
+      customLineItems: [{ label: 'Extra décor', amount: 500, quantity: 1 }], // only in Tier C
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const [a, b, c] = (['A', 'B', 'C'] as const).map((id) => portal.packages.find((p) => p.id === id)!);
+    // Tax-inclusive (×1.0875): A = $1,000; B = $1,400 (+ ridge/sides 40×$10);
+    // C = $1,900 (+ the $500 custom item, only in "everything").
+    expect(a.total).toBe(1087.5);
+    expect(b.total).toBe(1522.5);
+    expect(c.total).toBe(2066.25);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']); // nothing hidden
+  });
+
+  it('D equal in price to a kept preset (permanent Whole Home) is still shown — D is never hidden', () => {
+    // Force the front line to $0 so permanent's Whole Home (front + back)
+    // collapses to exactly the Back-of-Home total — proving D survives even
+    // when it price-ties a kept A/B/C tile. waiveMinimum keeps the #134 gate
+    // filter a no-op so only the new dedupe is under test.
+    const permInputs = emptyInputs({
+      waiveMinimum: true,
+      permanent: {
+        frontFootage: 10, leftFootage: 0, rightFootage: 0, backFootage: 20,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const rawResult = calculatePermanentQuote(permInputs);
+    const tied: QuoteResult = {
+      ...rawResult,
+      lineItems: rawResult.lineItems.map((li) => (li.id === 'permanent-front' ? { ...li, amount: 0 } : li)),
+    };
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(tied, permInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    const d = portal.packages.find((p) => p.id === 'D')!;
+    expect(c.total).toBeGreaterThan(0);
+    expect(c.total).toBe(d.total);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'C', 'D']); // D survives despite the tie
+  });
+
+  it('the empty "Build Your Own" (D) placeholder still always survives the dedupe', () => {
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = portalFrom(result)!;
+    const d = portal.packages.find((p) => p.id === 'D')!;
+    expect(d).toBeDefined();
+    expect(d.total).toBe(0);
+    expect(d.includedItemIds).toEqual([]);
+  });
+});
+
 // ── #131: permanent per-side recommend flags reach the portal line items ────
 describe('quoteRowToPortalQuote — permanent recommended sides (#131)', () => {
   function permInputsWith(over: Record<string, boolean> = {}): QuoteInputs {
