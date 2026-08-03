@@ -8,7 +8,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
-import { SERVICE_TYPE_LABELS, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { QuotesListSkeleton } from './QuotesListSkeleton';
 
 // Service-line badge palette (#123) — so an operator can tell holiday vs event
@@ -81,6 +81,9 @@ export default function QuotesAdminPage() {
   // Audit fix (Finding #40): client-side status filter + text search over the
   // already-loaded list so "what is still un-sent" is answerable at a glance.
   const [statusFilter, setStatusFilter] = useState<'All' | QuoteStatus>('All');
+  // Second chip row (this task): filter by service-line type, composing with
+  // statusFilter + search as AND conditions.
+  const [serviceFilter, setServiceFilter] = useState<'All' | ServiceType>('All');
   const [search, setSearch] = useState('');
 
   const refresh = async () => {
@@ -149,6 +152,7 @@ export default function QuotesAdminPage() {
   const term = search.trim().toLowerCase();
   const visible = items.filter(q => {
     if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
+    if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
     if (!term) return true;
     return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
       .some(v => v != null && v.toLowerCase().includes(term));
@@ -209,6 +213,23 @@ export default function QuotesAdminPage() {
                   }`}
                 >
                   {s === 'All' ? 'All' : STATUS_LABELS[s]}
+                </button>
+              ))}
+            </div>
+            {/* Service-type chip row (this task) — filters by service line,
+                composing with the status chips + search as AND conditions. */}
+            <div className="flex flex-wrap gap-1">
+              {(['All', ...SERVICE_TYPES] as const).map(s => (
+                <button
+                  key={s}
+                  onClick={() => setServiceFilter(s)}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                    serviceFilter === s
+                      ? 'bg-gray-900 text-white border-gray-900'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
                 </button>
               ))}
             </div>
