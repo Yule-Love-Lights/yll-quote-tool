@@ -303,7 +303,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 (code {quote.deposit_decline_code} — {depositDeclineReasonText(quote.deposit_decline_code)})
               </>
             )}
-            {' '}— customer can retry from their portal link.
+            {quote.view_only ? (
+              <>
+                {' '}
+                — the portal is view-only right now; turn that off before they can retry.
+              </>
+            ) : (
+              <> — customer can retry from their portal link.</>
+            )}
           </div>
         )}
 
