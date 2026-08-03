@@ -27,7 +27,7 @@ import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
-import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
+import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
@@ -890,6 +890,83 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
     .eq('status', 'pending')
     .select('id');
   return data ? data.length : 0;
+}
+
+// ─── View-only toggle-ON inbox cleanup (#187a) ──────────────────────────────
+// queries.ts's dashboard chokepoint (`.eq('view_only', false)`) drops a
+// flipped-view-only quote out of the reconcile feed entirely, so
+// runQuoteToolReconcile (sync.ts) never visits it again — a PENDING
+// quote_sent_no_reply follow-up on it would sit due-forever, and any other
+// quotetool inbox noise for the quote (e.g. a pending colour-change request,
+// #163) would never clear either. Close/resolve both up front instead, at the
+// moment staff flips the flag ON.
+
+/**
+ * Close any PENDING "sent, no reply" follow-up + resolve any un-resolved
+ * inbox_items for `quoteId`, called right after a view-only toggle-ON write
+ * succeeds. Matches BOTH external_id shapes a quotetool item can take (#183
+ * BUG 1): the bare quote id (the "quote sent" touch) and
+ * `${quoteId}:color-request` (the colour-request notification).
+ *
+ * Best-effort — never throws (the toggle write already succeeded; this is
+ * cleanup, mirroring apply-color-request's resolveInboxRequest). `operatorId`
+ * must be a real auth.users uuid, or null — inbox_items.handled_by is a
+ * nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ * comment); never pass a display name/email string here.
+ */
+export async function closeQuoteInboxNoise(quoteId: string, operatorId: string | null): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    const { data: items, error: itemsErr } = await sb
+      .from('inbox_items')
+      .select('id, status')
+      .eq('source', 'quotetool')
+      .in('external_id', [quoteId, `${quoteId}:color-request`]);
+    if (itemsErr) {
+      console.warn('[inbox] view-only cleanup: item lookup failed (non-fatal):', itemsErr.message);
+      return;
+    }
+    const rows = (items ?? []) as { id: string; status: string }[];
+    if (!rows.length) return;
+    const itemIds = rows.map((r) => r.id);
+
+    // Close a pending follow-up regardless of the item's own current status —
+    // the two are independent records.
+    const { error: fuErr } = await sb
+      .from('follow_ups')
+      .update({ status: 'done' })
+      .in('inbox_item_id', itemIds)
+      .eq('reason', FOLLOWUP_REASONS.quoteSentNoReply)
+      .eq('status', 'pending');
+    if (fuErr) {
+      console.warn('[inbox] view-only cleanup: follow-up close failed (non-fatal):', fuErr.message);
+    }
+
+    // Only resolve items that aren't already resolved — never re-stamp a
+    // dismissed/completed item's handled_at/handled_by.
+    const openIds = rows.filter((r) => r.status !== 'completed' && r.status !== 'dismissed').map((r) => r.id);
+    if (!openIds.length) return;
+    const now = new Date().toISOString();
+    const { error: itemUpdateErr } = await sb
+      .from('inbox_items')
+      .update({ status: 'completed', handled_by: operatorId, handled_at: now })
+      .in('id', openIds);
+    if (itemUpdateErr) {
+      console.warn('[inbox] view-only cleanup: item resolve failed (non-fatal):', itemUpdateErr.message);
+      return;
+    }
+    await sb.from('dashboard_activity').insert(
+      openIds.map((itemId) => ({
+        actor: operatorId,
+        action: 'completed',
+        inbox_item_id: itemId,
+        detail: { note: 'Quote marked view-only' },
+      })),
+    );
+  } catch (e) {
+    console.warn('[inbox] view-only cleanup failed (non-fatal):', e);
+  }
 }
 
 // ─── Orphaned follow-up sweep (#183 BUG 3) ──────────────────────────────────

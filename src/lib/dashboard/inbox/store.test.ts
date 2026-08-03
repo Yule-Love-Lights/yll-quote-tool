@@ -215,6 +215,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  closeQuoteInboxNoise,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
@@ -237,7 +238,7 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
   // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
   // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte']) {
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -1566,5 +1567,185 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     const closed = await sweepOrphanedFollowUps(REASON);
     expect(closed).toBe(0);
     expect(quotesQueried).toBe(false); // no quotetool candidates → no quotes lookup at all
+  });
+});
+
+describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const QUOTE_ID = '99999999-9999-9999-9999-999999999999';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+
+  /** Dispatch `from()` by table, returning the SELECT builder on the first
+   *  `inbox_items` call and the UPDATE builder on the second. */
+  function makeSbForCleanup(opts: {
+    itemsSelect: { data: unknown; error: null | { message: string } };
+    followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    itemsUpdate?: { data: unknown; error: null | { message: string } };
+    activityInsert?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
+    const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
+      opts.itemsUpdate ?? { data: [], error: null },
+    );
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
+      opts.activityInsert ?? { data: null, error: null },
+    );
+    let inboxItemsCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxItemsCallCount += 1;
+        return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
+      }
+      if (table === 'follow_ups') return fuBuilder;
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, itemsSelectCalls, fuCalls, itemsUpdateCalls, activityCalls };
+  }
+
+  it('looks up BOTH external_id shapes (#183: bare uuid + :color-request)', async () => {
+    const { from, itemsSelectCalls } = makeSbForCleanup({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const eqCall = itemsSelectCalls.find((c) => c.method === 'eq');
+    expect(eqCall!.args).toEqual(['source', 'quotetool']);
+    const inCall = itemsSelectCalls.find((c) => c.method === 'in');
+    expect(inCall!.args).toEqual(['external_id', [QUOTE_ID, `${QUOTE_ID}:color-request`]]);
+  });
+
+  it('closes the pending follow-up and resolves the open item for the bare-uuid external_id', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'unresponded' }], error: null },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args).toEqual(['inbox_item_id', ['item-bare']]);
+    const fuUpdateCall = fuCalls.find((c) => c.method === 'update');
+    expect(fuUpdateCall!.args[0]).toEqual({ status: 'done' });
+    const fuReasonEq = fuCalls.find((c) => c.method === 'eq' && c.args[0] === 'reason');
+    expect(fuReasonEq!.args[1]).toBe('quote_sent_no_reply');
+
+    const itemInCall = itemsUpdateCalls.find((c) => c.method === 'in');
+    expect(itemInCall!.args).toEqual(['id', ['item-bare']]);
+    const itemUpdateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(itemUpdateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      expect.objectContaining({ actor: OPERATOR_ID, action: 'completed', inbox_item_id: 'item-bare' }),
+    ]);
+  });
+
+  it('closes/resolves BOTH items when the quote has both external_id shapes', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: {
+        data: [
+          { id: 'item-bare', status: 'unresponded' },
+          { id: 'item-color', status: 'handled' },
+        ],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args[1]).toEqual(expect.arrayContaining(['item-bare', 'item-color']));
+    const itemInCall = itemsUpdateCalls.find((c) => c.method === 'in');
+    expect(itemInCall!.args[1]).toEqual(expect.arrayContaining(['item-bare', 'item-color']));
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toHaveLength(2);
+  });
+
+  it('never re-stamps an already-completed/dismissed item, but still tries to close its follow-up', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: {
+        data: [
+          { id: 'item-done', status: 'completed' },
+          { id: 'item-open', status: 'unresponded' },
+        ],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    // Follow-up close is attempted for BOTH found items (independent record).
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args[1]).toEqual(expect.arrayContaining(['item-done', 'item-open']));
+
+    // Only the still-open item is re-stamped.
+    const itemInCall = itemsUpdateCalls.find((c) => c.method === 'in');
+    expect(itemInCall!.args[1]).toEqual(['item-open']);
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toHaveLength(1);
+  });
+
+  it('does nothing further when no inbox items match either external_id shape', async () => {
+    let fromCalls = 0;
+    const { builder } = makeBuilder({ data: [], error: null });
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return builder;
+      },
+    };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+    expect(fromCalls).toBe(1); // only the inbox_items lookup fired
+  });
+
+  it('is non-fatal (fails open, warns) when the inbox_items lookup errors', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { builder } = makeBuilder({ data: null, error: { message: 'db down' } });
+      sbRef.current = { from: (_table: string) => builder };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item lookup failed (non-fatal):',
+        'db down',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('is non-fatal (warns) when the inbox write fails — the toggle response is never blocked', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from, fuCalls } = makeSbForCleanup({
+        itemsSelect: { data: [{ id: 'item-open', status: 'unresponded' }], error: null },
+        itemsUpdate: { data: null, error: { message: 'write failed' } },
+      });
+      sbRef.current = { from };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      // The independent follow-up close was still attempted despite the item
+      // write failing.
+      expect(fuCalls.some((c) => c.method === 'update')).toBe(true);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item resolve failed (non-fatal):',
+        'write failed',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
   });
 });
