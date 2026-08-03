@@ -23,7 +23,10 @@ import {
   getJobDetail,
   listJobs,
   listJobsForAdmin,
+  listJobsForCustomer,
+  mergeJobsNewestFirst,
   setJobStatus,
+  type JobRow,
 } from './jobs';
 
 // ── A tiny per-table fake Supabase ──────────────────────────────────────────
@@ -510,5 +513,62 @@ describe('getJobDetail', () => {
   it('returns null when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await getJobDetail('j1')).toBeNull();
+  });
+});
+
+// ─── mergeJobsNewestFirst (PURE — customer detail page match, #58) ─────────
+
+describe('mergeJobsNewestFirst', () => {
+  const job = (id: string, created_at: string, extra: Record<string, unknown> = {}): JobRow =>
+    ({ id, created_at, ...extra }) as unknown as JobRow;
+
+  it('de-duplicates rows that appear in more than one input list, newest-first', () => {
+    const a = job('j1', '2026-06-01');
+    const b = job('j2', '2026-06-05');
+    const aAgain = job('j1', '2026-06-01'); // e.g. matched by BOTH customer_id and quote_id
+    const merged = mergeJobsNewestFirst([a, b], [aAgain, b]);
+    expect(merged.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('returns [] for no lists or all-empty lists', () => {
+    expect(mergeJobsNewestFirst()).toEqual([]);
+    expect(mergeJobsNewestFirst([], [])).toEqual([]);
+  });
+
+  it('a later list wins on a same-id collision (last-write-wins)', () => {
+    const stale = job('j1', '2026-06-01', { status: 'to_schedule' });
+    const fresh = job('j1', '2026-06-01', { status: 'done' });
+    const merged = mergeJobsNewestFirst([stale], [fresh]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'j1', status: 'done' });
+  });
+});
+
+describe('listJobsForCustomer', () => {
+  it('merges the customer_id match and the quote_id match, de-duplicated newest-first', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', quote_id: 'q1', customer_id: 'cust-1', created_at: '2026-06-01' },
+          { id: 'j2', quote_id: 'q2', customer_id: null, created_at: '2026-06-05' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const jobs = await listJobsForCustomer('cust-1', ['q1', 'q2']);
+    expect(jobs.map((j) => j.id)).toEqual(['j2', 'j1']);
+  });
+
+  it('returns [] when neither a customerId nor any quoteIds are given', async () => {
+    const { client } = makeSb({ jobs: { list: [] } });
+    sbRef.current = client;
+    expect(await listJobsForCustomer(null, [])).toEqual([]);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listJobsForCustomer('cust-1', ['q1'])).toEqual([]);
   });
 });
