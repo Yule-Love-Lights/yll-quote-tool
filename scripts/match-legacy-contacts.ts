@@ -9,6 +9,9 @@
  *   npx tsx scripts/match-legacy-contacts.ts --manifest scripts/legacy-migration-data/manifest-batch2.csv
  *   npx tsx scripts/match-legacy-contacts.ts --live         # ⚠️ LIVE PROD WRITES: fills NULL
  *       highlevel_contact_id on each MATCH row (fill-null-only, idempotent — but real).
+ *   npx tsx scripts/match-legacy-contacts.ts --manifest <path> --init-state  # the manifest's
+ *       directory has no migration-state.json yet (a fresh batch) — proceed with an
+ *       empty state instead of the default fail-loudly guard below.
  *
  * READ-ONLY by default: it only calls GHL contact SEARCH (GET /contacts/) and
  * prints a match/ambiguous/none breakdown. It NEVER creates a contact (we never
@@ -90,10 +93,22 @@ const digits10 = (s: string) => s.replace(/\D/g, '').slice(-10);
 const nameOf = (c: GhlContact) => c.contactName ?? ([c.firstName, c.lastName].filter(Boolean).join(' ') || '(no name)');
 const uniqById = (cs: GhlContact[]) => Array.from(new Map(cs.map(c => [c.id, c])).values());
 
+// #171h: a clickable GHL contact link for the dry-run output, so a MATCH row
+// (email or phone) can be hand-verified without pasting the raw id into GHL's
+// search box. Same URL convention as src/app/customers/[contactId]/page.tsx's
+// highLevelContactUrl (locationId is not a secret — it's in HL URLs). Null
+// when HIGHLEVEL_LOCATION_ID isn't set (ghlSearch would already have thrown
+// by then, but stay defensive rather than assume).
+function highLevelContactUrl(contactId: string): string | null {
+  const loc = process.env.HIGHLEVEL_LOCATION_ID;
+  if (!loc) return null;
+  return `https://app.gohighlevel.com/v2/location/${loc}/contacts/detail/${encodeURIComponent(contactId)}`;
+}
+
 type Verdict = 'MATCH' | 'AMBIGUOUS' | 'NONE' | 'ERROR';
 interface Result {
   name: string; email: string; phone: string; quoteId: string;
-  verdict: Verdict; via: 'email' | 'phone' | ''; contactId: string; contactLabel: string; note: string;
+  verdict: Verdict; via: 'email' | 'phone' | ''; contactId: string; contactLabel: string; contactUrl: string; note: string;
 }
 
 async function classify(name: string, email: string, phone: string): Promise<Omit<Result, 'name' | 'email' | 'phone' | 'quoteId'>> {
@@ -104,18 +119,18 @@ async function classify(name: string, email: string, phone: string): Promise<Omi
     // Primary: exact email.
     if (wantEmail) {
       const byEmail = uniqById(await ghlSearch(email)).filter(c => (c.email ?? '').trim().toLowerCase() === wantEmail);
-      if (byEmail.length === 1) return { verdict: 'MATCH', via: 'email', contactId: byEmail[0].id, contactLabel: nameOf(byEmail[0]), note: '' };
-      if (byEmail.length > 1) return { verdict: 'AMBIGUOUS', via: 'email', contactId: '', contactLabel: '', note: `${byEmail.length} contacts share this email: ${byEmail.map(c => c.id).join(', ')}` };
+      if (byEmail.length === 1) return { verdict: 'MATCH', via: 'email', contactId: byEmail[0].id, contactLabel: nameOf(byEmail[0]), contactUrl: highLevelContactUrl(byEmail[0].id) ?? '', note: '' };
+      if (byEmail.length > 1) return { verdict: 'AMBIGUOUS', via: 'email', contactId: '', contactLabel: '', contactUrl: '', note: `${byEmail.length} contacts share this email: ${byEmail.map(c => c.id).join(', ')}` };
     }
     // Fallback: exact last-10 phone.
     if (wantPhone.length === 10) {
       const byPhone = uniqById(await ghlSearch(wantPhone)).filter(c => digits10(c.phone ?? '') === wantPhone);
-      if (byPhone.length === 1) return { verdict: 'MATCH', via: 'phone', contactId: byPhone[0].id, contactLabel: nameOf(byPhone[0]), note: wantEmail ? 'no email match; matched on phone' : 'phone-only row' };
-      if (byPhone.length > 1) return { verdict: 'AMBIGUOUS', via: 'phone', contactId: '', contactLabel: '', note: `${byPhone.length} contacts share this phone: ${byPhone.map(c => c.id).join(', ')}` };
+      if (byPhone.length === 1) return { verdict: 'MATCH', via: 'phone', contactId: byPhone[0].id, contactLabel: nameOf(byPhone[0]), contactUrl: highLevelContactUrl(byPhone[0].id) ?? '', note: wantEmail ? 'no email match; matched on phone' : 'phone-only row' };
+      if (byPhone.length > 1) return { verdict: 'AMBIGUOUS', via: 'phone', contactId: '', contactLabel: '', contactUrl: '', note: `${byPhone.length} contacts share this phone: ${byPhone.map(c => c.id).join(', ')}` };
     }
-    return { verdict: 'NONE', via: '', contactId: '', contactLabel: '', note: wantEmail || wantPhone ? 'no exact email/phone match in GHL' : 'row has no email or phone' };
+    return { verdict: 'NONE', via: '', contactId: '', contactLabel: '', contactUrl: '', note: wantEmail || wantPhone ? 'no exact email/phone match in GHL' : 'row has no email or phone' };
   } catch (e) {
-    return { verdict: 'ERROR', via: '', contactId: '', contactLabel: '', note: (e as Error).message };
+    return { verdict: 'ERROR', via: '', contactId: '', contactLabel: '', contactUrl: '', note: (e as Error).message };
   }
 }
 
@@ -123,6 +138,7 @@ async function main() {
   loadEnvLocal();
   const args = process.argv.slice(2);
   const live = args.includes('--live');
+  const initState = args.includes('--init-state');
   const mi = args.indexOf('--manifest');
   const manifestPath = mi >= 0 ? args[mi + 1] : 'scripts/legacy-migration-data/manifest-batch2.csv';
   const stmt = resolve(process.cwd(), manifestPath);
@@ -131,7 +147,19 @@ async function main() {
   const rows = parseCsv(readFileSync(stmt, 'utf8')).filter(r => (r.include ?? '').toUpperCase() === 'Y');
 
   // Join quoteId from migration-state.json (key = "<roster#>|<street>") by street.
+  // #171h: a --manifest pointed at a nonexistent/other-place state file used to
+  // silently proceed with an empty state — every row would resolve to
+  // "(unmatched street)" with no quote to link, and nothing would say why.
+  // Fail loudly by default; --init-state is the explicit "yes, this is a fresh
+  // batch with no state file yet" override.
   const statePath = join(resolve(process.cwd(), manifestPath, '..'), 'migration-state.json');
+  if (!existsSync(statePath) && !initState) {
+    throw new Error(
+      `migration-state.json not found next to the manifest: ${statePath}\n` +
+      `Every row would silently resolve to "(unmatched street)" with no quote to link. ` +
+      `Pass --init-state to proceed anyway with an empty state.`,
+    );
+  }
   const state: Record<string, { quoteId?: string }> = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const streetToQuote = new Map<string, string>();
   for (const [key, v] of Object.entries(state)) {
@@ -152,6 +180,7 @@ async function main() {
   for (const [i, r] of results.entries()) {
     console.log(`${String(i + 1).padStart(2)}. ${icon[r.verdict]} ${r.verdict.padEnd(9)} ${r.name.slice(0, 24).padEnd(24)} ${r.via ? '(' + r.via + ')' : ''}`);
     if (r.contactId) console.log(`        → ${r.contactLabel}  [${r.contactId}]  quote ${r.quoteId}`);
+    if (r.contactUrl) console.log(`        ↗ ${r.contactUrl}`);
     if (r.note) console.log(`        · ${r.note}`);
   }
 
