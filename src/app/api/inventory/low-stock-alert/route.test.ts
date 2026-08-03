@@ -3,12 +3,12 @@ import type { NextRequest } from 'next/server';
 
 // IO seams mocked; the pure logic (lowStockItems, newlyLowSkus, lowStockMessage)
 // runs for real so the dedup behavior is genuinely exercised.
-const { listOnHand, listCatalog, sendEmail, hlConfigured, notifyTelegram, getLast, record } = vi.hoisted(() => ({
+const { listOnHand, listCatalog, sendEmail, hlConfigured, notifyTelegramAudience, getLast, record } = vi.hoisted(() => ({
   listOnHand: vi.fn(async () => [] as { sku: string; on_hand_qty: number; reorder_point: number }[]),
   listCatalog: vi.fn(async () => [] as { sku: string; name: string }[]),
   sendEmail: vi.fn(async () => ({})),
   hlConfigured: { value: true },
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   getLast: vi.fn(async () => [] as string[]),
   record: vi.fn(async () => {}),
 }));
@@ -24,8 +24,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hlConfigured.value,
 }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
+}));
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 vi.mock('@/lib/inventory/lowStockNotify', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/inventory/lowStockNotify')>()),
@@ -74,8 +76,9 @@ describe('low-stock-alert — Telegram ping (#82 follow-up)', () => {
     getLast.mockResolvedValue([]); // nothing reported yet → both are new
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0] as string;
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    const msg = notifyTelegramAudience.mock.calls[0][1] as string;
     expect(msg).toContain('Low stock');
     expect(msg).toContain('C9 Warm White (1001): 12 on hand (reorder 50)');
     expect(msg).toContain('Green clips (1042): 0 on hand (reorder 100)');
@@ -85,15 +88,15 @@ describe('low-stock-alert — Telegram ping (#82 follow-up)', () => {
   it('does NOT ping when nothing is newly low, but still records the current set', async () => {
     getLast.mockResolvedValue(['1001', '1042']); // both already reported
     await GET(makeReq(SECRET));
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledWith(['1001', '1042']);
   });
 
   it('only pings the SKU that newly crossed the threshold', async () => {
     getLast.mockResolvedValue(['1001']); // 1001 already known, 1042 is new
     await GET(makeReq(SECRET));
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0] as string;
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    const msg = notifyTelegramAudience.mock.calls[0][1] as string;
     expect(msg).toContain('Green clips (1042)');
     expect(msg).not.toContain('C9 Warm White (1001)');
   });
@@ -101,13 +104,13 @@ describe('low-stock-alert — Telegram ping (#82 follow-up)', () => {
   it('does not ping or consume the baseline when the bot is disabled', async () => {
     delete process.env.TELEGRAM_BOT_ENABLED;
     await GET(makeReq(SECRET));
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
   });
 
   it('401s without the cron secret (no work done)', async () => {
     const res = await GET(makeReq('wrong'));
     expect(res.status).toBe(401);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 });

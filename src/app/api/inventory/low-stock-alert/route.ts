@@ -14,7 +14,8 @@ import { lowStockItems } from '@/lib/inventory/lowStock';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { lowStockEmailSubject, lowStockEmailHtml } from '@/lib/integrations/quoteMessages';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { lowStockMessage } from '@/lib/integrations/telegramMessages';
 import { newlyLowSkus, getLastLowStockNotified, recordLowStockNotified } from '@/lib/inventory/lowStockNotify';
 
@@ -43,7 +44,8 @@ export async function GET(req: NextRequest) {
       const currentLow = low.map((l) => l.sku);
       const newly = new Set(newlyLowSkus(currentLow, await getLastLowStockNotified()));
       if (newly.size) {
-        await notifyTelegram(
+        await notifyTelegramAudience(
+          'inventory',
           lowStockMessage({
             items: low
               .filter((l) => newly.has(l.sku))

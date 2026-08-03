@@ -60,7 +60,7 @@ import { createJobFromQuote, getJobByQuote, setJobStatus, type JobRow } from '@/
 import { getInvoiceByJob, type InvoiceRow } from '@/lib/invoices';
 import { triggerAutoPOIfBusy } from '@/lib/inventory/purchaseOrder';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
-import { notifyTelegram } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
@@ -776,7 +776,8 @@ export async function POST(req: NextRequest) {
     if (!job) return;
     const wo = await getJobWorkOrder(job.id);
     if (wo) {
-      await notifyTelegram(
+      await notifyTelegramAudience(
+        'inventory',
         prepJobMessage({
           customerName: wo.job.customerName,
           jobNumber: wo.job.jobNumber,
