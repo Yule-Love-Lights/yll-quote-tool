@@ -15,12 +15,19 @@
 -- it stays tiny however fast the 'ingested' flood grows):
 --   • getReopenCounts' `action = 'handled'` / `= 'reopened'` (+ optional
 --     created_at window) provably implies the predicate → index scan.
---   • listActivity's `NOT action IN ('ingested','escalated')` ordered by
---     created_at DESC matches the predicate outright.
--- Plain CREATE INDEX (not CONCURRENTLY — must run inside the migration
--- transaction): the build over 937k rows takes ~1–3s and the only writer
--- is the reconcile cron at ~14 rows/min, whose inserts just queue behind
--- the ShareLock. Idempotent: IF NOT EXISTS, per CONVENTIONS.md §6.
+--   • listActivity's `NOT action IN ('ingested','escalated')` carries the
+--     same predicate — planner proof expected but VERIFIED BY EXPLAIN
+--     post-apply (PostgREST's not.in parse tree isn't byte-identical to
+--     the index's), and a residual in-memory sort of the ~760 qualifying
+--     rows remains for its created_at ordering (trivial at that count).
+-- Plain CREATE INDEX (not CONCURRENTLY — safe inside a txn-wrapped apply
+-- path): the build's full heap scan over 937k rows is bounded by the
+-- 11.6s measured predicate scan, so expect up to ~10–15s of SHARE lock —
+-- writes (the cron's ~14 rows/min + any operator action-insert) QUEUE for
+-- that window, they don't fail. Apply in a quiet-traffic window; if the
+-- apply path can't hold the lock, fall back to CREATE INDEX CONCURRENTLY
+-- pasted as a single autocommit statement in the Supabase SQL editor.
+-- Idempotent: IF NOT EXISTS, per CONVENTIONS.md §6.
 -- Applies out-of-band directly on prod (Supabase MCP apply_migration, on
 -- Jason's named go); this file documents it. Additive + code-independent:
 -- no read path changes, so migration order is unconstrained.
