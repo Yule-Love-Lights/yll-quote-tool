@@ -38,6 +38,7 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
@@ -1399,7 +1400,7 @@ export default function QuoteBuilder({
       points: pendingPoints,
       label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
         : addMode === 'bistro' ? `Run ${satelliteBistroLines.length + 1}`
-        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : addMode === 'stake' ? 'new stake run' : 'new c9 run',
       // #117 MED: a bistro run carries a STABLE id so its billed line item id
       // (and any #104 per-line price/free override keyed on it) survives a
       // mid-list run delete. Without it, the engine synthesizes POSITIONAL ids
@@ -1729,15 +1730,29 @@ export default function QuoteBuilder({
     // satellite tab when THIS analysis actually carried satellite data (an address
     // pull). A manual street-photo analyze (analyze-photo) carries none, so leave
     // the existing satellite image, lines, and scale intact.
-    const hasSatelliteData =
-      data.satelliteBase64 != null ||
-      data.satelliteFeetPerPixel != null ||
-      (r.satelliteSantasLines?.length ?? 0) > 0 ||
-      (r.satelliteGingerbreadLines?.length ?? 0) > 0;
-    if (hasSatelliteData) {
+    // #190 (prod incident, quote ef73b2de): the ORIGINAL #97 guard counted
+    // non-empty satelliteSantasLines/satelliteGingerbreadLines as satellite
+    // evidence — but a street-only analyze-photo result can carry model-
+    // HALLUCINATED satellite lines with no satellite image ever shown to it
+    // (see analysisSatellitePayload.ts). That let a street re-analyze null out
+    // a live satelliteFeetPerPixel and clobber good seeded lines with
+    // fabricated ones, silently zeroing every satellite measurement downstream
+    // (the footage-derive effect early-returns on a null scale). The gate now
+    // requires an ACTUAL satellite payload (the image or its known scale —
+    // both only ever come from analyze-address), never mere line content.
+    if (hasSatellitePayload(data)) {
       setSatelliteSantasLines(r.satelliteSantasLines ?? []);
       setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
-      setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+      // Belt-and-braces: only overwrite the live scale when this payload
+      // actually carries one. In practice analyze-address always pairs
+      // satelliteBase64 with a computed satelliteFeetPerPixel (deterministic
+      // math off the Google Static Maps zoom level — verified non-nullable in
+      // googleMaps.ts's getCachedAddressImagery), so this can't currently
+      // fire with fpp missing. Guarding it anyway means a future satellite-
+      // carrying caller that omits the scale can never null-clobber a live one.
+      if (data.satelliteFeetPerPixel != null) {
+        setSatelliteFeetPerPixel(data.satelliteFeetPerPixel);
+      }
     }
     // The bridge auto-design (#35 Phase 2): roofline lines → tagged C9 strands
     // (#33) AND per-unit detections → scene items at the detected spots. The

@@ -72,13 +72,45 @@ describe('POST /api/analyze-photo — success path', () => {
     const res = await POST(makeReq({ photo: makeFile('house.jpg', 'image/jpeg') }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.result).toEqual({ santasFootage: 10 });
+    expect(json.result).toEqual({ santasFootage: 10, satelliteSantasLines: [], satelliteGingerbreadLines: [] });
     expect(json.analysisUnavailable).toBe(false);
     expect(json.analysisError).toBeUndefined();
     expect(json.fewShotCount).toBe(0);
     expect(json.fewShotBreakdown).toEqual({ ranking: 'recency' });
     expect(typeof json.photoBase64).toBe('string');
     expect(json.photoMediaType).toBe('image/jpeg');
+  });
+});
+
+describe('POST /api/analyze-photo — satellite-line stripping (#190)', () => {
+  // This route only ever shows the model a street photo (no satellite image
+  // passed to analyzePhoto), yet the model's output schema always asks for
+  // satelliteSantasLines/satelliteGingerbreadLines and can hallucinate
+  // coordinates for a satellite it never saw. Prod incident #190: those
+  // hallucinated lines reached the client, which (pre-fix) counted them as
+  // "satellite evidence" and nulled the live scale. Belt-and-braces: strip
+  // them here too, so a street-only result can never carry satellite lines
+  // regardless of what the client-side gate does.
+  it('empties satelliteSantasLines/satelliteGingerbreadLines even when the model emits them', async () => {
+    analyzePhoto.mockResolvedValueOnce({
+      santasFootage: 40,
+      satelliteSantasLines: [{ points: [[0.1, 0.2], [0.3, 0.4]] }],
+      satelliteGingerbreadLines: [{ points: [[0.5, 0.6], [0.7, 0.8]] }],
+    });
+    const res = await POST(makeReq({ photo: makeFile('house.jpg', 'image/jpeg') }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.result.satelliteSantasLines).toEqual([]);
+    expect(json.result.satelliteGingerbreadLines).toEqual([]);
+    // Everything else the analyzer returned survives untouched.
+    expect(json.result.santasFootage).toBe(40);
+  });
+
+  it('leaves result:null alone on the outage fail-safe path (nothing to strip)', async () => {
+    analyzePhoto.mockRejectedValueOnce(new Error('Claude is down'));
+    const res = await POST(makeReq({ photo: makeFile('house.jpg', 'image/jpeg') }));
+    const json = await res.json();
+    expect(json.result).toBeNull();
   });
 });
 
