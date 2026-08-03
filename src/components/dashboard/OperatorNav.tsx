@@ -14,6 +14,7 @@ type NavItem = { label: string; href: string; match: OperatorArea[] };
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
+  { label: 'Leads', href: '/admin/leads', match: ['leads'] },
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
