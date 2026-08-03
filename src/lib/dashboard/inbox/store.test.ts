@@ -215,10 +215,12 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  closeQuoteInboxNoise,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
   findOrphanedFollowUpItems,
+  findViewOnlyFollowUpItems,
   getReopenCounts,
   listInWorks,
   listOpenItems,
@@ -237,7 +239,7 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
   // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
   // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte']) {
+  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -1376,6 +1378,51 @@ describe('findOrphanedFollowUpItems (#183 BUG 3)', () => {
   });
 });
 
+describe('findViewOnlyFollowUpItems (#187 review FIX 2, #660)', () => {
+  const NORMAL_ID = '77777777-0000-0000-0000-000000000001';
+  const VIEW_ONLY_ID = '77777777-0000-0000-0000-000000000002';
+
+  it('flags a follow-up whose quote id IS in viewOnlyQuoteIds', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-frozen' }],
+      [{ id: 'item-frozen', externalId: VIEW_ONLY_ID }],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual(['item-frozen']);
+  });
+
+  it('does not flag a follow-up whose quote id is NOT in viewOnlyQuoteIds', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-normal' }],
+      [{ id: 'item-normal', externalId: NORMAL_ID }],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up with a null inboxItemId', () => {
+    const result = findViewOnlyFollowUpItems([{ inboxItemId: null }], [], new Set([VIEW_ONLY_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up whose inbox item could not be resolved at all', () => {
+    const result = findViewOnlyFollowUpItems([{ inboxItemId: 'item-unknown' }], [], new Set([VIEW_ONLY_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('mixed batch: only the view_only one comes back', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-normal' }, { inboxItemId: 'item-frozen' }],
+      [
+        { id: 'item-normal', externalId: NORMAL_ID },
+        { id: 'item-frozen', externalId: VIEW_ONLY_ID },
+      ],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual(['item-frozen']);
+  });
+});
+
 // ─── sweepOrphanedFollowUps — I/O wiring (#183 BUG 3) ───────────────────────
 //
 // Three sequential batched queries (follow_ups -> inbox_items -> quotes), then
@@ -1441,6 +1488,62 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     const closeEqCalls = closeCalls.filter((c) => c.method === 'eq');
     expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-dead')).toBe(true);
     expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-alive')).toBe(false);
+  });
+
+  // #187 review FIX 2 (#660): the reconcile-race backstop — a pending
+  // follow-up whose quote is now view_only=true gets closed too, even though
+  // the quote row still exists (it's just excluded from future reconciles).
+  it('closes a pending follow-up whose quote is now view_only=true; a non-view-only quote is left alone', async () => {
+    const VIEW_ONLY_QUOTE_ID = '99999999-1111-1111-1111-111111111111';
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [
+        { id: 'fu-normal', inbox_item_id: 'item-normal' },
+        { id: 'fu-frozen', inbox_item_id: 'item-frozen' },
+      ],
+      error: null,
+    });
+    const { builder: itemsBuilder } = makeBuilder({
+      data: [
+        { id: 'item-normal', external_id: ALIVE_ID, source: 'quotetool' },
+        { id: 'item-frozen', external_id: VIEW_ONLY_QUOTE_ID, source: 'quotetool' },
+      ],
+      error: null,
+    });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: ALIVE_ID, view_only: false },
+        { id: VIEW_ONLY_QUOTE_ID, view_only: true },
+      ],
+      error: null,
+    });
+    const { builder: closeBuilder, calls: closeCalls } = makeBuilder({
+      data: [{ id: 'fu-frozen' }],
+      error: null,
+    });
+
+    let followUpsCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') {
+          followUpsCallCount += 1;
+          return followUpsCallCount === 1 ? pendingBuilder : closeBuilder;
+        }
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') return quotesBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+
+    expect(closed).toBe(1);
+    // The quotes lookup selected view_only alongside id.
+    const selectCall = quotesCalls.find((c) => c.method === 'select');
+    expect(selectCall!.args[0]).toContain('view_only');
+    // closeFollowUp was called for the FROZEN (view_only) item only.
+    const closeEqCalls = closeCalls.filter((c) => c.method === 'eq');
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-frozen')).toBe(true);
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-normal')).toBe(false);
   });
 
   it('returns 0 without querying further when there are no pending follow-ups', async () => {
@@ -1566,5 +1669,186 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     const closed = await sweepOrphanedFollowUps(REASON);
     expect(closed).toBe(0);
     expect(quotesQueried).toBe(false); // no quotetool candidates → no quotes lookup at all
+  });
+});
+
+describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const QUOTE_ID = '99999999-9999-9999-9999-999999999999';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+
+  /** Dispatch `from()` by table, returning the SELECT builder on the first
+   *  `inbox_items` call and the UPDATE builder on the second. */
+  function makeSbForCleanup(opts: {
+    itemsSelect: { data: unknown; error: null | { message: string } };
+    followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    itemsUpdate?: { data: unknown; error: null | { message: string } };
+    activityInsert?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
+    const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
+      opts.itemsUpdate ?? { data: [], error: null },
+    );
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
+      opts.activityInsert ?? { data: null, error: null },
+    );
+    let inboxItemsCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxItemsCallCount += 1;
+        return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
+      }
+      if (table === 'follow_ups') return fuBuilder;
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, itemsSelectCalls, fuCalls, itemsUpdateCalls, activityCalls };
+  }
+
+  // #187 review FIX 1 (#660): the lookup is scoped to the EXACT bare-uuid
+  // external_id — never `.in([bare, suffixed])` — so a sibling
+  // `${quoteId}:color-request` item (a still-live customer ask; the
+  // colour-request flow is deliberately ungated on view_only) can never be
+  // matched by this query, structurally, regardless of what other quotetool
+  // items exist for the same quote.
+  it('looks up ONLY the bare-uuid external_id — never the :color-request one', async () => {
+    const { from, itemsSelectCalls } = makeSbForCleanup({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const sourceEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'source');
+    expect(sourceEqCall!.args).toEqual(['source', 'quotetool']);
+    const idEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'external_id');
+    expect(idEqCall!.args).toEqual(['external_id', QUOTE_ID]);
+    // No `.in()` on the select at all — the old both-shapes lookup is gone.
+    expect(itemsSelectCalls.some((c) => c.method === 'in')).toBe(false);
+  });
+
+  it('closes the pending follow-up and resolves the open item for the bare-uuid external_id', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'unresponded', followed_up_at: null }], error: null },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args).toEqual(['inbox_item_id', ['item-bare']]);
+    const fuUpdateCall = fuCalls.find((c) => c.method === 'update');
+    expect(fuUpdateCall!.args[0]).toEqual({ status: 'done' });
+    const fuReasonEq = fuCalls.find((c) => c.method === 'eq' && c.args[0] === 'reason');
+    expect(fuReasonEq!.args[1]).toBe('quote_sent_no_reply');
+
+    const itemInCall = itemsUpdateCalls.find((c) => c.method === 'in');
+    expect(itemInCall!.args).toEqual(['id', ['item-bare']]);
+    const itemUpdateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(itemUpdateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      expect.objectContaining({ actor: OPERATOR_ID, action: 'completed', inbox_item_id: 'item-bare' }),
+    ]);
+  });
+
+  // #187 review FIX 4 (#660): detail.from must carry the item's PRIOR
+  // status/follow state — inverseOf('completed', detail.from) (lifecycle.ts)
+  // reads detail.from.status specifically and silently falls back to
+  // 'handled' when it's missing or the wrong shape (e.g. a bare string).
+  it('carries the item prior status + follow flag into detail.from (so Reverse restores the right bucket)', async () => {
+    const { from, activityCalls } = makeSbForCleanup({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: '2026-07-01T00:00:00Z' }], error: null },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      expect.objectContaining({
+        detail: { note: 'Quote marked view-only', from: { status: 'handled', wasFollowed: true } },
+      }),
+    ]);
+  });
+
+  it('never re-stamps an already-completed/dismissed item, but still tries to close its follow-up', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: {
+        data: [{ id: 'item-done', status: 'completed', followed_up_at: null }],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    // Follow-up close is still attempted (independent record).
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args).toEqual(['inbox_item_id', ['item-done']]);
+
+    // But the already-resolved item is never re-stamped or logged.
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('does nothing further when no inbox item matches the bare-uuid external_id', async () => {
+    let fromCalls = 0;
+    const { builder } = makeBuilder({ data: [], error: null });
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return builder;
+      },
+    };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+    expect(fromCalls).toBe(1); // only the inbox_items lookup fired
+  });
+
+  it('is non-fatal (fails open, warns) when the inbox_items lookup errors', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { builder } = makeBuilder({ data: null, error: { message: 'db down' } });
+      sbRef.current = { from: (_table: string) => builder };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item lookup failed (non-fatal):',
+        'db down',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('is non-fatal (warns) when the inbox write fails — the toggle response is never blocked', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from, fuCalls } = makeSbForCleanup({
+        itemsSelect: { data: [{ id: 'item-open', status: 'unresponded' }], error: null },
+        itemsUpdate: { data: null, error: { message: 'write failed' } },
+      });
+      sbRef.current = { from };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      // The independent follow-up close was still attempted despite the item
+      // write failing.
+      expect(fuCalls.some((c) => c.method === 'update')).toBe(true);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item resolve failed (non-fatal):',
+        'write failed',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
   });
 });

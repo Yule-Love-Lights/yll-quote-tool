@@ -330,15 +330,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       stampPayload.customer_approved_at = null;
       stampPayload.viewed_at = null;
     }
-    const { error: stampErr } = await sb
+    // #187b TOCTOU: the view_only check above (and the deposit_paid_at check
+    // baked into isRevive's 409 above) are fast-path reads — staff could flip
+    // view_only ON, or the deposit could get paid, between that read and this
+    // write. Re-assert both directly on the write, mirroring the sibling
+    // `.eq('view_only', false)` idiom (approve/decline/pay/request-changes/
+    // staff-approve). `.is('deposit_paid_at', null)` additionally guards a
+    // revive-stamp from clobbering customer_approved_at/viewed_at on a quote
+    // that's now paid. `.select('id')` reports whether we actually won.
+    const { data: stampedRows, error: stampErr } = await sb
       .from('quotes')
       .update(stampPayload)
-      .eq('id', id);
+      .eq('id', id)
+      .eq('view_only', false)
+      .is('deposit_paid_at', null)
+      .select('id');
     if (stampErr) {
       console.error('[api/quotes/:id/send] stamp failed:', stampErr);
       return NextResponse.json(
         { error: `Failed to mark quote sent: ${stampErr.message}` },
         { status: 500 },
+      );
+    }
+    // Lost the race (0 rows): the quote changed out from under us — mirrors
+    // decline/request-changes' undisambiguated 409 (the write guards multiple
+    // conditions at once; no single label is more truthful than another).
+    if (!stampedRows || stampedRows.length === 0) {
+      return NextResponse.json(
+        { error: 'This quote changed before it could be sent — please refresh and try again.', code: 'send-conflict' },
+        { status: 409 },
       );
     }
   }
