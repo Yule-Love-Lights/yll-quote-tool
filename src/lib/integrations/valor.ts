@@ -154,7 +154,8 @@ export async function createHostedPageSale(input: HostedPageInput): Promise<Host
     // outright. We still don't know whether the customer's own BROWSER also
     // follows redirect_url (vs success_url) — if it does, a customer could land
     // on our API endpoint mid-checkout, which is why the route still answers
-    // every human leg with a 302, never a raw JSON/error response. Only when
+    // every human leg with a 200 minimal branded "payment received" page
+    // (#171e), never a redirect or a raw JSON/error response. Only when
     // VALOR_REDIRECT_CAPTURE_URL is set does redirect_url point at our capture
     // route (src/app/api/integrations/valor/redirect-capture/route.ts) instead
     // of success_url. See #161 in the ledger.

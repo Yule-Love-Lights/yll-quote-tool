@@ -21,31 +21,18 @@
 // constructed ONLY inside that guarded branch (a dynamic import), so an
 // unauthenticated hit never touches the database.
 //
-// GET  — the human-browser leg, if Valor's hosted page also follows
-//        redirect_url for the customer. Human requests (GET, or any request
-//        whose Accept prefers text/html) always get a 302: to the portal's
-//        confirming-payment page when an order ref is recoverable, else to
-//        `/`. Never a raw JSON/error response — a real customer's browser must
-//        never see this as a dead end.
+// GET  — the human-browser leg, if Valor's hosted page ever top-level-follows
+//        redirect_url for the customer (unobserved live — this route is
+//        really designed for a background S2S GET/POST; see #171e). Human
+//        requests (GET, or any request whose Accept prefers text/html) always
+//        get a 200 minimal branded "payment received" page — never a
+//        redirect (a redirect could land an anonymous customer on `/`, the
+//        operator login) and never a raw JSON/error response.
 // POST — the S2S leg. Logs the diagnostic headline (see below), attempts the
 //        guarded persistence path, and acknowledges 200 `{ ok: true }`. Never
 //        errors the caller.
-//
-// Order-ref → quote-id recovery for the human-browser redirect reuses
-// parseWebhookEvent's nested-shape-aware pick-list (same function the real
-// webhook uses) but can ONLY resolve a quote id from the `bal_<quoteId>`
-// balance-pay-link convention (the ref embeds the id directly — see the
-// webhook route's balance branch). Deposit order refs are a random `q<hex>`
-// (src/app/api/quotes/[id]/pay/route.ts) with NO embedded quote id; mapping
-// those back for the REDIRECT leg needs the `valor_order_ref` DB lookup the
-// real webhook performs, which this diagnostic redirect path still never does
-// — a deposit-flow human redirect therefore falls back to `/`. The GUARDED
-// PERSISTENCE path below is different: it looks the quote up by
-// `valor_order_ref = invoicenumber` directly (same pattern as the webhook
-// route), which works for either order-ref convention.
 import { NextRequest, NextResponse } from 'next/server';
 import { timingSafeEqual } from 'crypto';
-import { parseWebhookEvent } from '@/lib/integrations/valor';
 
 export const runtime = 'nodejs';
 
@@ -65,10 +52,6 @@ const TOKEN_CANDIDATE_KEYS = [
 // presence only is logged (the actual recovery below reuses parseWebhookEvent's
 // fuller pick-list, imported rather than duplicated).
 const ORDER_REF_CANDIDATE_KEYS = ['invoicenumber', 'invoice_no', 'orderid'];
-
-// The ONLY order-ref shape that embeds a quote id directly (no DB lookup) —
-// exact match to the webhook route's balance-pay-link regex.
-const BAL_ORDER_REF_RE = /^bal_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 const MAX_KEYS = 200;
 const MAX_DEPTH = 6;
@@ -157,14 +140,6 @@ function headerNames(headers: Headers): string[] {
     /* defensive only */
   }
   return names;
-}
-
-// Recover a quote id ONLY via the `bal_<quoteId>` convention — see the
-// file-header note on why the deposit `q<hex>` ref can't be resolved here.
-function recoverQuoteId(orderRef: string | null): string | null {
-  if (!orderRef) return null;
-  const m = BAL_ORDER_REF_RE.exec(orderRef);
-  return m ? m[1]! : null;
 }
 
 // Constant-time compare of the `s` query param against the configured secret.
@@ -259,6 +234,42 @@ async function persistVaultToken(
   }
 }
 
+// #171e — minimal, self-contained branded page for the rare case a real
+// customer's own browser top-level-follows this S2S capture URL (see file
+// header). No external assets/scripts, brand colors only (globals.css
+// --brand-* palette) — just enough to reassure a customer they don't need to
+// do anything else here; their actual confirmation already lives on the
+// portal page reached via success_url.
+const FRIENDLY_PAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment received — Yule Love Lights</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#0B140F; color:#F4ECD8; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .card { max-width:420px; margin:24px; padding:32px 28px; text-align:center; }
+  h1 { margin:0 0 12px; font-size:1.4rem; color:#F5CC7A; }
+  p { margin:0; font-size:1rem; color:#E0D7C1; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Payment received</h1>
+    <p>Thanks — your payment went through. You can close this window.</p>
+  </div>
+</body>
+</html>
+`;
+
+function friendlyPaymentReceivedPage(): NextResponse {
+  return new NextResponse(FRIENDLY_PAGE_HTML, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
 async function handle(req: NextRequest, method: 'GET' | 'POST'): Promise<NextResponse> {
   let accept = '';
   try {
@@ -267,8 +278,8 @@ async function handle(req: NextRequest, method: 'GET' | 'POST'): Promise<NextRes
     /* defensive only */
   }
   // Human-browser leg: always GET, or any request that prefers HTML. Decided
-  // BEFORE the risky parsing below so the catch-all can still redirect a real
-  // customer instead of erroring them.
+  // BEFORE the risky parsing below so the catch-all can still serve a real
+  // customer the friendly page instead of erroring them.
   const isHuman = method === 'GET' || accept.toLowerCase().includes('text/html');
 
   try {
@@ -321,17 +332,12 @@ async function handle(req: NextRequest, method: 'GET' | 'POST'): Promise<NextRes
     // doc above for the exact guard + outcome-logging contract.
     await persistVaultToken(queryObj, bodyObj);
 
-    // Recover the order ref the SAME way the real webhook does — reuse
-    // parseWebhookEvent (not a re-implemented pick-list) against the body
-    // first, then the URL query, then map it to a quote id via the `bal_`
-    // convention only (recoverQuoteId).
-    let orderRef: string | null = rawBody.trim() ? parseWebhookEvent(rawBody).orderRef : null;
-    if (!orderRef && hasQuery) orderRef = parseWebhookEvent(JSON.stringify(queryObj)).orderRef;
-    const quoteId = recoverQuoteId(orderRef);
-
+    // #171e — terminal response shape only: a real customer's actual
+    // confirmation lives on the portal page reached via success_url, so this
+    // defensive human leg no longer needs to resolve a quote id to redirect
+    // to — a generic reassuring page is simpler and can never dead-end on `/`.
     if (isHuman) {
-      const target = quoteId ? `/portal/${quoteId}/approved?confirming=1` : '/';
-      return NextResponse.redirect(new URL(target, req.nextUrl.origin), 302);
+      return friendlyPaymentReceivedPage();
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -343,7 +349,7 @@ async function handle(req: NextRequest, method: 'GET' | 'POST'): Promise<NextRes
       err instanceof Error ? err.message : 'unknown error',
     );
     if (isHuman) {
-      return NextResponse.redirect(new URL('/', req.nextUrl.origin), 302);
+      return friendlyPaymentReceivedPage();
     }
     return NextResponse.json({ ok: true });
   }
