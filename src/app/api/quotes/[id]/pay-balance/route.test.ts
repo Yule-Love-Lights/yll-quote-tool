@@ -45,8 +45,11 @@ type Row = Record<string, unknown>;
 // fires right before the Valor call as a TOCTOU re-check. `single()` stays
 // the FIRST fetch's terminal (unchanged); `maybeSingle()` is the re-check's
 // terminal — defaults to mirroring the same row's view_only, unless
-// `opts.recheckViewOnly` overrides it to simulate a flip mid-request.
-function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean } = {}) {
+// `opts.recheckViewOnly` overrides it to simulate a flip mid-request, or
+// `opts.recheckDeleted` (#187 review FIX 3, #660) forces `data: null` to
+// simulate the row being deleted BETWEEN the first fetch and the re-check
+// (the first fetch still succeeds normally with `quote`).
+function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean; recheckDeleted?: boolean } = {}) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
@@ -54,7 +57,7 @@ function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean } = {}) {
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({
-      data: quote ? { view_only: opts.recheckViewOnly ?? quote.view_only } : null,
+      data: quote && !opts.recheckDeleted ? { view_only: opts.recheckViewOnly ?? quote.view_only } : null,
       error: null,
     }),
   });
@@ -119,6 +122,19 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('view-only');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187 review FIX 3 (#660): the re-check must fail CLOSED, not open, when
+  // the quote row is gone by the time of the re-check — `recheck?.view_only`
+  // is equally falsy for "row exists, unflagged" and "row doesn't exist",
+  // so a deleted quote must 404 rather than silently proceed to Valor.
+  it('404s when the quote row is gone by the time of the pre-Valor re-check', async () => {
+    sbRef.current = makeSb({ ...QUOTE }, { recheckDeleted: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(404);
+    expect(json.error).toMatch(/not found/i);
     expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 
