@@ -1,9 +1,24 @@
 // Tests for the #161 redirect-capture route. Covers: JSON + form body
 // parsing, the names-only headline log (never values), malformed-body safety
-// (still 200), the human-browser leg's friendly 200 page (#171e), the guarded
-// token-persistence path (added once the channel was confirmed live
-// 2026-07-22 — see route.ts), and the no-unconditional-supabase-construction
-// guarantee.
+// (still 200), the human-browser leg's conditional response — a 302 to the
+// real portal confirmation when the order ref recovers a quote id, else the
+// #171e friendly 200 page — the guarded token-persistence path (added once
+// the channel was confirmed live 2026-07-22 — see route.ts), and the
+// no-unconditional-supabase-construction guarantee.
+//
+// NOTE (deviation from the original build brief): the brief's test list asked
+// for a "GET with recoverable dep_<uuid> order ref". There is NO `dep_`
+// prefix anywhere in this codebase — grepped clean. The only order-ref
+// convention that embeds a quote id directly (no DB lookup) is the balance
+// pay-link's `bal_<quoteId>` (src/app/api/integrations/valor/webhook/route.ts,
+// src/app/api/quotes/[id]/pay-balance/route.ts). Deposit order refs are a
+// random `q<hex>` (src/app/api/quotes/[id]/pay/route.ts) with no embedded id;
+// recovering THOSE for the human-browser redirect leg needs the
+// `valor_order_ref` DB lookup the real webhook does, which this route's
+// redirect path intentionally never performs — that's exactly the
+// "unrecoverable" case that now gets the friendly page. So these tests
+// exercise `bal_<uuid>` instead of the brief's `dep_<uuid>`, matching the
+// route's real behavior.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -165,7 +180,34 @@ describe('POST /api/integrations/valor/redirect-capture', () => {
 });
 
 describe('GET /api/integrations/valor/redirect-capture — human-browser leg (#171e)', () => {
-  it('a GET (html Accept implied) gets a 200 friendly branded page, never a redirect', async () => {
+  it('redirects to the portal approved page when a bal_<uuid> order ref is recoverable via the query string', async () => {
+    const uuid = '11111111-2222-4333-8444-555555555555';
+    const res = await GET(
+      req({ url: `https://quote.example.com/api/integrations/valor/redirect-capture?invoicenumber=bal_${uuid}` }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`https://quote.example.com/portal/${uuid}/approved?confirming=1`);
+  });
+
+  it('redirects to the portal approved page when a bal_<uuid> order ref is recoverable via a JSON body', async () => {
+    const uuid = '22222222-3333-4444-8888-666666666666';
+    const body = JSON.stringify({ data: { invoice_no: `bal_${uuid}`, response_code: '00' } });
+    const res = await GET(req({ body, headers: { 'content-type': 'application/json' } }));
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`https://quote.example.com/portal/${uuid}/approved?confirming=1`);
+  });
+
+  it('a POST that prefers text/html (a browser-style Accept) and recovers a quote id also redirects to the portal', async () => {
+    const uuid = '33333333-4444-5555-9999-777777777777';
+    const body = JSON.stringify({ order_id: `bal_${uuid}`, response_code: '00' });
+    const res = await POST(
+      req({ body, headers: { 'content-type': 'application/json', accept: 'text/html,application/xhtml+xml' } }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`https://quote.example.com/portal/${uuid}/approved?confirming=1`);
+  });
+
+  it('a GET with no order ref at all gets the 200 friendly branded page, never a redirect to / (the operator login)', async () => {
     const res = await GET(req({}));
     expect(res.status).toBe(200);
     expect(res.headers.get('location')).toBeNull();
@@ -175,29 +217,43 @@ describe('GET /api/integrations/valor/redirect-capture — human-browser leg (#1
     expect(html).toContain('close this window');
   });
 
-  it('the friendly page renders regardless of whether an order ref is present in the query', async () => {
+  it('an unrecoverable (non-bal_) order ref, e.g. a deposit q<hex> ref, gets the friendly page instead of / (no DB lookup performed)', async () => {
     const res = await GET(
-      req({ url: 'https://quote.example.com/api/integrations/valor/redirect-capture?invoicenumber=bal_11111111-2222-4333-8444-555555555555' }),
+      req({ url: 'https://quote.example.com/api/integrations/valor/redirect-capture?invoicenumber=qaf7affe2379dfd8a' }),
     );
     expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
     const html = await res.text();
     expect(html).toContain('Payment received');
   });
 
-  it('a POST that prefers text/html (a browser-style Accept) is also treated as the human leg — 200 friendly page, not JSON', async () => {
-    const body = JSON.stringify({ order_id: 'bal_33333333-4444-5555-9999-777777777777', response_code: '00' });
-    const res = await POST(
-      req({ body, headers: { 'content-type': 'application/json', accept: 'text/html,application/xhtml+xml' } }),
-    );
+  it('an unexpected thrown error mid-request (html leg) still gets the friendly 200 page, never / (belt-and-suspenders catch-all)', async () => {
+    // Force the outer catch by making the request's own headers.get() throw —
+    // the leading accept-read is separately try/caught (defaults accept='',
+    // and method GET already makes isHuman true regardless), but the later
+    // `req.headers.get('content-type')` inside the main try is NOT guarded,
+    // so this genuinely exercises the function-level catch block rather than
+    // mocking route internals.
+    const throwingReq = {
+      text: async () => '',
+      headers: { get: () => { throw new Error('boom'); } },
+      nextUrl: new URL('https://quote.example.com/api/integrations/valor/redirect-capture'),
+    } as unknown as NextRequest;
+
+    const res = await GET(throwingReq);
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(res.headers.get('location')).toBeNull();
     const html = await res.text();
     expect(html).toContain('Payment received');
   });
 
-  it('a non-html POST (the real S2S leg) keeps the existing JSON ack byte-preserved', async () => {
+  it('a non-html POST (the real S2S leg) keeps the existing JSON ack byte-preserved, even with a recoverable order ref', async () => {
+    const uuid = '44444444-5555-6666-8888-999999999999';
     const res = await POST(
-      req({ body: JSON.stringify({ response_code: '00' }), headers: { 'content-type': 'application/json' } }),
+      req({
+        body: JSON.stringify({ order_id: `bal_${uuid}`, response_code: '00' }),
+        headers: { 'content-type': 'application/json' },
+      }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
