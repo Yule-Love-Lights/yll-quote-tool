@@ -721,54 +721,6 @@ export async function POST(req: NextRequest) {
     console.error('[api/integrations/valor/webhook] referral code stamp failed:', err);
   }
 
-  // Vault registration (#161 "both vaults" decision, 2026-07-22): in ADDITION to
-  // the raw payment token already saved via the redirect_url capture route
-  // (quotes.valor_vault_token), Jason wants each card ALSO registered into
-  // Valor's OWN Vault product — it shows on their dashboard, is chargeable from
-  // their Virtual Terminal, and survives independent of our tool. Placed here,
-  // alongside the other independent post-claim side effects (referral accrual,
-  // referral code stamp), because it too needs nothing from job creation below
-  // and must run exactly once per booking (guarded by the fill-null update).
-  // Best-effort + fail-open: a vault hiccup must NEVER affect the booking
-  // response Valor is waiting on. Fires for is_test quotes too — deliberate,
-  // the armed $1 probe test rides a test-ish quote, and the flag itself
-  // (isVaultRegisterEnabled) is operator-armed, so there's no separate is_test
-  // gate here.
-  try {
-    if (isVaultRegisterEnabled() && !quote.valor_vault_customer_id && event.txnId) {
-      const vaultResult = await registerCardInVault({
-        customerName: quote.customer_name,
-        email: quote.customer_email,
-        phone: quote.customer_phone,
-        txnId: event.txnId,
-      });
-      if (vaultResult.ok) {
-        const { error: vaultUpdateErr } = await sb
-          .from('quotes')
-          .update({ valor_vault_customer_id: vaultResult.vaultCustomerId })
-          .eq('id', quote.id)
-          .is('valor_vault_customer_id', null);
-        if (vaultUpdateErr) {
-          console.warn(`[valor/webhook] vault register failed: ${vaultUpdateErr.message}`);
-        } else {
-          console.log(
-            `[valor/webhook] vault registered: customer ${vaultResult.vaultCustomerId} for quote ${quote.id}`,
-          );
-        }
-      } else {
-        console.warn(`[valor/webhook] vault register failed: ${vaultResult.reason}`);
-      }
-    }
-  } catch (err) {
-    // Second belt — registerCardInVault itself never throws (always resolves
-    // {ok:false, reason} on failure), but this guards the WHOLE block
-    // (including the DB update) so an unforeseen throw here can never affect
-    // the booking response.
-    console.error(
-      `[valor/webhook] vault register failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-    );
-  }
-
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────
   // Deposit paid = booked = a Job exists. We won the atomic claim, so this is
   // the single booking event; createJobFromQuote is itself idempotent (no-op if
@@ -967,6 +919,64 @@ export async function POST(req: NextRequest) {
   }
   if (autoPOR.status === 'rejected') {
     console.error('[api/integrations/valor/webhook] auto-PO trigger failed:', autoPOR.reason);
+  }
+
+  // Vault registration (#161 "both vaults" decision, 2026-07-22): in ADDITION to
+  // the raw payment token already saved via the redirect_url capture route
+  // (quotes.valor_vault_token), Jason wants each card ALSO registered into
+  // Valor's OWN Vault product — it shows on their dashboard, is chargeable from
+  // their Virtual Terminal, and survives independent of our tool. Best-effort +
+  // fail-open: a vault hiccup must NEVER affect the booking response Valor is
+  // waiting on. Fires for is_test quotes too — deliberate, the armed $1 probe
+  // test rides a test-ish quote, and the flag itself (isVaultRegisterEnabled)
+  // is operator-armed, so there's no separate is_test gate here.
+  //
+  // #171f — deliberately placed AFTER the customer notifications above (not
+  // alongside the other independent post-claim side effects it used to sit
+  // with, and not folded into the Promise.allSettled batch above — same
+  // attempts/logging/persistence, just reordered): registerCardInVault can
+  // take up to 2×15s (addcustomer + addpaymentprofiletxn, each with its own
+  // hard timeout — src/lib/integrations/valorVault.ts), and running it before
+  // the receipt SMS/email delayed the customer's booking confirmation by up to
+  // ~30s whenever Valor's Vault API was slow. Still awaited (not
+  // fire-and-forget) so the serverless invocation isn't killed mid-call — this
+  // changes ONLY when it runs relative to the notifications, not the total
+  // function duration (no maxDuration/runtime override is set on this route,
+  // so the reorder can't push the handler past a budget that didn't already
+  // exist).
+  try {
+    if (isVaultRegisterEnabled() && !quote.valor_vault_customer_id && event.txnId) {
+      const vaultResult = await registerCardInVault({
+        customerName: quote.customer_name,
+        email: quote.customer_email,
+        phone: quote.customer_phone,
+        txnId: event.txnId,
+      });
+      if (vaultResult.ok) {
+        const { error: vaultUpdateErr } = await sb
+          .from('quotes')
+          .update({ valor_vault_customer_id: vaultResult.vaultCustomerId })
+          .eq('id', quote.id)
+          .is('valor_vault_customer_id', null);
+        if (vaultUpdateErr) {
+          console.warn(`[valor/webhook] vault register failed: ${vaultUpdateErr.message}`);
+        } else {
+          console.log(
+            `[valor/webhook] vault registered: customer ${vaultResult.vaultCustomerId} for quote ${quote.id}`,
+          );
+        }
+      } else {
+        console.warn(`[valor/webhook] vault register failed: ${vaultResult.reason}`);
+      }
+    }
+  } catch (err) {
+    // Second belt — registerCardInVault itself never throws (always resolves
+    // {ok:false, reason} on failure), but this guards the WHOLE block
+    // (including the DB update) so an unforeseen throw here can never affect
+    // the booking response.
+    console.error(
+      `[valor/webhook] vault register failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    );
   }
 
   return NextResponse.json({
