@@ -751,6 +751,23 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     });
     packages = kept.some((pkg) => pkg.includedItemIds.length > 0) ? kept : allPackages;
   }
+  // Same-price tier dedupe (operator screenshot: Tier 2 "Full Festive" and
+  // Tier 3 "The Full Yule" both priced $2,185.88 — two identical-looking cards
+  // confused the customer). Runs AFTER the #134 gate filter above, so equality
+  // is judged only among tiles that would actually render. Scoped to the
+  // preset ladder (A/B/C) only — package D (the empty Build-Your-Own
+  // placeholder, or a non-empty staff recommendation) is NEVER hidden here,
+  // same carve-out as #134. Keeps the FIRST of any equal-priced run (A before
+  // B before C), so A===B===C collapses to just A — this can never violate the
+  // "packages never all vanish" invariant above, since the first of any tie is
+  // always kept.
+  const seenPresetTotals = new Set<number>();
+  packages = packages.filter((pkg) => {
+    if (pkg.id !== 'A' && pkg.id !== 'B' && pkg.id !== 'C') return true;
+    if (seenPresetTotals.has(pkg.total)) return false;
+    seenPresetTotals.add(pkg.total);
+    return true;
+  });
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
