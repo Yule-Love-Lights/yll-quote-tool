@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 45 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 64 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -11,26 +11,51 @@
 -- one). The dated migrations remain the append-only source of truth for
 -- HOW the schema got here; this file is WHERE it landed.
 --
--- Regenerated: 2026-07-03 @ commit f4b398d, reconciling every migration
--- through 2026-07-02-designs-photo-title.sql (45 files). Previous refresh
--- (2026-06-15) covered only 6 of the now-20 tables — see the superseded
--- header this replaces in git history.
+-- Regenerated: 2026-08-03 @ commit bf2ed0945619cc138f240272760882f646a23279,
+-- reconciling every migration through
+-- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
+-- Previous refresh (2026-07-03 @ commit f4b398d) covered files through
+-- 2026-07-02-designs-photo-title.sql; this pass folds in the 21 dated files
+-- that landed since (2026-07-06 → 2026-08-03). Three of those 21
+-- (2026-07-11-permanent-bistro-service-type.sql, 2026-07-16-legacy-rebook.sql,
+-- 2026-07-28-customers-manual-years.sql) had already been hand-folded into
+-- this file out of band, one PR at a time, before this regen — see this
+-- file's own `git log`; this pass reconciles the remaining 18 and brings the
+-- header/roster current for all 21. Previous refresh before that (2026-06-15)
+-- covered only 6 of the tables — see the superseded headers this replaces in
+-- git history.
 --
--- Tables (20 LIVE + 2 REMOVED tombstones below; RLS ENABLED on all 20 live
--- ones — #90 defense in depth). Two RLS postures coexist by design (see
+-- Tables (30 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 29 of the 30
+-- live ones — #90 defense in depth). The one exception, inventory_orders,
+-- ships RLS DISABLED — see its own posture bullet below, not silently
+-- "fixed" here. Three RLS postures coexist by design (see
 -- migrations/2026-06-28-dashboard-tables.sql header + the W2-006 note in
 -- 2026-06-28-enable-rls-all-tables.sql):
---   * "classic" PII tables (quotes, designs, training_houses, reference_assets,
---     training_examples, app_settings, custom_uploads, inventory_catalog,
---     inventory_on_hand, customers, properties, jobs, invoices,
---     quote_view_events): RLS enabled with NO policies. Every path uses the
---     service-role client, which bypasses RLS — anon/authenticated get nothing.
+--   * "classic" PII/service-role-only tables (quotes, designs, training_houses,
+--     reference_assets, training_examples, app_settings, custom_uploads,
+--     inventory_catalog, inventory_on_hand, customers, properties, jobs,
+--     invoices, quote_view_events, permanent_training_examples, referrals,
+--     website_leads, self_serve_estimates, self_serve_analyzer_budget,
+--     job_material_actuals, bot_pending_actions, bot_audit_log, bot_users):
+--     RLS enabled with NO policies. Every path uses the service-role client,
+--     which bypasses RLS — anon/authenticated get nothing.
 --   * dashboard tables (dashboard_contacts, inbox_items, follow_ups,
 --     dashboard_activity, integration_tokens, sync_cursors): RLS enabled WITH
 --     explicit policies — authenticated operators get SELECT (+UPDATE on the
 --     three operator tables); integration_tokens/sync_cursors are deny-all to
 --     authenticated; service_role gets ALL on every table (bypasses RLS
 --     anyway; policy exists for documentation/intent).
+--   * inventory_orders (added 2026-07-06-inventory-orders.sql, table #21
+--     below): RLS DISABLED entirely — NOT "enabled with no policies" like its
+--     inventory_catalog / inventory_on_hand siblings, despite that migration's
+--     own header comment claiming it "matches" them. That claim is stale:
+--     inventory_catalog and inventory_on_hand were both swept to RLS-ENABLED
+--     by 2026-06-28-enable-rls-all-tables.sql, which predates
+--     inventory_orders' creation by over a week and so never touched it. This
+--     file mirrors what the real dated migrations actually did — flagged as a
+--     live discrepancy (2026-08-03 regen, ledger #188), not corrected;
+--     correcting it needs its own dated migration + a product call, not a
+--     silent edit here.
 --
 --    1. quotes              — one per quote
 --    2. quote_view_events   — per-view read-receipt log (2026-06-25)
@@ -55,6 +80,26 @@
 --   19. integration_tokens  — Gmail OAuth, server-only (#58; not yet read/
 --       written anywhere in src/ as of this regen — table exists, wiring doesn't)
 --   20. sync_cursors        — per-source sync state/health, server-only (#58)
+--   21. inventory_orders    — on-order ledger for the supplier auto PO (P8/
+--       #110 W7-002; 2026-07-06). RLS DISABLED — see the posture note above.
+--   22. permanent_training_examples — the PERMANENT-lighting AI training
+--       loop, satellite-primary embedding + retrieval (#141; 2026-07-08)
+--   23. referrals           — referral program ledger: link/mention
+--       attribution, redemption columns (2026-07-11), 2yr credit expiry
+--       (2026-07-11) (ledger #41; 2026-07-10)
+--   24. website_leads       — WordPress quote-request form intake + GHL sync
+--       retry queue/bookkeeping (2026-07-11, retry cols 2026-07-12)
+--   25. self_serve_estimates — accuracy telemetry for the public self-serve
+--       estimator (2026-07-19)
+--   26. self_serve_analyzer_budget — daily aggregate spend cap (all-IPs) for
+--       the self-serve estimator (2026-07-20)
+--   27. job_material_actuals — field-reported actual material usage per job,
+--       text-ops bot Phase 2 (#168; 2026-07-22)
+--   28. bot_pending_actions — text-ops bot confirm-yes gate memory (#168;
+--       2026-07-22)
+--   29. bot_audit_log       — text-ops bot write audit trail (#168; 2026-07-22)
+--   30. bot_users           — text-ops bot roster/roles, managed from
+--       Settings → Bot team (#168; 2026-07-23)
 --
 -- Sequences: quote_number_seq, job_number_seq, invoice_number_seq (all
 -- START WITH 1000) + the shared allocate_display_number(seq_name) RPC.
@@ -83,8 +128,13 @@
 -- AFTER that migration (jobs, invoices, customers, properties, inventory_*
 -- were all created earlier the same day but are also listed in the enable-rls
 -- statement; the 6 dashboard tables created later that day ship RLS-enabled
--- from their own CREATE). So a fresh in-order rebuild is safe: no table is
--- left RLS-disabled at the end. The FOOTGUN W2-006 actually flags is
+-- from their own CREATE). So a fresh in-order rebuild THROUGH 2026-06-28 is
+-- safe: no table live as of that date is left RLS-disabled at the end. (This
+-- no longer holds for the file as a WHOLE as of the 2026-08-03 regen —
+-- inventory_orders, created 2026-07-06, ships RLS-disabled; see its own
+-- posture bullet near the top of this file. Not a W2-006-shaped footgun
+-- (no later blanket-enable migration exists to have "already covered" it) —
+-- a distinct, newer gap.) The FOOTGUN W2-006 actually flags is
 -- different — re-running any ONE of the older create-table files by itself
 -- (e.g. re-importing the Thunder catalog per inventory-catalog.sql's own
 -- instructions) still re-disables RLS on that single table, because each
@@ -170,7 +220,26 @@ alter table quotes
   add column if not exists is_test boolean not null default false,
   -- 2026-07-16 Legacy rebook flag (#155) — quotes migrated from last year's
   -- Jobber data get a slightly different portal + an admin detail line.
-  add column if not exists legacy_rebook boolean not null default false;
+  add column if not exists legacy_rebook boolean not null default false,
+  -- 2026-07-22 Valor Vault's own customer id (#161 "both vaults" decision),
+  -- distinct from valor_vault_token (the raw payment token captured via the
+  -- redirect_url path).
+  add column if not exists valor_vault_customer_id text,
+  -- 2026-07-28 View-only quotes (#176) — a quote staff created purely so a
+  -- customer can browse a designed scene (colors, prices) WITHOUT being able
+  -- to approve or pay a real deposit. Every approve/pay/decline/request-
+  -- changes surface must gate on this as a POSITIVE match (view_only = true),
+  -- never negative, so a normal quote is unaffected (AGENTS.md seam-gate
+  -- rule). Applied out-of-band directly on prod; this file documents it.
+  add column if not exists view_only boolean not null default false,
+  -- 2026-07-29 Deposit/balance card-decline notification (#175) — the webhook
+  -- route stamps these so a declined charge no longer vanishes into a
+  -- console.warn; deposit_decline_notified_at is the once-per-hour staff-
+  -- alert throttle claim. Applied out-of-band directly on prod; this file
+  -- documents it.
+  add column if not exists deposit_declined_at timestamptz,
+  add column if not exists deposit_decline_code text,
+  add column if not exists deposit_decline_notified_at timestamptz;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -670,6 +739,20 @@ create trigger customers_updated_at_trigger
   before update on public.customers
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-07-10 Customer-facing referral identity (ledger #41 referral program).
+-- referral_code: the short URL-safe code behind /refer/<code> (ensureReferralCode
+-- create-if-missing, race-safe via the UNIQUE constraint). Null until a
+-- customer's code is first ensured (the booked-page referral section, or the
+-- GHL stamp).
+-- referral_photo_optout: when true, the /refer/<code> landing page skips
+-- using this customer's own house photo as the hero (falls back to a generic
+-- completed-work gallery photo instead). Defaults false (opt-out, not
+-- opt-in).
+alter table public.customers
+  add column if not exists referral_code text unique;
+alter table public.customers
+  add column if not exists referral_photo_optout boolean not null default false;
+
 -- 2026-07-28 Customer tenure (#178) staff-editable manual override years,
 -- unioned with the auto-derived set (deposit-paid + legacy-rebook years) in
 -- src/lib/customerTenure.ts.
@@ -810,6 +893,13 @@ create trigger jobs_updated_at_trigger
   before update on public.jobs
   for each row execute function public.jobs_set_updated_at();
 
+-- 2026-07-22 Stock true-up idempotency claim (text-ops bot Phase 2, #168):
+-- the same guard idiom as stock_decremented_at above. NULL = actuals never
+-- recorded; set once the crew's reported usage has trued up on-hand stock, so
+-- a retry/double-tap/two-crew-members submission can never true up twice.
+alter table public.jobs
+  add column if not exists materials_actualized_at timestamptz;
+
 -- allocate_display_number RPC — SECURITY DEFINER, locked to the known
 -- sequence allowlist (quote/job/invoice) so it can't bump an arbitrary
 -- relation. Defined here in its FINAL form (the invoices migration below is
@@ -906,6 +996,21 @@ drop trigger if exists invoices_updated_at_trigger on public.invoices;
 create trigger invoices_updated_at_trigger
   before update on public.invoices
   for each row execute function public.invoices_set_updated_at();
+
+-- 2026-07-24 Auto-charge arming checklist (#170):
+--   valor_txn_log — jsonb array of retired charge records. When an amend
+--     reopens a PAID invoice (new balance due), the live
+--     valor_balance_txn_id/valor_receipt_url move here so the new charge
+--     cycle starts clean, while the old txn stays reconcilable.
+--   payment_preference — how this customer pays the balance:
+--     'card_on_file' | 'cash_check' | null (unset). 'cash_check' replaces the
+--     one-click charge button with an explicit override so nobody charges a
+--     card the customer said they'd settle in cash.
+alter table public.invoices add column if not exists valor_txn_log jsonb;
+alter table public.invoices add column if not exists payment_preference text;
+alter table public.invoices drop constraint if exists invoices_payment_preference_check;
+alter table public.invoices add constraint invoices_payment_preference_check
+  check (payment_preference is null or payment_preference in ('card_on_file', 'cash_check'));
 
 
 -- =====================================================================
@@ -1008,6 +1113,21 @@ alter table public.inbox_items drop constraint if exists inbox_items_status_chec
 alter table public.inbox_items add constraint inbox_items_status_check
   check (status in ('unresponded','handled','dismissed','completed'));
 
+-- 2026-07-06 CUSTOMER inbound-touch time (#110 W7-003), tracked separately
+-- from last_message_at (which gets overwritten by our own outbound reply on
+-- every reconcile). Response-time metrics read handled_at − last_inbound_at,
+-- falling back to last_message_at for historical rows whose true inbound
+-- time the old bug already overwrote. Nullable, no backfill, no index (read
+-- in bulk, computed in JS).
+alter table public.inbox_items add column if not exists last_inbound_at timestamptz;
+
+-- 2026-07-07 Reply double-submit guard: POST /api/dashboard/reply atomically
+-- claims this column BEFORE firing the real GHL SMS/email send, so a network
+-- retry or a stale second operator tab can't double-send. Released back to
+-- null on a genuine send failure. Nullable, no backfill, no index (read/
+-- written only by id).
+alter table public.inbox_items add column if not exists reply_claimed_at timestamptz;
+
 -- The /inbox list (open items, newest first) + the escalation cron scan.
 create index if not exists inbox_items_status_last_message_idx
   on public.inbox_items (status, last_message_at desc);
@@ -1085,6 +1205,15 @@ create table if not exists public.dashboard_activity (
 
 create index if not exists dashboard_activity_inbox_item_idx on public.dashboard_activity (inbox_item_id);
 create index if not exists dashboard_activity_created_at_idx on public.dashboard_activity (created_at desc);
+-- 2026-08-03 (#189): partial index over the non-firehose actions only
+-- ('ingested'/'escalated' excluded — 99.86% of the table's ~937k rows). Serves
+-- getReopenCounts()'s `action = 'handled' | 'reopened'` scans (11.6s full seq
+-- scan measured on prod pre-index → the dominant cost of the #185
+-- [inbox-timing] page-load figure) and listActivity's NOT action IN
+-- ('ingested','escalated') filter.
+create index if not exists dashboard_activity_operator_actions_idx
+  on public.dashboard_activity (action, created_at desc)
+  where action not in ('ingested', 'escalated');
 
 alter table public.dashboard_activity enable row level security;
 drop policy if exists dashboard_activity_select_auth on public.dashboard_activity;
@@ -1163,3 +1292,469 @@ create trigger integration_tokens_updated_at before update on public.integration
 drop trigger if exists sync_cursors_updated_at on public.sync_cursors;
 create trigger sync_cursors_updated_at before update on public.sync_cursors
   for each row execute function public.dashboard_set_updated_at();
+
+
+-- =====================================================================
+-- Tables 22-31 — everything that landed after the 2026-07-03 regen
+-- (2026-08-03 regen, ledger #188). Back to the "classic" service-role-only
+-- posture (RLS enabled, no policies) except inventory_orders — see its own
+-- note. Not part of the #58 dashboard-tables banner above; sequenced here
+-- purely by migration date.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 22. inventory_orders  (P8, #110 W7-002 — supplier auto purchase order)
+--     On-order ledger. One row per SENT purchase order. Recording an order
+--     BEFORE the future demand calc subtracts it (buildSupplierPurchaseOrder)
+--     means a re-send lists only the NEW shortfall, not the full cumulative
+--     one. `lines` = [{sku, name, qty}] as ordered; `received_lines` =
+--     [{sku, qty}] set at receive time (may differ from `lines` on a short
+--     shipment).
+--
+--     RLS DISABLED (not "enabled, no policies") — see the posture note at
+--     the top of this file. A real discrepancy with its inventory_catalog /
+--     inventory_on_hand siblings, faithfully carried over from
+--     2026-07-06-inventory-orders.sql, not corrected here.
+-- ---------------------------------------------------------------------
+create table if not exists inventory_orders (
+  id              uuid primary key default gen_random_uuid(),
+  created_at      timestamptz not null default now(),
+  sent_at         timestamptz,
+  channel         text not null check (channel in ('manual', 'auto-cron', 'auto-webhook')),
+  status          text not null default 'open' check (status in ('open', 'received', 'cancelled')),
+  received_at     timestamptz,
+  lines           jsonb not null,
+  received_lines  jsonb,
+  job_count       int not null default 0
+);
+
+alter table inventory_orders disable row level security;
+
+create index if not exists inventory_orders_status_open_idx
+  on inventory_orders (status)
+  where status = 'open';
+
+
+-- ---------------------------------------------------------------------
+-- 23. permanent_training_examples  (#141 — the PERMANENT-lighting AI
+--     training loop; mirrors #8 Stage A/B for holiday, but SEPARATE storage +
+--     retrieval — the two verticals teach two different analyzers with
+--     different ground-truth shapes.)
+--     One row = one operator-confirmed "the AI traced X, staff confirmed Y"
+--     snapshot: the FOUR satellite side channels (front/left/right/back) as
+--     ground truth, plus confirmed street runs + the AI's original pass for
+--     provenance. Soft links (quote_id/design_id) so deleting the quote/
+--     design must NOT delete the example. SATELLITE-PRIMARY: the embedding
+--     is the satellite image (the analyzer's primary input), so
+--     satellite_photo_base64 is NOT NULL; street is optional. Reached only
+--     via the service-role client; RLS enabled with no policies (#90).
+-- ---------------------------------------------------------------------
+create table if not exists permanent_training_examples (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  quote_id      uuid references quotes(id) on delete set null,
+  design_id     uuid references designs(id) on delete set null,
+  source        text not null default 'manual',     -- 'auto-send' | 'manual'
+  excluded      boolean not null default false,     -- park an oddball out of the few-shot
+  notes         text,
+  address       text,
+  street_photo_base64    text,
+  street_media_type      text,
+  satellite_photo_base64 text not null,
+  satellite_media_type   text not null,
+  satellite_feet_per_pixel numeric,
+  original_analysis      jsonb,    -- raw PermanentSatelliteAnalysis; NULL = manual design, no AI run
+  final_satellite_lines   jsonb not null,            -- PermanentSatelliteLines shape — the ground truth
+  final_street_runs       jsonb,                     -- PermanentStreetRun[], when present
+  final_inputs            jsonb,   -- per-side footage/corners/accessories context (not re-taught directly)
+  embedding               vector(1024)
+);
+
+alter table permanent_training_examples drop constraint if exists permanent_training_examples_source_check;
+alter table permanent_training_examples add constraint permanent_training_examples_source_check
+  check (source in ('auto-send', 'manual'));
+
+alter table permanent_training_examples enable row level security;
+
+create index if not exists permanent_training_examples_created_at_idx
+  on permanent_training_examples (created_at desc);
+
+-- Upsert semantics: a quote keeps at most ONE example per source (mirrors
+-- training_examples_quote_source_uniq exactly; NOT partial — PostgREST's ON
+-- CONFLICT can't infer a partial unique index; NULL quote_ids are distinct
+-- under Postgres unique semantics anyway).
+create unique index if not exists permanent_training_examples_quote_source_uniq
+  on permanent_training_examples (quote_id, source);
+
+create or replace function public.permanent_training_examples_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists permanent_training_examples_updated_at_trigger on public.permanent_training_examples;
+create trigger permanent_training_examples_updated_at_trigger
+  before update on public.permanent_training_examples
+  for each row execute function public.permanent_training_examples_set_updated_at();
+
+-- Cosine-similarity retrieval on the SATELLITE embedding — twin of
+-- match_training_examples, same shape, own table.
+create or replace function match_permanent_training_examples(
+  query_embedding vector(1024),
+  match_count int
+)
+returns setof permanent_training_examples
+language sql
+stable
+as $$
+  select *
+  from permanent_training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- 24. referrals  (ledger #41 — referral program)
+--     Locked product (Naldo, S30): the referrer earns $125 next-season
+--     credit per booked friend, stackable (one row per friend, no cap). The
+--     friend gets two free 16" spritzers on their first booked install
+--     (redemption UI, separate). Attribution is BOTH ways: 'link' (the
+--     referrer's personal /refer/<code> link; referee_quote_id NULL at
+--     creation — a lead capture before any quote exists) or 'mention' (staff
+--     picks an existing customer as "Referred by" while building a new
+--     quote; referee_quote_id known immediately). accrueOnBooking
+--     (src/lib/referrals.ts) flips pending → booked when the referee_quote_id's
+--     deposit is paid — matches ONLY on referee_quote_id, so a 'link' row
+--     never auto-accrues on its own. UNIQUE(referee_quote_id) is the
+--     once-per-referee idempotency backstop. Reached only via the
+--     service-role client; RLS enabled with no policies (#90).
+-- ---------------------------------------------------------------------
+create table if not exists public.referrals (
+  id                    uuid primary key default gen_random_uuid(),
+  referrer_customer_id  uuid references public.customers(id) on delete set null,
+  referee_quote_id      uuid references public.quotes(id) on delete set null,
+  referee_contact_name  text,
+  referee_contact_email text,
+  referee_contact_phone text,
+  source                text not null,
+  status                text not null default 'pending',
+  amount_usd            numeric not null default 125,
+  booked_at             timestamptz,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+
+alter table public.referrals drop constraint if exists referrals_source_check;
+alter table public.referrals add constraint referrals_source_check
+  check (source in ('link', 'mention'));
+
+alter table public.referrals drop constraint if exists referrals_status_check;
+alter table public.referrals add constraint referrals_status_check
+  check (status in ('pending', 'booked', 'credited'));
+
+-- The once-per-referee idempotency backstop (see header above).
+alter table public.referrals drop constraint if exists referrals_referee_quote_id_key;
+alter table public.referrals add constraint referrals_referee_quote_id_key unique (referee_quote_id);
+
+create index if not exists referrals_referrer_customer_id_idx
+  on public.referrals (referrer_customer_id);
+
+alter table public.referrals enable row level security;
+
+create or replace function public.referrals_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists referrals_updated_at_trigger on public.referrals;
+create trigger referrals_updated_at_trigger
+  before update on public.referrals
+  for each row execute function public.referrals_set_updated_at();
+
+-- 2026-07-11 Redemption columns (ledger #41 PR 2) — consumeCredits
+-- (src/lib/referrals.ts) stamps these when a referrer's balance is SPENT as a
+-- discount on a quote. credited_quote_id is the REFERRER's own later quote
+-- the credit was applied to — NOT the friend's referee_quote_id that earned
+-- it; the two can be different quotes, different customers even.
+alter table public.referrals
+  add column if not exists credited_at timestamptz;
+alter table public.referrals
+  add column if not exists credited_quote_id uuid references public.quotes(id) on delete set null;
+
+create index if not exists referrals_credited_quote_id_idx
+  on public.referrals (credited_quote_id);
+
+-- 2026-07-11 Credit expiry (ledger #41 follow-up) — a referral credit expires
+-- 2 years after it's EARNED (booked_at + 2 years, stamped by accrueOnBooking
+-- in the same update that flips pending → booked). NULL = non-expiring
+-- (grandfathered — existing 'booked' rows predating this column). A 'booked'
+-- row whose expires_at has passed stays status='booked' forever; it's just
+-- excluded from the spendable balance by creditBalanceFor's check.
+alter table public.referrals
+  add column if not exists expires_at timestamptz;
+
+
+-- ---------------------------------------------------------------------
+-- 25. website_leads  (lead-capture for the WordPress custom quote-request
+--     forms; yulelovelights.com → POST /api/leads)
+--     Replaces the old plugin that routed EVERY lead into the Christmas
+--     pipeline regardless of the service the visitor actually asked about —
+--     this table is the source of truth / retry queue, written FIRST on
+--     every submission; the route then syncs each row to the correct
+--     per-service HighLevel pipeline (src/lib/leads/leadService.ts).
+--     sync_status: 'pending' (saved, sync not yet attempted or it failed —
+--     retry queue) | 'synced' | 'spam' (honeypot/too-fast — kept for
+--     visibility, GHL skipped) | 'deferred' (service resolved but its GHL
+--     pipeline env vars aren't set yet) | 'rate_limited' (deliberate
+--     throttle) | 'failed' (2026-07-12 — retry attempts exhausted, parked for
+--     a manual re-drive). No DB CHECK constraint on sync_status/service —
+--     validated in application code.
+--     RLS ENABLED, ZERO POLICIES — service-role only (POST /api/leads runs
+--     server-side only), matching the #90 all-tables hardening pattern.
+-- ---------------------------------------------------------------------
+create table if not exists public.website_leads (
+  id                  uuid primary key default gen_random_uuid(),
+  created_at          timestamptz not null default now(),
+  form_variant        text not null,               -- which embedded form (e.g. 'hero', 'sticky', 'footer')
+  service             text not null,                -- christmas | permanent | event-wedding | landscape
+  name                text not null,
+  email               text not null,
+  phone               text not null,
+  address             text,
+  notes               text,
+  consent             boolean not null default false,
+  utm                 jsonb,
+  landing_url         text,
+  ip                  text,
+  ghl_contact_id      text,
+  ghl_opportunity_id  text,
+  sync_status         text not null default 'pending',
+  sync_error          text,
+  is_test             boolean not null default false
+);
+
+-- Newest-first admin views / cleanup.
+create index if not exists website_leads_created_at_idx
+  on public.website_leads (created_at);
+
+-- The rate-limit query (count from this IP in the last hour).
+create index if not exists website_leads_ip_created_at_idx
+  on public.website_leads (ip, created_at);
+
+alter table public.website_leads enable row level security;
+
+-- 2026-07-12 Retry bookkeeping (src/lib/leads/leadRetry.ts) — bounds
+-- automatic retries and surfaces stuck rows on /admin/leads. MIGRATION
+-- ORDER: additive + nullable/defaulted, ships migration-first. Old rows get
+-- retry_count = 0, last_retried_at = NULL — exactly what the worker treats as
+-- "never retried, most urgent" (nulls-first ordering).
+alter table public.website_leads
+  add column if not exists retry_count integer not null default 0;
+alter table public.website_leads
+  add column if not exists last_retried_at timestamptz;
+
+-- The retry worker's scan: still-stuck rows, oldest attempt first. Partial
+-- (only pending/deferred rows are ever selected) keeps it tiny.
+create index if not exists website_leads_retry_idx
+  on public.website_leads (last_retried_at)
+  where sync_status in ('pending', 'deferred');
+
+
+-- ---------------------------------------------------------------------
+-- 26. self_serve_estimates  (accuracy telemetry for the customer self-serve
+--     estimator)
+--     One row per self-serve quote at the moment /api/estimate priced it:
+--     the RANGE the customer was shown (estimate_low..estimate_high) + the
+--     analyzer's confidence + the raw engine total (estimate_total) the
+--     range was built from. Written at creation, never updated — the
+--     "verified final" price is read live from the linked quotes.total, so
+--     the dashboard can compare "what we quoted instantly" vs "what staff
+--     confirmed." quote_id FK ON DELETE CASCADE: deleting a quote drops its
+--     estimate row too. RLS ENABLED, ZERO POLICIES — service-role only
+--     (POST /api/estimate + the dashboard loader run server-side only).
+-- ---------------------------------------------------------------------
+create table if not exists public.self_serve_estimates (
+  id             uuid primary key default gen_random_uuid(),
+  created_at     timestamptz not null default now(),
+  quote_id       uuid not null references public.quotes(id) on delete cascade,
+  estimate_low   numeric(10,2) not null,
+  estimate_high  numeric(10,2) not null,
+  estimate_total numeric(10,2),
+  confidence     text
+);
+
+create index if not exists self_serve_estimates_quote_id_idx
+  on public.self_serve_estimates (quote_id);
+create index if not exists self_serve_estimates_created_at_idx
+  on public.self_serve_estimates (created_at);
+
+alter table public.self_serve_estimates enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 27. self_serve_analyzer_budget  (self-serve estimator's aggregate daily
+--     SPEND guard)
+--     /api/estimate spends money per accepted request (Claude analyzer +
+--     Google Maps). Per-IP rate limiting caps one attacker's rate; this caps
+--     the TOTAL across all IPs so a distributed bot can't run up the bill.
+--     One row per UTC day holding the count of paid analyzer runs; the route
+--     stops once the day's count passes SELF_SERVE_DAILY_ANALYZER_CAP (env;
+--     default 300). RLS ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.self_serve_analyzer_budget (
+  day   date primary key default (now() at time zone 'utc')::date,
+  count integer not null default 0
+);
+
+alter table public.self_serve_analyzer_budget enable row level security;
+
+-- Atomic consume-one-unit: upsert today's row incrementing the count, and
+-- return the NEW count — one statement, so concurrent lambdas across regions
+-- can't race. Runs under the service-role (BYPASSRLS) the server uses, so no
+-- SECURITY DEFINER is needed.
+create or replace function public.bump_self_serve_analyzer_budget()
+returns integer
+language sql
+as $$
+  insert into public.self_serve_analyzer_budget (day, count)
+  values ((now() at time zone 'utc')::date, 1)
+  on conflict (day)
+    do update set count = self_serve_analyzer_budget.count + 1
+  returning count;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- 28. job_material_actuals  (#168 text-ops bot Phase 2 — what a job REALLY
+--     used, captured from the field)
+--     prepareJobMaterials deducts the ESTIMATED BOM at prep time; this table
+--     closes the loop with what the crew actually consumed. One row per
+--     (job, sku) submission — the bot writes these when a crew member texts
+--     "job 142 done — 2 boxes C9, 30 clips"; the stock true-up then adjusts
+--     on-hand by the DIFFERENCE between estimate and actual
+--     (materialActuals.ts). jobs.materials_actualized_at (added in the jobs
+--     section above) is the idempotency claim — a retry/double-tap/two-crew
+--     submission finds the stamp already set and applies nothing. RLS
+--     ENABLED, ZERO POLICIES — service-role only (the bot runs server-side).
+-- ---------------------------------------------------------------------
+create table if not exists public.job_material_actuals (
+  id          uuid primary key default gen_random_uuid(),
+  job_id      uuid not null references public.jobs(id) on delete cascade,
+  sku         text not null,
+  qty         integer not null default 0 check (qty >= 0),
+  -- The estimate this submission was compared against when the true-up ran
+  -- (prepareJobMaterials doesn't persist what it deducted, so the baseline is
+  -- otherwise unreconstructable once the design has changed again).
+  estimated_qty integer not null default 0 check (estimated_qty >= 0),
+  raw_text    text,        -- what the crew typed, verbatim, for dispute/debug
+  recorded_by text,        -- Telegram chat id (or 'staff:<label>') — the audit trail
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists job_material_actuals_job_id_idx
+  on public.job_material_actuals (job_id);
+
+alter table public.job_material_actuals enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 29. bot_pending_actions  (#168 text-ops bot — the confirm-yes gate's memory)
+--     Every sensitive bot write echoes a one-line summary and waits for
+--     "yes" before it runs, so a misread text is harmless until confirmed.
+--     Lambdas are stateless, so the pending action lives here between the
+--     two messages. Rows are consumed ATOMICALLY (set consumed_at WHERE
+--     consumed_at is null) so a double "yes" can only execute once. RLS
+--     ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_pending_actions (
+  id          uuid primary key default gen_random_uuid(),
+  chat_id     text not null,
+  -- The SENDER, not the room: in a group chat each person confirms their own
+  -- pending action, and roles are keyed to the user too.
+  user_id     text not null,
+  tool        text not null,
+  args        jsonb not null default '{}'::jsonb,
+  summary     text not null,      -- the exact confirm line shown, replayed in the audit entry
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  consumed_at timestamptz
+);
+
+create index if not exists bot_pending_actions_open_idx
+  on public.bot_pending_actions (chat_id, user_id, created_at desc)
+  where consumed_at is null;
+
+alter table public.bot_pending_actions enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 30. bot_audit_log  (#168 text-ops bot — who asked the bot to do what, and
+--     what happened)
+--     Every write the bot performs lands here, including denied attempts, so
+--     an unexpected stock or CRM change is always traceable back to a person
+--     and a message. RLS ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_audit_log (
+  id         uuid primary key default gen_random_uuid(),
+  chat_id    text,
+  user_id    text,
+  role       text,
+  tool       text not null,
+  args       jsonb not null default '{}'::jsonb,
+  outcome    text not null,
+  detail     text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists bot_audit_log_created_at_idx
+  on public.bot_audit_log (created_at desc);
+
+alter table public.bot_audit_log enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 31. bot_users  (#168 text-ops bot roster, managed from Settings → Bot team)
+--     Moves crew/staff/admin role management OFF the TELEGRAM_ADMIN/STAFF/
+--     CREW_USERS env vars (which needed a Vercel redeploy on every roster
+--     change) into a DB table an admin edits in the app. One row per
+--     Telegram USER id (message.from.id), NOT per chat — roles are keyed to
+--     the person, so the same user carries their role into any allowlisted
+--     room (the room allowlist itself stays in TELEGRAM_ALLOWED_CHATS). The
+--     env vars remain a LOCKOUT-PROOF FLOOR: resolveSenderRole takes the
+--     higher of the DB role and the env role, so bootstrap admins can never
+--     be demoted out of access by a bad DB edit. RLS ENABLED, ZERO POLICIES
+--     — service-role only (admin API routes run server-side behind
+--     requireAdmin).
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_users (
+  telegram_user_id text primary key,
+  display_name     text,
+  role             text not null check (role in ('crew', 'staff', 'admin')),
+  added_by         text,       -- who added/last-changed this row (an operator email or 'seed')
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+alter table public.bot_users enable row level security;
+
+create or replace function public.bot_users_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists bot_users_updated_at on public.bot_users;
+create trigger bot_users_updated_at
+  before update on public.bot_users
+  for each row execute function public.bot_users_set_updated_at();
