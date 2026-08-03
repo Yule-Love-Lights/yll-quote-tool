@@ -41,13 +41,22 @@ const req = () => ({ nextUrl: { origin: 'https://portal.test' } }) as unknown as
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null) {
+// #187c: a second read (`.select('view_only').eq('id', id).maybeSingle()`)
+// fires right before the Valor call as a TOCTOU re-check. `single()` stays
+// the FIRST fetch's terminal (unchanged); `maybeSingle()` is the re-check's
+// terminal — defaults to mirroring the same row's view_only, unless
+// `opts.recheckViewOnly` overrides it to simulate a flip mid-request.
+function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean } = {}) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
     select: () => b,
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    maybeSingle: async () => ({
+      data: quote ? { view_only: opts.recheckViewOnly ?? quote.view_only } : null,
+      error: null,
+    }),
   });
   return b;
 }
@@ -99,6 +108,17 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     expect(res.status).toBe(409);
     expect(json.code).toBe('view-only');
     expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187c belt-and-suspenders — a cheap re-read right before the Valor call
+  // catches a flip that lands after the fast-path check but before checkout.
+  it('409s (view-only) when the flag flips ON between the fast-path check and the Valor call', async () => {
+    sbRef.current = makeSb({ ...QUOTE, view_only: false }, { recheckViewOnly: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
     expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 

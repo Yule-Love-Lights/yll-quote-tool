@@ -100,6 +100,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const successUrl = `${baseUrl}/portal/${id}/approved?balance=paid`;
   const failureUrl = `${baseUrl}/portal/${id}/pay-balance`;
 
+  // #187c (belt-and-suspenders): the view_only check above is a fast-path
+  // gate at fetch time, but the job/invoice lookups above are two more async
+  // hops during which staff could flip the flag ON. Re-check immediately
+  // before handing off to Valor so a real hosted-page charge is never opened
+  // on a quote that's now view-only. This window is near-unreachable today (a
+  // booked quote already refuses the toggle), so this is cheap insurance, not
+  // a load-bearing guard.
+  const { data: recheck } = await sb
+    .from('quotes')
+    .select('view_only')
+    .eq('id', id)
+    .maybeSingle<{ view_only: boolean }>();
+  if (recheck?.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
+  }
+
   try {
     const { url } = await createHostedPageSale({
       amountUsd: invoice.balance,
