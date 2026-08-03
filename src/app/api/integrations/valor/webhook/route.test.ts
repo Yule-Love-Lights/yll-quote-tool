@@ -1119,7 +1119,7 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(registerCardInVault).not.toHaveBeenCalled();
   });
 
-  it('registerCardInVault resolves ok:false → booking still 200 and "vault register failed" is logged', async () => {
+  it('registerCardInVault resolves ok:false → booking still 200, notifications unaffected, and "vault register failed" is logged', async () => {
     vaultEnabled.value = true;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerCardInVault.mockResolvedValueOnce({ ok: false, reason: 'addcustomer failed: 500' });
@@ -1131,6 +1131,10 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true);
+    // #171f: a vault failure must never affect the notifications it now runs
+    // AFTER — they already settled by the time the vault hook even starts.
+    expect(json.customerSmsSent).toBe(true);
+    expect(json.customerEmailSent).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
     // No vault-column write when registration failed.
     expect(updatePayloads.some((p) => 'valor_vault_customer_id' in p)).toBe(false);
@@ -1151,6 +1155,40 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(json.booked).toBe(true);
     expect(err).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
     err.mockRestore();
+  });
+
+  // #171f: the vault hook used to run BEFORE the customer receipt SMS/email —
+  // its 2×15s timeout budget (addcustomer + addpaymentprofiletxn, see
+  // valorVault.ts) could delay the customer's booking confirmation by up to
+  // ~30s whenever Valor's Vault API was slow. It's now reordered to run AFTER
+  // the notification batch settles (still awaited, not fire-and-forget).
+  it('runs AFTER the customer notifications settle, not before or concurrently', async () => {
+    vaultEnabled.value = true;
+    const order: string[] = [];
+    const delayedPush = (label: string) => async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(label);
+      return {};
+    };
+    hl.sendSms.mockImplementationOnce(delayedPush('sms'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:customer'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:internal'));
+    registerCardInVault.mockImplementationOnce(async () => {
+      order.push('vault');
+      return { ok: true, vaultCustomerId: 'vc-1' };
+    });
+
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+
+    // Vault ran dead last — i.e. only after EVERY notification had fully
+    // settled (not merely started), proving it's a sequential await after the
+    // Promise.allSettled batch rather than folded into it.
+    expect(order[order.length - 1]).toBe('vault');
+    expect(order.slice(0, -1).sort()).toEqual(['email:customer', 'email:internal', 'sms']);
   });
 });
 
