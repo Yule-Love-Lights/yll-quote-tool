@@ -17,8 +17,10 @@ import {
   getInvoiceByQuote,
   getInvoiceDetail,
   listInvoicesForAdmin,
+  listInvoicesForCustomer,
   markInvoicePaidManually,
   appendRetiredTxn,
+  mergeInvoicesNewestFirst,
   reconcileInvoice,
   setInvoiceStatus,
   setInvoiceTaxOverride,
@@ -1156,5 +1158,62 @@ describe('appendRetiredTxn', () => {
     expect(await appendRetiredTxn('inv-1', ENTRY, { clearLive: { expectTxnId: 'TXN-OLD-7' } })).toBe(false);
     expect(moved.updates).toHaveLength(0); // bailed before writing anything
     err.mockRestore();
+  });
+});
+
+// ─── mergeInvoicesNewestFirst (PURE — customer detail page match, #58) ─────
+
+describe('mergeInvoicesNewestFirst', () => {
+  const inv = (id: string, created_at: string, extra: Record<string, unknown> = {}): InvoiceRow =>
+    ({ id, created_at, ...extra }) as unknown as InvoiceRow;
+
+  it('de-duplicates rows that appear in more than one input list, newest-first', () => {
+    const a = inv('i1', '2026-06-01');
+    const b = inv('i2', '2026-06-05');
+    const aAgain = inv('i1', '2026-06-01'); // e.g. matched by BOTH customer_id and quote_id
+    const merged = mergeInvoicesNewestFirst([a, b], [aAgain, b]);
+    expect(merged.map((i) => i.id)).toEqual(['i2', 'i1']);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('returns [] for no lists or all-empty lists', () => {
+    expect(mergeInvoicesNewestFirst()).toEqual([]);
+    expect(mergeInvoicesNewestFirst([], [])).toEqual([]);
+  });
+
+  it('a later list wins on a same-id collision (last-write-wins)', () => {
+    const stale = inv('i1', '2026-06-01', { status: 'draft' });
+    const fresh = inv('i1', '2026-06-01', { status: 'paid' });
+    const merged = mergeInvoicesNewestFirst([stale], [fresh]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'i1', status: 'paid' });
+  });
+});
+
+describe('listInvoicesForCustomer', () => {
+  it('matches by customer_id OR quote_id, de-duplicated newest-first, excluding other customers', async () => {
+    const { client } = makeFakeSupabase({
+      invoices: [
+        { id: 'inv1', customer_id: 'cust-1', quote_id: 'q1', created_at: '2026-06-01' },
+        // legacy row: customer_id never backfilled, matched only via quote_id.
+        { id: 'inv2', customer_id: null, quote_id: 'q2', created_at: '2026-06-05' },
+        { id: 'inv3', customer_id: 'cust-2', quote_id: 'q3', created_at: '2026-06-10' },
+      ],
+    });
+    sbRef.current = client;
+
+    const invoices = await listInvoicesForCustomer('cust-1', ['q1', 'q2']);
+    expect(invoices.map((i) => i.id)).toEqual(['inv2', 'inv1']); // newest first
+  });
+
+  it('returns [] when neither a customerId nor any quoteIds are given', async () => {
+    const { client } = makeFakeSupabase({ invoices: [] });
+    sbRef.current = client;
+    expect(await listInvoicesForCustomer(null, [])).toEqual([]);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listInvoicesForCustomer('cust-1', ['q1'])).toEqual([]);
   });
 });

@@ -284,6 +284,56 @@ export async function listInvoices(limit = 500): Promise<InvoiceRow[]> {
   return (data ?? []) as unknown as InvoiceRow[];
 }
 
+/**
+ * PURE: merge invoice lists (e.g. one matched by customer_id, one by quote_id)
+ * into a single de-duplicated, newest-first list. No IO — exported for direct
+ * unit tests.
+ */
+export function mergeInvoicesNewestFirst(...lists: InvoiceRow[][]): InvoiceRow[] {
+  const byId = new Map<string, InvoiceRow>();
+  for (const list of lists) {
+    for (const inv of list) byId.set(inv.id, inv);
+  }
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+/**
+ * Invoices belonging to a customer (the customer detail page, #58): matched by
+ * EITHER the invoice's own customer_id OR its quote_id being one of the
+ * customer's known quotes (the page's Quote history) — the second leg covers
+ * legacy invoices whose customer_id is still null pre-backfill, mirroring
+ * matchesCustomerRoute's dual match. Two queries + merge-dedupe
+ * (mergeInvoicesNewestFirst) rather than a hand-built PostgREST `.or()` filter.
+ * Returns [] when Supabase isn't configured or neither a customerId nor any
+ * quoteIds are given.
+ */
+export async function listInvoicesForCustomer(
+  customerId: string | null,
+  quoteIds: string[],
+): Promise<InvoiceRow[]> {
+  const db = sb();
+  if (!db) return [];
+  if (!customerId && quoteIds.length === 0) return [];
+
+  let byCustomer: InvoiceRow[] = [];
+  if (customerId) {
+    const { data, error } = await db.from('invoices').select(INVOICE_SELECT).eq('customer_id', customerId);
+    if (error) console.error('listInvoicesForCustomer: customer_id query error:', error);
+    else byCustomer = (data ?? []) as unknown as InvoiceRow[];
+  }
+
+  let byQuote: InvoiceRow[] = [];
+  if (quoteIds.length) {
+    const { data, error } = await db.from('invoices').select(INVOICE_SELECT).in('quote_id', quoteIds);
+    if (error) console.error('listInvoicesForCustomer: quote_id query error:', error);
+    else byQuote = (data ?? []) as unknown as InvoiceRow[];
+  }
+
+  return mergeInvoicesNewestFirst(byCustomer, byQuote);
+}
+
 // A billing-board row for the operator /admin/invoices list, with the linked
 // quote's customer identity + is_test joined on. Test invoices stay VISIBLE here
 // (badged) — only dashboard metrics exclude test data (#93).
