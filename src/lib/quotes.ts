@@ -483,6 +483,13 @@ export type QuoteRaw = {
   // View-only portal (#176): the admin detail page shows a pill + the
   // ViewOnlyToggle off this value.
   view_only: boolean;
+  // #171g: the raw payment token (captured via the redirect_url capture
+  // route) and Valor's OWN Vault customer id (#161 "both vaults" decision,
+  // registered by the webhook's best-effort vault hook). The admin detail
+  // page uses these to surface a notice when the token is on file but Vault
+  // registration never completed — see VaultRegistrationNotice.
+  valor_vault_token: string | null;
+  valor_vault_customer_id: string | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -492,7 +499,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
     )
     .eq('id', id)
     .maybeSingle();

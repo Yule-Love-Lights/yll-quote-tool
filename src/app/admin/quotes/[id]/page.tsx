@@ -24,6 +24,7 @@ import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
+import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -313,6 +314,15 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             )}
           </div>
         )}
+
+        {/* #171g: a Vault registration failure was previously console.warn-only —
+            surface it here so staff know the deposit token still works even
+            though the card never landed in Valor's own Vault product. */}
+        <VaultRegistrationNotice
+          depositPaidAt={quote.deposit_paid_at}
+          valorVaultToken={quote.valor_vault_token}
+          valorVaultCustomerId={quote.valor_vault_customer_id}
+        />
 
         {/* Line items */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
