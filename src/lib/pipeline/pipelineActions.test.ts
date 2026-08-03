@@ -2,7 +2,13 @@
 import { describe, it, expect } from 'vitest';
 import { pipelineActions, type PipelineRecord } from './pipelineActions';
 
-const base: PipelineRecord = { quoteId: 'q1', quoteStatus: 'draft', isTest: false, depositPaid: false };
+const base: PipelineRecord = {
+  quoteId: 'q1',
+  quoteStatus: 'draft',
+  isTest: false,
+  depositPaid: false,
+  viewOnly: false,
+};
 const kinds = (r: PipelineRecord) => pipelineActions(r).map(a => a.kind);
 
 describe('pipelineActions', () => {
@@ -105,5 +111,35 @@ describe('pipelineActions', () => {
   it('details href points at the quote detail page', () => {
     const d = pipelineActions(base).find(a => a.kind === 'details');
     expect(d).toMatchObject({ kind: 'details', href: '/admin/quotes/q1' });
+  });
+});
+
+describe('pipelineActions — view-only (#176)', () => {
+  it('suppresses send/mark-sent/mark-approved/staff-decline on a view-only draft, leaving only details', () => {
+    expect(kinds({ ...base, viewOnly: true })).toEqual(['details']);
+  });
+  it('suppresses send + staff-decline on a view-only sent/viewed quote', () => {
+    for (const s of ['sent', 'viewed'] as const)
+      expect(kinds({ ...base, quoteStatus: s, viewOnly: true })).toEqual(['details']);
+  });
+  it('suppresses staff-decline on a view-only approved quote, leaving convert-to-job', () => {
+    // convert-to-job isn't a customer-facing action the view_only guard blocks
+    // (it's how staff books a deposit already taken outside the portal).
+    expect(kinds({ ...base, quoteStatus: 'approved', viewOnly: true })).toEqual(['convert-to-job', 'details']);
+  });
+  it('does not suppress the booked-job housekeeping actions on a view-only booked quote', () => {
+    expect(
+      kinds({
+        ...base,
+        quoteStatus: 'booked',
+        depositPaid: true,
+        job: { id: 'j', status: 'to_schedule' },
+        viewOnly: true,
+      }),
+    ).toEqual(['mark-complete', 'amend', 'cancel', 'details']);
+  });
+  it('does not suppress rebook on a view-only terminal quote', () => {
+    for (const s of ['declined', 'cancelled', 'lost'] as const)
+      expect(kinds({ ...base, quoteStatus: s, viewOnly: true })).toEqual(['rebook', 'details']);
   });
 });

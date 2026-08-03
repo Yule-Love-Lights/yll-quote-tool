@@ -45,6 +45,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ quo
     quoteStatus: deriveStatus(quote),
     isTest: !!quote.is_test,
     depositPaid: !!quote.deposit_paid_at,
+    // View-only portal (#176): threaded through so pipelineActions() can
+    // suppress the customer-state-changing offers on a browse-only quote.
+    viewOnly: !!quote.view_only,
     job: job ? { id: job.id, status: job.status } : null,
     invoice: invoice ? { id: invoice.id, status: invoice.status, balance: invoice.balance } : null,
   });

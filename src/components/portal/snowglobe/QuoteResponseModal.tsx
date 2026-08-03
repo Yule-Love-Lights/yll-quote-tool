@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation';
 import { useModalFocus } from '../useModalFocus';
 import type { ServiceType } from '@/lib/serviceType';
 import { track } from '@/lib/analytics/posthog';
+import { viewOnlyStaleTabError } from '../friendlyError';
 
 export type ResponseIntent = 'decline' | 'request-changes';
 
@@ -142,6 +143,14 @@ export function QuoteResponseModal({ quoteId, intent, onClose, serviceType }: Pr
         // 409 = the quote already moved on (booked/approved/declined). Tell the
         // customer plainly rather than leaking a status code.
         if (res.status === 409) {
+          // View-only portal (#176) — a stale tab: staff flipped this quote
+          // view-only after the page loaded. Mirrors the isViewOnlyCode /
+          // viewOnlyStaleTabError handling in StickyBottomBar/DepositCheckout —
+          // "may already be approved or booked" would be misleading here since
+          // retrying can never succeed while the quote stays view-only.
+          if ((body as { code?: string }).code === 'view-only') {
+            throw new Error(viewOnlyStaleTabError(phone));
+          }
           throw new Error(
             "This quote can't be updated anymore — it may already be approved or booked. Text us if that's not right.",
           );
@@ -173,7 +182,7 @@ export function QuoteResponseModal({ quoteId, intent, onClose, serviceType }: Pr
       // Friendly-error convention (audit fix g10): never surface raw internals.
       console.error(`${copy.endpoint} failed`, err);
       const friendly =
-        err instanceof Error && /can't be updated anymore/.test(err.message)
+        err instanceof Error && /can't be updated anymore|now browse-only/.test(err.message)
           ? err.message
           : `We couldn't send that just now — please try again, or text us at ${phone}.`;
       setErrorMsg(friendly);

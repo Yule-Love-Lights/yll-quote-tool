@@ -13,6 +13,10 @@ export type PipelineRecord = {
   quoteStatus: QuoteStatus;
   isTest: boolean;
   depositPaid: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote. Suppresses the
+  // customer-state-changing actions below (they'd 409 against the view_only
+  // guard on their own routes).
+  viewOnly: boolean;
   job?: { id: string; status: JobStatus } | null;
   invoice?: { id: string; status: InvoiceStatus; balance: number } | null;
 };
@@ -128,5 +132,18 @@ export function pipelineActions(r: PipelineRecord): PipelineAction[] {
   }
 
   a.push({ kind: 'details', label: 'Details', href: `/admin/quotes/${r.quoteId}` });
-  return a;
+
+  // View-only portal (#176): a browse-only quote can never have its customer-
+  // facing state changed — send/mark-sent/mark-approved/staff-decline all 409
+  // against the view_only guard on their own routes (approve/decline/send/
+  // mark-sent/staff-approve), so offering them here would just be a guaranteed
+  // failure. Genuinely-safe actions (booked-job housekeeping, rebook, details)
+  // are unaffected — a view-only toggle never blocks those.
+  const SUPPRESSED_WHEN_VIEW_ONLY: ReadonlySet<PipelineAction['kind']> = new Set([
+    'send',
+    'mark-sent',
+    'mark-approved',
+    'staff-decline',
+  ]);
+  return r.viewOnly ? a.filter((x) => !SUPPRESSED_WHEN_VIEW_ONLY.has(x.kind)) : a;
 }

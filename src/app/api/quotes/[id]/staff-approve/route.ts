@@ -185,6 +185,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // to 'approved' pre-booking: draft/sent/viewed, plus NULL for legacy rows) so a
   // row that just moved to declined/cancelled/lost/changes_requested no longer
   // matches. The OR-with-null idiom mirrors the decline + approve routes.
+  //
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409, but staff could flip view_only ON between that read and
+  // this write. `.eq('view_only', false)` makes the write itself lose that
+  // race (view_only is NOT NULL, so a plain `.eq` is safe — no W1-014 NULL
+  // trap here), mirroring the same re-check on the approve/decline/pay/
+  // request-changes/mark-sent routes.
   const { data: claimed, error } = await sb
     .from('quotes')
     .update({
@@ -193,6 +200,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       approval_snapshot: snapshot,
     })
     .eq('id', id)
+    .eq('view_only', false)
     .is('customer_approved_at', null)
     .or('status.in.(draft,sent,viewed),status.is.null')
     .select('id');
