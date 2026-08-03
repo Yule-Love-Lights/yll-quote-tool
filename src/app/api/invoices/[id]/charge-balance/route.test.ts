@@ -15,6 +15,8 @@ const {
   isAutoChargeEnabledMock,
   sendEmailMock,
   appendRetiredTxnMock,
+  staleBalanceEmailSubjectMock,
+  staleBalanceEmailHtmlMock,
 } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
@@ -25,6 +27,10 @@ const {
   isAutoChargeEnabledMock: vi.fn(() => true),
   sendEmailMock: vi.fn(async (): Promise<unknown> => undefined),
   appendRetiredTxnMock: vi.fn(async (): Promise<boolean> => true),
+  // #173 money-review: real spies (not plain arrow fns) so tests can assert
+  // the sign-aware `direction` argument reaches the email builders.
+  staleBalanceEmailSubjectMock: vi.fn((..._args: unknown[]) => 'stale-balance-subject'),
+  staleBalanceEmailHtmlMock: vi.fn((..._args: unknown[]) => '<p>stale-balance</p>'),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -46,8 +52,8 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 vi.mock('@/lib/integrations/quoteMessages', () => ({
   duplicatePaymentEmailSubject: () => 'dup',
   duplicatePaymentEmailHtml: () => '<p>dup</p>',
-  staleBalanceEmailSubject: () => 'stale-balance',
-  staleBalanceEmailHtml: () => '<p>stale-balance</p>',
+  staleBalanceEmailSubject: staleBalanceEmailSubjectMock,
+  staleBalanceEmailHtml: staleBalanceEmailHtmlMock,
 }));
 
 import { POST } from './route';
@@ -628,10 +634,11 @@ describe('POST /api/invoices/[id]/charge-balance — #173 stale-balance race', (
     expect(calls[1].patch.valor_balance_txn_id).toBeNull();
   });
 
-  it('a mid-charge amend (balance moves DURING the Valor round-trip) claims 0 rows on settle → stale-balance branch: NOT settled, txn preserved, sentinel NOT released', async () => {
+  it('a mid-charge amend UP (balance moves DURING the Valor round-trip) claims 0 rows on settle → stale-balance/under: NOT settled, txn recorded as the REAL id (not left pending)', async () => {
     // Fresh-read sees nothing changed yet (charge proceeds at 2500); the
     // amend lands while chargeBalanceOnFile is in flight, so the 0-row
-    // diagnosis re-read sees the NEW balance with status still awaiting_payment.
+    // diagnosis re-read sees the NEW (higher) balance with status still
+    // awaiting_payment.
     getInvoiceMock
       .mockResolvedValueOnce({ ...INVOICE, balance: 2500 }) // route-top read
       .mockResolvedValueOnce({ ...INVOICE, balance: 2500 }) // post-claim fresh-read — unchanged, charge proceeds at 2500
@@ -639,6 +646,7 @@ describe('POST /api/invoices/[id]/charge-balance — #173 stale-balance race', (
     sbRef.current = makeSb(QUOTE, [
       { data: [{ id: ID }], error: null }, // claim ok
       { data: [], error: null }, // settle claims 0 rows — balance predicate missed
+      { data: [{ id: ID }], error: null }, // #173 HIGH-2: real-txn CAS record
     ]);
 
     const res = await POST(req(), ctx());
@@ -649,23 +657,113 @@ describe('POST /api/invoices/[id]/charge-balance — #173 stale-balance race', (
     expect(json.error).toContain('NOT settled');
     expect(json.error).toContain('2500');
     expect(json.error).toContain('3000');
+    expect(json.error).toContain('owed'); // under-collection copy, not the refund copy
+    expect(json.error).not.toContain('REFUND');
 
-    // claim + settle(0 rows) only — NO release write (a released claim would
-    // let a naive retry recharge the full new balance on top of this one).
+    // claim, settle(0 rows), then the #173 HIGH-2 real-txn CAS record — the
+    // sentinel is REPLACED (not left pending forever), so a later click 409s
+    // already-charged instead of blindly recharging (see the dedicated retry test).
     const calls = invoiceCallsOf(sbRef.current);
-    expect(calls).toHaveLength(2);
-    expect(calls[0].patch.valor_balance_txn_id).toMatch(/^pending:/);
-    for (const c of calls.slice(1)) {
-      expect(c.patch.valor_balance_txn_id).toBeUndefined();
-    }
+    expect(calls).toHaveLength(3);
+    const claimSentinel = calls[0].patch.valor_balance_txn_id;
+    expect(claimSentinel).toMatch(/^pending:/);
+    expect(calls[1].patch.valor_balance_txn_id).toBeUndefined(); // the settle patch never touches it
+    expect(calls[2].patch).toMatchObject({ valor_balance_txn_id: 'txn-9', valor_receipt_url: 'r' });
+    expect(calls[2].eqs).toContainEqual(['valor_balance_txn_id', claimSentinel]);
 
-    // The real txn id is preserved via the same CAS'd retirement-log idiom the
-    // double-charge/cancelled branches use — never silently dropped.
+    // The real txn id is ALSO preserved via the same CAS'd retirement-log
+    // idiom the double-charge/cancelled branches use (the annotated audit
+    // trail) — never silently dropped.
     expect(appendRetiredTxnMock).toHaveBeenCalledWith(
       ID,
-      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('stale-balance') }),
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('stale-balance-under-collection') }),
     );
+    expect(staleBalanceEmailSubjectMock).toHaveBeenCalledWith('Alice', 'under');
+    expect(staleBalanceEmailHtmlMock).toHaveBeenCalledWith(expect.objectContaining({ direction: 'under' }));
     expect(sendEmailMock).toHaveBeenCalled();
     expect(setJobStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('a mid-charge amend DOWN claims 0 rows on settle → stale-balance/over: REFUND copy everywhere, never "still owed $0"', async () => {
+    // #173 HIGH-1 (money-review): the balance can move DOWN too — chargeAmount
+    // ($2500) ends up HIGHER than the true balance ($1900) by the time the
+    // diagnosis re-read runs. A naive max(0, diff) would print "$0 still
+    // owed"; the fix must say REFUND $600 instead.
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE, balance: 2500 }) // route-top read
+      .mockResolvedValueOnce({ ...INVOICE, balance: 2500 }) // post-claim fresh-read — unchanged, charge proceeds at 2500
+      .mockResolvedValueOnce({ ...INVOICE, status: 'awaiting_payment', balance: 1900 }); // 0-row diagnosis re-read — amended DOWN
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null }, // claim ok
+      { data: [], error: null }, // settle claims 0 rows
+      { data: [{ id: ID }], error: null }, // real-txn CAS record
+    ]);
+
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('stale-balance');
+    expect(json.error).toContain('OVER-collection');
+    expect(json.error).toContain('REFUND');
+    expect(json.error).toContain('600'); // the excess: 2500 - 1900
+    expect(json.error).not.toContain('still owed');
+
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ txnId: 'txn-9', reason: expect.stringContaining('stale-balance-over-collection') }),
+    );
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ reason: expect.stringContaining('REFUND') }),
+    );
+    expect(staleBalanceEmailSubjectMock).toHaveBeenCalledWith('Alice', 'over');
+    expect(staleBalanceEmailHtmlMock).toHaveBeenCalledWith(expect.objectContaining({ direction: 'over' }));
+
+    // The real txn id still gets recorded (not left pending) even on the
+    // over-collection branch.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls[2].patch).toMatchObject({ valor_balance_txn_id: 'txn-9' });
+  });
+
+  it('the balance lands back on the charged amount by the diagnosis re-read → stale-balance/even: honest generic reconcile copy, no owed/refund claim', async () => {
+    // Two moves within the same request: whatever made the settle CAS miss
+    // (balance != chargeAmount at settle time) reverted by the time the
+    // diagnosis re-read ran, landing exactly back on chargeAmount. No net
+    // difference — but the CAS still couldn't settle it automatically, so
+    // this must NOT claim "still owed" or "refund" (both would be false).
+    getInvoiceMock
+      .mockResolvedValueOnce({ ...INVOICE, balance: 2500 })
+      .mockResolvedValueOnce({ ...INVOICE, balance: 2500 })
+      .mockResolvedValueOnce({ ...INVOICE, status: 'awaiting_payment', balance: 2500 });
+    sbRef.current = makeSb(QUOTE, [
+      { data: [{ id: ID }], error: null },
+      { data: [], error: null },
+      { data: [{ id: ID }], error: null },
+    ]);
+
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('stale-balance');
+    expect(json.error).not.toContain('still owed');
+    expect(json.error).not.toContain('REFUND');
+    expect(json.error).toContain('reconcile');
+    expect(staleBalanceEmailSubjectMock).toHaveBeenCalledWith('Alice', 'even');
+  });
+
+  it('a retry 16+ minutes after a stale-balance under-collection hits already-charged, NOT a second blind auto-charge', async () => {
+    // #173 HIGH-2 (money-review): before the fix, the pending sentinel was
+    // left in place after a stale-balance diagnosis — 16 minutes later a
+    // retry would reclaim the (now-stale) sentinel and charge the FULL new
+    // balance again, double-collecting on top of the first real charge. The
+    // fix records the REAL txn id instead, so the retry's claim step sees a
+    // real (non-pending) id and 409s already-charged before ever calling Valor.
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, balance: 3000, valor_balance_txn_id: 'txn-9' });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('already-charged');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
   });
 });

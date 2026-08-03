@@ -500,16 +500,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // charge landed on a now-cancelled invoice and needs a REFUND, not a
     // void-the-duplicate hunt). #173 added a THIRD cause: the settle CAS now
     // also requires `balance = chargeAmount`, so a mid-charge amend re-syncing
-    // the balance UPWARD while our Valor call was in flight claims 0 rows too
-    // — even though status is still perfectly settle-able.
+    // the balance while our Valor call was in flight claims 0 rows too — even
+    // though status is still perfectly settle-able.
     const fresh = await getInvoice(id);
     const cancelledRace = fresh?.status === 'cancelled';
     // amend's invoice re-sync never sets status to 'paid' or 'cancelled' (only
     // the money fields move, or a PAID invoice reopens to awaiting_payment —
-    // never the reverse). So when status is STILL draft/awaiting_payment after
-    // a 0-row settle, status can't be why the CAS missed — the balance
-    // predicate is the only thing left that could have failed: an amend moved
-    // the balance out from under this charge.
+    // never the reverse; and if an amend-down drove balance to ≤0 it would
+    // have set status 'paid' directly, which falls out of this branch into
+    // the double-charge one below — a pre-existing ambiguity this fix doesn't
+    // touch). So when status is STILL draft/awaiting_payment after a 0-row
+    // settle, status can't be why the CAS missed — the balance predicate is
+    // the only thing left that could have failed, and fresh.balance is
+    // therefore guaranteed > 0 here.
     const staleBalanceRace =
       !cancelledRace && (fresh?.status === 'draft' || fresh?.status === 'awaiting_payment');
     // The settled txn on file (the webhook's) — for the double-charge alert
@@ -520,27 +523,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       fresh?.valor_balance_txn_id && !isPendingSentinel(fresh.valor_balance_txn_id)
         ? fresh.valor_balance_txn_id
         : null;
-    // The true amount still owed after crediting this charge — fresh.balance
-    // was computed by the amend independent of this charge (there's no
-    // partial-payment ledger beyond deposit_applied), so it doesn't yet know
-    // chargeAmount landed.
-    const stillOwed =
-      staleBalanceRace && fresh ? Math.max(0, round2(fresh.balance - chargeAmount)) : null;
+    // #173 HIGH-1 (money-review): the balance can move DOWN too — an amend
+    // DROPPING the true balance mid-charge is just as real as one raising it.
+    // A naive `max(0, fresh.balance - chargeAmount)` silently zeroed a genuine
+    // OVER-collection and told staff "$0 still owed" when a REFUND was
+    // actually due. Sign-aware instead: 'under' (balance grew — we owe more),
+    // 'over' (balance shrank below what we charged — refund the excess), or
+    // 'even' (the narrow window where the balance moved a SECOND time between
+    // the failed settle and this diagnosis read and landed back on
+    // chargeAmount — no net difference, but the CAS still couldn't settle it
+    // automatically). staleBalanceRace true ⇒ fresh is non-null ⇒ diff is
+    // non-null — the `!` uses below reflect that correlation.
+    const diff = staleBalanceRace && fresh ? round2(fresh.balance - chargeAmount) : null;
+    const staleBalanceDirection: 'under' | 'over' | 'even' | null =
+      diff == null ? null : diff > 0.005 ? 'under' : diff < -0.005 ? 'over' : 'even';
+    const absDiff = diff == null ? null : Math.abs(diff);
     console.error(
       cancelledRace
         ? `[api/invoices/:id/charge-balance] charge landed on a CANCELLED invoice ${id} — REFUND txn ${result.txnId} in Valor`
         : staleBalanceRace
-          ? `[api/invoices/:id/charge-balance] STALE-BALANCE under-collection for invoice ${id}: charged ${chargeAmount}, balance now ${fresh?.balance ?? '?'} (difference ${stillOwed ?? '?'} still owed) — txn ${result.txnId} NOT settled`
+          ? `[api/invoices/:id/charge-balance] STALE-BALANCE (${staleBalanceDirection}) for invoice ${id}: charged ${chargeAmount}, balance now ${fresh?.balance ?? '?'} (diff ${diff ?? '?'}) — txn ${result.txnId} NOT settled`
           : `[api/invoices/:id/charge-balance] DOUBLE CHARGE for invoice ${id}: pay-link settled during our charge — VOID our txn ${result.txnId} in Valor`,
     );
     // Stash our txn in the retirement log — CAS'd append (#640 review MED: a
     // plain read-modify-write could lose a concurrent amend rotation). Unlike
     // the double-charge/cancelled cases the stale-balance txn is a REAL, valid
     // charge (not a duplicate or an orphan) — it still goes through the same
-    // log so the txn id is never lost to reconciliation, and (like those two
-    // cases) the live slot is deliberately left holding our sentinel, NOT
-    // released: releasing it would let a naive retry charge the full NEW
-    // balance on top of what already landed here.
+    // log so the txn id is never lost to reconciliation.
     await appendRetiredTxn(id, {
       txnId: result.txnId ?? 'unknown',
       receiptUrl: result.receiptUrl ?? null,
@@ -549,22 +558,63 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       reason: cancelledRace
         ? 'charged-while-cancelled — REFUND in Valor'
         : staleBalanceRace
-          ? `stale-balance-under-collection — charged $${chargeAmount}, balance now $${fresh?.balance ?? '?'}, $${stillOwed ?? '?'} still owed — reconcile in Valor`
+          ? staleBalanceDirection === 'over'
+            ? `stale-balance-over-collection — charged $${chargeAmount}, balance dropped to $${fresh?.balance ?? '?'} — REFUND $${absDiff ?? '?'} in Valor`
+            : staleBalanceDirection === 'even'
+              ? `stale-balance-mismatch — charged $${chargeAmount}, balance now $${fresh?.balance ?? '?'} (no net difference) — reconcile in Valor`
+              : `stale-balance-under-collection — charged $${chargeAmount}, balance now $${fresh?.balance ?? '?'}, $${absDiff ?? '?'} still owed — reconcile in Valor`
           : 'double-charge-operator-leg — VOID in Valor',
     });
+    // #173 HIGH-2 (money-review): replace the pending sentinel with the REAL
+    // txn id — CAS on our exact sentinel, mirroring the success-path record
+    // write below. One card charge landed on this invoice; leaving the
+    // sentinel would let it go stale after 15 minutes and a LATER click would
+    // reclaim + auto-charge AGAIN (the balance math has no idea this charge
+    // already happened — amend's total−deposit_applied re-sync doesn't know
+    // about charge-balance captures). Writing the real txn id makes any later
+    // click hit the route's existing 'already-charged' 409 instead. Verified
+    // (grepped amend/route.ts + amend.ts): amend's invoice re-sync NEVER
+    // clears/rotates valor_balance_txn_id for a non-paid invoice — only a
+    // reopen-a-PAID-invoice amend does — so this is a PERMANENT block on this
+    // button for this invoice, by design: one card charge already landed;
+    // further collection/refund goes through amend + pay-link/mark-paid, or a
+    // manual Valor refund, never a second blind auto-charge. The
+    // appendRetiredTxn entry above stays as the annotated audit trail
+    // (intentional redundancy: the log records WHY, this column is now the
+    // PRIMARY idempotency record).
+    if (staleBalanceRace) {
+      try {
+        const { data: recorded, error: recordErr } = await sb
+          .from('invoices')
+          .update({ valor_balance_txn_id: result.txnId, valor_receipt_url: result.receiptUrl })
+          .eq('id', id)
+          .eq('valor_balance_txn_id', pendingSentinel)
+          .select('id');
+        if (recordErr) {
+          console.warn('[api/invoices/:id/charge-balance] stale-balance txn record failed:', recordErr);
+        } else if (!recorded || recorded.length === 0) {
+          console.error(
+            `[api/invoices/:id/charge-balance] stale-balance txn record skipped for invoice ${id} — sentinel was already overwritten (txn ${result.txnId}); reconcile in Valor`,
+          );
+        }
+      } catch (err) {
+        console.warn('[api/invoices/:id/charge-balance] stale-balance txn record failed:', err);
+      }
+    }
     try {
       const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
       if (isHighLevelConfigured() && internalContactId) {
         await sendEmail({
           contactId: internalContactId,
           subject: staleBalanceRace
-            ? staleBalanceEmailSubject(quote.customer_name)
+            ? staleBalanceEmailSubject(quote.customer_name, staleBalanceDirection!)
             : duplicatePaymentEmailSubject(quote.customer_name),
           html: staleBalanceRace
             ? staleBalanceEmailHtml({
                 customerName: quote.customer_name,
                 chargedUsd: chargeAmount,
                 newBalanceUsd: fresh?.balance ?? null,
+                direction: staleBalanceDirection!,
                 txnId: result.txnId ?? 'unknown',
                 adminUrl: `${(process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '')}/admin/invoices/${id}`,
               })
@@ -593,7 +643,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ? {
               ok: false,
               reason: 'stale-balance',
-              error: `Card captured $${chargeAmount} but the balance grew to $${fresh?.balance ?? '?'} while the charge was in flight (difference $${stillOwed ?? '?'} still owed) — the invoice was NOT settled. Collect the difference via amend/pay-link, and reconcile transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor.`,
+              error:
+                staleBalanceDirection === 'over'
+                  ? `Card captured $${chargeAmount} but the balance dropped to $${fresh?.balance ?? '?'} while the charge was in flight — that's a $${absDiff ?? '?'} OVER-collection. The invoice was NOT settled. REFUND $${absDiff ?? '?'} in Valor now; once reconciled, mark the invoice paid (the net payment covers the current balance). Reference transaction ${result.txnId ?? '(no id — find by amount/time)'}.`
+                  : staleBalanceDirection === 'even'
+                    ? `Card captured $${chargeAmount} and the balance is now $${fresh?.balance ?? '?'} (no net difference), but the invoice could not be settled automatically — the balance changed more than once during the charge. Verify the invoice balance and reconcile transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor before marking it paid.`
+                    : `Card captured $${chargeAmount} but the balance grew to $${fresh?.balance ?? '?'} while the charge was in flight (difference $${absDiff ?? '?'} still owed) — the invoice was NOT settled. Amend the invoice if needed so the balance reflects what's actually owed, then collect the difference via pay-link (or mark paid), and reconcile transaction ${result.txnId ?? '(no id — find by amount/time)'} in Valor.`,
               txnId: result.txnId,
             }
           : {
