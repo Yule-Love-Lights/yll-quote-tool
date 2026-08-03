@@ -7,17 +7,17 @@ const TODAY = nyDateString();
 // IO seams mocked; the pure logic (filterCompletingToday, completingTodayMessage)
 // runs for real. isTelegramBotEnabled/isTelegramConfigured are left real (pure
 // env-var checks, same as the other cron route tests).
-const { getSupabaseServiceClient, isSupabaseServiceConfigured, notifyTelegram } = vi.hoisted(() => ({
+const { getSupabaseServiceClient, isSupabaseServiceConfigured, notifyTelegramAudience } = vi.hoisted(() => ({
   getSupabaseServiceClient: vi.fn(),
   isSupabaseServiceConfigured: vi.fn(() => true),
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
 }));
 
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient, isSupabaseServiceConfigured }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
 }));
+vi.mock('@/lib/integrations/telegramRouting', () => ({ notifyTelegramAudience }));
 
 import { GET } from './route';
 
@@ -63,7 +63,7 @@ describe('jobs completing-today cron', () => {
   it('401s without the cron secret (no work done)', async () => {
     const res = await GET(makeReq('wrong'));
     expect(res.status).toBe(401);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('503s when Supabase service role is not configured', async () => {
@@ -77,7 +77,7 @@ describe('jobs completing-today cron', () => {
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, matched: 0 });
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('excludes done/cancelled jobs even when install_date matches today', async () => {
@@ -89,7 +89,7 @@ describe('jobs completing-today cron', () => {
     );
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, matched: 0 });
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('pings the Jobs chat with matching jobs, joined customer name + address', async () => {
@@ -102,8 +102,9 @@ describe('jobs completing-today cron', () => {
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, matched: 1 });
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0] as string;
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('jobs');
+    const msg = notifyTelegramAudience.mock.calls[0][1] as string;
     expect(msg).toContain('#55 Carol — 9 Elm St');
     expect(msg).toContain('Jobs → https://quote.yulelovelights.com/admin/jobs');
   });
@@ -115,7 +116,7 @@ describe('jobs completing-today cron', () => {
     );
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, matched: 1 });
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('502s when the jobs query errors', async () => {
@@ -127,6 +128,6 @@ describe('jobs completing-today cron', () => {
     });
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(502);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 });

@@ -15,7 +15,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { prepDigestMessage } from '@/lib/inventory/prepDigest';
 
@@ -35,6 +36,6 @@ export async function GET(req: NextRequest) {
 
   const cards = await listFulfillmentCards();
   const msg = prepDigestMessage(cards, appBaseUrl());
-  await notifyTelegram(msg);
+  await notifyTelegramAudience('inventory', msg);
   return NextResponse.json({ ok: true, sent: true });
 }

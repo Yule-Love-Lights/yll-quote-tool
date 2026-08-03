@@ -21,7 +21,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { safeEqual } from '@/lib/security';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { nyDateString, filterCompletingToday, completingTodayMessage, type CompletingTodayJob } from '@/lib/jobs/completingToday';
 
 export const runtime = 'nodejs';
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
   if (!msg) return NextResponse.json({ ok: true, matched: 0 });
 
   if (isTelegramBotEnabled() && isTelegramConfigured()) {
-    await notifyTelegram(msg);
+    await notifyTelegramAudience('jobs', msg);
   }
   return NextResponse.json({ ok: true, matched: jobs.length });
 }

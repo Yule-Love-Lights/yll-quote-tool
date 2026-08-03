@@ -3,9 +3,9 @@ import type { NextRequest } from 'next/server';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 
 // IO seams mocked; the pure logic (prepDigestMessage) runs for real.
-const { listFulfillmentCards, notifyTelegram } = vi.hoisted(() => ({
+const { listFulfillmentCards, notifyTelegramAudience } = vi.hoisted(() => ({
   listFulfillmentCards: vi.fn(async () => [] as FulfillmentCard[]),
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -13,9 +13,9 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/inventory/jobs', () => ({ listFulfillmentCards }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
 }));
+vi.mock('@/lib/integrations/telegramRouting', () => ({ notifyTelegramAudience }));
 
 import { GET } from './route';
 
@@ -60,15 +60,16 @@ describe('inventory prep-digest cron', () => {
   it('401s without the cron secret (no work done)', async () => {
     const res = await GET(makeReq('wrong'));
     expect(res.status).toBe(401);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('sends the all-clear when nothing is waiting', async () => {
     listFulfillmentCards.mockResolvedValue([]);
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    expect(notifyTelegram.mock.calls[0][0]).toBe('✅ Prep board clear — nothing waiting.');
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toBe('✅ Prep board clear — nothing waiting.');
   });
 
   it('sends the grouped digest, reusing the SAME cards the board reads', async () => {
@@ -78,8 +79,9 @@ describe('inventory prep-digest cron', () => {
     ]);
     const res = await GET(makeReq(SECRET));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0] as string;
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    const msg = notifyTelegramAudience.mock.calls[0][1] as string;
     expect(msg).toContain('#42 Alice');
     expect(msg).not.toContain('#43 Bob');
     expect(msg).toContain('Board → https://quote.yulelovelights.com/inventory/jobs');
@@ -88,7 +90,7 @@ describe('inventory prep-digest cron', () => {
   it('does not ping when the bot is disabled', async () => {
     delete process.env.TELEGRAM_BOT_ENABLED;
     await GET(makeReq(SECRET));
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     expect(listFulfillmentCards).not.toHaveBeenCalled();
   });
 });
