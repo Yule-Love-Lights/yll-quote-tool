@@ -154,7 +154,7 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
         return routeId ? (
           <Link
             href={`/customers/${encodeURIComponent(routeId)}`}
-            className="mt-0.5 truncate block hover:underline"
+            className="mt-0.5 truncate block font-medium hover:underline"
             style={{ color: 'var(--op-primary)' }}
           >
             {card.customerName ?? 'Customer'}
