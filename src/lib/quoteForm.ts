@@ -11,7 +11,7 @@ import type {
   Takedown,
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
-import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
@@ -153,6 +153,42 @@ export const initialFormData: QuoteFormData = {
   referralCredit: null,
   permanentBistro: { poles: 0, bistro: [] },
 };
+
+// Quote-builder prefill (#leads "Create quote" link, src/app/admin/leads). Raw
+// strings read straight off the /quote/new URL query params — untyped and
+// unvalidated by the caller (src/app/quote/new/page.tsx just forwards them).
+export type QuoteBuilderPrefill = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  serviceType?: string;
+};
+
+/**
+ * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
+ * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
+ * initializer) — never re-applied after mount, so a reopened quote
+ * (/quote/[id], initialQuote present) never calls this. Blank/whitespace-only
+ * strings and an unrecognized serviceType are ignored (base value kept).
+ */
+export function applyPrefill(base: QuoteFormData, prefill?: QuoteBuilderPrefill): QuoteFormData {
+  if (!prefill) return base;
+  const pick = (v: string | undefined, fallback: string) => {
+    const trimmed = v?.trim();
+    return trimmed ? trimmed : fallback;
+  };
+  return {
+    ...base,
+    customer: {
+      name: pick(prefill.name, base.customer.name),
+      email: pick(prefill.email, base.customer.email),
+      phone: pick(prefill.phone, base.customer.phone),
+      address: pick(prefill.address, base.customer.address),
+    },
+    serviceType: asServiceType(prefill.serviceType) ?? base.serviceType,
+  };
+}
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
 // choice sends a placeholder valid difficulty (the engine ignores it once a

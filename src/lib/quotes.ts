@@ -48,6 +48,12 @@ export type QuoteListItem = {
   // stays fully viewable but every approve/pay/decline/request-changes path
   // is blocked. The admin list/detail shows a pill + the ViewOnlyToggle.
   view_only: boolean;
+  // Customer detail-page route id fields (same precedence as
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets the admin quotes list link a customer name to their
+  // profile.
+  highlevel_contact_id: string | null;
+  customer_id: string | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -59,7 +65,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, view_only',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, view_only, highlevel_contact_id, customer_id',
     )
     .order('created_at', { ascending: false })
     .limit(limit);

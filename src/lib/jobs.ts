@@ -84,6 +84,54 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
   return (data ?? []) as unknown as JobRow[];
 }
 
+/**
+ * PURE: merge job lists (e.g. one matched by customer_id, one by quote_id) into a
+ * single de-duplicated, newest-first list. No IO — exported for direct unit tests.
+ */
+export function mergeJobsNewestFirst(...lists: JobRow[][]): JobRow[] {
+  const byId = new Map<string, JobRow>();
+  for (const list of lists) {
+    for (const j of list) byId.set(j.id, j);
+  }
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+/**
+ * Jobs belonging to a customer (the customer detail page, #58): matched by EITHER
+ * the job's own customer_id OR its quote_id being one of the customer's known
+ * quotes (the page's Quote history) — the second leg covers legacy jobs whose
+ * customer_id is still null pre-backfill, mirroring matchesCustomerRoute's dual
+ * match. Two queries + merge-dedupe (mergeJobsNewestFirst) rather than a
+ * hand-built PostgREST `.or()` filter. Returns [] when Supabase isn't configured
+ * or neither a customerId nor any quoteIds are given.
+ */
+export async function listJobsForCustomer(
+  customerId: string | null,
+  quoteIds: string[],
+): Promise<JobRow[]> {
+  const db = sb();
+  if (!db) return [];
+  if (!customerId && quoteIds.length === 0) return [];
+
+  let byCustomer: JobRow[] = [];
+  if (customerId) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).eq('customer_id', customerId);
+    if (error) console.error('listJobsForCustomer: customer_id query error:', error);
+    else byCustomer = (data ?? []) as unknown as JobRow[];
+  }
+
+  let byQuote: JobRow[] = [];
+  if (quoteIds.length) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).in('quote_id', quoteIds);
+    if (error) console.error('listJobsForCustomer: quote_id query error:', error);
+    else byQuote = (data ?? []) as unknown as JobRow[];
+  }
+
+  return mergeJobsNewestFirst(byCustomer, byQuote);
+}
+
 // A billing-board row: the job distilled for the operator /admin/jobs list, with
 // the linked quote's customer identity + is_test joined on (the job's own
 // customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard

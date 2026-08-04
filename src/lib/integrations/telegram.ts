@@ -83,6 +83,30 @@ export async function sendTelegramMessage(chatId: number | string, text: string)
 }
 
 /**
+ * Best-effort chat title lookup (Bot API getChat) for the Settings → Telegram
+ * routing UI. Never throws — any failure (unset token, network, chat not
+ * found) resolves to null so the caller falls back to showing the raw chat
+ * id. Groups/supergroups have a `title`; 1:1 chats don't, so we fall back to
+ * `first_name`/`username`.
+ */
+export async function getChatTitle(chatId: string): Promise<string | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(`${API_BASE}/bot${token}/getChat?chat_id=${encodeURIComponent(chatId)}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { result?: { title?: unknown; first_name?: unknown; username?: unknown } };
+    const r = data.result;
+    if (typeof r?.title === 'string' && r.title) return r.title;
+    if (typeof r?.first_name === 'string' && r.first_name) return r.first_name;
+    if (typeof r?.username === 'string' && r.username) return r.username;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Strip Telegram conventions so the existing command parser sees plain text.
  * Handles:
  *   /help                       → help

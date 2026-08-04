@@ -19,9 +19,11 @@ import {
   type FormCustomer,
   type StoredCustomer,
   type DifficultyChoice,
+  type QuoteBuilderPrefill,
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
+  applyPrefill,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -324,9 +326,14 @@ const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
 export default function QuoteBuilder({
   initialQuote,
   isTest: isTestProp,
+  prefill,
 }: {
   initialQuote?: QuoteBuilderInitial;
   isTest?: boolean;
+  // Blank-slate-only prefill (#leads "Create quote" link) — see applyPrefill in
+  // @/lib/quoteForm. Ignored whenever initialQuote is set (editing an existing
+  // quote at /quote/[id] never seeds from this).
+  prefill?: QuoteBuilderPrefill;
 }) {
   const editMode = initialQuote != null;
   // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
@@ -360,7 +367,7 @@ export default function QuoteBuilder({
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
-      : initialFormData,
+      : applyPrefill(initialFormData, prefill),
   );
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
@@ -3260,6 +3267,22 @@ export default function QuoteBuilder({
                     className="text-blue-700 font-medium underline hover:text-blue-900"
                   >
                     View on Google Maps ↗
+                  </a>
+                </p>
+              )}
+              {(form.customer.address.trim() !== '' || googleAddress != null) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={
+                      geoLat != null && geoLng != null
+                        ? `https://earth.google.com/web/search/${geoLat},${geoLng}`
+                        : `https://earth.google.com/web/search/${encodeURIComponent(googleAddress ?? form.customer.address.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 font-medium underline hover:text-blue-900"
+                  >
+                    View on Google Earth ↗
                   </a>
                 </p>
               )}
