@@ -96,8 +96,24 @@ export function TelegramRoutingManager({
   const liveAssignedCount = (audience: TelegramAudience) =>
     (draft?.[audience] ?? []).filter((id) => chats.some((c) => c.id === id)).length;
 
-  if (status === 'loading' || !draft) {
+  if (status === 'loading') {
     return <p className="text-sm text-gray-500 py-10 text-center">Loading Telegram chats…</p>;
+  }
+  // draft is only ever null when the initial load failed (success always seeds
+  // it) — show the error + a retry instead of a forever-"Loading…" dead end.
+  if (!draft) {
+    return (
+      <div className="py-10 text-center flex flex-col items-center gap-3">
+        <p className="text-sm text-red-600">{error ?? 'Failed to load Telegram chats'}</p>
+        <button
+          type="button"
+          onClick={load}
+          className="inline-flex items-center rounded-full border border-gray-300 px-4 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (

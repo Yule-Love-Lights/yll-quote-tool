@@ -546,19 +546,41 @@ describe('mergeJobsNewestFirst', () => {
 });
 
 describe('listJobsForCustomer', () => {
-  it('merges the customer_id match and the quote_id match, de-duplicated newest-first', async () => {
-    const { client } = makeSb({
-      jobs: {
-        list: [
-          { id: 'j1', quote_id: 'q1', customer_id: 'cust-1', created_at: '2026-06-01' },
-          { id: 'j2', quote_id: 'q2', customer_id: null, created_at: '2026-06-05' },
-        ],
+  // Purpose-built fake with REAL .eq()/.in() column filtering (the shared makeSb
+  // fake ignores filters, which can't prove customer scoping — mirrors the
+  // filtering fake invoices.test.ts uses for its listInvoicesForCustomer test).
+  function makeFilteringJobsDb(rows: Record<string, unknown>[]) {
+    return {
+      from: (table: string) => {
+        if (table !== 'jobs') throw new Error('unexpected table ' + table);
+        return {
+          select: () => ({
+            eq: async (col: string, val: unknown) => ({
+              data: rows.filter((r) => r[col] === val),
+              error: null,
+            }),
+            in: async (col: string, vals: unknown[]) => ({
+              data: rows.filter((r) => vals.includes(r[col])),
+              error: null,
+            }),
+          }),
+        };
       },
-    });
-    sbRef.current = client;
+    };
+  }
+
+  it('merges the customer_id match and the quote_id match, de-duplicated newest-first, excluding other customers', async () => {
+    sbRef.current = makeFilteringJobsDb([
+      { id: 'j1', quote_id: 'q1', customer_id: 'cust-1', created_at: '2026-06-01' },
+      { id: 'j2', quote_id: 'q2', customer_id: null, created_at: '2026-06-05' },
+      // Another customer's job — matches NEITHER cust-1 nor the quote-id set;
+      // must never leak into this customer's list.
+      { id: 'j3', quote_id: 'q-other', customer_id: 'cust-2', created_at: '2026-06-09' },
+    ]);
 
     const jobs = await listJobsForCustomer('cust-1', ['q1', 'q2']);
     expect(jobs.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(jobs.some((j) => j.id === 'j3')).toBe(false);
   });
 
   it('returns [] when neither a customerId nor any quoteIds are given', async () => {
