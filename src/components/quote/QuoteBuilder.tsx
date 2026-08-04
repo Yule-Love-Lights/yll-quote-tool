@@ -385,12 +385,28 @@ export default function QuoteBuilder({
   // `highlevelContact`: the GHL contact picked in the autocomplete. When
   // set, customer fields are pre-filled and we'll attach the quote to this
   // contact's existing opportunity on save.
+  // A lead-prefilled NEW quote seeds this as if the operator had picked the
+  // lead's known contact by hand (blank-slate branch only): the linked chip
+  // renders immediately, the false "contact required" warning never shows,
+  // and the normal post-save attach flow wires the pipeline card. Built from
+  // the prefill's own fields — the lead IS the contact. "Change" still works.
   // `savedQuoteId`: UUID returned from /api/quote. Needed for the attach
   // call and for the "Send Quote to Customer" button (which targets
   // /api/quotes/[id]/send).
   // `attachStatus` / `sendStatus`: informational — surfaced as a small
   // status line so the operator knows whether the GHL side is in sync.
-  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
+  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(() =>
+    !initialQuote && prefill?.ghlContactId
+      ? {
+          id: prefill.ghlContactId,
+          source: 'highlevel',
+          fullName: prefill.name?.trim() || undefined,
+          email: prefill.email?.trim() || undefined,
+          phone: prefill.phone?.trim() || undefined,
+          address1: prefill.address?.trim() || undefined,
+        }
+      : null,
+  );
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
   // Referral program (#41 "mention" attribution): an existing customer staff
   // picked as "Referred by" while building THIS quote. The new quote's id (or,
