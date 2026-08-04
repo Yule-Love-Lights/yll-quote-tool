@@ -318,7 +318,7 @@ export default function QuotesAdminPage() {
                           {(() => {
                             const routeId = q.highlevel_contact_id ?? q.customer_id;
                             return routeId ? (
-                              <Link href={`/customers/${encodeURIComponent(routeId)}`} className="text-blue-600 hover:underline">
+                              <Link href={`/customers/${encodeURIComponent(routeId)}`} className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
                                 {q.customer_name ?? '—'}
                               </Link>
                             ) : (

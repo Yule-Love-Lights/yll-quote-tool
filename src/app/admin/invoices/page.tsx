@@ -154,7 +154,7 @@ export default function InvoicesAdminPage() {
                         {(() => {
                           const routeId = inv.highlevelContactId ?? inv.customerId;
                           return routeId ? (
-                            <Link href={`/customers/${encodeURIComponent(routeId)}`} className="text-blue-600 hover:underline">
+                            <Link href={`/customers/${encodeURIComponent(routeId)}`} className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
                               {inv.customerName ?? '—'}
                             </Link>
                           ) : (
