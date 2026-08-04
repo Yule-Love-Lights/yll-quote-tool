@@ -456,7 +456,14 @@ export default function QuoteBuilder({
   // #172: the saved row already carries a HighLevel link (hydrated on edit,
   // maintained on attach/detach). Kills the false "contact required" warning
   // on reopened linked quotes — the chip itself stays pick-session-only.
-  const [dbLinked, setDbLinked] = useState<boolean>(!!initialQuote?.highlevelContactId);
+  // A lead-prefilled NEW quote is the second producer of that same state: the
+  // first Calculate inserts the carried ghlContactId, so the warning would be
+  // just as false — seed from the prefill too (applyPrefill is the only thing
+  // that sets form.highlevelContactId on the blank-slate branch). An explicit
+  // operator pick still overwrites via the attach flow as usual.
+  const [dbLinked, setDbLinked] = useState<boolean>(
+    !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId),
+  );
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
   // Save the customer block to localStorage as staff type, so a brand-new
