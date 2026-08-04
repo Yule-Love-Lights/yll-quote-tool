@@ -9,7 +9,7 @@
 // The ASCEND APL wholesale list reproduces the OMNI estimator totals to ~0.3%
 // (Greg 125ft → $1,286.56 vs sheet $1,290.81). Golden cases live in bom.test.ts.
 
-import type { TrackStyle, TrackColor, PermanentGap } from './types';
+import type { TrackStyle, TrackColor, PermanentGap, PermanentSide } from './types';
 
 export type BomCategory = 'lights' | 'track' | 'power' | 'data' | 'extension' | 'accessory';
 
@@ -25,7 +25,12 @@ export type BomLine = {
 export type PermanentBomInput = {
   footageBySide: { front: number; left: number; right: number; back: number };
   cornersBySide: { front: number; left: number; right: number; back: number };
-  trackStyle: TrackStyle;
+  /**
+   * #192 — per-side track style, FULLY RESOLVED (the pure engine never sees
+   * "absent" — callers resolve the legacy-scalar fallback via
+   * effectiveSideTrackStyle before building this input).
+   */
+  trackStyleBySide: Record<PermanentSide, TrackStyle>;
   trackColor: TrackColor;
   /** Puck housing: true → the -BLK SKUs (same price). */
   blackHousing: boolean;
@@ -339,11 +344,22 @@ export function buildPermanentBom(
   push(`APL11012-5${blk}`, `RGBW set of 5${blk ? ' (black)' : ''}`, withWaste(sets5), cost(`APL11012-5${blk}`, C.set5), 'lights');
   push(`APL11012-1${blk}`, `RGBW single${blk ? ' (black)' : ''}`, withWaste(totalSingles), cost(`APL11012-1${blk}`, C.single), 'lights');
 
-  // Track.
-  const tracks = trackSections(totalFt);
-  const tSku = trackSku(input.trackStyle, input.trackColor);
-  const tUnit = input.trackStyle === 'parapet' ? C.trackParapet : C.trackSingle;
-  push(tSku, `40" ${input.trackStyle === 'parapet' ? 'parapet' : 'single'} track (${input.trackColor})`, tracks, cost(tSku, tUnit), 'track');
+  // Track (#192: per-side style) — group included-side footage by style and
+  // emit ONE track line per style actually used. Per-style trackSections()
+  // rounding is intentional: a leftover single-track section can't substitute
+  // for a parapet section, so mixed sides can't share one rounded total.
+  const ftByStyle: Record<TrackStyle, number> = { single: 0, parapet: 0 };
+  for (const k of sides) ftByStyle[input.trackStyleBySide[k]] += posFt(input.footageBySide[k]);
+  let trackSectionsTotal = 0;
+  for (const style of ['single', 'parapet'] as const) {
+    const ft = ftByStyle[style];
+    if (ft <= 0) continue;
+    const secs = trackSections(ft);
+    trackSectionsTotal += secs;
+    const tSku = trackSku(style, input.trackColor);
+    const tUnit = style === 'parapet' ? C.trackParapet : C.trackSingle;
+    push(tSku, `40" ${style === 'parapet' ? 'parapet' : 'single'} track (${input.trackColor})`, secs, cost(tSku, tUnit), 'track');
+  }
 
   // Transformers (first = KIT with the system hub; rest bare). #125-4: a large
   // job can need 2+ bare supplies of the SAME wattage — emit ONE Qty-N line per
@@ -395,8 +411,9 @@ export function buildPermanentBom(
 
   const wholesaleCost = round2(lines.reduce((s, l) => s + l.extCost, 0));
   const flags: string[] = [];
-  // Parapet track is stocked only in white (9003) / black (9004).
-  if (input.trackStyle === 'parapet' && input.trackColor !== '9003' && input.trackColor !== '9004') {
+  // Parapet track is stocked only in white (9003) / black (9004) — flags
+  // whenever ANY side is ordering parapet track, not a single scalar style.
+  if (ftByStyle.parapet > 0 && input.trackColor !== '9003' && input.trackColor !== '9004') {
     flags.push('parapet-track-only-stocked-white-or-black');
   }
   return {
@@ -405,7 +422,7 @@ export function buildPermanentBom(
       totalFt,
       puckCount: totalLights,
       cornerSingles,
-      trackSections: tracks,
+      trackSections: trackSectionsTotal,
       wholesaleCost,
       costPerFt: totalFt > 0 ? round2(wholesaleCost / totalFt) : 0,
     },
