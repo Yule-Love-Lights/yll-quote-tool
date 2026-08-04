@@ -44,6 +44,21 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      // /forms/* are the non-lead website forms (#195) — newsletter signup, job
+      // and intern applications, Light Up For Hope nominations. Same reasoning
+      // and same allowlist as /estimate above: embedded on our own marketing
+      // pages only, never a wildcard, never the portal. These pages carry no
+      // access token and read no customer record; they only accept input.
+      {
+        source: '/forms/:path*',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value:
+              "frame-ancestors 'self' https://yulelovelights.com https://www.yulelovelights.com",
+          },
+        ],
+      },
     ];
   },
   images: {
