@@ -14,8 +14,17 @@ import type { TelegramAudience, TelegramRouting } from '@/lib/integrations/teleg
 type ChatRow = { id: string; title: string | null };
 type Status = 'loading' | 'idle' | 'saving' | 'saved' | 'error';
 
-function emptyRouting(audiences: readonly TelegramAudience[]): TelegramRouting {
-  return Object.fromEntries(audiences.map((a) => [a, [] as string[]])) as TelegramRouting;
+// First-run draft: every chat checked for every audience — the exact behavior
+// the legacy broadcast has TODAY, so a curious owner who opens this page and
+// hits Save without touching a checkbox changes nothing (an all-empty first
+// draft made one accidental Save a total notification blackout — S49 admin-lens
+// HIGH). Staff then UNCHECK what a chat shouldn't get, which is the actual task.
+function broadcastRouting(
+  audiences: readonly TelegramAudience[],
+  chats: ChatRow[],
+): TelegramRouting {
+  const all = chats.map((c) => c.id);
+  return Object.fromEntries(audiences.map((a) => [a, [...all]])) as TelegramRouting;
 }
 
 export function TelegramRoutingManager({
@@ -26,11 +35,7 @@ export function TelegramRoutingManager({
   labels: Record<TelegramAudience, string>;
 }) {
   const [chats, setChats] = useState<ChatRow[]>([]);
-  // The last-saved routing (null = nothing saved yet, legacy broadcast). Used
-  // only to gate the zero-chats warning — it shouldn't show before staff have
-  // ever saved a routing, since "unassigned sends nothing" isn't in effect yet.
-  const [savedRouting, setSavedRouting] = useState<TelegramRouting | null>(null);
-  const [draft, setDraft] = useState<TelegramRouting>(() => emptyRouting(audiences));
+  const [draft, setDraft] = useState<TelegramRouting | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState<string | null>(null);
 
@@ -41,9 +46,9 @@ export function TelegramRoutingManager({
       const res = await fetch('/api/settings/telegram-routing');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setChats(data.chats ?? []);
-      setSavedRouting(data.routing ?? null);
-      setDraft(data.routing ?? emptyRouting(audiences));
+      const loadedChats: ChatRow[] = data.chats ?? [];
+      setChats(loadedChats);
+      setDraft(data.routing ?? broadcastRouting(audiences, loadedChats));
       setStatus('idle');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load Telegram chats');
@@ -59,6 +64,7 @@ export function TelegramRoutingManager({
 
   const toggle = (audience: TelegramAudience, chatId: string) => {
     setDraft((d) => {
+      if (!d) return d;
       const on = d[audience].includes(chatId);
       return { ...d, [audience]: on ? d[audience].filter((id) => id !== chatId) : [...d[audience], chatId] };
     });
@@ -75,7 +81,6 @@ export function TelegramRoutingManager({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
-      setSavedRouting(data as TelegramRouting);
       setDraft(data as TelegramRouting);
       setStatus('saved');
       window.setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
@@ -89,17 +94,19 @@ export function TelegramRoutingManager({
   // chatsForAudience()'s intersection, so the warning reflects reality even if
   // the env allowlist shrank since the routing was last saved.
   const liveAssignedCount = (audience: TelegramAudience) =>
-    draft[audience].filter((id) => chats.some((c) => c.id === id)).length;
+    (draft?.[audience] ?? []).filter((id) => chats.some((c) => c.id === id)).length;
 
-  if (status === 'loading') {
+  if (status === 'loading' || !draft) {
     return <p className="text-sm text-gray-500 py-10 text-center">Loading Telegram chats…</p>;
   }
 
   return (
     <div className="flex flex-col gap-6">
       <p className="text-xs text-gray-500 leading-relaxed rounded-md border border-gray-200 bg-gray-50 p-3">
-        Until a routing is saved, every chat receives every notification. Once saved, each notification
-        type goes only to its assigned chats — an unassigned type sends nothing.
+        Until a routing is saved, every chat receives every notification — and the boxes below start
+        fully checked to match that, so saving without changes changes nothing. Once saved, each
+        notification type goes only to its checked chats — a type with no chats checked sends nothing.
+        Uncheck what a chat shouldn&apos;t get, then save.
       </p>
 
       <div aria-live="polite" className="min-h-[1.25rem] text-sm">
@@ -118,10 +125,10 @@ export function TelegramRoutingManager({
                 {audiences.map((a) => (
                   <th key={a} className="px-4 py-2.5 font-medium text-center whitespace-nowrap">
                     {labels[a]}
-                    {savedRouting && liveAssignedCount(a) === 0 && (
+                    {liveAssignedCount(a) === 0 && (
                       <span
                         className="ml-1 text-amber-600"
-                        title={`No chats assigned to ${labels[a]} — this notification type sends nothing`}
+                        title={`No chats assigned to ${labels[a]} — once saved, this notification type sends nothing`}
                       >
                         ⚠
                       </span>

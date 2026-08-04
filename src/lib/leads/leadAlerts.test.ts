@@ -69,6 +69,21 @@ describe('buildLeadAlertEmail', () => {
     expect(html).toContain('&lt;script&gt;evil()&lt;/script&gt;');
   });
 
+  it('escapes double-quotes so phone/email cannot break out of the href attribute', () => {
+    // phone/email are interpolated inside href="tel:…"/href="mailto:…" — a
+    // quote in the value must not terminate the attribute and inject markup.
+    const hostile: LeadAlertInput = {
+      ...BASE_LEAD,
+      phone: '555" onmouseover="alert(1)',
+      email: 'a"b@example.com',
+    };
+    const { html } = buildLeadAlertEmail(hostile, { partial: false });
+    expect(html).not.toContain('onmouseover="alert(1)"');
+    expect(html).not.toContain('555" onmouseover');
+    expect(html).toContain('tel:555&quot; onmouseover=&quot;alert(1)');
+    expect(html).toContain('mailto:a&quot;b@example.com');
+  });
+
   it('renders — for missing address and notes', () => {
     const sparse: LeadAlertInput = {
       name: 'No Extras',

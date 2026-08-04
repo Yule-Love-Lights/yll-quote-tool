@@ -21,10 +21,18 @@ export type LeadAlertInput = {
 };
 
 // No HTML-escape helper is exported anywhere in the codebase (quoteMessages.ts
-// keeps its own private copy) — minimal local copy, same behavior (&, <, >
-// only, matching that existing precedent). Leads are untrusted website input.
+// keeps its own private copy). Leads are untrusted website input, and unlike
+// quoteMessages (which only interpolates internally-built URLs into hrefs),
+// this email puts lead-supplied phone/email inside quoted href attributes —
+// so quotes are escaped too, or `phone: '555" onmouseover="…'` would break out
+// of the attribute and inject markup into the staff alert.
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function row(label: string, value: string): string {
@@ -85,7 +93,14 @@ export async function sendLeadAlertEmail(
   opts: { partial: boolean },
 ): Promise<LeadAlertResult> {
   const contactId = process.env.HIGHLEVEL_LEADS_ALERT_CONTACT_ID || process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
-  if (!contactId) return 'skipped';
+  if (!contactId) {
+    // Greppable in Vercel logs — otherwise a fresh deploy with neither env var
+    // set leaves the whole lead-email feature silently dormant.
+    console.warn(
+      '[leadAlerts] no HIGHLEVEL_LEADS_ALERT_CONTACT_ID / HIGHLEVEL_INTERNAL_CONTACT_ID set — lead alert email skipped',
+    );
+    return 'skipped';
+  }
   try {
     const { subject, html } = buildLeadAlertEmail(lead, opts);
     await sendEmail({

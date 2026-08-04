@@ -1038,6 +1038,57 @@ describe('quoteRowToPortalQuote — hides a later preset tier that price-ties an
     expect(d.total).toBe(0);
     expect(d.includedItemIds).toEqual([]);
   });
+
+  it('permanent surfaces are NEVER deduped — a symmetric house ties Front and Back legitimately', () => {
+    // Permanent reuses the A/B/C letter ids for mutually-exclusive SURFACES
+    // (A "Front of Home", C "Back of Home"), not a cumulative ladder — front
+    // 35ft × $40 and back 40ft × $35 both bill $1,400, price-tying two
+    // genuinely different products. The dedupe's positive holiday-only gate
+    // must leave both visible.
+    const permInputs = emptyInputs({
+      waiveMinimum: true,
+      permanent: {
+        frontFootage: 35, leftFootage: 0, rightFootage: 0, backFootage: 40,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(calculatePermanentQuote(permInputs), permInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    expect(a.total).toBeGreaterThan(0);
+    expect(a.total).toBe(c.total); // the tie is real…
+    expect(portal.packages.some((p) => p.id === 'A')).toBe(true);
+    expect(portal.packages.some((p) => p.id === 'C')).toBe(true); // …and C still renders
+  });
+
+  it("the customer's APPROVED package is never hidden by the dedupe", () => {
+    // Same B===C tie as the first test, but the customer already approved on C
+    // (frozen in the approval snapshot). Hiding C would strand the approval
+    // seed on a missing package id → the empty-selection $0 portal. C must
+    // survive; the un-approved B stays too (it isn't a duplicate of anything
+    // still eligible for hiding).
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...rowWith(result),
+        customer_approved_at: '2026-07-04T00:00:00Z',
+        approval_snapshot: {
+          approvedAt: '2026-07-04T00:00:00Z',
+          customerSelection: { packageId: 'C' },
+        } as QuoteRowForPortal['approval_snapshot'],
+      },
+      photos: PHOTOS,
+    })!;
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']); // C kept for the approval
+    expect(portal.approval?.packageId).toBe('C');
+  });
 });
 
 // ── #131: permanent per-side recommend flags reach the portal line items ────
