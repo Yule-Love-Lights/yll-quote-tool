@@ -40,6 +40,11 @@ const MAX_CUSTOM_RATE = 1000;
 const MAX_OVERRIDE_AMOUNT = 1_000_000;
 const MAX_OVERRIDE_REASON_LEN = 500;
 
+// #leads "Create quote" link: a HighLevel contact id is an opaque short
+// string (GHL's own ids run well under this) — cap it generously so a clean
+// 400 beats persisting an oversized/garbage value into highlevel_contact_id.
+const MAX_HL_CONTACT_ID_LEN = 100;
+
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
 // instead of an opaque downstream 500.
@@ -100,6 +105,7 @@ export async function POST(req: NextRequest) {
     isTest: rawIsTest,
     amendReprice: rawAmendReprice,
     referredByCustomerId: rawReferredByCustomerId,
+    highlevelContactId: rawHighlevelContactId,
   } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
@@ -136,6 +142,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'referredByCustomerId must be a valid UUID' }, { status: 400 });
   }
   const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
+
+  // #leads "Create quote" link: the lead's HighLevel contact id, carried
+  // through so a lead-created quote links to that contact from birth. Opaque
+  // untrusted string — type + length only (no format assumed, unlike the
+  // UUID-shaped referredByCustomerId above). Optional; only honored on a NEW
+  // save (saveQuote) — an update never touches highlevel_contact_id (an
+  // operator's later HL-autocomplete pick/clear, via /api/integrations/
+  // highlevel/attach, is the only thing allowed to change it after insert).
+  if (rawHighlevelContactId !== undefined && typeof rawHighlevelContactId !== 'string') {
+    return NextResponse.json({ error: 'highlevelContactId must be a string if provided' }, { status: 400 });
+  }
+  if (typeof rawHighlevelContactId === 'string' && rawHighlevelContactId.length > MAX_HL_CONTACT_ID_LEN) {
+    return NextResponse.json(
+      { error: `highlevelContactId exceeds the ${MAX_HL_CONTACT_ID_LEN}-character limit` },
+      { status: 400 },
+    );
+  }
+  const highlevelContactIdTrimmed =
+    typeof rawHighlevelContactId === 'string' ? rawHighlevelContactId.trim() : '';
+  const highlevelContactId = highlevelContactIdTrimmed ? highlevelContactIdTrimmed : null;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -617,6 +643,10 @@ export async function POST(req: NextRequest) {
           isTest,
           operator?.id ?? null,
           referredByCustomerId,
+          // #leads "Create quote" link: only honored on this NEW-save path —
+          // never passed to updateQuote, so an existing/reopened quote's
+          // linked contact can't be clobbered by a resave.
+          highlevelContactId,
         );
     return NextResponse.json({
       customer: safeCustomer,

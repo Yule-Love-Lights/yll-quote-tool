@@ -82,6 +82,10 @@ function StatusBadge({ status }: { status: string }) {
 // applyPrefill) to seed the blank builder's initial state. Only non-empty
 // fields are sent; an unrecognized/legacy lead.service is simply omitted
 // (QuoteBuilder validates serviceType itself and ignores anything invalid).
+// ghlContactId (operator feedback): when the lead already has a HighLevel
+// contact, carry its id through so the quote saves LINKED to that contact from
+// birth (quotes.highlevel_contact_id) instead of the operator having to
+// re-pick the same contact by hand in the builder's HL autocomplete.
 function quoteNewHref(lead: Lead): string {
   const params = new URLSearchParams();
   if (lead.name) params.set('name', lead.name);
@@ -90,6 +94,7 @@ function quoteNewHref(lead: Lead): string {
   if (lead.address) params.set('address', lead.address);
   const serviceType = leadServiceToQuoteServiceType(lead.service);
   if (serviceType) params.set('serviceType', serviceType);
+  if (lead.ghl_contact_id) params.set('ghlContactId', lead.ghl_contact_id);
   const qs = params.toString();
   return qs ? `/quote/new?${qs}` : '/quote/new';
 }

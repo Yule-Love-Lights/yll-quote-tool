@@ -201,6 +201,14 @@ export async function saveQuote(
   // on a brand-new save (this quote's id becomes the referee_quote_id) — the
   // update path (updateQuote) never touches referrals at all.
   referredByCustomerId: string | null = null,
+  // #leads "Create quote" link: the lead's known HighLevel contact id, carried
+  // through so the quote is linked from birth. Set once here at insert, same
+  // immutable-at-insert posture as is_test/created_by above — updateQuote
+  // never takes this param, so a resave can't clobber a contact the operator
+  // later picks/clears by hand (that's /api/integrations/highlevel/attach's
+  // job). rebook.ts's buildRebookInsert is the other direct-insert write site
+  // for this column (carries the SOURCE quote's link onto a rebooked clone).
+  highlevelContactId: string | null = null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -237,6 +245,7 @@ export async function saveQuote(
       status: 'draft' satisfies QuoteStatus,
       is_test: isTest,
       created_by: createdBy,
+      highlevel_contact_id: highlevelContactId,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
