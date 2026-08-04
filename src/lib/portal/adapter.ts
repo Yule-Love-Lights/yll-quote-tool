@@ -751,6 +751,42 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     });
     packages = kept.some((pkg) => pkg.includedItemIds.length > 0) ? kept : allPackages;
   }
+  // Same-price tier dedupe (operator screenshot: Tier 2 "Full Festive" and
+  // Tier 3 "The Full Yule" both priced $2,185.88 — two identical-looking cards
+  // confused the customer). Runs AFTER the #134 gate filter above, so equality
+  // is judged only among tiles that would actually render. Keeps the FIRST of
+  // any equal-priced run (A before B before C), so A===B===C collapses to just
+  // A — this can never violate the "packages never all vanish" invariant above,
+  // since the first of any tie is always kept. Three scope guards:
+  //   • HOLIDAY ONLY (positive seam gate): holiday's A/B/C is a cumulative
+  //     price ladder, where a tie means two identical-looking tiles. Permanent
+  //     reuses the SAME letter ids for mutually-exclusive surfaces (Front /
+  //     Front & Sides / Back) that legitimately tie on a symmetric house and
+  //     are different products — never hide those. Event/bistro/legacy-rebook
+  //     and any future vertical likewise never dedupe.
+  //   • Package D (the empty Build-Your-Own placeholder, or a non-empty staff
+  //     recommendation) is NEVER hidden here, same carve-out as #134.
+  //   • The customer's APPROVED package is never hidden: the frozen approval
+  //     seed points at it by id, and hiding it collapses the booked portal to
+  //     an empty selection — the $0-portal failure pickFallbackApprovalPackageId
+  //     exists to prevent. (Its total still counts as seen, so a later tile
+  //     tying the approved one still dedupes.)
+  if ((row.service_type ?? 'holiday') === 'holiday') {
+    const approvedPackageId = row.customer_approved_at
+      ? row.approval_snapshot?.customerSelection?.packageId
+      : undefined;
+    const seenPresetTotals = new Set<number>();
+    packages = packages.filter((pkg) => {
+      if (pkg.id !== 'A' && pkg.id !== 'B' && pkg.id !== 'C') return true;
+      if (pkg.id === approvedPackageId) {
+        seenPresetTotals.add(pkg.total);
+        return true;
+      }
+      if (seenPresetTotals.has(pkg.total)) return false;
+      seenPresetTotals.add(pkg.total);
+      return true;
+    });
+  }
   // Computed up front so the seeded install-timing can prefer the customer's
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather

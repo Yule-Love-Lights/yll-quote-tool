@@ -147,7 +147,20 @@ export default function InvoicesAdminPage() {
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">
-                        <span>{inv.customerName ?? '—'}</span>
+                        {/* Customer-name link (mirrors /admin/quotes' idiom, #666):
+                            same routing rule as src/lib/dashboard/customers.ts
+                            customerRouteId — highlevel_contact_id, else customer_id.
+                            A walk-in with neither stays plain text. */}
+                        {(() => {
+                          const routeId = inv.highlevelContactId ?? inv.customerId;
+                          return routeId ? (
+                            <Link href={`/customers/${encodeURIComponent(routeId)}`} className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
+                              {inv.customerName ?? '—'}
+                            </Link>
+                          ) : (
+                            <span>{inv.customerName ?? '—'}</span>
+                          );
+                        })()}
                         {inv.isTest && (
                           <span
                             title="Simulated test invoice — excluded from dashboard metrics"

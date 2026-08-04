@@ -488,7 +488,7 @@ export default function NewTrainingHousePage() {
     }
     const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : addMode === 'stake' ? 'new stake run' : 'new c9 run',
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);

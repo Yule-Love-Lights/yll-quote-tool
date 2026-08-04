@@ -4,6 +4,7 @@ import {
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
+  applyPrefill,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -51,6 +52,7 @@ const fullForm: QuoteFormData = {
   // #117: permanentBistro grew a `bistro` array (satellite-derived footage) —
   // [] here so the pre-existing full-payload assertions are unaffected.
   permanentBistro: { poles: 0, bistro: [] },
+  highlevelContactId: null,
 };
 
 describe('buildQuoteInputs', () => {
@@ -350,6 +352,65 @@ describe('inputsToFormData', () => {
     const real = inputsToFormData({ name: 'Ann O.', address: '4 Oak Ln' }, {});
     expect(real.customer.name).toBe('Ann O.');
     expect(real.customer.address).toBe('4 Oak Ln');
+  });
+});
+
+describe('applyPrefill (#leads Create-quote link)', () => {
+  it('returns base unchanged when no prefill is given', () => {
+    expect(applyPrefill(initialFormData, undefined)).toEqual(initialFormData);
+  });
+
+  it('seeds customer fields and a valid serviceType', () => {
+    const result = applyPrefill(initialFormData, {
+      name: 'Ann O.',
+      email: 'ann@example.com',
+      phone: '555-0100',
+      address: '4 Oak Ln',
+      serviceType: 'permanent',
+    });
+    expect(result.customer).toEqual({
+      name: 'Ann O.',
+      email: 'ann@example.com',
+      phone: '555-0100',
+      address: '4 Oak Ln',
+    });
+    expect(result.serviceType).toBe('permanent');
+  });
+
+  it('ignores an unrecognized serviceType, keeping the base default', () => {
+    const result = applyPrefill(initialFormData, { serviceType: 'not-a-real-type' });
+    expect(result.serviceType).toBe(initialFormData.serviceType);
+  });
+
+  it('ignores blank/whitespace-only fields, keeping the base value', () => {
+    const result = applyPrefill(initialFormData, { name: '   ', email: undefined });
+    expect(result.customer.name).toBe(initialFormData.customer.name);
+    expect(result.customer.email).toBe(initialFormData.customer.email);
+  });
+
+  it('only touches customer + serviceType, leaving every other field alone', () => {
+    const result = applyPrefill(initialFormData, { name: 'Bob' });
+    expect({ ...result, customer: initialFormData.customer }).toEqual(initialFormData);
+  });
+
+  it('seeds highlevelContactId from a prefill ghlContactId', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: 'ghl-contact-123' });
+    expect(result.highlevelContactId).toBe('ghl-contact-123');
+  });
+
+  it('trims a whitespace-padded ghlContactId', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: '  ghl-contact-123  ' });
+    expect(result.highlevelContactId).toBe('ghl-contact-123');
+  });
+
+  it('ignores a blank/whitespace-only ghlContactId, keeping highlevelContactId null', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: '   ' });
+    expect(result.highlevelContactId).toBeNull();
+  });
+
+  it('leaves highlevelContactId null when no ghlContactId is given', () => {
+    const result = applyPrefill(initialFormData, { name: 'Bob' });
+    expect(result.highlevelContactId).toBeNull();
   });
 });
 

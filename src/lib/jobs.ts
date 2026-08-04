@@ -84,6 +84,54 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
   return (data ?? []) as unknown as JobRow[];
 }
 
+/**
+ * PURE: merge job lists (e.g. one matched by customer_id, one by quote_id) into a
+ * single de-duplicated, newest-first list. No IO — exported for direct unit tests.
+ */
+export function mergeJobsNewestFirst(...lists: JobRow[][]): JobRow[] {
+  const byId = new Map<string, JobRow>();
+  for (const list of lists) {
+    for (const j of list) byId.set(j.id, j);
+  }
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+/**
+ * Jobs belonging to a customer (the customer detail page, #58): matched by EITHER
+ * the job's own customer_id OR its quote_id being one of the customer's known
+ * quotes (the page's Quote history) — the second leg covers legacy jobs whose
+ * customer_id is still null pre-backfill, mirroring matchesCustomerRoute's dual
+ * match. Two queries + merge-dedupe (mergeJobsNewestFirst) rather than a
+ * hand-built PostgREST `.or()` filter. Returns [] when Supabase isn't configured
+ * or neither a customerId nor any quoteIds are given.
+ */
+export async function listJobsForCustomer(
+  customerId: string | null,
+  quoteIds: string[],
+): Promise<JobRow[]> {
+  const db = sb();
+  if (!db) return [];
+  if (!customerId && quoteIds.length === 0) return [];
+
+  let byCustomer: JobRow[] = [];
+  if (customerId) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).eq('customer_id', customerId);
+    if (error) console.error('listJobsForCustomer: customer_id query error:', error);
+    else byCustomer = (data ?? []) as unknown as JobRow[];
+  }
+
+  let byQuote: JobRow[] = [];
+  if (quoteIds.length) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).in('quote_id', quoteIds);
+    if (error) console.error('listJobsForCustomer: quote_id query error:', error);
+    else byQuote = (data ?? []) as unknown as JobRow[];
+  }
+
+  return mergeJobsNewestFirst(byCustomer, byQuote);
+}
+
 // A billing-board row: the job distilled for the operator /admin/jobs list, with
 // the linked quote's customer identity + is_test joined on (the job's own
 // customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard
@@ -104,6 +152,13 @@ export type JobAdminCard = {
   isTest: boolean;
   createdAt: string;
   itemCount: number;
+  // Customer detail-page route id fields (same precedence as QuoteListItem /
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets /admin/jobs link a customer name to their profile.
+  // customerId prefers the job's OWN customer_id (Phase 5) over the linked
+  // quote's, since the job row is the more direct source once backfilled.
+  highlevelContactId: string | null;
+  customerId: string | null;
 };
 
 /**
@@ -122,23 +177,27 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean }
+    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test')
+      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      highlevel_contact_id: string | null;
+      customer_id: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        highlevelContactId: q.highlevel_contact_id ?? null,
+        customerId: q.customer_id ?? null,
       });
     }
   }
@@ -156,6 +215,8 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       isTest: c?.isTest ?? false,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
+      highlevelContactId: c?.highlevelContactId ?? null,
+      customerId: j.customer_id ?? c?.customerId ?? null,
     };
   });
 }

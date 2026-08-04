@@ -48,6 +48,12 @@ export type QuoteListItem = {
   // stays fully viewable but every approve/pay/decline/request-changes path
   // is blocked. The admin list/detail shows a pill + the ViewOnlyToggle.
   view_only: boolean;
+  // Customer detail-page route id fields (same precedence as
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets the admin quotes list link a customer name to their
+  // profile.
+  highlevel_contact_id: string | null;
+  customer_id: string | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -59,7 +65,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, view_only',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, view_only, highlevel_contact_id, customer_id',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -195,6 +201,14 @@ export async function saveQuote(
   // on a brand-new save (this quote's id becomes the referee_quote_id) — the
   // update path (updateQuote) never touches referrals at all.
   referredByCustomerId: string | null = null,
+  // #leads "Create quote" link: the lead's known HighLevel contact id, carried
+  // through so the quote is linked from birth. Set once here at insert, same
+  // immutable-at-insert posture as is_test/created_by above — updateQuote
+  // never takes this param, so a resave can't clobber a contact the operator
+  // later picks/clears by hand (that's /api/integrations/highlevel/attach's
+  // job). rebook.ts's buildRebookInsert is the other direct-insert write site
+  // for this column (carries the SOURCE quote's link onto a rebooked clone).
+  highlevelContactId: string | null = null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -231,6 +245,7 @@ export async function saveQuote(
       status: 'draft' satisfies QuoteStatus,
       is_test: isTest,
       created_by: createdBy,
+      highlevel_contact_id: highlevelContactId,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
@@ -483,6 +498,13 @@ export type QuoteRaw = {
   // View-only portal (#176): the admin detail page shows a pill + the
   // ViewOnlyToggle off this value.
   view_only: boolean;
+  // #171g: the raw payment token (captured via the redirect_url capture
+  // route) and Valor's OWN Vault customer id (#161 "both vaults" decision,
+  // registered by the webhook's best-effort vault hook). The admin detail
+  // page uses these to surface a notice when the token is on file but Vault
+  // registration never completed — see VaultRegistrationNotice.
+  valor_vault_token: string | null;
+  valor_vault_customer_id: string | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -492,7 +514,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
     )
     .eq('id', id)
     .maybeSingle();

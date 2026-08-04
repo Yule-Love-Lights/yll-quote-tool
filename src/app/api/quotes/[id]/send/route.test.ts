@@ -58,23 +58,40 @@ import { POST } from './route';
 // Fake Supabase: read = from().select().eq().single(); each write =
 // from().update(payload).eq() (awaited). Records every update payload so we
 // can assert what was persisted.
+//
+// #187b: the fresh-send stamp now chains `.eq('view_only', false)
+// .is('deposit_paid_at', null).select('id')` as a TOCTOU guard, so its
+// `.then()` must resolve `data` too (not just `error`) — default is a single
+// matched row `[{ id }]`; `opts.stampRace: true` simulates losing that race
+// (0 rows) for the ONE update call that carries `quote_sent_at` (the stamp).
+// Every other `.update()` in the route (GHL sync-state, quote-link field,
+// etc.) never reads `.data`, so giving them a non-empty array too is harmless.
 type Quote = Record<string, unknown> | null;
-function makeSb(quote: Quote) {
+function makeSb(quote: Quote, opts: { stampRace?: boolean } = {}) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
+  let lastUpdateIsStamp = false;
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
     update: (payload: Record<string, unknown>) => {
       isUpdate = true;
+      lastUpdateIsStamp = 'quote_sent_at' in payload;
       updatePayloads.push(payload);
       return builder;
     },
     eq: () => builder,
+    is: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     then: (resolve: (v: unknown) => void) => {
-      const res = isUpdate ? { error: null } : { data: quote, error: null };
+      let res: unknown;
+      if (isUpdate) {
+        const raceLost = lastUpdateIsStamp && opts.stampRace;
+        res = { data: raceLost ? [] : [{ id: (quote as { id?: string } | null)?.id ?? ID }], error: null };
+      } else {
+        res = { data: quote, error: null };
+      }
       isUpdate = false;
       resolve(res);
     },
@@ -828,6 +845,59 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  // #187b TOCTOU: the fresh-send stamp write itself re-asserts view_only AND
+  // deposit_paid_at, so a race landing AFTER the fast-path checks above (but
+  // before this write) can't sneak a real stamp/GHL/message through.
+  describe('#187b — fresh-send stamp TOCTOU guard', () => {
+    it('409s and does no GHL/messaging work when view_only flips ON between fetch and stamp', async () => {
+      const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE }, { stampRace: true });
+      sbRef.current = client;
+
+      const res = await POST(makeReq(), { params });
+      const json = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(json.code).toBe('send-conflict');
+      // The stamp write was attempted (and lost the race) — no other update
+      // (GHL sync-state, quote-link field, etc.) followed it.
+      expect(updatePayloads).toHaveLength(1);
+      expect(updatePayloads[0]).toMatchObject({ status: 'sent' });
+      expect(hl.updateOpportunity).not.toHaveBeenCalled();
+      expect(hl.createOpportunity).not.toHaveBeenCalled();
+      expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('409s when deposit_paid_at appears between fetch and stamp (belt-and-suspenders on a revive)', async () => {
+      const declined = { ...FRESH_QUOTE, status: 'declined', quote_sent_at: '2026-06-01T00:00:00.000Z' };
+      const { client, updatePayloads } = makeSb(declined, { stampRace: true });
+      sbRef.current = client;
+
+      const res = await POST(makeReq(), { params });
+      const json = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(json.code).toBe('send-conflict');
+      expect(updatePayloads).toHaveLength(1);
+      expect(hl.updateOpportunity).not.toHaveBeenCalled();
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('still sends normally when the stamp write does NOT lose the race', async () => {
+      const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });
+      sbRef.current = client;
+
+      const res = await POST(makeReq(), { params });
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(true);
+    });
   });
 
   it('rejects a zero-line-item quote before stamping or contacting HighLevel', async () => {

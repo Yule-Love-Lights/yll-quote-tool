@@ -17,8 +17,10 @@ import {
   getInvoiceByQuote,
   getInvoiceDetail,
   listInvoicesForAdmin,
+  listInvoicesForCustomer,
   markInvoicePaidManually,
   appendRetiredTxn,
+  mergeInvoicesNewestFirst,
   reconcileInvoice,
   setInvoiceStatus,
   setInvoiceTaxOverride,
@@ -499,6 +501,27 @@ describe('listInvoicesForAdmin', () => {
   it('returns [] when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await listInvoicesForAdmin()).toEqual([]);
+  });
+
+  it('computes the customer-detail route id fields (highlevel_contact_id first, then the invoice\'s own customer_id over the quote\'s)', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', invoice_number: 1000, job_id: 'j1', quote_id: 'q1', customer_id: null, total: 1000, deposit_applied: 500, balance: 500, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null },
+        { id: 'i2', invoice_number: 1001, job_id: 'j2', quote_id: 'q2', customer_id: 'inv-cust-2', total: 2000, deposit_applied: 1000, balance: 0, credit_note: 0, status: 'paid', created_at: '2026-06-01', paid_at: '2026-06-03' },
+      ],
+      quotes: [
+        { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false, highlevel_contact_id: 'hl-1', customer_id: 'quote-cust-1' },
+        { id: 'q2', customer_name: 'Bob', customer_address: '2 Oak', is_test: false, highlevel_contact_id: null, customer_id: 'quote-cust-2' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const cards = await listInvoicesForAdmin();
+    // i1: no invoice.customer_id, but the quote has a highlevel_contact_id — wins.
+    expect(cards[0]).toMatchObject({ id: 'i1', highlevelContactId: 'hl-1', customerId: 'quote-cust-1' });
+    // i2: no highlevel_contact_id on the quote — the invoice's OWN customer_id
+    // ('inv-cust-2') is preferred over the quote's ('quote-cust-2').
+    expect(cards[1]).toMatchObject({ id: 'i2', highlevelContactId: null, customerId: 'inv-cust-2' });
   });
 });
 
@@ -1156,5 +1179,62 @@ describe('appendRetiredTxn', () => {
     expect(await appendRetiredTxn('inv-1', ENTRY, { clearLive: { expectTxnId: 'TXN-OLD-7' } })).toBe(false);
     expect(moved.updates).toHaveLength(0); // bailed before writing anything
     err.mockRestore();
+  });
+});
+
+// ─── mergeInvoicesNewestFirst (PURE — customer detail page match, #58) ─────
+
+describe('mergeInvoicesNewestFirst', () => {
+  const inv = (id: string, created_at: string, extra: Record<string, unknown> = {}): InvoiceRow =>
+    ({ id, created_at, ...extra }) as unknown as InvoiceRow;
+
+  it('de-duplicates rows that appear in more than one input list, newest-first', () => {
+    const a = inv('i1', '2026-06-01');
+    const b = inv('i2', '2026-06-05');
+    const aAgain = inv('i1', '2026-06-01'); // e.g. matched by BOTH customer_id and quote_id
+    const merged = mergeInvoicesNewestFirst([a, b], [aAgain, b]);
+    expect(merged.map((i) => i.id)).toEqual(['i2', 'i1']);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('returns [] for no lists or all-empty lists', () => {
+    expect(mergeInvoicesNewestFirst()).toEqual([]);
+    expect(mergeInvoicesNewestFirst([], [])).toEqual([]);
+  });
+
+  it('a later list wins on a same-id collision (last-write-wins)', () => {
+    const stale = inv('i1', '2026-06-01', { status: 'draft' });
+    const fresh = inv('i1', '2026-06-01', { status: 'paid' });
+    const merged = mergeInvoicesNewestFirst([stale], [fresh]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'i1', status: 'paid' });
+  });
+});
+
+describe('listInvoicesForCustomer', () => {
+  it('matches by customer_id OR quote_id, de-duplicated newest-first, excluding other customers', async () => {
+    const { client } = makeFakeSupabase({
+      invoices: [
+        { id: 'inv1', customer_id: 'cust-1', quote_id: 'q1', created_at: '2026-06-01' },
+        // legacy row: customer_id never backfilled, matched only via quote_id.
+        { id: 'inv2', customer_id: null, quote_id: 'q2', created_at: '2026-06-05' },
+        { id: 'inv3', customer_id: 'cust-2', quote_id: 'q3', created_at: '2026-06-10' },
+      ],
+    });
+    sbRef.current = client;
+
+    const invoices = await listInvoicesForCustomer('cust-1', ['q1', 'q2']);
+    expect(invoices.map((i) => i.id)).toEqual(['inv2', 'inv1']); // newest first
+  });
+
+  it('returns [] when neither a customerId nor any quoteIds are given', async () => {
+    const { client } = makeFakeSupabase({ invoices: [] });
+    sbRef.current = client;
+    expect(await listInvoicesForCustomer(null, [])).toEqual([]);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listInvoicesForCustomer('cust-1', ['q1'])).toEqual([]);
   });
 });

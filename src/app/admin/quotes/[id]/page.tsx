@@ -24,6 +24,8 @@ import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
+import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
+import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -303,9 +305,34 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 (code {quote.deposit_decline_code} — {depositDeclineReasonText(quote.deposit_decline_code)})
               </>
             )}
-            {' '}— customer can retry from their portal link.
+            {quote.view_only ? (
+              <>
+                {' '}
+                — the portal is view-only right now; turn that off before they can retry.
+              </>
+            ) : (
+              <> — customer can retry from their portal link.</>
+            )}
           </div>
         )}
+
+        {/* #171g: a Vault registration failure was previously console.warn-only —
+            surface it here so staff know the deposit token still works even
+            though the card never landed in Valor's own Vault product.
+            #663 review, two caveats baked in: (1) gated on isVaultRegisterEnabled()
+            so a quote gets NO notice when the integration was never armed — without
+            this, every deposit-paid quote (token set, customer_id always null since
+            the webhook never attempts registration) would show a false failure.
+            (2) the #171f reorder moved the vault hook to run AFTER job creation +
+            notifications, widening the window where it's still in flight — the
+            component's copy is deliberately honest about "hasn't completed (yet)"
+            rather than asserting a hard failure. */}
+        <VaultRegistrationNotice
+          vaultRegisterEnabled={isVaultRegisterEnabled()}
+          depositPaidAt={quote.deposit_paid_at}
+          valorVaultToken={quote.valor_vault_token}
+          valorVaultCustomerId={quote.valor_vault_customer_id}
+        />
 
         {/* Line items */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">

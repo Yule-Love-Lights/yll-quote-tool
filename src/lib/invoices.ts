@@ -284,6 +284,56 @@ export async function listInvoices(limit = 500): Promise<InvoiceRow[]> {
   return (data ?? []) as unknown as InvoiceRow[];
 }
 
+/**
+ * PURE: merge invoice lists (e.g. one matched by customer_id, one by quote_id)
+ * into a single de-duplicated, newest-first list. No IO — exported for direct
+ * unit tests.
+ */
+export function mergeInvoicesNewestFirst(...lists: InvoiceRow[][]): InvoiceRow[] {
+  const byId = new Map<string, InvoiceRow>();
+  for (const list of lists) {
+    for (const inv of list) byId.set(inv.id, inv);
+  }
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+/**
+ * Invoices belonging to a customer (the customer detail page, #58): matched by
+ * EITHER the invoice's own customer_id OR its quote_id being one of the
+ * customer's known quotes (the page's Quote history) — the second leg covers
+ * legacy invoices whose customer_id is still null pre-backfill, mirroring
+ * matchesCustomerRoute's dual match. Two queries + merge-dedupe
+ * (mergeInvoicesNewestFirst) rather than a hand-built PostgREST `.or()` filter.
+ * Returns [] when Supabase isn't configured or neither a customerId nor any
+ * quoteIds are given.
+ */
+export async function listInvoicesForCustomer(
+  customerId: string | null,
+  quoteIds: string[],
+): Promise<InvoiceRow[]> {
+  const db = sb();
+  if (!db) return [];
+  if (!customerId && quoteIds.length === 0) return [];
+
+  let byCustomer: InvoiceRow[] = [];
+  if (customerId) {
+    const { data, error } = await db.from('invoices').select(INVOICE_SELECT).eq('customer_id', customerId);
+    if (error) console.error('listInvoicesForCustomer: customer_id query error:', error);
+    else byCustomer = (data ?? []) as unknown as InvoiceRow[];
+  }
+
+  let byQuote: InvoiceRow[] = [];
+  if (quoteIds.length) {
+    const { data, error } = await db.from('invoices').select(INVOICE_SELECT).in('quote_id', quoteIds);
+    if (error) console.error('listInvoicesForCustomer: quote_id query error:', error);
+    else byQuote = (data ?? []) as unknown as InvoiceRow[];
+  }
+
+  return mergeInvoicesNewestFirst(byCustomer, byQuote);
+}
+
 // A billing-board row for the operator /admin/invoices list, with the linked
 // quote's customer identity + is_test joined on. Test invoices stay VISIBLE here
 // (badged) — only dashboard metrics exclude test data (#93).
@@ -301,6 +351,13 @@ export type InvoiceAdminCard = {
   status: InvoiceStatus;
   createdAt: string;
   paidAt: string | null;
+  // Customer detail-page route id fields (same precedence as QuoteListItem /
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets /admin/invoices link a customer name to their profile.
+  // customerId prefers the invoice's OWN customer_id over the linked quote's,
+  // mirroring JobAdminCard's precedence.
+  highlevelContactId: string | null;
+  customerId: string | null;
 };
 
 /**
@@ -318,23 +375,27 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
   const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean }
+    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test')
+      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      highlevel_contact_id: string | null;
+      customer_id: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        highlevelContactId: q.highlevel_contact_id ?? null,
+        customerId: q.customer_id ?? null,
       });
     }
   }
@@ -355,6 +416,8 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       status: inv.status,
       createdAt: inv.created_at,
       paidAt: inv.paid_at,
+      highlevelContactId: c?.highlevelContactId ?? null,
+      customerId: inv.customer_id ?? c?.customerId ?? null,
     };
   });
 }

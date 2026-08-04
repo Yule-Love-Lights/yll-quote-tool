@@ -8,7 +8,8 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
-import { SERVICE_TYPE_LABELS, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { QuotesListSkeleton } from './QuotesListSkeleton';
 
 // Service-line badge palette (#123) — so an operator can tell holiday vs event
 // vs permanent at a glance. Holiday (the default, the majority) is muted; the
@@ -80,6 +81,9 @@ export default function QuotesAdminPage() {
   // Audit fix (Finding #40): client-side status filter + text search over the
   // already-loaded list so "what is still un-sent" is answerable at a glance.
   const [statusFilter, setStatusFilter] = useState<'All' | QuoteStatus>('All');
+  // Second chip row (this task): filter by service-line type, composing with
+  // statusFilter + search as AND conditions.
+  const [serviceFilter, setServiceFilter] = useState<'All' | ServiceType>('All');
   const [search, setSearch] = useState('');
 
   const refresh = async () => {
@@ -148,6 +152,7 @@ export default function QuotesAdminPage() {
   const term = search.trim().toLowerCase();
   const visible = items.filter(q => {
     if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
+    if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
     if (!term) return true;
     return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
       .some(v => v != null && v.toLowerCase().includes(term));
@@ -180,7 +185,11 @@ export default function QuotesAdminPage() {
           </div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same rich skeleton the route's loading.tsx shows (#171b) — was a
+            bare "Loading…" line, which made the route-transition skeleton
+            morph into something sparser before morphing again into the real
+            table once the client-side GET /api/quotes fetch resolved. */}
+        {loading && <QuotesListSkeleton />}
 
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">
@@ -189,34 +198,64 @@ export default function QuotesAdminPage() {
         )}
 
         {/* Audit fix (Finding #40): status filter + text search so un-sent
-            (Draft) quotes are legible at a glance. */}
+            (Draft) quotes are legible at a glance. Two separate labeled rows
+            (this task, per operator device-check feedback on #666 — stage and
+            service-type sat side by side and read as one confusing group):
+            stage (the status lifecycle) first, service line underneath. Label
+            style matches this section's existing muted-heading idiom (see the
+            detail page's "Customer" / "Lifecycle" headings). */}
         {!loading && items.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="flex flex-wrap gap-1">
-              {(['All', ...FILTER_STATUSES] as const).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
-                    statusFilter === s
-                      ? 'bg-gray-900 text-white border-gray-900'
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {s === 'All' ? 'All' : STATUS_LABELS[s]}
-                </button>
-              ))}
+          <div className="mb-3">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Stage</span>
+              <div className="flex flex-wrap gap-1">
+                {(['All', ...FILTER_STATUSES] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                      statusFilter === s
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {s === 'All' ? 'All' : STATUS_LABELS[s]}
+                  </button>
+                ))}
+              </div>
             </div>
-            <input
-              type="search"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search name, address, phone, email, ID…"
-              className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
-            />
-            <span className="text-xs text-gray-500 whitespace-nowrap">
-              {visible.length} of {items.length}
-            </span>
+            {/* Service-type chip row — filters by service line, composing with
+                the status chips + search as AND conditions. */}
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Service</span>
+              <div className="flex flex-wrap gap-1">
+                {(['All', ...SERVICE_TYPES] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setServiceFilter(s)}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                      serviceFilter === s
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search name, address, phone, email, ID…"
+                className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
+              />
+              <span className="text-xs text-gray-500 whitespace-nowrap">
+                {visible.length} of {items.length}
+              </span>
+            </div>
           </div>
         )}
 
@@ -272,7 +311,20 @@ export default function QuotesAdminPage() {
                       </td>
                       <td className="px-3 py-2 text-gray-700">
                         <div className="flex items-center gap-2">
-                          <span>{q.customer_name ?? '—'}</span>
+                          {/* Customer-name link (this task): same routing rule as
+                              src/lib/dashboard/customers.ts customerRouteId —
+                              highlevel_contact_id, else customer_id. A walk-in
+                              with neither stays plain text. */}
+                          {(() => {
+                            const routeId = q.highlevel_contact_id ?? q.customer_id;
+                            return routeId ? (
+                              <Link href={`/customers/${encodeURIComponent(routeId)}`} className="font-medium hover:underline" style={{ color: 'var(--op-primary)' }}>
+                                {q.customer_name ?? '—'}
+                              </Link>
+                            ) : (
+                              <span>{q.customer_name ?? '—'}</span>
+                            );
+                          })()}
                           {/* Service-line badge (#123) — holiday / permanent / event. */}
                           {(() => {
                             const svc = q.service_type ?? DEFAULT_SERVICE_TYPE;

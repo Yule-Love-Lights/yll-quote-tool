@@ -185,11 +185,15 @@ export default function InvoiceDetailPage() {
           // S30 wrap review HIGH: settle-failed and amount-mismatch are ALSO
           // "real money moved, bookkeeping didn't" — same reconcile-in-Valor-now
           // class as double-charge; they get the loud box, not the small line.
+          // #173 money-review MED: stale-balance is the same class too — a
+          // mid-amend race that leaves the invoice unsettled with a real
+          // charge on file (under- OR over-collected).
           tone:
             body.reason === 'double-charge' ||
             body.reason === 'charged-cancelled' ||
             body.reason === 'settle-failed' ||
-            body.reason === 'amount-mismatch'
+            body.reason === 'amount-mismatch' ||
+            body.reason === 'stale-balance'
               ? 'critical'
               : 'error',
         });

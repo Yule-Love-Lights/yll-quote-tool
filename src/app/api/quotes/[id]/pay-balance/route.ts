@@ -100,6 +100,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const successUrl = `${baseUrl}/portal/${id}/approved?balance=paid`;
   const failureUrl = `${baseUrl}/portal/${id}/pay-balance`;
 
+  // #187c (belt-and-suspenders): the view_only check above is a fast-path
+  // gate at fetch time, but the job/invoice lookups above are two more async
+  // hops during which staff could flip the flag ON. Re-check immediately
+  // before handing off to Valor so a real hosted-page charge is never opened
+  // on a quote that's now view-only. This window is near-unreachable today (a
+  // booked quote already refuses the toggle), so this is cheap insurance, not
+  // a load-bearing guard.
+  //
+  // #187 review FIX 3 (#660): fail CLOSED, not open, when the row is gone.
+  // `recheck?.view_only` is equally falsy whether the row still exists with
+  // view_only=false OR the row no longer exists at all — a bare `?.` read
+  // can't tell those apart, so a deleted quote fell through to Valor instead
+  // of 404ing (mirrors the fetch-time miss above).
+  const { data: recheck } = await sb
+    .from('quotes')
+    .select('view_only')
+    .eq('id', id)
+    .maybeSingle<{ view_only: boolean }>();
+  if (!recheck) {
+    return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+  if (recheck.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
+  }
+
   try {
     const { url } = await createHostedPageSale({
       amountUsd: invoice.balance,

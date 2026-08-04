@@ -79,6 +79,9 @@ type QuoteRow = {
   // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // staff-declined either — see the check right after the status gate below.
+  view_only: boolean;
 };
 
 // Best-effort: move the quote's linked HighLevel opportunity to the Declined
@@ -153,7 +156,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, approval_snapshot, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, approval_snapshot, highlevel_contact_id, highlevel_opportunity_id, service_type, is_test, legacy_rebook, view_only',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -180,6 +183,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // staff-declined either — the server hard-guard, mirroring staff-approve's
+  // check (and the customer /decline route's).
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
+  }
+
   const operator = await getOperator();
   const declinedAt = new Date().toISOString();
   // Human-visible reason the admin list already renders; default to a staff
@@ -200,6 +213,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // raced past. Eligible = (persisted status in the declinable set) OR (status IS
   // NULL — a legacy/pre-migration row the fast path already cleared via its
   // timestamps), AND the deposit hasn't been paid. Zero rows ⇒ we lost the race.
+  //
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409, but staff could flip view_only ON between that read and
+  // this write. `.eq('view_only', false)` makes the write itself lose that
+  // race (view_only is NOT NULL, so a plain `.eq` is safe — no W1-014 NULL
+  // trap here), mirroring the same re-check on staff-approve/decline/approve/
+  // pay/request-changes/mark-sent.
   const declinableFilter = `status.in.(${DECLINABLE_FROM.join(',')}),status.is.null`;
   const { data: claimed, error } = await sb
     .from('quotes')
@@ -209,6 +229,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       approval_snapshot: snapshot,
     })
     .eq('id', id)
+    .eq('view_only', false)
     .or(declinableFilter)
     .is('deposit_paid_at', null)
     .select('id');

@@ -4,10 +4,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // send and the new Telegram ping. The pure tests below don't use either. Also
 // mock the on-order ledger (P8) — recordOrder/markOrderSent/cancelOrder are the
 // new insert-first-then-send seam.
-const { sendEmail, hlConfigured, notifyTelegram, recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder } = vi.hoisted(() => ({
+const { sendEmail, hlConfigured, notifyTelegramAudience, recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder } = vi.hoisted(() => ({
   sendEmail: vi.fn(async () => ({})),
   hlConfigured: { value: true },
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   recordOrder: vi.fn<() => Promise<string | null>>(async () => 'order-1'),
   markOrderSent: vi.fn(async () => {}),
   cancelOrder: vi.fn(async () => 'cancelled' as const),
@@ -18,8 +18,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hlConfigured.value,
 }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
+}));
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 vi.mock('./orders', () => ({ recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder }));
 
@@ -195,8 +197,9 @@ describe('emailSupplierPurchaseOrder — Telegram ping (#82 follow-up)', () => {
     const res = await emailSupplierPurchaseOrder(PO, 'Jun 28, 2026', 'manual');
     expect(res.ok).toBe(true);
     expect(sendEmail).toHaveBeenCalledTimes(1);
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0] as string;
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    const msg = notifyTelegramAudience.mock.calls[0][1] as string;
     expect(msg).toContain('Purchase order sent to supplier');
     expect(msg).toContain('C9 Warm White (1001) ×88');
     expect(msg).toContain('6 job');
@@ -207,7 +210,7 @@ describe('emailSupplierPurchaseOrder — Telegram ping (#82 follow-up)', () => {
     const res = await emailSupplierPurchaseOrder(PO, 'Jun 28, 2026', 'manual');
     expect(res.ok).toBe(false);
     expect(sendEmail).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('does NOT ping when the email send throws', async () => {
@@ -215,7 +218,7 @@ describe('emailSupplierPurchaseOrder — Telegram ping (#82 follow-up)', () => {
     sendEmail.mockRejectedValueOnce(new Error('GHL down'));
     const res = await emailSupplierPurchaseOrder(PO, 'Jun 28, 2026', 'manual');
     expect(res.ok).toBe(false);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 });

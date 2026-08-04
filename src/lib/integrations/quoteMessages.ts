@@ -648,6 +648,76 @@ export function duplicatePaymentEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── Stale-balance mismatch alert (ledger #173) ───────────────────────────────
+// An amend re-synced the invoice balance while an operator "Charge remaining
+// balance" charge was in flight — the card captured a STALE amount and the
+// invoice could NOT settle at that number. Money moved, but the bookkeeping
+// didn't. Mirrors the duplicate-payment alert's shape (same recipient/CTA
+// idiom) — this is a different narrative, so it gets its own copy.
+//
+// #173 HIGH-1 (money-review): the balance can move UP (under-collection — we
+// owe more) or DOWN (over-collection — refund the excess) or land back on the
+// charged amount (a double-move landed at no net difference, but the CAS
+// still couldn't settle automatically). direction picks the right copy —
+// treating every case as "grew" silently told staff "$0 still owed" on a
+// genuine over-collection that actually needed a refund.
+
+export type StaleBalanceDirection = 'under' | 'over' | 'even';
+
+export function staleBalanceEmailSubject(customerName: string | null, direction: StaleBalanceDirection): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const label = direction === 'over' ? 'over-collected' : direction === 'even' ? 'balance mismatch' : 'under-collected';
+  return `⚠️ Balance charge ${label}: ${who}`;
+}
+
+export function staleBalanceEmailHtml(input: {
+  customerName: string | null;
+  chargedUsd: number;
+  newBalanceUsd: number | null;
+  direction: StaleBalanceDirection;
+  txnId: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  const newBalanceKnown = input.newBalanceUsd != null;
+  const newBalance = newBalanceKnown ? usdExact(input.newBalanceUsd as number) : '—';
+  const absDiffLabel = newBalanceKnown
+    ? usdExact(Math.abs((input.newBalanceUsd as number) - input.chargedUsd))
+    : '—';
+
+  const narrative =
+    input.direction === 'over'
+      ? `The order was amended DOWN while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card captured MORE than the balance now owed.`
+      : input.direction === 'even'
+        ? `The balance changed more than once while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card's captured amount no longer lined up with the balance by the time the invoice tried to settle, even though there's no net difference now.`
+        : `The order was amended UP while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card captured the OLD balance, and the invoice grew before it could settle.`;
+
+  const action =
+    input.direction === 'over'
+      ? `<strong>Action needed:</strong> REFUND ${absDiffLabel} in Valor, then mark the invoice paid once reconciled (the net payment covers the current balance). The invoice was NOT marked paid.`
+      : input.direction === 'even'
+        ? `<strong>Action needed:</strong> verify the invoice balance and reconcile the transaction in Valor by hand. The invoice was NOT marked paid.`
+        : `<strong>Action needed:</strong> collect the difference (amend/pay-link, or mark paid) and reconcile the charge in Valor. The invoice was NOT marked paid.`;
+
+  const diffRowLabel =
+    input.direction === 'over' ? 'Amount to refund' : input.direction === 'even' ? 'Net difference' : 'Difference still owed';
+
+  return [
+    `<p>${narrative}</p>`,
+    `<p>${action}</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Charged (this txn)', usdExact(input.chargedUsd)),
+    row('Balance now', newBalance),
+    row(diffRowLabel, absDiffLabel),
+    row('Transaction id', escapeHtml(input.txnId)),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open invoice →</a></p>`,
+  ].join('\n');
+}
+
 // ─── Refund-due alert (#110 W1-008) ──────────────────────────────────────────
 // A booked (deposit-paid) order was cancelled — the deposit must be refunded
 // manually in Valor. Mirrors the "deposit received" staff alert so a cancelled

@@ -13,18 +13,28 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { requireOperatorMock, getOperatorMock, sbRef, closeQuoteInboxNoiseMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
+  getOperatorMock: vi.fn(async (): Promise<{ id: string; email: string | null } | null> => null),
   sbRef: { current: null as unknown },
+  closeQuoteInboxNoiseMock: vi.fn(async (_quoteId: string, _operatorId: string | null): Promise<void> => undefined),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: requireOperatorMock,
+  getOperator: getOperatorMock,
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+// #187a: the inbox cleanup is a separate module with its own I/O-wiring tests
+// (store.test.ts) — here we only assert the ROUTE calls it on flip-ON and
+// skips it on flip-OFF, without re-testing its internals.
+vi.mock('@/lib/dashboard/inbox/store', () => ({
+  closeQuoteInboxNoise: closeQuoteInboxNoiseMock,
 }));
 
 import { POST } from './route';
@@ -91,6 +101,7 @@ function makeSb(
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null); // default: authorized / gate dormant
+  getOperatorMock.mockResolvedValue(null); // default: gate dormant, no session
 });
 
 describe('POST /api/quotes/[id]/view-only — operator gate', () => {
@@ -168,6 +179,45 @@ describe('POST /api/quotes/[id]/view-only — happy path', () => {
     expect(json).toEqual({ ok: true, viewOnly: false });
     expect(updatePayloads[0]).toEqual({ view_only: false });
   });
+});
+
+// #187a — flipping ON drops the quote out of the dashboard reconcile feed, so
+// the toggle must clean up any stale inbox noise for it. The cleanup's own
+// behavior (both external_id shapes, non-fatal on failure, etc.) is tested at
+// the store layer (store.test.ts); here we only assert the ROUTE wiring.
+describe('POST /api/quotes/[id]/view-only — inbox cleanup wiring (#187a)', () => {
+  it('calls closeQuoteInboxNoise with the operator id when turning ON', async () => {
+    getOperatorMock.mockResolvedValueOnce({ id: 'op-123', email: 'staff@example.com' });
+    const { client } = makeSb({ id: VALID_UUID, view_only: false });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: true }), makeParams(VALID_UUID));
+
+    expect(res.status).toBe(200);
+    expect(closeQuoteInboxNoiseMock).toHaveBeenCalledTimes(1);
+    expect(closeQuoteInboxNoiseMock).toHaveBeenCalledWith(VALID_UUID, 'op-123');
+  });
+
+  it('passes null when the auth gate is dormant (no operator session)', async () => {
+    getOperatorMock.mockResolvedValueOnce(null);
+    const { client } = makeSb({ id: VALID_UUID, view_only: false });
+    sbRef.current = client;
+
+    await POST(makeReq({ viewOnly: true }), makeParams(VALID_UUID));
+
+    expect(closeQuoteInboxNoiseMock).toHaveBeenCalledWith(VALID_UUID, null);
+  });
+
+  it('does NOT call closeQuoteInboxNoise when turning OFF', async () => {
+    const { client } = makeSb({ id: VALID_UUID, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ viewOnly: false }), makeParams(VALID_UUID));
+
+    expect(res.status).toBe(200);
+    expect(closeQuoteInboxNoiseMock).not.toHaveBeenCalled();
+  });
+
 });
 
 // #176 fix-batch — turning view-only ON must not silently hide a booked

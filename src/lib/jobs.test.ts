@@ -23,7 +23,10 @@ import {
   getJobDetail,
   listJobs,
   listJobsForAdmin,
+  listJobsForCustomer,
+  mergeJobsNewestFirst,
   setJobStatus,
+  type JobRow,
 } from './jobs';
 
 // ── A tiny per-table fake Supabase ──────────────────────────────────────────
@@ -432,6 +435,31 @@ describe('listJobsForAdmin', () => {
     sbRef.current = null;
     expect(await listJobsForAdmin()).toEqual([]);
   });
+
+  it('computes the customer-detail route id fields (highlevel_contact_id first, then the job\'s own customer_id over the quote\'s)', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', job_number: 1001, quote_id: 'q1', customer_id: null, status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: [] },
+          { id: 'j2', job_number: 1002, quote_id: 'q2', customer_id: 'job-cust-2', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-02', line_items: [] },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false, highlevel_contact_id: 'hl-1', customer_id: 'quote-cust-1' },
+          { id: 'q2', customer_name: 'Bob', customer_address: '2 Oak', is_test: false, highlevel_contact_id: null, customer_id: 'quote-cust-2' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    // j1: no job.customer_id, but the quote has a highlevel_contact_id — wins.
+    expect(cards[0]).toMatchObject({ id: 'j1', highlevelContactId: 'hl-1', customerId: 'quote-cust-1' });
+    // j2: no highlevel_contact_id on the quote — the job's OWN customer_id
+    // ('job-cust-2') is preferred over the quote's ('quote-cust-2').
+    expect(cards[1]).toMatchObject({ id: 'j2', highlevelContactId: null, customerId: 'job-cust-2' });
+  });
 });
 
 describe('getJobDetail', () => {
@@ -510,5 +538,84 @@ describe('getJobDetail', () => {
   it('returns null when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await getJobDetail('j1')).toBeNull();
+  });
+});
+
+// ─── mergeJobsNewestFirst (PURE — customer detail page match, #58) ─────────
+
+describe('mergeJobsNewestFirst', () => {
+  const job = (id: string, created_at: string, extra: Record<string, unknown> = {}): JobRow =>
+    ({ id, created_at, ...extra }) as unknown as JobRow;
+
+  it('de-duplicates rows that appear in more than one input list, newest-first', () => {
+    const a = job('j1', '2026-06-01');
+    const b = job('j2', '2026-06-05');
+    const aAgain = job('j1', '2026-06-01'); // e.g. matched by BOTH customer_id and quote_id
+    const merged = mergeJobsNewestFirst([a, b], [aAgain, b]);
+    expect(merged.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('returns [] for no lists or all-empty lists', () => {
+    expect(mergeJobsNewestFirst()).toEqual([]);
+    expect(mergeJobsNewestFirst([], [])).toEqual([]);
+  });
+
+  it('a later list wins on a same-id collision (last-write-wins)', () => {
+    const stale = job('j1', '2026-06-01', { status: 'to_schedule' });
+    const fresh = job('j1', '2026-06-01', { status: 'done' });
+    const merged = mergeJobsNewestFirst([stale], [fresh]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'j1', status: 'done' });
+  });
+});
+
+describe('listJobsForCustomer', () => {
+  // Purpose-built fake with REAL .eq()/.in() column filtering (the shared makeSb
+  // fake ignores filters, which can't prove customer scoping — mirrors the
+  // filtering fake invoices.test.ts uses for its listInvoicesForCustomer test).
+  function makeFilteringJobsDb(rows: Record<string, unknown>[]) {
+    return {
+      from: (table: string) => {
+        if (table !== 'jobs') throw new Error('unexpected table ' + table);
+        return {
+          select: () => ({
+            eq: async (col: string, val: unknown) => ({
+              data: rows.filter((r) => r[col] === val),
+              error: null,
+            }),
+            in: async (col: string, vals: unknown[]) => ({
+              data: rows.filter((r) => vals.includes(r[col])),
+              error: null,
+            }),
+          }),
+        };
+      },
+    };
+  }
+
+  it('merges the customer_id match and the quote_id match, de-duplicated newest-first, excluding other customers', async () => {
+    sbRef.current = makeFilteringJobsDb([
+      { id: 'j1', quote_id: 'q1', customer_id: 'cust-1', created_at: '2026-06-01' },
+      { id: 'j2', quote_id: 'q2', customer_id: null, created_at: '2026-06-05' },
+      // Another customer's job — matches NEITHER cust-1 nor the quote-id set;
+      // must never leak into this customer's list.
+      { id: 'j3', quote_id: 'q-other', customer_id: 'cust-2', created_at: '2026-06-09' },
+    ]);
+
+    const jobs = await listJobsForCustomer('cust-1', ['q1', 'q2']);
+    expect(jobs.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(jobs.some((j) => j.id === 'j3')).toBe(false);
+  });
+
+  it('returns [] when neither a customerId nor any quoteIds are given', async () => {
+    const { client } = makeSb({ jobs: { list: [] } });
+    sbRef.current = client;
+    expect(await listJobsForCustomer(null, [])).toEqual([]);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listJobsForCustomer('cust-1', ['q1'])).toEqual([]);
   });
 });

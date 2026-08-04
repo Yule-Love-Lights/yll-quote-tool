@@ -22,7 +22,7 @@ const {
   getJobByQuote,
   setJobStatus,
   getInvoiceByJob,
-  notifyTelegram,
+  notifyTelegramAudience,
   getJobWorkOrder,
   accrueOnBooking,
   ensureReferralCode,
@@ -46,7 +46,7 @@ const {
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
   // Proactive prep ping (#82 follow-up): the work order feeds the message; the
   // notifier is mocked so we assert it fires once per booking, never on replay.
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   getJobWorkOrder: vi.fn(async () => ({
     job: {
       id: 'job-1', jobNumber: 1042, quoteId: 'quote-1', designId: null,
@@ -89,8 +89,8 @@ vi.mock('@/lib/invoices', () => ({
   getInvoiceByJob,
 }));
 
-vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 
 vi.mock('@/lib/inventory/jobs', () => ({
@@ -275,10 +275,11 @@ describe('Valor webhook — happy path', () => {
 
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    expect(notifyTelegram.mock.calls[0][0]).toContain('New job to prep');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('Jordan Smith');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('C9 Warm White');
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('New job to prep');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('Jordan Smith');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('C9 Warm White');
   });
 
   it('#159: books a quote from the REAL Valor E-Invoice shape (ref nested at data.invoice_no)', async () => {
@@ -498,7 +499,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     // Lost the race → the winning request creates the job; this replay must not.
     expect(createJobFromQuote).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping on replay
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping on replay
   });
 
   it('short-circuits when the quote is already marked paid', async () => {
@@ -511,7 +512,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(json.alreadyPaid).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping
   });
 });
 
@@ -626,7 +627,7 @@ describe('Valor webhook — dead-quote guard (W1-007)', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     // Loud error log — real money may have moved, staff must reconcile.
     expect(err).toHaveBeenCalledWith(expect.stringContaining('NOT booking a dead order'));
     err.mockRestore();
@@ -1119,7 +1120,7 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(registerCardInVault).not.toHaveBeenCalled();
   });
 
-  it('registerCardInVault resolves ok:false → booking still 200 and "vault register failed" is logged', async () => {
+  it('registerCardInVault resolves ok:false → booking still 200, notifications unaffected, and "vault register failed" is logged', async () => {
     vaultEnabled.value = true;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerCardInVault.mockResolvedValueOnce({ ok: false, reason: 'addcustomer failed: 500' });
@@ -1131,6 +1132,10 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true);
+    // #171f: a vault failure must never affect the notifications it now runs
+    // AFTER — they already settled by the time the vault hook even starts.
+    expect(json.customerSmsSent).toBe(true);
+    expect(json.customerEmailSent).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
     // No vault-column write when registration failed.
     expect(updatePayloads.some((p) => 'valor_vault_customer_id' in p)).toBe(false);
@@ -1151,6 +1156,40 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(json.booked).toBe(true);
     expect(err).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
     err.mockRestore();
+  });
+
+  // #171f: the vault hook used to run BEFORE the customer receipt SMS/email —
+  // its 2×15s timeout budget (addcustomer + addpaymentprofiletxn, see
+  // valorVault.ts) could delay the customer's booking confirmation by up to
+  // ~30s whenever Valor's Vault API was slow. It's now reordered to run AFTER
+  // the notification batch settles (still awaited, not fire-and-forget).
+  it('runs AFTER the customer notifications settle, not before or concurrently', async () => {
+    vaultEnabled.value = true;
+    const order: string[] = [];
+    const delayedPush = (label: string) => async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(label);
+      return {};
+    };
+    hl.sendSms.mockImplementationOnce(delayedPush('sms'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:customer'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:internal'));
+    registerCardInVault.mockImplementationOnce(async () => {
+      order.push('vault');
+      return { ok: true, vaultCustomerId: 'vc-1' };
+    });
+
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+
+    // Vault ran dead last — i.e. only after EVERY notification had fully
+    // settled (not merely started), proving it's a sequential await after the
+    // Promise.allSettled batch rather than folded into it.
+    expect(order[order.length - 1]).toBe('vault');
+    expect(order.slice(0, -1).sort()).toEqual(['email:customer', 'email:internal', 'sms']);
   });
 });
 

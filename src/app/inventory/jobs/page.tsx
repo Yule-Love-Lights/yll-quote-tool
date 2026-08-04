@@ -7,6 +7,7 @@
 // list (design → SKUs) joined to on-hand stock. (PDF/email export is a follow-up.)
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import {
@@ -142,7 +143,26 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
           </span>
         )}
       </div>
-      <div className="mt-0.5 truncate" style={{ color: 'var(--op-text)' }}>{card.customerName ?? 'Customer'}</div>
+      {/* Customer-name link (mirrors /admin/quotes' idiom, #666): same routing
+          rule as src/lib/dashboard/customers.ts customerRouteId —
+          highlevel_contact_id, else customer_id. A walk-in with neither stays
+          plain text. This board's own link styling (var(--op-primary), not
+          Tailwind's text-blue-600) matches its other links (e.g. the job # button
+          above, the print/design links in the work-order modal). */}
+      {(() => {
+        const routeId = card.highlevelContactId ?? card.customerId;
+        return routeId ? (
+          <Link
+            href={`/customers/${encodeURIComponent(routeId)}`}
+            className="mt-0.5 truncate block hover:underline"
+            style={{ color: 'var(--op-primary)' }}
+          >
+            {card.customerName ?? 'Customer'}
+          </Link>
+        ) : (
+          <div className="mt-0.5 truncate" style={{ color: 'var(--op-text)' }}>{card.customerName ?? 'Customer'}</div>
+        );
+      })()}
       {card.customerAddress && <div className="text-[11px] truncate" style={{ color: 'var(--op-text-dim)' }}>{card.customerAddress}</div>}
       <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--op-text-dim)' }}>
         <span>{card.itemCount} item{card.itemCount === 1 ? '' : 's'}</span>

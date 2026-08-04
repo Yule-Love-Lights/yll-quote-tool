@@ -11,7 +11,7 @@ import type {
   Takedown,
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
-import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
@@ -114,6 +114,16 @@ export type QuoteFormData = {
   // on its billed line item id survives a mid-list run delete (a run's id must
   // not re-index like the old positional permanent-bistro-<index> fallback).
   permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
+  // HighLevel contact carried from the #leads "Create quote" link (operator
+  // feedback: the created quote should link to the lead's KNOWN contact from
+  // birth). Seeded ONLY by applyPrefill on the blank-slate builder's initial
+  // state; null on every other quote. Sent on save (see buildQuoteInputs'
+  // sibling, the /api/quote payload in QuoteBuilder) so saveQuote can set
+  // quotes.highlevel_contact_id on the FIRST insert only — mirrors the
+  // rebook flow's buildRebookInsert, which carries this same column forward
+  // on a direct insert (no live HighLevel opportunity call at save time; the
+  // "attach" flow / send flow reconcile the opportunity id later).
+  highlevelContactId: string | null;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -152,7 +162,49 @@ export const initialFormData: QuoteFormData = {
   permanent: makeDefaultPermanentFields(),
   referralCredit: null,
   permanentBistro: { poles: 0, bistro: [] },
+  highlevelContactId: null,
 };
+
+// Quote-builder prefill (#leads "Create quote" link, src/app/admin/leads). Raw
+// strings read straight off the /quote/new URL query params — untyped and
+// unvalidated by the caller (src/app/quote/new/page.tsx just forwards them).
+export type QuoteBuilderPrefill = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  serviceType?: string;
+  // The lead's HighLevel contact id (src/app/admin/leads' quoteNewHref), when
+  // known. Raw/untyped here too — validated at the /api/quote boundary.
+  ghlContactId?: string;
+};
+
+/**
+ * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
+ * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
+ * initializer) — never re-applied after mount, so a reopened quote
+ * (/quote/[id], initialQuote present) never calls this. Blank/whitespace-only
+ * strings and an unrecognized serviceType are ignored (base value kept).
+ */
+export function applyPrefill(base: QuoteFormData, prefill?: QuoteBuilderPrefill): QuoteFormData {
+  if (!prefill) return base;
+  const pick = (v: string | undefined, fallback: string) => {
+    const trimmed = v?.trim();
+    return trimmed ? trimmed : fallback;
+  };
+  const ghlContactId = prefill.ghlContactId?.trim();
+  return {
+    ...base,
+    customer: {
+      name: pick(prefill.name, base.customer.name),
+      email: pick(prefill.email, base.customer.email),
+      phone: pick(prefill.phone, base.customer.phone),
+      address: pick(prefill.address, base.customer.address),
+    },
+    serviceType: asServiceType(prefill.serviceType) ?? base.serviceType,
+    highlevelContactId: ghlContactId ? ghlContactId : base.highlevelContactId,
+  };
+}
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
 // choice sends a placeholder valid difficulty (the engine ignores it once a
@@ -399,5 +451,8 @@ export function inputsToFormData(
         ...(b.id ? { id: b.id } : {}),
       })),
     },
+    // #leads prefill-only field — a hydrated/reopened quote never carries it
+    // (applyPrefill never runs on the edit flavor; see its own doc comment).
+    highlevelContactId: null,
   };
 }

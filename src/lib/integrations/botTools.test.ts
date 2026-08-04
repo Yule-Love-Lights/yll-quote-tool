@@ -33,6 +33,8 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   service_type: null,
   legacy_rebook: false,
   view_only: false,
+  highlevel_contact_id: null,
+  customer_id: null,
   ...over,
 });
 
@@ -48,6 +50,8 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   itemCount: 3,
   installDate: null,
   isTest: false,
+  highlevelContactId: null,
+  customerId: null,
   ...over,
 });
 

@@ -1,23 +1,24 @@
 // Tests for the #161 redirect-capture route. Covers: JSON + form body
 // parsing, the names-only headline log (never values), malformed-body safety
-// (still 200), order-ref → quote-id recovery via the `bal_<quoteId>`
-// convention (302), the guarded token-persistence path (added once the
-// channel was confirmed live 2026-07-22 — see route.ts), and the
+// (still 200), the human-browser leg's conditional response — a 302 to the
+// real portal confirmation when the order ref recovers a quote id, else the
+// #171e friendly 200 page — the guarded token-persistence path (added once
+// the channel was confirmed live 2026-07-22 — see route.ts), and the
 // no-unconditional-supabase-construction guarantee.
 //
-// NOTE (deviation from the build brief): the brief's test list asked for a
-// "GET with recoverable dep_<uuid> order ref". There is NO `dep_` prefix
-// anywhere in this codebase — grepped clean. The only order-ref convention
-// that embeds a quote id directly (no DB lookup) is the balance pay-link's
-// `bal_<quoteId>` (src/app/api/integrations/valor/webhook/route.ts,
+// NOTE (deviation from the original build brief): the brief's test list asked
+// for a "GET with recoverable dep_<uuid> order ref". There is NO `dep_`
+// prefix anywhere in this codebase — grepped clean. The only order-ref
+// convention that embeds a quote id directly (no DB lookup) is the balance
+// pay-link's `bal_<quoteId>` (src/app/api/integrations/valor/webhook/route.ts,
 // src/app/api/quotes/[id]/pay-balance/route.ts). Deposit order refs are a
 // random `q<hex>` (src/app/api/quotes/[id]/pay/route.ts) with no embedded id;
 // recovering THOSE for the human-browser redirect leg needs the
 // `valor_order_ref` DB lookup the real webhook does, which this route's
-// redirect path intentionally never performs. So this test exercises
-// `bal_<uuid>` instead of the brief's `dep_<uuid>`, matching the route's real
-// behavior. (The GUARDED PERSISTENCE path below, unlike the redirect leg,
-// DOES do a `valor_order_ref` DB lookup — but only when authenticated.)
+// redirect path intentionally never performs — that's exactly the
+// "unrecoverable" case that now gets the friendly page. So these tests
+// exercise `bal_<uuid>` instead of the brief's `dep_<uuid>`, matching the
+// route's real behavior.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -178,7 +179,7 @@ describe('POST /api/integrations/valor/redirect-capture', () => {
   });
 });
 
-describe('GET /api/integrations/valor/redirect-capture — human-browser leg', () => {
+describe('GET /api/integrations/valor/redirect-capture — human-browser leg (#171e)', () => {
   it('redirects to the portal approved page when a bal_<uuid> order ref is recoverable via the query string', async () => {
     const uuid = '11111111-2222-4333-8444-555555555555';
     const res = await GET(
@@ -196,21 +197,7 @@ describe('GET /api/integrations/valor/redirect-capture — human-browser leg', (
     expect(res.headers.get('location')).toBe(`https://quote.example.com/portal/${uuid}/approved?confirming=1`);
   });
 
-  it('redirects to / when no order ref is recoverable', async () => {
-    const res = await GET(req({}));
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://quote.example.com/');
-  });
-
-  it('redirects to / for an unrecoverable (non-bal_) order ref, e.g. a deposit q<hex> ref (no DB lookup performed)', async () => {
-    const res = await GET(
-      req({ url: 'https://quote.example.com/api/integrations/valor/redirect-capture?invoicenumber=qaf7affe2379dfd8a' }),
-    );
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://quote.example.com/');
-  });
-
-  it('a POST that prefers text/html (a browser-style Accept) is also treated as the human leg', async () => {
+  it('a POST that prefers text/html (a browser-style Accept) and recovers a quote id also redirects to the portal', async () => {
     const uuid = '33333333-4444-5555-9999-777777777777';
     const body = JSON.stringify({ order_id: `bal_${uuid}`, response_code: '00' });
     const res = await POST(
@@ -218,6 +205,59 @@ describe('GET /api/integrations/valor/redirect-capture — human-browser leg', (
     );
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(`https://quote.example.com/portal/${uuid}/approved?confirming=1`);
+  });
+
+  it('a GET with no order ref at all gets the 200 friendly branded page, never a redirect to / (the operator login)', async () => {
+    const res = await GET(req({}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.get('content-type')).toContain('text/html');
+    const html = await res.text();
+    expect(html).toContain('Payment received');
+    expect(html).toContain('close this window');
+  });
+
+  it('an unrecoverable (non-bal_) order ref, e.g. a deposit q<hex> ref, gets the friendly page instead of / (no DB lookup performed)', async () => {
+    const res = await GET(
+      req({ url: 'https://quote.example.com/api/integrations/valor/redirect-capture?invoicenumber=qaf7affe2379dfd8a' }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    const html = await res.text();
+    expect(html).toContain('Payment received');
+  });
+
+  it('an unexpected thrown error mid-request (html leg) still gets the friendly 200 page, never / (belt-and-suspenders catch-all)', async () => {
+    // Force the outer catch by making the request's own headers.get() throw —
+    // the leading accept-read is separately try/caught (defaults accept='',
+    // and method GET already makes isHuman true regardless), but the later
+    // `req.headers.get('content-type')` inside the main try is NOT guarded,
+    // so this genuinely exercises the function-level catch block rather than
+    // mocking route internals.
+    const throwingReq = {
+      text: async () => '',
+      headers: { get: () => { throw new Error('boom'); } },
+      nextUrl: new URL('https://quote.example.com/api/integrations/valor/redirect-capture'),
+    } as unknown as NextRequest;
+
+    const res = await GET(throwingReq);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    const html = await res.text();
+    expect(html).toContain('Payment received');
+  });
+
+  it('a non-html POST (the real S2S leg) keeps the existing JSON ack byte-preserved, even with a recoverable order ref', async () => {
+    const uuid = '44444444-5555-6666-8888-999999999999';
+    const res = await POST(
+      req({
+        body: JSON.stringify({ order_id: `bal_${uuid}`, response_code: '00' }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ ok: true });
   });
 });
 

@@ -14,7 +14,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { closeQuoteInboxNoise } from '@/lib/dashboard/inbox/store';
 
 export const runtime = 'nodejs';
 
@@ -96,6 +97,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!data) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  // #187a: flipping ON drops the quote out of the dashboard reconcile feed
+  // (queries.ts's `.eq('view_only', false)` chokepoint), so it's never
+  // visited again — any pending "sent, no reply" follow-up + other quotetool
+  // inbox noise for it would otherwise sit stale forever. Best-effort, never
+  // blocks the response (closeQuoteInboxNoise never throws). Turning OFF does
+  // nothing — the quote re-enters the feed naturally on the next reconcile.
+  if (data.view_only) {
+    const operator = await getOperator();
+    await closeQuoteInboxNoise(id, operator?.id ?? null);
   }
 
   return NextResponse.json({ ok: true, viewOnly: data.view_only });

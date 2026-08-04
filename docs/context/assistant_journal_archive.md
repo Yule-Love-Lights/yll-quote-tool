@@ -5,6 +5,13 @@
 > sessions plus the scorecard; the full narrative always lives in
 > `docs/context/session_log_naldo.md` / `session_log.md`.
 
+### S29 (Jason) -- 2026-07-21→23 -- THE VALOR BREAKTHROUGH: #161 solved (token capture live at every deposit), #83 MIT charge proven ($1 APPROVED), both-vaults live (Vault customer 4237995), auto-charge wired flag-OFF (#170 gate); batch-2 send-prep cleared (19/19 linked); loading states + label strip; 9 PRs, 7 $1 tests -- close PR jason/s29-close
+
+- MISTAKE: left the match script's usage header claiming `--live` "refuses until wired" AFTER wiring it -- a false safety claim on a prod-writing script (the wrap staff lens caught it; fixed in this close). Lesson: a stub's safety docs die the moment the stub does, same diff.
+- MISTAKE: guessed the Vault addcustomer body from what the DASHBOARD displays (first/last/email/phone); the prod API takes `customer_name` ONLY (additionalProperties:false, 400 on the probe). Lesson: a vendor UI is not the API schema -- and the probe-first ladder caught it for $1.
+- MISTAKE (pattern, 2x): builder briefs carried unverified guesses (a `dep_` order-ref prefix that doesn't exist; kind `'stake'` vs the real `'stake-lighting'`). Builders verified against code and corrected both -- keep instructing builders to distrust the brief's claims.
+- Did right: the trap ladder (7 x $1, one question each); disproved the "prod portals stuck" P0 with curl + real Chrome before panicking (the in-app pane's renderer was dead all session -- never trust a broken instrument's testimony); the classifier's money-block honored via the Jason's-terminal fallback (#608 ladder); DB treated as source of truth over flaky log queries; every merge CI-gates-read (#625) + deploy SHA-verified; the wrap review's scariest finding (token poisoning) defused with two greps instead of accepted at face value.
+
 ### S28 (Jason) -- 2026-07-20 -- merge-marathon reconciled; #580 accepted (+#586 cap); #163 finished across a DUPLICATE-BUILD collision (#607 salvage); #161 vtToken trap (#609); #155 batch-2: 19 migrated live (+$28k -> pool $207k) -- close #615 + wrap-delta PR
 
 - MISTAKE: built #606 while the concurrent S42 had ALREADY merged the same feature (#588) -- never checked open/merged PRs for the task number before spawning the builder. Cost a full build; the S37 salvage playbook recovered it. Lesson: grep the PR list for the task # BEFORE building anything.

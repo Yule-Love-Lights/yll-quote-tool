@@ -28,6 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { syncPartialLeadToGhl } from '@/lib/leads/partialLead';
+import { sendLeadAlertEmail } from '@/lib/leads/leadAlerts';
 import { checkRateLimitByKey } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
@@ -328,6 +329,36 @@ export async function POST(req: NextRequest) {
       .update({ sync_error: 'HighLevel not configured' })
       .eq('id', rowId);
     if (updErr) console.error('[api/leads/partial] config-skip write-back failed:', updErr.message);
+  }
+
+  // Staff email alert (partial: true — abandoned before submitting), best
+  // effort, same 2s-cap race pattern as the full-lead route's ping/alert
+  // (POST /api/leads): a slow GHL email call must not stretch this background
+  // beacon's serverless function duration. Same spam gating this route
+  // already applies to its own processing — the honeypot branch above already
+  // returned, so this only runs for real (non-honeypot) captures. isTest
+  // captures skip the alert, matching the full-lead route's gating.
+  if (!isTest) {
+    let alertTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      sendLeadAlertEmail(
+        {
+          name,
+          email: hasEmail ? email : null,
+          phone: hasPhone ? phone : null,
+          address,
+          service,
+          formVariant,
+          notes,
+          landingUrl,
+        },
+        { partial: true },
+      ),
+      new Promise<void>((resolve) => {
+        alertTimer = setTimeout(resolve, 2000);
+      }),
+    ]);
+    clearTimeout(alertTimer);
   }
 
   return jsonResponse(origin, { ok: true, id: rowId }, 200);

@@ -26,7 +26,8 @@ import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 import { BISTRO_CATALOG } from './bistroCatalog';
 import { isHighLevelConfigured, sendEmail } from '@/lib/integrations/highlevel';
 import { supplierOrderEmailSubject, supplierOrderEmailHtml } from '@/lib/integrations/quoteMessages';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { poSentMessage } from '@/lib/integrations/telegramMessages';
 
 export type POInput = { sku: string; needed: number; onHand: number; onOrder: number };
@@ -277,7 +278,8 @@ export async function emailSupplierPurchaseOrder(
     // #82 follow-up — proactive ping to the inventory group with what was ordered.
     // Best-effort: a ping failure must not flip a successful send into an error.
     try {
-      await notifyTelegram(
+      await notifyTelegramAudience(
+        'inventory',
         poSentMessage({
           lines: po.lines.map((l) => ({ name: l.name, sku: l.sku, order: l.order })),
           jobCount: po.jobCount,

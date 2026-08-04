@@ -19,9 +19,11 @@ import {
   type FormCustomer,
   type StoredCustomer,
   type DifficultyChoice,
+  type QuoteBuilderPrefill,
   initialFormData,
   buildQuoteInputs,
   inputsToFormData,
+  applyPrefill,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -38,6 +40,7 @@ import dynamic from 'next/dynamic';
 import DesignSummary from '@/components/quote/DesignSummary';
 import PermanentSection from '@/components/quote/PermanentSection';
 import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
+import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
@@ -323,9 +326,14 @@ const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
 export default function QuoteBuilder({
   initialQuote,
   isTest: isTestProp,
+  prefill,
 }: {
   initialQuote?: QuoteBuilderInitial;
   isTest?: boolean;
+  // Blank-slate-only prefill (#leads "Create quote" link) — see applyPrefill in
+  // @/lib/quoteForm. Ignored whenever initialQuote is set (editing an existing
+  // quote at /quote/[id] never seeds from this).
+  prefill?: QuoteBuilderPrefill;
 }) {
   const editMode = initialQuote != null;
   // Test Quote (ledger #93). New: from /quote/new?test=1 (isTestProp). Edit: from
@@ -359,7 +367,7 @@ export default function QuoteBuilder({
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
       ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
-      : initialFormData,
+      : applyPrefill(initialFormData, prefill),
   );
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
@@ -377,12 +385,28 @@ export default function QuoteBuilder({
   // `highlevelContact`: the GHL contact picked in the autocomplete. When
   // set, customer fields are pre-filled and we'll attach the quote to this
   // contact's existing opportunity on save.
+  // A lead-prefilled NEW quote seeds this as if the operator had picked the
+  // lead's known contact by hand (blank-slate branch only): the linked chip
+  // renders immediately, the false "contact required" warning never shows,
+  // and the normal post-save attach flow wires the pipeline card. Built from
+  // the prefill's own fields — the lead IS the contact. "Change" still works.
   // `savedQuoteId`: UUID returned from /api/quote. Needed for the attach
   // call and for the "Send Quote to Customer" button (which targets
   // /api/quotes/[id]/send).
   // `attachStatus` / `sendStatus`: informational — surfaced as a small
   // status line so the operator knows whether the GHL side is in sync.
-  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
+  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(() =>
+    !initialQuote && prefill?.ghlContactId
+      ? {
+          id: prefill.ghlContactId,
+          source: 'highlevel',
+          fullName: prefill.name?.trim() || undefined,
+          email: prefill.email?.trim() || undefined,
+          phone: prefill.phone?.trim() || undefined,
+          address1: prefill.address?.trim() || undefined,
+        }
+      : null,
+  );
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
   // Referral program (#41 "mention" attribution): an existing customer staff
   // picked as "Referred by" while building THIS quote. The new quote's id (or,
@@ -448,7 +472,14 @@ export default function QuoteBuilder({
   // #172: the saved row already carries a HighLevel link (hydrated on edit,
   // maintained on attach/detach). Kills the false "contact required" warning
   // on reopened linked quotes — the chip itself stays pick-session-only.
-  const [dbLinked, setDbLinked] = useState<boolean>(!!initialQuote?.highlevelContactId);
+  // A lead-prefilled NEW quote is the second producer of that same state: the
+  // first Calculate inserts the carried ghlContactId, so the warning would be
+  // just as false — seed from the prefill too (applyPrefill is the only thing
+  // that sets form.highlevelContactId on the blank-slate branch). An explicit
+  // operator pick still overwrites via the attach flow as usual.
+  const [dbLinked, setDbLinked] = useState<boolean>(
+    !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId),
+  );
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
   // Save the customer block to localStorage as staff type, so a brand-new
@@ -1399,7 +1430,7 @@ export default function QuoteBuilder({
       points: pendingPoints,
       label: isPermanentSide(addMode) ? `${PERMANENT_SIDE_META[addMode].label} roofline`
         : addMode === 'bistro' ? `Run ${satelliteBistroLines.length + 1}`
-        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+        : addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : addMode === 'stake' ? 'new stake run' : 'new c9 run',
       // #117 MED: a bistro run carries a STABLE id so its billed line item id
       // (and any #104 per-line price/free override keyed on it) survives a
       // mid-list run delete. Without it, the engine synthesizes POSITIONAL ids
@@ -1729,15 +1760,29 @@ export default function QuoteBuilder({
     // satellite tab when THIS analysis actually carried satellite data (an address
     // pull). A manual street-photo analyze (analyze-photo) carries none, so leave
     // the existing satellite image, lines, and scale intact.
-    const hasSatelliteData =
-      data.satelliteBase64 != null ||
-      data.satelliteFeetPerPixel != null ||
-      (r.satelliteSantasLines?.length ?? 0) > 0 ||
-      (r.satelliteGingerbreadLines?.length ?? 0) > 0;
-    if (hasSatelliteData) {
+    // #190 (prod incident, quote ef73b2de): the ORIGINAL #97 guard counted
+    // non-empty satelliteSantasLines/satelliteGingerbreadLines as satellite
+    // evidence — but a street-only analyze-photo result can carry model-
+    // HALLUCINATED satellite lines with no satellite image ever shown to it
+    // (see analysisSatellitePayload.ts). That let a street re-analyze null out
+    // a live satelliteFeetPerPixel and clobber good seeded lines with
+    // fabricated ones, silently zeroing every satellite measurement downstream
+    // (the footage-derive effect early-returns on a null scale). The gate now
+    // requires an ACTUAL satellite payload (the image or its known scale —
+    // both only ever come from analyze-address), never mere line content.
+    if (hasSatellitePayload(data)) {
       setSatelliteSantasLines(r.satelliteSantasLines ?? []);
       setSatelliteGingerbreadLines(r.satelliteGingerbreadLines ?? []);
-      setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+      // Belt-and-braces: only overwrite the live scale when this payload
+      // actually carries one. In practice analyze-address always pairs
+      // satelliteBase64 with a computed satelliteFeetPerPixel (deterministic
+      // math off the Google Static Maps zoom level — verified non-nullable in
+      // googleMaps.ts's getCachedAddressImagery), so this can't currently
+      // fire with fpp missing. Guarding it anyway means a future satellite-
+      // carrying caller that omits the scale can never null-clobber a live one.
+      if (data.satelliteFeetPerPixel != null) {
+        setSatelliteFeetPerPixel(data.satelliteFeetPerPixel);
+      }
     }
     // The bridge auto-design (#35 Phase 2): roofline lines → tagged C9 strands
     // (#33) AND per-unit detections → scene items at the detected spots. The
@@ -2654,6 +2699,12 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
+          // #leads "Create quote" link: seeded only by applyPrefill on a
+          // blank-slate builder. Sent on every save, but the server only ever
+          // honors it on the NEW-quote insert (saveQuote) — an update never
+          // touches highlevel_contact_id, so this can't clobber a contact the
+          // operator later picks/clears via the HL autocomplete.
+          highlevelContactId: form.highlevelContactId ?? undefined,
         }),
       });
       const data = await res.json();
@@ -3245,6 +3296,22 @@ export default function QuoteBuilder({
                     className="text-blue-700 font-medium underline hover:text-blue-900"
                   >
                     View on Google Maps ↗
+                  </a>
+                </p>
+              )}
+              {(form.customer.address.trim() !== '' || googleAddress != null) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={
+                      geoLat != null && geoLng != null
+                        ? `https://earth.google.com/web/search/${geoLat},${geoLng}`
+                        : `https://earth.google.com/web/search/${encodeURIComponent(googleAddress ?? form.customer.address.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 font-medium underline hover:text-blue-900"
+                  >
+                    View on Google Earth ↗
                   </a>
                 </p>
               )}
