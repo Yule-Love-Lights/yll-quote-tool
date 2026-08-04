@@ -52,10 +52,34 @@ RLS: operator-only (staff), matching the other training tables. **Do not** reuse
 - Loader: a one-shot script/route that reads `data/2026-07-23-resolved-photos-cumulative.csv`, dedups by `drive_file_id`, and inserts `archive_photos` rows (address + contact + drive ref, `status='pending'`, `excluded` for the `skip` rows). Idempotent (re-runnable via the unique hash).
 - **Outcome:** the 210 resolved photos / 80 properties are live in the DB. This is the "we've started" milestone.
 
-**Slice 2 — imagery fetch (reuse estimate pipeline).**
-- Per distinct `resolved_address` (80 of them): call the existing satellite/Street-View fetch, store both images in `training-archive`, set `satellite_ref` / `street_view_ref` / `satellite_feet_per_pixel`, move `status` → `ready_to_trace`.
+**Slice 2 — imagery fetch (reuse estimate pipeline). BUILT.**
+- Per distinct `resolved_address_key` (**77** of them): geocode, fetch the Google satellite + Street View, store both in `training-archive`, set `satellite_ref` / `street_view_ref` / `satellite_feet_per_pixel` / `satellite_w` / `satellite_h`, move `status` → `ready_to_trace`.
 - Batched + resumable; skips addresses already fetched.
-- **Needs:** confirmation the estimate flow's Google key/quota can take ~80 lookups (one-time). No new key if we reuse it.
+- **Needs:** confirmation the estimate flow's Google key/quota can take ~77 lookups (one-time). No new key if we reuse it.
+
+What actually shipped, and the four things the build changed from this plan:
+
+1. **It is a ROUTE + an operator page, not a script.** `POST /api/training/archive/imagery` (operator-gated,
+   `maxDuration = 60`) with a trigger at `/training/archive`. The Google Maps key only exists in the deployed
+   environment, so the batch physically cannot run from a dev checkout — a human clicks it in prod. The page
+   is deliberately the seed of slice 3's queue rather than a throwaway.
+2. **It does NOT call `getCachedAddressImagery`.** That helper throws `NoStreetViewError` *before* it fetches
+   the satellite when a location has no panorama — correct for the estimator (which needs the front elevation),
+   exactly backwards here. The satellite is the thing being traced; Street View is reference. A house on a
+   private lane with no pano must still get its satellite, so the worker calls the primitives directly and
+   treats Street View as best-effort.
+3. **An imprecise geocode is recorded, never imaged.** New guard, not in the original plan: an address typed by
+   hand into the naming pass is not guaranteed to resolve, and when Google can't place one it does not error —
+   it silently returns a town/ZIP centroid (the `isPreciseAddress` discovery from the self-serve estimator).
+   Fetching that would store a satellite of a stranger's house and file its traced geometry as ground truth for
+   this address, permanently, in the corpus few-shot retrieval reads from. Bad training data is worse than
+   missing training data, so the property goes to `imagery_error` for a human instead.
+4. **No intermediate `imagery_fetched` status.** Nothing happens between "imagery landed" and "a human can
+   trace this", so a property goes straight to `ready_to_trace` in the same guarded UPDATE that attaches the
+   imagery. `imagery_fetched` is now dead vocabulary in the slice-1 ladder comment.
+
+Migration `2026-08-04-archive-photos-imagery.sql` adds `satellite_w` / `satellite_h` / `imagery_error` /
+`imagery_fetched_at`, the claim index, and the `training-archive` bucket. **Apply it before the first run.**
 
 **Slice 3 — review queue UI (pre-fill the existing tracer).**
 - New index page `/training/archive`: lists `ready_to_trace` rows **grouped by property** (so a house's multiple angles show as one item), with the archive night photo(s) + the fetched satellite/Street-View thumbnails, and per-property counts (e.g. "9 photos · 1991 Broadhollow Rd").
@@ -89,19 +113,22 @@ RLS: operator-only (staff), matching the other training tables. **Do not** reuse
 Slice 1 shipped with these knowingly deferred. They are NOT bugs in slice 1; they are the next
 slices' work, written down so they don't get rediscovered late.
 
-1. **`training-archive` storage bucket — deferred to slice 2.** The plan listed bucket creation in
-   slice 1, but nothing writes to it until slice 2 fetches imagery. Slice 2's first migration
-   creates it: `insert into storage.buckets (id, name, public) values ('training-archive',
-   'training-archive', false) on conflict (id) do nothing;` (the designs/custom-uploads precedent).
-2. **`satellite_feet_per_pixel` is not a pass-through to the tracer.** The estimate pipeline's
-   feet-per-pixel and what `/training/new` consumes are not the same unit today, and the satellite
-   image's pixel width has to be recorded alongside it. Slice 3's "pre-fill" needs an explicit
-   conversion step plus new state-seeding code in the tracer — budget for it rather than assuming
-   the value drops straight in.
-3. **The `not_in_crm` rows need their own queue lane.** Two rows (`IMG_0901` "tal", `img203`
-   69 31st street wyandanch) are flagged `not_in_crm`. The slice-3 index must show a "needs
-   identification" section (`resolved_address is null or not_in_crm`), or they sit in `pending`
-   forever, never reaching `ready_to_trace` and never surfacing to a human.
+1. ~~**`training-archive` storage bucket — deferred to slice 2.**~~ **DONE** — created by
+   `2026-08-04-archive-photos-imagery.sql` (the designs/custom-uploads precedent: private, service-role only).
+2. ~~**`satellite_feet_per_pixel` is not a pass-through to the tracer.**~~ **RESOLVED, and the audit's fear was
+   half wrong.** There is no unit conversion to budget for: feet-per-pixel is one deterministic scalar
+   (`156543.03392 · cos(lat) / 2^zoom · 3.28084`) and both the estimate pipeline and `designs` already store
+   exactly that number. The REAL gap the audit was circling is the one it named second — the pixel canvas.
+   Slice 2 now stores `satellite_w` / `satellite_h` alongside, matching the path+w+h+feet_per_pixel quartet
+   every other satellite consumer in this repo keeps together. Slice 3's pre-fill still needs state-seeding
+   code in the tracer, but it is seeding, not converting.
+3. **Two rows have no address to geocode and need their own queue lane.** Corrected from the original note,
+   which named the wrong pair: `img203` (69 31st street wyandanch) is flagged `not_in_crm` but DOES carry an
+   address, so the imagery worker claims it normally — a missing CRM link doesn't block tracing. The two rows
+   that actually can't be fetched are `IMG_0585` (customer-linked to "deborah sande", address never typed) and
+   `IMG_0901` ("tal", `not_in_crm`, no address at all). The slice-2 status endpoint reports them as
+   `needsAddress` and the page surfaces the count; slice 3 must give them a "needs identification" section
+   (`resolved_address is null`) where a human supplies the address, or they sit in `pending` forever.
 4. **Three address variants still split into separate queue cards.** `resolved_address_key`
    normalizes case/punctuation (it correctly merges the 4-photo `6 Birch Road` house), but three
    pairs are genuinely different strings and need a human call before or during slice 3 — they are
