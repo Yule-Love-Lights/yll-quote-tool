@@ -12,7 +12,7 @@ metadata:
 >
 > **ACTIVE** (S48 / S46 / S45 / S44 / S43 / S42 below; S48 = self-serve estimator redesign PR #624 OPEN; S46 is docs-only planning; S37-S41 and older -> `session_log_naldo_archive.md` (S38 ×2 siblings / S39 / S40 / S41 moved verbatim at the S44 close); S34 and older still inline pending a careful archive pass, the log's concurrent-edit structure needs one). (No S47 entry in this log — S47 = the self-serve estimate Phase A session, logged elsewhere.)
 >
-> ⚠️ **Session-number collisions are a recurring class on this machine** (two concurrent S38 conversations; S39/S40 taken by the legacy-Jobber sessions; S41/S42 by concurrent sessions, so the tooling session took S43). The colliding entries are recorded as siblings in the archive rather than renumbered mid-conversation. **Next fresh conversation = S49.**
+> ⚠️ **Session-number collisions are a recurring class on this machine** (two concurrent S38 conversations; S39/S40 taken by the legacy-Jobber sessions; S41/S42 by concurrent sessions, so the tooling session took S43). The colliding entries are recorded as siblings in the archive rather than renumbered mid-conversation. **Next fresh conversation = S50** — S49 is already claimed by a concurrent Naldo session (open PRs #669 `naldo/s49-wrap-fixes` + #670 `naldo/s49-close`), and S47 by three more (#671/#672/#623); verify the number against both logs on fresh master at start regardless.
 
 ### Naldo S48 — SELF-SERVE ESTIMATOR REDESIGN (Option A mockup port): the whole `/estimate` front door rebuilt customer-facing; PR #624 OPEN + review-clean, NOT merged (2026-07-26)
 
