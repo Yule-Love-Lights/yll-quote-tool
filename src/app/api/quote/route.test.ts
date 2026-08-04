@@ -277,6 +277,30 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
     const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
     expect(res.status).toBe(200);
   });
+
+  // #192 — per-side track style: trackStyleBySide validation trio.
+  it('rejects a non-object trackStyleBySide with 400', async () => {
+    const res = await POST(badPerm({ trackStyleBySide: 'single' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid VALUE on a recognized trackStyleBySide side with 400', async () => {
+    const res = await POST(badPerm({ trackStyleBySide: { front: 'diagonal' } }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed trackStyleBySide, ignoring an unknown key (mirrors sideSource leniency)', async () => {
+    const inputs = permInputs(120);
+    inputs.permanent = {
+      ...(inputs.permanent as Record<string, unknown>),
+      trackStyleBySide: { front: 'parapet', left: 'single', notASide: 'parapet' },
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /api/quote — event block validation (#96 audit fixes #9 / #5)', () => {

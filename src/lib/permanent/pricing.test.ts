@@ -70,6 +70,25 @@ describe('calculatePermanentQuote', () => {
     expect(r.depositRate).toBe(0.5); // default, absent depositPercent
   });
 
+  // #192 — trackStyleBySide is BOM-only ordering metadata; pricing.ts never
+  // reads it (verified: no `trackStyle` reference anywhere in this file).
+  // Byte-identical price lock: setting a mixed per-side map must not move a
+  // single cent versus the identical footage with no map set.
+  it('#192 — trackStyleBySide has ZERO price impact (byte-identical to no map set)', () => {
+    const base = calculatePermanentQuote(inputs({ frontFootage: 120, leftFootage: 50, rightFootage: 40, backFootage: 60 }));
+    const withMap = calculatePermanentQuote(
+      inputs({
+        frontFootage: 120,
+        leftFootage: 50,
+        rightFootage: 40,
+        backFootage: 60,
+        trackStyle: 'single',
+        trackStyleBySide: { front: 'parapet', left: 'parapet', right: 'single', back: 'parapet' },
+      }),
+    );
+    expect(withMap).toEqual(base);
+  });
+
   // #177 — permanent inherits the per-quote deposit override for free via the
   // shared computeTotalsTail; same total ($10,929.38) as the test above.
   it('honors a per-quote depositPercent override (#177)', () => {
