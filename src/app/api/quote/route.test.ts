@@ -606,7 +606,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
     const res = await POST(makeReq({ inputs: validInputs() }));
     expect(res.status).toBe(200);
-    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId)
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId, highlevelContactId)
     expect(save).toHaveBeenCalledWith(
       expect.anything(), // customer
       expect.anything(), // inputs
@@ -615,6 +615,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(), // isTest
       'op-1', // created_by
       null, // referredByCustomerId (#41) — not supplied in this request
+      null, // highlevelContactId (#leads) — not supplied in this request
     );
   });
 
@@ -627,6 +628,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
+      null,
       null,
       null,
     );
@@ -648,6 +650,7 @@ describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)',
       expect.anything(),
       null,
       referrerId,
+      null,
     );
   });
 
@@ -671,6 +674,52 @@ describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)',
     // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId)
     const updateArgs = update.mock.calls[0] as unknown[];
     expect(updateArgs[5]).toBe(referrerId);
+  });
+});
+
+describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', () => {
+  it('threads a valid highlevelContactId to saveQuote (8th arg)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), highlevelContactId: 'ghl-contact-abc123' }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      null,
+      'ghl-contact-abc123',
+    );
+  });
+
+  it('trims whitespace and defaults to null when blank', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), highlevelContactId: '   ' }));
+    expect(res.status).toBe(200);
+    expect((save.mock.calls[0] as unknown[])[7]).toBeNull();
+  });
+
+  it('400s when highlevelContactId is not a string', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), highlevelContactId: 123 }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s when highlevelContactId exceeds the length cap', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), highlevelContactId: 'x'.repeat(101) }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('does NOT thread highlevelContactId to updateQuote on the UPDATE path (never clobbers an existing link)', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: 'ghl-contact-abc123' }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId) — 6 args, no highlevelContactId slot.
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs).toHaveLength(6);
   });
 });
 

@@ -433,6 +433,30 @@ describe('saveQuote created_by', () => {
   });
 });
 
+// #leads "Create quote" link: saveQuote's 8th param writes highlevel_contact_id
+// on insert (mirrors rebook.ts's buildRebookInsert, the other direct-insert
+// write site for this column).
+describe('saveQuote highlevelContactId', () => {
+  it('writes the lead-carried contact id into highlevel_contact_id on insert', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    // saveQuote(customer, inputs, result, serviceType, isTest, createdBy, referredByCustomerId, highlevelContactId)
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT, undefined, false, null, null, 'ghl-contact-123');
+
+    expect(service.inserts[0]).toMatchObject({ highlevel_contact_id: 'ghl-contact-123' });
+  });
+
+  it('writes highlevel_contact_id null when none is passed', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(service.inserts[0]).toMatchObject({ highlevel_contact_id: null });
+  });
+});
+
 // ── #93: Test Quote flag + scoped cleanup ───────────────────────────────────
 
 describe('saveQuote — is_test (ledger #93)', () => {

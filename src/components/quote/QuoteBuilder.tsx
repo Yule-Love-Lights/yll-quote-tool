@@ -2676,6 +2676,12 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
+          // #leads "Create quote" link: seeded only by applyPrefill on a
+          // blank-slate builder. Sent on every save, but the server only ever
+          // honors it on the NEW-quote insert (saveQuote) — an update never
+          // touches highlevel_contact_id, so this can't clobber a contact the
+          // operator later picks/clears via the HL autocomplete.
+          highlevelContactId: form.highlevelContactId ?? undefined,
         }),
       });
       const data = await res.json();

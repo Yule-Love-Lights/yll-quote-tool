@@ -36,7 +36,9 @@ type Lead = {
 };
 
 // UI filter label → the set of sync_status values it shows. 'Stuck' is the
-// actionable default (still needs a human or a retry); the rest are exact.
+// most actionable view (still needs a human or a retry); the rest are exact.
+// The page itself opens on 'All' (see the `filter` useState below) so a fresh
+// operator sees every lead, not just the recovery queue.
 const FILTERS: Array<{ label: string; statuses: string[] | null }> = [
   { label: 'Stuck', statuses: ['pending', 'deferred', 'failed'] },
   { label: 'Pending', statuses: ['pending'] },
@@ -80,6 +82,10 @@ function StatusBadge({ status }: { status: string }) {
 // applyPrefill) to seed the blank builder's initial state. Only non-empty
 // fields are sent; an unrecognized/legacy lead.service is simply omitted
 // (QuoteBuilder validates serviceType itself and ignores anything invalid).
+// ghlContactId (operator feedback): when the lead already has a HighLevel
+// contact, carry its id through so the quote saves LINKED to that contact from
+// birth (quotes.highlevel_contact_id) instead of the operator having to
+// re-pick the same contact by hand in the builder's HL autocomplete.
 function quoteNewHref(lead: Lead): string {
   const params = new URLSearchParams();
   if (lead.name) params.set('name', lead.name);
@@ -88,6 +94,7 @@ function quoteNewHref(lead: Lead): string {
   if (lead.address) params.set('address', lead.address);
   const serviceType = leadServiceToQuoteServiceType(lead.service);
   if (serviceType) params.set('serviceType', serviceType);
+  if (lead.ghl_contact_id) params.set('ghlContactId', lead.ghl_contact_id);
   const qs = params.toString();
   return qs ? `/quote/new?${qs}` : '/quote/new';
 }
@@ -105,7 +112,7 @@ export default function LeadsAdminClient({ hlLocationId }: { hlLocationId: strin
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState('Stuck');
+  const [filter, setFilter] = useState('All');
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
