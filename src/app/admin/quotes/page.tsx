@@ -198,51 +198,64 @@ export default function QuotesAdminPage() {
         )}
 
         {/* Audit fix (Finding #40): status filter + text search so un-sent
-            (Draft) quotes are legible at a glance. */}
+            (Draft) quotes are legible at a glance. Two separate labeled rows
+            (this task, per operator device-check feedback on #666 — stage and
+            service-type sat side by side and read as one confusing group):
+            stage (the status lifecycle) first, service line underneath. Label
+            style matches this section's existing muted-heading idiom (see the
+            detail page's "Customer" / "Lifecycle" headings). */}
         {!loading && items.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="flex flex-wrap gap-1">
-              {(['All', ...FILTER_STATUSES] as const).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
-                    statusFilter === s
-                      ? 'bg-gray-900 text-white border-gray-900'
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {s === 'All' ? 'All' : STATUS_LABELS[s]}
-                </button>
-              ))}
+          <div className="mb-3">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Stage</span>
+              <div className="flex flex-wrap gap-1">
+                {(['All', ...FILTER_STATUSES] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                      statusFilter === s
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {s === 'All' ? 'All' : STATUS_LABELS[s]}
+                  </button>
+                ))}
+              </div>
             </div>
-            {/* Service-type chip row (this task) — filters by service line,
-                composing with the status chips + search as AND conditions. */}
-            <div className="flex flex-wrap gap-1">
-              {(['All', ...SERVICE_TYPES] as const).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setServiceFilter(s)}
-                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
-                    serviceFilter === s
-                      ? 'bg-gray-900 text-white border-gray-900'
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
-                </button>
-              ))}
+            {/* Service-type chip row — filters by service line, composing with
+                the status chips + search as AND conditions. */}
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Service</span>
+              <div className="flex flex-wrap gap-1">
+                {(['All', ...SERVICE_TYPES] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setServiceFilter(s)}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                      serviceFilter === s
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
+                  </button>
+                ))}
+              </div>
             </div>
-            <input
-              type="search"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search name, address, phone, email, ID…"
-              className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
-            />
-            <span className="text-xs text-gray-500 whitespace-nowrap">
-              {visible.length} of {items.length}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search name, address, phone, email, ID…"
+                className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
+              />
+              <span className="text-xs text-gray-500 whitespace-nowrap">
+                {visible.length} of {items.length}
+              </span>
+            </div>
           </div>
         )}
 
