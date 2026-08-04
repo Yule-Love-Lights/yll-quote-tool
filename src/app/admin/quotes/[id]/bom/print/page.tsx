@@ -8,9 +8,11 @@ import type { CSSProperties } from 'react';
 import { notFound, redirect } from 'next/navigation';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { getQuoteRaw } from '@/lib/quotes';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { deriveStatus } from '@/lib/quoteStatus';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
 import { catalogCostOverrides } from '@/lib/inventory/catalog';
 import type { BomCategory } from '@/lib/permanent/bom';
+import type { PermanentSide } from '@/lib/permanent/types';
 import { PrintButton } from '@/components/inventory/PrintButton';
 
 export const dynamic = 'force-dynamic';
@@ -39,11 +41,27 @@ export default async function PermanentBomPrintPage({ params }: { params: Promis
   const { id } = await params;
   const quote = await getQuoteRaw(id);
   if (!quote) notFound();
+  // #192 — approved-sides scoping cuts over at BOOKED (deposit paid), not
+  // approved — mirrors the admin quote detail page. Fails open to null
+  // (unscoped) on any missing/unparseable/no-match snapshot.
+  const includedPermanentSides =
+    deriveStatus(quote) === 'booked' ? includedPermanentSidesFromSnapshot(quote.approval_snapshot) : null;
+  const PERMANENT_SIDE_LABEL: Record<PermanentSide, string> = {
+    front: 'Front',
+    left: 'Left side',
+    right: 'Right side',
+    back: 'Back',
+  };
+  const scopedSideLabels = includedPermanentSides
+    ? (['front', 'left', 'right', 'back'] as const)
+        .filter((s) => includedPermanentSides.has(s))
+        .map((s) => PERMANENT_SIDE_LABEL[s])
+    : null;
   // P8 — live inventory_catalog costs override the engine's built-in fallback
   // prices; a catalog read failure swallows to [] → an empty override map →
   // every SKU falls back. Page already 404s for a non-permanent quote below, so
   // the fetch stays unconditional (this page never renders for holiday/event).
-  const bom = permanentBomFromQuote(quote.inputs, await catalogCostOverrides());
+  const bom = permanentBomFromQuote(quote.inputs, await catalogCostOverrides(), includedPermanentSides);
   if (!bom) notFound(); // not a permanent quote / no permanent inputs
 
   const groups = CATEGORY_ORDER.map((cat) => ({
@@ -91,6 +109,12 @@ export default async function PermanentBomPrintPage({ params }: { params: Promis
         <div><strong>Track sections:</strong> {bom.totals.trackSections}</div>
         <div><strong>Wholesale cost:</strong> {money(bom.totals.wholesaleCost)} ({money(bom.totals.costPerFt)}/ft)</div>
       </section>
+
+      {scopedSideLabels && scopedSideLabels.length > 0 && (
+        <p style={{ fontSize: '12px', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: '6px', padding: '6px 8px', margin: '0 0 14px' }}>
+          Booked scope: {scopedSideLabels.join(', ')} — accessories/gaps remain whole-job.
+        </p>
+      )}
 
       {bom.flags.length > 0 && (
         <ul style={{ fontSize: '12px', color: '#b45309', margin: '0 0 14px', paddingLeft: '18px' }}>

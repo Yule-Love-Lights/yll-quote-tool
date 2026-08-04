@@ -15,7 +15,7 @@ import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, adjustOnHandAtomic } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
 import type { PermanentQuoteFields } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
@@ -364,9 +364,18 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   // Positive `=== 'permanent_bistro'` gate, checked AFTER permanent (the two
   // service types are mutually exclusive, so order doesn't matter functionally,
   // but this reads as the natural "which BOM engine" ladder).
+  // #192 — a job exists only post-booking (deposit paid, see this file's own
+  // header), so its materials are ALWAYS scoped to the customer's approved
+  // sides. includedPermanentSidesFromSnapshot fails open to null (unscoped —
+  // today's full-BOM behavior) on any missing/unparseable/no-match snapshot,
+  // so a paid job can never silently under-order.
   const lines = isPermanent
     ? materialLinesFromBom(
-        permanentBomFromQuote({ permanent: permanentFields }, await catalogCostOverrides())?.lines ?? [],
+        permanentBomFromQuote(
+          { permanent: permanentFields },
+          await catalogCostOverrides(),
+          includedPermanentSidesFromSnapshot(approvalSnapshotRaw),
+        )?.lines ?? [],
       )
     : isPermanentBistro
       ? materialLinesFromBistroBom(

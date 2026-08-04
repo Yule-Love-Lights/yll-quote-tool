@@ -17,7 +17,8 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
+import type { PermanentSide } from '@/lib/permanent/types';
 import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
@@ -150,10 +151,30 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // when a SKU's been re-priced in Settings; a catalog read failure swallows to
   // [] → an empty override map → every SKU quietly falls back. Only fetched for
   // permanent quotes — no reason to hit the catalog for a holiday/event quote.
+  //
+  // #192 — approved-sides scoping cuts over at BOOKED (deposit paid), not
+  // approved: an approved-but-unpaid quote still shows every measured side
+  // (Jason's call — nothing is final until the deposit lands). fails open to
+  // null (unscoped) on any missing/unparseable/no-match snapshot.
+  const includedPermanentSides =
+    quote.service_type === 'permanent' && status === 'booked'
+      ? includedPermanentSidesFromSnapshot(quote.approval_snapshot)
+      : null;
   const bom =
     quote.service_type === 'permanent'
-      ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides())
+      ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides(), includedPermanentSides)
       : null;
+  const PERMANENT_SIDE_LABEL: Record<PermanentSide, string> = {
+    front: 'Front',
+    left: 'Left side',
+    right: 'Right side',
+    back: 'Back',
+  };
+  const scopedSideLabels = includedPermanentSides
+    ? (['front', 'left', 'right', 'back'] as const)
+        .filter((s) => includedPermanentSides.has(s))
+        .map((s) => PERMANENT_SIDE_LABEL[s])
+    : null;
 
   // Permanent Bistro (#117): the same ordering-only BOM pattern, a separate
   // engine (Thunder/Home Depot/Amazon, no wholesale-cost totals shown here —
@@ -415,7 +436,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             <p className="text-xs text-gray-400 mb-3">
               Ascend/Dauer APL list — ordering + margin only. Materials never affect the customer price.
             </p>
-            <PermanentBomPanel bom={bom} />
+            <PermanentBomPanel bom={bom} scopedSideLabels={scopedSideLabels} />
           </div>
         )}
 
