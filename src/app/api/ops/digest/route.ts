@@ -9,7 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { safeEqual } from '@/lib/security';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
-import { notifyTelegram, appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { collectOpsDigest, opsDigestMessage } from '@/lib/integrations/opsDigest';
 
 export const runtime = 'nodejs';
@@ -26,6 +27,6 @@ export async function GET(req: NextRequest) {
   const msg = opsDigestMessage(await collectOpsDigest(), appBaseUrl());
   if (!msg) return NextResponse.json({ ok: true, sent: false });
 
-  await notifyTelegram(msg);
+  await notifyTelegramAudience('ops', msg);
   return NextResponse.json({ ok: true, sent: true });
 }

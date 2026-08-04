@@ -3,10 +3,10 @@ import type { NextRequest } from 'next/server';
 
 // IO seams mocked (data modules, Telegram send, bot gating); collectOpsDigest +
 // opsDigestMessage run for real so the route test exercises the actual assembly.
-const { listQuotes, listFulfillmentCards, notifyTelegram, tg } = vi.hoisted(() => ({
+const { listQuotes, listFulfillmentCards, notifyTelegramAudience, tg } = vi.hoisted(() => ({
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   tg: { enabled: true, configured: true },
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
@@ -16,8 +16,10 @@ vi.mock('@/lib/integrations/telegram', () => ({
   isTelegramConfigured: () => tg.configured,
 }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
+}));
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 
 import { GET } from './route';
@@ -71,7 +73,7 @@ describe('GET /api/ops/digest', () => {
     expect((await GET(makeReq('wrong'))).status).toBe(401);
     delete process.env.CRON_SECRET;
     expect((await GET(makeReq(SECRET))).status).toBe(401);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('skips quietly while the Telegram bot is dormant', async () => {
@@ -79,21 +81,22 @@ describe('GET /api/ops/digest', () => {
     listQuotes.mockResolvedValue([draftQuote]);
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, skipped: 'telegram dormant' });
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('sends nothing on an all-quiet day', async () => {
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, sent: false });
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('sends the assembled digest when there is something to say', async () => {
     listQuotes.mockResolvedValue([draftQuote]);
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, sent: true });
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0];
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('ops');
+    const msg = notifyTelegramAudience.mock.calls[0][1];
     expect(msg).toContain('☀️ YLL morning digest');
     expect(msg).toContain('Quotes to send: 1');
     expect(msg).toContain('• #101 Ann Draft — $1,500');

@@ -11,6 +11,8 @@ const ITEMS = [
   { label: 'Accounts', href: '/settings/accounts', key: 'accounts' as const },
   // Text-ops bot roster — crew/staff/admin by Telegram id (admin-only; #168).
   { label: 'Bot team', href: '/settings/bot-team', key: 'bot-team' as const },
+  // Per-audience outbound Telegram chat routing — leads/jobs/inventory/ops.
+  { label: 'Telegram', href: '/settings/telegram', key: 'telegram' as const },
   // Test-quote tools + saved-quotes dev actions (#93).
   { label: 'Quotes', href: '/settings/quotes', key: 'quotes' as const },
   // Per-account editor keyboard shortcuts (#98).
@@ -28,6 +30,7 @@ export function SettingsSubNav({
     | 'customer-portal'
     | 'accounts'
     | 'bot-team'
+    | 'telegram'
     | 'quotes'
     | 'hotkeys'
     | 'highlevel';

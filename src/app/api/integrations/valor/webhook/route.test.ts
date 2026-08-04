@@ -22,7 +22,7 @@ const {
   getJobByQuote,
   setJobStatus,
   getInvoiceByJob,
-  notifyTelegram,
+  notifyTelegramAudience,
   getJobWorkOrder,
   accrueOnBooking,
   ensureReferralCode,
@@ -46,7 +46,7 @@ const {
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
   // Proactive prep ping (#82 follow-up): the work order feeds the message; the
   // notifier is mocked so we assert it fires once per booking, never on replay.
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   getJobWorkOrder: vi.fn(async () => ({
     job: {
       id: 'job-1', jobNumber: 1042, quoteId: 'quote-1', designId: null,
@@ -89,8 +89,8 @@ vi.mock('@/lib/invoices', () => ({
   getInvoiceByJob,
 }));
 
-vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 
 vi.mock('@/lib/inventory/jobs', () => ({
@@ -275,10 +275,11 @@ describe('Valor webhook — happy path', () => {
 
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    expect(notifyTelegram.mock.calls[0][0]).toContain('New job to prep');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('Jordan Smith');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('C9 Warm White');
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('New job to prep');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('Jordan Smith');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('C9 Warm White');
   });
 
   it('#159: books a quote from the REAL Valor E-Invoice shape (ref nested at data.invoice_no)', async () => {
@@ -498,7 +499,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     // Lost the race → the winning request creates the job; this replay must not.
     expect(createJobFromQuote).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping on replay
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping on replay
   });
 
   it('short-circuits when the quote is already marked paid', async () => {
@@ -511,7 +512,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(json.alreadyPaid).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping
   });
 });
 
@@ -626,7 +627,7 @@ describe('Valor webhook — dead-quote guard (W1-007)', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     // Loud error log — real money may have moved, staff must reconcile.
     expect(err).toHaveBeenCalledWith(expect.stringContaining('NOT booking a dead order'));
     err.mockRestore();
